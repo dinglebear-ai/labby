@@ -302,12 +302,26 @@ impl UpstreamPool {
         rmcp::service::Peer<rmcp::RoleClient>,
         Vec<rmcp::model::Tool>,
     )> {
-        use super::connect::connect_upstream_with_client;
-
         // Held through cache publication so credential mutation cannot evict
         // the client cache and then race an older authenticated connection
         // into the live pool.
         let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
+
+        self.acquire_or_connect_subject_guarded(config, subject)
+            .await
+    }
+
+    /// Subject connection acquisition when the caller already holds the OAuth
+    /// invalidation read barrier for the complete checked invocation.
+    pub(super) async fn acquire_or_connect_subject_guarded(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> anyhow::Result<(
+        rmcp::service::Peer<rmcp::RoleClient>,
+        Vec<rmcp::model::Tool>,
+    )> {
+        use super::connect::connect_upstream_with_client;
 
         let key = (config.name.clone(), subject.to_string());
 

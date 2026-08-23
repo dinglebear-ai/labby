@@ -10,19 +10,19 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use labby_codemode::{CodeModeCaller, CodeModeCallerCapabilities, ToolCallOutcome, ToolScope};
-use labby_runtime::caller_auth::PropagatedCallerUpstreamScope;
+use labby_runtime::caller_auth::{PropagatedCallerAuth, PropagatedCallerUpstreamScope};
 use labby_runtime::error::ToolError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
-use crate::gateway::code_mode::code_mode_host::propagated_caller_auth;
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::sanitize_tool_text;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 
 const MAX_SCHEMA_BYTES: usize = 64 * 1024;
+const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_CONTRACT_BYTES: usize = 160 * 1024;
 const CAPABILITY_CONTRACT_VERSION: u8 = 1;
 
@@ -49,6 +49,8 @@ pub struct CapabilityContract {
 
 impl CapabilityContract {
     pub fn from_upstream_tool(tool: &UpstreamTool) -> Result<Self, ToolError> {
+        validate_contract_schema(tool.input_schema.as_ref())?;
+        validate_contract_schema(tool.output_schema.as_ref())?;
         let annotations = tool.tool.annotations.as_ref();
         let mut contract = Self {
             contract_version: CAPABILITY_CONTRACT_VERSION,
@@ -64,13 +66,19 @@ impl CapabilityContract {
             destructive: tool.destructive,
             contract_hash: String::new(),
         };
-        contract.contract_hash = contract.compute_hash()?;
+        contract.contract_hash =
+            contract.compute_hash(tool.input_schema.as_ref(), tool.output_schema.as_ref())?;
         Ok(contract)
     }
 
-    fn compute_hash(&self) -> Result<String, ToolError> {
+    fn compute_hash(
+        &self,
+        exact_input_schema: Option<&Value>,
+        exact_output_schema: Option<&Value>,
+    ) -> Result<String, ToolError> {
         let mut writer = CappedHashWriter::new(MAX_CONTRACT_BYTES);
-        write_contract_canonical(&mut writer, self).map_err(|_| descriptor_unsupported())?;
+        write_contract_canonical(&mut writer, self, exact_input_schema, exact_output_schema)
+            .map_err(|_| descriptor_unsupported())?;
         Ok(hex_digest(&writer.finish()))
     }
 }
@@ -122,6 +130,7 @@ pub struct McpToolLauncherEntry {
 #[derive(Debug, Clone)]
 pub struct PaletteCaller {
     pub caller: CodeModeCaller,
+    pub caller_auth: PropagatedCallerAuth,
     pub scope: ToolScope,
     pub owner: UpstreamRuntimeOwner,
     pub oauth_subject: String,
@@ -143,7 +152,12 @@ impl PaletteCaller {
                     can_use_snippets: false,
                     is_admin: true,
                 },
-                sub: subject,
+                sub: subject.clone(),
+            },
+            caller_auth: PropagatedCallerAuth {
+                sub: subject.clone(),
+                scopes: vec!["lab:admin".to_string()],
+                trusted_local: false,
             },
             scope: ToolScope::default(),
             owner,
@@ -159,6 +173,13 @@ impl PaletteCaller {
     ) -> Self {
         let owner = crate::gateway::shared::make_api_runtime_owner(subject, request_id);
         let subject = subject.map(ToOwned::to_owned);
+        let scopes = std::iter::once("mcp:read".to_string())
+            .chain(
+                allowed_upstreams
+                    .iter()
+                    .map(|name| format!("gateway:{name}")),
+            )
+            .collect();
         Self {
             caller: CodeModeCaller::Scoped {
                 capabilities: CodeModeCallerCapabilities {
@@ -169,9 +190,45 @@ impl PaletteCaller {
                 },
                 sub: subject.clone(),
             },
+            caller_auth: PropagatedCallerAuth {
+                sub: subject.clone(),
+                scopes,
+                trusted_local: false,
+            },
             scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()).read_only(),
             owner,
             oauth_subject: subject.unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn scoped(
+        subject: &str,
+        request_id: Option<&str>,
+        scopes: Vec<String>,
+        allowed_upstreams: Vec<String>,
+    ) -> Self {
+        let can_read = scopes.iter().any(|scope| scope == "mcp:read");
+        let can_execute =
+            scopes.iter().any(|scope| scope == "mcp:write") && !allowed_upstreams.is_empty();
+        Self {
+            caller: CodeModeCaller::Scoped {
+                capabilities: CodeModeCallerCapabilities {
+                    can_read,
+                    can_execute,
+                    can_use_snippets: false,
+                    is_admin: false,
+                },
+                sub: Some(subject.to_string()),
+            },
+            caller_auth: PropagatedCallerAuth {
+                sub: Some(subject.to_string()),
+                scopes,
+                trusted_local: false,
+            },
+            scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()),
+            owner: crate::gateway::shared::make_api_runtime_owner(Some(subject), request_id),
+            oauth_subject: subject.to_string(),
         }
     }
 
@@ -216,6 +273,12 @@ impl GatewayManager {
         &self,
         caller: &PaletteCaller,
     ) -> Result<LauncherCatalogView, ToolError> {
+        if !caller.caller.can_read() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: "palette catalog requires mcp:read permission".to_string(),
+            });
+        }
         let start = Instant::now();
         let mut entries = Vec::new();
         let mut schema_bytes = 0usize;
@@ -306,52 +369,29 @@ impl GatewayManager {
                 });
             }
 
-            let upstream_tool = self
-                .resolve_code_mode_upstream_tool(
-                    upstream,
-                    tool,
-                    Some(&caller.owner),
-                    Some(&caller.oauth_subject),
-                )
-                .await
-                .map_err(map_unknown_tool_to_not_found)?;
-
-            let contract = CapabilityContract::from_upstream_tool(&upstream_tool)?;
-            if contract.contract_hash != contract_hash {
-                return Err(contract_changed(upstream, tool));
-            }
-
-            if upstream_tool.destructive {
-                if !caller.caller.is_admin() {
-                    return Err(ToolError::Sdk {
-                        sdk_kind: "forbidden".to_string(),
-                        message: format!(
-                            "tool `{upstream}::{tool}` is destructive and requires admin"
-                        ),
-                    });
-                }
-                if !request.confirm_destructive {
-                    return Err(ToolError::Sdk {
-                        sdk_kind: "confirmation_required".to_string(),
-                        message: format!("tool `{upstream}::{tool}` is destructive"),
-                    });
-                }
-            }
-
-            let outcome = self
+            let destructive_allowed = caller.caller.is_admin() && request.confirm_destructive;
+            let destructive_denial_kind = if caller.caller.is_admin() {
+                "confirmation_required"
+            } else {
+                "forbidden"
+            };
+            let checked = self
                 .execute_upstream_tool_checked(
                     upstream,
                     tool,
                     request.params,
                     &caller.owner,
                     Some(&caller.oauth_subject),
-                    Some(propagated_caller_auth(&caller.caller)),
+                    Some(caller.caller_auth.clone()),
                     Some(PropagatedCallerUpstreamScope::new(
                         caller.scope.allowed_namespaces().cloned(),
                     )),
                     &contract_hash,
+                    destructive_allowed,
+                    destructive_denial_kind,
                 )
-                .await?;
+                .await
+                .map_err(map_unknown_tool_to_not_found)?;
             let receipt = PaletteExecutionReceipt {
                 request_id: caller
                     .owner
@@ -359,20 +399,28 @@ impl GatewayManager {
                     .clone()
                     .unwrap_or_else(|| "unavailable".to_string()),
                 tool_id: tool_id.clone(),
-                contract_hash: contract_hash.clone(),
-                // V1 treats the exact caller-visible capability contract as
-                // the smallest useful opaque catalog revision.
-                catalog_revision: contract_hash.clone(),
+                contract_hash: checked.contract_hash,
+                catalog_revision: checked.catalog_revision,
                 truncated: false,
             };
-            Ok(execution_response(tool_id.clone(), outcome, receipt))
+            Ok(execution_response(
+                tool_id.clone(),
+                checked.outcome,
+                receipt,
+            ))
         };
         let result = result.await;
+        let catalog_revision = result
+            .as_ref()
+            .ok()
+            .map(|response| response.receipt.catalog_revision.as_str())
+            .unwrap_or("unavailable");
         log_palette_execution(
             caller,
             upstream,
             tool,
             &contract_hash,
+            catalog_revision,
             result
                 .as_ref()
                 .map_or_else(|error| error.kind(), |_| "success"),
@@ -386,6 +434,12 @@ impl GatewayManager {
         caller: &PaletteCaller,
         id: &str,
     ) -> Result<Option<Value>, ToolError> {
+        if !caller.caller.can_read() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: "palette schema requires mcp:read permission".to_string(),
+            });
+        }
         let start = Instant::now();
         let (upstream, tool) = parse_mcp_launcher_id(id)?;
         if caller
@@ -502,6 +556,9 @@ fn map_unknown_tool_to_not_found(error: ToolError) -> ToolError {
 
 fn project_palette_schema(schema: Option<Value>) -> Option<Value> {
     let mut schema = schema?;
+    if schema_depth_exceeds_limit(&schema) {
+        return None;
+    }
     redact_schema_value(&mut schema);
     if schema.to_string().len() > MAX_SCHEMA_BYTES {
         return None;
@@ -520,22 +577,41 @@ fn project_contract_schema(schema: Option<&Value>) -> Result<Option<Value>, Tool
     Ok(Some(projected))
 }
 
+fn validate_contract_schema(schema: Option<&Value>) -> Result<(), ToolError> {
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+    if schema_depth_exceeds_limit(schema) {
+        return Err(descriptor_unsupported());
+    }
+    let mut writer = CountingWriter::new(MAX_SCHEMA_BYTES);
+    serde_json::to_writer(&mut writer, schema).map_err(|_| descriptor_unsupported())
+}
+
+fn schema_depth_exceeds_limit(schema: &Value) -> bool {
+    let mut pending = vec![(schema, 1usize)];
+    while let Some((value, depth)) = pending.pop() {
+        if depth > MAX_SCHEMA_DEPTH {
+            return true;
+        }
+        match value {
+            Value::Object(map) => pending.extend(map.values().filter_map(|child| {
+                matches!(child, Value::Object(_) | Value::Array(_)).then_some((child, depth + 1))
+            })),
+            Value::Array(values) => pending.extend(values.iter().filter_map(|child| {
+                matches!(child, Value::Object(_) | Value::Array(_)).then_some((child, depth + 1))
+            })),
+            _ => {}
+        }
+    }
+    false
+}
+
 fn descriptor_unsupported() -> ToolError {
     ToolError::Sdk {
         sdk_kind: "descriptor_unsupported".to_string(),
         message: "capability descriptor exceeds the v1 contract limits".to_string(),
     }
-}
-
-fn contract_changed(upstream: &str, tool: &str) -> ToolError {
-    labby_codemode::CodeModeCallError::new(
-        "contract_changed",
-        format!("Tool `{upstream}::{tool}` changed; refresh its contract and review it again."),
-    )
-    .with_tool(format!("{upstream}::{tool}"))
-    .with_origin(labby_codemode::CodeModeErrorOrigin::Discovery)
-    .with_side_effects(labby_codemode::CodeModeSideEffectRisk::NoneExpected)
-    .into_tool_error()
 }
 
 fn validate_contract_hash(hash: &str) -> Result<(), ToolError> {
@@ -557,6 +633,7 @@ fn log_palette_execution(
     upstream: &str,
     tool: &str,
     contract_hash: &str,
+    catalog_revision: &str,
     kind: &str,
     elapsed: Duration,
 ) {
@@ -571,7 +648,7 @@ fn log_palette_execution(
         tool,
         subject_fingerprint,
         contract_hash,
-        catalog_revision = contract_hash,
+        catalog_revision,
         elapsed_ms = elapsed.as_millis(),
         kind,
         "palette launcher execution completed"
@@ -725,6 +802,8 @@ impl Write for CappedHashWriter {
 fn write_contract_canonical(
     writer: &mut impl Write,
     contract: &CapabilityContract,
+    exact_input_schema: Option<&Value>,
+    exact_output_schema: Option<&Value>,
 ) -> io::Result<()> {
     writer.write_all(b"{\"annotations\":{")?;
     write_optional_bool(
@@ -753,9 +832,9 @@ fn write_contract_canonical(
     writer.write_all(b",\"id\":")?;
     serde_json::to_writer(&mut *writer, &contract.id)?;
     writer.write_all(b",\"inputSchema\":")?;
-    write_optional_json_canonical(writer, contract.input_schema.as_ref())?;
+    write_optional_json_canonical(writer, exact_input_schema)?;
     writer.write_all(b",\"outputSchema\":")?;
-    write_optional_json_canonical(writer, contract.output_schema.as_ref())?;
+    write_optional_json_canonical(writer, exact_output_schema)?;
     writer.write_all(b"}")
 }
 
@@ -899,6 +978,69 @@ mod tests {
     }
 
     #[test]
+    fn capability_contract_hash_covers_sensitive_property_validation_semantics() {
+        let make = |property: &str, schema: Value| UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                "ping".to_string(),
+                "ping",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": {property: schema}
+            })),
+            output_schema: None,
+            upstream_name: Arc::from("alpha"),
+            destructive: false,
+        };
+
+        for property in ["apiKey", "token", "password"] {
+            let string_contract = CapabilityContract::from_upstream_tool(&make(
+                property,
+                json!({"type": "string", "minLength": 8}),
+            ))
+            .expect("string contract");
+            let integer_contract = CapabilityContract::from_upstream_tool(&make(
+                property,
+                json!({"type": "integer", "minimum": 1}),
+            ))
+            .expect("integer contract");
+            assert_ne!(
+                string_contract.contract_hash, integer_contract.contract_hash,
+                "{property} validation changes must alter the contract hash"
+            );
+        }
+    }
+
+    #[test]
+    fn capability_contract_accepts_depth_64_and_rejects_depth_65() {
+        fn nested_schema(depth: usize) -> Value {
+            let mut schema = json!({"type": "string"});
+            for _ in 1..depth {
+                schema = json!({"nested": schema});
+            }
+            schema
+        }
+
+        let make = |depth| UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                "ping".to_string(),
+                "ping",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: Some(nested_schema(depth)),
+            output_schema: None,
+            upstream_name: Arc::from("alpha"),
+            destructive: false,
+        };
+
+        CapabilityContract::from_upstream_tool(&make(64)).expect("depth 64 is supported");
+        let error = CapabilityContract::from_upstream_tool(&make(65))
+            .expect_err("depth 65 must fail before recursive projection");
+        assert_eq!(error.kind(), "descriptor_unsupported");
+    }
+
+    #[test]
     fn capability_contract_rejects_an_oversized_schema_instead_of_hashing_null() {
         let enum_values = (0..200)
             .map(|index| format!("{index:03}-{}", "x".repeat(509)))
@@ -950,6 +1092,7 @@ mod tests {
                 "github",
                 "search_issues",
                 &contract_hash,
+                "catalog-revision-1",
                 kind,
                 Duration::from_millis(7),
             );

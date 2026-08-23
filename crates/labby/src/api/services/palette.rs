@@ -200,9 +200,10 @@ fn palette_caller(
         .filter(|name| !name.is_empty() && *name != "*")
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    Ok(PaletteCaller::scoped_read_only(
-        Some(&auth.sub),
+    Ok(PaletteCaller::scoped(
+        &auth.sub,
         request_id,
+        auth.scopes.clone(),
         allowed_upstreams,
     ))
 }
@@ -757,7 +758,8 @@ fn hex_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         LauncherEntryView, append_labby_actions, catalog_fingerprint, entry_id,
-        labby_action_contract_hash, labby_action_schema, search_entries, stable_json_fingerprint,
+        labby_action_contract_hash, labby_action_schema, palette_caller, search_entries,
+        stable_json_fingerprint,
     };
     use std::future::Future;
     use std::pin::Pin;
@@ -828,6 +830,68 @@ mod tests {
             echo_dispatch,
         ));
         registry
+    }
+
+    #[test]
+    fn palette_caller_carries_real_mcp_scopes_and_exact_upstream_grants() {
+        let auth = AuthContext {
+            sub: "alice".to_string(),
+            actor_key: None,
+            scopes: vec![
+                "mcp:read".to_string(),
+                "mcp:write".to_string(),
+                "gateway:alpha".to_string(),
+            ],
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let caller = palette_caller(Some(&auth), Some("req-scopes")).expect("scoped caller");
+
+        assert!(caller.caller.can_read());
+        assert!(caller.caller.can_execute());
+        assert_eq!(caller.caller_auth.scopes, auth.scopes);
+        assert!(
+            !caller
+                .caller_auth
+                .scopes
+                .iter()
+                .any(|scope| scope == "lab" || scope == "lab:admin")
+        );
+        let allowed = caller.scope.allowed_namespaces().expect("exact scope");
+        assert!(allowed.contains("alpha"));
+        assert!(
+            !allowed.contains("beta"),
+            "cross-upstream access stays denied"
+        );
+    }
+
+    #[test]
+    fn palette_caller_requires_read_to_browse_and_write_plus_upstream_to_execute() {
+        let caller = |scopes: &[&str]| {
+            let auth = AuthContext {
+                sub: "alice".to_string(),
+                actor_key: None,
+                scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+                issuer: "test".to_string(),
+                via_session: false,
+                csrf_token: None,
+                email: None,
+            };
+            palette_caller(Some(&auth), None).expect("authenticated caller")
+        };
+
+        let browse = caller(&["mcp:read", "gateway:alpha"]);
+        assert!(browse.caller.can_read());
+        assert!(!browse.caller.can_execute());
+
+        let execute = caller(&["mcp:write", "gateway:alpha"]);
+        assert!(!execute.caller.can_read());
+        assert!(execute.caller.can_execute());
+
+        let unscoped_write = caller(&["mcp:write"]);
+        assert!(!unscoped_write.caller.can_execute());
     }
 
     fn test_upstream_config(name: &str) -> UpstreamConfig {

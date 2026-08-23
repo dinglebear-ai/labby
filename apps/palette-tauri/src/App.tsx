@@ -127,7 +127,7 @@ export default function App() {
     setRun({ kind: "running", title: action.label });
     try {
       const result = await executeLauncherEntry(action, params, { confirmDestructive: action.destructive });
-      recordPaletteLaunch(action, params, result);
+      recordPaletteLaunch(action, result);
       if (runRequestIdRef.current !== requestId) return;
       if (
         !result.ok &&

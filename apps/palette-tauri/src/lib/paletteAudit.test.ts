@@ -28,16 +28,25 @@ describe("palette audit trail", () => {
     window.localStorage.clear();
   });
 
-  it("records recent launches with redacted params", () => {
+  it("records receipt metadata without persisting any parameter values", () => {
+    const canary = "INNOCUOUS-PARAM-CANARY";
     recordPaletteLaunch(
       action,
-      { query: "labby", token: "secret-token" },
       {
         ok: true,
         status: 200,
         path: "/v1/palette/execute",
         method: "POST",
-        payload: { ok: true },
+        payload: {
+          harmless: canary,
+          receipt: {
+            requestId: "req-123",
+            toolId: action.id,
+            contractHash: action.contractHash,
+            catalogRevision: "pool:42",
+            truncated: false,
+          },
+        },
       },
     );
 
@@ -48,9 +57,18 @@ describe("palette audit trail", () => {
         source: "github",
         ok: true,
         status: 200,
-        params: { query: "labby", token: "[REDACTED]" },
+        receipt: {
+          requestId: "req-123",
+          toolId: action.id,
+          contractHash: action.contractHash,
+          catalogRevision: "pool:42",
+          truncated: false,
+        },
       },
     ]);
+    const persisted = window.localStorage.getItem("labby.palette.recentLaunches") ?? "";
+    expect(persisted).not.toContain(canary);
+    expect(persisted).not.toContain("params");
   });
 
   it("ignores localStorage write failures", () => {
@@ -61,7 +79,6 @@ describe("palette audit trail", () => {
     expect(() =>
       recordPaletteLaunch(
         action,
-        { query: "labby" },
         {
           ok: true,
           status: 200,

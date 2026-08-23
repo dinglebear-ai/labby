@@ -1022,6 +1022,15 @@ async fn palette_execute_rejects_cross_upstream_scope_and_destructive_reclassifi
             },
             sub: Some("alice".to_string()),
         },
+        caller_auth: labby_runtime::caller_auth::PropagatedCallerAuth {
+            sub: Some("alice".to_string()),
+            scopes: vec![
+                "mcp:read".to_string(),
+                "mcp:write".to_string(),
+                "gateway:alpha".to_string(),
+            ],
+            trusted_local: false,
+        },
         scope: ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new()),
         owner: crate::gateway::shared::make_api_runtime_owner(Some("alice"), Some("req-scope")),
         oauth_subject: "alice".to_string(),
