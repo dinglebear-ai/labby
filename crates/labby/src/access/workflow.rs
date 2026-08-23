@@ -55,12 +55,15 @@ fn map_store_error(error: AccessStoreError) -> OwnerBootstrapError {
         AccessStoreError::Corrupt
         | AccessStoreError::UnsupportedSchema { .. }
         | AccessStoreError::IntegrityViolation { .. }
-        | AccessStoreError::ForeignKeyViolation => OwnerBootstrapError::Integrity,
+        | AccessStoreError::ForeignKeyViolation
+        | AccessStoreError::MalformedVocabulary => OwnerBootstrapError::Integrity,
         AccessStoreError::DiskFull
         | AccessStoreError::ReadOnly
         | AccessStoreError::InsecurePath { .. }
         | AccessStoreError::MissingParent { .. }
         | AccessStoreError::InsecurePermissions { .. }
+        | AccessStoreError::IdentityUnavailable
+        | AccessStoreError::ProjectAccessUnavailable
         | AccessStoreError::Unavailable(_) => OwnerBootstrapError::Unavailable,
     }
 }

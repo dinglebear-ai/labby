@@ -28,6 +28,12 @@ pub(crate) enum AccessStoreError {
     BootstrapConflict,
     #[error("access store owner bootstrap input is invalid")]
     InvalidBootstrapInput,
+    #[error("access identity is unavailable")]
+    IdentityUnavailable,
+    #[error("project access is unavailable")]
+    ProjectAccessUnavailable,
+    #[error("access store contains malformed vocabulary")]
+    MalformedVocabulary,
     #[error("access store is unavailable: {0}")]
     Unavailable(String),
 }
