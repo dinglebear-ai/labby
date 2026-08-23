@@ -245,6 +245,14 @@ pub(crate) async fn get_visible_skill(
         }
 
         let upstream_uri = parsed.upstream_uri_for_origin(&config.name)?;
+        if let Some(cached) = provider.cached_owner_for_resource(&upstream_uri).await {
+            let entry =
+                aggregate::mint_proxied_entry(&config.name, &cached.into_validated(), Some(&meta))?;
+            if minted.conflicts_with(&entry) {
+                return None;
+            }
+            return Some(entry);
+        }
         let fetched = provider
             .get(&SkillGetRequest {
                 id: SkillId::new(provider.id().clone(), upstream_uri),
@@ -539,6 +547,9 @@ fn min_ttl(current: Option<u64>, incoming: Option<u64>) -> Option<u64> {
 mod tests {
     use super::*;
 
+    #[cfg(all(feature = "gateway", feature = "skills", feature = "proxy-testkit"))]
+    use labby_runtime::skills::digest::ResourceDigest;
+
     #[test]
     fn default_scope_is_first_party_only() {
         let scope = SkillCallerScope::default();
@@ -587,5 +598,111 @@ mod tests {
             .and_then(|resources| resources.iter().find(|resource| resource.uri == entry.uri))
             .expect("SKILL.md digest");
         assert_eq!(file.digest, digest.digest);
+    }
+
+    #[tokio::test]
+    #[cfg(all(feature = "gateway", feature = "skills", feature = "proxy-testkit"))]
+    async fn reminted_unlisted_supporting_uri_resolves_and_reads_through_gateway() {
+        use std::collections::HashMap;
+
+        use labby_gateway::gateway::manager::GatewayRuntimeHandle;
+        use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+        use serde_json::json;
+
+        let skill_body = "---\nname: unlisted\ndescription: a test skill\n---\n\n# Body\n";
+        let native_skill_uri = "skill://native/unlisted/SKILL.md";
+        let native_notes_uri = "skill://native/unlisted/notes.md";
+        let reminted_skill_uri = "skill://up/skill/native/unlisted/SKILL.md";
+        let reminted_notes_uri = "skill://up/skill/native/unlisted/notes.md";
+        let notes_digest = ResourceDigest::of_bytes(b"supporting notes").to_wire();
+        let unlisted_entry = json!({
+            "uri": native_skill_uri,
+            "frontmatter": { "name": "unlisted", "description": "a test skill" },
+            "resources": [
+                {
+                    "uri": native_skill_uri,
+                    "digest": ResourceDigest::of_bytes(skill_body.as_bytes()).to_wire()
+                },
+                { "uri": native_notes_uri, "digest": notes_digest }
+            ]
+        });
+
+        let pool = Arc::new(UpstreamPool::new());
+        pool.insert_scripted_skills_server_for_tests(
+            "up",
+            json!({ "skills": [] }),
+            unlisted_entry,
+            HashMap::from([
+                (native_skill_uri.to_string(), skill_body.to_string()),
+                (native_notes_uri.to_string(), "supporting notes".to_string()),
+            ]),
+        )
+        .await;
+
+        let upstream = UpstreamConfig {
+            enabled: true,
+            name: "up".to_string(),
+            url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: Some("true".to_string()),
+            args: Vec::new(),
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: true,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        };
+        let runtime = GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool)).await;
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                upstream: vec![upstream],
+                ..GatewayConfig::default()
+            })
+            .await;
+        let context = SkillRegistryContext::with_manager(
+            manager,
+            SkillCallerScope::root(Some("alice".to_string()), ToolAccess::Direct),
+        );
+
+        let fetched = get_visible_skill(&context, reminted_skill_uri)
+            .await
+            .expect("unlisted skill resolves through skills/get");
+        assert_eq!(fetched.uri, reminted_skill_uri);
+
+        let entry = get_visible_skill(&context, reminted_notes_uri)
+            .await
+            .expect("unlisted supporting URI resolves through cached ownership");
+        assert_eq!(entry.uri, reminted_skill_uri);
+        assert!(entry.resources.as_ref().is_some_and(|resources| {
+            resources
+                .iter()
+                .any(|resource| resource.uri == reminted_notes_uri)
+        }));
+
+        let file = read_visible_skill_file(&context, reminted_notes_uri)
+            .await
+            .expect("cached owner binds the supporting resource read");
+        assert_eq!(file.uri, reminted_notes_uri);
+        assert_eq!(file.skill_uri, reminted_skill_uri);
+        assert_eq!(file.origin, "up");
+        assert_eq!(file.digest, notes_digest);
+        assert_eq!(file.text, "supporting notes");
     }
 }

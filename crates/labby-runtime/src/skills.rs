@@ -33,6 +33,7 @@ pub mod frontmatter;
 pub mod limits;
 pub mod manifest;
 pub mod provider;
+pub mod requirements;
 pub mod uri;
 pub mod wire;
 
@@ -54,6 +55,7 @@ pub use provider::{
     SkillGetResult, SkillProvider, SkillProviderDeadline, SkillProviderEntry, SkillProviderError,
     SkillProviderFuture, SkillProviderResource, SkillResourceReadRequest, SkillResourceReadResult,
 };
+pub use requirements::SkillRequirementsSummary;
 pub use uri::{
     FIRST_PARTY_ORIGIN, SKILL_MD_FILE, SKILL_URI_SCHEME, SkillUri, is_valid_origin_label,
     parse_skill_resource_uri, parse_skill_uri,

@@ -48,10 +48,13 @@ Tracking: `lab-27juw`
   while preserving existing minting, collision, TTL, and incomplete metadata.
 - [x] Add fail-closed compatibility/availability vocabulary without embedding
   execution authorization.
+- [x] Add a provider-neutral requirements summary for Agent Skills
+  `compatibility` and experimental `allowed-tools`; tool hints preserve source
+  order and never grant Labby execution authority.
 - [x] Route exact upstream get/read through `SepSkillProvider` for listed Skills.
 - [x] Migrate first-party compatibility projection through immutable bundled
   and operator-local provider snapshots with bundled-first collision behavior.
-- [ ] Make direct-get unlisted Skill snapshots readable without weakening
+- [x] Make direct-get unlisted Skill snapshots readable without weakening
   manifest ownership.
 
 ## Decisions
@@ -128,6 +131,11 @@ Tracking: `lab-27juw`
   identity; a cross-Skill read regression now passes.
 - Preserve stable digest/stale/limit classifications at the provider boundary
   instead of flattening every read failure into a generic provider error.
+- Retain bounded, subject-scoped direct-get manifests separately from discovery,
+  recheck live exposure on every lookup/read, and resolve supporting resources
+  only through a unique provider-scoped manifest owner.
+- Add a distinct requirements summary for validated `compatibility` text and
+  non-authorizing `allowed-tools` hints.
 - Provider discovery retains one exact validated manifest beside its compact
   descriptor, and the upstream list facade consumes that projection without
   reconstructing or revalidating it.

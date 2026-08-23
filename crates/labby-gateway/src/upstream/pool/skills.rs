@@ -18,12 +18,12 @@ use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
 use labby_runtime::skills::{
     SkillDescriptor, SkillDiscoverySource, SkillProviderId, SkillProviderKind, ValidatedSkill,
-    parse_skill_resource_uri,
+    limits, parse_skill_resource_uri,
 };
 
 use super::UpstreamPool;
 use super::entries::{log_exposure_filter, resolve_request_skill_exposure_policy};
-use super::skills_cache::{CachedSkills, evict};
+use super::skills_cache::{CachedDirectSkill, CachedSkills, evict};
 use std::time::Instant;
 
 use super::capability_call::{CapabilityCallError, timed_capability_call};
@@ -215,7 +215,7 @@ impl UpstreamPool {
     }
 
     /// Fetch one upstream's catalog and store it.
-    async fn fetch_and_cache_skills(
+    pub(super) async fn fetch_and_cache_skills(
         &self,
         config: &UpstreamConfig,
         subject: Option<&str>,
@@ -320,7 +320,12 @@ impl UpstreamPool {
 
     async fn store_skills(&self, name: &str, subject: Option<&str>, entry: CachedSkills) {
         let mut cache = self.skills_cache.write().await;
-        cache.insert((name.to_string(), subject.map(str::to_string)), entry);
+        let key = (name.to_string(), subject.map(str::to_string));
+        let mut entry = entry;
+        if let Some(previous) = cache.get(&key) {
+            entry.retain_direct_from(previous);
+        }
+        cache.insert(key, entry);
         evict(&mut cache);
     }
 
@@ -415,6 +420,15 @@ impl UpstreamPool {
         if !config.proxy_skills {
             return Ok(None);
         }
+        let canonical_uri = parse_skill_resource_uri(uri)
+            .map_err(|error| error.to_string())?
+            .to_uri();
+        if let Some(skill) = self
+            .cached_direct_skill(config, subject, &canonical_uri)
+            .await
+        {
+            return Ok(Some(skill));
+        }
         let peer = self
             .acquire_peer(
                 &config.name,
@@ -437,7 +451,115 @@ impl UpstreamPool {
         // a listed one; filtering only the listing would be a bypass.
         let policy =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
-        Ok(policy.matches(&skill.name).then_some(skill))
+        if !policy.matches(&skill.name) {
+            return Ok(None);
+        }
+        if skill.entry.uri != canonical_uri {
+            return Err(format!(
+                "upstream `{}` returned a different skill URI than requested",
+                config.name
+            ));
+        }
+        self.store_direct_skill(config, subject, skill.clone())
+            .await?;
+        Ok(Some(skill))
+    }
+
+    async fn cached_direct_skill(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        skill_uri: &str,
+    ) -> Option<ValidatedSkill> {
+        let policy =
+            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
+        let key = (config.name.clone(), subject.map(str::to_string));
+        let mut cache = self.skills_cache.write().await;
+        let cached = cache.get_mut(&key)?;
+        cached.touch();
+        let snapshot = cached.direct.get_mut(skill_uri)?;
+        if !snapshot.is_fresh() {
+            cached.direct.remove(skill_uri);
+            return None;
+        }
+        snapshot.touch();
+        policy
+            .matches(&snapshot.skill.name)
+            .then(|| snapshot.skill.clone())
+    }
+
+    async fn store_direct_skill(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        skill: ValidatedSkill,
+    ) -> Result<(), String> {
+        let key = (config.name.clone(), subject.map(str::to_string));
+        let mut cache = self.skills_cache.write().await;
+        let cached = cache
+            .get_mut(&key)
+            .ok_or_else(|| "skill catalog cache disappeared during direct get".to_string())?;
+        cached.touch();
+        let candidate_uris = owned_skill_uris(&skill);
+
+        // Listed collisions are poisoned regardless of exposure. This is
+        // stricter than publishing a hidden owner and prevents a policy change
+        // from changing which manifest owns bytes already cached by URI.
+        if candidate_uris
+            .iter()
+            .any(|uri| cached.skills.resource_index.contains_key(uri))
+            || cached.direct.values().any(|snapshot| {
+                snapshot.skill.entry.uri != skill.entry.uri
+                    && owned_skill_uris(&snapshot.skill)
+                        .iter()
+                        .any(|uri| candidate_uris.contains(uri))
+            })
+        {
+            return Err(format!(
+                "unlisted skill `{}` collides with existing manifest ownership",
+                skill.entry.uri
+            ));
+        }
+        if cached.direct.len() >= limits::MAX_SKILLS_PER_UPSTREAM
+            && !cached.direct.contains_key(&skill.entry.uri)
+        {
+            return Err("direct skill snapshot limit exceeded".to_string());
+        }
+        cached
+            .direct
+            .insert(skill.entry.uri.clone(), CachedDirectSkill::new(skill));
+        Ok(())
+    }
+
+    /// Return the unique cached direct-get owner of a resource for this caller.
+    ///
+    /// This only recovers a manifest; reads still require its provider-scoped
+    /// identity and the exact resource identity separately.
+    pub async fn cached_unlisted_skill_owner(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        resource_uri: &str,
+    ) -> Option<ValidatedSkill> {
+        let canonical_uri = parse_skill_resource_uri(resource_uri).ok()?.to_uri();
+        let policy =
+            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
+        let key = (config.name.clone(), subject.map(str::to_string));
+        let mut cache = self.skills_cache.write().await;
+        let cached = cache.get_mut(&key)?;
+        cached.touch();
+        let mut owners = cached
+            .direct
+            .values_mut()
+            .filter(|snapshot| snapshot.is_fresh())
+            .filter(|snapshot| policy.matches(&snapshot.skill.name))
+            .filter(|snapshot| owned_skill_uris(&snapshot.skill).contains(&canonical_uri));
+        let owner = owners.next()?;
+        if owners.next().is_some() {
+            return None;
+        }
+        owner.touch();
+        Some(owner.skill.clone())
     }
 
     /// Drop every cached skill catalog for one upstream, across all subjects.
@@ -494,6 +616,29 @@ impl UpstreamPool {
 pub struct VerifiedSkillFile {
     pub text: String,
     pub mime_type: Option<String>,
+}
+
+fn owned_skill_uris(skill: &ValidatedSkill) -> BTreeSet<String> {
+    std::iter::once(&skill.entry.uri)
+        .chain(
+            skill
+                .entry
+                .resources
+                .iter()
+                .flatten()
+                .map(|resource| &resource.uri),
+        )
+        .filter_map(|uri| parse_skill_resource_uri(uri).ok().map(|uri| uri.to_uri()))
+        .collect()
+}
+
+fn stale_skill_binding(upstream: &str, uri: &str) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
+        message: format!(
+            "`{uri}` on upstream `{upstream}` does not identify exactly one exposed skill file"
+        ),
+    }
 }
 
 impl UpstreamPool {
@@ -573,18 +718,38 @@ impl UpstreamPool {
                 })
             })
             .collect::<Vec<_>>();
-        let [binding] = bindings.as_slice() else {
-            return Err(ToolError::Sdk {
-                sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
-                message: format!(
-                    "`{canonical_uri}` on upstream `{}` does not identify exactly one exposed skill file",
-                    config.name
-                ),
-            });
+        let (skill, resource) = match bindings.as_slice() {
+            [binding] => {
+                let skill = exposed.catalog.skills[binding.skill].clone();
+                let resource = skill.entry.resources.as_ref().expect("validated manifest")
+                    [binding.resource]
+                    .clone();
+                (skill, resource)
+            }
+            [] => {
+                let Some(expected) = expected_skill_uri else {
+                    return Err(stale_skill_binding(&config.name, &canonical_uri));
+                };
+                let Some(skill) = self.cached_direct_skill(config, subject, expected).await else {
+                    return Err(stale_skill_binding(&config.name, &canonical_uri));
+                };
+                let Some(resource) = skill
+                    .entry
+                    .resources
+                    .as_ref()
+                    .and_then(|resources| {
+                        resources
+                            .iter()
+                            .find(|resource| resource.uri == canonical_uri)
+                    })
+                    .cloned()
+                else {
+                    return Err(stale_skill_binding(&config.name, &canonical_uri));
+                };
+                (skill, resource)
+            }
+            _ => return Err(stale_skill_binding(&config.name, &canonical_uri)),
         };
-        let skill = &exposed.catalog.skills[binding.skill];
-        let resource =
-            &skill.entry.resources.as_ref().expect("validated manifest")[binding.resource];
         let upstream_uri = resource.uri.as_str();
         let digest = resource.digest.as_str();
 

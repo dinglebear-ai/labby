@@ -56,6 +56,19 @@ fn entry(origin: &str, name: &str) -> Value {
     })
 }
 
+fn entry_with_supporting(origin: &str, name: &str) -> Value {
+    let uri = format!("skill://{origin}/{name}/SKILL.md");
+    let notes = format!("skill://{origin}/{name}/notes.md");
+    json!({
+        "uri": uri,
+        "frontmatter": { "name": name, "description": "a test skill" },
+        "resources": [
+            { "uri": uri, "digest": ResourceDigest::of_bytes(skill_md_body(name).as_bytes()).to_wire() },
+            { "uri": notes, "digest": ResourceDigest::of_bytes(b"supporting notes").to_wire() }
+        ]
+    })
+}
+
 /// A skills-capable upstream whose `skills/list` behavior is scripted per test.
 #[derive(Clone)]
 struct SkillsServer {
@@ -165,7 +178,9 @@ impl ServerHandler for SkillsServer {
             .nth(1)
             .unwrap_or("alpha")
             .to_string();
-        let text = if self.tamper {
+        let text = if request.uri.ends_with("/notes.md") {
+            "supporting notes".to_string()
+        } else if self.tamper {
             "TAMPERED".to_string()
         } else if let Some(forged) = self.forged_frontmatter.as_deref() {
             // Digest is recomputed over this body by the test, so the digest
@@ -611,6 +626,287 @@ async fn sep_provider_gets_listed_unlisted_and_reports_authoritative_absence() {
         .await
         .expect_err("-32602 is authoritative absence");
     assert_eq!(error, SkillProviderError::SkillNotFound);
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_get_snapshot_reads_skill_md_and_supporting_file() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(
+        Arc::clone(&pool),
+        skills_config("up", None),
+        Some("alice".to_string()),
+    );
+    provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct get seeds the exact manifest");
+
+    for (resource_id, expected) in [
+        ("skill://up/unlisted/SKILL.md", skill_md_body("unlisted")),
+        (
+            "skill://up/unlisted/notes.md",
+            "supporting notes".to_string(),
+        ),
+    ] {
+        let read = provider
+            .read_resource(&SkillResourceReadRequest {
+                skill_id: provider_skill_id("up", "unlisted"),
+                resource_id: resource_id.to_string(),
+                max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+                deadline: SkillProviderDeadline::default(),
+            })
+            .await
+            .expect("manifest-bound direct resource read");
+        assert_eq!(read.bytes, expected.into_bytes());
+    }
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_get_snapshot_is_subject_scoped_and_exposure_is_rechecked() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let alice = super::SepSkillProvider::new(
+        Arc::clone(&pool),
+        skills_config("up", None),
+        Some("alice".to_string()),
+    );
+    alice
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("alice direct get");
+
+    let bob = super::SepSkillProvider::new(
+        Arc::clone(&pool),
+        skills_config("up", None),
+        Some("bob".to_string()),
+    );
+    assert!(
+        bob.cached_owner_for_resource("skill://up/unlisted/notes.md")
+            .await
+            .is_none(),
+        "alice's manifest must not enter bob's shard"
+    );
+    let bob_error = bob
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "unlisted"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("bob cannot read alice's cached manifest");
+    assert_eq!(bob_error, SkillProviderError::ManifestStale);
+
+    let narrowed = super::SepSkillProvider::new(
+        pool,
+        skills_config("up", Some(vec!["allowed"])),
+        Some("alice".to_string()),
+    );
+    assert!(
+        narrowed
+            .cached_owner_for_resource("skill://up/unlisted/notes.md")
+            .await
+            .is_none(),
+        "live exposure narrowing applies before snapshot expiry"
+    );
+    let narrowed_error = narrowed
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "unlisted"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("hidden direct snapshot is not readable");
+    assert_eq!(narrowed_error, SkillProviderError::ManifestStale);
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_snapshot_keeps_owner_binding_and_is_invalidated_with_catalog() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct get");
+    let error = provider
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "other"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("another skill identity cannot claim the cached resource");
+    assert_eq!(error, SkillProviderError::ManifestStale);
+
+    pool.invalidate_upstream_skills("up").await;
+    assert!(
+        provider
+            .cached_owner_for_resource("skill://up/unlisted/notes.md")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_get_cannot_reuse_a_listed_supporting_resource_uri() {
+    let shared = "skill://up/parent/child/shared.md";
+    let parent_body = skill_md_body("parent");
+    let parent = json!({
+        "uri": "skill://up/parent/SKILL.md",
+        "frontmatter": { "name": "parent", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire() }
+        ]
+    });
+    let child_body = skill_md_body("child");
+    let child = json!({
+        "uri": "skill://up/parent/child/SKILL.md",
+        "frontmatter": { "name": "child", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire() }
+        ]
+    });
+    let server = SkillsServer::new(vec![json!({ "skills": [parent] })]).with_get(child);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(pool, skills_config("up", None), None);
+    let error = provider
+        .get(&SkillGetRequest {
+            id: SkillId::new(provider_id("up"), "skill://up/parent/child/SKILL.md"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("ambiguous ownership must not be cached");
+    assert!(matches!(error, SkillProviderError::Provider { .. }));
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn non_conflicting_catalog_refresh_preserves_direct_snapshot() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [] }),
+        json!({ "skills": [entry("up", "listed")] }),
+    ])
+    .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), config.clone(), None);
+    provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct get");
+
+    pool.fetch_and_cache_skills(&config, None)
+        .await
+        .expect("refresh listed catalog");
+    let read = provider
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "unlisted"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("non-conflicting refresh retains direct manifest");
+    assert_eq!(read.bytes, b"supporting notes");
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn refresh_drops_direct_snapshot_when_hidden_listed_owner_claims_its_resource() {
+    let shared = "skill://up/parent/child/shared.md";
+    let child_body = skill_md_body("child");
+    let child = json!({
+        "uri": "skill://up/parent/child/SKILL.md",
+        "frontmatter": { "name": "child", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire() }
+        ]
+    });
+    let parent_body = skill_md_body("parent");
+    let parent = json!({
+        "uri": "skill://up/parent/SKILL.md",
+        "frontmatter": { "name": "parent", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire() }
+        ]
+    });
+    let server = SkillsServer::new(vec![json!({ "skills": [] }), json!({ "skills": [parent] })])
+        .with_get(child);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", Some(vec!["child"]));
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), config.clone(), None);
+    provider
+        .get(&SkillGetRequest {
+            id: SkillId::new(provider_id("up"), "skill://up/parent/child/SKILL.md"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct child is initially unambiguous");
+
+    pool.fetch_and_cache_skills(&config, None)
+        .await
+        .expect("refresh sees hidden parent owner");
+    assert!(
+        provider.cached_owner_for_resource(shared).await.is_none(),
+        "unfiltered refreshed ownership evicts the colliding direct snapshot"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn expired_direct_snapshot_is_evicted_and_refetched() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let get_calls = Arc::clone(&server.get_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    let request = SkillGetRequest {
+        id: provider_skill_id("up", "unlisted"),
+        deadline: SkillProviderDeadline::default(),
+    };
+    provider.get(&request).await.expect("initial direct get");
+    {
+        let mut cache = pool.skills_cache.write().await;
+        cache
+            .get_mut(&("up".to_string(), None))
+            .expect("catalog shard")
+            .direct
+            .get_mut("skill://up/unlisted/SKILL.md")
+            .expect("direct snapshot")
+            .expire_now();
+    }
+    provider
+        .get(&request)
+        .await
+        .expect("expired snapshot refetched");
+    assert_eq!(get_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

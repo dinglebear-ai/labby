@@ -49,6 +49,18 @@ impl SepSkillProvider {
     fn operation_timeout(&self, requested: Duration) -> Duration {
         requested.min(self.pool.request_timeout)
     }
+
+    /// Recover the exact direct-get manifest that uniquely owns `resource_id`.
+    ///
+    /// The returned entry is still provider-scoped. Callers must pass its id
+    /// back to `read_resource`; this lookup does not authorize a resource-only
+    /// read and rechecks the live exposure policy before returning anything.
+    pub async fn cached_owner_for_resource(&self, resource_id: &str) -> Option<SkillProviderEntry> {
+        self.pool
+            .cached_unlisted_skill_owner(&self.config, self.subject.as_deref(), resource_id)
+            .await
+            .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
+    }
 }
 
 impl SkillProvider for SepSkillProvider {

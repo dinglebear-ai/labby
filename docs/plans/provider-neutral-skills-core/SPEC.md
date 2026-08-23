@@ -48,9 +48,12 @@ name is a display/search field, never a globally unique identifier.
 
 The landed compact descriptor contains provider-scoped identity, name,
 description, an optional source URI, resource count, fail-closed compatibility
-availability, and provider metadata. It does not contain `SKILL.md` or file
-bodies. Rich provenance, revision/integrity, and requirements summaries remain
-future extensions; providers must not synthesize them from untrusted metadata.
+availability, source-authored requirements, and provider metadata. It does not
+contain `SKILL.md` or file bodies. The requirements summary projects the Agent
+Skills `compatibility` statement and experimental `allowed-tools` tokens as
+provider-scoped tool hints. It does not infer dependencies or grant execution
+authority. Rich provenance and revision/integrity remain future extensions;
+providers must not synthesize them from untrusted metadata.
 
 ### Provider
 

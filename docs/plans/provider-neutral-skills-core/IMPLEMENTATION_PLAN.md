@@ -23,8 +23,9 @@
   dispatch.
 - [x] Add a fail-closed compatibility availability summary once the provider
   result contract established its exact inputs.
-- [ ] Add a distinct requirements summary once concrete provider inputs require
-  it.
+- [x] Add a distinct requirements summary for the concrete Agent Skills
+  `compatibility` and experimental `allowed-tools` inputs without treating tool
+  hints as authorization.
 - [x] Adapt existing `ValidatedSkill` without duplicating validation or fetching
   bodies.
 - [x] Preserve existing published/source URI behavior at surface boundaries.

@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use super::{
     SkillAvailabilitySummary, SkillCompatibilityClassification, SkillCompatibilityItem,
-    ValidatedSkill,
+    SkillRequirementsSummary, ValidatedSkill,
 };
 
 /// The provider family responsible for discovering and reading a Skill.
@@ -147,6 +147,10 @@ pub struct SkillDescriptor {
     /// Fail-closed compatibility result. Callers must not offer descriptors
     /// whose availability is blocked.
     pub availability: SkillAvailabilitySummary,
+    /// Source-authored activation requirements. Tool hints are never execution
+    /// authorization and remain scoped to the source provider's context.
+    #[serde(default, skip_serializing_if = "SkillRequirementsSummary::is_empty")]
+    pub requirements: SkillRequirementsSummary,
     /// Provider metadata preserved outside author frontmatter. Adapters must not
     /// reinterpret permission-like vendor fields as Labby authorization.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
@@ -177,6 +181,7 @@ impl SkillDescriptor {
                     .with_detail("preserved as source metadata; never grants tool access")
                 }),
         );
+        let requirements = SkillRequirementsSummary::from_frontmatter(&skill.entry.frontmatter);
         Self {
             id: SkillId::new(provider, skill.entry.uri.clone()),
             name: skill.name.clone(),
@@ -184,6 +189,7 @@ impl SkillDescriptor {
             source_uri: Some(skill.entry.uri.clone()),
             resource_count: skill.entry.resources.as_ref().map_or(0, Vec::len),
             availability,
+            requirements,
             provider_metadata: skill.entry.meta.clone().unwrap_or_default(),
         }
     }
@@ -282,6 +288,47 @@ mod tests {
         assert_eq!(json["id"]["provider"]["instance"], "depot");
         assert_eq!(json["id"]["source_id"], "skill://catalog/review/SKILL.md");
         assert!(json.get("instructions").is_none());
+    }
+
+    #[test]
+    fn descriptor_projects_requirements_without_authorizing_tool_hints() {
+        let uri = "skill://catalog/review/SKILL.md";
+        let body = "---\nname: review\ndescription: demo\ncompatibility: Requires git\nallowed-tools: Read Grep\n---\nbody\n";
+        let entry = SkillEntry {
+            uri: uri.to_string(),
+            frontmatter: json!({
+                "name": "review",
+                "description": "demo",
+                "compatibility": "Requires git",
+                "allowed-tools": "Read Grep"
+            })
+            .as_object()
+            .expect("object")
+            .clone(),
+            resources: Some(vec![SkillResource {
+                uri: uri.to_string(),
+                digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+            }]),
+            meta: None,
+        };
+        let skill = validate_skill_entry(&entry).expect("validated skill");
+        let descriptor = SkillDescriptor::from_validated_entry(
+            SkillProviderId::new(SkillProviderKind::McpUpstream, "depot"),
+            &skill,
+        );
+
+        assert_eq!(
+            descriptor.requirements.compatibility.as_deref(),
+            Some("Requires git")
+        );
+        assert_eq!(descriptor.requirements.tool_hints, ["Read", "Grep"]);
+        assert_eq!(
+            descriptor.availability.items()[0].classification,
+            SkillCompatibilityClassification::PreservedHint
+        );
+        let json = serde_json::to_value(descriptor).expect("descriptor JSON");
+        assert!(json.get("authorized").is_none());
+        assert!(json["requirements"].get("allowed_tools").is_none());
     }
 
     #[test]
