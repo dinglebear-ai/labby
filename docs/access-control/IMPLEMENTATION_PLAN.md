@@ -251,6 +251,12 @@ Gateway now owns a coherent runtime-configuration Loadout snapshot paired with a
 
 The gateway-feature-only, crate-private composer brackets two uncached AccessStore Project-permission snapshots around two coherently published runtime Loadout snapshots. It accepts only when the complete Access facts, Access revision, published Loadout, and runtime-configuration generation are identical; mismatches retry at most three times and then fail with a bounded redacted instability error. Authorization precedes every Gateway lookup, ordinary denials remain non-enumerating, and missing published Loadouts fail closed. The returned non-cloneable context is observational evidence only: it is unmounted, binds no exact action or target, and is not a complete catalog generation or dispatch grant.
 
+### Wave 14: published upstream tool catalog prerequisite
+
+`UpstreamPool` now publishes one immutable snapshot of its routable, exposure-filtered tool routes with an opaque process-local generation. The projection and generation are observed coherently under the pool catalog lock, clones share one publication stream, distinct pools cannot collide, and add/remove/identical/ABA transitions retain distinct publication semantics. Projection is bounded and fails closed when route limits or tool invariants are violated.
+
+This prerequisite covers only upstream tools and their routability. It excludes resources, prompts, skills, subject-scoped OAuth catalogs, the built-in service registry, and any claim of a complete gateway catalog generation. It is not composed into the Project runtime context or mounted on discovery, transport, or dispatch enforcement.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

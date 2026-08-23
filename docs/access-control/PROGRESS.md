@@ -268,6 +268,7 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 - [x] **Wave 11 desired-Loadout admission:** an unmounted gateway-feature adapter authorizes `project.manage` before consulting desired Gateway configuration, admits only a current exact name through `GatewayManager::loadout_get`, then reauthorizes in the audited immediate AccessStore mutation. All composition errors are bounded and redacted.
 - [x] **Wave 12 published Loadout prerequisite:** Gateway exposes an exact runtime-configuration Loadout snapshot with an opaque monotonic publication generation, read under one publication barrier. Staged desired configuration is excluded and Loadout ABA produces distinct generations. This is not yet a complete pool/catalog generation or an Access runtime context.
 - [x] **Wave 13 stable runtime context:** an unmounted composer performs bounded A-G-A-G reads across AccessStore and Gateway, accepts only identical authorization and published runtime-Loadout facts, and fails closed on denial, absence, or sustained churn. The result is deliberately not a dispatch grant.
+- [x] **Wave 14 published upstream tool catalog prerequisite:** `UpstreamPool` exposes an immutable, generation-bearing snapshot of bounded routable and exposure-filtered tool routes. Publication is coherent across clones, process-unique across pools, distinguishes ABA changes, and fails closed on projection-limit or invariant violations. The snapshot excludes resources, prompts, skills, subject OAuth catalogs, and the built-in service registry; it remains uncomposed and does not enable discovery, transport, or dispatch enforcement.
 - [ ] ResolutionInput gateway facts.
 - [ ] Artifact authority/publisher/Assignment distribution policy facts.
 - [x] crate-private desired Gateway Loadout admission adapter; `GatewayManager::loadout_get` is the point-in-time desired-config authority, but the adapter remains unmounted.
@@ -275,7 +276,7 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 - [ ] Loadout repair/replacement workflow for invalid symbolic mappings.
 - [ ] filtered workspace output.
 - [ ] exact-action final dispatch authorization. Wave 10 is only a project-level snapshot: it binds no gateway target/action or catalog generation and must never be reused as a dispatch grant. Revocation can commit after its read snapshot; enforcement remains disabled until the final in-process boundary rechecks the exact operation and the revoke/check/dispatch race tests pass.
-- [ ] exact Project + policy epoch/catalog generation cache key.
+- [ ] exact Project + policy epoch/complete catalog generation cache key. Wave 14 supplies only the upstream tool/routability component, not a complete gateway catalog generation.
 - [ ] stale-cache invalidation tests.
 
 ### Phase 7: Cross-surface enforcement

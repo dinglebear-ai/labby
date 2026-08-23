@@ -55,7 +55,7 @@ async fn catalog_pool_with_expose_resources(
         upstream,
         expose_resources.map(|patterns| patterns.into_iter().map(str::to_string).collect()),
     );
-    let mut catalog = pool.catalog.write().await;
+    let mut catalog = pool.catalog_write().await;
     catalog
         .get_mut(upstream)
         .expect("fixture catalog entry")

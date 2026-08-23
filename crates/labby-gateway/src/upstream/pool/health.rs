@@ -28,7 +28,7 @@ impl UpstreamPool {
         capability: UpstreamCapability,
         error: impl Into<String>,
     ) {
-        let mut catalog = self.catalog.write().await;
+        let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
             let error = error.into();
             let previous = entry.health_for(capability);
@@ -82,7 +82,7 @@ impl UpstreamPool {
 
     /// Record a success for a specific upstream capability, resetting the circuit breaker.
     pub async fn record_success_for(&self, upstream_name: &str, capability: UpstreamCapability) {
-        let mut catalog = self.catalog.write().await;
+        let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
             if !entry.health_for(capability).is_routable() {
                 tracing::info!(
@@ -128,12 +128,12 @@ impl UpstreamPool {
 
     #[cfg(any(test, feature = "testkit"))]
     pub async fn insert_entry_for_tests(&self, name: &str, entry: UpstreamEntry) {
-        self.catalog.write().await.insert(name.to_string(), entry);
+        self.catalog_write().await.insert(name.to_string(), entry);
     }
 
     /// Test-only: insert a fully-formed `UpstreamEntry` into the catalog.
     pub async fn insert_entry_for_test(&self, name: &str, entry: UpstreamEntry) {
-        self.catalog.write().await.insert(name.to_string(), entry);
+        self.catalog_write().await.insert(name.to_string(), entry);
     }
 
     /// Check if an upstream capability is due for a re-probe.
@@ -168,7 +168,7 @@ impl UpstreamPool {
     /// Built-in lab services permanently take precedence. Upstream tools with
     /// colliding names are dropped with a warning.
     pub async fn filter_collisions(&self, builtin_names: &[&str]) {
-        let mut catalog = self.catalog.write().await;
+        let mut catalog = self.catalog_write().await;
         for entry in catalog.values_mut() {
             let collisions: Vec<String> = entry
                 .tools
@@ -392,7 +392,7 @@ mod tests {
                 .await;
         }
         {
-            let mut catalog = pool.catalog.write().await;
+            let mut catalog = pool.catalog_write().await;
             let entry = catalog.get_mut("broken").unwrap();
             entry.tool_unhealthy_since = Instant::now().checked_sub(
                 types::reprobe_interval_for_failures(types::CIRCUIT_BREAKER_THRESHOLD),

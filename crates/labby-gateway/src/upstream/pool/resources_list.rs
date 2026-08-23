@@ -327,7 +327,7 @@ impl UpstreamPool {
                     // there would make the allowlist un-editable. Enforcement
                     // happens on what leaves this function, and on every read.
                     let (policy, resource_uris_changed) = {
-                        let mut catalog = self.catalog.write().await;
+                        let mut catalog = self.catalog_write().await;
                         match catalog.get_mut(&name) {
                             Some(entry) => {
                                 let changed = entry.resource_uris != resource_uris;
@@ -384,7 +384,7 @@ impl UpstreamPool {
                     )
                     .await;
                     {
-                        let mut catalog = self.catalog.write().await;
+                        let mut catalog = self.catalog_write().await;
                         if let Some(entry) = catalog.get_mut(&name) {
                             entry.resource_count = 0;
                             entry.resource_uris.clear();
@@ -1088,7 +1088,7 @@ mod tests {
 
     async fn pool_with_empty_upstreams(names: &[&str]) -> UpstreamPool {
         let pool = UpstreamPool::new();
-        let mut catalog = pool.catalog.write().await;
+        let mut catalog = pool.catalog_write().await;
         for name in names {
             let entry = healthy_in_process_entry(Arc::from(*name), HashMap::new());
             catalog.insert((*name).to_string(), entry);
