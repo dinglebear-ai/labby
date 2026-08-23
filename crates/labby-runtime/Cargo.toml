@@ -26,6 +26,7 @@ tracing.workspace = true
 # the SEP requires against a skill entry's `frontmatter`. Both stay
 # transport-neutral, so neither weakens this crate's no-rmcp/axum/clap rule.
 sha2.workspace = true
+unicode-normalization.workspace = true
 serde_yaml.workspace = true
 atomic-write-file = "0.3.1"
 

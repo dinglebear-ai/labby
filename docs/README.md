@@ -83,6 +83,8 @@ Normative cross-surface contracts live under [contracts/](./contracts/):
 ## Product Design
 
 - [Design index](./design/README.md)
+- [Phabby shared control plane](./design/phabby-control-plane.md) — accepted Phoenix/OTP target and Rust/BEAM ownership boundary.
+- [Phabby migration ledger](./design/phabby-migration-ledger.md) — staged route, packaging, and ownership migration gates.
 - [Web design-system contract](./design/design-system-contract.md)
 - [Component development](./design/component-development.md)
 - [CLI design system](./design/CLI_DESIGN_SYSTEM.md)
