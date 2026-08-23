@@ -7,7 +7,7 @@ use axum::{
 };
 use labby_gateway::gateway::palette::{
     LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView, PaletteCaller,
-    PaletteExecuteRequest, PaletteExecuteResponse,
+    PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionReceipt,
 };
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
@@ -166,7 +166,13 @@ async fn execute(
     Json(request): Json<PaletteExecuteRequest>,
 ) -> Result<Json<PaletteExecuteResponse>, ApiError> {
     if request.id.starts_with("labby:") {
-        return execute_labby_action(state, auth.as_ref().map(|auth| &auth.0), request).await;
+        return execute_labby_action(
+            state,
+            auth.as_ref().map(|auth| &auth.0),
+            request_id(&headers),
+            request,
+        )
+        .await;
     }
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
@@ -232,16 +238,20 @@ fn append_labby_actions(
             }
             let input_schema = labby_action_schema(action);
             let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
+            let id = format!("labby:{}::{}", service.name, action.name);
+            let contract_hash =
+                labby_action_contract_hash(&id, action, schema_fingerprint.as_deref());
             catalog
                 .entries
                 .push(LauncherEntryView::LabbyAction(LabbyActionLauncherEntry {
-                    id: format!("labby:{}::{}", service.name, action.name),
+                    id,
                     label: format!("{} {}", service.name, action.name),
                     description: action.description.to_string(),
                     source: service.name.to_string(),
                     destructive: action.destructive,
                     input_schema,
                     schema_fingerprint,
+                    contract_hash,
                     service: service.name.to_string(),
                     action: action.name.to_string(),
                 }));
@@ -452,6 +462,7 @@ fn labby_schema_response(
 async fn execute_labby_action(
     state: AppState,
     auth: Option<&AuthContext>,
+    request_id: Option<&str>,
     request: PaletteExecuteRequest,
 ) -> Result<Json<PaletteExecuteResponse>, ApiError> {
     let Some(auth) = auth else {
@@ -499,6 +510,19 @@ async fn execute_labby_action(
             message: format!("action `{service_name}.{action_name}` requires admin scope"),
         }));
     }
+    let input_schema = labby_action_schema(action);
+    let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
+    let contract_hash =
+        labby_action_contract_hash(&request.id, action, schema_fingerprint.as_deref());
+    if request.expected_contract_hash != contract_hash {
+        return Err(ApiError::new(ToolError::Sdk {
+            sdk_kind: "contract_changed".to_string(),
+            message: format!(
+                "launcher entry `{}` changed; refresh its contract and review it again",
+                request.id
+            ),
+        }));
+    }
     if action.destructive && !request.confirm_destructive {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "confirmation_required".to_string(),
@@ -508,6 +532,13 @@ async fn execute_labby_action(
     validate_labby_action_params(action, &request.params)?;
     let result = (service.dispatch)(action_name.to_string(), request.params).await?;
     Ok(Json(PaletteExecuteResponse {
+        receipt: PaletteExecutionReceipt {
+            request_id: request_id.unwrap_or("unavailable").to_string(),
+            tool_id: request.id.clone(),
+            contract_hash: contract_hash.clone(),
+            catalog_revision: contract_hash,
+            truncated: false,
+        },
         id: request.id,
         result,
         ui: None,
@@ -697,6 +728,20 @@ fn stable_json_fingerprint(value: &Value) -> String {
     hex_digest(hasher.finalize().as_slice())
 }
 
+fn labby_action_contract_hash(
+    id: &str,
+    action: &ActionSpec,
+    schema_fingerprint: Option<&str>,
+) -> String {
+    stable_json_fingerprint(&json!({
+        "contractVersion": 1,
+        "id": id,
+        "schemaFingerprint": schema_fingerprint,
+        "destructive": action.destructive,
+        "requiresAdmin": action_requires_admin(action),
+    }))
+}
+
 fn hex_digest(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -711,7 +756,8 @@ fn hex_digest(bytes: &[u8]) -> String {
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::{
-        LauncherEntryView, append_labby_actions, catalog_fingerprint, entry_id, search_entries,
+        LauncherEntryView, append_labby_actions, catalog_fingerprint, entry_id,
+        labby_action_contract_hash, labby_action_schema, search_entries, stable_json_fingerprint,
     };
     use std::future::Future;
     use std::pin::Pin;
@@ -1277,6 +1323,7 @@ mod tests {
                     destructive: false,
                     input_schema: None,
                     schema_fingerprint: None,
+                    contract_hash: "a".repeat(64),
                     upstream: "github".to_string(),
                     tool: "list_issues".to_string(),
                 }),
@@ -1288,6 +1335,7 @@ mod tests {
                     destructive: false,
                     input_schema: None,
                     schema_fingerprint: None,
+                    contract_hash: "b".repeat(64),
                     upstream: "github".to_string(),
                     tool: "search_repos".to_string(),
                 }),
@@ -1310,6 +1358,7 @@ mod tests {
             destructive: false,
             input_schema: None,
             schema_fingerprint: None,
+            contract_hash: "a".repeat(64),
             upstream: "github".to_string(),
             tool: "search_repos".to_string(),
         };
@@ -1328,6 +1377,30 @@ mod tests {
         ));
         let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
         let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let catalog_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/catalog")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(catalog_response.status(), StatusCode::OK);
+        let catalog_body = axum::body::to_bytes(catalog_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let catalog: Value = serde_json::from_slice(&catalog_body).unwrap();
+        let contract_hash = catalog["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "labby:demo::echo.run")
+            .and_then(|entry| entry["contractHash"].as_str())
+            .expect("Labby action catalog contract hash")
+            .to_string();
 
         let response = app
             .oneshot(
@@ -1337,7 +1410,12 @@ mod tests {
                     .header(header::AUTHORIZATION, "Bearer test-token")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        r#"{"id":"labby:demo::echo.run","params":{"name":"labby"}}"#,
+                        json!({
+                            "id": "labby:demo::echo.run",
+                            "params": {"name": "labby"},
+                            "expectedContractHash": contract_hash,
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -1351,12 +1429,57 @@ mod tests {
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["id"], "labby:demo::echo.run");
         assert_eq!(value["result"]["name"], "labby");
+        assert_eq!(value["receipt"]["contractHash"], contract_hash);
     }
 
     #[tokio::test]
     async fn palette_execute_validates_labby_action_params() {
         let manager = Arc::new(test_gateway_manager(
             std::env::temp_dir().join("palette-labby-validate.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let input_schema = labby_action_schema(&TEST_ACTIONS[0]);
+        let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
+        let contract_hash = labby_action_contract_hash(
+            "labby:demo::echo.run",
+            &TEST_ACTIONS[0],
+            schema_fingerprint.as_deref(),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/palette/execute")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "id": "labby:demo::echo.run",
+                            "params": {},
+                            "expectedContractHash": contract_hash,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["kind"], "missing_param");
+    }
+
+    #[tokio::test]
+    async fn palette_execute_rejects_a_stale_labby_action_contract() {
+        let manager = Arc::new(test_gateway_manager(
+            std::env::temp_dir().join("palette-labby-stale.toml"),
             GatewayRuntimeHandle::default(),
         ));
         let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
@@ -1369,18 +1492,25 @@ mod tests {
                     .uri("/v1/palette/execute")
                     .header(header::AUTHORIZATION, "Bearer test-token")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"id":"labby:demo::echo.run","params":{}}"#))
+                    .body(Body::from(
+                        json!({
+                            "id": "labby:demo::echo.run",
+                            "params": {"name": "must-not-dispatch"},
+                            "expectedContractHash": "a".repeat(64),
+                        })
+                        .to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["kind"], "missing_param");
+        assert_eq!(value["kind"], "contract_changed");
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ describe("launcher catalog", () => {
         {
           kind: "mcpTool",
           id: "mcp:github::search",
+          contractHash: "contract-github-search",
           label: "search",
           description: "Search repos",
           source: "github",
@@ -19,6 +20,7 @@ describe("launcher catalog", () => {
         {
           kind: "labbyAction",
           id: "labby:gateway::gateway.list",
+          contractHash: "contract-gateway-list",
           label: "gateway: gateway.list",
           description: "List gateway upstreams",
           source: "labby",
@@ -32,6 +34,10 @@ describe("launcher catalog", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["mcp:github::search", "labby:gateway::gateway.list"]);
     expect(entries[0].kind).toBe("mcp_tool");
     expect(entries[1].kind).toBe("labby_action");
+    expect(entries.map((entry) => entry.contractHash)).toEqual([
+      "contract-github-search",
+      "contract-gateway-list",
+    ]);
   });
 
   it("searches name upstream source description and kind", () => {
@@ -41,6 +47,7 @@ describe("launcher catalog", () => {
         {
           kind: "mcpTool",
           id: "mcp:github::search",
+          contractHash: "contract-github-search",
           label: "search",
           description: "Search repos",
           source: "github",
@@ -64,6 +71,7 @@ describe("launcher catalog", () => {
         {
           kind: "mcpTool",
           id: "mcp:a::search",
+          contractHash: "contract-a-search",
           label: "search",
           description: "",
           source: "a",
@@ -74,6 +82,7 @@ describe("launcher catalog", () => {
         {
           kind: "mcpTool",
           id: "mcp:b::search",
+          contractHash: "contract-b-search",
           label: "search",
           description: "",
           source: "b",

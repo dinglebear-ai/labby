@@ -14,6 +14,7 @@ function entry(schema: unknown, schemaFingerprint = "fp"): LauncherEntry {
     category: "mcp",
     source: "alpha",
     destructive: false,
+    contractHash: "a".repeat(64),
     params: [],
     argMode: "json",
     inputSchema: schema,
