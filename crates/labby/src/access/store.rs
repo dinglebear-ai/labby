@@ -38,6 +38,20 @@ impl AccessStore {
         })
     }
 
+    /// Opens an already-bootstrapped store at the exact current schema without creating or
+    /// migrating any persistent state.
+    pub(crate) async fn open_existing_current(path: PathBuf) -> AccessStoreResult<Self> {
+        let open_path = path.clone();
+        let connection =
+            tokio::task::spawn_blocking(move || open_existing_current_connection(&open_path))
+                .await
+                .map_err(|error| AccessStoreError::Unavailable(error.to_string()))??;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+            path: Arc::new(path),
+        })
+    }
+
     pub(super) async fn with_connection<T, F>(&self, operation: F) -> AccessStoreResult<T>
     where
         T: Send + 'static,
@@ -131,7 +145,7 @@ impl AccessStore {
     }
 
     #[cfg(test)]
-    async fn metadata_for_test(&self) -> AccessStoreResult<(i64, String, i64)> {
+    pub(super) async fn metadata_for_test(&self) -> AccessStoreResult<(i64, String, i64)> {
         self.with_connection(|connection| {
             connection
                 .query_row(
@@ -209,6 +223,114 @@ fn open_connection(path: &Path) -> AccessStoreResult<Connection> {
     Ok(connection)
 }
 
+fn open_existing_current_connection(path: &Path) -> AccessStoreResult<Connection> {
+    validate_path_shape(path)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| AccessStoreError::InsecurePath {
+            path: path.to_path_buf(),
+        })?;
+    validate_secure_parent(parent)?;
+    validate_existing_store_files(path)?;
+    reject_rollback_journal(path)?;
+    validate_store_file(path)?;
+
+    let mut connection = open_nofollow(path)?;
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(map_sqlite_error)?;
+    let journal_mode = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .map_err(map_sqlite_error)?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "journal_mode",
+        });
+    }
+    connection
+        .pragma_update(None, "synchronous", "FULL")
+        .map_err(map_sqlite_error)?;
+    let synchronous = connection
+        .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+        .map_err(map_sqlite_error)?;
+    if synchronous != 2 {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "synchronous",
+        });
+    }
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(map_sqlite_error)?;
+    let foreign_keys = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .map_err(map_sqlite_error)?;
+    if foreign_keys != 1 {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "foreign_keys",
+        });
+    }
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    let version = transaction
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(map_sqlite_error)?;
+    if version > super::migrations::SCHEMA_VERSION {
+        return Err(AccessStoreError::UnsupportedSchema {
+            found: version,
+            supported: super::migrations::SCHEMA_VERSION,
+        });
+    }
+    if version != super::migrations::SCHEMA_VERSION {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_version",
+        });
+    }
+    validate_store_file(path)?;
+    validate_sidecars(path)?;
+    reject_rollback_journal(path)?;
+    super::integrity::validate(&transaction)?;
+    let bootstrap_generation = transaction
+        .query_row(
+            "SELECT bootstrap_generation FROM access_metadata WHERE singleton = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if bootstrap_generation != 1 {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "bootstrap_required",
+        });
+    }
+    transaction.commit().map_err(map_sqlite_error)?;
+    validate_store_file(path)?;
+    validate_sidecars(path)?;
+    reject_rollback_journal(path)?;
+    Ok(connection)
+}
+
+fn reject_rollback_journal(path: &Path) -> AccessStoreResult<()> {
+    let journal = sidecar_path(path, "-journal");
+    match std::fs::symlink_metadata(journal) {
+        Ok(_) => Err(AccessStoreError::Locked),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AccessStoreError::Unavailable(error.to_string())),
+    }
+}
+
+fn validate_path_shape(path: &Path) -> AccessStoreResult<()> {
+    if !path.is_absolute() || path.file_name().is_none_or(|name| name != "access.db") {
+        return Err(AccessStoreError::InsecurePath {
+            path: path.to_path_buf(),
+        });
+    }
+    labby_runtime::path_safety::reject_existing_symlinks_in_path(path).map_err(|_| {
+        AccessStoreError::InsecurePath {
+            path: path.to_path_buf(),
+        }
+    })
+}
+
 fn open_nofollow(path: &Path) -> AccessStoreResult<Connection> {
     Connection::open_with_flags(
         path,
@@ -228,7 +350,7 @@ fn validate_existing_store_files(path: &Path) -> AccessStoreResult<()> {
 
 fn validate_sidecars(path: &Path) -> AccessStoreResult<()> {
     for suffix in ["-wal", "-shm"] {
-        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        let sidecar = sidecar_path(path, suffix);
         match std::fs::symlink_metadata(&sidecar) {
             Ok(_) => validate_store_file(&sidecar)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -236,6 +358,12 @@ fn validate_sidecars(path: &Path) -> AccessStoreResult<()> {
         }
     }
     Ok(())
+}
+
+pub(super) fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
 }
 
 fn prepare_parent(path: &Path) -> AccessStoreResult<()> {
