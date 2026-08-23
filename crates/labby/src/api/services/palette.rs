@@ -108,7 +108,9 @@ async fn compact_palette_catalog(
     }
 
     let caller = palette_caller(auth, request_id(headers))?;
-    let mut catalog = manager.palette_catalog(&caller).await?;
+    // HTTP search reads the gateway's continuously maintained snapshot. A
+    // fleet-wide refresh here would make one query wait on every upstream.
+    let mut catalog = manager.palette_catalog_snapshot(&caller).await?;
     append_labby_actions(&mut catalog, state, auth);
     compact_catalog_schemas(&mut catalog);
     let mut cached = cache.lock().await;

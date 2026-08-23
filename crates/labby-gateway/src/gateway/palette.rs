@@ -345,6 +345,21 @@ impl GatewayManager {
         &self,
         caller: &PaletteCaller,
     ) -> Result<LauncherCatalogView, ToolError> {
+        self.palette_catalog_inner(caller, true).await
+    }
+
+    pub async fn palette_catalog_snapshot(
+        &self,
+        caller: &PaletteCaller,
+    ) -> Result<LauncherCatalogView, ToolError> {
+        self.palette_catalog_inner(caller, false).await
+    }
+
+    async fn palette_catalog_inner(
+        &self,
+        caller: &PaletteCaller,
+        refresh: bool,
+    ) -> Result<LauncherCatalogView, ToolError> {
         if !caller.caller.can_read() {
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
@@ -355,14 +370,14 @@ impl GatewayManager {
         let mut entries = Vec::new();
         let mut schema_bytes = 0usize;
 
-        self.refresh_code_mode_catalog_allowed(
-            Some(&caller.owner),
-            Some(&caller.oauth_subject),
-            caller.allowed_upstreams(),
-        )
-        .await?;
-        // Refresh can publish a new pool, so take a new coherent revision for
-        // rendering rather than pairing the pre-refresh config with it.
+        if refresh {
+            self.refresh_code_mode_catalog_allowed(
+                Some(&caller.owner),
+                Some(&caller.oauth_subject),
+                caller.allowed_upstreams(),
+            )
+            .await?;
+        }
         let (cfg, pool) = self.published_config_and_pool().await;
         if let Some(pool) = pool {
             for upstream in cfg.upstream.iter().filter(|upstream| {
