@@ -1,0 +1,31 @@
+use std::path::PathBuf;
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub(super) enum AccessStoreError {
+    #[error("access store is locked")]
+    Locked,
+    #[error("access store is corrupt")]
+    Corrupt,
+    #[error("access store storage is full")]
+    DiskFull,
+    #[error("access store is read-only")]
+    ReadOnly,
+    #[error("access store path is unsafe: {path}")]
+    InsecurePath { path: PathBuf },
+    #[error("access store parent must already exist: {path}")]
+    MissingParent { path: PathBuf },
+    #[error("access store file has insecure permissions: {path}")]
+    InsecurePermissions { path: PathBuf },
+    #[error("access store schema {found} is newer than supported schema {supported}")]
+    UnsupportedSchema { found: i64, supported: i64 },
+    #[error("access store integrity check failed: {check}")]
+    IntegrityViolation { check: &'static str },
+    #[error("access store relation references a missing parent")]
+    ForeignKeyViolation,
+    #[error("access store is unavailable: {0}")]
+    Unavailable(String),
+}
+
+pub(super) type AccessStoreResult<T> = Result<T, AccessStoreError>;
