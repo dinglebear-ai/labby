@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::access::{AccessHealthStatus, inspect_health};
 use crate::config::env_merge::{self, EnvEntry, MergeRequest};
 use crate::dispatch::error::ToolError;
 
@@ -159,7 +160,11 @@ pub struct PluginHookReport {
 
 /// Check or repair the local filesystem prerequisites used by plugin setup.
 pub fn run(mode: Mode) -> Result<SetupReport, ToolError> {
-    run_for_paths(mode, lab_home(), env_path())
+    let access_store = crate::config::access_db_path().map_err(|_| ToolError::Sdk {
+        sdk_kind: "setup_check_failed".into(),
+        message: "unable to resolve the access store path".to_string(),
+    })?;
+    run_for_paths(mode, lab_home(), env_path(), access_store)
 }
 
 /// Sync CLAUDE_PLUGIN_OPTION_* env vars into ~/.labby/.env.
@@ -532,12 +537,18 @@ fn normalize_connectivity_base(raw: &str) -> Result<String, String> {
     Ok(base.as_str().trim_end_matches('/').to_ascii_lowercase())
 }
 
-fn run_for_paths(mode: Mode, lab_home: PathBuf, env: PathBuf) -> Result<SetupReport, ToolError> {
-    let mut checks = Vec::with_capacity(2);
+fn run_for_paths(
+    mode: Mode,
+    lab_home: PathBuf,
+    env: PathBuf,
+    access_store: PathBuf,
+) -> Result<SetupReport, ToolError> {
+    let mut checks = Vec::with_capacity(3);
     let mut changed = false;
 
     checks.push(check_lab_home(mode, &lab_home, &mut changed)?);
     checks.push(check_env_file(mode, &env, &mut changed)?);
+    checks.push(check_access_store(&access_store));
 
     let blocking_failures = checks
         .iter()
@@ -573,6 +584,30 @@ fn run_for_paths(mode: Mode, lab_home: PathBuf, env: PathBuf) -> Result<SetupRep
     })
 }
 
+fn check_access_store(path: &Path) -> SetupCheck {
+    let health = inspect_health(path);
+    let (ok, severity) = match health.status {
+        AccessHealthStatus::Ready => (true, SetupSeverity::Advisory),
+        AccessHealthStatus::Missing | AccessHealthStatus::Uninitialized => {
+            (false, SetupSeverity::Advisory)
+        }
+        AccessHealthStatus::Insecure
+        | AccessHealthStatus::Corrupt
+        | AccessHealthStatus::NewerSchema
+        | AccessHealthStatus::Locked
+        | AccessHealthStatus::ReadOnly
+        | AccessHealthStatus::Unavailable => (false, SetupSeverity::Blocking),
+    };
+    SetupCheck {
+        name: "access_store",
+        ok,
+        severity,
+        path: path.display().to_string(),
+        repaired: None,
+        message: (!ok).then(|| health.detail.to_string()),
+    }
+}
+
 fn check_lab_home(mode: Mode, path: &Path, changed: &mut bool) -> Result<SetupCheck, ToolError> {
     if path.is_dir() {
         return Ok(ok_check("lab_home", path, None));
@@ -586,7 +621,7 @@ fn check_lab_home(mode: Mode, path: &Path, changed: &mut bool) -> Result<SetupCh
         ));
     }
     if mode == Mode::Repair {
-        fs::create_dir_all(path).map_err(|error| io_error("lab_home", path, error))?;
+        create_lab_home(path).map_err(|error| io_error("lab_home", path, error))?;
         *changed = true;
         return Ok(ok_check("lab_home", path, Some(true)));
     }
@@ -596,6 +631,19 @@ fn check_lab_home(mode: Mode, path: &Path, changed: &mut bool) -> Result<SetupCh
         SetupSeverity::Blocking,
         "directory is missing",
     ))
+}
+
+#[cfg(unix)]
+fn create_lab_home(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_lab_home(path: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(path)
 }
 
 fn check_env_file(mode: Mode, path: &Path, changed: &mut bool) -> Result<SetupCheck, ToolError> {
@@ -667,6 +715,16 @@ fn io_error(check: &'static str, path: &Path, error: std::io::Error) -> ToolErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn secure(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("secure permissions");
+    }
+
+    #[cfg(not(unix))]
+    fn secure(_path: &Path, _mode: u32) {}
 
     #[test]
     fn connectivity_target_precedence_ignores_blank_values() {
@@ -889,7 +947,13 @@ mod tests {
         let home = temp.path().join("lab-home");
         let env = home.join(".env");
 
-        let report = run_for_paths(Mode::Check, home.clone(), env.clone()).expect("check report");
+        let report = run_for_paths(
+            Mode::Check,
+            home.clone(),
+            env.clone(),
+            home.join("access.db"),
+        )
+        .expect("check report");
 
         assert!(!report.ok);
         assert!(!report.changed);
@@ -897,12 +961,13 @@ mod tests {
         assert!(report.no_repair);
         assert!(!report.ran_repair);
         assert_eq!(report.blocking_failures, ["lab_home"]);
-        assert_eq!(report.advisory_failures, ["env_file"]);
+        assert_eq!(report.advisory_failures, ["env_file", "access_store"]);
         assert!(!home.exists());
         assert!(!env.exists());
-        assert_eq!(report.checks.len(), 2);
+        assert_eq!(report.checks.len(), 3);
         assert_eq!(report.checks[0].name, "lab_home");
         assert_eq!(report.checks[1].name, "env_file");
+        assert_eq!(report.checks[2].name, "access_store");
     }
 
     #[test]
@@ -911,20 +976,27 @@ mod tests {
         let home = temp.path().join("lab-home");
         let env = home.join(".env");
 
-        let report = run_for_paths(Mode::Repair, home.clone(), env.clone()).expect("repair report");
+        let report = run_for_paths(
+            Mode::Repair,
+            home.clone(),
+            env.clone(),
+            home.join("access.db"),
+        )
+        .expect("repair report");
 
         assert!(report.ok);
         assert!(report.changed);
-        assert_eq!(report.exit_policy, "success");
+        assert_eq!(report.exit_policy, "advisory_failure");
         assert!(report.ran_repair);
         assert!(!report.no_repair);
         assert!(report.blocking_failures.is_empty());
-        assert!(report.advisory_failures.is_empty());
+        assert_eq!(report.advisory_failures, ["access_store"]);
         assert!(home.is_dir());
         assert!(env.is_file());
-        assert!(report.checks.iter().all(|check| check.ok));
+        assert!(report.checks[..2].iter().all(|check| check.ok));
         assert_eq!(report.checks[0].repaired, Some(true));
         assert_eq!(report.checks[1].repaired, Some(true));
+        assert_eq!(report.checks[2].repaired, None);
     }
 
     #[test]
@@ -933,12 +1005,61 @@ mod tests {
         let home = temp.path().join("lab-home");
         let env = home.join(".env");
         fs::create_dir_all(&home).expect("lab home");
+        secure(&home, 0o700);
         fs::write(&env, "APPRISE_URL=http://localhost\n").expect("env file");
 
-        let report = run_for_paths(Mode::Repair, home, env).expect("repair report");
+        let access = home.join("access.db");
+        let report = run_for_paths(Mode::Repair, home, env, access).expect("repair report");
 
         assert!(report.ok);
         assert!(!report.changed);
         assert!(report.checks.iter().all(|check| check.repaired.is_none()));
+    }
+
+    #[test]
+    fn repair_never_mutates_an_uninitialized_access_store() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("lab-home");
+        let env = home.join(".env");
+        let access = home.join("access.db");
+        fs::create_dir_all(&home).expect("lab home");
+        secure(&home, 0o700);
+        fs::write(&env, "").expect("env file");
+        fs::write(&access, b"").expect("access store");
+        secure(&access, 0o600);
+
+        let before = fs::metadata(&access).expect("metadata");
+        let report = run_for_paths(Mode::Repair, home, env, access.clone()).expect("repair report");
+        let after = fs::metadata(&access).expect("metadata");
+
+        assert!(report.ok);
+        assert!(!report.changed);
+        assert_eq!(report.advisory_failures, ["access_store"]);
+        assert_eq!(report.checks[2].repaired, None);
+        assert_eq!(fs::read(&access).expect("access bytes"), b"");
+        assert_eq!(before.permissions(), after.permissions());
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn corrupt_access_store_is_blocking_and_remains_unrepaired() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("lab-home");
+        let env = home.join(".env");
+        let access = home.join("access.db");
+        fs::create_dir_all(&home).expect("lab home");
+        secure(&home, 0o700);
+        fs::write(&env, "").expect("env file");
+        fs::write(&access, b"not a sqlite database").expect("access store");
+        secure(&access, 0o600);
+        let before = fs::read(&access).expect("access bytes");
+
+        let report = run_for_paths(Mode::Repair, home, env, access.clone()).expect("repair report");
+
+        assert!(!report.ok);
+        assert_eq!(report.exit_policy, "blocking_failure");
+        assert_eq!(report.blocking_failures, ["access_store"]);
+        assert_eq!(report.checks[2].repaired, None);
+        assert_eq!(fs::read(&access).expect("access bytes"), before);
     }
 }
