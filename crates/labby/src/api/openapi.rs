@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::{OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::SchemaType;
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
     Components, ContentBuilder, ObjectBuilder, PathItem, RefOr, Required, Response,
     ResponseBuilder, ResponsesBuilder, Schema, SecurityRequirement, Type,
@@ -19,6 +19,21 @@ use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::app_manifest::{APPS_MANIFEST_API_ROUTE, SERVER_LOGS_QUERY_API_ROUTE};
 use crate::registry::RegisteredService;
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AccessBootstrapOwnerRequest {
+    /// Display name for the reserved local Organization (1-128 bytes after trimming).
+    pub organization_name: String,
+    /// Display name for the reserved default Project (1-128 bytes after trimming).
+    pub project_name: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AccessBootstrapOwnerResponse {
+    /// Redacted outcome: `created` or `already_applied`.
+    pub status: String,
+}
 
 // ── Documentation-only error schemas ────────────────────────────────────
 //
@@ -445,6 +460,10 @@ impl Modify for SecurityAddon {
                     .build(),
             ),
         );
+        components.security_schemes.insert(
+            "browser_session".to_string(),
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("lab_session"))),
+        );
     }
 }
 
@@ -814,6 +833,82 @@ pub fn build_app_paths() -> Vec<(String, PathItem)> {
     ]
 }
 
+#[must_use]
+pub fn build_access_paths() -> Vec<(String, PathItem)> {
+    let response = |description: &str, schema: &str| {
+        ResponseBuilder::new()
+            .description(description)
+            .content(
+                "application/json",
+                ContentBuilder::new()
+                    .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(schema))))
+                    .build(),
+            )
+            .build()
+    };
+    let operation = OperationBuilder::new()
+        .tag("access")
+        .summary(Some("Explicitly bootstrap the access-control owner"))
+        .description(Some(
+            "OAuth-browser-only, one-time owner bootstrap. The /v1 middleware must supply an authenticated browser session, valid CSRF token, and canonical VerifiedIdentity; the handler additionally requires lab:admin and an email matching LABBY_AUTH_ADMIN_EMAIL. Bearer automation, MCP, CLI, stdio, local credentials, and loopback origin do not bypass these gates. Success reveals only created or already_applied and responses are private, no-store.",
+        ))
+        .parameter(
+            ParameterBuilder::new()
+                .name("x-csrf-token")
+                .parameter_in(ParameterIn::Header)
+                .required(Required::True)
+                .description(Some("CSRF token issued with the authenticated browser session."))
+                .schema(Some(RefOr::T(param_type_to_schema("string"))))
+                .build(),
+        )
+        .request_body(Some(
+            RequestBodyBuilder::new()
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                            "#/components/schemas/AccessBootstrapOwnerRequest",
+                        ))))
+                        .build(),
+                )
+                .required(Some(Required::True))
+                .build(),
+        ))
+        .responses(
+            ResponsesBuilder::new()
+                .response("200", response("Bootstrap was already applied", "#/components/schemas/AccessBootstrapOwnerResponse"))
+                .response("201", response("Bootstrap created the owner state", "#/components/schemas/AccessBootstrapOwnerResponse"))
+                .response("401", agent_error_response("Browser session is missing or invalid"))
+                .response("403", agent_error_response("Browser-admin identity gate failed"))
+                .response(
+                    "404",
+                    ResponseBuilder::new()
+                        .description("Route is not mounted when OAuth browser mode is unavailable")
+                        .build(),
+                )
+                .response("409", agent_error_response("Bootstrap conflicts with existing state"))
+                .response(
+                    "422",
+                    ResponseBuilder::new()
+                        .description("CSRF, JSON body, Organization name, or Project name is invalid; CSRF rejection uses the auth middleware error envelope")
+                        .build(),
+                )
+                .response("503", agent_error_response("Access store is busy, unavailable, or failed integrity validation"))
+                .build(),
+        )
+        .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
+            "browser_session",
+            [],
+        ))
+        .build();
+    vec![(
+        "/v1/access/bootstrap-owner".to_string(),
+        PathItemBuilder::new()
+            .operation(utoipa::openapi::HttpMethod::Post, operation)
+            .build(),
+    )]
+}
+
 fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
     [
         (
@@ -873,6 +968,8 @@ fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
         CodeModeToolSearchHitDoc,
         CodeModeToolSearchResponseDoc,
         CodeModeToolDescribeResponseDoc,
+        AccessBootstrapOwnerRequest,
+        AccessBootstrapOwnerResponse,
     )),
     modifiers(&SecurityAddon),
 )]
@@ -905,6 +1002,9 @@ pub fn build_openapi_spec(
         spec.paths.paths.insert(path, item);
     }
     for (path, item) in build_app_paths() {
+        spec.paths.paths.insert(path, item);
+    }
+    for (path, item) in build_access_paths() {
         spec.paths.paths.insert(path, item);
     }
 
@@ -1245,6 +1345,18 @@ mod tests {
 
         // At least setup (always-on) should have a /v1/setup path
         assert!(paths.contains_key("/v1/setup"), "missing /v1/setup path");
+        let bootstrap = &paths["/v1/access/bootstrap-owner"]["post"];
+        assert_eq!(
+            bootstrap["security"][0]["browser_session"],
+            serde_json::json!([])
+        );
+        assert!(
+            bootstrap["parameters"]
+                .as_array()
+                .is_some_and(|parameters| parameters.iter().any(|parameter| {
+                    parameter["name"] == "x-csrf-token" && parameter["in"] == "header"
+                }))
+        );
 
         // Components must include our error schemas
         let schemas = spec["components"]["schemas"]
@@ -1309,6 +1421,10 @@ mod tests {
         assert!(
             security_schemes.contains_key("bearer_auth"),
             "missing bearer_auth security scheme"
+        );
+        assert!(
+            security_schemes.contains_key("browser_session"),
+            "missing browser_session security scheme"
         );
 
         // Service dispatch paths should have POST operations with security requirement.

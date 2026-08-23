@@ -64,6 +64,14 @@ Milestone 1 proves the smallest security boundary end to end:
 
 Milestone 1 has no authorization cache. It includes explicit single-owner bootstrap, redacted decision logging, storage failure behavior, and opt-in/shadow rollout before enforcement.
 
+### Explicit first-owner workflow
+
+The initial owner is created only through `POST /v1/access/bootstrap-owner`, which is mounted only when OAuth browser mode exists. This endpoint is an authenticated browser projection, not a general access service: there is no MCP, Code Mode, CLI, stdio, local-credential, or bearer-automation equivalent. Without OAuth browser mode the route is absent and returns `404` before body validation.
+
+The `/v1` middleware MUST validate the browser session and CSRF token and MUST derive both `AuthContext` and canonical `VerifiedIdentity`. The handler additionally requires `lab:admin` and an authenticated email equal to the configured bootstrap admin email. Email establishes eligibility for this one operation; the durable Principal link remains the verified provider issuer and subject. Caller input MUST NOT select or replace identity, and loopback origin MUST NOT grant authority.
+
+The only success disclosures are `created` and `already_applied`. Responses MUST NOT expose the Principal, provider subject, identity fingerprint, or stored policy shape and MUST be private/no-store. Handler failures use the canonical agent error envelope; authentication and CSRF failures retain the shared auth-middleware envelope. Setup, doctor, startup, and ordinary request handling MUST NOT implicitly invoke bootstrap.
+
 ### Later milestones
 
 The following remain part of the initiative but are not Milestone 1 dependencies: nested Groups, Group-based Project membership, custom Roles and Grants, temporal membership, generalized Assignments, inheritance/slots/overrides/masks, personal overlay, per-capability assignment, Project credential binding, Artifact distribution, destination pairing/federation, Artifact-backed Loadouts, persistent explanation evidence, public/anonymous policy, and non-MCP surface parity.

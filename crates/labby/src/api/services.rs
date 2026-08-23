@@ -13,6 +13,9 @@ pub mod helpers;
 /// Admin-only allowlist management (`/v1/auth/allowed-emails`).
 pub mod auth_admin;
 
+/// Browser-session-only owner bootstrap (`/v1/access/bootstrap-owner`).
+pub mod access_bootstrap;
+
 /// `GET /v1/catalog` — filtered service+action catalog for the ⌘K palette.
 pub mod catalog;
 pub mod doctor;

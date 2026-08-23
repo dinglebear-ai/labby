@@ -9,7 +9,7 @@ status: "implementation"
 
 ## Current state
 
-The design packet and initial authentication/domain/persistence foundation are implemented in this worktree. The AccessStore now has explicit owner bootstrap and read-only doctor/setup health projection. Access-control enforcement, product lifecycle wiring for bootstrap, personal-Labby pairing, and transfer protocols are not implemented, so existing product behavior is not authorization-gated by this work.
+The design packet and initial authentication/domain/persistence foundation are implemented in this worktree. The AccessStore now has explicit owner bootstrap, an authenticated browser-only bootstrap endpoint, and read-only doctor/setup health projection. Access-control enforcement, startup/AppState bootstrap, personal-Labby pairing, and transfer protocols are not implemented, so existing product behavior is not authorization-gated by this work.
 
 Branch/worktree for the design packet:
 
@@ -227,7 +227,7 @@ Wave 2's private persistence kernel and Wave 3's store-only explicit owner boots
 - [ ] destinations/mirror state.
 - [x] bootstrap restart/concurrency/rollback and v1 migration safety tests.
 
-The bootstrap facade is crate-private and is not called by AppState or product startup. Doctor `access.check` and `audit.full`, plus setup check/repair reports, now project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. Explicit operator workflow wiring, Loadout compatibility projection, general mutations, and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap/health kernel exists.
+The bootstrap facade remains crate-private and is not called by AppState or product startup. One narrow `POST /v1/access/bootstrap-owner` adapter is mounted only with OAuth browser state and invokes it only after browser session, CSRF, middleware-derived `VerifiedIdentity`, `lab:admin`, and configured-admin-email gates. It returns only `created` or `already_applied`, uses canonical agent errors, and has no MCP/CLI/stdio/bearer/loopback bypass; without OAuth the route is absent and returns `404` before body validation. Doctor `access.check` and `audit.full`, plus setup check/repair reports, project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. Loadout compatibility projection, general mutations, and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap/health kernel exists.
 
 ### Phase 3: AuthContext identity integration
 
@@ -329,10 +329,11 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 ### Phase 13: migration/rollout
 
 - [x] explicit store-only local owner bootstrap transaction.
+- [x] authenticated browser-only owner-bootstrap endpoint with CSRF, canonical VerifiedIdentity, `lab:admin`, and configured-admin-email gates.
 - [ ] preserve private Artifact defaults.
 - [ ] preserve existing Loadout behavior.
 - [ ] identity setup/doctor checks.
-- [ ] AppState/startup/operator workflow wiring for explicit bootstrap.
+- [ ] AppState/startup bootstrap (intentionally absent; any future behavior requires a separate reviewed design).
 - [ ] shadow resolver.
 - [ ] opt-in enforcement flags.
 - [ ] staged default-on decision.

@@ -84,6 +84,8 @@ pub struct AppState {
     pub bearer_token: Option<Arc<str>>,
     /// HTTP bind host resolved by `labby serve`.
     pub http_bind_host: Option<Arc<String>>,
+    #[cfg(test)]
+    pub(crate) access_bootstrap_path_for_test: Option<Arc<PathBuf>>,
 }
 
 impl AppState {
@@ -141,6 +143,8 @@ impl AppState {
             web_ui_auth_disabled: false,
             bearer_token: None,
             http_bind_host: None,
+            #[cfg(test)]
+            access_bootstrap_path_for_test: None,
             server_start: std::time::Instant::now(),
         }
     }
@@ -149,6 +153,12 @@ impl AppState {
     #[must_use]
     pub fn with_auth_config(mut self, config: labby_auth::config::AuthConfig) -> Self {
         self.auth_config = Some(Arc::new(config));
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_access_bootstrap_path_for_test(mut self, path: PathBuf) -> Self {
+        self.access_bootstrap_path_for_test = Some(Arc::new(path));
         self
     }
 
