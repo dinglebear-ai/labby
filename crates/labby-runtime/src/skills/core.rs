@@ -8,7 +8,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::ValidatedSkill;
+use super::{
+    SkillAvailabilitySummary, SkillCompatibilityClassification, SkillCompatibilityItem,
+    ValidatedSkill,
+};
 
 /// The provider family responsible for discovering and reading a Skill.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -78,6 +81,9 @@ pub struct SkillDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_uri: Option<String>,
     pub resource_count: usize,
+    /// Fail-closed compatibility result. Callers must not offer descriptors
+    /// whose availability is blocked.
+    pub availability: SkillAvailabilitySummary,
     /// Provider metadata preserved outside author frontmatter. Adapters must not
     /// reinterpret permission-like vendor fields as Labby authorization.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
@@ -95,20 +101,28 @@ impl SkillDescriptor {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let availability = SkillAvailabilitySummary::from_items(
+            skill
+                .entry
+                .frontmatter
+                .contains_key("allowed-tools")
+                .then(|| {
+                    SkillCompatibilityItem::new(
+                        "allowed-tools",
+                        SkillCompatibilityClassification::PreservedHint,
+                    )
+                    .with_detail("preserved as source metadata; never grants tool access")
+                }),
+        );
         Self {
             id: SkillId::new(provider, skill.entry.uri.clone()),
             name: skill.name.clone(),
             description,
             source_uri: Some(skill.entry.uri.clone()),
             resource_count: skill.entry.resources.as_ref().map_or(0, Vec::len),
+            availability,
             provider_metadata: skill.entry.meta.clone().unwrap_or_default(),
         }
-    }
-
-    /// Adapt an already validated SEP-2640 entry without fetching package bytes.
-    #[must_use]
-    pub fn from_validated_sep(provider: SkillProviderId, skill: &ValidatedSkill) -> Self {
-        Self::from_validated_entry(provider, skill)
     }
 }
 
@@ -156,17 +170,18 @@ mod tests {
     }
 
     #[test]
-    fn sep_adapter_is_metadata_only_and_preserves_provider_metadata() {
+    fn validated_adapter_is_metadata_only_and_preserves_provider_metadata() {
         let skill = validated("skill://catalog/review/SKILL.md", "review");
         let provider = SkillProviderId::new(SkillProviderKind::McpUpstream, "depot");
 
-        let descriptor = SkillDescriptor::from_validated_sep(provider.clone(), &skill);
+        let descriptor = SkillDescriptor::from_validated_entry(provider.clone(), &skill);
 
         assert_eq!(descriptor.id.provider, provider);
         assert_eq!(descriptor.id.source_id, skill.entry.uri);
         assert_eq!(descriptor.name, "review");
         assert_eq!(descriptor.description, "demo");
         assert_eq!(descriptor.resource_count, 1);
+        assert!(descriptor.availability.available);
         assert_eq!(
             descriptor.provider_metadata["vendor.example/hint"],
             "preserved"
@@ -176,7 +191,7 @@ mod tests {
     #[test]
     fn descriptor_json_keeps_provider_and_source_identity_explicit() {
         let skill = validated("skill://catalog/review/SKILL.md", "review");
-        let descriptor = SkillDescriptor::from_validated_sep(
+        let descriptor = SkillDescriptor::from_validated_entry(
             SkillProviderId::new(SkillProviderKind::McpUpstream, "depot"),
             &skill,
         );

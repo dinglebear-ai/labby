@@ -15,14 +15,17 @@ pub(crate) mod providers;
 pub(crate) mod search;
 
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::sync::OnceLock;
 
-use labby_runtime::skills::wire::{
-    CACHE_SCOPE_PUBLIC, SkillEntry, SkillResource, SkillsListResult,
-};
-use labby_runtime::skills::{
-    FIRST_PARTY_ORIGIN, ResourceDigest, SkillUri, parse_skill_md_frontmatter, parse_skill_uri,
-};
+#[cfg(test)]
+use labby_runtime::skills::SkillUri;
+#[cfg(test)]
+use labby_runtime::skills::parse_skill_uri;
+#[cfg(test)]
+use labby_runtime::skills::wire::{CACHE_SCOPE_PUBLIC, SkillsListResult};
+use labby_runtime::skills::wire::{SkillEntry, SkillResource};
+use labby_runtime::skills::{FIRST_PARTY_ORIGIN, ResourceDigest, parse_skill_md_frontmatter};
 
 /// Every embedded first-party file, as `(skill name, path within the skill,
 /// contents)`.
@@ -91,9 +94,11 @@ const EMBEDDED_FILES: &[(&str, &str, &str)] = &[
 #[derive(Debug)]
 pub(crate) struct FirstPartySkill {
     pub(crate) entry: SkillEntry,
+    #[cfg(test)]
     files: BTreeMap<String, &'static str>,
 }
 
+#[cfg(test)]
 impl FirstPartySkill {
     /// Contents of one file of this skill, by full `skill://` URI.
     pub(crate) fn file(&self, uri: &str) -> Option<&'static str> {
@@ -140,6 +145,7 @@ fn build_first_party_skills() -> BTreeMap<String, FirstPartySkill> {
         };
 
         let mut resources = Vec::with_capacity(files.len());
+        #[cfg(test)]
         let mut contents = BTreeMap::new();
         for (path, body) in &files {
             let uri = first_party_uri(&skill, path);
@@ -147,6 +153,7 @@ fn build_first_party_skills() -> BTreeMap<String, FirstPartySkill> {
                 uri: uri.clone(),
                 digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
             });
+            #[cfg(test)]
             contents.insert(uri, *body);
         }
         // Deterministic order so two processes publish byte-identical listings.
@@ -161,6 +168,7 @@ fn build_first_party_skills() -> BTreeMap<String, FirstPartySkill> {
                     resources: Some(resources),
                     meta: None,
                 },
+                #[cfg(test)]
                 files: contents,
             },
         );
@@ -168,6 +176,7 @@ fn build_first_party_skills() -> BTreeMap<String, FirstPartySkill> {
     built
 }
 
+#[cfg(test)]
 fn first_party_skills() -> &'static BTreeMap<String, FirstPartySkill> {
     static SKILLS: OnceLock<BTreeMap<String, FirstPartySkill>> = OnceLock::new();
     SKILLS.get_or_init(|| {
@@ -208,6 +217,7 @@ fn first_party_skills() -> &'static BTreeMap<String, FirstPartySkill> {
 /// Single page: the bundled set is small and fixed, so there is nothing to
 /// paginate. The spec-shaped fields are still emitted so a client's pagination
 /// handling is exercised the same way it would be against any other server.
+#[cfg(test)]
 pub(crate) fn list_first_party_skills() -> SkillsListResult {
     SkillsListResult {
         skills: first_party_skills()
@@ -231,6 +241,7 @@ pub(crate) fn list_first_party_skills() -> SkillsListResult {
 /// Accepts any URI belonging to the skill, not only its `SKILL.md`: a caller
 /// holding a supporting file's URI should still be able to reach the entry that
 /// binds it.
+#[cfg(test)]
 pub(crate) fn first_party_skill_entry(uri: &str) -> Option<SkillEntry> {
     let parsed = parse_skill_uri(uri).ok()?;
     if parsed.origin() != FIRST_PARTY_ORIGIN {
@@ -243,6 +254,7 @@ pub(crate) fn first_party_skill_entry(uri: &str) -> Option<SkillEntry> {
 }
 
 /// Contents of a first-party skill file, by URI.
+#[cfg(test)]
 pub(crate) fn read_first_party_skill_file(uri: &str) -> Option<&'static str> {
     let parsed: SkillUri = parse_skill_uri(uri).ok()?;
     if parsed.origin() != FIRST_PARTY_ORIGIN {

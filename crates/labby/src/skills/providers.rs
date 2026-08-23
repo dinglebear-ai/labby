@@ -12,13 +12,6 @@ use labby_runtime::skills::{
 use super::{EMBEDDED_FILES, first_party_uri, local};
 
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the facade in the next migration slice"
-    )
-)]
 struct SnapshotSkill {
     validated: ValidatedSkill,
     files: BTreeMap<String, Vec<u8>>,
@@ -26,25 +19,11 @@ struct SnapshotSkill {
 
 /// Immutable provider whose descriptor and bytes come from one verified snapshot.
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the facade in the next migration slice"
-    )
-)]
 pub(crate) struct SnapshotSkillProvider {
     id: SkillProviderId,
     skills: BTreeMap<String, SnapshotSkill>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into the facade in the next migration slice"
-    )
-)]
 impl SnapshotSkillProvider {
     pub(crate) fn bundled() -> Self {
         let mut grouped: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
@@ -77,10 +56,6 @@ impl SnapshotSkillProvider {
         }
     }
 
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "ambient LABBY_HOME is not read by unit tests")
-    )]
     pub(crate) fn operator_local() -> Self {
         let skills = local::load_local_skills()
             .into_values()
@@ -108,10 +83,114 @@ impl SnapshotSkillProvider {
         if id.provider != self.id {
             return Err(SkillProviderError::WrongProvider);
         }
-        self.skills
+        let skill = self
+            .skills
             .get(&id.source_id)
-            .ok_or(SkillProviderError::SkillNotFound)
+            .ok_or(SkillProviderError::SkillNotFound)?;
+        if !skill.validated_descriptor(&self.id).is_available() {
+            return Err(SkillProviderError::SkillNotFound);
+        }
+        Ok(skill)
     }
+}
+
+impl SnapshotSkill {
+    fn validated_descriptor(&self, provider: &SkillProviderId) -> SkillProviderEntry {
+        SkillProviderEntry::from_validated(provider.clone(), self.validated.clone())
+    }
+}
+
+/// One immutable first-party registry snapshot. Bundled Skills win any name,
+/// manifest URI, or resource URI collision with operator-local content.
+#[derive(Debug, Clone)]
+pub(crate) struct FirstPartySkillProviders {
+    bundled: SnapshotSkillProvider,
+    operator_local: SnapshotSkillProvider,
+}
+
+impl FirstPartySkillProviders {
+    pub(crate) fn load() -> Self {
+        Self {
+            bundled: SnapshotSkillProvider::bundled(),
+            operator_local: SnapshotSkillProvider::operator_local(),
+        }
+    }
+
+    pub(crate) async fn discover(&self) -> Vec<SkillProviderEntry> {
+        let bundled = self
+            .bundled
+            .discover(&SkillDiscoverRequest::default())
+            .await
+            .map_or_else(|_| Vec::new(), |result| result.skills);
+        let local = self
+            .operator_local
+            .discover(&SkillDiscoverRequest::default())
+            .await
+            .map_or_else(|_| Vec::new(), |result| result.skills);
+        merge_bundled_first(bundled, local)
+    }
+
+    pub(crate) async fn find(&self, uri: &str) -> Option<SkillProviderEntry> {
+        self.discover().await.into_iter().find(|entry| {
+            entry.descriptor.id.source_id == uri
+                || entry.resources().any(|resource| resource.source_id == uri)
+        })
+    }
+
+    pub(crate) async fn read(
+        &self,
+        entry: &SkillProviderEntry,
+        resource_id: &str,
+        max_bytes: usize,
+    ) -> Result<SkillResourceReadResult, SkillProviderError> {
+        let provider = if entry.descriptor.id.provider == *self.bundled.id() {
+            &self.bundled
+        } else if entry.descriptor.id.provider == *self.operator_local.id() {
+            &self.operator_local
+        } else {
+            return Err(SkillProviderError::WrongProvider);
+        };
+        provider
+            .read_resource(&SkillResourceReadRequest {
+                skill_id: entry.descriptor.id.clone(),
+                resource_id: resource_id.to_string(),
+                max_bytes,
+                deadline: Default::default(),
+            })
+            .await
+    }
+}
+
+fn merge_bundled_first(
+    bundled: Vec<SkillProviderEntry>,
+    local: Vec<SkillProviderEntry>,
+) -> Vec<SkillProviderEntry> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut uris = std::collections::BTreeSet::new();
+    let mut merged = Vec::with_capacity(bundled.len() + local.len());
+    for entry in bundled.into_iter().chain(local) {
+        if !entry.is_available() {
+            continue;
+        }
+        let collides = names.contains(&entry.descriptor.name)
+            || uris.contains(&entry.descriptor.id.source_id)
+            || entry
+                .resources()
+                .any(|resource| uris.contains(&resource.source_id));
+        if collides {
+            tracing::warn!(
+                skill = %entry.descriptor.name,
+                provider = ?entry.descriptor.id.provider,
+                "excluding a first-party skill that collides with bundled-first URI ownership"
+            );
+            continue;
+        }
+        names.insert(entry.descriptor.name.clone());
+        uris.insert(entry.descriptor.id.source_id.clone());
+        uris.extend(entry.resources().map(|resource| resource.source_id.clone()));
+        merged.push(entry);
+    }
+    merged
 }
 
 impl SkillProvider for SnapshotSkillProvider {
@@ -125,12 +204,19 @@ impl SkillProvider for SnapshotSkillProvider {
     ) -> SkillProviderFuture<'a, SkillDiscoverResult> {
         Box::pin(async move {
             request.validate()?;
-            let available = self.skills.len();
+            let available = self
+                .skills
+                .values()
+                .filter(|skill| skill.validated_descriptor(&self.id).is_available())
+                .count();
             let skills = self
                 .skills
                 .values()
+                .map(|skill| {
+                    SkillProviderEntry::from_validated(self.id.clone(), skill.validated.clone())
+                })
+                .filter(SkillProviderEntry::is_available)
                 .take(request.max_items)
-                .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), &skill.validated))
                 .collect();
             Ok(SkillDiscoverResult {
                 skills,
@@ -148,7 +234,7 @@ impl SkillProvider for SnapshotSkillProvider {
             request.validate()?;
             let skill = self.requested_skill(&request.id)?;
             Ok(SkillGetResult {
-                skill: SkillProviderEntry::from_validated(self.id.clone(), &skill.validated),
+                skill: SkillProviderEntry::from_validated(self.id.clone(), skill.validated.clone()),
             })
         })
     }
@@ -185,7 +271,10 @@ impl SkillProvider for SnapshotSkillProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use labby_runtime::skills::{SkillProviderDeadline, SkillResourceReadRequest};
+    use labby_runtime::skills::{
+        SkillAvailabilitySummary, SkillCompatibilityClassification, SkillCompatibilityItem,
+        SkillProviderDeadline, SkillResourceReadRequest,
+    };
 
     #[tokio::test]
     async fn bundled_provider_discovers_metadata_then_reads_manifest_bytes() {
@@ -231,5 +320,59 @@ mod tests {
             source,
         );
         assert_ne!(bundled, local);
+    }
+
+    #[tokio::test]
+    async fn bundled_entries_win_name_and_uri_collisions() {
+        let provider = SnapshotSkillProvider::bundled();
+        let bundled = provider
+            .discover(&SkillDiscoverRequest::default())
+            .await
+            .unwrap()
+            .skills
+            .into_iter()
+            .next()
+            .unwrap();
+        let mut same_name_entry = bundled.validated().entry.clone();
+        same_name_entry.uri = format!(
+            "skill://labby/operator/{}/SKILL.md",
+            bundled.descriptor.name
+        );
+        let bundled_prefix = format!("skill://labby/{}/", bundled.descriptor.name);
+        let operator_prefix = format!("skill://labby/operator/{}/", bundled.descriptor.name);
+        for resource in same_name_entry.resources.as_mut().unwrap() {
+            resource.uri = resource.uri.replace(&bundled_prefix, &operator_prefix);
+        }
+        let same_name = SkillProviderEntry::from_validated(
+            SkillProviderId::new(SkillProviderKind::OperatorLocal, "labby-home"),
+            validate_skill_entry(&same_name_entry).unwrap(),
+        );
+        let same_uri = SkillProviderEntry::from_validated(
+            SkillProviderId::new(SkillProviderKind::OperatorLocal, "labby-home"),
+            bundled.validated().clone(),
+        );
+
+        let merged = merge_bundled_first(vec![bundled.clone()], vec![same_name, same_uri]);
+        assert_eq!(merged, vec![bundled]);
+    }
+
+    #[tokio::test]
+    async fn blocked_entries_are_not_offered() {
+        let provider = SnapshotSkillProvider::bundled();
+        let mut blocked = provider
+            .discover(&SkillDiscoverRequest::default())
+            .await
+            .unwrap()
+            .skills
+            .into_iter()
+            .next()
+            .unwrap();
+        blocked.descriptor.availability =
+            SkillAvailabilitySummary::from_items([SkillCompatibilityItem::new(
+                "runtime",
+                SkillCompatibilityClassification::DependencyUnavailable,
+            )]);
+
+        assert!(merge_bundled_first(Vec::new(), vec![blocked]).is_empty());
     }
 }

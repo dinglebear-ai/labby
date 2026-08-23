@@ -42,6 +42,13 @@ impl SepSkillProvider {
         }
         Ok(())
     }
+
+    /// Provider requests use the gateway's configured operation timeout unless
+    /// the caller deliberately supplies a shorter deadline. This preserves the
+    /// gateway timeout contract while still allowing callers to tighten it.
+    fn operation_timeout(&self, requested: Duration) -> Duration {
+        requested.min(self.pool.request_timeout)
+    }
 }
 
 impl SkillProvider for SepSkillProvider {
@@ -56,7 +63,7 @@ impl SkillProvider for SepSkillProvider {
         Box::pin(async move {
             request.validate()?;
             let exposed = tokio::time::timeout(
-                request.deadline.timeout,
+                self.operation_timeout(request.deadline.timeout),
                 self.pool
                     .upstream_skills(&self.config, self.subject.as_deref()),
             )
@@ -66,7 +73,7 @@ impl SkillProvider for SepSkillProvider {
             let available = exposed.skills.len();
             let skills = exposed
                 .skills
-                .iter()
+                .into_iter()
                 .take(request.max_items)
                 .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
                 .collect();
@@ -110,10 +117,10 @@ impl SkillProvider for SepSkillProvider {
                 };
                 let skill = skill.ok_or(SkillProviderError::SkillNotFound)?;
                 Ok(SkillGetResult {
-                    skill: SkillProviderEntry::from_validated(self.id.clone(), &skill),
+                    skill: SkillProviderEntry::from_validated(self.id.clone(), skill),
                 })
             };
-            tokio::time::timeout(request.deadline.timeout, operation)
+            tokio::time::timeout(self.operation_timeout(request.deadline.timeout), operation)
                 .await
                 .map_err(|_| SkillProviderError::DeadlineExceeded)?
         })
@@ -127,7 +134,7 @@ impl SkillProvider for SepSkillProvider {
             request.validate()?;
             self.validate_provider(&request.skill_id.provider)?;
             let verified = tokio::time::timeout(
-                request.deadline.timeout,
+                self.operation_timeout(request.deadline.timeout),
                 self.pool.read_proxied_skill_file_for_skill(
                     &self.config,
                     self.subject.as_deref(),
@@ -149,7 +156,7 @@ impl SkillProvider for SepSkillProvider {
                     }
                 }
                 labby_runtime::skills::KIND_SKILL_MANIFEST_STALE => {
-                    SkillProviderError::ResourceNotFound
+                    SkillProviderError::ManifestStale
                 }
                 _ => SkillProviderError::Provider {
                     reason: error.to_string(),
@@ -176,5 +183,27 @@ mod tests {
         let id = SkillProviderId::new(SkillProviderKind::McpUpstream, "docs");
         let other = SkillProviderId::new(SkillProviderKind::McpUpstream, "private");
         assert_ne!(id, other);
+    }
+
+    #[test]
+    fn provider_default_uses_configured_timeout_and_explicit_shorter_deadline_wins() {
+        let configured = Duration::from_secs(30);
+        let pool = Arc::new(UpstreamPool::new().with_request_timeout(configured));
+        let provider = SepSkillProvider::new(
+            pool,
+            super::super::testsupport::named_test_upstream_config("deadline-test"),
+            None,
+        );
+
+        assert_eq!(
+            provider.operation_timeout(
+                labby_runtime::skills::SkillProviderDeadline::default().timeout,
+            ),
+            configured
+        );
+        assert_eq!(
+            provider.operation_timeout(Duration::from_millis(25)),
+            Duration::from_millis(25)
+        );
     }
 }

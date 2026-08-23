@@ -11,13 +11,14 @@ use std::sync::Arc;
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
 use labby_runtime::skills::wire::{
-    CACHE_SCOPE_PRIVATE, SkillEntry, SkillResource, SkillsListResult,
+    CACHE_SCOPE_PRIVATE, CACHE_SCOPE_PUBLIC, SkillEntry, SkillsListResult,
 };
 #[cfg(feature = "gateway")]
 use labby_runtime::skills::{
     SkillDiscoverRequest, SkillGetRequest, SkillId, SkillProvider, SkillProviderDeadline,
-    SkillProviderEntry, SkillProviderError, SkillResourceReadRequest, limits, validate_skill_entry,
+    SkillResourceReadRequest,
 };
+use labby_runtime::skills::{SkillProviderEntry, SkillProviderError, limits};
 
 #[cfg(feature = "gateway")]
 use futures::{StreamExt, stream};
@@ -27,7 +28,7 @@ use labby_gateway::gateway::manager::GatewayManager;
 use labby_gateway::upstream::pool::{SepSkillProvider, UpstreamPool};
 
 use super::aggregate::{self, ToolAccess};
-use super::{first_party_skill_entry, list_first_party_skills, read_first_party_skill_file};
+use super::providers::FirstPartySkillProviders;
 
 /// Caller-dependent inputs that affect which skills may be observed.
 ///
@@ -102,6 +103,7 @@ impl SkillCallerScope {
 /// back to process-global gateway state because doing so would erase protected
 /// route and OAuth-subject boundaries.
 pub(crate) struct SkillRegistryContext {
+    first_party: FirstPartySkillProviders,
     #[cfg(feature = "gateway")]
     manager: Option<Arc<GatewayManager>>,
     scope: SkillCallerScope,
@@ -111,6 +113,7 @@ impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn first_party_only() -> Self {
         Self {
+            first_party: FirstPartySkillProviders::load(),
             #[cfg(feature = "gateway")]
             manager: None,
             scope: SkillCallerScope::first_party_only(),
@@ -121,6 +124,7 @@ impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn with_manager(manager: Arc<GatewayManager>, scope: SkillCallerScope) -> Self {
         Self {
+            first_party: FirstPartySkillProviders::load(),
             manager: Some(manager),
             scope,
         }
@@ -138,7 +142,19 @@ pub(crate) struct VisibleSkillFile {
 }
 
 pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> SkillsListResult {
-    let mut listing = list_first_party_skills();
+    let mut listing = SkillsListResult {
+        skills: context
+            .first_party
+            .discover()
+            .await
+            .into_iter()
+            .map(provider_entry_to_wire)
+            .collect(),
+        next_cursor: None,
+        ttl_ms: Some(3_600_000),
+        cache_scope: Some(CACHE_SCOPE_PUBLIC.to_string()),
+        meta: None,
+    };
 
     #[cfg(feature = "gateway")]
     {
@@ -173,8 +189,8 @@ pub(crate) async fn get_visible_skill(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Option<SkillEntry> {
-    if let Some(entry) = first_party_skill_entry(uri) {
-        return Some(entry);
+    if let Some(entry) = context.first_party.find(uri).await {
+        return Some(provider_entry_to_wire(entry));
     }
 
     #[cfg(feature = "gateway")]
@@ -202,9 +218,8 @@ pub(crate) async fn get_visible_skill(
         let validated = discovered
             .skills
             .into_iter()
-            .map(provider_entry_to_validated)
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
+            .map(SkillProviderEntry::into_validated)
+            .collect::<Vec<_>>();
         let meta = origin_meta(&origin, &pool, context.scope.tool_access()).await;
         let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
         if let Some(entry) = minted.entries.iter().find(|entry| {
@@ -231,7 +246,7 @@ pub(crate) async fn get_visible_skill(
             })
             .await
             .ok()
-            .and_then(|result| provider_entry_to_validated(result.skill).ok())?;
+            .map(|result| result.skill.into_validated())?;
         let entry = aggregate::mint_proxied_entry(&config.name, &fetched, Some(&meta))?;
         if minted.conflicts_with(&entry) {
             tracing::warn!(
@@ -256,20 +271,29 @@ pub(crate) async fn read_visible_skill_file(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Result<VisibleSkillFile, ToolError> {
-    if let Some(text) = read_first_party_skill_file(uri) {
-        let entry = first_party_skill_entry(uri).ok_or_else(|| unknown_file(uri))?;
+    if let Some(provider_entry) = context.first_party.find(uri).await {
+        let entry = provider_entry_to_wire(provider_entry.clone());
         let resource = entry
             .resources
             .as_ref()
             .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
             .ok_or_else(|| stale_manifest(uri))?;
+        let verified = context
+            .first_party
+            .read(&provider_entry, uri, limits::MAX_SKILL_RESOURCE_BYTES)
+            .await
+            .map_err(first_party_provider_error_to_tool)?;
+        let text = String::from_utf8(verified.bytes).map_err(|_| ToolError::Sdk {
+            sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+            message: "verified first-party skill resource was not UTF-8 text".to_string(),
+        })?;
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
             skill_uri: entry.uri,
             origin: labby_runtime::skills::FIRST_PARTY_ORIGIN.to_string(),
             digest: resource.digest.clone(),
             mime_type: None,
-            text: text.to_string(),
+            text,
         });
     }
 
@@ -340,6 +364,30 @@ pub(crate) async fn read_visible_skill_file(
     {
         let _ = context;
         Err(unknown_file(uri))
+    }
+}
+
+fn provider_entry_to_wire(skill: SkillProviderEntry) -> SkillEntry {
+    skill.into_validated().entry
+}
+
+fn first_party_provider_error_to_tool(error: SkillProviderError) -> ToolError {
+    let sdk_kind = match error {
+        SkillProviderError::InvalidRequest { .. } | SkillProviderError::WrongProvider => {
+            "invalid_param"
+        }
+        SkillProviderError::SkillNotFound | SkillProviderError::ResourceNotFound => "not_found",
+        SkillProviderError::ManifestStale => labby_runtime::skills::KIND_SKILL_MANIFEST_STALE,
+        SkillProviderError::DeadlineExceeded => "timeout",
+        SkillProviderError::LimitExceeded { .. } => "response_too_large",
+        SkillProviderError::Integrity { .. } => labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH,
+        SkillProviderError::Unavailable { .. } | SkillProviderError::Provider { .. } => {
+            "provider_error"
+        }
+    };
+    ToolError::Sdk {
+        sdk_kind: sdk_kind.to_string(),
+        message: error.to_string(),
     }
 }
 
@@ -419,18 +467,7 @@ async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills 
                 let validated = discovered
                     .skills
                     .into_iter()
-                    .filter_map(|skill| match provider_entry_to_validated(skill) {
-                        Ok(skill) => Some(skill),
-                        Err(reason) => {
-                            tracing::error!(
-                                upstream = %config.name,
-                                reason = reason.as_str(),
-                                "SEP provider returned an invalid compatibility projection"
-                            );
-                            aggregated.excluded_count += 1;
-                            None
-                        }
-                    })
+                    .map(SkillProviderEntry::into_validated)
                     .collect::<Vec<_>>();
                 let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
                 aggregated.excluded_count += minted.excluded_count;
@@ -451,36 +488,13 @@ async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills 
 }
 
 #[cfg(feature = "gateway")]
-fn provider_entry_to_validated(
-    skill: SkillProviderEntry,
-) -> Result<labby_runtime::skills::ValidatedSkill, labby_runtime::skills::SkillRejection> {
-    let meta = (!skill.descriptor.provider_metadata.is_empty())
-        .then_some(skill.descriptor.provider_metadata);
-    let entry = SkillEntry {
-        uri: skill.descriptor.id.source_id,
-        frontmatter: skill.author_metadata,
-        resources: Some(
-            skill
-                .resources
-                .into_iter()
-                .map(|resource| SkillResource {
-                    uri: resource.source_id,
-                    digest: resource.digest,
-                })
-                .collect(),
-        ),
-        meta,
-    };
-    validate_skill_entry(&entry)
-}
-
-#[cfg(feature = "gateway")]
 fn provider_error_to_tool(error: SkillProviderError) -> ToolError {
     let sdk_kind = match error {
         SkillProviderError::InvalidRequest { .. } | SkillProviderError::WrongProvider => {
             "invalid_param"
         }
         SkillProviderError::SkillNotFound | SkillProviderError::ResourceNotFound => "not_found",
+        SkillProviderError::ManifestStale => labby_runtime::skills::KIND_SKILL_MANIFEST_STALE,
         SkillProviderError::DeadlineExceeded => "timeout",
         SkillProviderError::LimitExceeded { .. } => "response_too_large",
         SkillProviderError::Integrity { .. } => labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH,
@@ -565,7 +579,7 @@ mod tests {
             .await
             .expect("read");
         assert_eq!(file.skill_uri, entry.uri);
-        assert_eq!(file.text, read_first_party_skill_file(&entry.uri).unwrap());
+        assert!(file.text.contains("name: using-labby"));
         let digest = entry
             .resources
             .as_ref()

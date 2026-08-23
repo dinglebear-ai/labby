@@ -4,10 +4,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use serde_json::{Map, Value};
 use thiserror::Error;
 
-use super::limits::{MAX_SKILL_RESOURCE_BYTES, MAX_SKILLS_PER_UPSTREAM, SKILLS_LIST_TIMEOUT};
+use super::limits::{MAX_SKILL_RESOURCE_BYTES, MAX_SKILLS_PER_UPSTREAM};
 use super::{SkillDescriptor, SkillId, SkillProviderId, ValidatedSkill};
 
 /// One provider-native resource bound to a Skill manifest.
@@ -27,16 +26,25 @@ pub struct SkillProviderResource {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillProviderEntry {
     pub descriptor: SkillDescriptor,
-    /// Author frontmatter preserved exactly after validation.
-    pub author_metadata: Map<String, Value>,
-    /// Complete validated resource manifest, without resource bodies.
-    pub resources: Vec<SkillProviderResource>,
+    /// Exact manifest accepted at the provider's validation boundary.
+    ///
+    /// This avoids reconstructing a wire entry from the compact projection,
+    /// which would lose distinctions such as an absent versus empty manifest.
+    validated: ValidatedSkill,
 }
 
 impl SkillProviderEntry {
     #[must_use]
-    pub fn from_validated(provider: SkillProviderId, skill: &ValidatedSkill) -> Self {
-        let resources = skill
+    pub fn from_validated(provider: SkillProviderId, skill: ValidatedSkill) -> Self {
+        Self {
+            descriptor: SkillDescriptor::from_validated_entry(provider, &skill),
+            validated: skill,
+        }
+    }
+
+    /// Iterate the validated resource manifest without retaining a second copy.
+    pub fn resources(&self) -> impl ExactSizeIterator<Item = SkillProviderResource> + '_ {
+        self.validated
             .entry
             .resources
             .as_deref()
@@ -47,12 +55,24 @@ impl SkillProviderEntry {
                 digest: resource.digest.clone(),
                 media_type: None,
             })
-            .collect();
-        Self {
-            descriptor: SkillDescriptor::from_validated_entry(provider, skill),
-            author_metadata: skill.entry.frontmatter.clone(),
-            resources,
-        }
+    }
+
+    /// Borrow the exact manifest already accepted by the provider.
+    #[must_use]
+    pub const fn validated(&self) -> &ValidatedSkill {
+        &self.validated
+    }
+
+    /// Consume this projection and recover its exact validated manifest.
+    #[must_use]
+    pub fn into_validated(self) -> ValidatedSkill {
+        self.validated
+    }
+
+    /// Whether this entry may be offered by discovery or exact lookup.
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.descriptor.availability.available
     }
 }
 
@@ -79,7 +99,10 @@ impl SkillProviderDeadline {
 impl Default for SkillProviderDeadline {
     fn default() -> Self {
         Self {
-            timeout: SKILLS_LIST_TIMEOUT,
+            // A provider default is intentionally unbounded at this neutral
+            // seam. Transport adapters clamp it to their configured operation
+            // timeout; callers can still supply a smaller explicit budget.
+            timeout: Duration::MAX,
         }
     }
 }
@@ -244,6 +267,8 @@ pub enum SkillProviderError {
     SkillNotFound,
     #[error("skill resource was not found or is not present in the manifest")]
     ResourceNotFound,
+    #[error("skill resource manifest is stale or ambiguous")]
+    ManifestStale,
     #[error("skill provider operation exceeded its deadline")]
     DeadlineExceeded,
     #[error("skill provider exceeded the `{what}` limit of {limit}")]
@@ -323,7 +348,10 @@ pub trait SkillProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::SkillProviderKind;
+    use crate::skills::{
+        ResourceDigest, SkillEntry, SkillProviderKind, SkillResource, validate_skill_entry,
+    };
+    use serde_json::json;
 
     #[test]
     fn discovery_defaults_are_hard_bounded() {
@@ -388,5 +416,32 @@ mod tests {
     fn provider_contract_is_object_safe() {
         fn accepts_provider(_: &dyn SkillProvider) {}
         let _ = accepts_provider;
+    }
+
+    #[test]
+    fn projection_recovers_the_exact_validated_manifest() {
+        let uri = "skill://catalog/review/SKILL.md";
+        let entry = SkillEntry {
+            uri: uri.to_string(),
+            frontmatter: json!({"name": "review", "description": "demo"})
+                .as_object()
+                .expect("object")
+                .clone(),
+            resources: Some(vec![SkillResource {
+                uri: uri.to_string(),
+                digest: ResourceDigest::of_bytes(b"manifest").to_wire(),
+            }]),
+            // `Some(empty)` is intentionally distinct from absent provider
+            // metadata and used to be collapsed by descriptor reconstruction.
+            meta: Some(serde_json::Map::new()),
+        };
+        let validated = validate_skill_entry(&entry).expect("validated skill");
+        let projection = SkillProviderEntry::from_validated(
+            SkillProviderId::new(SkillProviderKind::McpUpstream, "catalog"),
+            validated.clone(),
+        );
+
+        assert_eq!(projection.validated(), &validated);
+        assert_eq!(projection.into_validated(), validated);
     }
 }

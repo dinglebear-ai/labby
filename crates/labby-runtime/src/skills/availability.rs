@@ -76,6 +76,15 @@ pub struct SkillAvailabilitySummary {
 }
 
 impl SkillAvailabilitySummary {
+    /// A validated Skill with no additional compatibility requirements.
+    #[must_use]
+    pub const fn available() -> Self {
+        Self {
+            available: true,
+            items: Vec::new(),
+        }
+    }
+
     /// Build a summary and fail closed when any item blocks availability.
     #[must_use]
     pub fn from_items(items: impl IntoIterator<Item = SkillCompatibilityItem>) -> Self {

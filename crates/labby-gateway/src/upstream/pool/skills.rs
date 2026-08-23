@@ -26,10 +26,30 @@ use super::entries::{log_exposure_filter, resolve_request_skill_exposure_policy}
 use super::skills_cache::{CachedSkills, evict};
 use std::time::Instant;
 
-use super::capability_call::timed_capability_call_str;
+use super::capability_call::{CapabilityCallError, timed_capability_call};
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
 use super::skills_exposure::SkillExposureDecision;
 use super::skills_list::{UpstreamSkills, peer_declares_skills};
+
+/// Estimate the retained payload without serializing the complete response
+/// into a second buffer. The caller-specific body cap is checked first so an
+/// oversized skill body is rejected before the streaming JSON-size pass.
+fn skill_read_response_size(result: &rmcp::model::ReadResourceResult, content_cap: usize) -> usize {
+    let body_exceeds_cap = result.contents.iter().any(|content| match content {
+        rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+            text.len() > content_cap
+        }
+        rmcp::model::ResourceContents::BlobResourceContents { blob, .. } => {
+            blob.len() > content_cap
+        }
+        _ => false,
+    });
+    if body_exceeds_cap {
+        usize::MAX
+    } else {
+        super::helpers::estimate_resource_response_size(result)
+    }
+}
 
 /// One upstream's exposed skills, plus the completeness bookkeeping a caller
 /// needs to report honestly.
@@ -158,7 +178,7 @@ impl UpstreamPool {
             .skills
             .iter()
             .map(|skill| OperatorSkill {
-                descriptor: SkillDescriptor::from_validated_sep(provider.clone(), skill),
+                descriptor: SkillDescriptor::from_validated_entry(provider.clone(), skill),
                 exposure: SkillExposureDecision::evaluate(&policy, &skill.name),
             })
             .collect();
@@ -595,14 +615,14 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::skill(&config.name, redacted, subject.is_some());
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        let contents = timed_capability_call_str(
+        let contents = timed_capability_call(
             self,
             &config.name,
             super::super::types::UpstreamCapability::Skills,
             event,
             start,
             peer.read_resource(rmcp::model::ReadResourceRequestParams::new(upstream_uri)),
-            |result| serde_json::to_vec(result).map_or(usize::MAX, |bytes| bytes.len()),
+            |result| skill_read_response_size(result, max_bytes.unwrap_or(usize::MAX)),
             subject,
             |error| format!("upstream `{}` skill read failed: {error}", config.name),
             format!(
@@ -611,26 +631,31 @@ impl UpstreamPool {
             ),
         )
         .await
-        .map_err(|message| ToolError::Sdk {
-            sdk_kind: "upstream_error".to_string(),
-            message,
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: if matches!(&error, CapabilityCallError::ResponseTooLarge { .. }) {
+                "response_too_large"
+            } else {
+                "upstream_error"
+            }
+            .to_string(),
+            message: error.to_string(),
         })?;
 
         // Exactly one content block: the digest model is one URI to one blob.
-        let [content] = contents.contents.as_slice() else {
+        let content_count = contents.contents.len();
+        let Ok([content]) = <[_; 1]>::try_from(contents.contents) else {
             return Err(ToolError::Sdk {
                 sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
                 message: format!(
                     "upstream `{}` returned {} content blocks for one skill file",
-                    config.name,
-                    contents.contents.len()
+                    config.name, content_count
                 ),
             });
         };
         let (text, mime_type) = match content {
             rmcp::model::ResourceContents::TextResourceContents {
                 text, mime_type, ..
-            } => (text, mime_type.clone()),
+            } => (text, mime_type),
             // Anything else — a blob today, a new variant tomorrow — cannot be
             // digest-verified as text, so it is refused rather than relayed.
             _ => {
@@ -703,10 +728,7 @@ impl UpstreamPool {
             )?;
         }
 
-        Ok(VerifiedSkillFile {
-            text: text.clone(),
-            mime_type,
-        })
+        Ok(VerifiedSkillFile { text, mime_type })
     }
 }
 
@@ -721,4 +743,40 @@ fn is_skill_md(entry_uri: &str, upstream_path: &str) -> bool {
     // every skill, which disabled the frontmatter cross-check entirely — a
     // security check that fails open by never firing.
     parse_skill_resource_uri(entry_uri).is_ok_and(|parsed| parsed.to_uri() == upstream_path)
+}
+
+#[cfg(test)]
+mod provider_response_tests {
+    use super::*;
+
+    #[test]
+    fn response_sizing_rejects_content_over_the_caller_cap_without_serializing() {
+        let result =
+            rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(
+                "12345",
+                "skill://demo/SKILL.md",
+            )]);
+        assert_eq!(skill_read_response_size(&result, 4), usize::MAX);
+    }
+
+    #[test]
+    fn response_sizing_streams_the_exact_escape_heavy_serialized_size() {
+        let mut result =
+            rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(
+                "\"\\\n\r\t".repeat(64),
+                "skill://demo/SKILL.md",
+            )]);
+        result.meta = Some(
+            serde_json::from_value(serde_json::json!({
+                "nested": { "payload": "\"\\\n\r\t".repeat(64) }
+            }))
+            .unwrap(),
+        );
+        let serialized_len = serde_json::to_vec(&result).unwrap().len();
+        assert_eq!(
+            skill_read_response_size(&result, usize::MAX),
+            serialized_len
+        );
+        assert!(serialized_len > 1_000, "escape expansion must be counted");
+    }
 }
