@@ -1696,6 +1696,13 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
             services::auth_admin::routes(state.clone()),
         );
 
+    if state.oauth_state.is_some() {
+        v1 = v1.nest(
+            "/access/bootstrap-owner",
+            services::access_bootstrap::routes(state.clone()),
+        );
+    }
+
     #[cfg(feature = "fs")]
     if state
         .registry
@@ -3258,6 +3265,211 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_requires_browser_csrf() {
+        let auth_state = test_lab_auth_state().await;
+        let session = seed_browser_session(&auth_state).await;
+        let mut config = labby_auth::config::AuthConfig::default();
+        config.admin_email = "browser@example.com".into();
+        let app = build_router(
+            AppState::new().with_auth_config(config),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{}={}",
+                            labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                            session.session_id
+                        ),
+                    )
+                    .body(Body::from(
+                        r#"{"organization_name":"Local","project_name":"Default"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_maps_json_rejection_to_canonical_no_store_error() {
+        let auth_state = test_lab_auth_state().await;
+        let session = seed_browser_session(&auth_state).await;
+        let mut config = labby_auth::config::AuthConfig::default();
+        config.admin_email = "browser@example.com".into();
+        let app = build_router(
+            AppState::new().with_auth_config(config),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{}={}",
+                            labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                            session.session_id
+                        ),
+                    )
+                    .header(labby_auth::session::BROWSER_CSRF_HEADER_NAME, "csrf-123")
+                    .body(Body::from(
+                        r#"{"organization_name":"Local","project_name":"Default","subject":"forged"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["contract_version"], 1);
+        assert_eq!(json["kind"], "validation_failed");
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_creates_then_returns_idempotent_success() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let auth_state = test_lab_auth_state().await;
+        let session = seed_browser_session(&auth_state).await;
+        let mut config = labby_auth::config::AuthConfig::default();
+        config.admin_email = "browser@example.com".into();
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(config)
+                .with_access_bootstrap_path_for_test(directory.path().join("access.db")),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/v1/access/bootstrap-owner")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "{}={}",
+                        labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                        session.session_id
+                    ),
+                )
+                .header(labby_auth::session::BROWSER_CSRF_HEADER_NAME, "csrf-123")
+                .body(Body::from(
+                    r#"{"organization_name":"Local","project_name":"Default"}"#,
+                ))
+                .unwrap()
+        };
+
+        for (expected_status, expected_outcome) in [
+            (StatusCode::CREATED, "created"),
+            (StatusCode::OK, "already_applied"),
+        ] {
+            let response = app.clone().oneshot(request()).await.unwrap();
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "private, no-store"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["status"], expected_outcome);
+        }
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_rejects_bearer_and_is_absent_without_oauth() {
+        let auth_state = test_lab_auth_state().await;
+        let token = issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:admin");
+        let mut config = labby_auth::config::AuthConfig::default();
+        config.admin_email = "browser@example.com".into();
+        let authenticated = build_router(
+            AppState::new().with_auth_config(config),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let body = r#"{"organization_name":"Local","project_name":"Default"}"#;
+        let bearer = authenticated
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bearer.status(), StatusCode::FORBIDDEN);
+
+        let loopback = build_router(AppState::new(), None, None, None, &[])
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::HOST, "127.0.0.1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(loopback.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_is_absent_without_oauth_before_body_validation() {
+        let response = build_router(AppState::new(), None, None, None, &[])
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"organization_name":"Local","project_name":"Default","email":"owner@example.com","subject":"forged"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

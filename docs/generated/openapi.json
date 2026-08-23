@@ -58,6 +58,109 @@
         }
       }
     },
+    "/v1/access/bootstrap-owner": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Explicitly bootstrap the access-control owner",
+        "description": "OAuth-browser-only, one-time owner bootstrap. The /v1 middleware must supply an authenticated browser session, valid CSRF token, and canonical VerifiedIdentity; the handler additionally requires lab:admin and an email matching LABBY_AUTH_ADMIN_EMAIL. Bearer automation, MCP, CLI, stdio, local credentials, and loopback origin do not bypass these gates. Success reveals only created or already_applied and responses are private, no-store.",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "description": "CSRF token issued with the authenticated browser session.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessBootstrapOwnerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Bootstrap was already applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessBootstrapOwnerResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Bootstrap created the owner state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessBootstrapOwnerResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Browser session is missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser-admin identity gate failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Route is not mounted when OAuth browser mode is unavailable"
+          },
+          "409": {
+            "description": "Bootstrap conflicts with existing state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "CSRF, JSON body, Organization name, or Project name is invalid; CSRF rejection uses the auth middleware error envelope"
+          },
+          "503": {
+            "description": "Access store is busy, unavailable, or failed integrity validation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ]
+      }
+    },
     "/v1/apps/manifest": {
       "get": {
         "tags": [
@@ -1666,6 +1769,36 @@
   },
   "components": {
     "schemas": {
+      "AccessBootstrapOwnerRequest": {
+        "type": "object",
+        "required": [
+          "organization_name",
+          "project_name"
+        ],
+        "properties": {
+          "organization_name": {
+            "type": "string",
+            "description": "Display name for the reserved local Organization (1-128 bytes after trimming)."
+          },
+          "project_name": {
+            "type": "string",
+            "description": "Display name for the reserved default Project (1-128 bytes after trimming)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AccessBootstrapOwnerResponse": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Redacted outcome: `created` or `already_applied`."
+          }
+        }
+      },
       "ActionRequest": {
         "type": "object",
         "description": "Shared request type for all service action dispatchers.\n\nEvery service handler deserializes `POST /v1/<service>` bodies into this\nstruct and forwards `action` + `params` to the corresponding dispatch\nfunction, keeping HTTP and MCP input semantics aligned while each transport\nowns its response envelope.",
@@ -4013,6 +4146,11 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "token"
+      },
+      "browser_session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "lab_session"
       }
     }
   }

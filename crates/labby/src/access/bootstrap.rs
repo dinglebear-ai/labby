@@ -9,6 +9,7 @@ pub(super) const PROJECT_ID: &str = "bootstrap-default";
 pub(super) const LINK_ID: &str = "bootstrap-owner-link";
 pub(super) const MEMBERSHIP_ID: &str = "bootstrap-owner-membership";
 pub(super) const AUDIT_ID: &str = "bootstrap-owner-audit";
+const MAX_DISPLAY_NAME_LENGTH: usize = 128;
 
 #[derive(Clone, Debug)]
 pub(crate) struct BootstrapOwnerInput {
@@ -23,9 +24,9 @@ impl BootstrapOwnerInput {
         organization_name: impl Into<String>,
         project_name: impl Into<String>,
     ) -> AccessStoreResult<Self> {
-        let organization_name = organization_name.into();
-        let project_name = project_name.into();
-        if organization_name.trim().is_empty() || project_name.trim().is_empty() {
+        let organization_name = organization_name.into().trim().to_owned();
+        let project_name = project_name.into().trim().to_owned();
+        if !valid_display_name(&organization_name) || !valid_display_name(&project_name) {
             return Err(AccessStoreError::InvalidBootstrapInput);
         }
         Ok(Self {
@@ -34,6 +35,12 @@ impl BootstrapOwnerInput {
             project_name,
         })
     }
+}
+
+fn valid_display_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_DISPLAY_NAME_LENGTH
+        && !value.chars().any(char::is_control)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +142,31 @@ mod tests {
 
     fn input(identity: VerifiedIdentity) -> BootstrapOwnerInput {
         BootstrapOwnerInput::new(identity, "Local", "Default").unwrap()
+    }
+
+    #[test]
+    fn owner_names_are_normalized_and_validated_at_the_domain_boundary() {
+        let identity = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "static-bearer:primary",
+        )
+        .unwrap();
+        let normalized = BootstrapOwnerInput::new(identity.clone(), " Local ", " Default ")
+            .expect("valid names");
+        assert_eq!(normalized.organization_name, "Local");
+        assert_eq!(normalized.project_name, "Default");
+        assert!(matches!(
+            BootstrapOwnerInput::new(identity.clone(), "", "Default"),
+            Err(AccessStoreError::InvalidBootstrapInput)
+        ));
+        assert!(matches!(
+            BootstrapOwnerInput::new(identity.clone(), "Local", "bad\nname"),
+            Err(AccessStoreError::InvalidBootstrapInput)
+        ));
+        assert!(matches!(
+            BootstrapOwnerInput::new(identity, "Local", "x".repeat(129)),
+            Err(AccessStoreError::InvalidBootstrapInput)
+        ));
     }
 
     #[tokio::test]

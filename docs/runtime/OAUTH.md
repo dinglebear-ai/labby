@@ -474,6 +474,23 @@ Browser-session introspection semantics:
   coordination remain structured 5xx responses instead of collapsing into
   `authenticated: false`
 
+### Access owner bootstrap
+
+`POST /v1/access/bootstrap-owner` is mounted only when OAuth browser state is
+configured and is stricter than ordinary `/v1` routes. It accepts only an OAuth browser session with a matching `X-CSRF-Token`,
+middleware-derived canonical `VerifiedIdentity`, `lab:admin`, and an
+authenticated email equal to `LABBY_AUTH_ADMIN_EMAIL`. The email is the
+eligibility gate for this initial operation; the durable Principal link uses
+the verified provider issuer and subject.
+
+Bearer authentication, static/local credentials, MCP, CLI, stdio, and loopback
+origin do not substitute for those requirements. Success returns only
+`{"status":"created"}` or `{"status":"already_applied"}` with
+`Cache-Control: private, no-store`; handler failures use the canonical agent error
+envelope, while authentication and CSRF failures retain the shared auth-middleware
+envelope. Without OAuth browser state, the route is absent and returns `404`
+before body validation. See [Access Owner Bootstrap](../services/ACCESS.md).
+
 Allowlist removal is an immediate revocation boundary for renewable browser
 and upstream credentials. `DELETE /v1/auth/allowed-emails/{email}` resolves
 every subject associated with the email, then atomically removes the allowlist
