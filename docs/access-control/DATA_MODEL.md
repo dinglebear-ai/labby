@@ -11,7 +11,7 @@ status: "design"
 
 The preferred v1 implementation is a dedicated SQLite-backed AccessStore owned by the shared access-control layer. It should follow Labby's existing SQLite durability/migration conventions while remaining logically separate from OAuth tokens/sessions and Artifact payload storage.
 
-The exact on-disk filename/path is an implementation detail and must follow Labby's configured state directory rather than a new hard-coded location.
+The Milestone 1 database is `access.db` under Labby's configured state directory (`LABBY_HOME`, otherwise `$HOME/.labby`). The resolver must produce an absolute path; absence of a usable configured/home state root fails explicitly rather than falling back to a relative working-directory database. The initial secure opener may create the final state-directory leaf with mode `0700`, but its parent must already exist and pass symlink-safety checks; recursively creating missing ancestors is deferred until it has a descriptor-relative implementation.
 
 SQLite foreign keys MUST be enabled. Mutations that change policy and the corresponding policy-epoch increment MUST commit atomically in one transaction.
 
@@ -19,7 +19,9 @@ No table defined here stores raw passwords, OAuth refresh tokens, upstream API k
 
 ### AccessStore security and durability profile
 
-AccessStore is authorization-critical, not best-effort telemetry. Its implementation contract includes owner-only database/WAL/SHM permissions, symlink-safe creation, a deliberately selected WAL/synchronous policy, a bounded pool and busy timeout, foreign-key verification on every connection, serialized versioned migrations, startup integrity and tenant checks, WAL-consistent backup/restore, and explicit disk-full/locked/corrupt/read-only/newer-schema behavior. Any unavailable or unsafe state fails closed as service-unavailable/setup-required; compatibility-owner fallback is forbidden after enforcement.
+AccessStore is authorization-critical, not best-effort telemetry. Its implementation contract includes an owner-only state directory and database/WAL/SHM files, symlink- and hardlink-safe creation, WAL with `synchronous=FULL`, a five-second busy timeout, foreign-key verification, serialized versioned migrations, startup integrity and tenant checks, WAL-consistent backup/restore, and explicit disk-full/locked/corrupt/read-only/newer-schema behavior. Owner-only permissions must be established before schema or policy data is written. Any unavailable or unsafe state fails closed as service-unavailable/setup-required; compatibility-owner fallback is forbidden after enforcement.
+
+The initial Milestone 1 implementation deliberately owns one mutex-serialized SQLite connection. This is the bounded concurrency model for the first correctness baseline, not an implicit connection pool. A multi-connection pool is deferred until measured contention requires it and must preserve one-transaction snapshots, per-connection foreign keys/pragmas, migration serialization, and the same failure contract.
 
 Policy mutations and their mandatory audit event commit in the same SQLite transaction. Authorization reads use one read transaction and bounded set-based snapshot queries.
 
@@ -43,15 +45,11 @@ Artifact IDs/revision IDs remain owned by the Artifact subsystem and are stored 
 
 ## Core tables
 
-### schema_metadata
+### access_metadata
 
-Tracks AccessStore schema version and migration state.
+This STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, and `updated_at` columns. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
 
-Required fields:
-
-- schema_version;
-- migrated_at;
-- application_version when available.
+Bootstrap generation/fingerprint, migration time, and application version require a future schema migration when their owning workflows land; v1 does not expose an open-ended key/value metadata surface.
 
 Unknown/newer schema versions fail closed.
 
@@ -68,34 +66,37 @@ Fields:
 
 Authorization never keys on display_name.
 
-### external_identities
+### principal_links
 
 Fields:
 
-- identity_id primary key;
+- link_id primary key;
 - principal_id foreign key;
-- issuer;
-- subject;
-- verified_email optional metadata;
+- link_kind: external or local_credential;
+- issuer and subject for an external link;
+- credential_id for a local-credential link;
+- status: active or revoked;
+- verification_generation and link_generation;
 - created_at;
-- last_seen_at optional.
-- canonical authority kind and canonical issuer;
-- stable provider subject or stable local credential ID, exactly one according to identity kind;
-- authenticator/link generation; and
-- status/revoked_at.
+- updated_at.
 
 Constraints:
 
 - unique issuer + subject;
+- unique credential_id for local credentials;
 - each identity maps to exactly one Principal;
 - deleting a Principal must not leave a usable orphan identity.
 - transport sentinel issuers such as `browser-session` and `local` are not canonical provider issuers;
 - subject-only and email-only linking are forbidden; and
 - relinking requires an explicit audited compare-and-set mutation.
 
+Verified email, last-seen time, and explicit revocation time are optional future metadata. They are not authorization keys and are not columns in the Milestone 1 v1 schema.
+
 ### Milestone 1 schema subset
 
-Milestone 1 persists only principals, external identities, organizations, projects, direct Principal Project memberships with code-owned fixed roles, a Project-to-existing-named-Loadout relation, schema/bootstrap metadata, and mandatory mutation audit rows. Groups, custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, and runtime bindings are later migrations.
+Milestone 1 schema v1 contains exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and references one existing named Loadout. The metadata table carries schema identity and the singleton global AccessStore revision.
+
+Groups, custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, runtime bindings, and their tables are broader future design and require later versioned migrations.
 
 ### organizations
 

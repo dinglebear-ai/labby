@@ -118,7 +118,7 @@ Mitigations:
 
 ### T7: Role/grant escalation by assignment administration
 
-Attack: a Project Maintainer assigns a privileged runtime capability and believes assignment itself grants execution.
+Attack: a Project Owner or Admin assigns a privileged runtime capability and believes assignment itself grants execution.
 
 Mitigations:
 

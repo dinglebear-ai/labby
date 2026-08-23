@@ -56,7 +56,7 @@ Milestone 1 proves the smallest security boundary end to end:
 
 - one canonical verified human identity maps browser and OAuth bearer authentication to the same Principal;
 - static bearer and Unix credentials map only to explicit bootstrap/service Principals;
-- one Organization contains Projects with direct Principal memberships and code-owned fixed roles;
+- one Organization contains Projects with direct Principal memberships and exactly the code-owned Project roles Owner, Admin, Member, and Viewer;
 - one Project selects one existing named `GatewayLoadoutConfig`;
 - the server binds one authenticated MCP session/request context to one Project;
 - discovery intersects the existing route/Loadout scope with Project membership; and

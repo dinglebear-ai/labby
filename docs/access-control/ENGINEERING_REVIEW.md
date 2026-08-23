@@ -29,7 +29,7 @@ Findings applied:
 
 ## Simplicity
 
-The complete initiative is no longer treated as one release. Milestone 1 uses direct Principal Project membership, code-owned fixed roles, one existing named Loadout, MCP discovery filtering, and direct reauthorization. Groups, Grants, Assignment precedence, overlays, federation, persistent explanation, and caching are later milestones. `labby-access` is an extraction target, not a precommitted public API.
+The complete initiative is no longer treated as one release. Milestone 1 uses direct Principal Project membership, the fixed Project roles Owner/Admin/Member/Viewer, one existing named Loadout, MCP discovery filtering, and direct reauthorization. Project Owner is Project-scoped in this kernel and is not Organization Owner or a projection of `lab:admin`. Groups, custom Roles/Grants, Assignment precedence, overlays, federation, persistent explanation, and caching are later milestones. `labby-access` is an extraction target, not a precommitted public API.
 
 ## Security
 

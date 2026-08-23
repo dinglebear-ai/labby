@@ -210,9 +210,13 @@ Later roadmap domain work:
 
 ### Phase 2: AccessStore persistence
 
-- [ ] SQLite migrations.
-- [ ] foreign key/transaction policy.
-- [ ] identity uniqueness.
+Wave 2's private persistence kernel is implemented. It provides the exact eight-table schema (`access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`), a singleton global AccessStore revision, an absolute configured-state `access.db` path, owner-only symlink/hardlink-safe storage, one mutex-serialized SQLite connection, exact schema-identity validation, and fail-closed typed storage errors. It is not yet wired into AppState, setup/doctor, bootstrap, mutations, or transport enforcement.
+
+- [x] Exact schema-v1 SQLite migration and canonical reopen validation.
+- [x] Composite tenant foreign keys and authorization-grade connection profile.
+- [x] Canonical external/local identity shape and global uniqueness.
+- [x] Secure absolute path, owner-only creation, NOFOLLOW, hardlink/sidecar checks, and integrity validation.
+- [x] Singleton global revision initialized for later transactional mutations.
 - [ ] memberships/Roles/Grants with scope validation.
 - [ ] Artifact authority/publisher policy persistence.
 - [ ] Assignments/relations + Artifact Assignment distribution persistence.

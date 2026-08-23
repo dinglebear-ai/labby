@@ -28,7 +28,7 @@ The numbered phases below are the complete initiative roadmap, not one release. 
 
 ### Milestone 1: Project-bound MCP isolation
 
-Implement only principals, external identities, Organizations, Projects, direct Principal membership with code-owned fixed roles, and Project-to-existing-named-Loadout selection. Start in a private surface-neutral `crates/labby/src/access/` module; extract `labby-access` only after a second consumer or an architecture/dependency test proves the need.
+Implement only principals, external identities, Organizations, Projects, direct Principal membership with the code-owned Project roles Owner/Admin/Member/Viewer, and Project-to-existing-named-Loadout selection. Project Owner is Project-scoped and does not imply Organization Owner. Start in a private surface-neutral `crates/labby/src/access/` module; extract `labby-access` only after a second consumer or an architecture/dependency test proves the need.
 
 Bind each MCP request/session to a server-owned `BoundAccessContext`; intersect discovery with the existing route/Loadout scope; repeat an uncached authorization read at final direct dispatch. Include reconnect, tasks, pagination, Code Mode, MCP Apps, in-process, stdio/Unix, and revoke/check/dispatch race tests. Ship shadowed/opt-in only.
 
@@ -167,7 +167,7 @@ Add restart/durability tests and migration-from-empty tests.
 
 ### Green
 
-Implement AccessStore and versioned migrations.
+Implement AccessStore and versioned migrations, beginning with one mutex-serialized SQLite connection. Do not introduce a multi-connection pool until contention evidence justifies it and snapshot/pragmas/failure behavior are re-proven.
 
 Use transactions for policy mutation + epoch increment. Add indexes only after correctness queries exist, then verify query plans where useful.
 

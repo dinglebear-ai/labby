@@ -120,9 +120,13 @@ secret.use and runtime_binding.use are both required where a runtime binding poi
 
 ## Built-in role templates
 
-Milestone 1 supports fixed owner/admin/member/viewer templates only. Custom Roles, arbitrary Grants, Group-derived roles, temporal memberships, and distribution permissions are later migrations.
+Milestone 1 supports exactly four code-owned Project roles: `owner`, `admin`, `member`, and `viewer`. Custom Roles, arbitrary Grants, Group-derived roles, temporal memberships, and distribution permissions are later migrations.
+
+In this narrow kernel, Project Owner is a Project-scoped role. It is distinct from the future Organization Owner template and does not grant Organization-wide authority. Project Owner and Project Admin currently expand to the same Milestone 1 permissions (`project.read`, `project.manage`, `asset.discover`, and `asset.use`); retaining a separate Owner value preserves the explicit bootstrap/ownership distinction without making transport scope such as `lab:admin` authoritative. Project Member receives `project.read`, `asset.discover`, and `asset.use`; Project Viewer receives `project.read` and `asset.discover`.
 
 Built-in roles are bootstrap templates. Organizations may eventually define custom roles from the same permission registry.
+
+The detailed templates below describe the broader eventual permission registry. During Milestone 1, the four Project roles remain limited to the four-permission expansion stated above; later permission names do not silently become effective merely because they appear in these templates.
 
 ### Organization Owner
 
@@ -152,6 +156,10 @@ Typical permissions:
 
 Organizations MAY split identity/security administration from ordinary organization administration rather than granting every item above.
 
+### Project Owner
+
+For Milestone 1, Project Owner is Project-scoped and has the same fixed permission expansion as Project Admin. It does not imply Organization Owner and cannot be inferred from an OAuth scope or static credential.
+
 ### Project Admin
 
 Typical Project-scoped permissions:
@@ -167,17 +175,6 @@ Typical Project-scoped permissions:
 - audit.read for that Project where desired.
 
 Project Admin does not automatically get organization.manage, group.manage, gateway.manage outside the Project, secret.manage, artifact.export, or artifact.reshare.
-
-### Project Maintainer
-
-Typical permissions:
-
-- project.read;
-- asset.discover/use/create/update/assign/unassign within Project;
-- artifact.use/sync/follow/fork where allowed;
-- loadout.activate/manage;
-- gateway.read;
-- runtime_binding.use.
 
 ### Project Member
 
@@ -201,6 +198,8 @@ Typical permissions:
 - gateway.read where non-sensitive.
 
 Viewer does not imply asset.use.
+
+A Maintainer template may be reconsidered with the later custom-role/expanded-permission milestone. It is not a persisted or runtime role in the Milestone 1 kernel.
 
 ## Scope applicability
 
