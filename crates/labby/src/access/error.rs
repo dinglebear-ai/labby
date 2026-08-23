@@ -32,6 +32,10 @@ pub(crate) enum AccessStoreError {
     IdentityUnavailable,
     #[error("project access is unavailable")]
     ProjectAccessUnavailable,
+    #[error("project loadout assignment input is invalid")]
+    InvalidProjectLoadoutInput,
+    #[error("project already has a different loadout assignment")]
+    ProjectLoadoutConflict,
     #[error("access store contains malformed vocabulary")]
     MalformedVocabulary,
     #[error("access store is unavailable: {0}")]

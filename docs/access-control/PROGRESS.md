@@ -219,15 +219,16 @@ Wave 2's private persistence kernel and Wave 3's store-only explicit owner boots
 - [x] Singleton global revision initialized for later transactional mutations.
 - [x] Explicit one-time owner bootstrap transaction with canonical identity link, default Project owner membership, audit record, compare-and-set metadata, restart idempotence, and concurrent-writer safety.
 - [x] Reserved bootstrap-record integrity that permits later legitimate store growth and rejects partial reserved state.
+- [x] Audited Project Loadout compatibility assignment with exact identity re-resolution, `project.manage`, same-Organization qualification, no-write idempotence, conflict detection, and atomic global/Organization/Project revision advancement.
 - [ ] memberships/Roles/Grants with scope validation.
 - [ ] Artifact authority/publisher policy persistence.
 - [ ] Assignments/relations + Artifact Assignment distribution persistence.
-- [ ] policy epochs.
+- [ ] general policy-epoch mutation coverage; Project Loadout assignment already advances the global, owning Organization, and Project revisions atomically.
 - [ ] runtime binding metadata.
 - [ ] destinations/mirror state.
 - [x] bootstrap restart/concurrency/rollback and v1 migration safety tests.
 
-The bootstrap facade remains crate-private and is not called by product startup. One narrow `POST /v1/access/bootstrap-owner` adapter is mounted only with OAuth browser state and invokes it only after browser session, CSRF, middleware-derived `VerifiedIdentity`, `lab:admin`, and configured-admin-email gates. It returns only `created` or `already_applied`, uses canonical agent errors, and has no MCP/CLI/stdio/bearer/loopback bypass; without OAuth the route is absent and returns `404` before body validation. Doctor `access.check` and `audit.full`, plus setup check/repair reports, project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. The stale AppState-only ownership assumption is superseded: AccessStore owns its connection/transaction boundary, and future application/runtime state may carry a cloneable store handle without owning policy semantics. General mutations and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap/health kernel exists.
+The bootstrap facade remains crate-private and is not called by product startup. One narrow `POST /v1/access/bootstrap-owner` adapter is mounted only with OAuth browser state and invokes it only after browser session, CSRF, middleware-derived `VerifiedIdentity`, `lab:admin`, and configured-admin-email gates. It returns only `created` or `already_applied`, uses canonical agent errors, and has no MCP/CLI/stdio/bearer/loopback bypass; without OAuth the route is absent and returns `404` before body validation. Doctor `access.check` and `audit.full`, plus setup check/repair reports, project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. The stale AppState-only ownership assumption is superseded: AccessStore owns its connection/transaction boundary, and future application/runtime state may carry a cloneable store handle without owning policy semantics. The Loadout assignment is currently a crate-private store operation whose caller must first validate the canonical name through `GatewayManager::loadout_get`; no API, CLI, MCP, or automatic compatibility projection invokes it. Broader mutations and transport enforcement remain unimplemented, so access control is not active merely because the store/bootstrap/health kernel exists.
 
 ### Phase 3: AuthContext identity integration
 
@@ -262,9 +263,10 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 - [x] **Wave 6:** coherent AccessStore snapshot read from canonical `VerifiedIdentity` plus explicit Project ID through active Principal, same-Organization Project membership, fixed role, and Project Loadout, all at one store revision in one read transaction. Focused read tests cover transport convergence, exact local identity, inactive and malformed facts, cross-Organization isolation, deterministic listing, missing Loadouts, selection, revision, and restart.
 - [x] **Wave 7 core:** process-scoped `AccessRuntime` lifecycle with observational startup, typed setup/blocked states, exact-current non-migrating store open, cancellation-safe serialized explicit bootstrap, and atomic promotion to Ready.
 - [x] **Wave 8 ownership:** one `AccessRuntime` allocation is created after the live-daemon bridge early return and shared by hosted AppState, HTTP/Unix root and protected MCP handlers, and standalone stdio. The owner-bootstrap endpoint now mutates through that live runtime; delegated in-process peers are explicitly non-authoritative.
+- [x] **Wave 9 store mutation:** explicit Project Loadout assignment re-resolves identity and direct Project membership in one immediate transaction, requires the fixed-role `project.manage` permission, advances global/Organization/Project revisions, and commits redacted audit evidence atomically. Exact replay is a zero-write success and a different existing mapping conflicts.
 - [ ] ResolutionInput gateway facts.
 - [ ] Artifact authority/publisher/Assignment distribution policy facts.
-- [ ] current Gateway Loadout adapter; Wave 6 reads only the persisted Project Loadout name and does not yet compile or enforce gateway exposure.
+- [ ] current Gateway Loadout validation adapter; Wave 9 records only a caller-validated canonical name, while `GatewayManager::loadout_get` remains the desired-config authority and is not yet composed into a product action.
 - [ ] filtered workspace output.
 - [ ] exact Project + policy epoch/catalog generation cache key.
 - [ ] stale-cache invalidation tests.

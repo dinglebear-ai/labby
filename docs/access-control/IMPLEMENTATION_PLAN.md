@@ -225,6 +225,12 @@ Listing returns only active same-Organization direct memberships and includes an
 
 Wave 8 attaches exactly one runtime allocation, after the live-daemon bridge early return, to hosted AppState, standalone stdio, and every root or protected HTTP/Unix MCP handler. The authenticated owner-bootstrap endpoint uses this owner rather than reopening persistence per request. Delegated in-process built-in peers receive an explicit blocked non-authoritative runtime because policy decisions belong at the root boundary. Path-resolution failure remains a redacted blocked runtime while enforcement is disabled, preserving existing serve availability. This ownership wiring still does not bind a Project, filter discovery, authorize dispatch, or enable enforcement.
 
+### Wave 9: audited Project Loadout compatibility assignment
+
+The crate-private AccessStore mutation accepts an exact `VerifiedIdentity`, Project ID, and canonical Loadout name that the caller has already validated against desired gateway configuration. In one immediate transaction it re-resolves the active Principal, requires an active same-Organization Project and direct membership with `project.manage`, inserts the sole Project Loadout mapping, advances the global revision plus owning Organization and Project policy epochs, and writes redacted audit evidence. Exact replay returns `AlreadyApplied` without writes; a different existing mapping returns a conflict; inaccessible Projects are non-enumerating.
+
+This wave intentionally does not read gateway state inside AccessStore. The next composition adapter must call `GatewayManager::loadout_get` before the mutation and must not create grants, route exposure, or transport actions as a side effect. Discovery filtering and dispatch authorization remain later gates.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

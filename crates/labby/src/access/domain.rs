@@ -29,6 +29,7 @@ opaque_id!(ProjectId);
 pub(super) enum DomainError {
     EmptyId,
     EmptyLoadoutName,
+    InvalidLoadoutName,
     OrganizationMismatch,
 }
 
@@ -37,12 +38,26 @@ impl fmt::Display for DomainError {
         formatter.write_str(match self {
             Self::EmptyId => "identifier must not be empty",
             Self::EmptyLoadoutName => "loadout name must not be empty",
+            Self::InvalidLoadoutName => "loadout name must be canonical printable text",
             Self::OrganizationMismatch => "access-control records must share an organization",
         })
     }
 }
 
 impl std::error::Error for DomainError {}
+
+pub(super) fn validate_loadout_name(loadout_name: &str) -> Result<(), DomainError> {
+    if loadout_name.trim().is_empty() {
+        return Err(DomainError::EmptyLoadoutName);
+    }
+    if loadout_name != loadout_name.trim()
+        || loadout_name.len() > 128
+        || loadout_name.chars().any(char::is_control)
+    {
+        return Err(DomainError::InvalidLoadoutName);
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Organization {
@@ -210,9 +225,7 @@ impl ProjectLoadout {
         loadout_name: impl Into<String>,
     ) -> Result<Self, DomainError> {
         let loadout_name = loadout_name.into();
-        if loadout_name.trim().is_empty() {
-            return Err(DomainError::EmptyLoadoutName);
-        }
+        validate_loadout_name(&loadout_name)?;
         Ok(Self {
             organization_id: project.organization_id().clone(),
             project_id: project.id().clone(),
