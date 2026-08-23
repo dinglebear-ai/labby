@@ -260,7 +260,8 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 ### Phase 6: EffectiveWorkspace/Gateway integration
 
 - [x] **Wave 6:** coherent AccessStore snapshot read from canonical `VerifiedIdentity` plus explicit Project ID through active Principal, same-Organization Project membership, fixed role, and Project Loadout, all at one store revision in one read transaction. Focused read tests cover transport convergence, exact local identity, inactive and malformed facts, cross-Organization isolation, deterministic listing, missing Loadouts, selection, revision, and restart.
-- [ ] Runtime owner for the resolved snapshot (next; not implemented).
+- [x] **Wave 7 core:** process-scoped `AccessRuntime` lifecycle with observational startup, typed setup/blocked states, exact-current non-migrating store open, cancellation-safe serialized explicit bootstrap, and atomic promotion to Ready. Transport ownership wiring is still not implemented.
+- [ ] Attach one `AccessRuntime` instance to the shared hosted and standalone-stdio process lifetime.
 - [ ] ResolutionInput gateway facts.
 - [ ] Artifact authority/publisher/Assignment distribution policy facts.
 - [ ] current Gateway Loadout adapter; Wave 6 reads only the persisted Project Loadout name and does not yet compile or enforce gateway exposure.

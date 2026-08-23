@@ -1,0 +1,514 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
+
+use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
+use super::error::AccessStoreError;
+use super::health::{AccessHealthStatus, inspect_health};
+use super::store::AccessStore;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccessSetupReason {
+    Missing,
+    Uninitialized,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccessBlockedReason {
+    Insecure,
+    Corrupt,
+    NewerSchema,
+    Locked,
+    ReadOnly,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AccessRuntimeStatus {
+    SetupRequired(AccessSetupReason),
+    Ready,
+    Blocked(AccessBlockedReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum AccessRuntimeError {
+    #[error("access setup is required")]
+    SetupRequired(AccessSetupReason),
+    #[error("access runtime is blocked")]
+    Blocked(AccessBlockedReason),
+    #[error("access owner bootstrap conflicts with existing state")]
+    BootstrapConflict,
+    #[error("access owner bootstrap input is invalid")]
+    InvalidBootstrapInput,
+    #[error("access runtime lifecycle is unavailable")]
+    LifecycleUnavailable,
+}
+
+enum RuntimeState {
+    SetupRequired(AccessSetupReason),
+    Ready(AccessStore),
+    Blocked(AccessBlockedReason),
+}
+
+/// Process-scoped owner of the access-store lifecycle.
+///
+/// Construction is observational: it never creates or migrates the store. Only the explicit
+/// bootstrap operation is allowed to initialize persistence and promote the runtime to `Ready`.
+#[derive(Clone)]
+pub(crate) struct AccessRuntime {
+    path: Arc<PathBuf>,
+    state: Arc<Mutex<RuntimeState>>,
+}
+
+impl AccessRuntime {
+    pub(crate) async fn initialize(path: PathBuf) -> Self {
+        let state = observe_state(&path).await;
+        Self {
+            path: Arc::new(path),
+            state: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    pub(crate) async fn status(&self) -> AccessRuntimeStatus {
+        match &*self.state.lock().await {
+            RuntimeState::SetupRequired(reason) => AccessRuntimeStatus::SetupRequired(*reason),
+            RuntimeState::Ready(_) => AccessRuntimeStatus::Ready,
+            RuntimeState::Blocked(reason) => AccessRuntimeStatus::Blocked(*reason),
+        }
+    }
+
+    /// Returns a handle only while the runtime is atomically observed as Ready.
+    ///
+    /// Once Ready handles can be issued, this lifecycle never transitions back to Blocked or
+    /// SetupRequired. Future enforcement must treat a process restart as the boundary for
+    /// re-observing persistent store health.
+    pub(crate) async fn store(&self) -> Result<AccessStore, AccessRuntimeError> {
+        match &*self.state.lock().await {
+            RuntimeState::Ready(store) => Ok(store.clone()),
+            RuntimeState::SetupRequired(reason) => Err(AccessRuntimeError::SetupRequired(*reason)),
+            RuntimeState::Blocked(reason) => Err(AccessRuntimeError::Blocked(*reason)),
+        }
+    }
+
+    pub(crate) async fn bootstrap_owner(
+        &self,
+        input: BootstrapOwnerInput,
+    ) -> Result<BootstrapOutcome, AccessRuntimeError> {
+        // The owned task is the single-flight lifecycle operation. If the initiating request is
+        // cancelled after SQLite starts work, this task still observes completion and installs
+        // the authoritative Ready state.
+        let runtime = self.clone();
+        tokio::spawn(async move { runtime.bootstrap_owner_owned(input).await })
+            .await
+            .map_err(|_| AccessRuntimeError::LifecycleUnavailable)?
+    }
+
+    async fn bootstrap_owner_owned(
+        &self,
+        input: BootstrapOwnerInput,
+    ) -> Result<BootstrapOutcome, AccessRuntimeError> {
+        let mut state = self.state.lock().await;
+        let store = match &*state {
+            RuntimeState::Ready(store) => {
+                return store
+                    .bootstrap_owner(input)
+                    .await
+                    .map_err(|error| runtime_error(&state, Some(&error)));
+            }
+            RuntimeState::SetupRequired(_) => match AccessStore::open((*self.path).clone()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    *state = observe_state(&self.path).await;
+                    return Err(runtime_error(&state, Some(&error)));
+                }
+            },
+            RuntimeState::Blocked(reason) => return Err(AccessRuntimeError::Blocked(*reason)),
+        };
+
+        let outcome = match store.bootstrap_owner(input).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                *state = observe_state(&self.path).await;
+                return Err(runtime_error(&state, Some(&error)));
+            }
+        };
+        // Reopen through the non-migrating seam so promotion proves the same invariant required
+        // during normal process initialization.
+        let ready = match AccessStore::open_existing_current((*self.path).clone()).await {
+            Ok(store) => store,
+            Err(error) => {
+                *state = observe_state(&self.path).await;
+                return Err(runtime_error(&state, Some(&error)));
+            }
+        };
+        *state = RuntimeState::Ready(ready);
+        Ok(outcome)
+    }
+}
+
+async fn observe_state(path: &Path) -> RuntimeState {
+    let health_path = path.to_path_buf();
+    let health = match tokio::task::spawn_blocking(move || inspect_health(&health_path)).await {
+        Ok(health) => health,
+        Err(_) => return RuntimeState::Blocked(AccessBlockedReason::Unavailable),
+    };
+    match health.status {
+        AccessHealthStatus::Missing => RuntimeState::SetupRequired(AccessSetupReason::Missing),
+        AccessHealthStatus::Uninitialized => {
+            RuntimeState::SetupRequired(AccessSetupReason::Uninitialized)
+        }
+        AccessHealthStatus::Ready => {
+            match AccessStore::open_existing_current(path.to_path_buf()).await {
+                Ok(store) => RuntimeState::Ready(store),
+                Err(error) => RuntimeState::Blocked(blocked_reason(&error)),
+            }
+        }
+        AccessHealthStatus::Insecure => RuntimeState::Blocked(AccessBlockedReason::Insecure),
+        AccessHealthStatus::Corrupt => RuntimeState::Blocked(AccessBlockedReason::Corrupt),
+        AccessHealthStatus::NewerSchema => RuntimeState::Blocked(AccessBlockedReason::NewerSchema),
+        AccessHealthStatus::Locked => RuntimeState::Blocked(AccessBlockedReason::Locked),
+        AccessHealthStatus::ReadOnly => RuntimeState::Blocked(AccessBlockedReason::ReadOnly),
+        AccessHealthStatus::Unavailable => RuntimeState::Blocked(AccessBlockedReason::Unavailable),
+    }
+}
+
+fn blocked_reason(error: &AccessStoreError) -> AccessBlockedReason {
+    match error {
+        AccessStoreError::InsecurePath { .. } | AccessStoreError::InsecurePermissions { .. } => {
+            AccessBlockedReason::Insecure
+        }
+        AccessStoreError::Corrupt
+        | AccessStoreError::IntegrityViolation { .. }
+        | AccessStoreError::MalformedVocabulary
+        | AccessStoreError::ForeignKeyViolation => AccessBlockedReason::Corrupt,
+        AccessStoreError::UnsupportedSchema { .. } => AccessBlockedReason::NewerSchema,
+        AccessStoreError::Locked => AccessBlockedReason::Locked,
+        AccessStoreError::ReadOnly => AccessBlockedReason::ReadOnly,
+        AccessStoreError::DiskFull
+        | AccessStoreError::MissingParent { .. }
+        | AccessStoreError::BootstrapConflict
+        | AccessStoreError::InvalidBootstrapInput
+        | AccessStoreError::IdentityUnavailable
+        | AccessStoreError::ProjectAccessUnavailable
+        | AccessStoreError::Unavailable(_) => AccessBlockedReason::Unavailable,
+    }
+}
+
+fn runtime_error(state: &RuntimeState, source: Option<&AccessStoreError>) -> AccessRuntimeError {
+    match source {
+        Some(AccessStoreError::BootstrapConflict) => AccessRuntimeError::BootstrapConflict,
+        Some(AccessStoreError::InvalidBootstrapInput) => AccessRuntimeError::InvalidBootstrapInput,
+        _ => match state {
+            RuntimeState::SetupRequired(reason) => AccessRuntimeError::SetupRequired(*reason),
+            RuntimeState::Blocked(reason) => AccessRuntimeError::Blocked(*reason),
+            RuntimeState::Ready(_) => AccessRuntimeError::LifecycleUnavailable,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use labby_auth::{Authenticator, VerifiedIdentity};
+
+    fn secure_test_path(directory: &tempfile::TempDir) -> PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        directory.path().join("access.db")
+    }
+
+    fn input() -> BootstrapOwnerInput {
+        BootstrapOwnerInput::new(
+            VerifiedIdentity::local_credential(
+                Authenticator::StaticBearer,
+                "static-bearer:runtime-test",
+            )
+            .unwrap(),
+            "Local",
+            "Default",
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn initialization_is_observational_for_missing_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+
+        let runtime = AccessRuntime::initialize(path.clone()).await;
+
+        assert_eq!(
+            runtime.status().await,
+            AccessRuntimeStatus::SetupRequired(AccessSetupReason::Missing)
+        );
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn current_but_unbootstrapped_store_requires_setup_without_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        let before = store.metadata_for_test().await.unwrap();
+        drop(store);
+
+        let runtime = AccessRuntime::initialize(path.clone()).await;
+
+        assert_eq!(
+            runtime.status().await,
+            AccessRuntimeStatus::SetupRequired(AccessSetupReason::Uninitialized)
+        );
+        let store = AccessStore::open(path).await.unwrap();
+        assert_eq!(store.metadata_for_test().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn canonical_v1_is_not_migrated_until_explicit_bootstrap() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(super::super::migrations::V1_METADATA_SCHEMA)
+            .unwrap();
+        connection
+            .execute_batch(super::super::migrations::DOMAIN_SCHEMA)
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata(singleton,schema_version,schema_fingerprint,global_revision,updated_at) VALUES(1,?1,?2,0,123)",
+                rusqlite::params![
+                    super::super::migrations::V1_SCHEMA_VERSION,
+                    super::super::migrations::V1_SCHEMA_FINGERPRINT
+                ],
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "application_id",
+                super::super::migrations::APPLICATION_ID,
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::V1_SCHEMA_VERSION,
+            )
+            .unwrap();
+        drop(connection);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let runtime = AccessRuntime::initialize(path.clone()).await;
+        assert_eq!(
+            runtime.status().await,
+            AccessRuntimeStatus::SetupRequired(AccessSetupReason::Uninitialized)
+        );
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            super::super::migrations::V1_SCHEMA_VERSION
+        );
+        drop(connection);
+
+        assert_eq!(
+            runtime.bootstrap_owner(input()).await.unwrap(),
+            BootstrapOutcome::Created
+        );
+        assert_eq!(runtime.status().await, AccessRuntimeStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn explicit_bootstrap_promotes_runtime_and_restart_is_ready() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let runtime = AccessRuntime::initialize(path.clone()).await;
+
+        assert_eq!(
+            runtime.bootstrap_owner(input()).await.unwrap(),
+            BootstrapOutcome::Created
+        );
+        assert_eq!(runtime.status().await, AccessRuntimeStatus::Ready);
+        assert!(runtime.store().await.is_ok());
+
+        let restarted = AccessRuntime::initialize(path).await;
+        assert_eq!(restarted.status().await, AccessRuntimeStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn concurrent_bootstrap_is_serialized_and_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = AccessRuntime::initialize(secure_test_path(&directory)).await;
+        let first = runtime.clone();
+        let second = runtime.clone();
+        let (first, second) = tokio::join!(
+            first.bootstrap_owner(input()),
+            second.bootstrap_owner(input())
+        );
+
+        let mut outcomes = [first.unwrap(), second.unwrap()];
+        outcomes.sort_by_key(|outcome| match outcome {
+            BootstrapOutcome::Created => 0,
+            BootstrapOutcome::AlreadyApplied => 1,
+        });
+        assert_eq!(
+            outcomes,
+            [BootstrapOutcome::Created, BootstrapOutcome::AlreadyApplied]
+        );
+        assert_eq!(runtime.status().await, AccessRuntimeStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn cancelling_request_does_not_cancel_lifecycle_promotion() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = AccessRuntime::initialize(secure_test_path(&directory)).await;
+        let request_runtime = runtime.clone();
+        let request = tokio::spawn(async move { request_runtime.bootstrap_owner(input()).await });
+        tokio::task::yield_now().await;
+        request.abort();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime.status().await == AccessRuntimeStatus::Ready {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(runtime.store().await.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn insecure_store_is_typed_blocked_and_not_changed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        std::fs::write(&path, []).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let runtime = AccessRuntime::initialize(path.clone()).await;
+
+        assert_eq!(
+            runtime.status().await,
+            AccessRuntimeStatus::Blocked(AccessBlockedReason::Insecure)
+        );
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_and_newer_stores_are_typed_blocked() {
+        let corrupt_directory = tempfile::tempdir().unwrap();
+        let corrupt_path = secure_test_path(&corrupt_directory);
+        std::fs::write(&corrupt_path, b"not sqlite").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&corrupt_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
+        let corrupt = AccessRuntime::initialize(corrupt_path).await;
+        assert_eq!(
+            corrupt.status().await,
+            AccessRuntimeStatus::Blocked(AccessBlockedReason::Corrupt)
+        );
+
+        let newer_directory = tempfile::tempdir().unwrap();
+        let newer_path = secure_test_path(&newer_directory);
+        let connection = rusqlite::Connection::open(&newer_path).unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::SCHEMA_VERSION + 1,
+            )
+            .unwrap();
+        drop(connection);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&newer_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let newer = AccessRuntime::initialize(newer_path).await;
+        assert_eq!(
+            newer.status().await,
+            AccessRuntimeStatus::Blocked(AccessBlockedReason::NewerSchema)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_only_store_is_typed_blocked() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        store.bootstrap_owner(input()).await.unwrap();
+        drop(store);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        let runtime = AccessRuntime::initialize(path).await;
+        assert_eq!(
+            runtime.status().await,
+            AccessRuntimeStatus::Blocked(AccessBlockedReason::ReadOnly)
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_journal_mode_is_rejected_as_corrupt() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        store.bootstrap_owner(input()).await.unwrap();
+        drop(store);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        drop(connection);
+
+        let runtime = AccessRuntime::initialize(path).await;
+        assert_eq!(
+            runtime.status().await,
+            AccessRuntimeStatus::Blocked(AccessBlockedReason::Corrupt)
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_journal_is_typed_locked() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        store.bootstrap_owner(input()).await.unwrap();
+        drop(store);
+        let journal = super::super::store::sidecar_path(&path, "-journal");
+        std::fs::write(&journal, []).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let runtime = AccessRuntime::initialize(path).await;
+        assert_eq!(
+            runtime.status().await,
+            AccessRuntimeStatus::Blocked(AccessBlockedReason::Locked)
+        );
+    }
+}

@@ -219,6 +219,10 @@ The current implementation wave joins the completed `VerifiedIdentity` authentic
 
 Listing returns only active same-Organization direct memberships and includes an optional persisted Loadout name so callers can distinguish discoverable Projects from selectable Projects; a valid Principal may receive an empty list. Identity resolution and explicit selection fail closed through typed redacted errors for missing or unusable required records. The implementation issues no per-result queries, and the revision plus all returned facts come from the same SQLite read transaction; fixed query-count instrumentation remains an enforcement-readiness gate. This wave is read-only: it does not install the snapshot into MCP/API/CLI runtime state, select gateway capabilities, authorize dispatch, or activate enforcement. Those runtime ownership and enforcement adapters are the next implementation boundary and remain unimplemented until their focused tests and repository gates are green.
 
+### Wave 7: AccessRuntime lifecycle core
+
+`AccessRuntime` is the process-scoped lifecycle authority for the AccessStore. Normal initialization is observational: missing or uninitialized state remains setup-required, unsafe or unusable state is typed blocked, and only a bootstrapped exact-current WAL store can become Ready. The Ready open path never creates or migrates the database, validates schema/integrity/bootstrap facts in one read transaction, and applies only connection-local operational pragmas. Explicit bootstrap is serialized in an owned task so request cancellation cannot commit authority without completing the in-memory Ready transition. The core is implemented and tested; attaching exactly one runtime instance to hosted HTTP/Unix MCP and standalone stdio remains the next wave and does not itself enable enforcement.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
