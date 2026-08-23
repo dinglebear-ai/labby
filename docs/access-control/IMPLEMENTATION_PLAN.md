@@ -257,6 +257,12 @@ The gateway-feature-only, crate-private composer brackets two uncached AccessSto
 
 This prerequisite covers only upstream tools and their routability. It excludes resources, prompts, skills, subject-scoped OAuth catalogs, the built-in service registry, and any claim of a complete gateway catalog generation. It is not composed into the Project runtime context or mounted on discovery, transport, or dispatch enforcement.
 
+### Wave 15 / Milestone 0S: published runtime-pool identity prerequisite
+
+`GatewayRuntimeHandle` now publishes the current optional `UpstreamPool` together with an opaque process-local publication identity in one immutable state. Every swap advances the identity, including publication of the identical pool, repeated `None`, and A-B-A pool transitions. Cloned handles share one publication stream, while separately constructed handles receive distinct identities; readers therefore observe a coherent old or new pool/identity pair rather than a torn combination.
+
+This is a prerequisite for later manager composition of the published runtime Loadout configuration with the selected pool's tool-catalog snapshot. It does not perform that composition, produce a complete catalog generation, bind a Project or exact action, or enable discovery, transport, or dispatch enforcement.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
