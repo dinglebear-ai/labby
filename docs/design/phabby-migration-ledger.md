@@ -27,8 +27,21 @@ acceptance and rollback evidence is attached.
 
 ## Initial route inventory
 
-This must expand to individual routes, callbacks, deep links, and API
-dependencies before UI source moves.
+The first executable snapshot now lives in Phabby at
+`priv/contracts/migration/routes-v1.json`. It records 21 Labby page routes and
+9 Depot LiveView routes against immutable source revisions, including each
+legacy source, proposed target path and owner, auth boundary, product modes,
+rendering strategy, and migration state. Phabby validates its schema and checks
+it for drift against live backend checkouts with:
+
+```console
+mix phabby.routes.check --labby /path/to/labby --depot /path/to/depot
+```
+
+The snapshot still must expand to callbacks, deep links, per-route API
+dependencies, asset provenance, failure states, and acceptance evidence before
+UI source moves. The grouped table below remains a planning summary, not the
+machine-authoritative inventory.
 
 | Route group | Current owner | Target | State |
 | --- | --- | --- | --- |
