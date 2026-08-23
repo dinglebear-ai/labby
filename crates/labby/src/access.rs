@@ -23,6 +23,11 @@ pub(crate) use domain::{Permission, ProjectRole};
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]
 pub(crate) use gateway_loadout::{GatewayLoadoutAssignmentError, assign_admitted_project_loadout};
+#[cfg(feature = "gateway")]
+#[allow(unused_imports)]
+pub(crate) use gateway_loadout::{
+    ProjectRuntimeLoadoutContext, ProjectRuntimeLoadoutError, project_runtime_loadout_context,
+};
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 #[allow(unused_imports)]
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};

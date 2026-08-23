@@ -2,12 +2,137 @@ use std::future::Future;
 
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::manager::GatewayManager;
+use labby_gateway::gateway::manager::{
+    GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot,
+};
+use labby_runtime::gateway_config::GatewayLoadoutConfig;
 use thiserror::Error;
 
 use super::error::AccessStoreError;
 use super::{
     AccessRuntime, AccessRuntimeError, AssignProjectLoadoutInput, AssignProjectLoadoutOutcome,
+    AuthorizeProjectInput, Permission, ProjectPermissionSnapshot,
 };
+
+const RUNTIME_CONTEXT_ATTEMPTS: usize = 3;
+
+/// One coherent, point-in-time Project and published-runtime Loadout view.
+///
+/// This is deliberately non-`Clone` and is not a dispatch grant: it binds neither an exact
+/// gateway action/target nor a catalog generation. A consumer must still authorize at dispatch.
+pub(crate) struct ProjectRuntimeLoadoutContext {
+    access: ProjectPermissionSnapshot,
+    loadout: GatewayLoadoutConfig,
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+}
+
+impl ProjectRuntimeLoadoutContext {
+    pub(crate) fn access(&self) -> &ProjectPermissionSnapshot {
+        &self.access
+    }
+
+    pub(crate) fn loadout(&self) -> &GatewayLoadoutConfig {
+        &self.loadout
+    }
+
+    pub(crate) fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ProjectRuntimeLoadoutError {
+    #[error("access runtime is unavailable")]
+    RuntimeUnavailable,
+    #[error("project access is unavailable")]
+    ProjectAccessUnavailable,
+    #[error("access persistence is unavailable")]
+    AccessUnavailable,
+    #[error("gateway loadout is unavailable")]
+    LoadoutUnavailable,
+    #[error("project runtime snapshot is unstable")]
+    SnapshotUnstable,
+}
+
+/// Resolves a stable A-G-A-G view across the independent Access and Gateway stores.
+///
+/// The first Access read is intentionally before any Gateway read, so unauthorized, unknown, or
+/// malformed Project selectors cannot probe Gateway Loadout state.
+pub(crate) async fn project_runtime_loadout_context(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    identity: VerifiedIdentity,
+    project_id: impl Into<String>,
+    permission: Permission,
+) -> Result<ProjectRuntimeLoadoutContext, ProjectRuntimeLoadoutError> {
+    let store = runtime
+        .store()
+        .await
+        .map_err(|_| ProjectRuntimeLoadoutError::RuntimeUnavailable)?;
+    let project_id = project_id.into();
+
+    stable_runtime_context(
+        || {
+            let store = store.clone();
+            let identity = identity.clone();
+            let project_id = project_id.clone();
+            async move {
+                store
+                    .authorize_project(AuthorizeProjectInput::new(identity, project_id, permission))
+                    .await
+            }
+        },
+        |name| async move { manager.published_runtime_loadout_snapshot(&name).await },
+    )
+    .await
+}
+
+async fn stable_runtime_context<AF, AFut, GF, GFut>(
+    mut read_access: AF,
+    mut read_gateway: GF,
+) -> Result<ProjectRuntimeLoadoutContext, ProjectRuntimeLoadoutError>
+where
+    AF: FnMut() -> AFut,
+    AFut: Future<Output = Result<ProjectPermissionSnapshot, AccessStoreError>>,
+    GF: FnMut(String) -> GFut,
+    GFut: Future<Output = PublishedRuntimeLoadoutSnapshot>,
+{
+    for _ in 0..RUNTIME_CONTEXT_ATTEMPTS {
+        let first_access = read_access()
+            .await
+            .map_err(map_runtime_context_access_error)?;
+        let first_gateway = read_gateway(first_access.loadout_name.clone()).await;
+        let second_access = read_access()
+            .await
+            .map_err(map_runtime_context_access_error)?;
+        let second_gateway = read_gateway(second_access.loadout_name.clone()).await;
+
+        if first_access == second_access && first_gateway == second_gateway {
+            let runtime_config_generation = second_gateway.generation();
+            let loadout = second_gateway
+                .into_loadout()
+                .ok_or(ProjectRuntimeLoadoutError::LoadoutUnavailable)?;
+            return Ok(ProjectRuntimeLoadoutContext {
+                access: second_access,
+                loadout,
+                runtime_config_generation,
+            });
+        }
+    }
+    Err(ProjectRuntimeLoadoutError::SnapshotUnstable)
+}
+
+fn map_runtime_context_access_error(error: AccessStoreError) -> ProjectRuntimeLoadoutError {
+    match error {
+        AccessStoreError::NotAuthorized
+        | AccessStoreError::IdentityUnavailable
+        | AccessStoreError::ProjectAccessUnavailable
+        | AccessStoreError::InvalidProjectLoadoutInput => {
+            ProjectRuntimeLoadoutError::ProjectAccessUnavailable
+        }
+        _ => ProjectRuntimeLoadoutError::AccessUnavailable,
+    }
+}
 
 /// Redacted failure contract for the unmounted Gateway compatibility adapter.
 #[derive(Debug, Error)]
@@ -115,6 +240,9 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[cfg(feature = "proxy-testkit")]
+    use std::sync::atomic::AtomicUsize;
 
     use labby_auth::{Authenticator, VerifiedIdentity};
     #[cfg(feature = "proxy-testkit")]
@@ -290,6 +418,355 @@ mod tests {
             .await
             .unwrap(),
             AssignProjectLoadoutOutcome::Assigned
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn runtime_context_combines_exact_access_and_published_loadout_snapshots() {
+        let (directory, runtime, owner) = fixture().await;
+        let gateway_path = directory.path().join("runtime-context-gateway.toml");
+        let manager = GatewayManager::with_store(
+            gateway_path.clone(),
+            GatewayRuntimeHandle::default(),
+            Arc::new(FsGatewayConfigStore::new(gateway_path)),
+        );
+        manager
+            .try_seed_config(GatewayConfig {
+                loadouts: vec![GatewayLoadoutConfig {
+                    name: "production".into(),
+                    ..GatewayLoadoutConfig::default()
+                }],
+                ..GatewayConfig::default()
+            })
+            .await
+            .unwrap();
+        assign_admitted_project_loadout(
+            &runtime,
+            &manager,
+            owner.clone(),
+            "bootstrap-default",
+            "production",
+        )
+        .await
+        .unwrap();
+
+        let context = project_runtime_loadout_context(
+            &runtime,
+            &manager,
+            owner,
+            "bootstrap-default",
+            Permission::AssetUse,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(context.access().project_id, "bootstrap-default");
+        assert_eq!(context.access().permission, Permission::AssetUse);
+        assert_eq!(context.access().loadout_name, "production");
+        assert_eq!(context.loadout().name, "production");
+        assert_eq!(
+            context.runtime_config_generation(),
+            manager
+                .published_runtime_loadout_snapshot("production")
+                .await
+                .generation()
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn unauthorized_or_malformed_project_is_denied_before_gateway_resolution() {
+        let (directory, runtime, _owner) = fixture().await;
+        let gateway_path = directory.path().join("denial-gateway.toml");
+        let manager = GatewayManager::with_store(
+            gateway_path.clone(),
+            GatewayRuntimeHandle::default(),
+            Arc::new(FsGatewayConfigStore::new(gateway_path)),
+        );
+
+        let result = project_runtime_loadout_context(
+            &runtime,
+            &manager,
+            identity("static-bearer:unknown"),
+            "bad\nproject",
+            Permission::AssetUse,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ProjectRuntimeLoadoutError::ProjectAccessUnavailable)
+        ));
+
+        let gateway_reads = Arc::new(AtomicUsize::new(0));
+        let observed_reads = Arc::clone(&gateway_reads);
+        let result = stable_runtime_context(
+            || async { Err(AccessStoreError::NotAuthorized) },
+            |name| {
+                let manager = manager.clone();
+                let observed_reads = Arc::clone(&observed_reads);
+                async move {
+                    observed_reads.fetch_add(1, Ordering::SeqCst);
+                    manager.published_runtime_loadout_snapshot(&name).await
+                }
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ProjectRuntimeLoadoutError::ProjectAccessUnavailable)
+        ));
+        assert_eq!(gateway_reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn missing_published_loadout_is_redacted() {
+        let (directory, runtime, owner) = fixture().await;
+        let gateway_path = directory.path().join("missing-runtime-loadout.toml");
+        let manager = GatewayManager::with_store(
+            gateway_path.clone(),
+            GatewayRuntimeHandle::default(),
+            Arc::new(FsGatewayConfigStore::new(gateway_path)),
+        );
+        let store = runtime.store().await.unwrap();
+        store
+            .execute_test_statement(
+                "INSERT INTO project_loadouts VALUES
+                 ('bootstrap-local','bootstrap-default','secret-missing-name','bootstrap-owner',2,2)",
+            )
+            .await
+            .unwrap();
+
+        let error = match project_runtime_loadout_context(
+            &runtime,
+            &manager,
+            owner,
+            "bootstrap-default",
+            Permission::ProjectRead,
+        )
+        .await
+        {
+            Ok(_) => panic!("missing published loadout must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            ProjectRuntimeLoadoutError::LoadoutUnavailable
+        ));
+        assert_eq!(error.to_string(), "gateway loadout is unavailable");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn bounded_retries_end_in_redacted_snapshot_unstable() {
+        let (directory, runtime, owner) = fixture().await;
+        let gateway_path = directory.path().join("unstable-runtime-loadout.toml");
+        let manager = GatewayManager::with_store(
+            gateway_path.clone(),
+            GatewayRuntimeHandle::default(),
+            Arc::new(FsGatewayConfigStore::new(gateway_path)),
+        );
+        manager
+            .try_seed_config(GatewayConfig {
+                loadouts: vec![GatewayLoadoutConfig {
+                    name: "production".into(),
+                    ..GatewayLoadoutConfig::default()
+                }],
+                ..GatewayConfig::default()
+            })
+            .await
+            .unwrap();
+        let store = runtime.store().await.unwrap();
+        store
+            .execute_test_statement(
+                "INSERT INTO project_loadouts VALUES
+                 ('bootstrap-local','bootstrap-default','production','bootstrap-owner',2,2)",
+            )
+            .await
+            .unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let access_reads = Arc::clone(&reads);
+
+        let error = match stable_runtime_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                let access_reads = Arc::clone(&access_reads);
+                async move {
+                    let mut snapshot = store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await?;
+                    snapshot.global_revision += access_reads.fetch_add(1, Ordering::SeqCst) as u64;
+                    Ok(snapshot)
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                async move { manager.published_runtime_loadout_snapshot(&name).await }
+            },
+        )
+        .await
+        {
+            Ok(_) => panic!("continuous revision churn must not produce a context"),
+            Err(error) => error,
+        };
+
+        assert_eq!(reads.load(Ordering::SeqCst), RUNTIME_CONTEXT_ATTEMPTS * 2);
+        assert!(matches!(
+            error,
+            ProjectRuntimeLoadoutError::SnapshotUnstable
+        ));
+        assert_eq!(error.to_string(), "project runtime snapshot is unstable");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn transient_gateway_publication_change_retries_to_one_stable_context() {
+        let (directory, runtime, owner) = fixture().await;
+        let gateway_path = directory.path().join("retry-runtime-loadout.toml");
+        let manager = GatewayManager::with_store(
+            gateway_path.clone(),
+            GatewayRuntimeHandle::default(),
+            Arc::new(FsGatewayConfigStore::new(gateway_path)),
+        );
+        let alpha = GatewayLoadoutConfig {
+            name: "production".into(),
+            description: Some("alpha".into()),
+            ..GatewayLoadoutConfig::default()
+        };
+        let bravo = GatewayLoadoutConfig {
+            name: "production".into(),
+            description: Some("bravo".into()),
+            ..GatewayLoadoutConfig::default()
+        };
+        manager
+            .try_seed_config(GatewayConfig {
+                loadouts: vec![alpha],
+                ..GatewayConfig::default()
+            })
+            .await
+            .unwrap();
+        let store = runtime.store().await.unwrap();
+        store
+            .execute_test_statement(
+                "INSERT INTO project_loadouts VALUES
+                 ('bootstrap-local','bootstrap-default','production','bootstrap-owner',2,2)",
+            )
+            .await
+            .unwrap();
+        let gateway_reads = Arc::new(AtomicUsize::new(0));
+
+        let context = stable_runtime_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                async move {
+                    store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                let bravo = bravo.clone();
+                let gateway_reads = Arc::clone(&gateway_reads);
+                async move {
+                    if gateway_reads.fetch_add(1, Ordering::SeqCst) == 1 {
+                        manager
+                            .try_seed_config(GatewayConfig {
+                                loadouts: vec![bravo],
+                                ..GatewayConfig::default()
+                            })
+                            .await
+                            .unwrap();
+                    }
+                    manager.published_runtime_loadout_snapshot(&name).await
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(gateway_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(context.loadout().description.as_deref(), Some("bravo"));
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn continuous_gateway_publication_churn_exhausts_the_bound() {
+        let (directory, runtime, owner) = fixture().await;
+        let gateway_path = directory.path().join("gateway-churn.toml");
+        let manager = GatewayManager::with_store(
+            gateway_path.clone(),
+            GatewayRuntimeHandle::default(),
+            Arc::new(FsGatewayConfigStore::new(gateway_path)),
+        );
+        let store = runtime.store().await.unwrap();
+        store
+            .execute_test_statement(
+                "INSERT INTO project_loadouts VALUES
+                 ('bootstrap-local','bootstrap-default','production','bootstrap-owner',2,2)",
+            )
+            .await
+            .unwrap();
+        let gateway_reads = Arc::new(AtomicUsize::new(0));
+
+        let result = stable_runtime_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                async move {
+                    store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                let gateway_reads = Arc::clone(&gateway_reads);
+                async move {
+                    let read = gateway_reads.fetch_add(1, Ordering::SeqCst);
+                    manager
+                        .try_seed_config(GatewayConfig {
+                            loadouts: vec![GatewayLoadoutConfig {
+                                name,
+                                description: Some(format!("revision-{read}")),
+                                ..GatewayLoadoutConfig::default()
+                            }],
+                            ..GatewayConfig::default()
+                        })
+                        .await
+                        .unwrap();
+                    manager
+                        .published_runtime_loadout_snapshot("production")
+                        .await
+                }
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ProjectRuntimeLoadoutError::SnapshotUnstable)
+        ));
+        assert_eq!(
+            gateway_reads.load(Ordering::SeqCst),
+            RUNTIME_CONTEXT_ATTEMPTS * 2
         );
     }
 

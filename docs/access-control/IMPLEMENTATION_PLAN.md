@@ -247,6 +247,10 @@ This is point-in-time admission, not cross-store referential integrity. Gateway 
 
 Gateway now owns a coherent runtime-configuration Loadout snapshot paired with an opaque, process-local monotonic publication generation. The snapshot reads the published configuration and generation under the same publication barrier, ignores restart-bound desired configuration, and distinguishes Loadout ABA publications. This is deliberately narrower than a complete gateway catalog generation: pool/catalog-only mutations remain a later boundary. Access composition and transport enforcement remain unimplemented.
 
+### Wave 13: stable Project runtime Loadout context
+
+The gateway-feature-only, crate-private composer brackets two uncached AccessStore Project-permission snapshots around two coherently published runtime Loadout snapshots. It accepts only when the complete Access facts, Access revision, published Loadout, and runtime-configuration generation are identical; mismatches retry at most three times and then fail with a bounded redacted instability error. Authorization precedes every Gateway lookup, ordinary denials remain non-enumerating, and missing published Loadouts fail closed. The returned non-cloneable context is observational evidence only: it is unmounted, binds no exact action or target, and is not a complete catalog generation or dispatch grant.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
