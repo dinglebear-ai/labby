@@ -119,7 +119,7 @@ impl UpstreamPool {
         Ok(CheckedToolCall {
             result,
             checked,
-            catalog_revision: format!("pool:{}", self.revision),
+            catalog_revision: self.revision_label(),
         })
     }
 }

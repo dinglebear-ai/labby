@@ -25,6 +25,7 @@ const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_CONTRACT_BYTES: usize = 160 * 1024;
 const CAPABILITY_CONTRACT_VERSION: u8 = 1;
+const MAX_DESCRIPTION_CHARS: usize = 2_048;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +41,22 @@ pub struct CapabilityAnnotations {
 pub struct CapabilityContract {
     pub contract_version: u8,
     pub id: String,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+    pub annotations: CapabilityAnnotations,
+    pub destructive: bool,
+    pub contract_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityDescriptor {
+    pub contract_version: u8,
+    pub catalog_revision: String,
+    pub id: String,
+    pub upstream: String,
+    pub tool: String,
+    pub description: String,
     pub input_schema: Option<Value>,
     pub output_schema: Option<Value>,
     pub annotations: CapabilityAnnotations,
@@ -269,6 +286,61 @@ pub struct PaletteExecutionReceipt {
 }
 
 impl GatewayManager {
+    pub async fn palette_descriptor(
+        &self,
+        caller: &PaletteCaller,
+        id: &str,
+    ) -> Result<CapabilityDescriptor, ToolError> {
+        if !caller.caller.can_read() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: "palette descriptor requires mcp:read permission".to_string(),
+            });
+        }
+        let (upstream, tool_name) = parse_mcp_launcher_id(id)?;
+        if caller
+            .allowed_upstreams()
+            .is_some_and(|allowed| !allowed.contains(upstream))
+        {
+            return Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("launcher entry `{id}` was not found"),
+            });
+        }
+        let tool = self
+            .resolve_code_mode_upstream_tool(
+                upstream,
+                tool_name,
+                Some(&caller.owner),
+                Some(&caller.oauth_subject),
+            )
+            .await
+            .map_err(map_unknown_tool_to_not_found)?;
+        let contract = CapabilityContract::from_upstream_tool(&tool)?;
+        let (_, pool) = self.published_config_and_pool().await;
+        let descriptor = CapabilityDescriptor {
+            contract_version: contract.contract_version,
+            catalog_revision: pool
+                .map(|pool| pool.revision_label())
+                .unwrap_or_else(|| "unavailable".to_string()),
+            id: contract.id,
+            upstream: upstream.to_string(),
+            tool: tool_name.to_string(),
+            description: sanitize_tool_text(
+                tool.tool.description.as_deref().unwrap_or(""),
+                MAX_DESCRIPTION_CHARS,
+            ),
+            input_schema: contract.input_schema,
+            output_schema: contract.output_schema,
+            annotations: contract.annotations,
+            destructive: contract.destructive,
+            contract_hash: contract.contract_hash,
+        };
+        let mut writer = CountingWriter::new(MAX_CONTRACT_BYTES);
+        serde_json::to_writer(&mut writer, &descriptor).map_err(|_| descriptor_unsupported())?;
+        Ok(descriptor)
+    }
+
     pub async fn palette_catalog(
         &self,
         caller: &PaletteCaller,
@@ -1060,6 +1132,30 @@ mod tests {
         let error = CapabilityContract::from_upstream_tool(&tool)
             .expect_err("oversized schemas fail explicitly");
         assert_eq!(error.kind(), "descriptor_unsupported");
+    }
+
+    #[test]
+    fn capability_contract_v1_golden_vectors_match_canonical_json_and_sha256() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/capability-contract-v1.json"
+        ))
+        .expect("golden fixture parses");
+        let cases = fixture["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let name = case["name"].as_str().expect("case name");
+            let mut canonical = Vec::new();
+            write_json_canonical(&mut canonical, &case["normalizedInput"])
+                .unwrap_or_else(|error| panic!("{name}: canonicalization failed: {error}"));
+            let canonical = String::from_utf8(canonical).expect("canonical JSON is UTF-8");
+            assert_eq!(canonical, case["canonicalJson"], "{name}: canonical JSON");
+            let digest = Sha256::digest(canonical.as_bytes());
+            assert_eq!(
+                hex_digest(digest.as_slice()),
+                case["expectedSha256"],
+                "{name}: SHA-256"
+            );
+        }
     }
 
     #[test]

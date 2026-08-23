@@ -492,6 +492,11 @@ type TestUpstreamConnector = Arc<
 >;
 
 impl UpstreamPool {
+    #[must_use]
+    pub fn revision_label(&self) -> String {
+        format!("pool:{}", self.revision)
+    }
+
     /// Create a new empty pool.
     #[must_use]
     pub fn new() -> Self {

@@ -803,7 +803,7 @@ impl GatewayManager {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     async fn dispatch_upstream_tool(
         &self,
         pool: Arc<crate::upstream::pool::UpstreamPool>,

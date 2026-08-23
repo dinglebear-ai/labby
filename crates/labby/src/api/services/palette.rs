@@ -6,12 +6,13 @@ use axum::{
     routing::{get, post},
 };
 use labby_gateway::gateway::palette::{
-    LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView, PaletteCaller,
-    PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionReceipt,
+    CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
+    PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionReceipt,
 };
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -22,7 +23,8 @@ use crate::api::state::AppState;
 use crate::dispatch::error::ToolError;
 
 const PALETTE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(2);
-static PALETTE_CATALOG_CACHE: OnceLock<Mutex<Option<CachedPaletteCatalog>>> = OnceLock::new();
+const PALETTE_CATALOG_CACHE_CAPACITY: usize = 32;
+static PALETTE_CATALOG_CACHE: OnceLock<Mutex<VecDeque<CachedPaletteCatalog>>> = OnceLock::new();
 
 #[derive(Clone)]
 struct CachedPaletteCatalog {
@@ -36,6 +38,7 @@ pub fn routes(_state: AppState) -> Router<AppState> {
         .route("/catalog", get(catalog))
         .route("/search", get(search))
         .route("/schema", get(schema))
+        .route("/descriptor", get(descriptor))
         .route("/execute", post(execute))
 }
 
@@ -90,14 +93,17 @@ async fn compact_palette_catalog(
 ) -> Result<LauncherCatalogView, ApiError> {
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let cache_key = palette_catalog_cache_key(state, &manager, auth);
-    let cache = PALETTE_CATALOG_CACHE.get_or_init(|| Mutex::new(None));
+    let cache = PALETTE_CATALOG_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     {
-        let cached = cache.lock().await;
-        if let Some(cached) = cached.as_ref()
-            && cached.key == cache_key
-            && cached.expires_at > Instant::now()
+        let mut cached = cache.lock().await;
+        let now = Instant::now();
+        cached.retain(|entry| entry.expires_at > now);
+        if let Some(position) = cached.iter().position(|entry| entry.key == cache_key)
+            && let Some(entry) = cached.remove(position)
         {
-            return Ok(cached.catalog.clone());
+            let catalog = entry.catalog.clone();
+            cached.push_back(entry);
+            return Ok(catalog);
         }
     }
 
@@ -105,12 +111,34 @@ async fn compact_palette_catalog(
     let mut catalog = manager.palette_catalog(&caller).await?;
     append_labby_actions(&mut catalog, state, auth);
     compact_catalog_schemas(&mut catalog);
-    *cache.lock().await = Some(CachedPaletteCatalog {
+    let mut cached = cache.lock().await;
+    if cached.len() == PALETTE_CATALOG_CACHE_CAPACITY {
+        cached.pop_front();
+    }
+    cached.push_back(CachedPaletteCatalog {
         key: cache_key,
         expires_at: Instant::now() + PALETTE_CATALOG_CACHE_TTL,
         catalog: catalog.clone(),
     });
     Ok(catalog)
+}
+
+async fn descriptor(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Query(query): Query<SchemaQuery>,
+) -> Result<Json<CapabilityDescriptor>, ApiError> {
+    if !query.id.starts_with("mcp:") {
+        return Err(ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("launcher entry `{}` was not found", query.id),
+        }
+        .into());
+    }
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    Ok(Json(manager.palette_descriptor(&caller, &query.id).await?))
 }
 
 fn palette_catalog_cache_key(
@@ -1229,6 +1257,72 @@ mod tests {
             .unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["inputSchema"]["required"][0], "q");
+    }
+
+    #[tokio::test]
+    async fn palette_descriptor_returns_the_bounded_live_mcp_contract() {
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = test_gateway_manager(
+            std::env::temp_dir().join("palette-descriptor.toml"),
+            runtime,
+        );
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                code_mode: CodeModeConfig {
+                    enabled: true,
+                    ..CodeModeConfig::default()
+                },
+                upstream: vec![test_upstream_config("github")],
+                ..GatewayConfig::default()
+            })
+            .await;
+        pool.insert_entry_for_test(
+            "github",
+            healthy_upstream_entry_with_schema(
+                "github",
+                "search_repos",
+                Some(json!({
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"]
+                })),
+            ),
+        )
+        .await;
+
+        let state =
+            AppState::from_registry(test_registry()).with_gateway_manager(Arc::new(manager));
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/descriptor?id=mcp:github::search_repos")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["contractVersion"], 1);
+        assert_eq!(value["id"], "mcp:github::search_repos");
+        assert_eq!(value["upstream"], "github");
+        assert_eq!(value["tool"], "search_repos");
+        assert_eq!(value["inputSchema"]["required"][0], "q");
+        assert_eq!(value["destructive"], false);
+        assert_eq!(value["contractHash"].as_str().unwrap().len(), 64);
+        assert!(
+            value["catalogRevision"]
+                .as_str()
+                .unwrap()
+                .starts_with("pool:")
+        );
     }
 
     #[tokio::test]
