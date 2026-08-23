@@ -213,11 +213,13 @@ The phase tracker below covers the complete roadmap. The authoritative execution
 
 ### Phase 3: AuthContext identity integration
 
-- [ ] issuer+subject mapping.
-- [ ] service/static credential mapping.
+- [x] Canonical verified-identity fact keyed by issuer+subject for browser sessions and OAuth bearer tokens.
+- [x] Explicit local-credential identity facts for static bearer and kernel-derived Unix peer credentials.
 - [ ] disabled/unknown fail closed.
-- [ ] email non-authority tests.
+- [x] Email excluded from the Principal-link type and covered by a non-authority contract test.
 - [ ] OAuth scope/domain permission separation tests.
+
+Milestone 0A implementation evidence: `labby-auth` now emits one transport-independent `VerifiedIdentity` request extension alongside the existing `AuthContext`. This establishes authentication facts only; durable Principal mapping, disabled-Principal enforcement, and permission resolution remain AccessStore work.
 
 ### Phase 4: membership/permission resolver
 
