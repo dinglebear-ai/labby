@@ -188,6 +188,16 @@ The phase tracker below covers the complete roadmap. The authoritative execution
 
 ### Phase 1: labby-access domain
 
+Milestone 1 starts as a private `crates/labby/src/access/` kernel; extraction remains evidence-gated.
+
+- [x] Minimal typed Principal/Organization/Project IDs and entities.
+- [x] Direct Organization-qualified Project membership with fixed owner/admin/member/viewer roles.
+- [x] One Organization-qualified Project-to-existing-named-Loadout mapping.
+- [x] Uncached fail-closed resolution with stable Milestone 1 reason codes and cross-tenant collision tests.
+- [ ] AccessStore-backed callable facade and transport integration.
+
+Later roadmap domain work:
+
 - [ ] Create crate.
 - [ ] IDs/entities/scopes/subjects.
 - [ ] Permission registry with scope compatibility/Roles/Grants.
@@ -219,7 +229,7 @@ The phase tracker below covers the complete roadmap. The authoritative execution
 - [x] Email excluded from the Principal-link type and covered by a non-authority contract test.
 - [ ] OAuth scope/domain permission separation tests.
 
-Milestone 0A implementation evidence: `labby-auth` now emits one transport-independent `VerifiedIdentity` request extension alongside the existing `AuthContext`. This establishes authentication facts only; durable Principal mapping, disabled-Principal enforcement, and permission resolution remain AccessStore work.
+Milestone 0A implementation evidence: `labby-auth` now emits one transport-independent `VerifiedIdentity` request extension alongside the existing `AuthContext`. Labby-issued JWTs carry signed, exactly-one identity provenance for Google, configured enterprise issuers, or machine-client local credentials; pathful HTTPS enterprise issuers remain distinct and allowlisted. Verification/link generations are explicit schema versions and fingerprints are redacted correlation values only. This establishes authentication facts only; durable Principal mapping and disabled-Principal enforcement remain AccessStore work.
 
 ### Phase 4: membership/permission resolver
 
