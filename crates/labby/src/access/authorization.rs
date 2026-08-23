@@ -71,6 +71,23 @@ pub(super) fn authorize(
     Ok(snapshot)
 }
 
+/// Authorizes management of a Project without consulting its Loadout mapping.
+///
+/// This narrow preflight exists for the operation that creates that mapping. It deliberately
+/// returns no reusable grant; the mutation reauthorizes in its own immediate transaction.
+pub(super) fn authorize_management_without_loadout(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+) -> AccessStoreResult<()> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    super::loadout::resolve_project_manager(&transaction, identity, project_id)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(())
+}
+
 fn collapse_denial(error: AccessStoreError) -> AccessStoreError {
     match error {
         AccessStoreError::IdentityUnavailable | AccessStoreError::ProjectAccessUnavailable => {

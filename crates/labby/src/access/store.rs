@@ -115,6 +115,21 @@ impl AccessStore {
             .await
     }
 
+    pub(crate) async fn authorize_project_management_without_loadout(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            super::authorization::authorize_management_without_loadout(
+                connection,
+                &identity,
+                &project_id,
+            )
+        })
+        .await
+    }
+
     #[cfg(test)]
     pub(super) async fn seed_loadout_roles_for_test(&self) -> AccessStoreResult<()> {
         self.execute_test_statement(
