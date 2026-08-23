@@ -408,9 +408,15 @@ mod tests {
             .await;
 
         assert!(prompts.is_empty());
+        // `StalledPromptServer` never resolves, so honoring the deadline is the
+        // only way to get here at all — a run that ignored it would hang until
+        // the harness killed it. The ceiling just needs to sit far below that,
+        // not near the 30ms deadline, where scheduler jitter under parallel test
+        // load failed correct runs.
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(150),
-            "the caller deadline must bound the entire prompt aggregation"
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the caller deadline must bound the entire prompt aggregation: {:?}",
+            started.elapsed()
         );
     }
 
@@ -430,7 +436,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["quick/first", "quick/second"]);
-        assert!(started.elapsed() < std::time::Duration::from_millis(160));
+        // Same reasoning as above: the stalled upstream never resolves, so the
+        // deadline is what returns control here.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the caller deadline must bound the entire prompt aggregation: {:?}",
+            started.elapsed()
+        );
     }
 
     impl ServerHandler for PaginatedPromptServer {

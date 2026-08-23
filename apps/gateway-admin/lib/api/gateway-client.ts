@@ -361,6 +361,36 @@ function importTombstoneParams(server: DiscoveredMcpServer) {
   }
 }
 
+// Older Labby servers serialized `upstreams`/`services` with
+// `skip_serializing_if = "Vec::is_empty"`, so a Loadout that selected only
+// upstreams (or only services) arrived with the other key absent even though
+// the published type declares both as required arrays — and every consumer
+// reads `.length` off them, which took down the whole Loadouts page. Current
+// servers always emit both keys, but a freshly deployed UI can face an older
+// backend, so normalize at the adapter boundary as deploy-skew defense.
+type WireGatewayLoadout = Omit<GatewayLoadout, 'upstreams' | 'services'> & {
+  upstreams?: string[]
+  services?: string[]
+}
+
+type WireGatewayLoadoutStageResult = Omit<GatewayLoadoutStageResult, 'loadout'> & {
+  loadout: WireGatewayLoadout
+}
+
+function normalizeLoadout(loadout: WireGatewayLoadout): GatewayLoadout {
+  return {
+    ...loadout,
+    upstreams: loadout.upstreams ?? [],
+    services: loadout.services ?? [],
+  }
+}
+
+function normalizeLoadoutStageResult(
+  result: WireGatewayLoadoutStageResult,
+): GatewayLoadoutStageResult {
+  return { ...result, loadout: normalizeLoadout(result.loadout) }
+}
+
 export const gatewayApi = {
   async discoverExternalConfigs(signal?: AbortSignal): Promise<DiscoveredMcpServer[]> {
     return gatewayAction<DiscoveredMcpServer[]>('gateway.discover', {}, signal)
@@ -630,19 +660,20 @@ export const gatewayApi = {
   },
 
   async listLoadouts(signal?: AbortSignal): Promise<GatewayLoadout[]> {
-    return gatewayAction<GatewayLoadout[]>('gateway.loadout.list_state', {}, signal)
+    const loadouts = await gatewayAction<WireGatewayLoadout[]>('gateway.loadout.list_state', {}, signal)
+    return loadouts.map(normalizeLoadout)
   },
 
   async getLoadout(name: string, signal?: AbortSignal): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>('gateway.loadout.get', { name }, signal)
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>('gateway.loadout.get', { name }, signal))
   },
 
   async addLoadout(loadout: GatewayLoadoutInput, signal?: AbortSignal): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.add',
       confirmGatewayParams({ loadout }),
       signal,
-    )
+    ))
   },
 
   async updateLoadout(
@@ -650,11 +681,11 @@ export const gatewayApi = {
     loadout: GatewayLoadoutInput,
     signal?: AbortSignal,
   ): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.update',
       confirmGatewayParams({ name, loadout }),
       signal,
-    )
+    ))
   },
 
   async patchLoadout(
@@ -662,11 +693,11 @@ export const gatewayApi = {
     patch: GatewayLoadoutPatch,
     signal?: AbortSignal,
   ): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.patch',
       confirmGatewayParams({ name, patch }),
       signal,
-    )
+    ))
   },
 
   async stageLoadoutUpdate(
@@ -674,11 +705,11 @@ export const gatewayApi = {
     loadout: GatewayLoadoutInput,
     signal?: AbortSignal,
   ): Promise<GatewayLoadoutStageResult> {
-    return gatewayAction<GatewayLoadoutStageResult>(
+    return normalizeLoadoutStageResult(await gatewayAction<WireGatewayLoadoutStageResult>(
       'gateway.loadout.stage_update',
       confirmGatewayParams({ name, loadout }),
       signal,
-    )
+    ))
   },
 
   async stageLoadoutPatch(
@@ -686,30 +717,30 @@ export const gatewayApi = {
     patch: GatewayLoadoutPatch,
     signal?: AbortSignal,
   ): Promise<GatewayLoadoutStageResult> {
-    return gatewayAction<GatewayLoadoutStageResult>(
+    return normalizeLoadoutStageResult(await gatewayAction<WireGatewayLoadoutStageResult>(
       'gateway.loadout.stage_patch',
       confirmGatewayParams({ name, patch }),
       signal,
-    )
+    ))
   },
 
   async stageLoadoutRemove(
     name: string,
     signal?: AbortSignal,
   ): Promise<GatewayLoadoutStageResult> {
-    return gatewayAction<GatewayLoadoutStageResult>(
+    return normalizeLoadoutStageResult(await gatewayAction<WireGatewayLoadoutStageResult>(
       'gateway.loadout.stage_remove',
       confirmGatewayParams({ name }),
       signal,
-    )
+    ))
   },
 
   async removeLoadout(name: string, signal?: AbortSignal): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.remove',
       confirmGatewayParams({ name }),
       signal,
-    )
+    ))
   },
 
   async listProtectedRoutes(signal?: AbortSignal): Promise<ProtectedMcpRoute[]> {

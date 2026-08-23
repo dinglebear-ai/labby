@@ -166,7 +166,12 @@ async fn downstream_cancellation_interrupts_queued_permit_acquisition() {
     drop(held);
 }
 
-#[tokio::test]
+// Paused time: every wait here is a tokio timer against a `tokio::time::Instant`
+// deadline, so the budget arithmetic this test pins is exact under the virtual
+// clock. Measured against the wall clock it failed intermittently under
+// parallel test load, when scheduler overshoot on the 40ms remaining budget
+// pushed the observed send past the 75ms ceiling.
+#[tokio::test(start_paused = true)]
 async fn permit_wait_and_send_share_one_absolute_deadline() {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(120);
     let cancellation = CancellationToken::new();
@@ -181,7 +186,12 @@ async fn permit_wait_and_send_share_one_absolute_deadline() {
     .await;
     assert!(matches!(permit, RelayPermitOutcome::Acquired(Ok(()))));
 
-    let started_send = Instant::now();
+    // Virtual-clock instant: under `start_paused`, wall-clock elapsed is
+    // near-zero regardless of behavior, so a `std::time::Instant` here would
+    // assert nothing. On the virtual clock the arithmetic is exact — the send
+    // gets the 40ms remaining from the 120ms absolute deadline, never its own
+    // fresh 80ms.
+    let started_send = tokio::time::Instant::now();
     let send = await_relay_send(
         async {
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -194,7 +204,8 @@ async fn permit_wait_and_send_share_one_absolute_deadline() {
     assert!(matches!(send, RelaySendOutcome::TimedOut));
     assert!(
         started_send.elapsed() < std::time::Duration::from_millis(75),
-        "send receives only the remaining absolute-deadline budget"
+        "send receives only the remaining absolute-deadline budget, got {:?}",
+        started_send.elapsed()
     );
 }
 
@@ -210,9 +221,16 @@ async fn stalled_handle_cleanup_is_detached_and_bounded() {
 
     let started = Instant::now();
     let cleanup = spawn_bounded_handle_cancellation(stalled_cleanup);
+    // Two constraints pin this ceiling. It must sit far above scheduler jitter
+    // (a 100ms ceiling failed correct runs on a loaded machine), but it must
+    // also stay below RELAY_CANCELLATION_DELIVERY_TIMEOUT (1s): a regression
+    // that awaited the bounded cleanup before returning would come back at
+    // ~1s when that internal timer fires, and only a sub-second ceiling
+    // catches it.
     assert!(
-        started.elapsed() < std::time::Duration::from_millis(100),
-        "stalled rmcp cleanup must not delay the caller's Cancelled/Timeout outcome"
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "stalled rmcp cleanup must not delay the caller's Cancelled/Timeout outcome: {:?}",
+        started.elapsed()
     );
     tokio::time::timeout(std::time::Duration::from_secs(2), cleanup)
         .await

@@ -1074,9 +1074,19 @@ pub struct GatewayLoadoutConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Selected upstream MCP servers.
+    ///
+    /// Always serialized, including when empty. Agents and HTTP clients read
+    /// this as a required array on every `gateway.loadout.*` response, so
+    /// omitting it for a services-only Loadout breaks them. The cost is an
+    /// explicit `upstreams = []` in TOML, which is the honest representation.
+    #[serde(default)]
     pub upstreams: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Selected built-in Labby services.
+    ///
+    /// Always serialized, including when empty, for the same reason as
+    /// [`GatewayLoadoutConfig::upstreams`].
+    #[serde(default)]
     pub services: Vec<String>,
     #[serde(default)]
     pub expose_code_mode: bool,
@@ -2387,5 +2397,66 @@ client_secret_env = "SECRET"
     #[test]
     fn in_process_prefix_constant_is_stable() {
         assert_eq!(IN_PROCESS_UPSTREAM_PREFIX, "__in_process__");
+    }
+
+    /// `gateway.loadout.*` responses must always carry `upstreams` and
+    /// `services` as arrays. Omitting an empty selection made every JSON
+    /// consumer that treats them as required arrays fail on a Loadout that
+    /// picked only upstreams or only services.
+    #[test]
+    fn loadout_json_always_carries_both_selection_arrays() {
+        let upstreams_only = GatewayLoadoutConfig {
+            name: "sd".to_string(),
+            upstreams: vec!["chrome-devtools".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+        let services_only = GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            services: vec!["gateway".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+
+        for loadout in [&upstreams_only, &services_only] {
+            let value = serde_json::to_value(loadout).expect("loadout serializes to JSON");
+            let object = value.as_object().expect("loadout serializes as an object");
+            assert!(
+                object
+                    .get("upstreams")
+                    .is_some_and(serde_json::Value::is_array),
+                "upstreams must always be an array: {value}"
+            );
+            assert!(
+                object
+                    .get("services")
+                    .is_some_and(serde_json::Value::is_array),
+                "services must always be an array: {value}"
+            );
+        }
+
+        assert_eq!(
+            serde_json::to_value(&services_only)
+                .expect("loadout serializes to JSON")
+                .get("upstreams"),
+            Some(&serde_json::json!([])),
+            "a services-only Loadout still reports an empty upstream selection"
+        );
+    }
+
+    /// Always-serialized selections must survive a TOML round trip, including
+    /// the explicit empty arrays now written into `config.toml`.
+    #[test]
+    fn loadout_toml_round_trips_empty_selection_arrays() {
+        let services_only = GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            services: vec!["gateway".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+
+        let rendered = toml::to_string(&services_only).expect("loadout serializes to TOML");
+        assert!(rendered.contains("upstreams = []"), "{rendered}");
+
+        let parsed: GatewayLoadoutConfig =
+            toml::from_str(&rendered).expect("loadout parses back from TOML");
+        assert_eq!(parsed, services_only);
     }
 }
