@@ -44,7 +44,7 @@ fn next_pool_publication_generation() -> u64 {
 /// Equality is meaningful only within this process. Every publication receives
 /// a fresh identity, even when it republishes the same pool or `None`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PoolPublicationGeneration(u64);
+pub struct PoolPublicationGeneration(u64);
 
 struct PublishedPoolState {
     // Consumed by the manager publication composer in the next bounded wave.

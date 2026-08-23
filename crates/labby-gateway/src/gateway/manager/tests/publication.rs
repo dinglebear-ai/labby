@@ -1,6 +1,7 @@
 //! Published runtime Loadout snapshot and generation tests.
 
 use crate::gateway::config::write_gateway_config;
+use crate::gateway::manager::LoadoutToolCatalogPublicationError;
 use labby_runtime::gateway_config::GatewayLoadoutConfig;
 
 use super::*;
@@ -141,4 +142,272 @@ async fn missing_loadout_is_bound_to_the_observed_publication() {
     assert!(missing.loadout().is_none());
     assert!(present.loadout().is_some());
     assert_ne!(missing.generation(), present.generation());
+}
+
+#[tokio::test]
+async fn loadout_tool_catalog_is_exact_filtered_and_deterministic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("bravo", healthy_entry_with_tool("bravo", "zulu"))
+        .await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    pool.insert_entry_for_tests("excluded", healthy_entry_with_tool("excluded", "hidden"))
+        .await;
+    runtime.swap(Some(pool)).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime);
+    manager
+        .seed_config(config_with_loadout(loadout(
+            "project",
+            &["bravo", "alpha", "ALPHA"],
+        )))
+        .await;
+
+    let snapshot = manager
+        .published_loadout_tool_catalog_snapshot("project")
+        .await
+        .expect("coherent catalog");
+    let routes = snapshot
+        .routes()
+        .iter()
+        .map(|route| (route.upstream_name.as_ref(), route.tool_name.as_ref()))
+        .collect::<Vec<_>>();
+    assert_eq!(routes, [("alpha", "echo"), ("bravo", "zulu")]);
+    let runtime_generation = snapshot.runtime_config_generation();
+    let pool_generation = snapshot.pool_publication_generation();
+    let tool_generation = snapshot.tool_catalog_generation();
+    assert_eq!(
+        manager
+            .published_loadout_tool_catalog_snapshot("project")
+            .await
+            .expect("stable catalog")
+            .runtime_config_generation(),
+        runtime_generation
+    );
+    assert_eq!(
+        manager
+            .published_loadout_tool_catalog_snapshot("project")
+            .await
+            .expect("stable catalog")
+            .tool_catalog_generation(),
+        tool_generation
+    );
+    assert_eq!(
+        manager
+            .published_loadout_tool_catalog_snapshot("project")
+            .await
+            .expect("stable catalog")
+            .pool_publication_generation(),
+        pool_generation
+    );
+}
+
+#[tokio::test]
+async fn loadout_tool_catalog_honors_false_empty_and_stable_missing_states() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    runtime.swap(Some(pool)).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime);
+    let mut hidden = loadout("hidden", &["alpha"]);
+    hidden.expose_tools = false;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            loadouts: vec![hidden, loadout("empty", &[])],
+            ..GatewayConfig::default()
+        })
+        .await;
+
+    assert!(
+        manager
+            .published_loadout_tool_catalog_snapshot("hidden")
+            .await
+            .expect("hidden projection")
+            .routes()
+            .is_empty()
+    );
+    assert!(
+        manager
+            .published_loadout_tool_catalog_snapshot("empty")
+            .await
+            .expect("empty projection")
+            .routes()
+            .is_empty()
+    );
+    assert_eq!(
+        manager
+            .published_loadout_tool_catalog_snapshot("missing")
+            .await
+            .err(),
+        Some(LoadoutToolCatalogPublicationError::MissingLoadout)
+    );
+
+    let no_pool = GatewayManager::new(
+        dir.path().join("no-pool.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    no_pool
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    assert_eq!(
+        no_pool
+            .published_loadout_tool_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutToolCatalogPublicationError::MissingPool)
+    );
+
+    let invalid_runtime = GatewayRuntimeHandle::default();
+    let invalid_pool = Arc::new(UpstreamPool::new());
+    invalid_pool
+        .insert_entry_for_tests("alpha", healthy_entry_with_tool("bravo", "echo"))
+        .await;
+    invalid_runtime.swap(Some(invalid_pool)).await;
+    let invalid = GatewayManager::new(dir.path().join("invalid.toml"), invalid_runtime);
+    invalid
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    assert_eq!(
+        invalid
+            .published_loadout_tool_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutToolCatalogPublicationError::CatalogUnavailable)
+    );
+}
+
+#[tokio::test]
+async fn loadout_tool_catalog_retries_catalog_and_manager_publication_changes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "old"))
+        .await;
+    pool.insert_entry_for_tests("bravo", healthy_entry_with_tool("bravo", "new"))
+        .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime);
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+
+    let changing_pool = Arc::clone(&pool);
+    let after_catalog_change = manager
+        .compose_loadout_tool_catalog("project", move |attempt| {
+            let pool = Arc::clone(&changing_pool);
+            async move {
+                if attempt == 0 {
+                    pool.insert_entry_for_tests(
+                        "alpha",
+                        healthy_entry_with_tool("alpha", "replacement"),
+                    )
+                    .await;
+                }
+            }
+        })
+        .await
+        .expect("catalog change should retry");
+    assert_eq!(
+        after_catalog_change.routes()[0].tool_name.as_ref(),
+        "replacement"
+    );
+
+    let changing_manager = manager.clone();
+    let after_manager_change = manager
+        .compose_loadout_tool_catalog("project", move |attempt| {
+            let manager = changing_manager.clone();
+            async move {
+                if attempt == 0 {
+                    manager
+                        .seed_config(config_with_loadout(loadout("project", &["bravo"])))
+                        .await;
+                }
+            }
+        })
+        .await
+        .expect("manager change should retry");
+    assert_eq!(
+        after_manager_change.routes()[0].upstream_name.as_ref(),
+        "bravo"
+    );
+}
+
+#[tokio::test]
+async fn loadout_tool_catalog_fails_closed_under_sustained_manager_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "a"))
+        .await;
+    pool.insert_entry_for_tests("bravo", healthy_entry_with_tool("bravo", "b"))
+        .await;
+    runtime.swap(Some(pool)).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime);
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+
+    let changing_manager = manager.clone();
+    let result = manager
+        .compose_loadout_tool_catalog("project", move |attempt| {
+            let manager = changing_manager.clone();
+            async move {
+                let upstream = if attempt % 2 == 0 { "bravo" } else { "alpha" };
+                manager
+                    .seed_config(config_with_loadout(loadout("project", &[upstream])))
+                    .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutToolCatalogPublicationError::Unstable)
+    );
+}
+
+#[tokio::test]
+async fn loadout_tool_catalog_retries_pool_aba_and_binds_final_publication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let original = Arc::new(UpstreamPool::new());
+    original
+        .insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "original"))
+        .await;
+    let transient = Arc::new(UpstreamPool::new());
+    transient
+        .insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "transient"))
+        .await;
+    runtime.swap(Some(Arc::clone(&original))).await;
+    let initial_generation = runtime.published_pool_snapshot().generation();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+
+    let swap_runtime = runtime.clone();
+    let republished_original = Arc::clone(&original);
+    let result = manager
+        .compose_loadout_tool_catalog("project", move |attempt| {
+            let runtime = swap_runtime.clone();
+            let transient = Arc::clone(&transient);
+            let original = Arc::clone(&republished_original);
+            async move {
+                if attempt == 0 {
+                    runtime.swap(Some(transient)).await;
+                    runtime.swap(Some(original)).await;
+                }
+            }
+        })
+        .await
+        .expect("pool ABA should retry to a coherent publication");
+
+    assert_eq!(result.routes()[0].tool_name.as_ref(), "original");
+    assert_ne!(result.pool_publication_generation(), initial_generation);
+    assert_eq!(
+        result.pool_publication_generation(),
+        runtime.published_pool_snapshot().generation()
+    );
 }

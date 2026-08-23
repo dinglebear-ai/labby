@@ -263,6 +263,12 @@ This prerequisite covers only upstream tools and their routability. It excludes 
 
 This is a prerequisite for later manager composition of the published runtime Loadout configuration with the selected pool's tool-catalog snapshot. It does not perform that composition, produce a complete catalog generation, bind a Project or exact action, or enable discovery, transport, or dispatch enforcement.
 
+### Wave 16 / Milestone 0T: published Loadout-filtered runtime tool catalog
+
+`GatewayManager` now composes a successful runtime Loadout observation, runtime-pool publication, and bounded upstream tool-catalog publication with a three-attempt G-C-G-C protocol. A returned snapshot binds all three opaque generations and includes only exposure-filtered, routable routes whose exact upstream appears in the runtime Loadout; `expose_tools = false` and an empty upstream set produce an empty projection. Manager, pool, or catalog churn retries and sustained churn fails closed. Missing and invalid publication states remain bounded and redacted.
+
+The snapshot is immutable observational input, not a dispatch grant. It remains unmounted and excludes built-in services, subject-scoped OAuth catalogs, resources, prompts, skills, Code Mode, protected routes, exact actions/targets, and enforcement. Those omitted authority domains still require their own coherent publication identities and final-boundary reauthorization.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
