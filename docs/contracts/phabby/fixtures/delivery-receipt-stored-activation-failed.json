@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "dinglebear.depot-delivery/v1",
+  "receiptId": "rcpt_01K35E3DV9SBT40FXEAFWA8RNB",
+  "sequence": 7,
+  "deliveryId": "del_01K35DWEEVDTNC2FW4Z6QB8MM8",
+  "correlationId": "cor_01K35DVFGST8ZFBBGC1TY8HB12",
+  "connectionId": "con_01K35DT9YW8H1X4Q1MNG3BBR2Q",
+  "tenantId": "ten_01K35DRR08706RPZ8A1WQF77ZC",
+  "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF",
+  "resource": {
+    "kind": "artifact",
+    "id": "art_5c9597f642c50c814c1585b49ac19921520d780d259678dabd6502608179f6ce",
+    "revisionId": "rev_01K35DV2SSZYJZ7NR7P3P8CSD8",
+    "contentDigest": "sha256:feda49490988a21b01ea9d6548f2c893a7cea6c4e9834322985c28d82280c13f"
+  },
+  "state": "partial",
+  "components": [
+    {
+      "componentId": "cmp_manifest",
+      "state": "stored",
+      "bytesTransferred": 3214,
+      "digestVerified": true
+    },
+    {
+      "componentId": "cmp_runtime",
+      "state": "failed",
+      "stage": "activation",
+      "code": "target_requirement_unsatisfied",
+      "retryable": false,
+      "message": "The stored revision requires a capability this target does not provide."
+    }
+  ],
+  "summary": {
+    "requested": 2,
+    "granted": 2,
+    "transferred": 2,
+    "verified": 2,
+    "stored": 2,
+    "materialized": 1,
+    "exposed": 0,
+    "activated": 0,
+    "incompatible": 0,
+    "partial": 1,
+    "cancelled": 0,
+    "failed": 1
+  },
+  "occurredAt": "2026-08-22T14:05:42Z"
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "dinglebear.depot-delivery/v1",
+  "error": {
+    "code": "grant_expired",
+    "stage": "grant_validation",
+    "retryable": true,
+    "message": "The download grant expired; request a new grant for the same delivery."
+  },
+  "deliveryId": "del_01K35DWEEVDTNC2FW4Z6QB8MM8",
+  "correlationId": "cor_01K35DVFGST8ZFBBGC1TY8HB12",
+  "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF"
+}

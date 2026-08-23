@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "dinglebear.depot-delivery/v1",
+  "deliveryHandle": "dh_7unNfYzqp7wzkxuE9S3VzR8c",
+  "connectionId": "con_01K35DT9YW8H1X4Q1MNG3BBR2Q",
+  "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF",
+  "resource": {
+    "kind": "artifact",
+    "id": "art_5c9597f642c50c814c1585b49ac19921520d780d259678dabd6502608179f6ce",
+    "revisionId": "rev_01K35DV2SSZYJZ7NR7P3P8CSD8",
+    "contentDigest": "sha256:feda49490988a21b01ea9d6548f2c893a7cea6c4e9834322985c28d82280c13f"
+  },
+  "conflictPolicy": "reject",
+  "requestedOperations": ["store", "materialize", "expose", "activate"],
+  "idempotencyKey": "idem_0PxLDuFD52blZ0QIR0TiO9KP",
+  "correlationId": "cor_01K35DVFGST8ZFBBGC1TY8HB12"
+}

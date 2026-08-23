@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "dinglebear.depot-delivery/v1",
+  "challengeId": "link_01K35DMBZ4SGK13R0ME2JZ4XGD",
+  "nonce": "7dJ8E2fH4wC9nQ6rT1yU5iO0pA3sG8kL2zX7vB9mN4c",
+  "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF",
+  "targetDisplayName": "Home Labby",
+  "depotOrigin": "https://depot.example.test",
+  "labbyKeyThumbprint": "sha256:2b9349f290ee28da2d742231f4f04eecc8fd44f013c4d7728762987fb2dc0f28",
+  "protocolRange": {
+    "minimum": "dinglebear.depot-delivery/v1",
+    "maximum": "dinglebear.depot-delivery/v1"
+  },
+  "expiresAt": "2026-08-22T14:10:00Z"
+}
