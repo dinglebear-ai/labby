@@ -4,7 +4,7 @@
 //! deliberately does not represent execution authorization: discovery,
 //! compatibility, and availability never grant tools or side-effect access.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Labby's disposition for one compatibility feature or requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -68,11 +68,11 @@ impl SkillCompatibilityItem {
 /// `available` is derived exclusively from compatibility classifications. It
 /// means the Skill may be offered for discovery or activation; it never grants
 /// execution authorization, tools, filesystem, network, shell, or secrets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkillAvailabilitySummary {
-    pub available: bool,
+    available: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub items: Vec<SkillCompatibilityItem>,
+    items: Vec<SkillCompatibilityItem>,
 }
 
 impl SkillAvailabilitySummary {
@@ -93,6 +93,38 @@ impl SkillAvailabilitySummary {
             .iter()
             .any(|item| item.classification.blocks_availability());
         Self { available, items }
+    }
+
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        self.available
+    }
+
+    #[must_use]
+    pub fn items(&self) -> &[SkillCompatibilityItem] {
+        &self.items
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillAvailabilitySummary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            available: bool,
+            #[serde(default)]
+            items: Vec<SkillCompatibilityItem>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let summary = Self::from_items(wire.items);
+        if summary.available != wire.available {
+            return Err(serde::de::Error::custom(
+                "available contradicts compatibility items",
+            ));
+        }
+        Ok(summary)
     }
 }
 
@@ -118,7 +150,7 @@ mod tests {
             ),
         ]);
 
-        assert!(summary.available);
+        assert!(summary.is_available());
     }
 
     #[test]
@@ -134,7 +166,7 @@ mod tests {
             )
             .with_detail("operator-visible reason")]);
 
-            assert!(!summary.available, "{classification:?} must block");
+            assert!(!summary.is_available(), "{classification:?} must block");
         }
     }
 
@@ -158,5 +190,12 @@ mod tests {
         );
         assert!(value.get("authorized").is_none());
         assert!(value.get("allowed_tools").is_none());
+    }
+
+    #[test]
+    fn serde_rejects_contradictory_availability() {
+        let value =
+            json!({"available": true, "items": [{"name": "x", "classification": "invalid"}]});
+        assert!(serde_json::from_value::<SkillAvailabilitySummary>(value).is_err());
     }
 }

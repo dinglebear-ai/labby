@@ -25,7 +25,7 @@ pub struct SkillProviderResource {
 /// [`SkillProvider::read_resource`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillProviderEntry {
-    pub descriptor: SkillDescriptor,
+    descriptor: SkillDescriptor,
     /// Exact manifest accepted at the provider's validation boundary.
     ///
     /// This avoids reconstructing a wire entry from the compact projection,
@@ -40,6 +40,17 @@ impl SkillProviderEntry {
             descriptor: SkillDescriptor::from_validated_entry(provider, &skill),
             validated: skill,
         }
+    }
+
+    #[must_use]
+    pub const fn descriptor(&self) -> &SkillDescriptor {
+        &self.descriptor
+    }
+
+    #[must_use]
+    pub fn with_availability(mut self, availability: super::SkillAvailabilitySummary) -> Self {
+        self.descriptor.availability = availability;
+        self
     }
 
     /// Iterate the validated resource manifest without retaining a second copy.
@@ -72,7 +83,7 @@ impl SkillProviderEntry {
     /// Whether this entry may be offered by discovery or exact lookup.
     #[must_use]
     pub const fn is_available(&self) -> bool {
-        self.descriptor.availability.available
+        self.descriptor.availability.is_available()
     }
 }
 
@@ -152,6 +163,31 @@ pub struct SkillDiscoverResult {
     pub truncated: bool,
 }
 
+impl SkillDiscoverResult {
+    pub fn validate_for(
+        &self,
+        provider: &SkillProviderId,
+        request: &SkillDiscoverRequest,
+    ) -> Result<(), SkillProviderError> {
+        request.validate()?;
+        validate_provider_id(provider)?;
+        if self.skills.len() > request.max_items {
+            return Err(SkillProviderError::LimitExceeded {
+                what: "max_items",
+                limit: request.max_items,
+            });
+        }
+        if self
+            .skills
+            .iter()
+            .any(|entry| entry.descriptor().id.provider() != provider)
+        {
+            return Err(SkillProviderError::WrongProvider);
+        }
+        Ok(())
+    }
+}
+
 /// Provider-neutral provenance for a discovery result.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SkillDiscoverySource {
@@ -180,6 +216,25 @@ impl SkillGetRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillGetResult {
     pub skill: SkillProviderEntry,
+}
+
+impl SkillGetResult {
+    pub fn validate_for(
+        &self,
+        provider: &SkillProviderId,
+        request: &SkillGetRequest,
+    ) -> Result<(), SkillProviderError> {
+        request.validate()?;
+        if provider != request.id.provider() {
+            return Err(SkillProviderError::WrongProvider);
+        }
+        if self.skill.descriptor().id != request.id {
+            return Err(SkillProviderError::Integrity {
+                reason: "skill_identity_mismatch",
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Request to read one manifest-listed Skill resource within a byte budget.
@@ -302,15 +357,19 @@ fn validate_bound(
 }
 
 fn validate_skill_id(id: &SkillId) -> Result<(), SkillProviderError> {
-    if id.provider.instance.is_empty() {
+    validate_provider_id(id.provider())?;
+    validate_nonempty("skill.source_id", id.source_id())?;
+    Ok(())
+}
+
+fn validate_provider_id(id: &SkillProviderId) -> Result<(), SkillProviderError> {
+    validate_nonempty("provider.instance", id.instance())
+}
+
+fn validate_nonempty(field: &'static str, value: &str) -> Result<(), SkillProviderError> {
+    if value.is_empty() {
         return Err(SkillProviderError::InvalidRequest {
-            field: "provider.instance",
-            reason: "must_not_be_empty",
-        });
-    }
-    if id.source_id.is_empty() {
-        return Err(SkillProviderError::InvalidRequest {
-            field: "skill.source_id",
+            field,
             reason: "must_not_be_empty",
         });
     }
@@ -352,6 +411,25 @@ mod tests {
         ResourceDigest, SkillEntry, SkillProviderKind, SkillResource, validate_skill_entry,
     };
     use serde_json::json;
+
+    fn provider_entry(provider: SkillProviderId, uri: &str, name: &str) -> SkillProviderEntry {
+        let entry = SkillEntry {
+            uri: uri.to_string(),
+            frontmatter: json!({"name": name, "description": "demo"})
+                .as_object()
+                .expect("object")
+                .clone(),
+            resources: Some(vec![SkillResource {
+                uri: uri.to_string(),
+                digest: ResourceDigest::of_bytes(b"manifest").to_wire(),
+            }]),
+            meta: None,
+        };
+        SkillProviderEntry::from_validated(
+            provider,
+            validate_skill_entry(&entry).expect("validated skill"),
+        )
+    }
 
     #[test]
     fn discovery_defaults_are_hard_bounded() {
@@ -409,6 +487,89 @@ mod tests {
                 what: "resource_bytes",
                 limit: 4
             })
+        ));
+
+        let wrong_identity = SkillResourceReadResult {
+            skill_id: SkillId::new(
+                SkillProviderId::new(SkillProviderKind::Bundled, "other"),
+                "review",
+            ),
+            resource_id: "other.md".to_string(),
+            bytes: b"1234".to_vec(),
+            media_type: None,
+        };
+        assert!(matches!(
+            wrong_identity.validate_for(&request),
+            Err(SkillProviderError::Integrity { .. })
+        ));
+    }
+
+    #[test]
+    fn discovery_result_rejects_excess_and_foreign_entries() {
+        let provider = SkillProviderId::new(SkillProviderKind::Bundled, "built-in");
+        let request = SkillDiscoverRequest {
+            max_items: 1,
+            ..SkillDiscoverRequest::default()
+        };
+        let foreign = SkillProviderId::new(SkillProviderKind::Bundled, "other");
+        let result = SkillDiscoverResult {
+            skills: vec![provider_entry(
+                foreign,
+                "skill://other/review/SKILL.md",
+                "review",
+            )],
+            source: SkillDiscoverySource::Refreshed,
+            cache_age: None,
+            ttl: None,
+            excluded_count: 0,
+            truncated: false,
+        };
+        assert!(matches!(
+            result.validate_for(&provider, &request),
+            Err(SkillProviderError::WrongProvider)
+        ));
+
+        let excess = SkillDiscoverResult {
+            skills: vec![
+                provider_entry(provider.clone(), "skill://built-in/one/SKILL.md", "one"),
+                provider_entry(provider.clone(), "skill://built-in/two/SKILL.md", "two"),
+            ],
+            source: SkillDiscoverySource::Refreshed,
+            cache_age: None,
+            ttl: None,
+            excluded_count: 0,
+            truncated: false,
+        };
+        assert!(matches!(
+            excess.validate_for(&provider, &request),
+            Err(SkillProviderError::LimitExceeded {
+                what: "max_items",
+                limit: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn get_result_rejects_provider_and_exact_identity_mismatches() {
+        let provider = SkillProviderId::new(SkillProviderKind::Bundled, "built-in");
+        let requested_id = SkillId::new(provider.clone(), "skill://built-in/review/SKILL.md");
+        let request = SkillGetRequest {
+            id: requested_id,
+            deadline: SkillProviderDeadline::default(),
+        };
+        let result = SkillGetResult {
+            skill: provider_entry(provider.clone(), "skill://built-in/other/SKILL.md", "other"),
+        };
+        assert!(matches!(
+            result.validate_for(&provider, &request),
+            Err(SkillProviderError::Integrity { .. })
+        ));
+        assert!(matches!(
+            result.validate_for(
+                &SkillProviderId::new(SkillProviderKind::Bundled, "other"),
+                &request
+            ),
+            Err(SkillProviderError::WrongProvider)
         ));
     }
 

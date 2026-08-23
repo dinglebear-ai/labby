@@ -5,7 +5,7 @@
 //! pagination, cache, or JSON-RPC fields so bundled, local, Artifact-backed,
 //! and future registry providers can describe the same logical object.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 use super::{
@@ -29,19 +29,49 @@ pub enum SkillProviderKind {
 ///
 /// `instance` is assigned by Labby configuration, not accepted as an assertion
 /// of trust from the provider. For MCP it is the host-assigned upstream name.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct SkillProviderId {
-    pub kind: SkillProviderKind,
-    pub instance: String,
+    kind: SkillProviderKind,
+    instance: String,
 }
 
 impl SkillProviderId {
     #[must_use]
     pub fn new(kind: SkillProviderKind, instance: impl Into<String>) -> Self {
-        Self {
-            kind,
-            instance: instance.into(),
+        let instance = instance.into();
+        assert!(!instance.is_empty(), "provider instance must not be empty");
+        Self { kind, instance }
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &SkillProviderKind {
+        &self.kind
+    }
+
+    #[must_use]
+    pub fn instance(&self) -> &str {
+        &self.instance
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillProviderId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            kind: SkillProviderKind,
+            instance: String,
         }
+
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.instance.is_empty() {
+            return Err(serde::de::Error::custom(
+                "provider instance must not be empty",
+            ));
+        }
+        Ok(Self::new(wire.kind, wire.instance))
     }
 }
 
@@ -50,19 +80,52 @@ impl SkillProviderId {
 /// `source_id` is opaque provider-native identity. For SEP-2640 it is the URI
 /// published by the originating server. It is never replaced by a display name
 /// or inferred from a URI scheme.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct SkillId {
-    pub provider: SkillProviderId,
-    pub source_id: String,
+    provider: SkillProviderId,
+    source_id: String,
 }
 
 impl SkillId {
     #[must_use]
     pub fn new(provider: SkillProviderId, source_id: impl Into<String>) -> Self {
+        let source_id = source_id.into();
+        assert!(!source_id.is_empty(), "skill source id must not be empty");
         Self {
             provider,
-            source_id: source_id.into(),
+            source_id,
         }
+    }
+
+    #[must_use]
+    pub fn provider(&self) -> &SkillProviderId {
+        &self.provider
+    }
+
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            provider: SkillProviderId,
+            source_id: String,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.source_id.is_empty() {
+            return Err(serde::de::Error::custom(
+                "skill source id must not be empty",
+            ));
+        }
+        Ok(Self::new(wire.provider, wire.source_id))
     }
 }
 
@@ -170,18 +233,36 @@ mod tests {
     }
 
     #[test]
+    fn identity_deserialization_rejects_empty_components() {
+        assert!(
+            serde_json::from_value::<SkillProviderId>(json!({
+                "kind": "bundled",
+                "instance": ""
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<SkillId>(json!({
+                "provider": {"kind": "bundled", "instance": "built-in"},
+                "source_id": ""
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn validated_adapter_is_metadata_only_and_preserves_provider_metadata() {
         let skill = validated("skill://catalog/review/SKILL.md", "review");
         let provider = SkillProviderId::new(SkillProviderKind::McpUpstream, "depot");
 
         let descriptor = SkillDescriptor::from_validated_entry(provider.clone(), &skill);
 
-        assert_eq!(descriptor.id.provider, provider);
-        assert_eq!(descriptor.id.source_id, skill.entry.uri);
+        assert_eq!(descriptor.id.provider(), &provider);
+        assert_eq!(descriptor.id.source_id(), skill.entry.uri);
         assert_eq!(descriptor.name, "review");
         assert_eq!(descriptor.description, "demo");
         assert_eq!(descriptor.resource_count, 1);
-        assert!(descriptor.availability.available);
+        assert!(descriptor.availability.is_available());
         assert_eq!(
             descriptor.provider_metadata["vendor.example/hint"],
             "preserved"
@@ -201,5 +282,18 @@ mod tests {
         assert_eq!(json["id"]["provider"]["instance"], "depot");
         assert_eq!(json["id"]["source_id"], "skill://catalog/review/SKILL.md");
         assert!(json.get("instructions").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "provider instance must not be empty")]
+    fn provider_identity_rejects_empty_instance() {
+        drop(SkillProviderId::new(SkillProviderKind::Bundled, ""));
+    }
+
+    #[test]
+    #[should_panic(expected = "skill source id must not be empty")]
+    fn skill_identity_rejects_empty_source_id() {
+        let provider = SkillProviderId::new(SkillProviderKind::Bundled, "labby");
+        drop(SkillId::new(provider, ""));
     }
 }

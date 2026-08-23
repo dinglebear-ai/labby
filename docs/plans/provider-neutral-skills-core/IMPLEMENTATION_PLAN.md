@@ -2,11 +2,11 @@
 
 ## Slice 1: explain current availability
 
-- Introduce `SkillExposureDecision` in the gateway runtime.
-- Compute it from the same fail-closed policy used for enforcement.
-- Replace `OperatorSkill.exposed` storage with the decision.
-- Project structured decision data and retain derived `exposed` JSON.
-- Add unit tests for allow-all, matched-pattern, and not-matched decisions.
+- [x] Introduce `SkillExposureDecision` in the gateway runtime.
+- [x] Compute it from the same fail-closed policy used for enforcement.
+- [x] Replace `OperatorSkill.exposed` storage with the decision.
+- [x] Project structured decision data and retain derived `exposed` JSON.
+- [x] Add unit tests for allow-all, matched-pattern, and not-matched decisions.
 
 ## Slice 2: dedicated policy vocabulary
 
@@ -21,8 +21,10 @@
 - [x] Define provider-scoped `SkillId`, `SkillProviderId`, and compact
   `SkillDescriptor` in the lowest shared crate used by providers and product
   dispatch.
-- [ ] Add compatibility, requirements, and availability summaries once the
-  provider result contract establishes their exact inputs.
+- [x] Add a fail-closed compatibility availability summary once the provider
+  result contract established its exact inputs.
+- [ ] Add a distinct requirements summary once concrete provider inputs require
+  it.
 - [x] Adapt existing `ValidatedSkill` without duplicating validation or fetching
   bodies.
 - [x] Preserve existing published/source URI behavior at surface boundaries.

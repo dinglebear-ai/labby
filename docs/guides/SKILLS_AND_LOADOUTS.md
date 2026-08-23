@@ -68,7 +68,29 @@ Trust/exposure mutations use gateway.update:
 }
 ~~~
 
-The operator listing returns a row per relevant upstream with enabled/trusted state, extension support, validated Skills, rejected entries, excluded count, truncation, cache age, and a per-upstream error when inspection degrades.
+The operator listing returns a row per relevant upstream with enabled/trusted
+state, extension support, validated Skills, rejected entries, excluded count,
+truncation, cache age, and a per-upstream error when inspection degrades. Each
+validated Skill retains the legacy `exposed` boolean and also reports its
+provider-scoped identity plus the structured exposure decision:
+
+~~~json
+{
+  "identity": {
+    "provider": { "kind": "mcp_sep", "instance": "github" },
+    "source_id": "skill://github/review/SKILL.md"
+  },
+  "exposed": true,
+  "exposure": {
+    "status": "exposed",
+    "reason": "matched_pattern",
+    "matched_pattern": "review-*"
+  }
+}
+~~~
+
+Identity is provenance, not authorization. The exposure decision explains the
+existing `expose_skills` policy result; it does not grant tool access.
 
 ## Skills graceful degradation
 

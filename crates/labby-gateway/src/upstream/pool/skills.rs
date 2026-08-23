@@ -411,9 +411,9 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         subject: Option<&str>,
         uri: &str,
-    ) -> Option<ValidatedSkill> {
+    ) -> Result<Option<ValidatedSkill>, String> {
         if !config.proxy_skills {
-            return None;
+            return Ok(None);
         }
         let peer = self
             .acquire_peer(
@@ -421,30 +421,23 @@ impl UpstreamPool {
                 super::super::types::UpstreamCapability::Skills,
                 "skills.get",
             )
-            .await?;
-        if !peer_declares_skills(&peer) {
-            return None;
-        }
-        let skill = match self
-            .fetch_upstream_skill(&config.name, &peer, uri, subject)
             .await
-        {
-            Ok(skill) => skill?,
-            Err(error) => {
-                tracing::warn!(
-                    upstream = %config.name,
-                    error = %error,
-                    "skills/get for an unlisted skill failed"
-                );
-                return None;
-            }
+            .ok_or_else(|| format!("upstream `{}` is not connected", config.name))?;
+        if !peer_declares_skills(&peer) {
+            return Ok(None);
+        }
+        let Some(skill) = self
+            .fetch_upstream_skill(&config.name, &peer, uri, subject)
+            .await?
+        else {
+            return Ok(None);
         };
 
         // The allowlist applies to a skill fetched by URI exactly as it does to
         // a listed one; filtering only the listing would be a bypass.
         let policy =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
-        policy.matches(&skill.name).then_some(skill)
+        Ok(policy.matches(&skill.name).then_some(skill))
     }
 
     /// Drop every cached skill catalog for one upstream, across all subjects.

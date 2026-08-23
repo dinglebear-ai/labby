@@ -77,7 +77,7 @@ impl SkillProvider for SepSkillProvider {
                 .take(request.max_items)
                 .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
                 .collect();
-            Ok(SkillDiscoverResult {
+            let result = SkillDiscoverResult {
                 skills,
                 source: exposed.source,
                 cache_age: (exposed.source == SkillDiscoverySource::Cached)
@@ -85,14 +85,16 @@ impl SkillProvider for SepSkillProvider {
                 ttl: exposed.ttl_ms.map(Duration::from_millis),
                 excluded_count: exposed.excluded_count,
                 truncated: exposed.truncated || available > request.max_items,
-            })
+            };
+            result.validate_for(&self.id, request)?;
+            Ok(result)
         })
     }
 
     fn get<'a>(&'a self, request: &'a SkillGetRequest) -> SkillProviderFuture<'a, SkillGetResult> {
         Box::pin(async move {
             request.validate()?;
-            self.validate_provider(&request.id.provider)?;
+            self.validate_provider(request.id.provider())?;
             let operation = async {
                 let exposed = self
                     .pool
@@ -102,7 +104,7 @@ impl SkillProvider for SepSkillProvider {
                 let skill = if let Some(skill) = exposed
                     .skills
                     .iter()
-                    .find(|skill| skill.entry.uri == request.id.source_id)
+                    .find(|skill| skill.entry.uri == request.id.source_id())
                     .cloned()
                 {
                     Some(skill)
@@ -111,14 +113,17 @@ impl SkillProvider for SepSkillProvider {
                         .fetch_unlisted_skill(
                             &self.config,
                             self.subject.as_deref(),
-                            &request.id.source_id,
+                            request.id.source_id(),
                         )
                         .await
+                        .map_err(|reason| SkillProviderError::Provider { reason })?
                 };
                 let skill = skill.ok_or(SkillProviderError::SkillNotFound)?;
-                Ok(SkillGetResult {
+                let result = SkillGetResult {
                     skill: SkillProviderEntry::from_validated(self.id.clone(), skill),
-                })
+                };
+                result.validate_for(&self.id, request)?;
+                Ok(result)
             };
             tokio::time::timeout(self.operation_timeout(request.deadline.timeout), operation)
                 .await
@@ -132,13 +137,13 @@ impl SkillProvider for SepSkillProvider {
     ) -> SkillProviderFuture<'a, SkillResourceReadResult> {
         Box::pin(async move {
             request.validate()?;
-            self.validate_provider(&request.skill_id.provider)?;
+            self.validate_provider(request.skill_id.provider())?;
             let verified = tokio::time::timeout(
                 self.operation_timeout(request.deadline.timeout),
                 self.pool.read_proxied_skill_file_for_skill(
                     &self.config,
                     self.subject.as_deref(),
-                    &request.skill_id.source_id,
+                    request.skill_id.source_id(),
                     &request.resource_id,
                     request.max_bytes,
                 ),

@@ -46,10 +46,11 @@ name is a display/search field, never a globally unique identifier.
 
 ### Descriptor
 
-The compact descriptor contains identity, name, description, provider,
-provenance, revision/integrity metadata when available, compatibility summary,
-requirements summary, and availability. It does not contain `SKILL.md` or file
-bodies.
+The landed compact descriptor contains provider-scoped identity, name,
+description, an optional source URI, resource count, fail-closed compatibility
+availability, and provider metadata. It does not contain `SKILL.md` or file
+bodies. Rich provenance, revision/integrity, and requirements summaries remain
+future extensions; providers must not synthesize them from untrusted metadata.
 
 ### Provider
 
@@ -61,15 +62,13 @@ frontmatter verification behavior.
 
 ### Availability and exposure
 
-Availability describes whether Labby can safely offer a Skill. Initial states:
-
-- `validated_exposed`
-- `validated_hidden`
-- `integrity_rejected`
-- `transport_unsupported`
-- `dependency_unavailable`
-- `policy_blocked`
-- `truncated`
+Availability describes whether Labby can safely offer a validated Skill. The
+landed summary is derived from compatibility items classified as `supported`,
+`preserved_hint`, `adaptable`, `dependency_unavailable`, `invalid`, or
+`policy_blocked`. Dependency-unavailable, invalid, and policy-blocked items make
+the summary unavailable. Exposure, validation rejection, transport failure,
+and discovery truncation remain separate decisions/results rather than being
+collapsed into availability.
 
 An exposure decision records whether the Skill is visible, the stable reason,
 and the matching rule when one exists. The initial implementation distinguishes

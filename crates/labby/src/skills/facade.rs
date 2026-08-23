@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 #[cfg(feature = "gateway")]
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
@@ -103,7 +104,7 @@ impl SkillCallerScope {
 /// back to process-global gateway state because doing so would erase protected
 /// route and OAuth-subject boundaries.
 pub(crate) struct SkillRegistryContext {
-    first_party: FirstPartySkillProviders,
+    first_party: &'static FirstPartySkillProviders,
     #[cfg(feature = "gateway")]
     manager: Option<Arc<GatewayManager>>,
     scope: SkillCallerScope,
@@ -113,7 +114,7 @@ impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn first_party_only() -> Self {
         Self {
-            first_party: FirstPartySkillProviders::load(),
+            first_party: first_party_providers(),
             #[cfg(feature = "gateway")]
             manager: None,
             scope: SkillCallerScope::first_party_only(),
@@ -124,11 +125,16 @@ impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn with_manager(manager: Arc<GatewayManager>, scope: SkillCallerScope) -> Self {
         Self {
-            first_party: FirstPartySkillProviders::load(),
+            first_party: first_party_providers(),
             manager: Some(manager),
             scope,
         }
     }
+}
+
+fn first_party_providers() -> &'static FirstPartySkillProviders {
+    static PROVIDERS: OnceLock<FirstPartySkillProviders> = OnceLock::new();
+    PROVIDERS.get_or_init(FirstPartySkillProviders::load)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,8 +152,8 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
         skills: context
             .first_party
             .discover()
-            .await
-            .into_iter()
+            .iter()
+            .cloned()
             .map(provider_entry_to_wire)
             .collect(),
         next_cursor: None,
@@ -189,8 +195,8 @@ pub(crate) async fn get_visible_skill(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Option<SkillEntry> {
-    if let Some(entry) = context.first_party.find(uri).await {
-        return Some(provider_entry_to_wire(entry));
+    if let Some(entry) = context.first_party.find(uri) {
+        return Some(provider_entry_to_wire(entry.clone()));
     }
 
     #[cfg(feature = "gateway")]
@@ -271,7 +277,7 @@ pub(crate) async fn read_visible_skill_file(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Result<VisibleSkillFile, ToolError> {
-    if let Some(provider_entry) = context.first_party.find(uri).await {
+    if let Some(provider_entry) = context.first_party.find(uri) {
         let entry = provider_entry_to_wire(provider_entry.clone());
         let resource = entry
             .resources
@@ -283,10 +289,10 @@ pub(crate) async fn read_visible_skill_file(
             .read(&provider_entry, uri, limits::MAX_SKILL_RESOURCE_BYTES)
             .await
             .map_err(first_party_provider_error_to_tool)?;
-        let text = String::from_utf8(verified.bytes).map_err(|_| ToolError::Sdk {
-            sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
-            message: "verified first-party skill resource was not UTF-8 text".to_string(),
-        })?;
+        let text = verified_text(
+            verified.bytes,
+            "verified first-party skill resource was not UTF-8 text",
+        )?;
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
             skill_uri: entry.uri,
@@ -346,10 +352,7 @@ pub(crate) async fn read_visible_skill_file(
             })
             .await
             .map_err(provider_error_to_tool)?;
-        let text = String::from_utf8(verified.bytes).map_err(|_| ToolError::Sdk {
-            sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
-            message: "verified skill resource was not UTF-8 text".to_string(),
-        })?;
+        let text = verified_text(verified.bytes, "verified skill resource was not UTF-8 text")?;
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
             skill_uri: entry.uri,
@@ -372,6 +375,13 @@ fn provider_entry_to_wire(skill: SkillProviderEntry) -> SkillEntry {
 }
 
 fn first_party_provider_error_to_tool(error: SkillProviderError) -> ToolError {
+    provider_error_with_failure_kind(error, "provider_error")
+}
+
+fn provider_error_with_failure_kind(
+    error: SkillProviderError,
+    provider_failure_kind: &'static str,
+) -> ToolError {
     let sdk_kind = match error {
         SkillProviderError::InvalidRequest { .. } | SkillProviderError::WrongProvider => {
             "invalid_param"
@@ -382,13 +392,20 @@ fn first_party_provider_error_to_tool(error: SkillProviderError) -> ToolError {
         SkillProviderError::LimitExceeded { .. } => "response_too_large",
         SkillProviderError::Integrity { .. } => labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH,
         SkillProviderError::Unavailable { .. } | SkillProviderError::Provider { .. } => {
-            "provider_error"
+            provider_failure_kind
         }
     };
     ToolError::Sdk {
         sdk_kind: sdk_kind.to_string(),
         message: error.to_string(),
     }
+}
+
+fn verified_text(bytes: Vec<u8>, message: &'static str) -> Result<String, ToolError> {
+    String::from_utf8(bytes).map_err(|_| ToolError::Sdk {
+        sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+        message: message.to_string(),
+    })
 }
 
 fn unknown_file(uri: &str) -> ToolError {
@@ -489,23 +506,7 @@ async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills 
 
 #[cfg(feature = "gateway")]
 fn provider_error_to_tool(error: SkillProviderError) -> ToolError {
-    let sdk_kind = match error {
-        SkillProviderError::InvalidRequest { .. } | SkillProviderError::WrongProvider => {
-            "invalid_param"
-        }
-        SkillProviderError::SkillNotFound | SkillProviderError::ResourceNotFound => "not_found",
-        SkillProviderError::ManifestStale => labby_runtime::skills::KIND_SKILL_MANIFEST_STALE,
-        SkillProviderError::DeadlineExceeded => "timeout",
-        SkillProviderError::LimitExceeded { .. } => "response_too_large",
-        SkillProviderError::Integrity { .. } => labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH,
-        SkillProviderError::Unavailable { .. } | SkillProviderError::Provider { .. } => {
-            "upstream_error"
-        }
-    };
-    ToolError::Sdk {
-        sdk_kind: sdk_kind.to_string(),
-        message: error.to_string(),
-    }
+    provider_error_with_failure_kind(error, "upstream_error")
 }
 
 #[cfg(feature = "gateway")]

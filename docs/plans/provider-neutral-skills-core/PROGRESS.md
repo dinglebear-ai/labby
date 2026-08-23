@@ -1,6 +1,6 @@
 # Provider-neutral Skills core progress
 
-Last updated: 2026-08-22
+Last updated: 2026-08-23
 Branch: `codex/provider-neutral-skills-core`
 Worktree: `/home/jmagar/workspace/labby/.worktrees/codex/provider-neutral-skills-core`
 Tracking: `lab-27juw`
@@ -12,7 +12,9 @@ Tracking: `lab-27juw`
 - The referenced ChatGPT session created no repository worktree or documents.
 - Existing `docs/plans/skills-over-mcp-compat/` addresses client projection,
   not provider neutrality; it remains an adjacent plan.
-- Current operator state is `OperatorSkill { skill, exposed: bool }`.
+- At the recorded baseline, operator state was `OperatorSkill { skill,
+  exposed: bool }`. This branch now stores a provider-neutral descriptor plus a
+  structured exposure decision while retaining derived `exposed` JSON.
 - Current enforcement compiles `expose_skills` through the shared fail-closed
   matcher and applies it both to cached listings and unlisted direct fetches.
 
@@ -47,9 +49,10 @@ Tracking: `lab-27juw`
 - [x] Add fail-closed compatibility/availability vocabulary without embedding
   execution authorization.
 - [x] Route exact upstream get/read through `SepSkillProvider` for listed Skills.
+- [x] Migrate first-party compatibility projection through immutable bundled
+  and operator-local provider snapshots with bundled-first collision behavior.
 - [ ] Make direct-get unlisted Skill snapshots readable without weakening
-  manifest ownership, then migrate first-party compatibility projection fully
-  through providers.
+  manifest ownership.
 
 ## Decisions
 
@@ -94,7 +97,7 @@ Tracking: `lab-27juw`
 - Gateway all-features/all-targets Clippy with warnings denied passed after the
   descriptor integration.
 
-### Slice 4 verification in progress
+### Slice 4 verification
 
 - Provider contract request/result validation and object-safety tests: 4
   passed.
@@ -105,8 +108,9 @@ Tracking: `lab-27juw`
   the neutral request controls returned items and deadline without pretending
   that cached traversals honor caller-selected page counts.
 - Bundled and operator-local providers snapshot validated entries and exact
-  bytes behind distinct provider IDs while leaving the current first-party
-  compatibility registry and bundled-first collision behavior unchanged.
+  bytes behind distinct provider IDs. The production first-party facade uses
+  one process-lifetime merged snapshot and preserves bundled-first collision
+  behavior.
 - Bundled progressive discovery/read and cross-provider identity tests: 2
   passed.
 - Full runtime suite: 181 unit tests plus 22 contract/integration tests passed;
@@ -124,8 +128,9 @@ Tracking: `lab-27juw`
   identity; a cross-Skill read regression now passes.
 - Preserve stable digest/stale/limit classifications at the provider boundary
   instead of flattening every read failure into a generic provider error.
-- Provider discovery now carries validated manifest metadata separately from
-  compact descriptors, and the upstream list facade consumes that projection.
+- Provider discovery retains one exact validated manifest beside its compact
+  descriptor, and the upstream list facade consumes that projection without
+  reconstructing or revalidating it.
 - Compatibility/availability classification tests: 3 passed.
 - Provider contract tests: 4 passed; focused facade tests: 4 passed; bundled
   provider tests: 2 passed; cross-Skill owner-binding test: passed.
