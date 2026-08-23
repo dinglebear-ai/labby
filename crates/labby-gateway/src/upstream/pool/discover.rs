@@ -19,7 +19,8 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use crate::registry::InProcessServiceRegistry;
 
 use super::super::types::{
-    ToolExposurePolicy, UpstreamCapability, UpstreamEntry, UpstreamHealth, UpstreamTool,
+    SkillExposurePolicy, ToolExposurePolicy, UpstreamCapability, UpstreamEntry, UpstreamHealth,
+    UpstreamTool,
 };
 use super::UpstreamPool;
 use super::capability::discover_capability_counts;
@@ -413,7 +414,7 @@ impl UpstreamPool {
                         exposure_policy: ToolExposurePolicy::All,
                         resource_exposure_policy: ToolExposurePolicy::All,
                         prompt_exposure_policy: ToolExposurePolicy::All,
-                        skill_exposure_policy: ToolExposurePolicy::All,
+                        skill_exposure_policy: SkillExposurePolicy::all(),
                         proxy_skills: false,
                         supports_skills: None,
                         proxy_resources: true,

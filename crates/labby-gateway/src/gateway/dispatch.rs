@@ -1239,13 +1239,19 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         .skills
         .iter()
         .map(|item| {
-            let skill = &item.skill;
+            let skill = &item.descriptor;
             serde_json::json!({
                 "name": skill.name,
-                "uri": skill.entry.uri,
-                "description": skill.entry.frontmatter.get("description").and_then(|value| value.as_str()),
-                "resource_count": skill.entry.resources.as_ref().map_or(0, Vec::len),
-                "exposed": item.exposed,
+                "uri": skill.source_uri,
+                "description": skill.description,
+                "resource_count": skill.resource_count,
+                "identity": skill.id,
+                "exposed": item.exposure.exposed,
+                "exposure": {
+                    "status": item.exposure.status(),
+                    "reason": item.exposure.reason.as_str(),
+                    "matched_pattern": item.exposure.matched_pattern,
+                },
             })
         })
         .collect();
@@ -1264,7 +1270,11 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         skills,
         rejected,
         discovered_count: operator.discovered_count,
-        exposed_count: operator.skills.iter().filter(|item| item.exposed).count(),
+        exposed_count: operator
+            .skills
+            .iter()
+            .filter(|item| item.exposure.exposed)
+            .count(),
     }
 }
 

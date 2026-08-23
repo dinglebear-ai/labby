@@ -33,7 +33,7 @@ use labby_runtime::skills::{
 };
 
 /// Largest single operator-provided file that will be served.
-const MAX_LOCAL_SKILL_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_LOCAL_SKILL_FILE_BYTES: u64 = limits::MAX_SKILL_RESOURCE_BYTES as u64;
 
 /// Directory under `$LABBY_HOME` scanned for operator skills.
 const LOCAL_SKILLS_DIR: &str = "skills";
