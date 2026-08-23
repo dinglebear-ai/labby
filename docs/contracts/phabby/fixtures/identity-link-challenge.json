@@ -5,6 +5,7 @@
   "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF",
   "targetDisplayName": "Home Labby",
   "depotOrigin": "https://depot.example.test",
+  "dnsPolicyId": "dns_14daa3df83a36b1d6375378fae3383d2db1f610b1de901de23b47becb2313359",
   "labbyKeyThumbprint": "sha256:2b9349f290ee28da2d742231f4f04eecc8fd44f013c4d7728762987fb2dc0f28",
   "protocolRange": {
     "minimum": "dinglebear.depot-delivery/v1",

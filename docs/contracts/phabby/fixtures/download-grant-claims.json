@@ -1,5 +1,6 @@
 {
   "iss": "https://depot.example.test",
+  "dnsPolicyId": "dns_14daa3df83a36b1d6375378fae3383d2db1f610b1de901de23b47becb2313359",
   "sub": "acct_01K35DRD17JYEQ7Y6G12CCJAXW",
   "aud": "labby:delivery",
   "tenantId": "ten_01K35DRR08706RPZ8A1WQF77ZC",

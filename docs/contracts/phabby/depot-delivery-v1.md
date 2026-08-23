@@ -123,7 +123,7 @@ The signed claims include:
 
 | Claim | Binding |
 | --- | --- |
-| `iss`, `tenantId`, `sub` | exact Depot origin, tenant, and account |
+| `iss`, `dnsPolicyId`, `tenantId`, `sub` | exact Depot origin, immutable approved DNS resolution policy, tenant, and account |
 | `aud`, `targetId` | `labby:delivery` and the one linked target |
 | `connectionId`, `deliveryId` | explicit connection and request |
 | `resourceKind`, `resourceId` | Artifact or Loadout identity |
@@ -134,6 +134,12 @@ The signed claims include:
 | `jti`, `iat`, `nbf`, `exp` | random token identity and short validity |
 
 Grant lifetime is at most five minutes with at most 30 seconds of clock skew.
+Expiry is exclusive at the skew-adjusted boundary. `dnsPolicyId` is the SHA-256
+identity of the approved origin plus its sorted public resolved-address set; a
+private resolution or any resolution-set change requires a new policy identity
+and fails the existing connection/grant binding. The transport must validate
+the selected socket address as a member of that exact policy while retaining
+the bound HTTPS origin for TLS and HTTP authority checks.
 Depot stores hashed `jti` state and atomically changes it from `issued` to
 `active` on first valid chunk request. Repeated requests for the same delivery
 and chunk are permitted while active; a different delivery, target, manifest,
@@ -189,9 +195,18 @@ state and report activation failure separately. `incompatible` is terminal for
 that exact target and revision. Cancellation never rolls back an already
 committed immutable revision.
 
+A component in `partial` carries `completedThrough`, naming its last completed
+nonterminal stage. Entering partial preserves that stage exactly; resumption may
+re-emit the same stage or advance by one valid state-machine edge. This makes
+`transferred -> partial(completedThrough=transferred) -> transferred|verified`
+truthful without permitting a skipped stage or regression.
+
 Receipts are append-only snapshots with a strictly increasing `sequence`, the
 same `deliveryId`, `correlationId`, target, resource, revision, and digest, plus
-per-component states. Depot rejects sequence regression or conflicting content
+per-component states. Summary counts are derived from component state and the
+explicit failure stage; both counts and component progress are non-regressing.
+Aggregate state changes follow the state machine above without skipped or
+backward transitions. Depot rejects sequence regression or conflicting content
 at the same sequence. The terminal receipt is signed by Labby; intermediate
 receipts may be signed or delivered over the mutually authenticated connection.
 

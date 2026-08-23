@@ -14,6 +14,7 @@ ROOT = Path(__file__).parent
 FIXTURES = ROOT / "fixtures"
 SCHEMA = "dinglebear.depot-delivery/v1"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+DNS_POLICY_ID = re.compile(r"^dns_[0-9a-f]{64}$")
 SECRET_KEYS = {"grant", "token", "authorization", "credential", "secret"}
 STATES = {
     "requested", "granted", "transferred", "verified", "stored",
@@ -78,7 +79,7 @@ def validate_request(value: dict) -> None:
 
 def validate_claims(value: dict) -> None:
     require_keys(value, {
-        "iss", "sub", "aud", "tenantId", "targetId", "connectionId",
+        "iss", "dnsPolicyId", "sub", "aud", "tenantId", "targetId", "connectionId",
         "deliveryId", "resourceKind", "resourceId", "revisionId",
         "contentDigest", "manifestDigest", "purpose", "protocolVersion",
         "artifactSchemaVersion", "jti", "iat", "nbf", "exp",
@@ -93,6 +94,8 @@ def validate_claims(value: dict) -> None:
         raise ValueError("claims: invalid validity window")
     if not DIGEST.fullmatch(value["contentDigest"]) or not DIGEST.fullmatch(value["manifestDigest"]):
         raise ValueError("claims: invalid digest")
+    if not DNS_POLICY_ID.fullmatch(value["dnsPolicyId"]):
+        raise ValueError("claims: invalid DNS policy identity")
 
 
 def validate_receipt(value: dict) -> None:
@@ -125,13 +128,15 @@ def validate_error(value: dict) -> None:
 def validate_link_challenge(value: dict) -> None:
     require_keys(value, {
         "schemaVersion", "challengeId", "nonce", "targetId",
-        "targetDisplayName", "depotOrigin", "labbyKeyThumbprint",
+        "targetDisplayName", "depotOrigin", "dnsPolicyId", "labbyKeyThumbprint",
         "protocolRange", "expiresAt",
     }, "link challenge")
     if not value["depotOrigin"].startswith("https://"):
         raise ValueError("link challenge: Depot origin must use HTTPS")
     if len(value["nonce"]) < 43 or not DIGEST.fullmatch(value["labbyKeyThumbprint"]):
         raise ValueError("link challenge: weak nonce or invalid key thumbprint")
+    if not DNS_POLICY_ID.fullmatch(value["dnsPolicyId"]):
+        raise ValueError("link challenge: invalid DNS policy identity")
     if set(value["protocolRange"].values()) != {SCHEMA}:
         raise ValueError("link challenge: unsupported protocol range")
 
@@ -139,14 +144,21 @@ def validate_link_challenge(value: dict) -> None:
 def validate_link_receipt(value: dict) -> None:
     require_keys(value, {
         "schemaVersion", "challengeId", "connectionId", "depotAccountId",
-        "tenantId", "targetId", "depotOrigin", "depotKeyThumbprint",
+        "tenantId", "targetId", "depotOrigin", "dnsPolicyId", "depotKeyThumbprint",
         "labbyKeyThumbprint", "protocolVersion", "linkedAt",
     }, "link receipt")
     if value["protocolVersion"] != SCHEMA:
         raise ValueError("link receipt: protocol version mismatch")
+    if not DNS_POLICY_ID.fullmatch(value["dnsPolicyId"]):
+        raise ValueError("link receipt: invalid DNS policy identity")
     for key in ("depotKeyThumbprint", "labbyKeyThumbprint"):
         if not DIGEST.fullmatch(value[key]):
             raise ValueError(f"link receipt: invalid {key}")
+
+
+def validate_dns_binding(challenge: dict, receipt: dict, claims: dict) -> None:
+    if len({challenge["dnsPolicyId"], receipt["dnsPolicyId"], claims["dnsPolicyId"]}) != 1:
+        raise ValueError("DNS policy identity is not bound across link and grant fixtures")
 
 
 def validate_manifest(value: dict) -> None:
@@ -214,6 +226,37 @@ def main() -> int:
     manifest_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
     if loaded["download-grant-claims.json"]["manifestDigest"] != manifest_digest:
         raise ValueError("grant claims: manifest digest does not bind the golden manifest")
+    validate_dns_binding(
+        loaded["identity-link-challenge.json"],
+        loaded["identity-link-receipt.json"],
+        loaded["download-grant-claims.json"],
+    )
+    changed_claims = dict(loaded["download-grant-claims.json"])
+    changed_claims["dnsPolicyId"] = "dns_" + "0" * 64
+    try:
+        validate_dns_binding(
+            loaded["identity-link-challenge.json"],
+            loaded["identity-link-receipt.json"],
+            changed_claims,
+        )
+    except ValueError:
+        pass
+    else:
+        raise ValueError("mismatched dnsPolicyId mutation unexpectedly passed")
+    validators = (
+        ("identity-link-challenge.json", validate_link_challenge),
+        ("identity-link-receipt.json", validate_link_receipt),
+        ("download-grant-claims.json", validate_claims),
+    )
+    for name, validator in validators:
+        missing = dict(loaded[name])
+        missing.pop("dnsPolicyId")
+        try:
+            validator(missing)
+        except ValueError:
+            pass
+        else:
+            raise ValueError(f"{name}: missing dnsPolicyId mutation unexpectedly passed")
     print(f"validated {len(paths)} fixtures")
     return 0
 
