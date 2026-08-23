@@ -3115,8 +3115,10 @@ mod tests {
     async fn access_owner_bootstrap_requires_browser_csrf() {
         let auth_state = test_lab_auth_state().await;
         let session = seed_browser_session(&auth_state).await;
-        let mut config = labby_auth::config::AuthConfig::default();
-        config.admin_email = "browser@example.com".into();
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
         let app = build_router(
             AppState::new().with_auth_config(config),
             None,
@@ -3152,8 +3154,10 @@ mod tests {
     async fn access_owner_bootstrap_maps_json_rejection_to_canonical_no_store_error() {
         let auth_state = test_lab_auth_state().await;
         let session = seed_browser_session(&auth_state).await;
-        let mut config = labby_auth::config::AuthConfig::default();
-        config.admin_email = "browser@example.com".into();
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
         let app = build_router(
             AppState::new().with_auth_config(config),
             None,
@@ -3206,12 +3210,17 @@ mod tests {
         }
         let auth_state = test_lab_auth_state().await;
         let session = seed_browser_session(&auth_state).await;
-        let mut config = labby_auth::config::AuthConfig::default();
-        config.admin_email = "browser@example.com".into();
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
+        let access_runtime = Arc::new(
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+        );
         let app = build_router(
             AppState::new()
                 .with_auth_config(config)
-                .with_access_bootstrap_path_for_test(directory.path().join("access.db")),
+                .with_access_runtime(access_runtime),
             None,
             Some(auth_state),
             None,
@@ -3259,8 +3268,10 @@ mod tests {
     async fn access_owner_bootstrap_rejects_bearer_and_is_absent_without_oauth() {
         let auth_state = test_lab_auth_state().await;
         let token = issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:admin");
-        let mut config = labby_auth::config::AuthConfig::default();
-        config.admin_email = "browser@example.com".into();
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
         let authenticated = build_router(
             AppState::new().with_auth_config(config),
             None,

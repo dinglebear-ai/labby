@@ -78,35 +78,8 @@ async fn bootstrap_owner(
         }
     };
     // Resolve mutable state only after every authorization gate has passed.
-    #[cfg(test)]
-    let configured_path = state
-        .access_bootstrap_path_for_test
-        .as_deref()
-        .cloned()
-        .map(Ok)
-        .unwrap_or_else(crate::config::access_db_path);
-    #[cfg(not(test))]
-    let configured_path = crate::config::access_db_path();
-    let path = match configured_path {
-        Ok(path) => path,
-        Err(_) => {
-            tracing::error!("access bootstrap path resolution failed");
-            log_auth_dispatch(
-                action,
-                req_id.as_deref(),
-                start,
-                Some("access_bootstrap_unavailable"),
-                auth.actor_key.as_deref(),
-            );
-            return no_store(stable_error(
-                "service_unavailable",
-                "access owner bootstrap is unavailable",
-            ));
-        }
-    };
-
-    let response = match crate::access::bootstrap_owner_at(
-        path,
+    let response = match crate::access::bootstrap_owner(
+        &state.access_runtime,
         identity,
         request.organization_name,
         request.project_name,
@@ -253,8 +226,10 @@ mod tests {
     }
 
     fn state() -> AppState {
-        let mut config = labby_auth::config::AuthConfig::default();
-        config.admin_email = "owner@example.com".into();
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "owner@example.com".into(),
+            ..Default::default()
+        };
         AppState::new().with_auth_config(config)
     }
 

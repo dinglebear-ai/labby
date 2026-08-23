@@ -9,6 +9,7 @@ use rmcp::{RoleClient, ServiceExt};
 
 use labby_gateway::registry::InProcessService;
 
+use crate::access::AccessRuntime;
 use crate::dispatch::upstream::pool::{
     InProcessConnector, InProcessRegistration, UpstreamConnection, in_process_upstream_name,
 };
@@ -56,6 +57,11 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
     registry.register(service.clone());
     LabMcpServer {
         registry: Arc::new(registry),
+        // Delegated built-in peers are protocol adapters, not access-policy
+        // decision points or process lifecycle owners. Give them an explicit,
+        // non-I/O blocked runtime so future enforcement cannot accidentally
+        // treat this internal hop as an independently authoritative store.
+        access_runtime: Arc::new(AccessRuntime::blocked_unavailable()),
         // Each of these INDEPENDENTLY closes the re-entrancy path:
         // `expose_code_mode: false` (below) short-circuits
         // `code_mode_visibility` to `Raw` before the manager is consulted, and
@@ -206,6 +212,34 @@ mod tests {
             destructive: false,
             requires_admin: false,
         }];
+
+    #[tokio::test]
+    async fn in_process_peer_is_not_an_access_policy_decision_point() {
+        let service = RegisteredService {
+            name: "gateway-alpha",
+            description: "Gateway alpha",
+            category: "network",
+            kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
+            status: "available",
+            actions: TEST_ACTIONS,
+            dispatch: noop_dispatch,
+        };
+
+        let server = build_peer_server(&service);
+
+        assert_eq!(
+            server.access_runtime.status().await,
+            crate::access::AccessRuntimeStatus::Blocked(
+                crate::access::AccessBlockedReason::Unavailable
+            )
+        );
+        assert_eq!(
+            server.access_runtime.store().await.unwrap_err(),
+            crate::access::AccessRuntimeError::Blocked(
+                crate::access::AccessBlockedReason::Unavailable
+            )
+        );
+    }
 
     /// FU-1 (issue #210, lab-48z4k): the mini in-process server must list its
     /// service in Raw mode even when the PROCESS code-mode flag is enabled —

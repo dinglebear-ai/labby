@@ -24,7 +24,7 @@ pub(crate) use runtime::{
 #[allow(unused_imports)]
 pub(crate) use store::AccessStore;
 #[allow(unused_imports)]
-pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner_at};
+pub(crate) use workflow::{OwnerBootstrapError, bootstrap_owner};
 
 #[cfg(test)]
 mod facade_tests {

@@ -18,9 +18,11 @@ use rmcp::transport::streamable_http_server::{
 #[cfg(feature = "gateway")]
 use tokio::sync::mpsc;
 
+use crate::access::AccessRuntime;
 use crate::api::AppState;
 use crate::config::{
-    LabConfig, config_toml_path, dotenv_path, heal_env_file_permissions, resolve_auth_for_config,
+    LabConfig, access_db_path, config_toml_path, dotenv_path, heal_env_file_permissions,
+    resolve_auth_for_config,
 };
 #[cfg(feature = "gateway")]
 use crate::dispatch::clients::SharedServiceClients;
@@ -222,6 +224,17 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         return run_stdio_bridge(live).await;
     }
 
+    let access_runtime = match access_db_path() {
+        Ok(path) => Arc::new(AccessRuntime::initialize(path).await),
+        Err(_) => {
+            // Access enforcement is not active yet, so preserve existing serve
+            // availability while exposing a typed blocked runtime to every
+            // transport. Do not log ambient path/config details.
+            tracing::warn!("access runtime unavailable: state path could not be resolved");
+            Arc::new(AccessRuntime::blocked_unavailable())
+        }
+    };
+
     let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
     let mut bearer_token = http_token();
@@ -279,6 +292,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             return run_stdio(
                 Arc::new(registry),
                 Arc::clone(&gateway_manager),
+                Arc::clone(&access_runtime),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -289,6 +303,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         {
             return run_stdio(
                 Arc::new(registry),
+                Arc::clone(&access_runtime),
                 notifier,
                 spawn_depth,
                 suppress_upstream_runtime,
@@ -422,6 +437,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
+        .with_access_runtime(Arc::clone(&access_runtime))
         .with_http_bind_host(host.clone());
     let public_relay_store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
         crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
@@ -1607,6 +1623,7 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
 async fn run_stdio(
     registry: Arc<ToolRegistry>,
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
+    access_runtime: Arc<AccessRuntime>,
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
@@ -1654,6 +1671,7 @@ async fn run_stdio(
     let service_count = registry.services().len();
     let server = LabMcpServer {
         registry,
+        access_runtime,
         #[cfg(feature = "gateway")]
         gateway_manager: Some(Arc::clone(&gateway_manager)),
         peers: Arc::clone(&notifier.peers),
@@ -1751,6 +1769,7 @@ fn build_mcp_service_with_scope(
     extra_allowed_hosts: &[String],
 ) -> Result<StreamableHttpService<LabMcpServer, NeverSessionManager>> {
     let registry = Arc::clone(&state.registry);
+    let access_runtime = Arc::clone(&state.access_runtime);
     #[cfg(feature = "gateway")]
     let gateway_manager = state.gateway_manager.clone();
 
@@ -1799,6 +1818,7 @@ fn build_mcp_service_with_scope(
     Ok(StreamableHttpService::new(
         move || {
             let reg = Arc::clone(&registry);
+            let access_runtime = Arc::clone(&access_runtime);
             #[cfg(feature = "gateway")]
             let manager = gateway_manager.clone();
             #[cfg(feature = "gateway")]
@@ -1824,6 +1844,7 @@ fn build_mcp_service_with_scope(
             );
             Ok(LabMcpServer {
                 registry: reg,
+                access_runtime,
                 #[cfg(feature = "gateway")]
                 gateway_manager: manager,
                 peers,
