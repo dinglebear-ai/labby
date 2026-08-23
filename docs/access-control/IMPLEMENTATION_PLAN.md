@@ -179,7 +179,7 @@ Persistence tests prove deterministic round-trip and rollback behavior.
 
 The private AccessStore currently creates schema v2 directly for fresh stores and transactionally migrates only the exact canonical v1 manifest, preserving its global revision. Schema v2 metadata carries exact schema identity, global revision, bootstrap generation, and a safe bootstrap identity fingerprint. The crate-private explicit bootstrap operation creates the reserved local Organization, owner Principal and canonical identity link, default Project owner membership, and audit record in one immediate compare-and-set transaction. Repeated calls with the same input are idempotent; drift and non-pristine generation-zero business state fail closed. Integrity checks protect the reserved bootstrap records while allowing later legitimate rows and audit growth.
 
-The store operation is now reachable through one explicit authenticated browser endpoint. It is not invoked by AppState/startup, setup, or doctor, and Loadout compatibility and transport enforcement have not landed. Those capabilities must not be inferred from the bootstrap implementation.
+The store operation is now reachable through one explicit authenticated browser endpoint. It is not invoked by startup, setup, or doctor, and Loadout compatibility and transport enforcement have not landed. Those capabilities must not be inferred from the bootstrap implementation. The earlier idea that only `AppState` could own access reads is superseded: the AccessStore is the surface-neutral owner of its connection and transaction boundary, while application state may later hold a cloneable handle as runtime wiring requires.
 
 ## Phase 3: Identity mapping from current AuthContext
 
@@ -206,6 +206,18 @@ Do not key authorization on AuthContext.email.
 ### Exit
 
 Authentication regressions remain green and no existing OAuth flow is reimplemented in labby-access.
+
+### Wave 6: coherent access snapshot reads
+
+The current implementation wave joins the completed `VerifiedIdentity` authentication fact to the Milestone 1 store subset. Project listing and explicit Project selection each use one AccessStore read transaction. Selection given a caller-supplied `VerifiedIdentity` and Project ID must:
+
+1. resolve exactly one active `principal_links` row and active Principal;
+2. resolve exactly one active Project in the same Organization;
+3. resolve exactly one active direct Principal membership and its fixed Project role;
+4. resolve exactly one Project Loadout mapping; and
+5. return one immutable snapshot containing the store revision, Principal, Project, role, and Loadout name.
+
+Listing returns only active same-Organization direct memberships and includes an optional persisted Loadout name so callers can distinguish discoverable Projects from selectable Projects; a valid Principal may receive an empty list. Identity resolution and explicit selection fail closed through typed redacted errors for missing or unusable required records. The implementation issues no per-result queries, and the revision plus all returned facts come from the same SQLite read transaction; fixed query-count instrumentation remains an enforcement-readiness gate. This wave is read-only: it does not install the snapshot into MCP/API/CLI runtime state, select gateway capabilities, authorize dispatch, or activate enforcement. Those runtime ownership and enforcement adapters are the next implementation boundary and remain unimplemented until their focused tests and repository gates are green.
 
 ## Phase 4: Membership, role, and permission resolver
 

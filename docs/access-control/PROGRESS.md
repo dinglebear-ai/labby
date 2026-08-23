@@ -9,7 +9,7 @@ status: "implementation"
 
 ## Current state
 
-The design packet and initial authentication/domain/persistence foundation are implemented in this worktree. The AccessStore now has explicit owner bootstrap, an authenticated browser-only bootstrap endpoint, and read-only doctor/setup health projection. Access-control enforcement, startup/AppState bootstrap, personal-Labby pairing, and transfer protocols are not implemented, so existing product behavior is not authorization-gated by this work.
+The design packet and initial authentication/domain/persistence foundation are implemented in this worktree. The AccessStore now has explicit owner bootstrap, an authenticated browser-only bootstrap endpoint, and read-only doctor/setup health projection. Wave 6 is the current implementation boundary: coherent read-only `VerifiedIdentity` -> Principal -> explicit Project membership -> Project Loadout snapshots. Runtime ownership of those snapshots and access-control enforcement are next and are not implemented, so existing product behavior is not authorization-gated by this work. Startup bootstrap, personal-Labby pairing, and transfer protocols also remain unimplemented.
 
 Branch/worktree for the design packet:
 
@@ -227,7 +227,7 @@ Wave 2's private persistence kernel and Wave 3's store-only explicit owner boots
 - [ ] destinations/mirror state.
 - [x] bootstrap restart/concurrency/rollback and v1 migration safety tests.
 
-The bootstrap facade remains crate-private and is not called by AppState or product startup. One narrow `POST /v1/access/bootstrap-owner` adapter is mounted only with OAuth browser state and invokes it only after browser session, CSRF, middleware-derived `VerifiedIdentity`, `lab:admin`, and configured-admin-email gates. It returns only `created` or `already_applied`, uses canonical agent errors, and has no MCP/CLI/stdio/bearer/loopback bypass; without OAuth the route is absent and returns `404` before body validation. Doctor `access.check` and `audit.full`, plus setup check/repair reports, project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. Loadout compatibility projection, general mutations, and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap/health kernel exists.
+The bootstrap facade remains crate-private and is not called by product startup. One narrow `POST /v1/access/bootstrap-owner` adapter is mounted only with OAuth browser state and invokes it only after browser session, CSRF, middleware-derived `VerifiedIdentity`, `lab:admin`, and configured-admin-email gates. It returns only `created` or `already_applied`, uses canonical agent errors, and has no MCP/CLI/stdio/bearer/loopback bypass; without OAuth the route is absent and returns `404` before body validation. Doctor `access.check` and `audit.full`, plus setup check/repair reports, project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. The stale AppState-only ownership assumption is superseded: AccessStore owns its connection/transaction boundary, and future application/runtime state may carry a cloneable store handle without owning policy semantics. General mutations and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap/health kernel exists.
 
 ### Phase 3: AuthContext identity integration
 
@@ -259,9 +259,11 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 
 ### Phase 6: EffectiveWorkspace/Gateway integration
 
+- [x] **Wave 6:** coherent AccessStore snapshot read from canonical `VerifiedIdentity` plus explicit Project ID through active Principal, same-Organization Project membership, fixed role, and Project Loadout, all at one store revision in one read transaction. Focused read tests cover transport convergence, exact local identity, inactive and malformed facts, cross-Organization isolation, deterministic listing, missing Loadouts, selection, revision, and restart.
+- [ ] Runtime owner for the resolved snapshot (next; not implemented).
 - [ ] ResolutionInput gateway facts.
 - [ ] Artifact authority/publisher/Assignment distribution policy facts.
-- [ ] current Loadout adapter.
+- [ ] current Gateway Loadout adapter; Wave 6 reads only the persisted Project Loadout name and does not yet compile or enforce gateway exposure.
 - [ ] filtered workspace output.
 - [ ] exact Project + policy epoch/catalog generation cache key.
 - [ ] stale-cache invalidation tests.

@@ -4,13 +4,18 @@ mod error;
 mod health;
 mod integrity;
 mod migrations;
+mod read;
 mod resolver;
 mod store;
 mod workflow;
 
 #[allow(unused_imports)]
 pub(crate) use bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
+#[allow(unused_imports)]
+pub(crate) use domain::ProjectRole;
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
+#[allow(unused_imports)]
+pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
 #[allow(unused_imports)]
 pub(crate) use store::AccessStore;
 #[allow(unused_imports)]

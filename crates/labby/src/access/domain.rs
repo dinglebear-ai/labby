@@ -114,7 +114,7 @@ pub(super) enum Permission {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProjectRole {
+pub(crate) enum ProjectRole {
     Owner,
     Admin,
     Member,
@@ -141,6 +141,16 @@ impl ProjectRole {
             Self::Owner | Self::Admin => &Self::ADMIN_PERMISSIONS,
             Self::Member => &Self::MEMBER_PERMISSIONS,
             Self::Viewer => &Self::VIEWER_PERMISSIONS,
+        }
+    }
+
+    pub(super) fn from_persisted(value: &str) -> Option<Self> {
+        match value {
+            "owner" => Some(Self::Owner),
+            "admin" => Some(Self::Admin),
+            "member" => Some(Self::Member),
+            "viewer" => Some(Self::Viewer),
+            _ => None,
         }
     }
 }

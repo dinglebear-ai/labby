@@ -23,7 +23,7 @@ AccessStore is authorization-critical, not best-effort telemetry. Its implementa
 
 The initial Milestone 1 implementation deliberately owns one mutex-serialized SQLite connection. This is the bounded concurrency model for the first correctness baseline, not an implicit connection pool. A multi-connection pool is deferred until measured contention requires it and must preserve one-transaction snapshots, per-connection foreign keys/pragmas, migration serialization, and the same failure contract.
 
-Policy mutations and their mandatory audit event commit in the same SQLite transaction. Authorization reads use one read transaction and bounded set-based snapshot queries.
+Policy mutations and their mandatory audit event commit in the same SQLite transaction. Authorization reads use one read transaction and bounded set-based snapshot queries. AccessStore, rather than `AppState`, owns this coherence boundary; a later runtime may retain a cloneable AccessStore handle, but it must not split one authorization decision across independently opened or differently versioned reads.
 
 ## Identifier rules
 
@@ -558,3 +558,9 @@ Indexes should cover:
 Performance work must preserve deterministic resolution and revocation correctness. Materialized membership/permission caches are optional optimizations, not sources of truth.
 
 Milestone 1 resolution has a fixed query-count budget independent of result count. Tests assert query counts/plans and benchmark cold authorization, contention, unstable-snapshot retries, and storage failure before enforcement.
+
+### Wave 6 Milestone 1 read snapshot
+
+The first coherent read projections accept a canonical `VerifiedIdentity`. Listing resolves the unique active identity link and Principal, then returns active same-Organization direct Project memberships at one singleton AccessStore revision; the persisted Loadout name is optional in this discovery result. Explicit selection additionally accepts a Project ID and, within one SQLite read transaction, requires the active Project, direct membership and fixed role, and Project Loadout row. The selected result is one immutable Principal/Project/role/Loadout snapshot at that revision.
+
+Identity resolution and explicit selection fail closed for missing, inactive, revoked, disabled, cross-Organization, or ambiguous required rows; no partial selected snapshot is returned. Listing a valid active Principal may return no Projects, and a listed Project may have no persisted Loadout mapping. This projection does not read gateway catalog state and does not prove that the named Loadout currently exists. Gateway fact capture, runtime ownership of the snapshot, capability intersection, and direct-invocation enforcement are separate next steps and are not implemented by the database read itself.

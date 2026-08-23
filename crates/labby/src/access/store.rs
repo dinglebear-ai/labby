@@ -8,6 +8,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags};
 
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
+use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
@@ -59,6 +60,27 @@ impl AccessStore {
     ) -> AccessStoreResult<BootstrapOutcome> {
         self.with_connection(move |connection| bootstrap_owner(connection, &input))
             .await
+    }
+
+    pub(crate) async fn list_accessible_projects(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+    ) -> AccessStoreResult<Vec<AccessibleProjectSnapshot>> {
+        self.with_connection(move |connection| {
+            super::read::list_accessible_projects(connection, &identity)
+        })
+        .await
+    }
+
+    pub(crate) async fn select_project(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+    ) -> AccessStoreResult<ProjectAccessSnapshot> {
+        self.with_connection(move |connection| {
+            super::read::select_project(connection, &identity, &project_id)
+        })
+        .await
     }
 
     #[cfg(test)]
