@@ -21,6 +21,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, RwLock};
@@ -64,6 +65,7 @@ mod oauth_resources;
 mod persist;
 mod pool_lifecycle;
 mod protected_routes;
+mod publication;
 #[cfg(test)]
 mod tests;
 mod usage;
@@ -82,6 +84,7 @@ pub use self::import_matchers::ImportTombstoneSelector;
 pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_discovered_for_import};
 #[allow(unused_imports)]
 pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
+pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
 
 #[derive(Clone)]
 pub struct GatewayManager {
@@ -100,6 +103,10 @@ pub struct GatewayManager {
     /// that combine those components take a read lease and clone a coherent
     /// revision before doing slow I/O.
     pub(super) publication_barrier: Arc<RwLock<()>>,
+    /// Opaque process-local identity for the currently published runtime
+    /// configuration revision. Advanced under `publication_barrier` for every
+    /// live config publication, including rollback and ABA.
+    pub(super) runtime_config_generation: Arc<AtomicU64>,
     pub(super) config_mutation: Arc<Mutex<()>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
@@ -268,6 +275,7 @@ impl GatewayManager {
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
         *self.config.write().await = runtime_cfg;
+        self.advance_runtime_config_generation();
         Ok(())
     }
 }

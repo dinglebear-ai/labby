@@ -231,17 +231,21 @@ The crate-private AccessStore mutation accepts an exact `VerifiedIdentity`, Proj
 
 This wave intentionally does not read gateway state inside AccessStore. The Wave 11 composition adapter calls `GatewayManager::loadout_get` before the mutation and does not create grants, route exposure, or transport actions as a side effect. Discovery filtering and dispatch authorization remain later gates.
 
-### Wave 11: desired Gateway Loadout admission
-
-The gateway-feature-only, crate-private adapter first authorizes the opaque Project selector for `project.manage`, then validates the canonical Loadout name against desired configuration with `GatewayManager::loadout_get`, and finally invokes the immediate AccessStore mutation, which reauthorizes before writing. This ordering prevents unauthorized Loadout-name probing and closes the permission-revocation window between validation and mutation. Gateway and persistence failures map to bounded redacted composition errors. The adapter is not registered on any transport.
-
-This is point-in-time admission, not cross-store referential integrity. Gateway configuration and AccessStore cannot commit atomically, and a concurrent or later Loadout removal can invalidate the stored symbolic name. Every use-time composition must re-resolve the name from desired configuration and fail closed. A repair/replacement workflow or immutable Loadout revision identity is required before claiming a durable existence invariant.
-
 ### Wave 10: coherent Project permission snapshot
 
 The crate-private AccessStore facade checks one of the four implemented fixed Project permissions while resolving the canonical identity, active same-Organization membership, fixed role, required Project Loadout mapping, and global revision in one deferred read transaction. It performs no writes or audit events. Missing, inactive, cross-Organization, unmapped, and insufficient-permission cases collapse to the same non-enumerating denial; malformed persisted vocabulary and storage failures remain distinct operator-facing causes.
 
 The returned value is deliberately a project-level snapshot, not a capability or dispatch grant. It contains no exact gateway action/target, catalog generation, expiry, or consume-at-boundary mechanism. A revocation may commit after its SQLite snapshot. Transport enforcement therefore remains off: a later final-dispatch adapter must reauthorize the exact operation immediately before the in-process side-effect boundary and prove the revoke/check/dispatch race contract.
+
+### Wave 11: desired Gateway Loadout admission
+
+The gateway-feature-only, crate-private adapter first authorizes the opaque Project selector for `project.manage`, then validates the canonical Loadout name against desired configuration with `GatewayManager::loadout_get`, and finally invokes the immediate AccessStore mutation, which reauthorizes before writing. This ordering prevents unauthorized Loadout-name probing and closes the permission-revocation window between validation and mutation. Gateway and persistence failures map to bounded redacted composition errors. The adapter is not registered on any transport.
+
+This is point-in-time admission, not cross-store referential integrity. Gateway configuration and AccessStore cannot commit atomically, and a concurrent or later Loadout removal can invalidate the stored symbolic name. Every use-time composition must resolve the name from the coherently published runtime configuration and fail closed. A repair/replacement workflow or immutable Loadout revision identity is required before claiming a durable existence invariant.
+
+### Wave 12: published runtime Loadout snapshot prerequisite
+
+Gateway now owns a coherent runtime-configuration Loadout snapshot paired with an opaque, process-local monotonic publication generation. The snapshot reads the published configuration and generation under the same publication barrier, ignores restart-bound desired configuration, and distinguishes Loadout ABA publications. This is deliberately narrower than a complete gateway catalog generation: pool/catalog-only mutations remain a later boundary. Access composition and transport enforcement remain unimplemented.
 
 ## Phase 4: Membership, role, and permission resolver
 
