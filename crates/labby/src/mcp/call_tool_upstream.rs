@@ -1379,6 +1379,7 @@ mod tests {
                 .await;
             LabMcpServer {
                 registry: Arc::new(crate::registry::ToolRegistry::new()),
+                access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
                 gateway_manager: Some(manager),
                 peers: Default::default(),
                 code_mode_app_state: Default::default(),

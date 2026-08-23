@@ -62,6 +62,19 @@ pub(crate) struct AccessRuntime {
 }
 
 impl AccessRuntime {
+    /// Constructs a conservative non-I/O runtime for state containers that are not process
+    /// lifecycle owners. Production serve wiring must replace this with `initialize`.
+    pub(crate) fn blocked_unavailable() -> Self {
+        Self {
+            // A blocked non-owner can never open or bootstrap this path. Keeping
+            // the sentinel internal avoids platform-specific fake absolute paths.
+            path: Arc::new(PathBuf::new()),
+            state: Arc::new(Mutex::new(RuntimeState::Blocked(
+                AccessBlockedReason::Unavailable,
+            ))),
+        }
+    }
+
     pub(crate) async fn initialize(path: PathBuf) -> Self {
         let state = observe_state(&path).await;
         Self {

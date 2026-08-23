@@ -1,10 +1,9 @@
-use std::path::PathBuf;
-
 use labby_auth::{Authenticator, PrincipalLink, VerifiedIdentity};
 use thiserror::Error;
 
-use super::{AccessStore, BootstrapOutcome, BootstrapOwnerInput};
-use crate::access::error::AccessStoreError;
+use super::{
+    AccessBlockedReason, AccessRuntime, AccessRuntimeError, BootstrapOutcome, BootstrapOwnerInput,
+};
 
 /// Stable, redacted failures suitable for an application-surface adapter.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -26,9 +25,9 @@ pub(crate) enum OwnerBootstrapError {
 /// Run the one-shot owner bootstrap from an already-authenticated browser identity.
 ///
 /// This is intentionally below all transports: it neither authenticates a request nor
-/// exposes a generic CLI/MCP operation. Callers must pass the explicit access-store path.
-pub(crate) async fn bootstrap_owner_at(
-    store_path: PathBuf,
+/// exposes a generic CLI/MCP operation. Callers pass the process-scoped runtime owner.
+pub(crate) async fn bootstrap_owner(
+    runtime: &AccessRuntime,
     identity: VerifiedIdentity,
     organization_name: String,
     project_name: String,
@@ -40,31 +39,24 @@ pub(crate) async fn bootstrap_owner_at(
     }
 
     let input = BootstrapOwnerInput::new(identity, organization_name, project_name)
-        .map_err(map_store_error)?;
-    let store = AccessStore::open(store_path)
+        .map_err(|_| OwnerBootstrapError::InvalidInput)?;
+    runtime
+        .bootstrap_owner(input)
         .await
-        .map_err(map_store_error)?;
-    store.bootstrap_owner(input).await.map_err(map_store_error)
+        .map_err(map_runtime_error)
 }
 
-fn map_store_error(error: AccessStoreError) -> OwnerBootstrapError {
+fn map_runtime_error(error: AccessRuntimeError) -> OwnerBootstrapError {
     match error {
-        AccessStoreError::InvalidBootstrapInput => OwnerBootstrapError::InvalidInput,
-        AccessStoreError::BootstrapConflict => OwnerBootstrapError::Conflict,
-        AccessStoreError::Locked => OwnerBootstrapError::Busy,
-        AccessStoreError::Corrupt
-        | AccessStoreError::UnsupportedSchema { .. }
-        | AccessStoreError::IntegrityViolation { .. }
-        | AccessStoreError::ForeignKeyViolation
-        | AccessStoreError::MalformedVocabulary => OwnerBootstrapError::Integrity,
-        AccessStoreError::DiskFull
-        | AccessStoreError::ReadOnly
-        | AccessStoreError::InsecurePath { .. }
-        | AccessStoreError::MissingParent { .. }
-        | AccessStoreError::InsecurePermissions { .. }
-        | AccessStoreError::IdentityUnavailable
-        | AccessStoreError::ProjectAccessUnavailable
-        | AccessStoreError::Unavailable(_) => OwnerBootstrapError::Unavailable,
+        AccessRuntimeError::InvalidBootstrapInput => OwnerBootstrapError::InvalidInput,
+        AccessRuntimeError::BootstrapConflict => OwnerBootstrapError::Conflict,
+        AccessRuntimeError::Blocked(AccessBlockedReason::Locked) => OwnerBootstrapError::Busy,
+        AccessRuntimeError::Blocked(
+            AccessBlockedReason::Corrupt | AccessBlockedReason::NewerSchema,
+        ) => OwnerBootstrapError::Integrity,
+        AccessRuntimeError::SetupRequired(_)
+        | AccessRuntimeError::Blocked(_)
+        | AccessRuntimeError::LifecycleUnavailable => OwnerBootstrapError::Unavailable,
     }
 }
 
@@ -98,10 +90,11 @@ mod tests {
     async fn browser_external_identity_creates_then_idempotently_reuses_owner() {
         let directory = secure_tempdir();
         let path = directory.path().join("access.db");
+        let runtime = AccessRuntime::initialize(path).await;
 
         assert_eq!(
-            bootstrap_owner_at(
-                path.clone(),
+            bootstrap_owner(
+                &runtime,
                 browser_identity("owner"),
                 "Local".into(),
                 "Default".into()
@@ -110,8 +103,8 @@ mod tests {
             Ok(BootstrapOutcome::Created)
         );
         assert_eq!(
-            bootstrap_owner_at(
-                path,
+            bootstrap_owner(
+                &runtime,
                 browser_identity("owner"),
                 "Local".into(),
                 "Default".into()
@@ -133,7 +126,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            bootstrap_owner_at(path.clone(), identity, "Local".into(), "Default".into()).await,
+            bootstrap_owner(
+                &AccessRuntime::initialize(path.clone()).await,
+                identity,
+                "Local".into(),
+                "Default".into(),
+            )
+            .await,
             Err(OwnerBootstrapError::IdentityNotEligible)
         );
         assert!(!path.exists());
@@ -150,7 +149,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            bootstrap_owner_at(path.clone(), identity, "Local".into(), "Default".into()).await,
+            bootstrap_owner(
+                &AccessRuntime::initialize(path.clone()).await,
+                identity,
+                "Local".into(),
+                "Default".into(),
+            )
+            .await,
             Err(OwnerBootstrapError::IdentityNotEligible)
         );
         assert!(!path.exists());
@@ -160,8 +165,9 @@ mod tests {
     async fn identity_or_configuration_drift_is_a_redacted_conflict() {
         let directory = secure_tempdir();
         let path = directory.path().join("access.db");
-        bootstrap_owner_at(
-            path.clone(),
+        let runtime = AccessRuntime::initialize(path).await;
+        bootstrap_owner(
+            &runtime,
             browser_identity("owner"),
             "Local".into(),
             "Default".into(),
@@ -170,8 +176,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            bootstrap_owner_at(
-                path,
+            bootstrap_owner(
+                &runtime,
                 browser_identity("other"),
                 "Local".into(),
                 "Default".into()
@@ -190,8 +196,9 @@ mod tests {
             .join("access")
             .join("access.db");
 
-        let error = bootstrap_owner_at(
-            missing_parent.clone(),
+        let runtime = AccessRuntime::initialize(missing_parent.clone()).await;
+        let error = bootstrap_owner(
+            &runtime,
             browser_identity("owner"),
             "Local".into(),
             "Default".into(),
