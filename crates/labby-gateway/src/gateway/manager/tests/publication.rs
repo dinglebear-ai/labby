@@ -2,7 +2,10 @@
 
 use crate::gateway::config::write_gateway_config;
 use crate::gateway::manager::LoadoutToolCatalogPublicationError;
-use labby_runtime::gateway_config::GatewayLoadoutConfig;
+use labby_runtime::gateway_config::{
+    GatewayLoadoutConfig, VirtualServerConfig, VirtualServerMcpPolicyConfig,
+    VirtualServerSurfacesConfig,
+};
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -81,6 +84,329 @@ fn publication_registry(name: &'static str) -> Arc<PublicationRegistry> {
             service_action("a.action", false, false),
         ],
     )]))
+}
+
+fn ordered_publication_registry() -> Arc<PublicationRegistry> {
+    Arc::new(PublicationRegistry::new(vec![
+        ("zulu", vec![]),
+        ("alpha", vec![]),
+    ]))
+}
+
+fn mcp_virtual_server(id: &str, service: &str, allowed: &[&str]) -> VirtualServerConfig {
+    VirtualServerConfig {
+        id: id.to_string(),
+        service: service.to_string(),
+        enabled: true,
+        surfaces: VirtualServerSurfacesConfig {
+            mcp: true,
+            ..Default::default()
+        },
+        mcp_policy: (!allowed.is_empty()).then(|| VirtualServerMcpPolicyConfig {
+            allowed_actions: allowed.iter().map(|action| (*action).to_string()).collect(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn loadout_service_catalog_applies_alias_visibility_policy_and_metadata() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(PublicationRegistry::new(vec![(
+        "deploy",
+        vec![
+            service_action("help", false, false),
+            service_action("schema", false, false),
+            service_action("deploy.plan", false, true),
+            service_action("deploy.destroy", true, true),
+        ],
+    )]));
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(registry);
+    let mut selected = loadout("project", &[]);
+    selected.services = vec!["deploy-primary".to_string()];
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            loadouts: vec![selected],
+            virtual_servers: vec![mcp_virtual_server(
+                "deploy-primary",
+                "deploy",
+                &["deploy.plan"],
+            )],
+            ..Default::default()
+        })
+        .await;
+
+    let snapshot = manager
+        .published_loadout_service_catalog_snapshot("project")
+        .await
+        .expect("snapshot");
+    assert_eq!(snapshot.services().len(), 1);
+    let service = &snapshot.services()[0];
+    assert_eq!(service.name(), "deploy");
+    assert!(service.allows_implicit_help_and_schema());
+    assert_eq!(
+        service
+            .actions()
+            .iter()
+            .map(|action| action.name())
+            .collect::<Vec<_>>(),
+        vec!["deploy.plan", "help", "schema"]
+    );
+    assert!(service.actions()[0].requires_admin());
+    assert!(!service.actions()[0].destructive());
+}
+
+#[tokio::test]
+async fn loadout_service_catalog_hides_absent_disabled_and_expose_tools_false() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("deploy"));
+    let mut hidden = loadout("hidden", &[]);
+    hidden.services = vec!["deploy".to_string()];
+    hidden.expose_tools = false;
+    let mut absent = loadout("absent", &[]);
+    absent.services = vec!["deploy".to_string()];
+    let mut disabled = loadout("disabled", &[]);
+    disabled.services = vec!["deploy-off".to_string()];
+    let mut surface_off = loadout("surface-off", &[]);
+    surface_off.services = vec!["deploy-no-mcp".to_string()];
+    let mut disabled_server = mcp_virtual_server("deploy-off", "deploy", &[]);
+    disabled_server.enabled = false;
+    let mut surface_off_server = mcp_virtual_server("deploy-no-mcp", "deploy", &[]);
+    surface_off_server.surfaces.mcp = false;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            loadouts: vec![hidden, absent, disabled, surface_off],
+            virtual_servers: vec![disabled_server, surface_off_server],
+            ..Default::default()
+        })
+        .await;
+    assert!(
+        manager
+            .published_loadout_service_catalog_snapshot("hidden")
+            .await
+            .expect("hidden")
+            .services()
+            .is_empty()
+    );
+    assert!(
+        manager
+            .published_loadout_service_catalog_snapshot("disabled")
+            .await
+            .expect("disabled")
+            .services()
+            .is_empty()
+    );
+    assert!(
+        manager
+            .published_loadout_service_catalog_snapshot("surface-off")
+            .await
+            .expect("surface off")
+            .services()
+            .is_empty()
+    );
+    assert!(
+        manager
+            .published_loadout_service_catalog_snapshot("absent")
+            .await
+            .expect("absent")
+            .services()
+            .is_empty()
+    );
+    assert_eq!(
+        manager
+            .published_loadout_service_catalog_snapshot("missing")
+            .await
+            .err(),
+        Some(crate::gateway::manager::LoadoutServiceCatalogPublicationError::MissingLoadout)
+    );
+}
+
+#[tokio::test]
+async fn loadout_service_catalog_fails_closed_on_alias_collision() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("deploy"));
+    let mut selected = loadout("project", &[]);
+    selected.services = vec!["deploy".to_string(), "deploy-primary".to_string()];
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            loadouts: vec![selected],
+            virtual_servers: vec![mcp_virtual_server(
+                "deploy-primary",
+                "deploy",
+                &["a.action"],
+            )],
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(
+        manager
+            .published_loadout_service_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(crate::gateway::manager::LoadoutServiceCatalogPublicationError::CatalogUnavailable)
+    );
+}
+
+#[tokio::test]
+async fn loadout_service_catalog_retries_registry_swap_and_rejects_sustained_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("old"));
+    let mut selected = loadout("project", &[]);
+    selected.services = vec!["new".to_string()];
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            loadouts: vec![selected],
+            virtual_servers: vec![mcp_virtual_server("new", "new", &[])],
+            ..Default::default()
+        })
+        .await;
+    let changing = manager.clone();
+    let snapshot = manager
+        .compose_loadout_service_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            async move {
+                if attempt == 0 {
+                    manager.set_builtin_service_registry(publication_registry("new"));
+                }
+            }
+        })
+        .await
+        .expect("retry");
+    assert_eq!(snapshot.services()[0].name(), "new");
+
+    let changing = manager.clone();
+    let result = manager
+        .compose_loadout_service_catalog("project", move |_| {
+            let manager = changing.clone();
+            async move {
+                manager.set_builtin_service_registry(publication_registry("new"));
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(crate::gateway::manager::LoadoutServiceCatalogPublicationError::Unstable)
+    );
+}
+
+#[tokio::test]
+async fn loadout_service_catalog_binds_registry_aba_and_sorts_services() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(ordered_publication_registry());
+    let initial = manager
+        .published_service_registry_snapshot()
+        .expect("initial")
+        .generation();
+    let mut selected = loadout("project", &[]);
+    selected.services = vec!["zulu".to_string(), "alpha".to_string()];
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            loadouts: vec![selected],
+            virtual_servers: vec![
+                mcp_virtual_server("zulu", "zulu", &[]),
+                mcp_virtual_server("alpha", "alpha", &[]),
+            ],
+            ..Default::default()
+        })
+        .await;
+    let changing = manager.clone();
+    let snapshot = manager
+        .compose_loadout_service_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            async move {
+                if attempt == 0 {
+                    manager.set_builtin_service_registry(publication_registry("transient"));
+                    manager.set_builtin_service_registry(ordered_publication_registry());
+                }
+            }
+        })
+        .await
+        .expect("ABA retry");
+    assert_ne!(snapshot.service_registry_generation(), initial);
+    assert_eq!(
+        snapshot
+            .services()
+            .iter()
+            .map(|service| service.name())
+            .collect::<Vec<_>>(),
+        vec!["alpha", "zulu"]
+    );
+}
+
+#[tokio::test]
+async fn loadout_service_catalog_retries_and_rejects_config_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("deploy"));
+    fn service_config(action: &'static str) -> GatewayConfig {
+        let mut selected = loadout("project", &[]);
+        selected.services = vec!["deploy".to_string()];
+        GatewayConfig {
+            loadouts: vec![selected],
+            virtual_servers: vec![mcp_virtual_server("deploy", "deploy", &[action])],
+            ..Default::default()
+        }
+    }
+    manager
+        .seed_config_unchecked_for_tests(service_config("a.action"))
+        .await;
+    let changing = manager.clone();
+    let snapshot = manager
+        .compose_loadout_service_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            async move {
+                if attempt == 0 {
+                    manager
+                        .seed_config_unchecked_for_tests(service_config("z.action"))
+                        .await;
+                }
+            }
+        })
+        .await
+        .expect("config retry");
+    assert_eq!(snapshot.services()[0].actions()[0].name(), "z.action");
+
+    let changing = manager.clone();
+    let result = manager
+        .compose_loadout_service_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            async move {
+                manager
+                    .seed_config_unchecked_for_tests(service_config(if attempt % 2 == 0 {
+                        "a.action"
+                    } else {
+                        "z.action"
+                    }))
+                    .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(crate::gateway::manager::LoadoutServiceCatalogPublicationError::Unstable)
+    );
 }
 
 #[test]
