@@ -231,6 +231,12 @@ The crate-private AccessStore mutation accepts an exact `VerifiedIdentity`, Proj
 
 This wave intentionally does not read gateway state inside AccessStore. The next composition adapter must call `GatewayManager::loadout_get` before the mutation and must not create grants, route exposure, or transport actions as a side effect. Discovery filtering and dispatch authorization remain later gates.
 
+### Wave 10: coherent Project permission snapshot
+
+The crate-private AccessStore facade checks one of the four implemented fixed Project permissions while resolving the canonical identity, active same-Organization membership, fixed role, required Project Loadout mapping, and global revision in one deferred read transaction. It performs no writes or audit events. Missing, inactive, cross-Organization, unmapped, and insufficient-permission cases collapse to the same non-enumerating denial; malformed persisted vocabulary and storage failures remain distinct operator-facing causes.
+
+The returned value is deliberately a project-level snapshot, not a capability or dispatch grant. It contains no exact gateway action/target, catalog generation, expiry, or consume-at-boundary mechanism. A revocation may commit after its SQLite snapshot. Transport enforcement therefore remains off: a later final-dispatch adapter must reauthorize the exact operation immediately before the in-process side-effect boundary and prove the revoke/check/dispatch race contract.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

@@ -264,10 +264,12 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 - [x] **Wave 7 core:** process-scoped `AccessRuntime` lifecycle with observational startup, typed setup/blocked states, exact-current non-migrating store open, cancellation-safe serialized explicit bootstrap, and atomic promotion to Ready.
 - [x] **Wave 8 ownership:** one `AccessRuntime` allocation is created after the live-daemon bridge early return and shared by hosted AppState, HTTP/Unix root and protected MCP handlers, and standalone stdio. The owner-bootstrap endpoint now mutates through that live runtime; delegated in-process peers are explicitly non-authoritative.
 - [x] **Wave 9 store mutation:** explicit Project Loadout assignment re-resolves identity and direct Project membership in one immediate transaction, requires the fixed-role `project.manage` permission, advances global/Organization/Project revisions, and commits redacted audit evidence atomically. Exact replay is a zero-write success and a different existing mapping conflicts.
+- [x] **Wave 10 project permission snapshot:** an uncached crate-private facade resolves `VerifiedIdentity`, same-Organization Project membership, fixed role, required Loadout mapping, requested project permission, and global revision in one read transaction. Ordinary denials collapse to one non-enumerating result while malformed/storage failures remain typed.
 - [ ] ResolutionInput gateway facts.
 - [ ] Artifact authority/publisher/Assignment distribution policy facts.
 - [ ] current Gateway Loadout validation adapter; Wave 9 records only a caller-validated canonical name, while `GatewayManager::loadout_get` remains the desired-config authority and is not yet composed into a product action.
 - [ ] filtered workspace output.
+- [ ] exact-action final dispatch authorization. Wave 10 is only a project-level snapshot: it binds no gateway target/action or catalog generation and must never be reused as a dispatch grant. Revocation can commit after its read snapshot; enforcement remains disabled until the final in-process boundary rechecks the exact operation and the revoke/check/dispatch race tests pass.
 - [ ] exact Project + policy epoch/catalog generation cache key.
 - [ ] stale-cache invalidation tests.
 

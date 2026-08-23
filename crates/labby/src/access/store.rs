@@ -6,6 +6,7 @@ use std::time::Duration;
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 
+use super::authorization::{AuthorizeProjectInput, ProjectPermissionSnapshot};
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
@@ -103,6 +104,14 @@ impl AccessStore {
         input: AssignProjectLoadoutInput,
     ) -> AccessStoreResult<AssignProjectLoadoutOutcome> {
         self.with_connection(move |connection| super::loadout::assign(connection, &input))
+            .await
+    }
+
+    pub(crate) async fn authorize_project(
+        &self,
+        input: AuthorizeProjectInput,
+    ) -> AccessStoreResult<ProjectPermissionSnapshot> {
+        self.with_connection(move |connection| super::authorization::authorize(connection, &input))
             .await
     }
 

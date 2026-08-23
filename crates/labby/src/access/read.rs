@@ -1,7 +1,7 @@
 use labby_auth::{PrincipalLink, VerifiedIdentity};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
-use super::domain::ProjectRole;
+use super::domain::{ProjectRole, validate_loadout_name};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::store::map_sqlite_error;
 
@@ -79,6 +79,12 @@ pub(super) fn list_accessible_projects(
         if membership_status != "active" || project_status != "active" || org_status != "active" {
             continue;
         }
+        if loadout_name
+            .as_deref()
+            .is_some_and(|name| validate_loadout_name(name).is_err())
+        {
+            return Err(AccessStoreError::MalformedVocabulary);
+        }
         projects.push(AccessibleProjectSnapshot {
             principal_id: principal.id.clone(),
             organization_id: principal.organization_id.clone(),
@@ -105,6 +111,16 @@ pub(super) fn select_project(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(map_sqlite_error)?;
+    let snapshot = select_project_in_transaction(&transaction, identity, project_id)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(snapshot)
+}
+
+pub(super) fn select_project_in_transaction(
+    transaction: &Transaction<'_>,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+) -> AccessStoreResult<ProjectAccessSnapshot> {
     let revision = global_revision(&transaction)?;
     let principal = resolve_principal(&transaction, identity)?;
     let row = transaction
@@ -138,15 +154,16 @@ pub(super) fn select_project(
     if row.2 != "active" || row.3 != "active" || row.4 != "active" {
         return Err(AccessStoreError::ProjectAccessUnavailable);
     }
+    let loadout_name = row.1.ok_or(AccessStoreError::ProjectAccessUnavailable)?;
+    validate_loadout_name(&loadout_name).map_err(|_| AccessStoreError::MalformedVocabulary)?;
     let snapshot = ProjectAccessSnapshot {
         principal_id: principal.id,
         organization_id: principal.organization_id,
         project_id: project_id.to_owned(),
         role: ProjectRole::from_persisted(&row.0).ok_or(AccessStoreError::MalformedVocabulary)?,
-        loadout_name: row.1.ok_or(AccessStoreError::ProjectAccessUnavailable)?,
+        loadout_name,
         global_revision: revision,
     };
-    transaction.commit().map_err(map_sqlite_error)?;
     Ok(snapshot)
 }
 
