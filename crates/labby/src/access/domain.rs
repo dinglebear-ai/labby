@@ -121,7 +121,7 @@ impl Project {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Permission {
+pub(crate) enum Permission {
     ProjectRead,
     ProjectManage,
     AssetDiscover,

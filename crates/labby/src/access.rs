@@ -1,3 +1,4 @@
+mod authorization;
 mod bootstrap;
 mod domain;
 mod error;
@@ -12,9 +13,11 @@ mod store;
 mod workflow;
 
 #[allow(unused_imports)]
+pub(crate) use authorization::{AuthorizeProjectInput, ProjectPermissionSnapshot};
+#[allow(unused_imports)]
 pub(crate) use bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
 #[allow(unused_imports)]
-pub(crate) use domain::ProjectRole;
+pub(crate) use domain::{Permission, ProjectRole};
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 #[allow(unused_imports)]
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};

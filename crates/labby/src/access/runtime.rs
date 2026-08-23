@@ -204,6 +204,7 @@ fn blocked_reason(error: &AccessStoreError) -> AccessBlockedReason {
         | AccessStoreError::InvalidBootstrapInput
         | AccessStoreError::IdentityUnavailable
         | AccessStoreError::ProjectAccessUnavailable
+        | AccessStoreError::NotAuthorized
         | AccessStoreError::InvalidProjectLoadoutInput
         | AccessStoreError::ProjectLoadoutConflict
         | AccessStoreError::Unavailable(_) => AccessBlockedReason::Unavailable,
