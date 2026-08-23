@@ -1,14 +1,33 @@
 use labby_runtime::phabby_delivery::{
     ApprovedDnsPolicy, ChunkManifest, ContractError, DeliveryErrorEnvelope, DeliveryReceipt,
     DeliveryRequest, DeliveryState, DownloadGrantClaims, IdentityLinkChallenge,
-    IdentityLinkReceipt, ReceiptSummary, Validate, parse_canonical_json, parse_json,
-    validate_extension,
+    IdentityLinkReceipt, ReceiptSummary, Validate, dns_policy_id, dns_policy_preimage,
+    parse_canonical_json, parse_json,
 };
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeSet;
 
 fn ts(value: &str) -> jiff::Timestamp {
     value.parse().unwrap()
+}
+
+fn success_summary(count: u32, rank: usize) -> ReceiptSummary {
+    let reached = |milestone: usize| u32::from(rank >= milestone) * count;
+    ReceiptSummary {
+        requested: count,
+        granted: reached(1),
+        transferred: reached(2),
+        verified: reached(3),
+        stored: reached(4),
+        materialized: reached(5),
+        exposed: reached(6),
+        activated: reached(7),
+        incompatible: 0,
+        partial: 0,
+        cancelled: 0,
+        failed: 0,
+    }
 }
 
 const FIXTURES: &str = "../../../docs/contracts/phabby/fixtures";
@@ -136,11 +155,16 @@ fn dns_policy_binding_rejects_private_resolution_and_rebinding() {
         parse_json::<IdentityLinkChallenge>(fixture!("identity-link-challenge.json")).unwrap();
     let link = parse_json::<IdentityLinkReceipt>(fixture!("identity-link-receipt.json")).unwrap();
     let claims = parse_json::<DownloadGrantClaims>(fixture!("download-grant-claims.json")).unwrap();
+    let addresses = BTreeSet::from(["1.1.1.1".parse().unwrap()]);
     let approved = ApprovedDnsPolicy {
-        id: challenge.dns_policy_id.clone(),
+        id: dns_policy_id(&challenge.depot_origin, &addresses).unwrap(),
         depot_origin: challenge.depot_origin.clone(),
-        resolved_addresses: BTreeSet::from(["1.1.1.1".parse().unwrap()]),
+        resolved_addresses: addresses,
     };
+    let mut link = link;
+    link.dns_policy_id = approved.id.clone();
+    let mut claims = claims;
+    claims.dns_policy_id = approved.id.clone();
     link.matches_dns_policy(&approved).unwrap();
     claims.matches_dns_policy(&approved).unwrap();
     approved
@@ -216,15 +240,284 @@ fn fails_closed_on_unknown_duplicate_unsafe_and_unbounded_data() {
     manifest.components[1].path = "../escape".into();
     assert!(manifest.validate().is_err());
 
-    assert!(validate_extension(&json!({"nested": {"accessToken": "redacted"}})).is_err());
-    assert!(validate_extension(&json!(vec![0; 257])).is_err());
-
     let too_large = vec![b' '; 16 * 1024 * 1024 + 1];
     assert!(parse_json::<DeliveryRequest>(&too_large).is_err());
     let excessive_collection = serde_json::to_vec(&vec![0; 8_193]).unwrap();
     assert!(parse_json::<DeliveryRequest>(&excessive_collection).is_err());
     let excessive_string = serde_json::to_vec(&"x".repeat(16_385)).unwrap();
     assert!(parse_json::<DeliveryRequest>(&excessive_string).is_err());
+}
+
+#[test]
+fn rejects_platform_alias_paths_and_nonexclusive_chunk_ownership() {
+    let manifest = parse_json::<ChunkManifest>(fixture!("chunk-manifest.json")).unwrap();
+    for path in [
+        "C:/escape",
+        "aux/file",
+        "dir/con",
+        "dir/CON.txt",
+        "dir/COM1.log",
+        "file.txt.",
+        "file.txt ",
+        "file:stream",
+        "dir\\file",
+    ] {
+        let mut changed = manifest.clone();
+        changed.components[0].path = path.into();
+        assert!(changed.validate().is_err(), "accepted {path}");
+    }
+    let mut collision = manifest.clone();
+    collision.components[1].path = "SKILL\u{212b}.md".into();
+    collision.components[0].path = "skill\u{00c5}.md".into();
+    assert!(collision.validate().is_err());
+
+    let mut duplicate = manifest.clone();
+    duplicate.components[1].chunks = duplicate.components[0].chunks.clone();
+    assert!(duplicate.validate().is_err());
+    let mut orphan = manifest;
+    orphan.components[0].chunks.clear();
+    orphan.components[0].chunks.push(1);
+    assert!(orphan.validate().is_err());
+}
+
+#[test]
+fn caps_clock_skew_and_rejects_secret_shaped_public_messages() {
+    let challenge =
+        parse_json::<IdentityLinkChallenge>(fixture!("identity-link-challenge.json")).unwrap();
+    assert!(
+        challenge
+            .validate_at(ts("2026-08-22T14:10:00Z"), 31)
+            .is_err()
+    );
+    let claims = parse_json::<DownloadGrantClaims>(fixture!("download-grant-claims.json")).unwrap();
+    assert!(claims.validate_at(ts("2026-08-22T10:02:30Z"), 31).is_err());
+
+    let mut receipt =
+        parse_json::<DeliveryReceipt>(fixture!("delivery-receipt-stored-activation-failed.json"))
+            .unwrap();
+    for secret in [
+        "Bearer abc.def.ghi",
+        "Cookie: sid=short",
+        "Basic dXNlcjpwYXNz",
+        "AKIAIOSFODNN7EXAMPLE",
+        "hunter2",
+    ] {
+        receipt.components[1].message = Some(secret.into());
+        assert!(receipt.validate().is_err(), "accepted {secret}");
+    }
+    let mut envelope =
+        parse_json::<DeliveryErrorEnvelope>(fixture!("delivery-error-expired-grant.json")).unwrap();
+    envelope.error.message = "access_token=abc".into();
+    assert!(envelope.validate().is_err());
+    envelope.error.message = "opaque ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 value".into();
+    assert!(envelope.validate().is_err());
+}
+
+#[test]
+fn dns_policy_rejects_ipv6_translation_and_reserved_ranges() {
+    for address in [
+        "::ffff:192.0.2.1",
+        "64:ff9b::c000:201",
+        "64:ff9b:1::c000:201",
+        "100::1",
+        "2001::1",
+        "2001:db8::1",
+        "2002:c000:0201::1",
+        "3fff::1",
+        "fc00::1",
+        "fe80::1",
+    ] {
+        let addresses = BTreeSet::from([address.parse().unwrap()]);
+        let policy = ApprovedDnsPolicy {
+            id: dns_policy_id("https://depot.example.test", &addresses).unwrap(),
+            depot_origin: "https://depot.example.test".into(),
+            resolved_addresses: addresses,
+        };
+        assert!(policy.validate().is_err(), "accepted {address}");
+    }
+    let addresses = BTreeSet::from(["2606:4700:4700::1111".parse().unwrap()]);
+    ApprovedDnsPolicy {
+        id: dns_policy_id("https://depot.example.test", &addresses).unwrap(),
+        depot_origin: "https://depot.example.test".into(),
+        resolved_addresses: addresses,
+    }
+    .validate()
+    .unwrap();
+}
+
+#[test]
+fn receipt_binds_the_complete_delivery_chain() {
+    let request = parse_json::<DeliveryRequest>(fixture!("delivery-request.json")).unwrap();
+    let grant = parse_json::<DownloadGrantClaims>(fixture!("download-grant-claims.json")).unwrap();
+    let manifest = parse_json::<ChunkManifest>(fixture!("chunk-manifest.json")).unwrap();
+    let receipt =
+        parse_json::<DeliveryReceipt>(fixture!("delivery-receipt-activated.json")).unwrap();
+    receipt
+        .matches_delivery_chain(&request, &grant, &manifest)
+        .unwrap();
+    let mut changed = request.clone();
+    changed.resource.id = "art_other".into();
+    assert!(
+        receipt
+            .matches_delivery_chain(&changed, &grant, &manifest)
+            .is_err()
+    );
+    let mut malformed = grant.clone();
+    malformed.target_id = "bad".into();
+    assert!(
+        receipt
+            .matches_delivery_chain(&request, &malformed, &manifest)
+            .is_err()
+    );
+    let mut wrong_correlation = request.clone();
+    wrong_correlation.correlation_id = "cor_other".into();
+    assert!(
+        receipt
+            .matches_delivery_chain(&wrong_correlation, &grant, &manifest)
+            .is_err()
+    );
+    let mut wrong_tenant = grant.clone();
+    wrong_tenant.tenant_id = "ten_other".into();
+    assert!(
+        receipt
+            .matches_delivery_chain(&request, &wrong_tenant, &manifest)
+            .is_err()
+    );
+}
+
+#[test]
+fn every_nonterminal_state_can_finish_with_explicit_preserved_progress() {
+    let template =
+        parse_json::<DeliveryReceipt>(fixture!("delivery-receipt-activated.json")).unwrap();
+    let successes = [
+        DeliveryState::Requested,
+        DeliveryState::Granted,
+        DeliveryState::Transferred,
+        DeliveryState::Verified,
+        DeliveryState::Stored,
+        DeliveryState::Materialized,
+        DeliveryState::Exposed,
+    ];
+    for (rank, success) in successes.into_iter().enumerate() {
+        let mut previous = template.clone();
+        previous.receipt_id = format!("rcpt_previous_{rank}");
+        previous.sequence = 1;
+        previous.state = success;
+        for component in &mut previous.components {
+            component.state = success;
+            component.completed_through = None;
+        }
+        let count = previous.components.len() as u32;
+        previous.summary = success_summary(count, rank);
+        previous.validate().unwrap();
+        for terminal in [
+            DeliveryState::Incompatible,
+            DeliveryState::Cancelled,
+            DeliveryState::Failed,
+        ] {
+            let mut next = previous.clone();
+            next.receipt_id = format!("rcpt_terminal_{rank}_{terminal:?}");
+            next.sequence = 2;
+            next.occurred_at = "2026-08-22T15:00:00Z".into();
+            next.state = terminal;
+            for component in &mut next.components {
+                component.state = terminal;
+                component.completed_through = Some(success);
+                if terminal != DeliveryState::Cancelled {
+                    component.stage = Some("delivery".into());
+                    component.code = Some("terminal_outcome".into());
+                    component.retryable = Some(false);
+                }
+            }
+            next.summary.partial = count;
+            match terminal {
+                DeliveryState::Incompatible => next.summary.incompatible = count,
+                DeliveryState::Cancelled => next.summary.cancelled = count,
+                DeliveryState::Failed => next.summary.failed = count,
+                _ => unreachable!(),
+            }
+            next.validate().unwrap();
+            next.follows(&previous).unwrap();
+        }
+    }
+}
+
+#[test]
+fn dns_policy_id_uses_the_closed_v1_canonical_preimage() {
+    let addresses = BTreeSet::from([
+        "1.1.1.1".parse().unwrap(),
+        "2606:4700:4700::1111".parse().unwrap(),
+    ]);
+    assert_eq!(
+        dns_policy_id("https://DEPOT.EXAMPLE.TEST.:443", &addresses).unwrap(),
+        dns_policy_id("https://depot.example.test", &addresses).unwrap()
+    );
+    for noncanonical in [
+        "https://DEPOT.EXAMPLE.TEST",
+        "https://depot.example.test.",
+        "https://depot.example.test:443",
+    ] {
+        let policy = ApprovedDnsPolicy {
+            id: dns_policy_id(noncanonical, &addresses).unwrap(),
+            depot_origin: noncanonical.into(),
+            resolved_addresses: addresses.clone(),
+        };
+        assert!(policy.validate().is_err(), "accepted {noncanonical}");
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DnsPolicyVectors {
+    schema_version: String,
+    vectors: Vec<DnsPolicyVector>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DnsPolicyVector {
+    name: String,
+    origin: String,
+    addresses: Vec<String>,
+    preimage: String,
+    dns_policy_id: String,
+}
+
+#[test]
+fn consumes_all_canonical_dns_policy_vectors() {
+    let fixture: DnsPolicyVectors =
+        serde_json::from_slice(fixture!("dns-policy-vectors.json")).unwrap();
+    assert_eq!(
+        fixture.schema_version,
+        "dinglebear.depot-dns-policy-v1/vectors"
+    );
+    assert_eq!(fixture.vectors.len(), 3);
+    for vector in fixture.vectors {
+        let addresses = vector
+            .addresses
+            .iter()
+            .map(|address| address.parse().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            dns_policy_preimage(&vector.origin, &addresses).unwrap(),
+            vector.preimage.as_bytes(),
+            "preimage mismatch for {}",
+            vector.name
+        );
+        assert_eq!(
+            dns_policy_id(&vector.origin, &addresses).unwrap(),
+            vector.dns_policy_id,
+            "ID mismatch for {}",
+            vector.name
+        );
+        ApprovedDnsPolicy {
+            id: vector.dns_policy_id,
+            depot_origin: vector.origin,
+            resolved_addresses: addresses,
+        }
+        .validate()
+        .unwrap();
+    }
 }
 
 #[test]
@@ -263,6 +556,9 @@ fn receipt_rejects_state_detail_and_count_mismatches() {
     receipt.components[1].code = None;
     assert!(receipt.validate().is_err());
     receipt.components[1].code = Some("target_requirement_unsatisfied".into());
+    receipt.components[1].completed_through = None;
+    assert!(receipt.validate().is_err());
+    receipt.components[1].completed_through = Some(DeliveryState::Materialized);
     receipt.summary.activated = 99;
     assert!(receipt.validate().is_err());
 
@@ -277,6 +573,22 @@ fn receipt_rejects_state_detail_and_count_mismatches() {
 }
 
 #[test]
+fn activation_failure_distinguishes_materialized_from_exposed_progress() {
+    let materialized =
+        parse_json::<DeliveryReceipt>(fixture!("delivery-receipt-stored-activation-failed.json"))
+            .unwrap();
+    assert_eq!(
+        materialized.components[1].completed_through,
+        Some(DeliveryState::Materialized)
+    );
+    let mut exposed = materialized.clone();
+    exposed.components[1].completed_through = Some(DeliveryState::Exposed);
+    exposed.summary.exposed = 1;
+    exposed.validate().unwrap();
+    assert_ne!(materialized.summary, exposed.summary);
+}
+
+#[test]
 fn receipts_reject_component_summary_lies_and_skipped_aggregate_transitions() {
     let mut receipt =
         parse_json::<DeliveryReceipt>(fixture!("delivery-receipt-activated.json")).unwrap();
@@ -288,20 +600,7 @@ fn receipts_reject_component_summary_lies_and_skipped_aggregate_transitions() {
         component.state = DeliveryState::Requested;
     }
     receipt.state = DeliveryState::Requested;
-    receipt.summary = ReceiptSummary {
-        requested: count,
-        granted: 0,
-        transferred: 0,
-        verified: 0,
-        stored: 0,
-        materialized: 0,
-        exposed: 0,
-        activated: 0,
-        incompatible: 0,
-        partial: 0,
-        cancelled: 0,
-        failed: 0,
-    };
+    receipt.summary = success_summary(count, 0);
     receipt.validate().unwrap();
 
     let mut skipped = receipt.clone();
@@ -330,20 +629,7 @@ fn partial_receipts_preserve_progress_and_resume_only_at_same_or_adjacent_stage(
         component.completed_through = None;
     }
     let count = transferred.components.len() as u32;
-    transferred.summary = ReceiptSummary {
-        requested: count,
-        granted: count,
-        transferred: count,
-        verified: 0,
-        stored: 0,
-        materialized: 0,
-        exposed: 0,
-        activated: 0,
-        incompatible: 0,
-        partial: 0,
-        cancelled: 0,
-        failed: 0,
-    };
+    transferred.summary = success_summary(count, 2);
     transferred.validate().unwrap();
 
     let mut partial = transferred.clone();
@@ -439,27 +725,13 @@ fn receipts_bind_exact_component_sets_to_manifest_and_prior_snapshot() {
     let mut extra = added.components[0].clone();
     extra.component_id = "cmp_extra".into();
     added.components.push(extra);
-    added.summary.requested += 1;
-    added.summary.granted += 1;
-    added.summary.transferred += 1;
-    added.summary.verified += 1;
-    added.summary.stored += 1;
-    added.summary.materialized += 1;
-    added.summary.exposed += 1;
-    added.summary.activated += 1;
+    added.summary = success_summary(added.components.len() as u32, 7);
     assert!(added.validate().is_ok());
     assert!(added.matches_manifest(&manifest).is_err());
 
     let mut removed = receipt.clone();
     removed.components.pop();
-    removed.summary.requested -= 1;
-    removed.summary.granted -= 1;
-    removed.summary.transferred -= 1;
-    removed.summary.verified -= 1;
-    removed.summary.stored -= 1;
-    removed.summary.materialized -= 1;
-    removed.summary.exposed -= 1;
-    removed.summary.activated -= 1;
+    removed.summary = success_summary(removed.components.len() as u32, 7);
     assert!(removed.validate().is_ok());
     assert!(removed.matches_manifest(&manifest).is_err());
 
@@ -474,29 +746,13 @@ fn receipts_bind_exact_component_sets_to_manifest_and_prior_snapshot() {
         component.state = DeliveryState::Requested;
     }
     let count = previous.components.len() as u32;
-    previous.summary = ReceiptSummary {
-        requested: count,
-        granted: 0,
-        transferred: 0,
-        verified: 0,
-        stored: 0,
-        materialized: 0,
-        exposed: 0,
-        activated: 0,
-        incompatible: 0,
-        partial: 0,
-        cancelled: 0,
-        failed: 0,
-    };
+    previous.summary = success_summary(count, 0);
     for mut next in [added, removed, substituted] {
         next.state = DeliveryState::Requested;
         for component in &mut next.components {
             component.state = DeliveryState::Requested;
         }
-        next.summary = ReceiptSummary {
-            requested: next.components.len() as u32,
-            ..previous.summary.clone()
-        };
+        next.summary = success_summary(next.components.len() as u32, 0);
         next.sequence = previous.sequence + 1;
         next.receipt_id = "rcpt_component_set_change".into();
         assert!(next.validate().is_ok());

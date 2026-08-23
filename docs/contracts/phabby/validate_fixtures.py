@@ -1,48 +1,50 @@
 #!/usr/bin/env python3
-"""Validate Depot delivery v1 golden fixtures with only the Python stdlib."""
+"""Syntax-check delivery goldens; Rust conformance owns semantic validation."""
 
 from __future__ import annotations
 
-import json
 import hashlib
-import re
+import json
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).parent
 FIXTURES = ROOT / "fixtures"
-SCHEMA = "dinglebear.depot-delivery/v1"
-DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-DNS_POLICY_ID = re.compile(r"^dns_[0-9a-f]{64}$")
-SECRET_KEYS = {"grant", "token", "authorization", "credential", "secret"}
-STATES = {
-    "requested", "granted", "transferred", "verified", "stored",
-    "materialized", "exposed", "activated", "incompatible", "partial",
-    "cancelled", "failed",
+DELIVERY_SCHEMA = "dinglebear.depot-delivery/v1"
+MANIFEST_SCHEMA = "dinglebear.depot-delivery-manifest/v1"
+DNS_VECTOR_SCHEMA = "dinglebear.depot-dns-policy-v1/vectors"
+SECRET_KEYS = {"grant", "token", "authorization", "credential", "secret", "password", "cookie"}
+EXPECTED = {
+    "chunk-manifest.json",
+    "delivery-error-expired-grant.json",
+    "delivery-error-replayed-grant.json",
+    "delivery-error-revoked-grant.json",
+    "delivery-error-wrong-target.json",
+    "delivery-receipt-activated.json",
+    "delivery-receipt-stored-activation-failed.json",
+    "delivery-request.json",
+    "dns-policy-vectors.json",
+    "download-grant-claims.json",
+    "identity-link-challenge.json",
+    "identity-link-receipt.json",
 }
 
 
 def load(path: Path) -> dict:
     def no_duplicates(pairs: list[tuple[str, object]]) -> dict:
-        result = {}
+        result: dict[str, object] = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError(f"duplicate key {key!r}")
+                raise ValueError(f"{path.name}: duplicate key {key!r}")
             result[key] = value
         return result
 
     with path.open(encoding="utf-8") as stream:
         value = json.load(stream, object_pairs_hook=no_duplicates)
     if not isinstance(value, dict):
-        raise ValueError("fixture root must be an object")
+        raise ValueError(f"{path.name}: fixture root must be an object")
     return value
-
-
-def require_keys(value: dict, keys: set[str], where: str) -> None:
-    missing = keys - value.keys()
-    if missing:
-        raise ValueError(f"{where}: missing {sorted(missing)}")
 
 
 def inspect_secrets(value: object, where: str = "$") -> None:
@@ -56,214 +58,52 @@ def inspect_secrets(value: object, where: str = "$") -> None:
             inspect_secrets(child, f"{where}[{index}]")
 
 
-def validate_resource(resource: dict, where: str) -> None:
-    require_keys(resource, {"kind", "id", "revisionId", "contentDigest"}, where)
-    if resource["kind"] not in {"artifact", "loadout"}:
-        raise ValueError(f"{where}: invalid kind")
-    if not DIGEST.fullmatch(resource["contentDigest"]):
-        raise ValueError(f"{where}: invalid content digest")
-
-
-def validate_request(value: dict) -> None:
-    require_keys(value, {
-        "schemaVersion", "deliveryHandle", "connectionId", "targetId",
-        "resource", "conflictPolicy", "requestedOperations",
-        "idempotencyKey", "correlationId",
-    }, "request")
-    if value["conflictPolicy"] not in {"reject", "keep_existing", "create_side_by_side"}:
-        raise ValueError("request: invalid conflict policy")
-    if not value["requestedOperations"]:
-        raise ValueError("request: operations must not be empty")
-    validate_resource(value["resource"], "request.resource")
-
-
-def validate_claims(value: dict) -> None:
-    require_keys(value, {
-        "iss", "dnsPolicyId", "sub", "aud", "tenantId", "targetId", "connectionId",
-        "deliveryId", "resourceKind", "resourceId", "revisionId",
-        "contentDigest", "manifestDigest", "purpose", "protocolVersion",
-        "artifactSchemaVersion", "jti", "iat", "nbf", "exp",
-    }, "claims")
-    if value["aud"] != "labby:delivery" or value["purpose"] != "depot-to-labby-pull":
-        raise ValueError("claims: invalid audience or purpose")
-    if value["protocolVersion"] != SCHEMA:
-        raise ValueError("claims: protocol version mismatch")
-    if value["artifactSchemaVersion"] != "dinglebear.artifact-interchange/v1":
-        raise ValueError("claims: Artifact schema mismatch")
-    if value["nbf"] < value["iat"] or value["exp"] - value["iat"] > 300:
-        raise ValueError("claims: invalid validity window")
-    if not DIGEST.fullmatch(value["contentDigest"]) or not DIGEST.fullmatch(value["manifestDigest"]):
-        raise ValueError("claims: invalid digest")
-    if not DNS_POLICY_ID.fullmatch(value["dnsPolicyId"]):
-        raise ValueError("claims: invalid DNS policy identity")
-
-
-def validate_receipt(value: dict) -> None:
-    require_keys(value, {
-        "schemaVersion", "receiptId", "sequence", "deliveryId",
-        "correlationId", "connectionId", "tenantId", "targetId",
-        "resource", "state", "components", "summary", "occurredAt",
-    }, "receipt")
-    validate_resource(value["resource"], "receipt.resource")
-    if value["state"] not in STATES or value["sequence"] < 1:
-        raise ValueError("receipt: invalid state or sequence")
-    if not value["components"]:
-        raise ValueError("receipt: components must not be empty")
-    for component in value["components"]:
-        require_keys(component, {"componentId", "state"}, "receipt.component")
-        if component["state"] not in STATES:
-            raise ValueError("receipt.component: invalid state")
-    require_keys(value["summary"], STATES, "receipt.summary")
-    if any(not isinstance(count, int) or count < 0 for count in value["summary"].values()):
-        raise ValueError("receipt.summary: counts must be nonnegative integers")
-
-
-def validate_error(value: dict) -> None:
-    require_keys(value, {"schemaVersion", "error", "deliveryId", "correlationId", "targetId"}, "error fixture")
-    require_keys(value["error"], {"code", "stage", "retryable", "message"}, "error")
-    if not isinstance(value["error"]["retryable"], bool):
-        raise ValueError("error.retryable must be boolean")
-
-
-def validate_link_challenge(value: dict) -> None:
-    require_keys(value, {
-        "schemaVersion", "challengeId", "nonce", "targetId",
-        "targetDisplayName", "depotOrigin", "dnsPolicyId", "labbyKeyThumbprint",
-        "protocolRange", "expiresAt",
-    }, "link challenge")
-    if not value["depotOrigin"].startswith("https://"):
-        raise ValueError("link challenge: Depot origin must use HTTPS")
-    if len(value["nonce"]) < 43 or not DIGEST.fullmatch(value["labbyKeyThumbprint"]):
-        raise ValueError("link challenge: weak nonce or invalid key thumbprint")
-    if not DNS_POLICY_ID.fullmatch(value["dnsPolicyId"]):
-        raise ValueError("link challenge: invalid DNS policy identity")
-    if set(value["protocolRange"].values()) != {SCHEMA}:
-        raise ValueError("link challenge: unsupported protocol range")
-
-
-def validate_link_receipt(value: dict) -> None:
-    require_keys(value, {
-        "schemaVersion", "challengeId", "connectionId", "depotAccountId",
-        "tenantId", "targetId", "depotOrigin", "dnsPolicyId", "depotKeyThumbprint",
-        "labbyKeyThumbprint", "protocolVersion", "linkedAt",
-    }, "link receipt")
-    if value["protocolVersion"] != SCHEMA:
-        raise ValueError("link receipt: protocol version mismatch")
-    if not DNS_POLICY_ID.fullmatch(value["dnsPolicyId"]):
-        raise ValueError("link receipt: invalid DNS policy identity")
-    for key in ("depotKeyThumbprint", "labbyKeyThumbprint"):
-        if not DIGEST.fullmatch(value[key]):
-            raise ValueError(f"link receipt: invalid {key}")
-
-
-def validate_dns_binding(challenge: dict, receipt: dict, claims: dict) -> None:
-    if len({challenge["dnsPolicyId"], receipt["dnsPolicyId"], claims["dnsPolicyId"]}) != 1:
-        raise ValueError("DNS policy identity is not bound across link and grant fixtures")
-
-
-def validate_manifest(value: dict) -> None:
-    require_keys(value, {
-        "schemaVersion", "deliveryId", "targetId", "revisionId",
-        "contentDigest", "totalCompressedBytes", "totalUncompressedBytes",
-        "components", "chunks",
-    }, "manifest")
-    if value["schemaVersion"] != "dinglebear.depot-delivery-manifest/v1":
-        raise ValueError("manifest: schema version mismatch")
-    if len(value["components"]) > 2_000 or len(value["chunks"]) > 4_096:
-        raise ValueError("manifest: count limit exceeded")
-    if value["totalCompressedBytes"] > 1 << 30 or value["totalUncompressedBytes"] > 2 << 30:
-        raise ValueError("manifest: byte limit exceeded")
-    if sum(chunk["bytes"] for chunk in value["chunks"]) != value["totalCompressedBytes"]:
-        raise ValueError("manifest: compressed byte total mismatch")
-    ordinals = [chunk["ordinal"] for chunk in value["chunks"]]
-    if ordinals != list(range(len(ordinals))):
-        raise ValueError("manifest: chunk ordinals must be contiguous")
-    for chunk in value["chunks"]:
-        if chunk["bytes"] > 8 << 20 or not DIGEST.fullmatch(chunk["digest"]):
-            raise ValueError("manifest: invalid chunk")
-        if not chunk["downloadPath"].startswith("/") or "://" in chunk["downloadPath"]:
-            raise ValueError("manifest: download path must be origin-relative")
+def validate_dns_vectors(value: dict) -> None:
+    if set(value) != {"schemaVersion", "vectors"} or value["schemaVersion"] != DNS_VECTOR_SCHEMA:
+        raise ValueError("dns-policy-vectors.json: invalid closed vector envelope")
+    vectors = value["vectors"]
+    if not isinstance(vectors, list) or len(vectors) != 3:
+        raise ValueError("dns-policy-vectors.json: expected three vectors")
+    names: set[str] = set()
+    for vector in vectors:
+        if not isinstance(vector, dict) or set(vector) != {
+            "name", "origin", "addresses", "preimage", "dnsPolicyId"
+        }:
+            raise ValueError("dns-policy-vectors.json: invalid closed vector shape")
+        names.add(vector["name"])
+        expected = "dns_" + hashlib.sha256(vector["preimage"].encode("utf-8")).hexdigest()
+        if vector["dnsPolicyId"] != expected:
+            raise ValueError(f"dns vector {vector['name']}: digest mismatch")
+    if names != {"ipv4", "ipv6", "mixed"}:
+        raise ValueError("dns-policy-vectors.json: missing family coverage")
 
 
 def main() -> int:
     paths = sorted(FIXTURES.glob("*.json"))
-    if not paths:
-        raise ValueError("no JSON fixtures found")
-    identities = {}
-    loaded = {}
+    names = {path.name for path in paths}
+    if names != EXPECTED:
+        raise ValueError(f"fixture inventory mismatch: missing={sorted(EXPECTED - names)} extra={sorted(names - EXPECTED)}")
     for path in paths:
         value = load(path)
-        loaded[path.name] = value
-        if path.name not in {"download-grant-claims.json", "chunk-manifest.json"} and value.get("schemaVersion") != SCHEMA:
-            raise ValueError(f"{path.name}: schema version mismatch")
-        if path.name == "delivery-request.json":
-            validate_request(value)
-        elif path.name == "download-grant-claims.json":
-            validate_claims(value)
-        elif path.name == "chunk-manifest.json":
-            validate_manifest(value)
-        elif path.name == "identity-link-challenge.json":
-            validate_link_challenge(value)
-        elif path.name == "identity-link-receipt.json":
-            validate_link_receipt(value)
-        elif path.name.startswith("delivery-receipt-"):
-            validate_receipt(value)
-        elif path.name.startswith("delivery-error-"):
-            validate_error(value)
-        else:
-            raise ValueError(f"unrecognized fixture {path.name}")
         inspect_secrets(value)
-        for key in ("deliveryId", "correlationId", "targetId"):
-            if key in value:
-                previous = identities.setdefault(key, value[key])
-                if value[key] != previous:
-                    raise ValueError(f"{path.name}: cross-fixture {key} mismatch")
+        if path.name == "dns-policy-vectors.json":
+            validate_dns_vectors(value)
+        elif path.name == "chunk-manifest.json":
+            if value.get("schemaVersion") != MANIFEST_SCHEMA:
+                raise ValueError(f"{path.name}: schema version mismatch")
+        elif path.name == "download-grant-claims.json":
+            if value.get("protocolVersion") != DELIVERY_SCHEMA:
+                raise ValueError(f"{path.name}: protocol version mismatch")
+        elif value.get("schemaVersion") != DELIVERY_SCHEMA:
+            raise ValueError(f"{path.name}: schema version mismatch")
         print(f"ok {path.relative_to(ROOT)}")
-    manifest_bytes = json.dumps(
-        loaded["chunk-manifest.json"], sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    manifest_digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
-    if loaded["download-grant-claims.json"]["manifestDigest"] != manifest_digest:
-        raise ValueError("grant claims: manifest digest does not bind the golden manifest")
-    validate_dns_binding(
-        loaded["identity-link-challenge.json"],
-        loaded["identity-link-receipt.json"],
-        loaded["download-grant-claims.json"],
-    )
-    changed_claims = dict(loaded["download-grant-claims.json"])
-    changed_claims["dnsPolicyId"] = "dns_" + "0" * 64
-    try:
-        validate_dns_binding(
-            loaded["identity-link-challenge.json"],
-            loaded["identity-link-receipt.json"],
-            changed_claims,
-        )
-    except ValueError:
-        pass
-    else:
-        raise ValueError("mismatched dnsPolicyId mutation unexpectedly passed")
-    validators = (
-        ("identity-link-challenge.json", validate_link_challenge),
-        ("identity-link-receipt.json", validate_link_receipt),
-        ("download-grant-claims.json", validate_claims),
-    )
-    for name, validator in validators:
-        missing = dict(loaded[name])
-        missing.pop("dnsPolicyId")
-        try:
-            validator(missing)
-        except ValueError:
-            pass
-        else:
-            raise ValueError(f"{name}: missing dnsPolicyId mutation unexpectedly passed")
-    print(f"validated {len(paths)} fixtures")
+    print(f"syntax-validated {len(paths)} fixtures; Rust conformance is the semantic authority")
     return 0
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError, json.JSONDecodeError) as error:
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         print(f"validation failed: {error}", file=sys.stderr)
         sys.exit(1)

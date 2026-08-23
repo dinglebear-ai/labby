@@ -24,6 +24,7 @@
     {
       "componentId": "cmp_runtime",
       "state": "failed",
+      "completedThrough": "materialized",
       "stage": "activation",
       "code": "target_requirement_unsatisfied",
       "retryable": false,

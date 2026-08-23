@@ -13,9 +13,9 @@ use serde::{
     Deserialize, Serialize,
     de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor},
 };
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::artifacts::canonical_json;
 
@@ -35,6 +35,7 @@ const MAX_WIRE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WIRE_COLLECTION_ITEMS: usize = 8_192;
 const MAX_WIRE_DEPTH: usize = 64;
 const MAX_WIRE_STRING_BYTES: usize = 16_384;
+const MAX_CLOCK_SKEW_SECONDS: u64 = 30;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ContractError {
@@ -247,33 +248,82 @@ impl Validate for ApprovedDnsPolicy {
                         || a >= 224
                 }
                 IpAddr::V6(address) => {
+                    let segments = address.segments();
                     address.is_loopback()
                         || address.is_unique_local()
                         || address.is_unicast_link_local()
                         || address.is_multicast()
                         || address.is_unspecified()
-                        || address.segments()[0..2] == [0x2001, 0x0db8]
+                        || segments[0] & 0xe000 != 0x2000
+                        || segments[0] & 0xfff0 == 0x3ff0
+                        || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
+                        || segments[0..2] == [0x2001, 0x0db8]
+                        || segments[0] == 0x2002
+                        || (segments[0..2] == [0x0064, 0xff9b]
+                            && ((segments[2..6] == [0, 0, 0, 0]) || segments[2] == 1))
+                        || segments[0..4] == [0x0100, 0, 0, 0]
                         || address.to_ipv4_mapped().is_some()
                 }
             })
         {
             return Err(invalid("dnsPolicy", "disallowed_address"));
         }
-        let mut hasher = Sha256::new();
-        hasher.update(self.depot_origin.as_bytes());
-        for address in &self.resolved_addresses {
-            hasher.update(b"\n");
-            hasher.update(address.to_string().as_bytes());
+        if self.depot_origin != canonical_depot_origin(&self.depot_origin)? {
+            return Err(invalid("depotOrigin", "noncanonical"));
         }
-        let mut expected = String::from("dns_");
-        for byte in hasher.finalize() {
-            write!(&mut expected, "{byte:02x}").expect("writing to a String cannot fail");
-        }
+        let expected = dns_policy_id(&self.depot_origin, &self.resolved_addresses)?;
         if self.id != expected {
             return Err(invalid("dnsPolicyId", "content_mismatch"));
         }
         Ok(())
     }
+}
+
+/// Calculate the v1 DNS policy identifier from its canonical, text-framed preimage.
+pub fn dns_policy_id(
+    depot_origin_value: &str,
+    addresses: &BTreeSet<IpAddr>,
+) -> Result<String, ContractError> {
+    let preimage = dns_policy_preimage(depot_origin_value, addresses)?;
+    let mut hasher = Sha256::new();
+    hasher.update(preimage);
+    let mut id = String::from("dns_");
+    for byte in hasher.finalize() {
+        write!(&mut id, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(id)
+}
+
+/// Produce the exact v1 DNS policy preimage bytes used by every implementation.
+pub fn dns_policy_preimage(
+    depot_origin_value: &str,
+    addresses: &BTreeSet<IpAddr>,
+) -> Result<Vec<u8>, ContractError> {
+    let normalized_origin = canonical_depot_origin(depot_origin_value)?;
+    let mut preimage = b"dinglebear.depot-dns-policy/v1\n".to_vec();
+    preimage.extend_from_slice(normalized_origin.as_bytes());
+    preimage.push(b'\n');
+    for address in addresses {
+        preimage.extend_from_slice(address.to_string().as_bytes());
+        preimage.push(b'\n');
+    }
+    Ok(preimage)
+}
+
+fn canonical_depot_origin(value: &str) -> Result<String, ContractError> {
+    let origin = depot_origin(value, "depotOrigin")?;
+    let host = origin
+        .host_str()
+        .ok_or_else(|| invalid("depotOrigin", "invalid_url"))?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let mut normalized_origin = format!("https://{host}");
+    if let Some(port) = origin.port()
+        && port != 443
+    {
+        write!(&mut normalized_origin, ":{port}").expect("writing to a String cannot fail");
+    }
+    Ok(normalized_origin)
 }
 
 impl ApprovedDnsPolicy {
@@ -347,15 +397,60 @@ fn safe_path(value: &str, absolute: bool, field: &'static str) -> Result<(), Con
     if value.is_empty() || value.len() > MAX_PATH_BYTES || value.contains(['\\', '\0', '?', '#']) {
         return Err(invalid(field, "unsafe_path"));
     }
-    if value.starts_with('/') != absolute || value.starts_with("//") || value.contains("://") {
+    if value.starts_with('/') != absolute
+        || value.starts_with("//")
+        || value.contains("://")
+        || (!absolute && value.as_bytes().get(1) == Some(&b':'))
+    {
         return Err(invalid(field, "unsafe_path"));
     }
     let relative = value.strip_prefix('/').unwrap_or(value);
-    if relative
-        .split('/')
-        .any(|part| part.is_empty() || matches!(part, "." | ".."))
-    {
+    if relative.split('/').any(|part| {
+        let device_stem = part.split('.').next().unwrap_or(part);
+        let bytes = device_stem.as_bytes();
+        let numbered_device = bytes.len() == 4
+            && (bytes[..3].eq_ignore_ascii_case(b"com") || bytes[..3].eq_ignore_ascii_case(b"lpt"))
+            && matches!(bytes[3], b'1'..=b'9');
+        part.is_empty()
+            || matches!(part, "." | "..")
+            || part.ends_with(['.', ' '])
+            || part.contains(':')
+            || device_stem.eq_ignore_ascii_case("con")
+            || device_stem.eq_ignore_ascii_case("prn")
+            || device_stem.eq_ignore_ascii_case("aux")
+            || device_stem.eq_ignore_ascii_case("nul")
+            || device_stem.eq_ignore_ascii_case("conin$")
+            || device_stem.eq_ignore_ascii_case("conout$")
+            || device_stem.eq_ignore_ascii_case("clock$")
+            || numbered_device
+    }) {
         return Err(invalid(field, "unsafe_path"));
+    }
+    Ok(())
+}
+
+fn validate_pair<L: Validate, R: Validate>(left: &L, right: &R) -> Result<(), ContractError> {
+    left.validate()?;
+    right.validate()
+}
+
+fn validate_skew(skew_seconds: u64) -> Result<i64, ContractError> {
+    if skew_seconds > MAX_CLOCK_SKEW_SECONDS {
+        return Err(invalid("skew", "limit_exceeded"));
+    }
+    i64::try_from(skew_seconds).map_err(|_| invalid("skew", "overflow"))
+}
+
+fn safe_public_message(value: &str, field: &'static str) -> Result<(), ContractError> {
+    const ALLOWED: &[&str] = &[
+        "The download grant expired; request a new grant for the same delivery.",
+        "The download grant is not valid for this delivery context.",
+        "Authorization for this delivery was revoked.",
+        "The download grant is not valid for this Labby target.",
+        "The stored revision requires a capability this target does not provide.",
+    ];
+    if value.is_empty() || !ALLOWED.contains(&value) {
+        return Err(invalid(field, "unsafe_value"));
     }
     Ok(())
 }
@@ -464,20 +559,38 @@ pub struct IdentityLinkChallenge {
     pub expires_at: String,
 }
 
+fn validate_link_identity(
+    schema_version: &str,
+    challenge_id: &str,
+    target_id: &str,
+    depot_origin_value: &str,
+    dns_policy_id: &str,
+    labby_key_thumbprint: &str,
+) -> Result<(), ContractError> {
+    schema(schema_version, DELIVERY_SCHEMA)?;
+    identifier(challenge_id, "link_", "challengeId")?;
+    identifier(target_id, "labby_", "targetId")?;
+    depot_origin(depot_origin_value, "depotOrigin")?;
+    identifier(dns_policy_id, "dns_", "dnsPolicyId")?;
+    digest(labby_key_thumbprint, "labbyKeyThumbprint")
+}
+
 impl Validate for IdentityLinkChallenge {
     fn validate(&self) -> Result<(), ContractError> {
-        schema(&self.schema_version, DELIVERY_SCHEMA)?;
-        identifier(&self.challenge_id, "link_", "challengeId")?;
-        identifier(&self.target_id, "labby_", "targetId")?;
+        validate_link_identity(
+            &self.schema_version,
+            &self.challenge_id,
+            &self.target_id,
+            &self.depot_origin,
+            &self.dns_policy_id,
+            &self.labby_key_thumbprint,
+        )?;
         if self.nonce.len() < 43 || self.nonce.len() > 128 {
             return Err(invalid("nonce", "invalid_length"));
         }
         if self.target_display_name.is_empty() || self.target_display_name.len() > 128 {
             return Err(invalid("targetDisplayName", "invalid_length"));
         }
-        depot_origin(&self.depot_origin, "depotOrigin")?;
-        identifier(&self.dns_policy_id, "dns_", "dnsPolicyId")?;
-        digest(&self.labby_key_thumbprint, "labbyKeyThumbprint")?;
         if self.protocol_range.minimum != DELIVERY_SCHEMA
             || self.protocol_range.maximum != DELIVERY_SCHEMA
         {
@@ -496,7 +609,7 @@ impl IdentityLinkChallenge {
     ) -> Result<(), ContractError> {
         self.validate()?;
         let expires = timestamp(&self.expires_at, "expiresAt")?;
-        let skew = i64::try_from(skew_seconds).map_err(|_| invalid("skew", "overflow"))?;
+        let skew = validate_skew(skew_seconds)?;
         if now.as_second() >= expires.as_second().saturating_add(skew) {
             return Err(invalid("expiresAt", "expired"));
         }
@@ -523,35 +636,23 @@ pub struct IdentityLinkReceipt {
 
 impl Validate for IdentityLinkReceipt {
     fn validate(&self) -> Result<(), ContractError> {
-        schema(&self.schema_version, DELIVERY_SCHEMA)?;
-        identifier(&self.challenge_id, "link_", "challengeId")?;
+        validate_link_identity(
+            &self.schema_version,
+            &self.challenge_id,
+            &self.target_id,
+            &self.depot_origin,
+            &self.dns_policy_id,
+            &self.labby_key_thumbprint,
+        )?;
         identifier(&self.connection_id, "con_", "connectionId")?;
         identifier(&self.depot_account_id, "acct_", "depotAccountId")?;
         identifier(&self.tenant_id, "ten_", "tenantId")?;
-        identifier(&self.target_id, "labby_", "targetId")?;
-        identifier(&self.dns_policy_id, "dns_", "dnsPolicyId")?;
         digest(&self.depot_key_thumbprint, "depotKeyThumbprint")?;
-        digest(&self.labby_key_thumbprint, "labbyKeyThumbprint")?;
         if self.protocol_version != DELIVERY_SCHEMA {
             return Err(invalid("protocolVersion", "unsupported"));
         }
         timestamp(&self.linked_at, "linkedAt")?;
-        IdentityLinkChallenge {
-            schema_version: self.schema_version.clone(),
-            challenge_id: self.challenge_id.clone(),
-            nonce: "x".repeat(43),
-            target_id: self.target_id.clone(),
-            target_display_name: "x".into(),
-            depot_origin: self.depot_origin.clone(),
-            dns_policy_id: self.dns_policy_id.clone(),
-            labby_key_thumbprint: self.labby_key_thumbprint.clone(),
-            protocol_range: ProtocolRange {
-                minimum: DELIVERY_SCHEMA.into(),
-                maximum: DELIVERY_SCHEMA.into(),
-            },
-            expires_at: "1970-01-01T00:00:00Z".into(),
-        }
-        .validate()
+        Ok(())
     }
 }
 
@@ -560,6 +661,7 @@ impl IdentityLinkReceipt {
         &self,
         challenge: &IdentityLinkChallenge,
     ) -> Result<(), ContractError> {
+        validate_pair(self, challenge)?;
         if self.challenge_id != challenge.challenge_id {
             return Err(ContractError::IdentityMismatch("challengeId"));
         }
@@ -579,7 +681,7 @@ impl IdentityLinkReceipt {
     }
 
     pub fn matches_dns_policy(&self, policy: &ApprovedDnsPolicy) -> Result<(), ContractError> {
-        policy.validate()?;
+        validate_pair(self, policy)?;
         if self.dns_policy_id != policy.id {
             return Err(ContractError::IdentityMismatch("dnsPolicyId"));
         }
@@ -659,7 +761,7 @@ impl DownloadGrantClaims {
     ) -> Result<(), ContractError> {
         self.validate()?;
         let now = now.as_second();
-        let skew = i64::try_from(skew_seconds).map_err(|_| invalid("skew", "overflow"))?;
+        let skew = validate_skew(skew_seconds)?;
         let iat = i64::try_from(self.iat).map_err(|_| invalid("iat", "overflow"))?;
         let nbf = i64::try_from(self.nbf).map_err(|_| invalid("nbf", "overflow"))?;
         let exp = i64::try_from(self.exp).map_err(|_| invalid("exp", "overflow"))?;
@@ -676,6 +778,7 @@ impl DownloadGrantClaims {
     }
 
     pub fn matches_link(&self, link: &IdentityLinkReceipt) -> Result<(), ContractError> {
+        validate_pair(self, link)?;
         for (field, matches) in [
             ("iss", self.iss == link.depot_origin),
             ("dnsPolicyId", self.dns_policy_id == link.dns_policy_id),
@@ -692,7 +795,7 @@ impl DownloadGrantClaims {
     }
 
     pub fn matches_dns_policy(&self, policy: &ApprovedDnsPolicy) -> Result<(), ContractError> {
-        policy.validate()?;
+        validate_pair(self, policy)?;
         if self.dns_policy_id != policy.id {
             return Err(ContractError::IdentityMismatch("dnsPolicyId"));
         }
@@ -788,12 +891,15 @@ impl Validate for ChunkManifest {
             return Err(invalid("components", "duplicate_id"));
         }
         let mut paths = BTreeSet::new();
+        let mut owned_chunks = BTreeSet::new();
         let mut edges = 0_usize;
         let mut graph = BTreeMap::new();
         for component in &self.components {
             identifier(&component.component_id, "cmp_", "componentId")?;
             safe_path(&component.path, false, "component.path")?;
-            if !paths.insert(component.path.to_ascii_lowercase()) {
+            let canonical_path: String =
+                component.path.nfkc().flat_map(char::to_lowercase).collect();
+            if !paths.insert(canonical_path) {
                 return Err(invalid("components", "duplicate_path"));
             }
             edges = edges
@@ -814,6 +920,11 @@ impl Validate for ChunkManifest {
                     .any(|ordinal| !chunk_ids.contains(ordinal))
             {
                 return Err(invalid("component.chunks", "unknown_chunk"));
+            }
+            for ordinal in &component.chunks {
+                if !owned_chunks.insert(*ordinal) {
+                    return Err(invalid("component.chunks", "duplicate_owner"));
+                }
             }
             graph.insert(
                 component.component_id.as_str(),
@@ -851,12 +962,16 @@ impl Validate for ChunkManifest {
         for node in graph.keys() {
             visit(node, &graph, &mut BTreeSet::new(), &mut done, 1)?;
         }
+        if owned_chunks != chunk_ids {
+            return Err(invalid("component.chunks", "orphan_chunk"));
+        }
         Ok(())
     }
 }
 
 impl DownloadGrantClaims {
     pub fn matches_request(&self, request: &DeliveryRequest) -> Result<(), ContractError> {
+        validate_pair(self, request)?;
         for (field, matches) in [
             ("targetId", self.target_id == request.target_id),
             ("connectionId", self.connection_id == request.connection_id),
@@ -879,6 +994,7 @@ impl DownloadGrantClaims {
     }
 
     pub fn matches_manifest(&self, manifest: &ChunkManifest) -> Result<(), ContractError> {
+        validate_pair(self, manifest)?;
         for (field, matches) in [
             ("deliveryId", self.delivery_id == manifest.delivery_id),
             ("targetId", self.target_id == manifest.target_id),
@@ -1006,17 +1122,11 @@ fn component_milestone(component: &ComponentReceipt) -> Result<u8, ContractError
             .and_then(success_rank)
             .filter(|rank| *rank < 7)
             .ok_or_else(|| invalid("component.completedThrough", "required_for_partial"))?,
-        DeliveryState::Incompatible | DeliveryState::Cancelled | DeliveryState::Failed => {
-            match component.stage.as_deref() {
-                Some("grant") => 0,
-                Some("transfer") => 1,
-                Some("verification") => 2,
-                Some("storage") => 3,
-                Some("materialization") => 4,
-                Some("exposure" | "activation") => 5,
-                _ => return Err(invalid("component.stage", "unsupported")),
-            }
-        }
+        DeliveryState::Incompatible | DeliveryState::Cancelled | DeliveryState::Failed => component
+            .completed_through
+            .and_then(success_rank)
+            .filter(|rank| *rank < 7)
+            .ok_or_else(|| invalid("component.completedThrough", "required_for_terminal"))?,
     };
     Ok(rank)
 }
@@ -1090,68 +1200,46 @@ impl Validate for DeliveryReceipt {
             {
                 return Err(invalid("component", "missing_failure_detail"));
             }
-            if component.state != DeliveryState::Partial && component.completed_through.is_some() {
+            for (field, value) in [
+                ("component.stage", component.stage.as_deref()),
+                ("component.code", component.code.as_deref()),
+            ] {
+                if value.is_some_and(|value| {
+                    value.is_empty()
+                        || value.len() > 128
+                        || !value.bytes().all(|byte| {
+                            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                        })
+                }) {
+                    return Err(invalid(field, "unsafe_value"));
+                }
+            }
+            if success_rank(component.state).is_some() && component.completed_through.is_some() {
                 return Err(invalid(
                     "component.completedThrough",
-                    "only_valid_for_partial",
+                    "only_valid_for_terminal_or_partial",
                 ));
             }
-            if component
-                .message
-                .as_ref()
-                .is_some_and(|message| message.len() > 512)
+            if matches!(
+                component.state,
+                DeliveryState::Incompatible | DeliveryState::Cancelled | DeliveryState::Failed
+            ) && component.completed_through.is_none()
             {
-                return Err(invalid("component.message", "too_long"));
+                return Err(invalid(
+                    "component.completedThrough",
+                    "required_for_terminal",
+                ));
+            }
+            if let Some(message) = &component.message {
+                safe_public_message(message, "component.message")?;
             }
         }
         if self.summary != derived_summary(&self.components)? {
             return Err(invalid("summary", "component_mismatch"));
         }
         let count = self.components.len() as u32;
-        for (field, value) in [
-            ("requested", self.summary.requested),
-            ("granted", self.summary.granted),
-            ("transferred", self.summary.transferred),
-            ("verified", self.summary.verified),
-            ("stored", self.summary.stored),
-            ("materialized", self.summary.materialized),
-            ("exposed", self.summary.exposed),
-            ("activated", self.summary.activated),
-            ("incompatible", self.summary.incompatible),
-            ("partial", self.summary.partial),
-            ("cancelled", self.summary.cancelled),
-            ("failed", self.summary.failed),
-        ] {
-            if value > count {
-                return Err(invalid(field, "count_exceeds_components"));
-            }
-        }
         timestamp(&self.occurred_at, "occurredAt")?;
-        if self.summary.requested != count {
-            return Err(invalid("summary.requested", "must_equal_components"));
-        }
-        let ordered = [
-            self.summary.requested,
-            self.summary.granted,
-            self.summary.transferred,
-            self.summary.verified,
-            self.summary.stored,
-            self.summary.materialized,
-            self.summary.exposed,
-            self.summary.activated,
-        ];
-        if ordered.windows(2).any(|pair| pair[1] > pair[0]) {
-            return Err(invalid("summary", "nonmonotonic_counts"));
-        }
-        let terminal = self
-            .summary
-            .incompatible
-            .checked_add(self.summary.cancelled)
-            .and_then(|v| v.checked_add(self.summary.failed))
-            .ok_or_else(|| invalid("summary", "overflow"))?;
-        if terminal > count || self.summary.partial > count {
-            return Err(invalid("summary", "terminal_count_exceeded"));
-        }
+        let terminal = self.summary.incompatible + self.summary.cancelled + self.summary.failed;
         match self.state {
             DeliveryState::Requested if self.summary.granted != 0 => {
                 return Err(invalid("state", "summary_mismatch"));
@@ -1217,8 +1305,7 @@ impl Validate for DeliveryReceipt {
 
 impl DeliveryReceipt {
     pub fn matches_manifest(&self, manifest: &ChunkManifest) -> Result<(), ContractError> {
-        self.validate()?;
-        manifest.validate()?;
+        validate_pair(self, manifest)?;
         for (field, matches) in [
             ("deliveryId", self.delivery_id == manifest.delivery_id),
             ("targetId", self.target_id == manifest.target_id),
@@ -1247,6 +1334,34 @@ impl DeliveryReceipt {
             .collect();
         if receipt_ids != manifest_ids {
             return Err(invalid("components", "manifest_mismatch"));
+        }
+        Ok(())
+    }
+
+    /// Bind a receipt to the full request, signed grant, and manifest lineage.
+    pub fn matches_delivery_chain(
+        &self,
+        request: &DeliveryRequest,
+        grant: &DownloadGrantClaims,
+        manifest: &ChunkManifest,
+    ) -> Result<(), ContractError> {
+        self.matches_manifest(manifest)?;
+        grant.matches_request(request)?;
+        grant.matches_manifest(manifest)?;
+        for (field, matches) in [
+            ("connectionId", self.connection_id == request.connection_id),
+            (
+                "correlationId",
+                self.correlation_id == request.correlation_id,
+            ),
+            ("targetId", self.target_id == request.target_id),
+            ("tenantId", self.tenant_id == grant.tenant_id),
+            ("resource", self.resource == request.resource),
+            ("deliveryId", self.delivery_id == grant.delivery_id),
+        ] {
+            if !matches {
+                return Err(ContractError::IdentityMismatch(field));
+            }
         }
         Ok(())
     }
@@ -1399,22 +1514,13 @@ fn allowed_receipt_transition(previous: DeliveryState, next: DeliveryState) -> b
         return true;
     }
     match previous {
-        DeliveryState::Requested => next == DeliveryState::Granted,
-        DeliveryState::Granted => next == DeliveryState::Transferred,
-        DeliveryState::Transferred => next == DeliveryState::Verified,
-        DeliveryState::Verified => next == DeliveryState::Stored,
-        DeliveryState::Stored => {
-            matches!(next, DeliveryState::Materialized | DeliveryState::Exposed)
-        }
-        DeliveryState::Materialized => {
-            matches!(next, DeliveryState::Exposed | DeliveryState::Activated)
-        }
-        DeliveryState::Exposed => next == DeliveryState::Activated,
+        state if success_rank(state).is_some() => success_successor(state, next),
         DeliveryState::Partial => !matches!(next, DeliveryState::Requested),
         DeliveryState::Activated
         | DeliveryState::Incompatible
         | DeliveryState::Cancelled
         | DeliveryState::Failed => false,
+        _ => false,
     }
 }
 
@@ -1456,59 +1562,6 @@ impl Validate for DeliveryErrorEnvelope {
                 return Err(invalid(field, "unsafe_value"));
             }
         }
-        if self.error.message.is_empty()
-            || self.error.message.len() > 512
-            || self.error.message.contains("://")
-        {
-            return Err(invalid("error.message", "unsafe_value"));
-        }
-        Ok(())
+        safe_public_message(&self.error.message, "error.message")
     }
-}
-
-/// Reject recursively unbounded or secret-shaped extension data before future DTOs accept it.
-pub fn validate_extension(value: &Value) -> Result<(), ContractError> {
-    fn walk(value: &Value, depth: usize) -> Result<(), ContractError> {
-        if depth > 8 {
-            return Err(invalid("extension", "depth_exceeded"));
-        }
-        match value {
-            Value::Object(map) => {
-                if map.len() > 128 {
-                    return Err(invalid("extension", "map_too_large"));
-                }
-                for (key, child) in map {
-                    let key_lower = key.to_ascii_lowercase();
-                    if [
-                        "authorization",
-                        "credential",
-                        "password",
-                        "secret",
-                        "token",
-                        "grant",
-                    ]
-                    .iter()
-                    .any(|part| key_lower.contains(part))
-                    {
-                        return Err(invalid("extension", "secret_shaped_key"));
-                    }
-                    walk(child, depth + 1)?;
-                }
-            }
-            Value::Array(values) => {
-                if values.len() > 256 {
-                    return Err(invalid("extension", "list_too_large"));
-                }
-                for child in values {
-                    walk(child, depth + 1)?;
-                }
-            }
-            Value::String(value) if value.len() > 16_384 => {
-                return Err(invalid("extension", "string_too_large"));
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    walk(value, 0)
 }

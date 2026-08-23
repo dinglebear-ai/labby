@@ -40,10 +40,12 @@ documentation prose.
 ## Version and compatibility
 
 JSON messages use UTF-8, reject duplicate object keys, and carry the exact
-`schemaVersion` value `dinglebear.depot-delivery/v1`. Unknown fields may be
-preserved by relays but MUST NOT change authorization or validation. A receiver
-MUST reject unknown enum values, a missing required field, and a major schema it
-does not support. In-place weakening of v1 is forbidden.
+`schemaVersion` value `dinglebear.depot-delivery/v1`. V1 is a closed schema:
+receivers and relays MUST reject unknown object fields, unknown enum values, and
+missing required fields. A relay MUST NOT preserve or forward a field that its
+selected schema version does not define. Every additive or incompatible shape
+change requires a new `schemaVersion`; in-place weakening or extension of v1 is
+forbidden.
 
 Connections record the supported protocol range and Artifact interchange
 versions. Grant issuance selects one mutually supported version and binds it in
@@ -136,11 +138,45 @@ The signed claims include:
 
 Grant lifetime is at most five minutes with at most 30 seconds of clock skew.
 Expiry is exclusive at the skew-adjusted boundary. `dnsPolicyId` is the SHA-256
-identity of the approved origin plus its sorted public resolved-address set; a
-private resolution or any resolution-set change requires a new policy identity
-and fails the existing connection/grant binding. The transport must validate
-the selected socket address as a member of that exact policy while retaining
-the bound HTTPS origin for TLS and HTTP authority checks.
+identity of the approved origin plus its public resolved-address set. Its exact
+canonical construction is specified below; implementations MUST NOT hash a
+resolver-dependent presentation. A private resolution or any resolution-set
+change requires a new policy identity and fails the existing connection/grant
+binding. The transport must validate the selected socket address as a member of
+that exact policy while retaining the bound HTTPS origin for TLS and HTTP
+authority checks.
+
+### DNS policy identity canonicalization
+
+The approved origin is normalized before it is stored, compared, or hashed:
+
+- parse as an absolute URL and require `https`, a DNS hostname, and no userinfo,
+  query, fragment, or non-root path;
+- lowercase the ASCII/IDNA hostname, remove its trailing DNS dot, remove the
+  explicit default port `:443`, and serialize as `https://<host>` (or
+  `https://<host>:<non-default-port>`); there is no trailing slash;
+- reject IP-literal, `localhost`, `.localhost`, `.local`, and `.internal` hosts.
+
+Addresses are unique network addresses, not `host:port` socket strings. Encode
+IPv4 as lowercase dotted decimal and IPv6 as RFC 5952 lowercase compressed
+text. Sort by address family (IPv4 before IPv6), then by the unsigned 4-byte or
+16-byte network-order address. The SHA-256 preimage is UTF-8 bytes constructed
+without a BOM as:
+
+```text
+dinglebear.depot-dns-policy/v1\n
+<normalized-origin>\n
+<address-1>\n
+...
+<address-n>\n
+```
+
+Every displayed `\n` is the single byte `0x0a`, including the final one. No
+spaces, JSON quoting, CR bytes, or locale-dependent formatting are present.
+`dnsPolicyId` is the literal ASCII prefix `dns_` followed by the lowercase
+64-hex-character SHA-256 digest. The IPv4-only, IPv6-only, and mixed-family
+golden vectors in [`fixtures/dns-policy-vectors.json`](./fixtures/dns-policy-vectors.json)
+are normative inputs and expected identities.
 Depot stores hashed `jti` state and atomically changes it from `issued` to
 `active` on first valid chunk request. Repeated requests for the same delivery
 and chunk are permitted while active; a different delivery, target, manifest,
@@ -196,16 +232,18 @@ state and report activation failure separately. `incompatible` is terminal for
 that exact target and revision. Cancellation never rolls back an already
 committed immutable revision.
 
-A component in `partial` carries `completedThrough`, naming its last completed
-nonterminal stage. Entering partial preserves that stage exactly; resumption may
-re-emit the same stage or advance by one valid state-machine edge. This makes
+A component in `partial`, `cancelled`, `failed`, or `incompatible` carries the
+required `completedThrough` field, naming its last completed nonterminal stage.
+The separate `stage` field names the operation that produced a terminal outcome
+and never infers completed progress. Entering partial preserves the completed
+stage exactly; resumption may re-emit it or advance by one valid state-machine edge. This makes
 `transferred -> partial(completedThrough=transferred) -> transferred|verified`
 truthful without permitting a skipped stage or regression.
 
 Receipts are append-only snapshots with a strictly increasing `sequence`, the
 same `deliveryId`, `correlationId`, target, resource, revision, and digest, plus
-per-component states. Summary counts are derived from component state and the
-explicit failure stage; both counts and component progress are non-regressing.
+per-component states. Summary counts are derived from component state and
+`completedThrough`; both counts and component progress are non-regressing.
 Aggregate state changes follow the state machine above without skipped or
 backward transitions. Depot rejects sequence regression or conflicting content
 at the same sequence. The terminal receipt is signed by Labby; intermediate
@@ -230,8 +268,18 @@ CAS objects may remain only when independently verified and unreachable partial
 metadata is garbage-collectable; no local head, exposure, or activation pointer
 may reference a failed delivery.
 
-Errors use stable `code`, `stage`, `retryable`, and safe `message` fields. They
-never echo credentials or attacker-controlled URLs. Examples are in
+Errors use stable `code`, `stage`, and `retryable` fields. An optional `message`
+must be one of the closed public templates defined by v1; implementations never
+forward or interpolate backend text. Messages never echo credentials or
+attacker-controlled values. The complete v1 template set is:
+
+- `The download grant expired; request a new grant for the same delivery.`
+- `The download grant is not valid for this delivery context.`
+- `Authorization for this delivery was revoked.`
+- `The download grant is not valid for this Labby target.`
+- `The stored revision requires a capability this target does not provide.`
+
+Examples are in
 [`fixtures/`](./fixtures/).
 
 ## Audit and privacy
@@ -266,6 +314,11 @@ Before enabling connected delivery, implementations must prove:
 9. disabling either feature gate stops new work and preserves committed state;
 10. a fresh client requires no CORS credential bridge for bytes.
 
-The fixtures and `validate_fixtures.py` provide syntax and invariant goldens.
-They are not substitutes for signature, authorization, storage fault-injection,
-fresh-browser, or production-equivalent tests.
+The fixtures are semantic goldens for the Rust conformance suite.
+`validate_fixtures.py` deliberately provides only standard-library JSON syntax,
+closed inventory, duplicate-key, secret-shaped-field, schema marker, and DNS
+vector digest checks; it is not a second semantic implementation. Rust is the
+normative executable v1 validator until another language projection consumes
+the same mutation corpus. Neither check substitutes for signature,
+authorization, storage fault-injection, fresh-browser, or
+production-equivalent tests.
