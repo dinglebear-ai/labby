@@ -346,6 +346,8 @@ fn oauth_claims(resource: &str, issuer: &str, scope: &str) -> AccessClaims {
         jti: "jwt-id-must-not-be-logged".to_string(),
         scope: scope.to_string(),
         azp: "proxy-test".to_string(),
+        identity_issuer: Some("https://accounts.google.com".to_string()),
+        identity_credential_id: None,
     }
 }
 

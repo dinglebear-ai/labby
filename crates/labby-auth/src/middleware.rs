@@ -384,11 +384,36 @@ async fn authenticate(
                 &expected_issuer,
             ) {
                 Ok(claims) => {
-                    let identity = VerifiedIdentity::external(
-                        Authenticator::OauthBearer,
-                        crate::google::GOOGLE_ISSUER,
-                        claims.sub.clone(),
-                    )
+                    let identity = match (
+                        claims.identity_issuer.as_deref(),
+                        claims.identity_credential_id.as_deref(),
+                    ) {
+                        (Some(provider_issuer), None) => {
+                            let allowed_issuers = std::iter::once(crate::google::GOOGLE_ISSUER)
+                                .chain(
+                                    auth_state
+                                        .config
+                                        .enterprise_issuers
+                                        .iter()
+                                        .map(|issuer| issuer.issuer.as_str()),
+                                );
+                            VerifiedIdentity::external_from_allowed_issuers(
+                                Authenticator::OauthBearer,
+                                claims.iss.clone(),
+                                provider_issuer,
+                                claims.sub.clone(),
+                                allowed_issuers,
+                            )
+                        }
+                        (None, Some(credential_id)) => {
+                            VerifiedIdentity::local_credential_with_issuer(
+                                Authenticator::OauthBearer,
+                                claims.iss.clone(),
+                                credential_id,
+                            )
+                        }
+                        _ => Err(crate::VerifiedIdentityError::InvalidIdentityProvenance),
+                    }
                     .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
                     let actor_key =
                         derive_actor_key(layer.actor_key_deriver.as_deref(), &claims.sub);
@@ -846,6 +871,8 @@ mod tests {
             jti: "j-1".to_string(),
             scope: "syslog:read syslog:admin".to_string(),
             azp: String::new(),
+            identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+            identity_credential_id: None,
         };
         let token = state.signing_keys.issue_access_token(&claims).unwrap();
         let layer = AuthLayer::from_state(state);
@@ -875,6 +902,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"user@example.com|syslog:read,syslog:admin");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn jwt_without_canonical_identity_provenance_fails_closed() {
+        let state = Arc::new(test_auth_state().await);
+        let issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .map(|url| url.as_str().trim_end_matches('/').to_string())
+            .unwrap();
+        let token = state
+            .signing_keys
+            .issue_access_token(&crate::jwt::AccessClaims {
+                iss: issuer,
+                sub: "ambiguous-subject".to_string(),
+                aud: canonical_resource_url(&state),
+                exp: (crate::util::now_unix() + 60) as usize,
+                nbf: None,
+                iat: crate::util::now_unix() as usize,
+                jti: "missing-identity-provenance".to_string(),
+                scope: "lab:read".to_string(),
+                azp: String::new(),
+                identity_issuer: None,
+                identity_credential_id: None,
+            })
+            .unwrap();
+        let response = echo_app(AuthLayer::from_state(state))
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn jwt_with_both_identity_provenance_kinds_fails_closed() {
+        let state = Arc::new(test_auth_state().await);
+        let issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .map(|url| url.as_str().trim_end_matches('/').to_string())
+            .unwrap();
+        let token = state
+            .signing_keys
+            .issue_access_token(&crate::jwt::AccessClaims {
+                iss: issuer,
+                sub: "ambiguous-subject".to_string(),
+                aud: canonical_resource_url(&state),
+                exp: (crate::util::now_unix() + 60) as usize,
+                nbf: None,
+                iat: crate::util::now_unix() as usize,
+                jti: "conflicting-identity-provenance".to_string(),
+                scope: "lab:read".to_string(),
+                azp: String::new(),
+                identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                identity_credential_id: Some("machine-client:ambiguous".to_string()),
+            })
+            .unwrap();
+        let response = echo_app(AuthLayer::from_state(state))
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -912,6 +1017,8 @@ mod tests {
                 jti: "identity-link-test".to_string(),
                 scope: "lab:read".to_string(),
                 azp: String::new(),
+                identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                identity_credential_id: None,
             })
             .unwrap();
         let bearer_app = principal_link_app(AuthLayer::from_state(state));
@@ -956,6 +1063,82 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn google_and_enterprise_tokens_with_same_subject_keep_distinct_provider_links() {
+        let base = test_auth_state().await;
+        let mut config = (*base.config).clone();
+        config.enterprise_issuers = vec![crate::config::EnterpriseIssuerConfig {
+            issuer: "https://idp.example.com/oidc/tenant/".to_string(),
+            jwks_uri: None,
+            jwks: None,
+            allowed_client_ids: Vec::new(),
+        }];
+        let state = Arc::new(AuthState::for_tests(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            (*base.google).clone(),
+        ));
+        let transport_issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .map(|url| url.as_str().trim_end_matches('/').to_string())
+            .unwrap();
+        let audience = canonical_resource_url(&state);
+        let issue = |identity_issuer: &str, jti: &str| {
+            state
+                .signing_keys
+                .issue_access_token(&crate::jwt::AccessClaims {
+                    iss: transport_issuer.clone(),
+                    sub: "shared-subject".to_string(),
+                    aud: audience.clone(),
+                    exp: (crate::util::now_unix() + 60) as usize,
+                    nbf: None,
+                    iat: crate::util::now_unix() as usize,
+                    jti: jti.to_string(),
+                    scope: "lab:read".to_string(),
+                    azp: String::new(),
+                    identity_issuer: Some(identity_issuer.to_string()),
+                    identity_credential_id: None,
+                })
+                .unwrap()
+        };
+        let google = issue(crate::google::GOOGLE_ISSUER, "google-provider-link");
+        let enterprise = issue(
+            "https://idp.example.com/oidc/tenant/",
+            "enterprise-provider-link",
+        );
+
+        let call = |token: String| {
+            principal_link_app(AuthLayer::from_state(Arc::clone(&state))).oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let google_response = call(google).await.unwrap();
+        let enterprise_response = call(enterprise).await.unwrap();
+        let google_body = axum::body::to_bytes(google_response.into_body(), 1024)
+            .await
+            .unwrap();
+        let enterprise_body = axum::body::to_bytes(enterprise_response.into_body(), 1024)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            &google_body[..],
+            b"external|https://accounts.google.com|shared-subject"
+        );
+        assert_eq!(
+            &enterprise_body[..],
+            b"external|https://idp.example.com/oidc/tenant|shared-subject"
+        );
+        assert_ne!(google_body, enterprise_body);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn jwt_with_wrong_issuer_rejected() {
         let state = Arc::new(test_auth_state().await);
         let aud = canonical_resource_url(&state);
@@ -969,6 +1152,8 @@ mod tests {
             jti: "j-1".to_string(),
             scope: "syslog:read".to_string(),
             azp: String::new(),
+            identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+            identity_credential_id: None,
         };
         let token = state.signing_keys.issue_access_token(&claims).unwrap();
         let layer = AuthLayer::from_state(state)
@@ -1007,6 +1192,8 @@ mod tests {
             jti: "j-1".to_string(),
             scope: "syslog:read".to_string(),
             azp: String::new(),
+            identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+            identity_credential_id: None,
         };
         let token = state.signing_keys.issue_access_token(&claims).unwrap();
         let layer = AuthLayer::from_state(state);
@@ -1135,6 +1322,8 @@ mod tests {
                 jti: "exact-resource".to_string(),
                 scope: "mcp:read".to_string(),
                 azp: String::new(),
+                identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                identity_credential_id: None,
             })
             .unwrap();
 
@@ -1193,6 +1382,8 @@ mod tests {
                 jti: "insufficient-scope".to_string(),
                 scope: "mcp:read".to_string(),
                 azp: String::new(),
+                identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                identity_credential_id: None,
             })
             .unwrap();
 
