@@ -16,7 +16,9 @@ use rmcp::transport::{AuthClient, AuthorizationManager};
 use crate::gateway::config_store::{GatewayConfigStore, StoreFuture};
 use crate::gateway::discovery::DiscoveredServer;
 use crate::upstream::pool::UpstreamPool;
-use crate::upstream::types::{ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool};
+use crate::upstream::types::{
+    SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
+};
 use labby_auth::upstream::encryption::{EncryptionKey, load_key};
 use labby_runtime::gateway_config::{
     CodeModeConfig, GatewayConfig, ImportSource, ProtectedMcpRouteConfig, ResolvedPublicUrls,
@@ -549,7 +551,7 @@ fn fixture_upstream_entry(upstream: &str, tools: HashMap<String, UpstreamTool>) 
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
-        skill_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: SkillExposurePolicy::all(),
         proxy_skills: false,
         supports_skills: None,
         proxy_resources: true,

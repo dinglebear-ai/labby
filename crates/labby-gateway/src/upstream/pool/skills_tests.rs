@@ -592,6 +592,47 @@ async fn a_second_read_is_served_from_cache() {
 }
 
 #[tokio::test]
+async fn operator_skills_explain_exposed_and_hidden_policy_decisions() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "review-pr"), entry("up", "deploy")],
+        "ttlMs": 600_000
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", Some(vec!["review-*"]));
+
+    let operator = pool
+        .upstream_skills_operator(&config)
+        .await
+        .expect("operator skills");
+
+    assert_eq!(operator.skills.len(), 2);
+    assert_eq!(operator.skills[0].descriptor.id.provider.instance, "up");
+    assert_eq!(
+        operator.skills[0].descriptor.id.provider.kind,
+        labby_runtime::skills::SkillProviderKind::McpUpstream
+    );
+    assert_eq!(
+        operator.skills[0].descriptor.id.source_id,
+        "skill://up/review-pr/SKILL.md"
+    );
+    assert!(operator.skills[0].exposure.exposed);
+    assert_eq!(
+        operator.skills[0].exposure.reason,
+        super::skills_exposure::SkillExposureReason::MatchedPattern
+    );
+    assert_eq!(
+        operator.skills[0].exposure.matched_pattern.as_deref(),
+        Some("review-*")
+    );
+    assert!(!operator.skills[1].exposure.exposed);
+    assert_eq!(
+        operator.skills[1].exposure.reason,
+        super::skills_exposure::SkillExposureReason::NotMatched
+    );
+    assert_eq!(operator.skills[1].exposure.matched_pattern, None);
+}
+
+#[tokio::test]
 async fn expose_skills_filters_and_fails_closed_on_an_empty_allowlist() {
     let server = SkillsServer::new(vec![json!({
         "skills": [entry("up", "alpha"), entry("up", "beta")], "ttlMs": 600_000
@@ -937,6 +978,29 @@ async fn a_hidden_skills_files_are_not_readable_by_uri() {
         )
         .await
         .expect_err("a skill hidden from the listing must also be unreadable");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
+    );
+}
+
+#[tokio::test]
+async fn provider_read_binds_the_resource_to_the_requested_skill_identity() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha"), entry("up", "beta")]
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .read_proxied_skill_file_for_skill(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+            "skill://up/beta/SKILL.md",
+            limits::MAX_SKILL_RESOURCE_BYTES,
+        )
+        .await
+        .expect_err("a resource owned by another skill must not be relabeled");
     assert_eq!(
         error.kind(),
         labby_runtime::skills::KIND_SKILL_MANIFEST_STALE

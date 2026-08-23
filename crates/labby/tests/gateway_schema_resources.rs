@@ -25,7 +25,7 @@ use serde_json::json;
 
 use labby::dispatch::upstream::pool::UpstreamPool;
 use labby::dispatch::upstream::types::{
-    ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
+    SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
 
 fn make_tool(name: &'static str, upstream: &str) -> UpstreamTool {
@@ -49,7 +49,7 @@ fn make_entry(name: &str, tools: Vec<UpstreamTool>, policy: ToolExposurePolicy) 
         exposure_policy: policy,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
-        skill_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: SkillExposurePolicy::all(),
         proxy_skills: false,
         supports_skills: None,
         proxy_resources: true,

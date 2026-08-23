@@ -11,6 +11,7 @@
 pub(crate) mod aggregate;
 pub(crate) mod facade;
 pub(crate) mod local;
+pub(crate) mod providers;
 pub(crate) mod search;
 
 use std::collections::BTreeMap;

@@ -724,7 +724,7 @@ mod tests {
     use labby_gateway::gateway::palette::LauncherCatalogView;
     use labby_gateway::upstream::pool::UpstreamPool;
     use labby_gateway::upstream::types::{
-        ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
+        SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
     };
     use labby_primitives::action::{ActionSpec, ParamSpec};
     use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
@@ -840,7 +840,7 @@ mod tests {
             exposure_policy: ToolExposurePolicy::All,
             resource_exposure_policy: ToolExposurePolicy::All,
             prompt_exposure_policy: ToolExposurePolicy::All,
-            skill_exposure_policy: ToolExposurePolicy::All,
+            skill_exposure_policy: SkillExposurePolicy::all(),
             proxy_skills: false,
             supports_skills: None,
             proxy_resources: false,

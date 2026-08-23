@@ -73,12 +73,17 @@ mod resources_exposure_tests;
 mod resources_list;
 mod resources_read;
 mod skills;
+mod skills_exposure;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills::OperatorSkillRejection;
 #[cfg(feature = "skills")]
 pub(crate) use skills::OperatorSkills;
 mod skills_cache;
 mod skills_list;
+#[cfg(feature = "skills")]
+mod skills_provider;
+#[cfg(feature = "skills")]
+pub use skills_provider::SepSkillProvider;
 mod skills_tests;
 mod spawn_lock;
 mod stdio_stderr;

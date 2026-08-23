@@ -143,6 +143,15 @@ pub enum ToolExposurePolicy {
     AllowList(Vec<ToolPattern>),
 }
 
+/// Runtime exposure policy applied to one upstream's validated Agent Skills.
+///
+/// This is deliberately a distinct capability type even though the legacy
+/// `expose_skills` syntax currently compiles through the shared name matcher.
+/// Keeping the type distinct prevents tool-only assumptions from leaking into
+/// provider, provenance, requirement, and loadout rules as this policy grows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillExposurePolicy(ToolExposurePolicy);
+
 /// One user-provided tool pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolPattern {
@@ -189,6 +198,42 @@ impl ToolExposurePolicy {
                     .then(|| pattern.as_str().to_string())
             }),
         }
+    }
+}
+
+impl SkillExposurePolicy {
+    pub fn from_optional(patterns: Option<Vec<String>>) -> Result<Self, String> {
+        ToolExposurePolicy::from_optional(patterns).map(Self)
+    }
+
+    pub fn from_patterns(patterns: Vec<String>) -> Result<Self, String> {
+        ToolExposurePolicy::from_patterns(patterns).map(Self)
+    }
+
+    #[must_use]
+    pub fn all() -> Self {
+        Self(ToolExposurePolicy::All)
+    }
+
+    #[must_use]
+    pub fn matches(&self, skill_name: &str) -> bool {
+        self.0.matches(skill_name)
+    }
+
+    #[must_use]
+    pub fn matched_by(&self, skill_name: &str) -> Option<String> {
+        self.0.matched_by(skill_name)
+    }
+
+    #[must_use]
+    pub fn is_unrestricted(&self) -> bool {
+        matches!(self.0, ToolExposurePolicy::All)
+    }
+}
+
+impl From<ToolExposurePolicy> for SkillExposurePolicy {
+    fn from(policy: ToolExposurePolicy) -> Self {
+        Self(policy)
     }
 }
 
@@ -329,7 +374,7 @@ pub struct UpstreamEntry {
     /// `pool::entries::prompt_exposed`.
     pub prompt_exposure_policy: ToolExposurePolicy,
     /// Exposure policy for this upstream's Agent Skills (`expose_skills`).
-    pub skill_exposure_policy: ToolExposurePolicy,
+    pub skill_exposure_policy: SkillExposurePolicy,
     /// Whether this upstream's Agent Skills are trusted for downstream proxying.
     pub proxy_skills: bool,
     /// Whether the most recent MCP initialize handshake advertised the Skills extension.
@@ -382,7 +427,7 @@ pub struct UpstreamEntry {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{ToolExposurePolicy, wildcard_matches};
+    use super::{SkillExposurePolicy, ToolExposurePolicy, wildcard_matches};
 
     #[test]
     fn exact_and_wildcard_patterns_match_tool_names() {
@@ -400,6 +445,29 @@ mod tests {
     #[test]
     fn missing_policy_defaults_to_all() {
         let policy = ToolExposurePolicy::from_optional(None).expect("policy");
+        assert!(policy.matches("anything_at_all"));
+    }
+
+    #[test]
+    fn skill_policy_preserves_legacy_pattern_semantics_behind_a_distinct_type() {
+        let policy = SkillExposurePolicy::from_optional(Some(vec![
+            "review-*".to_string(),
+            "deploy".to_string(),
+        ]))
+        .expect("skill policy");
+
+        assert!(!policy.is_unrestricted());
+        assert!(policy.matches("review-pr"));
+        assert!(policy.matches("deploy"));
+        assert!(!policy.matches("delete-repository"));
+        assert_eq!(policy.matched_by("review-pr").as_deref(), Some("review-*"));
+    }
+
+    #[test]
+    fn missing_skill_policy_preserves_the_existing_expose_all_default() {
+        let policy = SkillExposurePolicy::from_optional(None).expect("skill policy");
+
+        assert!(policy.is_unrestricted());
         assert!(policy.matches("anything_at_all"));
     }
 

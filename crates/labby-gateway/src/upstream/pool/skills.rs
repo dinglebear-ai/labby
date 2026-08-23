@@ -16,7 +16,10 @@ use std::sync::Arc;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
-use labby_runtime::skills::{ValidatedSkill, parse_skill_resource_uri};
+use labby_runtime::skills::{
+    SkillDescriptor, SkillDiscoverySource, SkillProviderId, SkillProviderKind, ValidatedSkill,
+    parse_skill_resource_uri,
+};
 
 use super::UpstreamPool;
 use super::entries::{log_exposure_filter, resolve_request_skill_exposure_policy};
@@ -25,6 +28,7 @@ use std::time::Instant;
 
 use super::capability_call::timed_capability_call_str;
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
+use super::skills_exposure::SkillExposureDecision;
 use super::skills_list::{UpstreamSkills, peer_declares_skills};
 
 /// One upstream's exposed skills, plus the completeness bookkeeping a caller
@@ -45,35 +49,37 @@ pub struct ExposedSkills {
     /// untrusted `ttlMs`. A downstream listing that folds these entries in must
     /// not advertise a longer TTL than the data behind it actually has.
     pub ttl_ms: Option<u64>,
+    /// Whether this response reused a catalog snapshot or completed a refresh.
+    pub source: SkillDiscoverySource,
     catalog: Arc<UpstreamSkills>,
     exposed_indices: BTreeSet<usize>,
 }
 
 /// Operator-only view of one validated upstream skill before exposure filtering.
 #[derive(Debug, Clone)]
-pub struct OperatorSkill {
-    pub skill: ValidatedSkill,
-    pub exposed: bool,
+pub(crate) struct OperatorSkill {
+    pub(crate) descriptor: SkillDescriptor,
+    pub(crate) exposure: SkillExposureDecision,
 }
 
 /// Operator-only reason a skill entry was rejected during ingest.
 #[derive(Debug, Clone)]
-pub struct OperatorSkillRejection {
-    pub reason: String,
-    pub uri: String,
-    pub detail: String,
+pub(crate) struct OperatorSkillRejection {
+    pub(crate) reason: String,
+    pub(crate) uri: String,
+    pub(crate) detail: String,
 }
 
 /// Operator-only skills snapshot. Unlike the downstream view, this retains
 /// validated-but-hidden skills so the admin UI can manage exposure safely.
 #[derive(Debug, Clone, Default)]
-pub struct OperatorSkills {
-    pub supports_skills: Option<bool>,
-    pub discovered_count: usize,
-    pub skills: Vec<OperatorSkill>,
-    pub rejected: Vec<OperatorSkillRejection>,
-    pub truncated: bool,
-    pub age_secs: u64,
+pub(crate) struct OperatorSkills {
+    pub(crate) supports_skills: Option<bool>,
+    pub(crate) discovered_count: usize,
+    pub(crate) skills: Vec<OperatorSkill>,
+    pub(crate) rejected: Vec<OperatorSkillRejection>,
+    pub(crate) truncated: bool,
+    pub(crate) age_secs: u64,
 }
 
 impl UpstreamPool {
@@ -97,9 +103,15 @@ impl UpstreamPool {
         // still served; the refresh happens behind it rather than in front.
         if let Some(cached) = self.cached_skills(&key).await {
             if cached.is_fresh() {
-                return Ok(self.apply_skill_exposure(config, &cached, subject));
+                return Ok(self.apply_skill_exposure(
+                    config,
+                    &cached,
+                    subject,
+                    SkillDiscoverySource::Cached,
+                ));
             }
-            let stale = self.apply_skill_exposure(config, &cached, subject);
+            let stale =
+                self.apply_skill_exposure(config, &cached, subject, SkillDiscoverySource::Cached);
             self.spawn_skills_refresh(config.clone(), subject.map(str::to_string));
             return Ok(stale);
         }
@@ -109,16 +121,21 @@ impl UpstreamPool {
         let guard = self.skills_fetch_locks.guard_for(&key).await;
         let _held = guard.lock().await;
         if let Some(cached) = self.cached_skills(&key).await {
-            return Ok(self.apply_skill_exposure(config, &cached, subject));
+            return Ok(self.apply_skill_exposure(
+                config,
+                &cached,
+                subject,
+                SkillDiscoverySource::Cached,
+            ));
         }
 
         let snapshot = self.fetch_and_cache_skills(config, subject).await?;
-        Ok(self.apply_skill_exposure(config, &snapshot, subject))
+        Ok(self.apply_skill_exposure(config, &snapshot, subject, SkillDiscoverySource::Refreshed))
     }
 
     /// Operator snapshot for the admin UI. This never bypasses the trust gate:
     /// untrusted upstreams report handshake support but are not asked to list skills.
-    pub async fn upstream_skills_operator(
+    pub(crate) async fn upstream_skills_operator(
         &self,
         config: &UpstreamConfig,
     ) -> Result<OperatorSkills, String> {
@@ -133,14 +150,16 @@ impl UpstreamPool {
         }
 
         let exposed = self.upstream_skills(config, None).await?;
+        let policy =
+            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
+        let provider = SkillProviderId::new(SkillProviderKind::McpUpstream, config.name.clone());
         let skills = exposed
             .catalog
             .skills
             .iter()
-            .enumerate()
-            .map(|(index, skill)| OperatorSkill {
-                skill: skill.clone(),
-                exposed: exposed.exposed_indices.contains(&index),
+            .map(|skill| OperatorSkill {
+                descriptor: SkillDescriptor::from_validated_sep(provider.clone(), skill),
+                exposure: SkillExposureDecision::evaluate(&policy, &skill.name),
             })
             .collect();
         let rejected = exposed
@@ -322,6 +341,7 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         cached: &CachedSkills,
         subject: Option<&str>,
+        source: SkillDiscoverySource,
     ) -> ExposedSkills {
         let policy =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
@@ -350,6 +370,7 @@ impl UpstreamPool {
             truncated: cached.skills.truncated,
             age_secs: cached.age().as_secs(),
             ttl_ms: Some(cached.remaining_ttl().as_millis() as u64),
+            source,
             catalog: Arc::clone(&cached.skills),
             exposed_indices,
         }
@@ -475,6 +496,41 @@ impl UpstreamPool {
         // The upstream's complete URI, including its native scheme.
         upstream_uri: &str,
     ) -> Result<VerifiedSkillFile, ToolError> {
+        self.read_proxied_skill_file_inner(config, subject, None, upstream_uri, None)
+            .await
+    }
+
+    /// Read one file while requiring a specific manifest owner.
+    ///
+    /// Provider-neutral callers carry a provider-scoped Skill identity in
+    /// addition to the resource identity. Binding both prevents a caller from
+    /// naming one exposed Skill while reading a file owned by another.
+    pub async fn read_proxied_skill_file_for_skill(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        skill_uri: &str,
+        upstream_uri: &str,
+        max_bytes: usize,
+    ) -> Result<VerifiedSkillFile, ToolError> {
+        self.read_proxied_skill_file_inner(
+            config,
+            subject,
+            Some(skill_uri),
+            upstream_uri,
+            Some(max_bytes),
+        )
+        .await
+    }
+
+    async fn read_proxied_skill_file_inner(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        expected_skill_uri: Option<&str>,
+        upstream_uri: &str,
+        max_bytes: Option<usize>,
+    ) -> Result<VerifiedSkillFile, ToolError> {
         let canonical_uri = parse_skill_resource_uri(upstream_uri)
             .map_err(|error| ToolError::Sdk {
                 sdk_kind: "invalid_param".into(),
@@ -498,6 +554,11 @@ impl UpstreamPool {
             .into_iter()
             .flatten()
             .filter(|binding| exposed.exposed_indices.contains(&binding.skill))
+            .filter(|binding| {
+                expected_skill_uri.is_none_or(|expected| {
+                    exposed.catalog.skills[binding.skill].entry.uri == expected
+                })
+            })
             .collect::<Vec<_>>();
         let [binding] = bindings.as_slice() else {
             return Err(ToolError::Sdk {
@@ -541,7 +602,7 @@ impl UpstreamPool {
             event,
             start,
             peer.read_resource(rmcp::model::ReadResourceRequestParams::new(upstream_uri)),
-            |_| 0,
+            |result| serde_json::to_vec(result).map_or(usize::MAX, |bytes| bytes.len()),
             subject,
             |error| format!("upstream `{}` skill read failed: {error}", config.name),
             format!(
@@ -569,7 +630,7 @@ impl UpstreamPool {
         let (text, mime_type) = match content {
             rmcp::model::ResourceContents::TextResourceContents {
                 text, mime_type, ..
-            } => (text.clone(), mime_type.clone()),
+            } => (text, mime_type.clone()),
             // Anything else — a blob today, a new variant tomorrow — cannot be
             // digest-verified as text, so it is refused rather than relayed.
             _ => {
@@ -580,6 +641,16 @@ impl UpstreamPool {
                 });
             }
         };
+        if max_bytes.is_some_and(|limit| text.len() > limit) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "response_too_large".to_string(),
+                message: format!(
+                    "skill resource from upstream `{}` exceeds the {} byte read limit",
+                    config.name,
+                    max_bytes.expect("checked")
+                ),
+            });
+        }
 
         let parsed_digest =
             labby_runtime::skills::parse_digest(digest).map_err(|error| ToolError::Sdk {
@@ -632,7 +703,10 @@ impl UpstreamPool {
             )?;
         }
 
-        Ok(VerifiedSkillFile { text, mime_type })
+        Ok(VerifiedSkillFile {
+            text: text.clone(),
+            mime_type,
+        })
     }
 }
 

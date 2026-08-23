@@ -12,7 +12,7 @@ use crate::config::{
 use crate::dispatch::error::ToolError;
 use crate::dispatch::upstream::pool::UpstreamPool;
 use crate::dispatch::upstream::types::{
-    ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
+    SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
 };
 use crate::mcp::catalog::ToolCatalogSnapshot;
 use crate::mcp::catalog::{
@@ -443,7 +443,7 @@ fn fixture_upstream_entry(upstream: &str, tools: HashMap<String, UpstreamTool>) 
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
-        skill_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: SkillExposurePolicy::all(),
         proxy_skills: false,
         supports_skills: None,
         proxy_resources: true,
