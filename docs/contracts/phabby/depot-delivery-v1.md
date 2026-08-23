@@ -2,6 +2,7 @@
 title: "Depot-to-Labby Delivery Protocol v1"
 status: proposed-contract
 created: "2026-08-22"
+updated: "2026-08-23"
 ---
 
 # Depot-to-Labby Delivery Protocol v1

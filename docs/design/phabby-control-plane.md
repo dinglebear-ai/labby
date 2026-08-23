@@ -2,6 +2,7 @@
 title: "Phabby Shared Control Plane"
 status: accepted-target
 created: "2026-08-22"
+updated: "2026-08-23"
 ---
 
 # Phabby Shared Control Plane
