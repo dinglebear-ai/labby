@@ -3461,6 +3461,11 @@ upstreams = ["gateway-alpha", " "]
     #[test]
     fn protected_route_allows_same_gateway_subset_path_on_different_hosts() {
         let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+enabled = false
+url = "https://gateway-alpha.example.com/mcp"
+
 [[protected_mcp_routes]]
 name = "media-a"
 public_host = "mcp-a.example.com"
