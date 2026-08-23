@@ -229,7 +229,13 @@ Wave 8 attaches exactly one runtime allocation, after the live-daemon bridge ear
 
 The crate-private AccessStore mutation accepts an exact `VerifiedIdentity`, Project ID, and canonical Loadout name that the caller has already validated against desired gateway configuration. In one immediate transaction it re-resolves the active Principal, requires an active same-Organization Project and direct membership with `project.manage`, inserts the sole Project Loadout mapping, advances the global revision plus owning Organization and Project policy epochs, and writes redacted audit evidence. Exact replay returns `AlreadyApplied` without writes; a different existing mapping returns a conflict; inaccessible Projects are non-enumerating.
 
-This wave intentionally does not read gateway state inside AccessStore. The next composition adapter must call `GatewayManager::loadout_get` before the mutation and must not create grants, route exposure, or transport actions as a side effect. Discovery filtering and dispatch authorization remain later gates.
+This wave intentionally does not read gateway state inside AccessStore. The Wave 11 composition adapter calls `GatewayManager::loadout_get` before the mutation and does not create grants, route exposure, or transport actions as a side effect. Discovery filtering and dispatch authorization remain later gates.
+
+### Wave 11: desired Gateway Loadout admission
+
+The gateway-feature-only, crate-private adapter first authorizes the opaque Project selector for `project.manage`, then validates the canonical Loadout name against desired configuration with `GatewayManager::loadout_get`, and finally invokes the immediate AccessStore mutation, which reauthorizes before writing. This ordering prevents unauthorized Loadout-name probing and closes the permission-revocation window between validation and mutation. Gateway and persistence failures map to bounded redacted composition errors. The adapter is not registered on any transport.
+
+This is point-in-time admission, not cross-store referential integrity. Gateway configuration and AccessStore cannot commit atomically, and a concurrent or later Loadout removal can invalidate the stored symbolic name. Every use-time composition must re-resolve the name from desired configuration and fail closed. A repair/replacement workflow or immutable Loadout revision identity is required before claiming a durable existence invariant.
 
 ### Wave 10: coherent Project permission snapshot
 

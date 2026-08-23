@@ -2,6 +2,8 @@ mod authorization;
 mod bootstrap;
 mod domain;
 mod error;
+#[cfg(feature = "gateway")]
+mod gateway_loadout;
 mod health;
 mod integrity;
 mod loadout;
@@ -18,6 +20,9 @@ pub(crate) use authorization::{AuthorizeProjectInput, ProjectPermissionSnapshot}
 pub(crate) use bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole};
+#[cfg(feature = "gateway")]
+#[allow(unused_imports)]
+pub(crate) use gateway_loadout::{GatewayLoadoutAssignmentError, assign_admitted_project_loadout};
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 #[allow(unused_imports)]
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};

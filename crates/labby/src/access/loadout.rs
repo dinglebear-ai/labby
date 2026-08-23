@@ -1,5 +1,5 @@
 use labby_auth::VerifiedIdentity;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest as _, Sha256};
 
 use super::domain::{Permission, ProjectRole, validate_loadout_name};
@@ -35,6 +35,18 @@ impl AssignProjectLoadoutInput {
             loadout_name,
         })
     }
+
+    pub(super) fn identity(&self) -> &VerifiedIdentity {
+        &self.identity
+    }
+
+    pub(super) fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub(super) fn loadout_name(&self) -> &str {
+        &self.loadout_name
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,37 +55,34 @@ pub(crate) enum AssignProjectLoadoutOutcome {
     AlreadyApplied,
 }
 
-pub(super) fn assign(
-    connection: &mut Connection,
-    input: &AssignProjectLoadoutInput,
-) -> AccessStoreResult<AssignProjectLoadoutOutcome> {
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(map_sqlite_error)?;
-    let prior_global_revision: i64 = transaction
-        .query_row(
-            "SELECT global_revision FROM access_metadata WHERE singleton=1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(map_sqlite_error)?;
-    let principal = super::read::resolve_principal(&transaction, &input.identity)?;
+pub(super) struct ProjectManager {
+    pub(super) principal: super::read::ResolvedPrincipal,
+    project_policy_epoch: i64,
+    organization_policy_epoch: i64,
+}
+
+pub(super) fn resolve_project_manager(
+    transaction: &Transaction<'_>,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+) -> AccessStoreResult<ProjectManager> {
+    let principal = super::read::resolve_principal(transaction, identity)?;
     let row = transaction
         .query_row(
             "SELECT m.role, m.status, p.status, o.status, p.project_policy_epoch, o.policy_epoch
-         FROM project_memberships m
-         JOIN projects p ON p.organization_id=m.organization_id AND p.project_id=m.project_id
-         JOIN organizations o ON o.organization_id=m.organization_id
-         WHERE m.organization_id=?1 AND m.principal_id=?2 AND m.project_id=?3",
-            params![principal.organization_id, principal.id, input.project_id],
-            |r| {
+             FROM project_memberships m
+             JOIN projects p ON p.organization_id=m.organization_id AND p.project_id=m.project_id
+             JOIN organizations o ON o.organization_id=m.organization_id
+             WHERE m.organization_id=?1 AND m.principal_id=?2 AND m.project_id=?3",
+            params![principal.organization_id, principal.id, project_id],
+            |row| {
                 Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, i64>(5)?,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             },
         )
@@ -94,6 +103,29 @@ pub(super) fn assign(
     {
         return Err(AccessStoreError::ProjectAccessUnavailable);
     }
+    Ok(ProjectManager {
+        principal,
+        project_policy_epoch: row.4,
+        organization_policy_epoch: row.5,
+    })
+}
+
+pub(super) fn assign(
+    connection: &mut Connection,
+    input: &AssignProjectLoadoutInput,
+) -> AccessStoreResult<AssignProjectLoadoutOutcome> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_error)?;
+    let prior_global_revision: i64 = transaction
+        .query_row(
+            "SELECT global_revision FROM access_metadata WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let manager = resolve_project_manager(&transaction, &input.identity, &input.project_id)?;
+    let principal = &manager.principal;
     let existing = transaction
         .query_row(
             "SELECT loadout_name FROM project_loadouts WHERE organization_id=?1 AND project_id=?2",
@@ -135,13 +167,13 @@ pub(super) fn assign(
             .checked_add(1)
             .ok_or(AccessStoreError::MalformedVocabulary)?
         || organization_epoch
-            != row
-                .5
+            != manager
+                .organization_policy_epoch
                 .checked_add(1)
                 .ok_or(AccessStoreError::MalformedVocabulary)?
         || project_epoch
-            != row
-                .4
+            != manager
+                .project_policy_epoch
                 .checked_add(1)
                 .ok_or(AccessStoreError::MalformedVocabulary)?
     {
