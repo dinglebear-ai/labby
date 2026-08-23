@@ -40,7 +40,7 @@ use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
 use super::protected_routes::ProtectedRouteIndex;
 pub use super::runtime::GatewayRuntimeHandle;
-use super::service_registry::GatewayServiceRegistry;
+use super::service_registry::PublishedServiceRegistryState;
 use super::types::CatalogChangeNotifier;
 
 #[derive(Clone)]
@@ -88,6 +88,10 @@ pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoad
 pub use self::publication::{
     LoadoutToolCatalogPublicationError, PublishedLoadoutToolCatalogSnapshot,
 };
+pub use super::service_registry::{
+    PublishedServiceRegistrySnapshot, ServiceRegistryPublicationError,
+    ServiceRegistryPublicationGeneration,
+};
 pub use crate::gateway::runtime::PoolPublicationGeneration;
 
 #[derive(Clone)]
@@ -121,7 +125,10 @@ pub struct GatewayManager {
         Arc<Mutex<std::collections::HashMap<(String, String), OauthStatusDiscoverySnapshot>>>,
     pub(super) oauth_status_discovery_locks:
         Arc<dashmap::DashMap<(String, String), Arc<Mutex<()>>>>,
-    builtin_service_registry: Arc<ArcSwap<Arc<dyn GatewayServiceRegistry>>>,
+    builtin_service_registry: Arc<ArcSwap<PublishedServiceRegistryState>>,
+    /// Serializes synchronous registry projection and publication so concurrent
+    /// setters cannot install generations out of allocation order.
+    builtin_service_registry_publication: Arc<std::sync::Mutex<()>>,
     pub(super) oauth_sqlite: Option<labby_auth::sqlite::SqliteStore>,
     pub(super) oauth_key: Option<EncryptionKey>,
     pub(super) oauth_redirect_uri: Option<Arc<String>>,

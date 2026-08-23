@@ -5,6 +5,323 @@ use crate::gateway::manager::LoadoutToolCatalogPublicationError;
 use labby_runtime::gateway_config::GatewayLoadoutConfig;
 
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct PublicationRegistry {
+    services: Vec<(
+        &'static str,
+        Vec<crate::gateway::service_registry::ServiceActionInfo>,
+    )>,
+    reads: Arc<AtomicUsize>,
+}
+
+impl PublicationRegistry {
+    fn new(
+        services: Vec<(
+            &'static str,
+            Vec<crate::gateway::service_registry::ServiceActionInfo>,
+        )>,
+    ) -> Self {
+        Self {
+            services,
+            reads: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl crate::registry::InProcessServiceRegistry for PublicationRegistry {
+    fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+        Vec::new()
+    }
+}
+
+impl crate::gateway::service_registry::GatewayServiceRegistry for PublicationRegistry {
+    fn service_names(&self) -> Vec<&'static str> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.services.iter().map(|(name, _)| *name).collect()
+    }
+    fn contains_service(&self, name: &str) -> bool {
+        self.services
+            .iter()
+            .any(|(candidate, _)| *candidate == name)
+    }
+    fn service_actions(
+        &self,
+        name: &str,
+    ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        self.services
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, actions)| actions.clone())
+    }
+    fn service_meta(&self, _name: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+        None
+    }
+}
+
+fn service_action(
+    name: &'static str,
+    destructive: bool,
+    requires_admin: bool,
+) -> crate::gateway::service_registry::ServiceActionInfo {
+    crate::gateway::service_registry::ServiceActionInfo {
+        name,
+        description: if destructive { "danger" } else { "safe" },
+        destructive,
+        requires_admin,
+    }
+}
+
+fn publication_registry(name: &'static str) -> Arc<PublicationRegistry> {
+    Arc::new(PublicationRegistry::new(vec![(
+        name,
+        vec![
+            service_action("z.action", true, true),
+            service_action("a.action", false, false),
+        ],
+    )]))
+}
+
+#[test]
+fn service_registry_publication_is_exact_sorted_and_materialized_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(PublicationRegistry::new(vec![
+        (
+            "bravo",
+            vec![
+                service_action("z.action", true, true),
+                service_action("a.action", false, false),
+            ],
+        ),
+        ("alpha", vec![]),
+    ]));
+    let reads = Arc::clone(&registry.reads);
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(registry);
+    let reads_after_publish = reads.load(Ordering::Relaxed);
+
+    let snapshot = manager
+        .published_service_registry_snapshot()
+        .expect("valid catalog");
+    assert_eq!(reads.load(Ordering::Relaxed), reads_after_publish);
+    assert_eq!(snapshot.services()[0].name(), "alpha");
+    assert_eq!(snapshot.services()[1].name(), "bravo");
+    let actions = snapshot.services()[1].actions();
+    assert_eq!(actions[0].name(), "a.action");
+    assert_eq!(actions[0].description(), "safe");
+    assert!(!actions[0].destructive());
+    assert!(!actions[0].requires_admin());
+    assert_eq!(actions[1].name(), "z.action");
+    assert!(actions[1].destructive());
+    assert!(actions[1].requires_admin());
+}
+
+#[test]
+fn empty_service_registry_publishes_an_empty_catalog() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    assert!(
+        manager
+            .published_service_registry_snapshot()
+            .expect("empty catalog")
+            .services()
+            .is_empty()
+    );
+}
+
+#[test]
+fn service_registry_generations_cover_identical_aba_clones_and_distinct_managers() {
+    let first_dir = tempfile::tempdir().expect("first tempdir");
+    let second_dir = tempfile::tempdir().expect("second tempdir");
+    let manager = GatewayManager::new(
+        first_dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("alpha"));
+    let clone = manager.clone();
+    let first_a = manager
+        .published_service_registry_snapshot()
+        .expect("first a")
+        .generation();
+    manager.set_builtin_service_registry(publication_registry("alpha"));
+    let identical_a = clone
+        .published_service_registry_snapshot()
+        .expect("identical a")
+        .generation();
+    manager.set_builtin_service_registry(publication_registry("bravo"));
+    let b = manager
+        .published_service_registry_snapshot()
+        .expect("b")
+        .generation();
+    manager.set_builtin_service_registry(publication_registry("alpha"));
+    let second_a = manager
+        .published_service_registry_snapshot()
+        .expect("second a")
+        .generation();
+    let distinct = GatewayManager::new(
+        second_dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .published_service_registry_snapshot()
+    .expect("distinct")
+    .generation();
+    assert_ne!(first_a, identical_a);
+    assert_ne!(identical_a, b);
+    assert_ne!(b, second_a);
+    assert_ne!(first_a, second_a);
+    assert_ne!(second_a, distinct);
+}
+
+#[test]
+fn old_service_registry_snapshot_is_immutable_after_replacement() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("alpha"));
+    let old = manager.published_service_registry_snapshot().expect("old");
+    manager.set_builtin_service_registry(publication_registry("bravo"));
+    let new = manager.published_service_registry_snapshot().expect("new");
+    assert_eq!(old.services()[0].name(), "alpha");
+    assert_eq!(new.services()[0].name(), "bravo");
+    assert_ne!(old.generation(), new.generation());
+}
+
+#[test]
+fn ambiguous_service_registry_publications_fail_closed() {
+    use crate::gateway::service_registry::ServiceRegistryPublicationError;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager.set_builtin_service_registry(Arc::new(PublicationRegistry::new(vec![
+        ("dup", vec![]),
+        ("dup", vec![]),
+    ])));
+    assert_eq!(
+        manager.published_service_registry_snapshot().err(),
+        Some(ServiceRegistryPublicationError::DuplicateService)
+    );
+    manager.set_builtin_service_registry(Arc::new(PublicationRegistry::new(vec![(
+        "svc",
+        vec![
+            service_action("dup", false, false),
+            service_action("dup", true, true),
+        ],
+    )])));
+    assert_eq!(
+        manager.published_service_registry_snapshot().err(),
+        Some(ServiceRegistryPublicationError::DuplicateAction)
+    );
+}
+
+struct InconsistentPublicationRegistry;
+impl crate::registry::InProcessServiceRegistry for InconsistentPublicationRegistry {
+    fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+        Vec::new()
+    }
+}
+impl crate::gateway::service_registry::GatewayServiceRegistry for InconsistentPublicationRegistry {
+    fn service_names(&self) -> Vec<&'static str> {
+        vec!["missing"]
+    }
+    fn contains_service(&self, _name: &str) -> bool {
+        false
+    }
+    fn service_actions(
+        &self,
+        _name: &str,
+    ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+        None
+    }
+    fn service_meta(&self, _name: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+        None
+    }
+}
+
+struct OversizedPublicationRegistry;
+impl crate::registry::InProcessServiceRegistry for OversizedPublicationRegistry {
+    fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+        Vec::new()
+    }
+}
+
+struct OversizedActionsPublicationRegistry;
+impl crate::registry::InProcessServiceRegistry for OversizedActionsPublicationRegistry {
+    fn in_process_services(&self) -> Vec<Box<dyn crate::registry::InProcessService>> {
+        Vec::new()
+    }
+}
+impl crate::gateway::service_registry::GatewayServiceRegistry
+    for OversizedActionsPublicationRegistry
+{
+    fn service_names(&self) -> Vec<&'static str> {
+        vec!["service"]
+    }
+    fn contains_service(&self, _name: &str) -> bool {
+        true
+    }
+    fn service_actions(
+        &self,
+        _name: &str,
+    ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+        Some(vec![service_action("action", false, false); 4097])
+    }
+    fn service_meta(&self, _name: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+        None
+    }
+}
+impl crate::gateway::service_registry::GatewayServiceRegistry for OversizedPublicationRegistry {
+    fn service_names(&self) -> Vec<&'static str> {
+        vec!["service"; 257]
+    }
+    fn contains_service(&self, _name: &str) -> bool {
+        true
+    }
+    fn service_actions(
+        &self,
+        _name: &str,
+    ) -> Option<Vec<crate::gateway::service_registry::ServiceActionInfo>> {
+        Some(Vec::new())
+    }
+    fn service_meta(&self, _name: &str) -> Option<&'static labby_primitives::plugin::PluginMeta> {
+        None
+    }
+}
+
+#[test]
+fn inconsistent_and_oversized_service_registries_fail_closed() {
+    use crate::gateway::service_registry::ServiceRegistryPublicationError;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager.set_builtin_service_registry(Arc::new(InconsistentPublicationRegistry));
+    assert_eq!(
+        manager.published_service_registry_snapshot().err(),
+        Some(ServiceRegistryPublicationError::InvalidRegistry)
+    );
+    manager.set_builtin_service_registry(Arc::new(OversizedPublicationRegistry));
+    assert_eq!(
+        manager.published_service_registry_snapshot().err(),
+        Some(ServiceRegistryPublicationError::TooLarge)
+    );
+    manager.set_builtin_service_registry(Arc::new(OversizedActionsPublicationRegistry));
+    assert_eq!(
+        manager.published_service_registry_snapshot().err(),
+        Some(ServiceRegistryPublicationError::TooLarge)
+    );
+}
 
 fn loadout(name: &str, upstreams: &[&str]) -> GatewayLoadoutConfig {
     GatewayLoadoutConfig {
