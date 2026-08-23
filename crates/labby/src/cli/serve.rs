@@ -1261,11 +1261,11 @@ fn build_http_router(
         None
     };
     #[cfg(feature = "gateway")]
-    let protected_mcp_router = build_protected_mcp_router(&state, mcp_config, notifier)?;
+    let protected_mcp_routers = build_protected_mcp_routers(&state, mcp_config, notifier)?;
     #[cfg(not(feature = "gateway"))]
-    let protected_mcp_router: Option<axum::Router> = None;
-    let state = if let Some(router) = protected_mcp_router {
-        state.with_protected_mcp_router(router)
+    let protected_mcp_routers: Option<std::collections::HashMap<String, axum::Router>> = None;
+    let state = if let Some(routers) = protected_mcp_routers {
+        state.with_protected_mcp_routers(routers)
     } else {
         state
     };
@@ -1854,11 +1854,11 @@ fn build_mcp_service_with_scope(
 }
 
 #[cfg(feature = "gateway")]
-fn build_protected_mcp_router(
+fn build_protected_mcp_routers(
     state: &AppState,
     mcp_config: &crate::config::McpPreferences,
     notifier: PeerNotifier,
-) -> Result<Option<axum::Router>> {
+) -> Result<Option<std::collections::HashMap<String, axum::Router>>> {
     let routes: Vec<_> = state
         .config
         .protected_mcp_routes
@@ -1870,7 +1870,7 @@ fn build_protected_mcp_router(
         return Ok(None);
     }
 
-    let mut router = axum::Router::new();
+    let mut routers = std::collections::HashMap::with_capacity(routes.len());
     for route in routes {
         let Some(scope) = crate::mcp::route_scope::McpRouteScope::from_protected_route(
             &route,
@@ -1887,9 +1887,10 @@ fn build_protected_mcp_router(
             scope,
             std::slice::from_ref(&route.public_host),
         )?;
-        router = router.nest_service(&route.public_path, service);
+        let router = axum::Router::new().nest_service(&route.public_path, service);
+        routers.insert(route.name, router);
     }
-    Ok(Some(router))
+    Ok(Some(routers))
 }
 
 /// Build the allowed hosts list for DNS rebinding protection.
@@ -2828,13 +2829,14 @@ mod tests {
         let state = AppState::new()
             .with_config(config)
             .with_gateway_manager(manager);
-        let router = super::build_protected_mcp_router(
+        let routers = super::build_protected_mcp_routers(
             &state,
             &McpPreferences::default(),
             PeerNotifier::default(),
         )
         .expect("protected mcp router")
         .expect("gateway subset router");
+        let router = routers.get("ops").expect("ops scoped router").clone();
 
         let response = router
             .oneshot(

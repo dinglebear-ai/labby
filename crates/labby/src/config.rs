@@ -564,6 +564,11 @@ impl LabConfig {
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
             if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                target.loadout = target
+                    .loadout
+                    .take()
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty());
                 normalize_string_list(&mut target.upstreams, "target.upstreams").map_err(
                     |field| ConfigError::InvalidProtectedRoute {
                         name: route.name.clone(),
@@ -629,7 +634,6 @@ impl LabConfig {
             }
             route.backend_mcp_path = default_mcp_path();
         }
-        validate_gateway_subset_paths_are_unique(&self.protected_mcp_routes)?;
         Ok(())
     }
 }
@@ -652,28 +656,6 @@ fn normalize_string_list(
     Ok(())
 }
 
-fn validate_gateway_subset_paths_are_unique(
-    routes: &[ProtectedMcpRouteConfig],
-) -> Result<(), ConfigError> {
-    let mut paths = std::collections::HashSet::new();
-    for route in routes
-        .iter()
-        .filter(|route| route.enabled && route.is_gateway_subset())
-    {
-        if !paths.insert(route.public_path.clone()) {
-            return Err(ConfigError::InvalidProtectedRoute {
-                name: route.name.clone(),
-                field: "public_path",
-                value: format!(
-                    "gateway_subset routes must use unique public_path values; `{}` is already mounted",
-                    route.public_path
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 fn validate_protected_mcp_routes_for_startup(cfg: &LabConfig) -> Result<(), ConfigError> {
     let mut names = std::collections::HashSet::new();
     let mut enabled_keys = std::collections::HashSet::new();
@@ -688,10 +670,19 @@ fn validate_protected_mcp_routes_for_startup(cfg: &LabConfig) -> Result<(), Conf
         .iter()
         .map(|service| service.name)
         .collect();
+    let loadout_names: std::collections::HashSet<&str> = cfg
+        .loadouts
+        .iter()
+        .map(|loadout| loadout.name.as_str())
+        .collect();
 
-    validate_gateway_subset_paths_are_unique(&cfg.protected_mcp_routes)?;
     for route in &cfg.protected_mcp_routes {
-        validate_protected_mcp_route_for_startup(route, &upstream_names, &service_names)?;
+        validate_protected_mcp_route_for_startup(
+            route,
+            &upstream_names,
+            &service_names,
+            &loadout_names,
+        )?;
         if !names.insert(route.name.trim().to_string()) {
             return Err(ConfigError::InvalidProtectedRoute {
                 name: route.name.clone(),
@@ -726,6 +717,7 @@ fn validate_protected_mcp_route_for_startup(
     route: &ProtectedMcpRouteConfig,
     upstream_names: &std::collections::HashSet<&str>,
     service_names: &std::collections::HashSet<&str>,
+    loadout_names: &std::collections::HashSet<&str>,
 ) -> Result<(), ConfigError> {
     if route.name.trim().is_empty() {
         return invalid_protected_route(
@@ -745,11 +737,35 @@ fn validate_protected_mcp_route_for_startup(
     }
 
     if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &route.target {
-        if target.upstreams.is_empty() && target.services.is_empty() && !target.expose_code_mode {
+        if target.loadout.is_some()
+            && (!target.upstreams.is_empty()
+                || !target.services.is_empty()
+                || target.expose_code_mode)
+        {
+            return invalid_protected_route(
+                route,
+                "target.loadout",
+                "gateway_subset target with `loadout` cannot also set inline upstreams, services, or expose_code_mode",
+            );
+        }
+        if target.loadout.is_none()
+            && target.upstreams.is_empty()
+            && target.services.is_empty()
+            && !target.expose_code_mode
+        {
             return invalid_protected_route(
                 route,
                 "target",
-                "gateway_subset target must expose at least one upstream, service, or Code Mode",
+                "gateway_subset target must set a loadout or expose at least one upstream, service, or Code Mode",
+            );
+        }
+        if let Some(loadout) = target.loadout.as_deref()
+            && !loadout_names.contains(loadout)
+        {
+            return invalid_protected_route(
+                route,
+                "target.loadout",
+                format!("unknown gateway_subset loadout `{loadout}`"),
             );
         }
         if route.enabled {
@@ -3443,8 +3459,13 @@ upstreams = ["gateway-alpha", " "]
     }
 
     #[test]
-    fn protected_route_rejects_duplicate_gateway_subset_public_paths() {
+    fn protected_route_allows_same_gateway_subset_path_on_different_hosts() {
         let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+enabled = false
+url = "https://gateway-alpha.example.com/mcp"
+
 [[protected_mcp_routes]]
 name = "media-a"
 public_host = "mcp-a.example.com"
@@ -3465,12 +3486,10 @@ upstreams = ["gateway-alpha"]
 "#;
 
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
-        let err = cfg
-            .normalize_protected_mcp_routes()
-            .expect_err("duplicate gateway_subset public_path must fail");
-
-        assert!(err.to_string().contains("public_path"));
-        assert!(err.to_string().contains("gateway_subset"));
+        cfg.normalize_protected_mcp_routes()
+            .expect("host and path together identify a protected route");
+        cfg.validate()
+            .expect("same subset path on distinct hosts is valid");
     }
 
     #[test]
@@ -3535,6 +3554,40 @@ kind = "gateway_subset"
             .expect_err("empty gateway_subset target must fail validation");
 
         assert!(err.to_string().contains("gateway_subset target"));
+    }
+
+    #[test]
+    fn config_validation_accepts_gateway_subset_loadout_target() {
+        let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+enabled = false
+url = "https://gateway-alpha.example.com/mcp"
+
+[[loadouts]]
+name = "sd"
+upstreams = ["gateway-alpha"]
+
+[[protected_mcp_routes]]
+name = "sd"
+public_host = "sd.example.com"
+public_path = "/mcp"
+scopes = ["mcp:read"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+loadout = " sd "
+"#;
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+
+        cfg.normalize_protected_mcp_routes()
+            .expect("loadout route normalization succeeds");
+        cfg.validate().expect("known loadout route is valid");
+        let ProtectedMcpRouteTarget::GatewaySubset(target) = cfg.protected_mcp_routes[0]
+            .target
+            .as_ref()
+            .expect("gateway subset target");
+        assert_eq!(target.loadout.as_deref(), Some("sd"));
     }
 
     #[test]

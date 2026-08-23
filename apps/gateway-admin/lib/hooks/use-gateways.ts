@@ -360,20 +360,38 @@ export const CODE_MODE_CONFIG_KEY = '/gateway-code-mode-config'
 export const LOADOUTS_KEY = '/gateway-loadouts'
 export const PROTECTED_MCP_ROUTES_KEY = '/gateway-protected-mcp-routes'
 
+export function gatewaysRequestKey(enabled: boolean): string | null {
+  return enabled ? GATEWAYS_KEY : null
+}
+
+export function gatewaysRuntimeRequestKey(
+  enabled: boolean,
+  includeRuntime: boolean,
+  gateways: Gateway[] | undefined,
+): [string, string] | null {
+  return enabled && includeRuntime && gateways
+    ? ['/gateways/runtime', gateways.map((gateway) => gateway.id).join(',')]
+    : null
+}
+
 async function refreshGatewayCache(id?: string, extraKeys: string[] = []) {
   const keys = [GATEWAYS_KEY, ...(id ? [gatewayKey(id)] : []), ...extraKeys]
   await Promise.all(keys.map((key) => mutate(key)))
 }
 
 // Hooks
-export function useGateways() {
-  const configured = useSWR<Gateway[]>(GATEWAYS_KEY, fetchGateways, {
+export function useGatewaySnapshots(enabled = true) {
+  return useSWR<Gateway[]>(gatewaysRequestKey(enabled), fetchGateways, {
     revalidateOnFocus: false,
     fallbackData: USE_MOCK_DATA ? getMockGatewaysFallback() : undefined,
     revalidateOnMount: !USE_MOCK_DATA,
   })
-  const runtimeKey = !USE_MOCK_DATA && configured.data
-    ? ['/gateways/runtime', configured.data.map((gateway) => gateway.id).join(',')]
+}
+
+export function useGateways(enabled = true) {
+  const configured = useGatewaySnapshots(enabled)
+  const runtimeKey = !USE_MOCK_DATA
+    ? gatewaysRuntimeRequestKey(enabled, true, configured.data)
     : null
   const runtime = useSWR<Gateway[]>(
     runtimeKey,

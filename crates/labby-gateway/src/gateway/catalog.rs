@@ -57,6 +57,13 @@ const NAME_PARAM: ParamSpec = ParamSpec {
     description: "Gateway name",
 };
 
+const OPTIONAL_NAME_PARAM: ParamSpec = ParamSpec {
+    name: "name",
+    ty: "string",
+    required: false,
+    description: "Optional gateway name filter",
+};
+
 pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "help",
@@ -81,7 +88,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.list",
-        description: "List configured gateways",
+        description: "List configured gateways using the current cached runtime snapshot without connecting upstreams",
         destructive: false,
         requires_admin: true,
         returns: "ServerView[]",
@@ -1112,7 +1119,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.status",
-        description: "Get current runtime gateway status",
+        description: "Refresh and return runtime gateway status",
         destructive: false,
         requires_admin: true,
         returns: "GatewayRuntimeView[]",
@@ -1348,11 +1355,11 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.mcp.list",
-        description: "List upstream MCP runtime state, discovery counts, and likely stale process counts",
+        description: "List the current upstream MCP runtime snapshot, discovery counts, and likely stale process counts without connecting upstreams",
         destructive: false,
         requires_admin: true,
         returns: "GatewayMcpRuntimeView[]",
-        params: &[],
+        params: &[OPTIONAL_NAME_PARAM],
     },
     ActionSpec {
         name: "gateway.clients.list",

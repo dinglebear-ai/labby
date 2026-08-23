@@ -1480,7 +1480,11 @@ async fn protected_mcp_route_entry(
         route.effective_target(),
         ProtectedMcpRouteEffectiveTarget::GatewaySubset(_)
     ) {
-        let Some(router) = state.protected_mcp_router.as_ref() else {
+        let Some(router) = state
+            .protected_mcp_routers
+            .as_ref()
+            .and_then(|routers| routers.get(&route.name))
+        else {
             tracing::error!(
                 route = %route.name,
                 resource = %route.public_resource(),
@@ -1493,7 +1497,6 @@ async fn protected_mcp_route_entry(
             .into_response();
         };
         return router
-            .as_ref()
             .clone()
             .oneshot(request)
             .await
@@ -4545,7 +4548,10 @@ mod tests {
         let state = AppState::new()
             .with_config(config)
             .with_gateway_manager(manager)
-            .with_protected_mcp_router(scoped_router);
+            .with_protected_mcp_routers(std::collections::HashMap::from([(
+                "ops".to_string(),
+                scoped_router,
+            )]));
         let auth_state = test_lab_auth_state().await;
         let token = issue_test_token(&auth_state, "https://mcp.example.com/ops", "mcp:ops");
         let app = build_router(
@@ -4585,6 +4591,84 @@ mod tests {
             String::from_utf8(body.to_vec()).unwrap(),
             r#"{"scoped":true}"#
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn protected_gateway_subsets_with_same_path_dispatch_by_host() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                tempdir.path().join("gateway.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let mut config = protected_gateway_subset_config();
+        let mut second = config.protected_mcp_routes[0].clone();
+        second.name = "ops-b".to_string();
+        second.public_host = "mcp-b.example.com".to_string();
+        config.protected_mcp_routes.push(second);
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+
+        let routers = std::collections::HashMap::from([
+            (
+                "ops".to_string(),
+                Router::new().route(
+                    "/ops",
+                    post(|| async { Json(serde_json::json!({"route": "a"})) }),
+                ),
+            ),
+            (
+                "ops-b".to_string(),
+                Router::new().route(
+                    "/ops",
+                    post(|| async { Json(serde_json::json!({"route": "b"})) }),
+                ),
+            ),
+        ]);
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager)
+            .with_protected_mcp_routers(routers);
+        let auth_state = test_lab_auth_state().await;
+        let token_a = issue_test_token(&auth_state, "https://mcp.example.com/ops", "mcp:ops");
+        let token_b = issue_test_token(&auth_state, "https://mcp-b.example.com/ops", "mcp:ops");
+        let app = build_router(
+            state,
+            Some("static-token".to_string()),
+            Some(auth_state),
+            None,
+            &[],
+        );
+
+        for (host, token, expected) in [
+            ("mcp.example.com", token_a, r#"{"route":"a"}"#),
+            ("mcp-b.example.com", token_b, r#"{"route":"b"}"#),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/ops")
+                        .header(header::HOST, host)
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            r#"{"jsonrpc":"2.0","method":"server/discover","id":1,"params":{}}"#,
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(String::from_utf8(body.to_vec()).unwrap(), expected);
+        }
     }
 
     #[cfg(feature = "gateway")]

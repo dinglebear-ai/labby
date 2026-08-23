@@ -51,7 +51,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.list` | false | false | true | lab:admin |  | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string` | `ok` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | cli, mcp, api, web |

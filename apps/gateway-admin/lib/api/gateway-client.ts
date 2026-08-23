@@ -134,6 +134,18 @@ async function normalizeGatewayView(
   return normalizeGateway(view, probe, discovery, runtime)
 }
 
+async function normalizeGatewaySnapshotView(
+  view: BackendGatewayView,
+  includeDiscovery: boolean,
+  signal?: AbortSignal,
+  runtime?: BackendGatewayMcpRuntimeView,
+): Promise<Gateway> {
+  const discovery = includeDiscovery
+    ? await fetchDiscovery(view.config.name, signal)
+    : { tools: [], resources: [], prompts: [] }
+  return normalizeGateway(view, probeStatusFromRuntime(view.runtime), discovery, runtime)
+}
+
 async function findServerView(id: string, signal?: AbortSignal): Promise<BackendServerView> {
   return gatewayAction<BackendServerView>('gateway.server.get', { id }, signal)
 }
@@ -443,13 +455,15 @@ export const gatewayApi = {
       return normalizeLabServiceServer(serverView, signal)
     }
 
-    const view = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
+    const [view, runtimeRows] = await Promise.all([
+      gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
+      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: id }, signal),
+    ])
+    return normalizeGatewaySnapshotView(
       view,
       true,
-      runtimeRows.find((row) => row.name === view.config.name),
       signal,
+      runtimeRows.find((runtime) => runtime.name === id),
     )
   },
 
@@ -459,13 +473,7 @@ export const gatewayApi = {
       confirmGatewayParams(buildGatewayCreatePayload(input)),
       signal,
     )
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
-      view,
-      true,
-      runtimeRows.find((row) => row.name === view.config.name),
-      signal,
-    )
+    return normalizeGatewaySnapshotView(view, true, signal)
   },
 
   async update(id: string, input: UpdateGatewayInput, signal?: AbortSignal): Promise<Gateway> {
@@ -474,13 +482,7 @@ export const gatewayApi = {
       confirmGatewayParams(buildGatewayUpdatePayload(id, input)),
       signal,
     )
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
-      view,
-      true,
-      runtimeRows.find((row) => row.name === view.config.name),
-      signal,
-    )
+    return normalizeGatewaySnapshotView(view, true, signal)
   },
 
   async remove(id: string, signal?: AbortSignal): Promise<void> {

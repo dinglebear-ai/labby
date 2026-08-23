@@ -51,7 +51,7 @@ import {
 } from '@/lib/dashboard/dashboard-metrics'
 import { METRICS_WINDOWS, type CallOutcome, type MetricsWindow } from '@/lib/types/metrics'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
-import { cn } from '@/lib/utils'
+import { cn, getErrorMessage } from '@/lib/utils'
 
 const PAGE_SIZE = 50
 const ALL = 'all'
@@ -389,6 +389,7 @@ function UsageExplorer() {
                   <TableRow>
                       <TableCell colSpan={tableColumns} className="py-8 text-center">
                       <span className="text-sm text-aurora-error">Couldn&apos;t load calls. </span>
+                      <span className="text-sm text-aurora-text-muted">{getErrorMessage(error, 'Usage request failed')} </span>
                       <button
                         type="button"
                         onClick={() => mutate()}

@@ -32,6 +32,34 @@ test('tool browser presents auth, availability, and request-id failures distinct
   )
 })
 
+test('tool browser submits a blank query to browse the live catalog', async () => {
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated', user: { sub: 'admin', email: 'admin@example.com' },
+    expiresAt: 100, csrfToken: 'csrf', isAdmin: true,
+  })
+  let requestBody: unknown
+  globalThis.fetch = async (input, init) => {
+    const path = String(input)
+    if (path.endsWith('/search')) {
+      requestBody = JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({
+        results: [{ path: 'alpha.ping', id: 'alpha::ping', kind: 'tool', namespace: 'alpha', name: 'ping', description: 'Ping', signature: '()', tags: [], score: 0 }],
+        total: 1, truncated: false,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response('{}', { status: 404 })
+  }
+
+  const view = await renderClient(<ToolBrowser />)
+  try {
+    const form = view.container.querySelector('form'); assert.ok(form)
+    await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /alpha\.ping/))
+    assert.deepEqual(requestBody, { query: '', limit: 50 })
+  } finally { await view.unmount() }
+})
+
 test('tool browser renders hostile catalog text literally and clears it on session change', async () => {
   installTestDom()
   __setBrowserSessionStateForTests({

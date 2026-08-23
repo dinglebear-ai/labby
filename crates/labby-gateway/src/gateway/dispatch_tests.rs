@@ -16,6 +16,30 @@ use super::super::params::{GatewayDiscoverParams, GatewayEnrichmentScope};
 use super::super::types::McpClientTransportType;
 use super::*;
 
+#[cfg(feature = "skills")]
+#[test]
+fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
+    let operator = OperatorSkills {
+        discovered_count: 2,
+        rejected: vec![crate::upstream::pool::OperatorSkillRejection {
+            uri: "skill://labby/rejected/SKILL.md".into(),
+            reason: "invalid_frontmatter".into(),
+            detail: "frontmatter `allowed-tools` must be a space-separated string".into(),
+        }],
+        ..OperatorSkills::default()
+    };
+
+    let projection = project_operator_skills(&operator);
+
+    assert_eq!(projection.discovered_count, 2);
+    assert!(projection.skills.is_empty());
+    assert_eq!(projection.rejected[0]["reason"], "invalid_frontmatter");
+    assert_eq!(
+        projection.rejected[0]["detail"],
+        "frontmatter `allowed-tools` must be a space-separated string"
+    );
+}
+
 #[derive(Clone)]
 struct DashboardCatalogResponder {
     discover_requests: std::sync::Arc<AtomicUsize>,
@@ -642,6 +666,163 @@ async fn gateway_usage_calls_rejects_route_hidden_explicit_upstream() {
     .expect_err("route-hidden upstream must fail");
 
     assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_status_rejects_route_hidden_explicit_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.status",
+        json!({"name": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_status_aggregate_only_returns_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.status",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect("scoped status succeeds");
+
+    let rows = result.as_array().expect("status rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], json!("github"));
+}
+
+#[tokio::test]
+async fn gateway_mcp_list_can_return_one_targeted_snapshot() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.list",
+        json!({"name": "gateway-alpha"}),
+    )
+    .await
+    .expect("targeted runtime snapshot succeeds");
+
+    let rows = result.as_array().expect("runtime rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], json!("gateway-alpha"));
+}
+
+#[tokio::test]
+async fn gateway_mcp_list_rejects_route_hidden_explicit_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.mcp.list",
+        json!({"name": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_mcp_list_aggregate_only_returns_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.mcp.list",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect("scoped runtime list succeeds");
+
+    let rows = result.as_array().expect("runtime rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], json!("github"));
 }
 
 #[tokio::test]
@@ -1911,7 +2092,7 @@ async fn gateway_server_get_returns_custom_gateway_row() {
 }
 
 #[tokio::test]
-async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
+async fn gateway_list_and_mcp_runtime_are_snapshot_only_until_status_refresh() {
     let server = MockServer::start().await;
     let responder = DashboardCatalogResponder::default();
     Mock::given(wiremock::matchers::method("POST"))
@@ -1964,8 +2145,50 @@ async fn gateway_list_warms_lazy_upstreams_before_reporting_counts() {
         .find(|item| item["id"] == "dashboard-http")
         .expect("dashboard row");
 
-    assert_eq!(row["discovered_tool_count"], 1);
-    assert_eq!(row["exposed_tool_count"], 1);
+    assert_eq!(row["discovered_tool_count"], 0);
+    assert_eq!(row["exposed_tool_count"], 0);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 0);
+
+    let runtime_value = dispatch_with_manager(&manager, "gateway.mcp.list", json!({}))
+        .await
+        .expect("runtime snapshot");
+    let runtime_row = runtime_value
+        .as_array()
+        .expect("runtime array")
+        .iter()
+        .find(|item| item["name"] == "dashboard-http")
+        .expect("runtime row");
+    assert_eq!(runtime_row["discovered_tool_count"], 0);
+    assert_eq!(runtime_row["exposed_tool_count"], 0);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 0);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
+        .await;
+    let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("refreshed list");
+    let refreshed_row = refreshed
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(refreshed_row["discovered_tool_count"], 1);
+    assert_eq!(refreshed_row["exposed_tool_count"], 1);
+    assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+
+    let refreshed_runtime = dispatch_with_manager(&manager, "gateway.mcp.list", json!({}))
+        .await
+        .expect("refreshed runtime snapshot");
+    let refreshed_runtime_row = refreshed_runtime
+        .as_array()
+        .expect("runtime array")
+        .iter()
+        .find(|item| item["name"] == "dashboard-http")
+        .expect("runtime row");
+    assert_eq!(refreshed_runtime_row["discovered_tool_count"], 1);
+    assert_eq!(refreshed_runtime_row["exposed_tool_count"], 1);
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
 }
 
@@ -2022,7 +2245,22 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
         .iter()
         .find(|item| item["id"] == "dashboard-http")
         .expect("dashboard row");
-    assert_eq!(first_row["discovered_tool_count"], 1);
+    assert_eq!(first_row["discovered_tool_count"], 0);
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 0);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
+        .await;
+    let initial = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("initial refreshed list");
+    let initial_row = initial
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|item| item["id"] == "dashboard-http")
+        .expect("dashboard row");
+    assert_eq!(initial_row["discovered_tool_count"], 1);
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     responder.tool_count.store(3, Ordering::SeqCst);
@@ -2039,17 +2277,28 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     manager
-        .refresh_gateway_status_catalog(&GatewayEnrichmentScope {
-            route_visible_upstreams: Some(std::collections::BTreeSet::from([
-                "different-upstream".to_string()
-            ])),
-            oauth_subject: None,
-        })
+        .refresh_gateway_status_catalog(
+            &GatewayEnrichmentScope::default(),
+            Some("different-upstream"),
+        )
         .await;
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     manager
-        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default())
+        .refresh_gateway_status_catalog(
+            &GatewayEnrichmentScope {
+                route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                    "different-upstream".to_string(),
+                ])),
+                oauth_subject: None,
+            },
+            None,
+        )
+        .await;
+    assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
         .await;
 
     let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))

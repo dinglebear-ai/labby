@@ -25,6 +25,19 @@ fn bounded_search_excludes_types_and_snippets() {
 }
 
 #[test]
+fn blank_query_browses_the_first_visible_tools() {
+    let entries = vec![
+        tool("alpha", "ping", "ping"),
+        tool("beta", "status", "status"),
+    ];
+
+    let response = search_visible_tools(&entries, &ToolScope::default(), "", 50).unwrap();
+
+    assert_eq!(response.total, 2);
+    assert_eq!(response.results.len(), 2);
+}
+
+#[test]
 fn hidden_and_random_describe_are_identical() {
     let entries = vec![
         tool("github", "issues", "issues"),

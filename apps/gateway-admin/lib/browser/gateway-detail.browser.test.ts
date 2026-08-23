@@ -13,6 +13,30 @@ let previewServerReady: Promise<void> | null = null
 let buildReady: Promise<void> | null = null
 let previewStderr = ''
 
+function buildApplication(buildId?: string) {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn('pnpm', ['run', 'build'], {
+      cwd: APP_DIR,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        ...(buildId ? { NEXT_BUILD_ID: buildId } : {}),
+        LAB_ALLOWED_DEV_ORIGINS: '127.0.0.1',
+        NEXT_PUBLIC_MOCK_DATA: 'true',
+        NEXT_PUBLIC_API_TOKEN: 'dev-token',
+      },
+    })
+    let output = ''
+    child.stdout?.on('data', (chunk) => { output += String(chunk) })
+    child.stderr?.on('data', (chunk) => { output += String(chunk) })
+    child.once('error', reject)
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`Gateway Admin build failed (${code ?? signal}):\n${output.slice(-12_000)}`))
+    })
+  })
+}
+
 async function allocatePort(): Promise<number> {
   const server = http.createServer()
   server.listen(0, '127.0.0.1')
@@ -31,26 +55,7 @@ function buildApplicationOnce() {
     buildReady = Promise.resolve()
     return buildReady
   }
-  buildReady = new Promise<void>((resolve, reject) => {
-    const child = spawn('pnpm', ['run', 'build'], {
-      cwd: APP_DIR,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        LAB_ALLOWED_DEV_ORIGINS: '127.0.0.1',
-        NEXT_PUBLIC_MOCK_DATA: 'true',
-        NEXT_PUBLIC_API_TOKEN: 'dev-token',
-      },
-    })
-    let output = ''
-    child.stdout?.on('data', (chunk) => { output += String(chunk) })
-    child.stderr?.on('data', (chunk) => { output += String(chunk) })
-    child.once('error', reject)
-    child.once('exit', (code, signal) => {
-      if (code === 0) resolve()
-      else reject(new Error(`Gateway Admin build failed (${code ?? signal}):\n${output.slice(-12_000)}`))
-    })
-  })
+  buildReady = buildApplication()
   return buildReady
 }
 
@@ -430,4 +435,39 @@ test('gateway list row action disable flow opens and completes successfully', { 
   await assert.doesNotReject(() =>
     page.getByText('Server disabled. Catalog change sent and runtime cleanup requested.').waitFor(),
   )
+})
+
+test('stale Loadouts clients hard-navigate after a new static build is deployed', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => {
+    await browser.close()
+  })
+
+  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  const blockFlightPrefetch = async (route: import('playwright').Route) => {
+    if (new URL(route.request().url()).pathname.endsWith('.txt')) {
+      await route.abort()
+    } else {
+      await route.continue()
+    }
+  }
+  await page.route('**/*', blockFlightPrefetch)
+  await page.goto(`${baseUrl}/loadouts/`, { waitUntil: 'networkidle' })
+  await page.evaluate(() => {
+    Object.assign(window, { __labbySkewMarker: true })
+  })
+
+  await buildApplication('browser-skew-replacement')
+  await page.unroute('**/*', blockFlightPrefetch)
+  await Promise.all([
+    page.waitForURL('**/snippets/', { waitUntil: 'networkidle' }),
+    page.getByRole('link', { name: 'Snippets' }).click(),
+  ])
+
+  const staleDocumentSurvived = await page.evaluate(
+    () => '__labbySkewMarker' in window,
+  )
+  assert.equal(staleDocumentSurvived, false, 'build skew must replace the stale document')
 })

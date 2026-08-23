@@ -1832,7 +1832,6 @@ impl GatewayConfig {
             }
             route.backend_mcp_path = default_mcp_path();
         }
-        validate_gateway_subset_paths_are_unique(&self.protected_mcp_routes)?;
         Ok(())
     }
 }
@@ -1855,30 +1854,38 @@ fn normalize_string_list(
     Ok(())
 }
 
-fn validate_gateway_subset_paths_are_unique(
-    routes: &[ProtectedMcpRouteConfig],
-) -> Result<(), ConfigError> {
-    let mut paths = std::collections::HashSet::new();
-    for route in routes
-        .iter()
-        .filter(|route| route.enabled && route.is_gateway_subset())
-    {
-        if !paths.insert(route.public_path.clone()) {
-            return Err(ConfigError::InvalidProtectedRoute {
-                name: route.name.clone(),
-                field: "public_path",
-                value: format!(
-                    "gateway_subset routes must use unique public_path values; `{}` is already mounted",
-                    route.public_path
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gateway_subset_routes_may_share_a_path_on_different_hosts() {
+        let mut config: GatewayConfig = toml::from_str(
+            r#"
+[[protected_mcp_routes]]
+name = "alpha"
+public_host = "alpha.example.com"
+public_path = "/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+expose_code_mode = true
+
+[[protected_mcp_routes]]
+name = "beta"
+public_host = "beta.example.com"
+public_path = "/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+expose_code_mode = true
+"#,
+        )
+        .expect("parse gateway config");
+
+        config
+            .normalize_protected_mcp_routes()
+            .expect("host-specific routes can share a path");
+    }
+
     #[test]
     fn code_mode_max_source_bytes_validation_is_bounded() {
         let mut config = CodeModeConfig {

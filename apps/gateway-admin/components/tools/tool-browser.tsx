@@ -46,7 +46,6 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
   async function runSearch(value: string) {
     activeRequest.current?.abort(); const controller = new AbortController(); activeRequest.current = controller
     setDetail(null); setError(null); setResults([]); setTotal(0)
-    if (!value.trim()) { setLoading(false); return }
     setLoading(true)
     try {
       const response = await searchCodeModeTools(value, controller.signal)
@@ -85,12 +84,12 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     </div>
     <form className="flex gap-3" onSubmit={(event: FormEvent) => { event.preventDefault(); void runSearch(query) }}>
       <Input aria-label="Search tools" maxLength={1024} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by tool, namespace, description, or tag" />
-      <Button type="submit" disabled={loading}>{loading ? 'Loading…' : 'Search'}</Button>
+      <Button type="submit" disabled={loading}>{loading ? 'Loading…' : query.trim() ? 'Search' : 'Browse all'}</Button>
     </form>
     {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && error.retry && <Button variant="ghost" size="sm" onClick={error.retry}>Retry</Button>}</div>}
     <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
       <section aria-label="Tool results" className="space-y-3">
-        <p className="text-xs text-aurora-text-muted">{total ? `${total} matches${results.length < total ? ` · showing ${results.length}` : ''}` : query && !loading && !error ? 'No matching tools' : !error ? 'Enter a query to search the live catalog' : ''}</p>
+        <p className="text-xs text-aurora-text-muted">{total ? `${total} matches${results.length < total ? ` · showing ${results.length}` : ''}` : query && !loading && !error ? 'No matching tools' : !error ? 'Search, or browse the live catalog without a query' : ''}</p>
         {results.map((hit) => <button key={hit.id} type="button" onClick={() => void selectTool(hit)} className="block w-full rounded-xl border border-aurora-border-default bg-aurora-panel-medium p-4 text-left transition hover:border-aurora-accent-primary/50 hover:bg-aurora-panel-strong">
           <div className="flex items-center justify-between gap-3"><code className="text-sm font-semibold text-aurora-accent-primary">{hit.path}</code><Safety safety={hit.safety} /></div>
           <p className="mt-2 line-clamp-2 text-sm text-aurora-text-secondary">{hit.description || 'No description provided.'}</p>

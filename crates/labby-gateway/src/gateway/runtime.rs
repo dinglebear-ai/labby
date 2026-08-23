@@ -247,14 +247,25 @@ impl GatewayManager {
 
     pub async fn mcp_runtime_list(
         &self,
+        name: Option<&str>,
+        scope: &crate::gateway::params::GatewayEnrichmentScope,
     ) -> Result<Vec<super::types::GatewayMcpRuntimeView>, ToolError> {
+        if let Some(name) = name {
+            scope.ensure_visible(name)?;
+        }
         let cfg = self.config.read().await.clone();
         let pool = self.runtime.current_pool().await;
-        self.warm_mcp_runtime_catalog_bounded(&cfg, pool.as_deref(), "gateway.mcp.list")
-            .await;
+        // Runtime inspection reports the current snapshot. It must not start or
+        // connect upstreams; refresh/test/reload own active discovery.
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
-        for upstream in &cfg.upstream {
+        for upstream in cfg.upstream.iter().filter(|upstream| {
+            name.is_none_or(|name| upstream.name == name)
+                && scope
+                    .route_visible_upstreams
+                    .as_ref()
+                    .is_none_or(|visible| visible.contains(&upstream.name))
+        }) {
             let (summary, health) =
                 upstream_summary_with_health(pool.as_deref(), &upstream.name).await;
             let runtime = match pool.as_deref() {
@@ -361,72 +372,6 @@ impl GatewayManager {
         Ok(rows)
     }
 
-    pub(super) async fn warm_mcp_runtime_catalog_bounded(
-        &self,
-        cfg: &GatewayConfig,
-        pool: Option<&UpstreamPool>,
-        action: &'static str,
-    ) {
-        let timeout = mcp_runtime_warm_timeout(cfg);
-        if tokio::time::timeout(timeout, self.warm_mcp_runtime_catalog(cfg, pool))
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "gateway",
-                action,
-                timeout_ms = timeout.as_millis(),
-                "gateway MCP runtime catalog warm timed out; returning current snapshot"
-            );
-        }
-    }
-
-    async fn warm_mcp_runtime_catalog(&self, cfg: &GatewayConfig, pool: Option<&UpstreamPool>) {
-        let Some(pool) = pool else {
-            return;
-        };
-
-        // P-M7: cap concurrency using the same setting the rest of the
-        // codebase uses (default 3) to avoid a stdio spawn storm when many
-        // upstreams are warming simultaneously.
-        let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
-            cfg.gateway.upstream_discovery_concurrency,
-        );
-
-        // Collect owned values so the closure passed to buffer_unordered can
-        // satisfy the HRTB (`for<'a> FnOnce(&'a UpstreamConfig)`) required by
-        // futures::stream::iter — borrows from cfg would tie the lifetime to
-        // the caller's borrow and break the bound.
-        let upstreams: Vec<UpstreamConfig> = cfg
-            .upstream
-            .iter()
-            .filter(|upstream| upstream.enabled && upstream.oauth.is_none())
-            .cloned()
-            .collect();
-
-        let mut stream = futures::stream::iter(upstreams)
-            .map(|upstream| async move {
-                let name = upstream.name.clone();
-                let result = pool.ensure_tools_for_upstream(&upstream, None, None).await;
-                (name, result)
-            })
-            .buffer_unordered(concurrency);
-
-        while let Some((upstream, result)) = stream.next().await {
-            if let Err(error) = result {
-                tracing::warn!(
-                    surface = "dispatch",
-                    service = "gateway",
-                    action = "gateway.mcp.list",
-                    upstream = upstream.as_str(),
-                    error = %error,
-                    "gateway MCP runtime catalog warm failed"
-                );
-            }
-        }
-    }
-
     pub(super) async fn refresh_mcp_runtime_catalog_bounded(
         &self,
         cfg: &GatewayConfig,
@@ -477,6 +422,11 @@ impl GatewayManager {
             })
             .cloned()
             .collect();
+
+        // A cold explicit refresh must establish snapshot entries before the
+        // reprobe writes discovered capabilities into them. Read-only list
+        // actions deliberately no longer perform this initialization.
+        pool.seed_lazy_upstreams(&upstreams).await;
 
         let mut stream = futures::stream::iter(upstreams)
             .map(|upstream| async move {

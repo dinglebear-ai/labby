@@ -7,16 +7,19 @@ import {
   AlertTriangle,
   BookOpen,
   Cable,
+  ChevronDown,
   Info,
   Loader2,
   RefreshCw,
   Scissors,
   ShieldAlert,
+  Search,
 } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { ConsoleHero, type ConsoleHeroStat } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { PrimitiveExposureTable } from '@/components/gateway/primitive-exposure-table'
@@ -29,15 +32,20 @@ import {
 } from '@/components/aurora/tokens'
 import { GatewayApiError, gatewayAction } from '@/lib/api/gateway-client'
 import { getMockSkillsRowsFallback } from '@/lib/api/mock-fallback'
-import { useGateways, useGatewayMutations } from '@/lib/hooks/use-gateways'
+import { useGatewayMutations } from '@/lib/hooks/use-gateways'
 import {
   formatCacheAge,
+  filterSkillsRows,
+  groupSkillRejections,
+  isSkillsParticipant,
+  skillsReadiness,
   skillsRowStatus,
   skillsRowSummary,
   sortSkillsRows,
   totalExposedSkillCount,
   totalSkillCount,
   type SkillsRowStatus,
+  type SkillsInventoryFilter,
   type UpstreamSkillsRow,
 } from '@/lib/api/skills-model'
 import { cn, getErrorMessage } from '@/lib/utils'
@@ -49,6 +57,47 @@ type LoadState =
   | { kind: 'loaded'; rows: UpstreamSkillsRow[] }
   | { kind: 'unavailable'; detail: string }
   | { kind: 'error'; detail: string }
+
+export function RejectedSkillsList({ rejected }: { rejected: UpstreamSkillsRow['rejected'] }) {
+  if (rejected.length === 0) return null
+  const groups = groupSkillRejections(rejected)
+  return (
+    <DashboardPanel
+      title="Rejected Skills"
+      icon={<AlertTriangle className="size-4 text-amber-500" />}
+      meta={`${rejected.length}`}
+    >
+      <div className="flex flex-col gap-3">
+        <p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>
+          Labby validates manifests against the pinned{' '}
+          <a className="text-aurora-accent-primary underline-offset-2 hover:underline" href="https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640" target="_blank" rel="noreferrer">
+            SEP-2640 Agent Skills contract
+          </a>{' '}
+          before exposure.
+          Rejections are grouped by the upstream change needed.
+        </p>
+        {groups.map((group) => (
+          <details key={group.reason} className="group rounded-lg border border-aurora-border-subtle bg-aurora-surface-muted/30 p-3" open={groups.length === 1}>
+            <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/40">
+              <ChevronDown className="size-4 shrink-0 transition-transform group-open:rotate-180" />
+              <span className="font-medium">{group.label}</span>
+              <Badge variant="outline">{group.items.length}</Badge>
+            </summary>
+            <p className={cn(AURORA_DENSE_META, 'mt-2 text-aurora-text-muted')}>{group.guidance}</p>
+            <ul className="mt-3 flex flex-col gap-2">
+              {group.items.map((item) => (
+                <li key={`${item.reason}:${item.uri}`} className="flex min-w-0 flex-col gap-0.5 border-l border-aurora-border-subtle pl-3">
+                  <code className={cn(AURORA_DENSE_META, 'break-all')}>{item.uri}</code>
+                  {item.detail ? <span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{item.detail}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ))}
+      </div>
+    </DashboardPanel>
+  )
+}
 
 /** Icon and tone per row status, so severity reads before the text does. */
 function statusPresentation(status: SkillsRowStatus) {
@@ -76,9 +125,11 @@ function statusPresentation(status: SkillsRowStatus) {
 
 export function SkillsPageContent({ upstream }: { upstream?: string }) {
   const router = useRouter()
-  const { data: gateways = [] } = useGateways()
   const { updateGateway } = useGatewayMutations()
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
+  const [query, setQuery] = useState('')
+  const [inventoryFilter, setInventoryFilter] = useState<SkillsInventoryFilter>('attention')
+  const [showNonParticipants, setShowNonParticipants] = useState(false)
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setState({ kind: 'loading' })
@@ -118,6 +169,7 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
   const unreachableCount = rows ? rows.filter((row) => row.error !== null).length : null
   const supportedCount = rows ? rows.filter((row) => row.supports_skills === true).length : null
   const trustedCount = rows ? rows.filter((row) => row.trusted).length : null
+  const readiness = rows ? skillsReadiness(rows) : null
 
   const stats: ConsoleHeroStat[] = [
     {
@@ -149,8 +201,7 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
   ]
 
   const selectedRow = upstream && rows?.length ? rows[0] : null
-  const gatewayIdForUpstream = (name: string) =>
-    gateways.find((gateway) => gateway.name === name)?.id ?? name
+  const gatewayIdForUpstream = (name: string) => name
 
   const pulse =
     rows === null || rows.length === 0
@@ -207,11 +258,23 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
           />
 
           <DashboardPanel title="Skills trust and exposure" icon={<Info className="size-4" />}>
-            <p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>
-              Labby records whether an upstream advertises the Agent Skills extension without trusting
-              its instructions. Only upstreams with <code>proxy_skills</code> enabled are enumerated, and
-              <code>expose_skills</code> controls which validated skills are republished downstream.
-            </p>
+            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              <div>
+                <span className={AURORA_CARD_TITLE}>Discover safely, then choose what agents can use</span>
+                <p className={cn(AURORA_DENSE_META, 'mt-1 max-w-3xl text-aurora-text-muted')}>
+                  Advertising the extension does not make its instructions trusted. Labby only reads catalogs
+                  from servers with <code>proxy_skills</code> enabled, validates every manifest against the pinned
+                  <a className="text-aurora-accent-primary underline-offset-2 hover:underline" href="https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640" target="_blank" rel="noreferrer">SEP-2640 contract</a>, and republishes only the selection allowed by <code>expose_skills</code>.
+                </p>
+              </div>
+              {readiness ? (
+                <div className="flex flex-wrap gap-2 md:justify-end" aria-label="Skills readiness">
+                  <Badge variant="secondary">{readiness.ready} ready</Badge>
+                  {readiness.needs_attention > 0 ? <Badge variant="outline">{readiness.needs_attention} need action</Badge> : null}
+                  <Badge variant="outline">{readiness.not_participating} not participating</Badge>
+                </div>
+              ) : null}
+            </div>
           </DashboardPanel>
 
           {state.kind === 'loading' && (
@@ -344,37 +407,37 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
                 </DashboardPanel>
               )}
 
-              {selectedRow.rejected.length > 0 && (
-                <DashboardPanel
-                  title="Rejected Skills"
-                  icon={<AlertTriangle className="size-4 text-amber-500" />}
-                  meta={`${selectedRow.rejected.length}`}
-                >
-                  <ul className="flex flex-col gap-2">
-                    {selectedRow.rejected.map((item) => (
-                      <li key={`${item.reason}:${item.uri}`} className="flex flex-col gap-0.5">
-                        <div className="flex items-center gap-2">
-                          <Badge variant="outline">{item.reason}</Badge>
-                          <code className={AURORA_DENSE_META}>{item.uri}</code>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </DashboardPanel>
-              )}
+              <RejectedSkillsList rejected={selectedRow.rejected} />
             </>
           )}
 
           {state.kind === 'loaded' && !upstream && state.rows.length > 0 && (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-                gap: 12,
-                alignItems: 'start',
-              }}
-            >
-              {state.rows.map((row) => {
+            <DashboardPanel title="Operator inventory" icon={<BookOpen className="size-4" />} meta={`${readiness?.participating ?? 0} participating`}>
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="relative w-full lg:max-w-md">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
+                    <Input aria-label="Search skills inventory" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search servers, skills, URIs, or validation errors" className="pl-9" />
+                  </div>
+                  <div className="flex flex-wrap gap-1" role="group" aria-label="Filter skills inventory">
+                    {([
+                      ['attention', `Needs action ${readiness?.needs_attention ?? 0}`],
+                      ['ready', `Ready ${readiness?.ready ?? 0}`],
+                      ['all', `All participants ${readiness?.participating ?? 0}`],
+                    ] as const).map(([value, label]) => (
+                      <Button key={value} size="sm" variant={inventoryFilter === value ? 'secondary' : 'ghost'} aria-pressed={inventoryFilter === value} onClick={() => setInventoryFilter(value)}>{label}</Button>
+                    ))}
+                  </div>
+                </div>
+
+                {filterSkillsRows(state.rows.filter(isSkillsParticipant), query, inventoryFilter === 'not-participating' ? 'all' : inventoryFilter).length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-aurora-border-subtle px-4 py-8 text-center">
+                    <p className="font-medium">No participating servers match this view</p>
+                    <p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Try another filter or search term.</p>
+                  </div>
+                ) : (
+                  <div className="grid items-start gap-3 xl:grid-cols-2">
+              {filterSkillsRows(state.rows.filter(isSkillsParticipant), query, inventoryFilter === 'not-participating' ? 'all' : inventoryFilter).map((row) => {
                 const status = skillsRowStatus(row)
                 const { Icon, tone, label } = statusPresentation(status)
                 return (
@@ -385,11 +448,11 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
                     meta={row.trusted ? `cached ${formatCacheAge(row.cache_age_secs)}` : undefined}
                     action={
                       <Button
-                        variant="outline"
+                        variant={status === 'ok' || status === 'empty' ? 'outline' : 'secondary'}
                         size="sm"
                         onClick={() => router.push(`/skills?upstream=${encodeURIComponent(row.upstream)}`)}
                       >
-                        View
+                        {status === 'ok' || status === 'empty' ? 'Manage exposure' : 'Review'}
                       </Button>
                     }
                   >
@@ -437,7 +500,39 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
                   </DashboardPanel>
                 )
               })}
-            </div>
+                  </div>
+                )}
+
+                {(readiness?.not_participating ?? 0) > 0 ? (
+                  <div className="border-t border-aurora-border-subtle pt-3">
+                    <Button variant="ghost" size="sm" aria-expanded={showNonParticipants} onClick={() => setShowNonParticipants((value) => !value)}>
+                      <ChevronDown className={cn('size-4 transition-transform', showNonParticipants && 'rotate-180')} />
+                      {showNonParticipants ? 'Hide' : 'Show'} {readiness?.not_participating} nonparticipating servers
+                    </Button>
+                    {showNonParticipants ? (
+                      <div className="mt-3 grid items-start gap-3 xl:grid-cols-2">
+                        {filterSkillsRows(state.rows, query, 'not-participating').map((row) => {
+                          const status = skillsRowStatus(row)
+                          const { Icon, tone, label } = statusPresentation(status)
+                          return (
+                            <div key={row.upstream} className="flex min-w-0 flex-col gap-2 rounded-lg border border-aurora-border-subtle bg-aurora-surface-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex min-w-0 items-start gap-3">
+                                <Icon className={cn('mt-0.5 size-4 shrink-0', tone)} />
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2"><span className="font-medium">{row.upstream}</span><Badge variant="outline">{label}</Badge></div>
+                                  <p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>{skillsRowSummary(row)}</p>
+                                </div>
+                              </div>
+                              <Button variant="outline" size="sm" onClick={() => router.push(`/skills?upstream=${encodeURIComponent(row.upstream)}`)}>Details</Button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </DashboardPanel>
           )}
         </div>
       </div>

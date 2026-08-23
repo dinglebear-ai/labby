@@ -1,6 +1,6 @@
 //! Shared application state for axum handlers.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,9 +33,12 @@ pub struct AppState {
     ///
     /// `None` means the public relay is not enabled for this process.
     pub public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
-    /// Router containing protected route scoped MCP services, mounted by
-    /// host/path after protected route auth.
-    pub protected_mcp_router: Option<Arc<axum::Router>>,
+    /// Protected-route scoped MCP services, keyed by the configured route name.
+    ///
+    /// Host/path matching happens before this lookup. Keeping one router per
+    /// route prevents equal paths on different public hosts from overwriting
+    /// each other in a shared Axum router.
+    pub protected_mcp_routers: Option<Arc<HashMap<String, axum::Router>>>,
     /// Runtime-enabled service names derived from the registry.
     ///
     /// The HTTP router checks this set to decide which per-service route groups
@@ -124,7 +127,7 @@ impl AppState {
                     .expect("public relay forwarder configuration is valid"),
             ),
             public_relay: None,
-            protected_mcp_router: None,
+            protected_mcp_routers: None,
             enabled_services: Arc::new(enabled_services),
             auth_config: None,
             config: Arc::new(LabConfig::default()),
@@ -156,8 +159,8 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn with_protected_mcp_router(mut self, router: axum::Router) -> Self {
-        self.protected_mcp_router = Some(Arc::new(router));
+    pub fn with_protected_mcp_routers(mut self, routers: HashMap<String, axum::Router>) -> Self {
+        self.protected_mcp_routers = Some(Arc::new(routers));
         self
     }
 

@@ -49,12 +49,28 @@ impl GatewayManager {
             .collect())
     }
 
-    pub async fn refresh_gateway_status_catalog(&self, scope: &GatewayEnrichmentScope) {
+    pub async fn refresh_gateway_status_catalog(
+        &self,
+        scope: &GatewayEnrichmentScope,
+        name: Option<&str>,
+    ) {
         let (cfg, pool) = self.published_config_and_pool().await;
+        let allowed_upstreams = match (scope.route_visible_upstreams.as_ref(), name) {
+            (Some(allowed), Some(name)) => Some(
+                allowed
+                    .iter()
+                    .filter(|upstream| upstream.as_str() == name)
+                    .cloned()
+                    .collect(),
+            ),
+            (Some(allowed), None) => Some(allowed.clone()),
+            (None, Some(name)) => Some(std::iter::once(name.to_owned()).collect()),
+            (None, None) => None,
+        };
         self.refresh_mcp_runtime_catalog_bounded(
             &cfg,
             pool.as_deref(),
-            scope.route_visible_upstreams.as_ref(),
+            allowed_upstreams.as_ref(),
             scope.oauth_subject.as_deref(),
             "gateway.status.refresh",
         )
@@ -63,13 +79,9 @@ impl GatewayManager {
 
     pub async fn list(&self) -> Result<Vec<ServerView>, ToolError> {
         let (cfg, pool) = self.published_config_and_pool().await;
-        // `gateway.list` backs both the CLI and dashboard. Warm lazy, non-OAuth
-        // upstreams before projecting the snapshot so a freshly started daemon
-        // does not report zero capabilities for healthy servers until another
-        // command happens to trigger discovery. OAuth upstreams remain
-        // request-scoped and are intentionally skipped by the shared warmer.
-        self.warm_mcp_runtime_catalog_bounded(&cfg, pool.as_deref(), "gateway.list")
-            .await;
+        // Inspection must remain side-effect free. Project whatever the runtime
+        // has already observed; callers that need fresh discovery use the
+        // explicit status refresh or per-upstream test/reload actions.
         let mut views = Vec::with_capacity(cfg.upstream.len() + cfg.virtual_servers.len());
         for upstream in &cfg.upstream {
             views.push(server_view_from_upstream(pool.as_deref(), upstream).await);
@@ -206,11 +218,29 @@ impl GatewayManager {
     }
 
     pub async fn status(&self, name: Option<&str>) -> Result<Vec<GatewayRuntimeView>, ToolError> {
+        self.status_scoped(name, &GatewayEnrichmentScope::default())
+            .await
+    }
+
+    pub async fn status_scoped(
+        &self,
+        name: Option<&str>,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<GatewayRuntimeView>, ToolError> {
+        if let Some(name) = name {
+            scope.ensure_visible(name)?;
+        }
         let (cfg, pool) = self.published_config_and_pool().await;
         let upstreams: Vec<UpstreamConfig> = cfg
             .upstream
             .iter()
-            .filter(|u| name.is_none_or(|needle| needle == u.name))
+            .filter(|upstream| {
+                name.is_none_or(|needle| needle == upstream.name)
+                    && scope
+                        .route_visible_upstreams
+                        .as_ref()
+                        .is_none_or(|visible| visible.contains(&upstream.name))
+            })
             .cloned()
             .collect();
         // P-M8: use the cached prompt-ownership snapshot instead of a live
