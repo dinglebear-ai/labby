@@ -85,6 +85,10 @@ pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_disco
 #[allow(unused_imports)]
 pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
 pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
+pub use self::publication::{
+    LoadoutToolCatalogPublicationError, PublishedLoadoutToolCatalogSnapshot,
+};
+pub use crate::gateway::runtime::PoolPublicationGeneration;
 
 #[derive(Clone)]
 pub struct GatewayManager {
