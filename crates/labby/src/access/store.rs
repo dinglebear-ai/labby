@@ -8,6 +8,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags};
 
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
+use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 use super::read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -95,6 +96,58 @@ impl AccessStore {
             super::read::select_project(connection, &identity, &project_id)
         })
         .await
+    }
+
+    pub(crate) async fn assign_project_loadout(
+        &self,
+        input: AssignProjectLoadoutInput,
+    ) -> AccessStoreResult<AssignProjectLoadoutOutcome> {
+        self.with_connection(move |connection| super::loadout::assign(connection, &input))
+            .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn seed_loadout_roles_for_test(&self) -> AccessStoreResult<()> {
+        self.execute_test_statement(
+            "INSERT INTO principals VALUES
+               ('admin-principal','bootstrap-local','user','active',NULL,2,2),
+               ('member-principal','bootstrap-local','user','active',NULL,2,2),
+               ('viewer-principal','bootstrap-local','user','active',NULL,2,2);
+             INSERT INTO principal_links VALUES
+               ('admin-link','admin-principal','local_credential',NULL,NULL,'static-bearer:admin','active',1,1,2,2),
+               ('member-link','member-principal','local_credential',NULL,NULL,'static-bearer:member','active',1,1,2,2),
+               ('viewer-link','viewer-principal','local_credential',NULL,NULL,'static-bearer:viewer','active',1,1,2,2);
+             INSERT INTO projects VALUES
+               ('admin-project','bootstrap-local','Admin','active',0,2,2),
+               ('member-project','bootstrap-local','Member','active',0,2,2),
+               ('viewer-project','bootstrap-local','Viewer','active',0,2,2);
+             INSERT INTO project_memberships VALUES
+               ('admin-membership','bootstrap-local','admin-project','admin-principal','admin','active','bootstrap-owner',2,2),
+               ('member-membership','bootstrap-local','member-project','member-principal','member','active','bootstrap-owner',2,2),
+               ('viewer-membership','bootstrap-local','viewer-project','viewer-principal','viewer','active','bootstrap-owner',2,2);
+             INSERT INTO organizations VALUES('other-org','Other','active',0,2,2);
+             INSERT INTO principals VALUES('other-principal','other-org','user','active',NULL,2,2);
+             INSERT INTO projects VALUES('other-project','other-org','Other','active',0,2,2);",
+        ).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn loadout_state_for_test(
+        &self,
+    ) -> AccessStoreResult<(i64, i64, i64, i64, i64)> {
+        self.with_connection(|c| c.query_row("SELECT (SELECT count(*) FROM project_loadouts), (SELECT global_revision FROM access_metadata WHERE singleton=1), (SELECT policy_epoch FROM organizations WHERE organization_id='bootstrap-local'), (SELECT project_policy_epoch FROM projects WHERE project_id='bootstrap-default'), (SELECT count(*) FROM access_audit)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(map_sqlite_error)).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn loadout_audit_for_test(
+        &self,
+    ) -> AccessStoreResult<(String, String, String, i64, String)> {
+        self.with_connection(|c| c.query_row("SELECT action,decision,reason_code,policy_epoch,target_fingerprint FROM access_audit WHERE action='access.project_loadout.assign'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(map_sqlite_error)).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn install_loadout_audit_failure_for_test(&self) -> AccessStoreResult<()> {
+        self.execute_test_statement("CREATE TEMP TRIGGER fail_loadout_audit BEFORE INSERT ON access_audit WHEN NEW.action='access.project_loadout.assign' BEGIN SELECT RAISE(ABORT, 'test audit failure'); END;").await
     }
 
     #[cfg(test)]

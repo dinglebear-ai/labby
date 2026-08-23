@@ -3,6 +3,7 @@ mod domain;
 mod error;
 mod health;
 mod integrity;
+mod loadout;
 mod migrations;
 mod read;
 mod resolver;
@@ -15,6 +16,8 @@ pub(crate) use bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
 #[allow(unused_imports)]
 pub(crate) use domain::ProjectRole;
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
+#[allow(unused_imports)]
+pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 #[allow(unused_imports)]
 pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
 #[allow(unused_imports)]

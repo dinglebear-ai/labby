@@ -27,9 +27,9 @@ pub(crate) struct ProjectAccessSnapshot {
     pub(crate) global_revision: u64,
 }
 
-struct ResolvedPrincipal {
-    id: String,
-    organization_id: String,
+pub(super) struct ResolvedPrincipal {
+    pub(super) id: String,
+    pub(super) organization_id: String,
 }
 
 pub(super) fn list_accessible_projects(
@@ -161,7 +161,7 @@ fn global_revision(transaction: &Transaction<'_>) -> AccessStoreResult<u64> {
     u64::try_from(revision).map_err(|_| AccessStoreError::MalformedVocabulary)
 }
 
-fn resolve_principal(
+pub(super) fn resolve_principal(
     transaction: &Transaction<'_>,
     identity: &VerifiedIdentity,
 ) -> AccessStoreResult<ResolvedPrincipal> {
