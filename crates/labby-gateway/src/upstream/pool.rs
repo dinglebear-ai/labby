@@ -24,7 +24,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use crate::registry::InProcessService;
 
-use super::types::{UpstreamEntry, UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
+use super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 
 #[cfg(test)]
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
@@ -34,6 +34,7 @@ mod cache_repair;
 mod capability;
 mod capability_call;
 mod catalog_pagination;
+mod catalog_publication;
 mod completion;
 mod connect;
 mod connect_stdio;
@@ -103,6 +104,10 @@ mod usage_record;
 mod validate;
 
 pub use capability_call::CapabilityCallError;
+pub use catalog_publication::{
+    PublishedToolCatalogSnapshot, PublishedToolRoute, ToolCatalogGeneration,
+    ToolCatalogPublicationError,
+};
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
@@ -229,7 +234,7 @@ impl HeaderRecoveryMetricsStore {
 #[derive(Clone)]
 pub struct UpstreamPool {
     /// Discovered upstream state, keyed by upstream name.
-    catalog: Arc<RwLock<HashMap<String, UpstreamEntry>>>,
+    catalog: Arc<RwLock<catalog_publication::CatalogState>>,
     /// Live client connections, keyed by upstream name.
     /// Each is an `Arc<Peer<RoleClient>>` that can `call_tool` / `list_tools`.
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
@@ -506,7 +511,7 @@ impl UpstreamPool {
         );
         let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {
-            catalog: Arc::new(RwLock::new(HashMap::new())),
+            catalog: Arc::new(RwLock::new(catalog_publication::CatalogState::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
             generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),

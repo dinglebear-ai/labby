@@ -252,7 +252,7 @@ impl UpstreamPool {
         // simply has no skills, and caching that avoids re-asking every read.
         if !peer_declares_skills(&peer) {
             {
-                let mut catalog = self.catalog.write().await;
+                let mut catalog = self.catalog_write().await;
                 if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                     catalog_entry.supports_skills = Some(false);
                     catalog_entry.skill_count = 0;
@@ -265,7 +265,7 @@ impl UpstreamPool {
             return Ok(empty);
         }
         {
-            let mut catalog = self.catalog.write().await;
+            let mut catalog = self.catalog_write().await;
             if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                 catalog_entry.supports_skills = Some(true);
             }
@@ -289,7 +289,7 @@ impl UpstreamPool {
                 )
                 .await;
                 {
-                    let mut catalog = self.catalog.write().await;
+                    let mut catalog = self.catalog_write().await;
                     if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                         catalog_entry.supports_skills = Some(true);
                         catalog_entry.skill_count = discovered_count;
@@ -571,7 +571,7 @@ impl UpstreamPool {
         let mut cache = self.skills_cache.write().await;
         cache.retain(|(upstream, _), _| upstream != name);
         drop(cache);
-        let mut catalog = self.catalog.write().await;
+        let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(name) {
             entry.skill_count = 0;
             entry.skill_names.clear();
