@@ -275,6 +275,12 @@ The snapshot is immutable observational input, not a dispatch grant. It remains 
 
 This publication proves registered service/action metadata only. Replacing the registry does not rebuild the current upstream pool or prove that an in-process peer is routable. It is unmounted observational input, not a service dispatch grant, and is not yet composed with runtime Loadouts, virtual-server policy, protected routes, OAuth scopes, or final-boundary authorization.
 
+### Wave 18 / Milestone 0V: published Loadout-filtered built-in MCP service catalog
+
+`GatewayManager` now composes one running Loadout and its virtual-server MCP policy with one exact immutable built-in service-registry publication through a three-attempt G-S-G-S observation. A successful snapshot binds the runtime-configuration and service-registry generations, selects exact Loadout service names or configured virtual-server ID aliases, requires an enabled MCP surface, applies `expose_tools`, and preserves deterministic service/action ordering plus exact action metadata. Non-empty action allowlists narrow the projection while the generic MCP `help` and `schema` compatibility actions remain available. Missing, disabled, ambiguous-alias, invalid-catalog, and sustained config or registry churn states fail closed with bounded redacted errors; identical and A-B-A registry replacement cannot be mistaken for stability.
+
+The immutable result is unmounted observational input only. It does not rebuild or prove the routability of an in-process peer, authorize a service action, mount discovery or transport, bind a Project or protected route, or include upstream tools, subject-scoped OAuth catalogs, resources, prompts, skills, Code Mode, or a complete catalog generation. The next boundary is bounded composition of the stable Project runtime context with the separately generation-bound upstream-tool and built-in-service projections; exact-action final-boundary reauthorization and the omitted catalog families remain later prerequisites.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

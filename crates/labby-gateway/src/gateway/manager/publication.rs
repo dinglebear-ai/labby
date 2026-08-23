@@ -3,7 +3,7 @@
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use labby_runtime::gateway_config::GatewayLoadoutConfig;
+use labby_runtime::gateway_config::{GatewayLoadoutConfig, VirtualServerConfig};
 
 use crate::gateway::runtime::{PoolPublicationGeneration, PublishedPoolSnapshot};
 use crate::upstream::pool::{
@@ -11,6 +11,9 @@ use crate::upstream::pool::{
 };
 
 use super::GatewayManager;
+use crate::gateway::service_registry::{
+    PublishedService, ServiceRegistryPublicationError, ServiceRegistryPublicationGeneration,
+};
 
 static NEXT_RUNTIME_CONFIG_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -54,6 +57,77 @@ pub enum LoadoutToolCatalogPublicationError {
     MissingPool,
     CatalogUnavailable,
     Unstable,
+}
+
+/// A fail-closed reason that a coherent Loadout built-in service projection
+/// could not be observed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutServiceCatalogPublicationError {
+    MissingLoadout,
+    CatalogUnavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for LoadoutServiceCatalogPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingLoadout => "runtime Loadout is unavailable",
+            Self::CatalogUnavailable => "built-in service catalog is unavailable",
+            Self::Unstable => "runtime service catalog changed during observation",
+        })
+    }
+}
+
+impl std::error::Error for LoadoutServiceCatalogPublicationError {}
+
+/// Immutable built-in service/action projection for one running Loadout.
+///
+/// This mirrors current MCP discovery visibility, including virtual-server
+/// enablement, MCP surface policy, and non-empty action allowlists. It remains
+/// observational: it is not a dispatch grant or proof of peer routability.
+pub struct PublishedLoadoutServiceCatalogSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    service_registry_generation: ServiceRegistryPublicationGeneration,
+    services: std::sync::Arc<[PublishedLoadoutService]>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PublishedLoadoutService {
+    service: PublishedService,
+}
+
+impl PublishedLoadoutService {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.service.name()
+    }
+    #[must_use]
+    pub fn actions(&self) -> &[crate::gateway::service_registry::PublishedServiceAction] {
+        self.service.actions()
+    }
+    /// Generic MCP `help` and `schema` remain allowed even when absent from the
+    /// registry-backed action metadata returned by [`Self::actions`].
+    #[must_use]
+    pub fn allows_implicit_help_and_schema(&self) -> bool {
+        true
+    }
+}
+
+impl PublishedLoadoutServiceCatalogSnapshot {
+    #[must_use]
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+
+    #[must_use]
+    pub fn service_registry_generation(&self) -> ServiceRegistryPublicationGeneration {
+        self.service_registry_generation
+    }
+
+    #[must_use]
+    pub fn services(&self) -> &[PublishedLoadoutService] {
+        &self.services
+    }
 }
 
 impl std::fmt::Display for LoadoutToolCatalogPublicationError {
@@ -143,10 +217,8 @@ impl PublishedRuntimeLoadoutSnapshot {
 impl GatewayManager {
     async fn manager_publication_observation(&self, name: &str) -> ManagerPublicationObservation {
         let _publication = self.publication_barrier.read().await;
-        let loadout = self
-            .config
-            .read()
-            .await
+        let config = self.config.read().await;
+        let loadout = config
             .loadouts
             .iter()
             .find(|loadout| loadout.name == name)
@@ -158,6 +230,128 @@ impl GatewayManager {
             loadout,
             pool_snapshot: self.runtime.published_pool_snapshot(),
         }
+    }
+
+    async fn service_publication_observation(
+        &self,
+        name: &str,
+    ) -> ServiceManagerPublicationObservation {
+        let _publication = self.publication_barrier.read().await;
+        let config = self.config.read().await;
+        ServiceManagerPublicationObservation {
+            runtime_generation: GatewayRuntimeConfigGeneration(
+                self.runtime_config_generation.load(Ordering::Relaxed),
+            ),
+            loadout: config
+                .loadouts
+                .iter()
+                .find(|loadout| loadout.name == name)
+                .cloned(),
+            virtual_servers: config.virtual_servers.clone(),
+        }
+    }
+
+    /// Compose the running named Loadout with the exact published built-in
+    /// service registry. Three bounded G-S-G-S attempts reject config/registry
+    /// churn, including ABA replacement publications.
+    pub async fn published_loadout_service_catalog_snapshot(
+        &self,
+        name: &str,
+    ) -> Result<PublishedLoadoutServiceCatalogSnapshot, LoadoutServiceCatalogPublicationError> {
+        self.compose_loadout_service_catalog(name, |_: usize| ready(()))
+            .await
+    }
+
+    pub(super) async fn compose_loadout_service_catalog<F, Fut>(
+        &self,
+        name: &str,
+        mut after_first_catalog: F,
+    ) -> Result<PublishedLoadoutServiceCatalogSnapshot, LoadoutServiceCatalogPublicationError>
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        const MAX_ATTEMPTS: usize = 3;
+
+        for attempt in 0..MAX_ATTEMPTS {
+            let first_gateway = self.service_publication_observation(name).await;
+            let first_catalog = self.published_service_registry_snapshot();
+            after_first_catalog(attempt).await;
+            let second_gateway = self.service_publication_observation(name).await;
+            if !first_gateway.same_publication(&second_gateway) {
+                continue;
+            }
+            let second_catalog = self.published_service_registry_snapshot();
+            let (first_catalog, second_catalog) = match (first_catalog, second_catalog) {
+                (Ok(first), Ok(second)) => (first, second),
+                (Err(first), Err(second)) if first == second => {
+                    return Err(map_service_catalog_error(first));
+                }
+                _ => continue,
+            };
+            if first_catalog.generation() != second_catalog.generation() {
+                continue;
+            }
+            let loadout = first_gateway
+                .loadout
+                .as_ref()
+                .ok_or(LoadoutServiceCatalogPublicationError::MissingLoadout)?;
+            let selected = if loadout.expose_tools {
+                let by_name = first_catalog
+                    .services()
+                    .iter()
+                    .map(|service| (service.name(), service))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                let mut selected = std::collections::BTreeMap::new();
+                for member in &loadout.services {
+                    let Some(server) = first_gateway
+                        .virtual_servers
+                        .iter()
+                        .find(|server| server.service == *member || server.id == *member)
+                    else {
+                        continue;
+                    };
+                    let Some(service) = by_name.get(server.service.as_str()) else {
+                        continue;
+                    };
+                    let projected = match super::views::mcp_service_policy_for_config(
+                        &first_gateway.virtual_servers,
+                        member,
+                    ) {
+                        super::views::McpServicePolicy::Absent
+                        | super::views::McpServicePolicy::Hidden => continue,
+                        super::views::McpServicePolicy::Unrestricted => (*service).clone(),
+                        super::views::McpServicePolicy::Allowlisted(actions) => {
+                            let allowed = actions
+                                .iter()
+                                .map(String::as_str)
+                                .collect::<std::collections::BTreeSet<_>>();
+                            PublishedService::from_filtered_actions(service, |action| {
+                                matches!(action, "help" | "schema") || allowed.contains(action)
+                            })
+                        }
+                    };
+                    if selected
+                        .insert(
+                            projected.name().to_string(),
+                            PublishedLoadoutService { service: projected },
+                        )
+                        .is_some()
+                    {
+                        return Err(LoadoutServiceCatalogPublicationError::CatalogUnavailable);
+                    }
+                }
+                selected.into_values().collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            return Ok(PublishedLoadoutServiceCatalogSnapshot {
+                runtime_config_generation: first_gateway.runtime_generation,
+                service_registry_generation: first_catalog.generation(),
+                services: std::sync::Arc::from(selected),
+            });
+        }
+        Err(LoadoutServiceCatalogPublicationError::Unstable)
     }
 
     /// Compose the running named Loadout with the exact published pool's
@@ -275,6 +469,26 @@ impl GatewayManager {
     }
 }
 
+struct ServiceManagerPublicationObservation {
+    runtime_generation: GatewayRuntimeConfigGeneration,
+    loadout: Option<GatewayLoadoutConfig>,
+    virtual_servers: Vec<VirtualServerConfig>,
+}
+
+impl ServiceManagerPublicationObservation {
+    fn same_publication(&self, other: &Self) -> bool {
+        self.runtime_generation == other.runtime_generation
+            && self.loadout == other.loadout
+            && self.virtual_servers == other.virtual_servers
+    }
+}
+
 fn map_catalog_error(_error: ToolCatalogPublicationError) -> LoadoutToolCatalogPublicationError {
     LoadoutToolCatalogPublicationError::CatalogUnavailable
+}
+
+fn map_service_catalog_error(
+    _error: ServiceRegistryPublicationError,
+) -> LoadoutServiceCatalogPublicationError {
+    LoadoutServiceCatalogPublicationError::CatalogUnavailable
 }

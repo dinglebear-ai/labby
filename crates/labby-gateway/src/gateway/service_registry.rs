@@ -88,6 +88,23 @@ impl PublishedService {
     pub fn actions(&self) -> &[PublishedServiceAction] {
         &self.actions
     }
+
+    pub(crate) fn from_filtered_actions(
+        service: &Self,
+        mut keep: impl FnMut(&str) -> bool,
+    ) -> Self {
+        Self {
+            name: Arc::clone(&service.name),
+            actions: Arc::from(
+                service
+                    .actions
+                    .iter()
+                    .filter(|action| keep(action.name()))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
+        }
+    }
 }
 
 /// Redacted reason a registry could not be projected unambiguously.

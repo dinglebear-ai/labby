@@ -86,7 +86,9 @@ pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_disco
 pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
 pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
 pub use self::publication::{
-    LoadoutToolCatalogPublicationError, PublishedLoadoutToolCatalogSnapshot,
+    LoadoutServiceCatalogPublicationError, LoadoutToolCatalogPublicationError,
+    PublishedLoadoutService, PublishedLoadoutServiceCatalogSnapshot,
+    PublishedLoadoutToolCatalogSnapshot,
 };
 pub use super::service_registry::{
     PublishedServiceRegistrySnapshot, ServiceRegistryPublicationError,
