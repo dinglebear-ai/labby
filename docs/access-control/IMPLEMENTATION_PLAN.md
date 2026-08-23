@@ -175,6 +175,12 @@ Use transactions for policy mutation + epoch increment. Add indexes only after c
 
 Persistence tests prove deterministic round-trip and rollback behavior.
 
+### Current implementation status
+
+The private AccessStore currently creates schema v2 directly for fresh stores and transactionally migrates only the exact canonical v1 manifest, preserving its global revision. Schema v2 metadata carries exact schema identity, global revision, bootstrap generation, and a safe bootstrap identity fingerprint. The crate-private explicit bootstrap operation creates the reserved local Organization, owner Principal and canonical identity link, default Project owner membership, and audit record in one immediate compare-and-set transaction. Repeated calls with the same input are idempotent; drift and non-pristine generation-zero business state fail closed. Integrity checks protect the reserved bootstrap records while allowing later legitimate rows and audit growth.
+
+This is store-only infrastructure. AppState/startup invocation, setup/doctor health and recovery, Loadout compatibility, and transport enforcement have not landed and must not be inferred from the bootstrap implementation.
+
 ## Phase 3: Identity mapping from current AuthContext
 
 Do not map literal `AuthContext.issuer + sub`. First extend the authentication boundary to produce `VerifiedIdentity`, including canonical provider authority/subject or stable local credential ID. Browser sessions and Labby-issued bearer tokens for one human must resolve the same link; static and Unix credentials remain explicit service/bootstrap identities.
@@ -458,7 +464,7 @@ Migration tests first from representative current configs:
 
 ### Green
 
-Create explicit bootstrap local owner Principal/Organization/Role/Assignments and migration tooling.
+The store-only portion now creates the explicit local owner Principal/Organization, canonical identity link, default Project owner membership, and audit event. Fresh schema v2 creation and exact canonical v1 migration are implemented. Retain the following work in this phase: wire an explicit operator-owned bootstrap workflow, preserve current Loadout behavior without implicit broad grants, and stage enforcement only after health checks and identity verification.
 
 Add doctor/setup checks for:
 

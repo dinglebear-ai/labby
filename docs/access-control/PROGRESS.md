@@ -210,20 +210,24 @@ Later roadmap domain work:
 
 ### Phase 2: AccessStore persistence
 
-Wave 2's private persistence kernel is implemented. It provides the exact eight-table schema (`access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`), a singleton global AccessStore revision, an absolute configured-state `access.db` path, owner-only symlink/hardlink-safe storage, one mutex-serialized SQLite connection, exact schema-identity validation, and fail-closed typed storage errors. It is not yet wired into AppState, setup/doctor, bootstrap, mutations, or transport enforcement.
+Wave 2's private persistence kernel and Wave 3's store-only explicit owner bootstrap are implemented. The kernel provides the exact eight-table schema (`access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`), a singleton global AccessStore revision, an absolute configured-state `access.db` path, owner-only symlink/hardlink-safe storage, one mutex-serialized SQLite connection, exact schema-identity validation, and fail-closed typed storage errors. Schema v2 adds constrained bootstrap generation and safe identity fingerprint metadata. Fresh stores create v2 directly; exact canonical v1 stores migrate transactionally while preserving global revision.
 
-- [x] Exact schema-v1 SQLite migration and canonical reopen validation.
+- [x] Exact schema-v2 SQLite creation, canonical v1-to-v2 migration, and canonical reopen validation.
 - [x] Composite tenant foreign keys and authorization-grade connection profile.
 - [x] Canonical external/local identity shape and global uniqueness.
 - [x] Secure absolute path, owner-only creation, NOFOLLOW, hardlink/sidecar checks, and integrity validation.
 - [x] Singleton global revision initialized for later transactional mutations.
+- [x] Explicit one-time owner bootstrap transaction with canonical identity link, default Project owner membership, audit record, compare-and-set metadata, restart idempotence, and concurrent-writer safety.
+- [x] Reserved bootstrap-record integrity that permits later legitimate store growth and rejects partial reserved state.
 - [ ] memberships/Roles/Grants with scope validation.
 - [ ] Artifact authority/publisher policy persistence.
 - [ ] Assignments/relations + Artifact Assignment distribution persistence.
 - [ ] policy epochs.
 - [ ] runtime binding metadata.
 - [ ] destinations/mirror state.
-- [ ] restart/migration/rollback tests.
+- [x] bootstrap restart/concurrency/rollback and v1 migration safety tests.
+
+The bootstrap facade is crate-private and is not called by AppState or product startup. Setup/doctor health, explicit operator workflow wiring, Loadout compatibility projection, general mutations, and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap kernel exists.
 
 ### Phase 3: AuthContext identity integration
 
@@ -324,10 +328,11 @@ Milestone 0A implementation evidence: `labby-auth` now emits one transport-indep
 
 ### Phase 13: migration/rollout
 
-- [ ] explicit local owner bootstrap.
+- [x] explicit store-only local owner bootstrap transaction.
 - [ ] preserve private Artifact defaults.
 - [ ] preserve existing Loadout behavior.
 - [ ] identity setup/doctor checks.
+- [ ] AppState/startup/operator workflow wiring for explicit bootstrap.
 - [ ] shadow resolver.
 - [ ] opt-in enforcement flags.
 - [ ] staged default-on decision.

@@ -6,11 +6,12 @@ use std::time::Duration;
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 
+use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
-pub(super) struct AccessStore {
+pub(crate) struct AccessStore {
     connection: Arc<Mutex<Connection>>,
     path: Arc<PathBuf>,
 }
@@ -25,7 +26,7 @@ impl std::fmt::Debug for AccessStore {
 }
 
 impl AccessStore {
-    pub(super) async fn open(path: PathBuf) -> AccessStoreResult<Self> {
+    pub(crate) async fn open(path: PathBuf) -> AccessStoreResult<Self> {
         let open_path = path.clone();
         let connection = tokio::task::spawn_blocking(move || open_connection(&open_path))
             .await
@@ -36,21 +37,42 @@ impl AccessStore {
         })
     }
 
-    #[cfg(test)]
-    async fn with_connection<T, F>(&self, operation: F) -> AccessStoreResult<T>
+    pub(super) async fn with_connection<T, F>(&self, operation: F) -> AccessStoreResult<T>
     where
         T: Send + 'static,
-        F: FnOnce(&Connection) -> AccessStoreResult<T> + Send + 'static,
+        F: FnOnce(&mut Connection) -> AccessStoreResult<T> + Send + 'static,
     {
         let connection = Arc::clone(&self.connection);
         tokio::task::spawn_blocking(move || {
-            let connection = connection
+            let mut connection = connection
                 .lock()
                 .map_err(|_| AccessStoreError::Unavailable("connection mutex poisoned".into()))?;
-            operation(&connection)
+            operation(&mut connection)
         })
         .await
         .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+    }
+
+    pub(crate) async fn bootstrap_owner(
+        &self,
+        input: BootstrapOwnerInput,
+    ) -> AccessStoreResult<BootstrapOutcome> {
+        self.with_connection(move |connection| bootstrap_owner(connection, &input))
+            .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn bootstrap_counts_for_test(
+        &self,
+    ) -> AccessStoreResult<(i64, i64, i64, i64, i64, i64)> {
+        self.with_connection(|c| c.query_row("SELECT (SELECT count(*) FROM organizations), (SELECT count(*) FROM principals), (SELECT count(*) FROM principal_links), (SELECT count(*) FROM projects), (SELECT count(*) FROM project_memberships), (SELECT count(*) FROM access_audit)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(map_sqlite_error)).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn bootstrap_metadata_for_test(
+        &self,
+    ) -> AccessStoreResult<(i64, Option<String>)> {
+        self.with_connection(|c| c.query_row("SELECT bootstrap_generation, bootstrap_identity_fingerprint FROM access_metadata WHERE singleton=1", [], |r| Ok((r.get(0)?,r.get(1)?))).map_err(map_sqlite_error)).await
     }
 
     #[cfg(test)]
@@ -102,7 +124,7 @@ impl AccessStore {
     }
 
     #[cfg(test)]
-    async fn execute_test_statement(&self, sql: &'static str) -> AccessStoreResult<()> {
+    pub(super) async fn execute_test_statement(&self, sql: &'static str) -> AccessStoreResult<()> {
         self.with_connection(move |connection| {
             connection.execute_batch(sql).map_err(map_sqlite_error)
         })
@@ -157,7 +179,11 @@ fn open_connection(path: &Path) -> AccessStoreResult<Connection> {
     super::migrations::migrate(&mut connection)?;
     validate_store_file(path)?;
     validate_sidecars(path)?;
-    super::integrity::validate(&connection)?;
+    let validation = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    super::integrity::validate(&validation)?;
+    validation.commit().map_err(map_sqlite_error)?;
     Ok(connection)
 }
 
@@ -383,12 +409,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_store_has_exact_v1_schema_and_security_pragmas() {
+    async fn fresh_store_has_exact_v2_schema_and_security_pragmas() {
         let directory = tempfile::tempdir().unwrap();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path).await.unwrap();
 
-        assert_eq!(store.pragma_for_test("user_version").await.unwrap(), "1");
+        assert_eq!(store.pragma_for_test("user_version").await.unwrap(), "2");
         assert_eq!(store.pragma_for_test("journal_mode").await.unwrap(), "wal");
         assert_eq!(store.pragma_for_test("synchronous").await.unwrap(), "2");
         assert_eq!(store.pragma_for_test("foreign_keys").await.unwrap(), "1");
@@ -423,9 +449,7 @@ mod tests {
         let store = AccessStore::open(path.clone()).await.unwrap();
         store
             .execute_test_statement(
-                "INSERT INTO organizations VALUES
-                   ('org_durable', 'Durable', 'active', 0, 1, 1);
-                 UPDATE access_metadata SET global_revision = 7 WHERE singleton = 1;",
+                "UPDATE access_metadata SET global_revision = 7 WHERE singleton = 1;",
             )
             .await
             .unwrap();
@@ -433,20 +457,6 @@ mod tests {
 
         let reopened = AccessStore::open(path).await.unwrap();
         assert_eq!(reopened.metadata_for_test().await.unwrap().2, 7);
-        let organization_count = reopened
-            .with_connection(|connection| {
-                connection
-                    .query_row(
-                        "SELECT COUNT(*) FROM organizations
-                         WHERE organization_id = 'org_durable'",
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map_err(map_sqlite_error)
-            })
-            .await
-            .unwrap();
-        assert_eq!(organization_count, 1);
     }
 
     #[tokio::test]
@@ -454,14 +464,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
         drop(connection);
         restrict_permissions(&path).unwrap();
         assert!(matches!(
-            AccessStore::open(path).await,
+            AccessStore::open(path.clone()).await,
             Err(AccessStoreError::UnsupportedSchema {
-                found: 2,
-                supported: 1
+                found: 3,
+                supported: 2
             })
         ));
     }
@@ -471,13 +481,133 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 1).unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::V1_SCHEMA_VERSION,
+            )
+            .unwrap();
         drop(connection);
         restrict_permissions(&path).unwrap();
 
         assert!(matches!(
-            AccessStore::open(path).await,
+            AccessStore::open(path.clone()).await,
             Err(AccessStoreError::IntegrityViolation { .. })
+        ));
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            super::super::migrations::V1_SCHEMA_VERSION
+        );
+    }
+
+    #[tokio::test]
+    async fn canonical_v1_migrates_to_v2_and_preserves_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(super::super::migrations::V1_METADATA_SCHEMA)
+            .unwrap();
+        connection
+            .execute_batch(super::super::migrations::DOMAIN_SCHEMA)
+            .unwrap();
+        connection.execute("INSERT INTO access_metadata(singleton,schema_version,schema_fingerprint,global_revision,updated_at) VALUES(1,?1,?2,9,123)", rusqlite::params![super::super::migrations::V1_SCHEMA_VERSION, super::super::migrations::V1_SCHEMA_FINGERPRINT]).unwrap();
+        connection
+            .pragma_update(
+                None,
+                "application_id",
+                super::super::migrations::APPLICATION_ID,
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::V1_SCHEMA_VERSION,
+            )
+            .unwrap();
+        drop(connection);
+        restrict_permissions(&path).unwrap();
+
+        let store = AccessStore::open(path).await.unwrap();
+        assert_eq!(store.pragma_for_test("user_version").await.unwrap(), "2");
+        assert_eq!(store.metadata_for_test().await.unwrap().2, 9);
+        assert_eq!(
+            store.bootstrap_metadata_for_test().await.unwrap(),
+            (0, None)
+        );
+        let input = BootstrapOwnerInput::new(
+            labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .unwrap(),
+            "Local",
+            "Default",
+        )
+        .unwrap();
+        assert!(matches!(
+            store.bootstrap_owner(input).await,
+            Err(AccessStoreError::BootstrapConflict)
+        ));
+    }
+
+    #[tokio::test]
+    async fn populated_canonical_v1_migrates_healthy_but_is_not_bootstrap_pristine() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = secure_test_path(&directory);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(super::super::migrations::V1_METADATA_SCHEMA)
+            .unwrap();
+        connection
+            .execute_batch(super::super::migrations::DOMAIN_SCHEMA)
+            .unwrap();
+        connection.execute("INSERT INTO access_metadata(singleton,schema_version,schema_fingerprint,global_revision,updated_at) VALUES(1,?1,?2,4,123)", rusqlite::params![super::super::migrations::V1_SCHEMA_VERSION, super::super::migrations::V1_SCHEMA_FINGERPRINT]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO organizations VALUES('legacy-org','Legacy','active',0,1,1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "application_id",
+                super::super::migrations::APPLICATION_ID,
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::V1_SCHEMA_VERSION,
+            )
+            .unwrap();
+        drop(connection);
+        restrict_permissions(&path).unwrap();
+        let store = AccessStore::open(path).await.unwrap();
+        assert_eq!(
+            store.bootstrap_metadata_for_test().await.unwrap(),
+            (0, None)
+        );
+        let input = BootstrapOwnerInput::new(
+            labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .unwrap(),
+            "Local",
+            "Default",
+        )
+        .unwrap();
+        assert!(matches!(
+            store.bootstrap_owner(input).await,
+            Err(AccessStoreError::BootstrapConflict)
         ));
     }
 

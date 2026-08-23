@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub(super) enum AccessStoreError {
+pub(crate) enum AccessStoreError {
     #[error("access store is locked")]
     Locked,
     #[error("access store is corrupt")]
@@ -24,8 +24,12 @@ pub(super) enum AccessStoreError {
     IntegrityViolation { check: &'static str },
     #[error("access store relation references a missing parent")]
     ForeignKeyViolation,
+    #[error("access store owner bootstrap conflicts with existing state")]
+    BootstrapConflict,
+    #[error("access store owner bootstrap input is invalid")]
+    InvalidBootstrapInput,
     #[error("access store is unavailable: {0}")]
     Unavailable(String),
 }
 
-pub(super) type AccessStoreResult<T> = Result<T, AccessStoreError>;
+pub(crate) type AccessStoreResult<T> = Result<T, AccessStoreError>;

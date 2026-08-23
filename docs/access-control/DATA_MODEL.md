@@ -47,9 +47,7 @@ Artifact IDs/revision IDs remain owned by the Artifact subsystem and are stored 
 
 ### access_metadata
 
-This STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, and `updated_at` columns. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
-
-Bootstrap generation/fingerprint, migration time, and application version require a future schema migration when their owning workflows land; v1 does not expose an open-ended key/value metadata surface.
+Schema v2's STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, `updated_at`, and `bootstrap_generation` columns, with a nullable `bootstrap_identity_fingerprint`. The metadata carries exactly schema identity, the singleton global AccessStore revision, and explicit bootstrap generation/identity state; it is not an open-ended key/value surface. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. Bootstrap generation is either zero with no fingerprint or one with a non-empty safe identity fingerprint. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
 
 Unknown/newer schema versions fail closed.
 
@@ -94,7 +92,9 @@ Verified email, last-seen time, and explicit revocation time are optional future
 
 ### Milestone 1 schema subset
 
-Milestone 1 schema v1 contains exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and references one existing named Loadout. The metadata table carries schema identity and the singleton global AccessStore revision.
+Milestone 1 schema v2 contains exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and references one existing named Loadout. The metadata table carries schema identity, the singleton global AccessStore revision, and bootstrap generation/safe identity fingerprint.
+
+Fresh stores create the canonical v2 schema directly in one transaction. A store with the exact canonical v1 manifest migrates transactionally to v2, preserving `global_revision` and starting at bootstrap generation zero. Malformed v1 and unknown/newer schemas fail closed; migration does not silently repair them.
 
 Groups, custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, runtime bindings, and their tables are broader future design and require later versioned migrations.
 
@@ -522,18 +522,19 @@ Artifact license/publication/head changes keep their own Artifact revisions and 
 
 The first migration on an existing single-user Labby must be fail-safe.
 
-Recommended bootstrap:
+The implemented store-only bootstrap transaction:
 
 1. create one local owner Principal;
 2. create one local Organization;
-3. grant the owner built-in owner/admin permissions explicitly;
+3. create an explicit owner Project membership;
 4. associate the configured local authentication identity with that Principal where a stable identity exists;
-5. preserve existing Loadouts/catalog behavior through owner-visible assignments or a compatibility bootstrap projection;
-6. keep multi-user enforcement opt-in until identity mapping is verified.
+5. record the bootstrap audit event and atomically advance the global revision and bootstrap generation.
 
-The migration MUST NOT create organization-visible/public grants for existing private Artifacts.
+The transaction does not create Loadout mappings, Artifact assignments, organization-visible/public grants, or a compatibility projection. Those remain later integration work, and existing private Artifacts must remain private.
 
-Bootstrap runs before shadow resolution or enforcement. It is one-time, compare-and-set, idempotent across restarts, and stores a bootstrap generation plus safe identity fingerprint. Ambiguous or absent canonical identity requires explicit setup; changed email, static token, or provider configuration is never auto-promoted. Concurrent attempts produce exactly one owner or fail closed.
+Bootstrap is an explicit crate-internal AccessStore operation; it is not invoked by startup, AppState, setup, or doctor yet. It is one-time, compare-and-set, idempotent across restarts, and stores bootstrap generation one plus a safe identity fingerprint. It accepts only a pristine generation-zero business state. Ambiguous or absent canonical identity requires explicit setup; changed identity or bootstrap naming is never auto-promoted. Concurrent attempts produce exactly one owner or fail closed.
+
+Integrity validation protects the reserved bootstrap Organization, Principal, canonical identity link, default Project, owner membership, and audit record. It intentionally does not require global table counts to remain one: later legitimate principals, projects, memberships, Loadout mappings, and audit events may coexist without invalidating bootstrap state. At generation zero, unrelated valid migrated data may be opened, but partial use of reserved bootstrap identifiers fails integrity validation and explicit bootstrap refuses any non-pristine business state.
 
 Cross-store operations use durable pending state, idempotent finalize/compensate functions, operation IDs, and startup/runtime reconciliation. SQLite foreign keys never imply atomicity with ArtifactStore, gateway configuration, or secret storage.
 

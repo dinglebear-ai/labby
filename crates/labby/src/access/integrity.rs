@@ -29,7 +29,8 @@ pub(super) fn validate(connection: &Connection) -> AccessStoreResult<()> {
     }
 
     let metadata = connection.query_row(
-        "SELECT schema_version, schema_fingerprint, global_revision
+        "SELECT schema_version, schema_fingerprint, global_revision,
+                bootstrap_generation, bootstrap_identity_fingerprint
          FROM access_metadata WHERE singleton = 1",
         [],
         |row| {
@@ -37,33 +38,150 @@ pub(super) fn validate(connection: &Connection) -> AccessStoreResult<()> {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         },
     );
-    let Ok((schema_version, fingerprint, global_revision)) = metadata else {
+    let Ok((
+        schema_version,
+        fingerprint,
+        global_revision,
+        bootstrap_generation,
+        bootstrap_fingerprint,
+    )) = metadata
+    else {
         return Err(integrity("schema_metadata"));
+    };
+    let bootstrap_metadata_valid = match (bootstrap_generation, bootstrap_fingerprint.as_deref()) {
+        (0, None) => true,
+        (1, Some(value)) => !value.is_empty(),
+        _ => false,
     };
     if schema_version != super::migrations::SCHEMA_VERSION
         || fingerprint != super::migrations::SCHEMA_FINGERPRINT
         || global_revision < 0
+        || !bootstrap_metadata_valid
     {
         return Err(integrity("schema_metadata"));
     }
 
-    validate_manifest(connection)
+    validate_manifest(connection)?;
+    validate_bootstrap_state(connection, bootstrap_generation)
+}
+
+pub(super) fn validate_v1_before_migration(connection: &Connection) -> AccessStoreResult<()> {
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .map_err(map_metadata_error)?;
+    let metadata = connection
+        .query_row(
+            "SELECT schema_version, schema_fingerprint, global_revision FROM access_metadata WHERE singleton=1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .map_err(map_metadata_error)?;
+    if application_id != super::migrations::APPLICATION_ID
+        || metadata.0 != super::migrations::V1_SCHEMA_VERSION
+        || metadata.1 != super::migrations::V1_SCHEMA_FINGERPRINT
+        || metadata.2 < 0
+    {
+        return Err(integrity("schema_metadata"));
+    }
+    let actual = schema_manifest(connection)?;
+    let canonical = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
+    canonical
+        .execute_batch(super::migrations::V1_METADATA_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    canonical
+        .execute_batch(super::migrations::DOMAIN_SCHEMA)
+        .map_err(super::store::map_sqlite_error)?;
+    if actual != schema_manifest(&canonical)? {
+        return Err(integrity("schema_manifest"));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_bootstrap_state(
+    connection: &Connection,
+    generation: i64,
+) -> AccessStoreResult<()> {
+    let reserved: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM organizations WHERE organization_id='bootstrap-local') OR EXISTS(SELECT 1 FROM principals WHERE principal_id='bootstrap-owner') OR EXISTS(SELECT 1 FROM principal_links WHERE link_id='bootstrap-owner-link') OR EXISTS(SELECT 1 FROM projects WHERE project_id='bootstrap-default') OR EXISTS(SELECT 1 FROM project_memberships WHERE membership_id='bootstrap-owner-membership') OR EXISTS(SELECT 1 FROM access_audit WHERE event_id='bootstrap-owner-audit')", [], |r| r.get(0)).map_err(super::store::map_sqlite_error)?;
+    if generation == 0 {
+        return if reserved {
+            Err(integrity("bootstrap_state"))
+        } else {
+            Ok(())
+        };
+    }
+    let canonical: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM organizations WHERE organization_id='bootstrap-local' AND status='active') AND EXISTS(SELECT 1 FROM principals WHERE principal_id='bootstrap-owner' AND organization_id='bootstrap-local' AND kind='user' AND status='active') AND EXISTS(SELECT 1 FROM principal_links WHERE link_id='bootstrap-owner-link' AND principal_id='bootstrap-owner' AND status='active' AND verification_generation=1 AND link_generation=1) AND EXISTS(SELECT 1 FROM projects WHERE project_id='bootstrap-default' AND organization_id='bootstrap-local' AND status='active') AND EXISTS(SELECT 1 FROM project_memberships WHERE membership_id='bootstrap-owner-membership' AND organization_id='bootstrap-local' AND project_id='bootstrap-default' AND principal_id='bootstrap-owner' AND role='owner' AND status='active' AND created_by='bootstrap-owner') AND EXISTS(SELECT 1 FROM access_audit WHERE event_id='bootstrap-owner-audit' AND actor_principal_id='bootstrap-owner' AND organization_id='bootstrap-local' AND project_id='bootstrap-default' AND action='access.bootstrap_owner' AND decision='allow' AND reason_code='explicit_owner_bootstrap' AND target_fingerprint=(SELECT bootstrap_identity_fingerprint FROM access_metadata WHERE singleton=1))", [], |r| r.get(0)).map_err(super::store::map_sqlite_error)?;
+    if canonical
+        && persisted_link_fingerprint(connection)?.as_deref()
+            == connection
+                .query_row(
+                    "SELECT bootstrap_identity_fingerprint FROM access_metadata WHERE singleton=1",
+                    [],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .map_err(super::store::map_sqlite_error)?
+                .as_deref()
+    {
+        Ok(())
+    } else {
+        Err(integrity("bootstrap_state"))
+    }
+}
+
+fn persisted_link_fingerprint(connection: &Connection) -> AccessStoreResult<Option<String>> {
+    use labby_auth::PrincipalLink;
+    let row = connection.query_row(
+        "SELECT link_kind, issuer, subject, credential_id FROM principal_links WHERE link_id='bootstrap-owner-link'",
+        [],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)),
+    ).map_err(super::store::map_sqlite_error)?;
+    let link = match row {
+        (kind, Some(issuer), Some(subject), None) if kind == "external" => {
+            PrincipalLink::External { issuer, subject }
+        }
+        (kind, None, None, Some(credential_id)) if kind == "local_credential" => {
+            PrincipalLink::LocalCredential { credential_id }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(link.safe_fingerprint()))
 }
 
 fn validate_manifest(connection: &Connection) -> AccessStoreResult<()> {
     let actual = schema_manifest(connection)?;
     let canonical = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
     canonical
-        .execute_batch(super::migrations::SCHEMA_V1)
+        .execute_batch(super::migrations::SCHEMA_V2_METADATA)
+        .map_err(super::store::map_sqlite_error)?;
+    canonical
+        .execute_batch(super::migrations::DOMAIN_SCHEMA)
         .map_err(super::store::map_sqlite_error)?;
     let expected = schema_manifest(&canonical)?;
     if actual != expected {
         return Err(integrity("schema_manifest"));
     }
     Ok(())
+}
+
+fn map_metadata_error(error: rusqlite::Error) -> AccessStoreError {
+    if let rusqlite::Error::SqliteFailure(failure, _) = &error
+        && matches!(
+            failure.code,
+            rusqlite::ErrorCode::DatabaseBusy
+                | rusqlite::ErrorCode::DatabaseLocked
+                | rusqlite::ErrorCode::DatabaseCorrupt
+                | rusqlite::ErrorCode::NotADatabase
+                | rusqlite::ErrorCode::DiskFull
+                | rusqlite::ErrorCode::ReadOnly
+        )
+    {
+        return super::store::map_sqlite_error(error);
+    }
+    integrity("schema_metadata")
 }
 
 fn schema_manifest(
