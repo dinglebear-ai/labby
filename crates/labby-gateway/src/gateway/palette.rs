@@ -1145,8 +1145,11 @@ mod tests {
         for case in cases {
             let name = case["name"].as_str().expect("case name");
             let mut canonical = Vec::new();
-            write_json_canonical(&mut canonical, &case["normalizedInput"])
-                .unwrap_or_else(|error| panic!("{name}: canonicalization failed: {error}"));
+            let result = write_json_canonical(&mut canonical, &case["normalizedInput"]);
+            assert!(
+                result.is_ok(),
+                "{name}: canonicalization failed: {result:?}"
+            );
             let canonical = String::from_utf8(canonical).expect("canonical JSON is UTF-8");
             assert_eq!(canonical, case["canonicalJson"], "{name}: canonical JSON");
             let digest = Sha256::digest(canonical.as_bytes());

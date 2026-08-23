@@ -750,7 +750,7 @@ impl GatewayManager {
                     let current_contract = CapabilityContract::from_upstream_tool(current_tool)
                         .map_err(CodeModeCallError::from)?;
                     if current_contract.contract_hash != expected_contract_hash {
-                        return Err(contract_changed_call_error(&id));
+                        return Err(contract_changed_call_error(&id).into());
                     }
                     if current_tool.destructive && !destructive_allowed {
                         return Err(CodeModeCallError::new(
@@ -759,7 +759,8 @@ impl GatewayManager {
                         )
                         .with_tool(id.clone())
                         .with_origin(CodeModeErrorOrigin::Policy)
-                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                        .into());
                     }
                     if caller_is_read_only
                         && (!config.code_mode.trusts_read_only_tool(upstream, tool)
@@ -773,12 +774,15 @@ impl GatewayManager {
                         )
                         .with_tool(id.clone())
                         .with_origin(CodeModeErrorOrigin::Policy)
-                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                        .into());
                     }
                     validate_code_mode_params_against_schema(
                         &Value::Object(arguments.clone()),
                         current_tool.input_schema.as_ref(),
-                    )?;
+                    )
+                    .map_err(CodeModeCallError::from)
+                    .map_err(Box::new)?;
                     Ok(CheckedDispatch {
                         safety: upstream_tool_safety(current_tool),
                         contract_hash: current_contract.contract_hash,
@@ -939,7 +943,7 @@ fn contract_changed_call_error(id: &str) -> CodeModeCallError {
 
 fn map_checked_call_error(error: CheckedToolCallError, id: &str) -> CodeModeCallError {
     match error {
-        CheckedToolCallError::Check(error) => error,
+        CheckedToolCallError::Check(error) => *error,
         CheckedToolCallError::MissingTool => contract_changed_call_error(id),
         CheckedToolCallError::Unavailable => {
             CodeModeCallError::new("not_found", format!("upstream tool `{id}` was not found"))

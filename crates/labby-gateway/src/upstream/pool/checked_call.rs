@@ -25,7 +25,7 @@ pub(crate) struct CheckedToolCall<T> {
 
 #[derive(Debug)]
 pub(crate) enum CheckedToolCallError {
-    Check(CodeModeCallError),
+    Check(Box<CodeModeCallError>),
     Capability(CapabilityCallError),
     Connect(String),
     Catalog { kind: &'static str, message: String },
@@ -43,7 +43,7 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         oauth_subject: Option<&str>,
         params: CallToolRequestParams,
-        check: impl FnOnce(&UpstreamTool) -> Result<T, CodeModeCallError>,
+        check: impl FnOnce(&UpstreamTool) -> Result<T, Box<CodeModeCallError>>,
     ) -> Result<CheckedToolCall<T>, CheckedToolCallError> {
         let _pool_generation = self.invocation_barrier.read().await;
         let started = Instant::now();
@@ -54,7 +54,11 @@ impl UpstreamPool {
             return Err(CheckedToolCallError::MissingTool);
         }
 
-        let _oauth_generation;
+        let oauth_generation_guard = if config.oauth.is_some() {
+            Some(self.oauth_invalidation_barrier.read().await)
+        } else {
+            None
+        };
         let subject;
         let subject_tools;
         let peer = if config.oauth.is_some() {
@@ -64,7 +68,6 @@ impl UpstreamPool {
                     config.name
                 ))
             })?;
-            _oauth_generation = Some(self.oauth_invalidation_barrier.read().await);
             let (peer, tools) = self
                 .acquire_or_connect_subject_guarded(config, subject)
                 .await
@@ -74,7 +77,6 @@ impl UpstreamPool {
         } else {
             subject = "";
             subject_tools = None;
-            _oauth_generation = None;
             self.acquire_peer(&config.name, UpstreamCapability::Tools, "tool.checked_call")
                 .await
                 .ok_or(CheckedToolCallError::Unavailable)?
@@ -115,6 +117,7 @@ impl UpstreamPool {
         )
         .await
         .map_err(CheckedToolCallError::Capability)?;
+        drop(oauth_generation_guard);
 
         Ok(CheckedToolCall {
             result,
