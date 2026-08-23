@@ -39,6 +39,7 @@ use crate::error::AuthError;
 use crate::metadata::canonical_resource_url;
 use crate::session;
 use crate::state::AuthState;
+use crate::{Authenticator, VerifiedIdentity};
 
 /// Closure-erased actor-key derivation hook.
 ///
@@ -334,6 +335,11 @@ async fn authenticate(
             && tokens_equal(&token, expected.as_ref())
         {
             let sub = "static-bearer".to_string();
+            let identity = VerifiedIdentity::local_credential(
+                Authenticator::StaticBearer,
+                "static-bearer:primary",
+            )
+            .expect("the configured static bearer slot has a stable non-empty identity");
             let actor_key = derive_actor_key(layer.actor_key_deriver.as_deref(), &sub);
             let auth = AuthContext {
                 sub,
@@ -347,6 +353,7 @@ async fn authenticate(
             if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
                 return Err(response);
             }
+            request.extensions_mut().insert(identity);
             request.extensions_mut().insert(auth);
             return Ok(request);
         }
@@ -377,6 +384,12 @@ async fn authenticate(
                 &expected_issuer,
             ) {
                 Ok(claims) => {
+                    let identity = VerifiedIdentity::external(
+                        Authenticator::OauthBearer,
+                        crate::google::GOOGLE_ISSUER,
+                        claims.sub.clone(),
+                    )
+                    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
                     let actor_key =
                         derive_actor_key(layer.actor_key_deriver.as_deref(), &claims.sub);
                     let auth = AuthContext {
@@ -396,6 +409,7 @@ async fn authenticate(
                     if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
                         return Err(response);
                     }
+                    request.extensions_mut().insert(identity);
                     request.extensions_mut().insert(auth);
                     return Ok(request);
                 }
@@ -437,6 +451,12 @@ async fn authenticate(
                     }
                 }
 
+                let identity = VerifiedIdentity::external(
+                    Authenticator::BrowserSession,
+                    crate::google::GOOGLE_ISSUER,
+                    session.subject.clone(),
+                )
+                .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
                 let actor_key =
                     derive_actor_key(layer.actor_key_deriver.as_deref(), &session.subject);
                 let auth = AuthContext {
@@ -451,6 +471,7 @@ async fn authenticate(
                 if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
                     return Err(response);
                 }
+                request.extensions_mut().insert(identity);
                 request.extensions_mut().insert(auth);
                 return Ok(request);
             }
@@ -644,10 +665,31 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::authorize::tests::{test_auth_config, test_auth_state, test_auth_state_with_config};
+    use crate::{PrincipalLink, VerifiedIdentity};
 
     fn echo_app(layer: AuthLayer) -> Router {
         Router::new()
             .route("/probe", get(|| async { "ok" }))
+            .route_layer(layer)
+    }
+
+    fn principal_link_app(layer: AuthLayer) -> Router {
+        Router::new()
+            .route(
+                "/probe",
+                get(
+                    |axum::Extension(identity): axum::Extension<VerifiedIdentity>| async move {
+                        match identity.principal_link() {
+                            PrincipalLink::External { issuer, subject } => {
+                                format!("external|{issuer}|{subject}")
+                            }
+                            PrincipalLink::LocalCredential { credential_id } => {
+                                format!("local|{credential_id}")
+                            }
+                        }
+                    },
+                ),
+            )
             .route_layer(layer)
     }
 
@@ -743,6 +785,30 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn static_bearer_emits_an_explicit_local_credential_link() {
+        let app = principal_link_app(
+            AuthLayer::new().with_static_token(Some(Arc::<str>::from("super-secret"))),
+        );
+
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, "Bearer super-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"local|static-bearer:primary");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn wrong_static_bearer_rejected() {
         let layer = AuthLayer::new().with_static_token(Some(Arc::<str>::from("super-secret")));
         let app = echo_app(layer);
@@ -809,6 +875,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(&body[..], b"user@example.com|syslog:read,syslog:admin");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn browser_session_and_jwt_emit_the_same_provider_principal_link() {
+        let state = Arc::new(test_auth_state().await);
+        let subject = "google-subject-123";
+        let session = session::create_browser_session(
+            &state,
+            subject.to_string(),
+            Some("user@example.com".to_string()),
+        )
+        .await
+        .unwrap();
+        let cookie_name = state.config.session_cookie_name.clone();
+        let browser_app = principal_link_app(
+            AuthLayer::from_state(Arc::clone(&state)).with_allow_session_cookie(true),
+        );
+
+        let audience = canonical_resource_url(&state);
+        let issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .map(|url| url.as_str().trim_end_matches('/').to_string())
+            .unwrap();
+        let token = state
+            .signing_keys
+            .issue_access_token(&crate::jwt::AccessClaims {
+                iss: issuer,
+                sub: subject.to_string(),
+                aud: audience,
+                exp: (crate::util::now_unix() + 60) as usize,
+                nbf: None,
+                iat: crate::util::now_unix() as usize,
+                jti: "identity-link-test".to_string(),
+                scope: "lab:read".to_string(),
+                azp: String::new(),
+            })
+            .unwrap();
+        let bearer_app = principal_link_app(AuthLayer::from_state(state));
+
+        let browser_response = browser_app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(
+                        header::COOKIE,
+                        format!("{cookie_name}={}", session.session_id),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bearer_response = bearer_app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(browser_response.status(), StatusCode::OK);
+        assert_eq!(bearer_response.status(), StatusCode::OK);
+        let browser_body = axum::body::to_bytes(browser_response.into_body(), 1024)
+            .await
+            .unwrap();
+        let bearer_body = axum::body::to_bytes(bearer_response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(browser_body, bearer_body);
+        assert_eq!(
+            &browser_body[..],
+            b"external|https://accounts.google.com|google-subject-123",
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
