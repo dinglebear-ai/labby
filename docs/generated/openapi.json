@@ -2045,6 +2045,7 @@
               "system.checks",
               "audit.full",
               "auth.check",
+              "access.check",
               "proxy.preflight",
               "proxy.check",
               "oauth.relay.check"

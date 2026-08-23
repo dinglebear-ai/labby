@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-08-18"
+updated: "2026-08-23"
 ---
 
 # Setup Service
@@ -19,12 +19,23 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 - configure the direct stdio MCP proxy
 - install, uninstall, inspect, and synchronize the checked-in Claude plugin integration
 - repair supported setup state
+- project observational access-store health into setup checks without owning access-store repair
 
 ## Safety Model
 
 Read-only discovery actions such as `check`, `help`, `schema`, and `schema.get` do not require destructive confirmation. Mutating setup actions are classified as destructive and require `lab:admin` where the action catalog says so.
 
 Plugin lifecycle and other local host mutations are additionally constrained by the product's local-action policy. Surface adapters must use the shared setup dispatcher rather than reimplementing setup behavior.
+
+### Access-store projection
+
+`setup check` and the check phase of `setup repair` include an `access_store` check derived from the same read-only health inspection as `doctor access.check`:
+
+- `ready` passes.
+- `missing` and `uninitialized` are advisory while access enforcement is disabled; the operator must use the explicit owner-bootstrap workflow before enabling enforcement.
+- `insecure`, `corrupt`, `newer_schema`, `locked`, `read_only`, and `unavailable` are blocking failures.
+
+`setup repair` never creates, migrates, bootstraps, chmods, checkpoints, or repairs `access.db` or its SQLite sidecars. Access-store recovery requires an explicit access-control workflow so setup repair cannot silently change authorization state or ownership.
 
 ## Main Action Families
 

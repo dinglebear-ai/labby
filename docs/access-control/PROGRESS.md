@@ -1,15 +1,15 @@
 ---
 title: "Access Control Progress"
 created: "2026-08-22"
-updated: "2026-08-22"
-status: "design"
+updated: "2026-08-23"
+status: "implementation"
 ---
 
 # Access Control Progress
 
 ## Current state
 
-Design packet created. No production access-control implementation, migration, enforcement, personal-Labby pairing, or transfer protocol has been implemented by this worktree yet.
+The design packet and initial authentication/domain/persistence foundation are implemented in this worktree. The AccessStore now has explicit owner bootstrap and read-only doctor/setup health projection. Access-control enforcement, product lifecycle wiring for bootstrap, personal-Labby pairing, and transfer protocols are not implemented, so existing product behavior is not authorization-gated by this work.
 
 Branch/worktree for the design packet:
 
@@ -227,7 +227,7 @@ Wave 2's private persistence kernel and Wave 3's store-only explicit owner boots
 - [ ] destinations/mirror state.
 - [x] bootstrap restart/concurrency/rollback and v1 migration safety tests.
 
-The bootstrap facade is crate-private and is not called by AppState or product startup. Setup/doctor health, explicit operator workflow wiring, Loadout compatibility projection, general mutations, and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap kernel exists.
+The bootstrap facade is crate-private and is not called by AppState or product startup. Doctor `access.check` and `audit.full`, plus setup check/repair reports, now project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. Explicit operator workflow wiring, Loadout compatibility projection, general mutations, and transport enforcement remain unimplemented; access control therefore is not active merely because the store/bootstrap/health kernel exists.
 
 ### Phase 3: AuthContext identity integration
 

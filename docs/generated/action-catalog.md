@@ -6,6 +6,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 
 | Service | Action | Built-in | Destructive | Admin | Required scopes | Params | Returns | Surfaces |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `audit.full` | false | false | false |  |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |

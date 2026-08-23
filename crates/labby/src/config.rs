@@ -20,9 +20,9 @@ mod paths;
 mod secret_files;
 
 pub use env_writer::{EnvCredential, write_env_pairs, write_service_creds};
-pub(crate) use paths::home_dir;
 #[cfg(test)]
 use paths::resolve_usage_telemetry_enabled;
+pub(crate) use paths::{access_db_path, home_dir};
 pub use paths::{
     codemode_journal_db_path, codemode_journal_enabled, config_toml_path, dotenv_path,
     toml_candidates, usage_db_path, usage_telemetry_enabled, workspace_root_for_home,
