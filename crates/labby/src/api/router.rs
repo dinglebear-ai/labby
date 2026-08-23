@@ -5009,6 +5009,8 @@ mod tests {
                 jti: "test-jti".to_string(),
                 scope: scope.to_string(),
                 azp: "client".to_string(),
+                identity_issuer: Some("https://accounts.google.com".to_string()),
+                identity_credential_id: None,
             })
             .unwrap()
     }
