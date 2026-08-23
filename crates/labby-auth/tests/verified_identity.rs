@@ -137,3 +137,14 @@ fn identity_fingerprint_is_stable_and_does_not_disclose_identity_values() {
     assert!(!identity.safe_fingerprint().contains("sensitive"));
     assert!(!identity.safe_fingerprint().contains("google"));
 }
+
+#[test]
+fn principal_link_fingerprint_supports_persisted_enterprise_issuers() {
+    let persisted = PrincipalLink::External {
+        issuer: "https://login.enterprise.example/oidc".to_string(),
+        subject: "enterprise-subject".to_string(),
+    };
+
+    assert_eq!(persisted.safe_fingerprint().len(), 12);
+    assert!(!persisted.safe_fingerprint().contains("enterprise"));
+}

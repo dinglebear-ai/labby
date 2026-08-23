@@ -90,6 +90,22 @@ pub enum PrincipalLink {
     },
 }
 
+impl PrincipalLink {
+    /// Stable redacted identifier for this already-validated durable link.
+    ///
+    /// This performs no issuer admission. It is suitable for checking a link
+    /// that was validated before persistence without coupling reads to the
+    /// process's current provider configuration.
+    #[must_use]
+    pub fn safe_fingerprint(&self) -> String {
+        let material = match self {
+            Self::External { issuer, subject } => format!("external\0{issuer}\0{subject}"),
+            Self::LocalCredential { credential_id } => format!("local\0{credential_id}"),
+        };
+        fingerprint(&material)
+    }
+}
+
 /// Verified identity plus the authentication facts that produced its link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedIdentity {
@@ -225,15 +241,7 @@ impl VerifiedIdentity {
     /// Stable redacted identifier suitable for logs and audit correlation.
     #[must_use]
     pub fn safe_fingerprint(&self) -> String {
-        let material = match &self.principal_link {
-            PrincipalLink::External { issuer, subject } => {
-                format!("external\0{issuer}\0{subject}")
-            }
-            PrincipalLink::LocalCredential { credential_id } => {
-                format!("local\0{credential_id}")
-            }
-        };
-        fingerprint(&material)
+        self.principal_link.safe_fingerprint()
     }
 }
 
