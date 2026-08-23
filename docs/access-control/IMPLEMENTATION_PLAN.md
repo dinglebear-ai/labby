@@ -269,6 +269,12 @@ This is a prerequisite for later manager composition of the published runtime Lo
 
 The snapshot is immutable observational input, not a dispatch grant. It remains unmounted and excludes built-in services, subject-scoped OAuth catalogs, resources, prompts, skills, Code Mode, protected routes, exact actions/targets, and enforcement. Those omitted authority domains still require their own coherent publication identities and final-boundary reauthorization.
 
+### Wave 17 / Milestone 0U: published built-in service registry catalog
+
+`GatewayManager` now atomically publishes the immutable built-in service/action projection, the exact registry object, and an opaque process-local generation. Every initialization and replacement is total-ordered and receives a fresh identity, including identical and A-B-A publications. The owned projection is deterministic, bounded, includes exact `destructive` and `requires_admin` action metadata, and fails closed on duplicate or inconsistent registry vocabulary. Previously returned snapshots remain immutable across replacement.
+
+This publication proves registered service/action metadata only. Replacing the registry does not rebuild the current upstream pool or prove that an in-process peer is routable. It is unmounted observational input, not a service dispatch grant, and is not yet composed with runtime Loadouts, virtual-server policy, protected routes, OAuth scopes, or final-boundary authorization.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
