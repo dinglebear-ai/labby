@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, RwLock};
@@ -130,6 +131,9 @@ impl GatewayManager {
             runtime,
             config: Arc::new(RwLock::new(GatewayConfig::default())),
             publication_barrier: Arc::new(RwLock::new(())),
+            runtime_config_generation: Arc::new(AtomicU64::new(
+                super::publication::next_runtime_config_generation(),
+            )),
             config_mutation: Arc::new(Mutex::new(())),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
@@ -358,6 +362,7 @@ impl GatewayManager {
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
         *self.config.write().await = config;
+        self.advance_runtime_config_generation();
         // Cold-connect for the codemode surface is handled lazily by the
         // code_mode path (`ensure_search_runtime_ready`) on first call, so
         // seed_config does not eagerly connect upstreams here. This keeps startup
