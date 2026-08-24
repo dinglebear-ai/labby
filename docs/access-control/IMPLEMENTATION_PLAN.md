@@ -343,6 +343,12 @@ The pool now retains bounded, incarnation-tagged regular non-OAuth `resources/li
 
 This snapshot is observational and unmounted. It is not read authority, authorization evidence, or a grant, and excludes UI resources, templates, OAuth/subject-scoped, synthetic/local, Skills, and application families. Manager Loadout projection, Project composition, handler shadow consumption, reads, and enforcement remain later milestones.
 
+### Wave 29 / Milestone 0AG: Loadout-filtered regular Resource publication
+
+`GatewayManager` now composes one immutable regular Resource view across a bounded G-R-G-R observation of the active runtime configuration, exact pool publication, and pool resource-catalog generation. It filters only exact Loadout upstream membership when `expose_resources` is enabled, preserves deterministic Resource metadata and provenance, retries pool/config/resource ABA, and returns redacted stable missing/catalog errors or bounded `Unstable` under sustained churn. Staged desired configuration is excluded.
+
+The snapshot remains unmounted observation, not read authority, authorization evidence, or a dispatch grant. Project composition, route intersection, handler shadow consumption, OAuth/templates/UI/local/synthetic families, reads, and enforcement remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

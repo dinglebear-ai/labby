@@ -552,6 +552,26 @@ impl UpstreamPool {
     ) -> Result<Arc<PublishedResourceCatalogSnapshot>, ResourceCatalogPublicationError> {
         self.catalog.read().await.published_resources.clone()
     }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_resource_routes_for_tests(
+        &self,
+        upstream: &str,
+        resources: Vec<Resource>,
+    ) {
+        let incarnation = super::incarnation::next_connection_incarnation().expect("test identity");
+        let mut catalog = self.catalog_write().await;
+        let mut entry =
+            super::entries::healthy_in_process_entry(Arc::from(upstream), HashMap::new());
+        entry.resource_count = resources.len();
+        entry.resource_uris = resources
+            .iter()
+            .map(|resource| resource.uri.clone())
+            .collect();
+        catalog.insert(upstream.to_string(), entry);
+        catalog.bind_incarnation(upstream, incarnation);
+        catalog.set_resource_source(upstream, incarnation, &resources);
+    }
 }
 
 #[cfg(test)]
