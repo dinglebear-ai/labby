@@ -243,6 +243,26 @@ impl VerifiedIdentity {
     pub fn safe_fingerprint(&self) -> String {
         self.principal_link.safe_fingerprint()
     }
+
+    /// Redacted fingerprint of the complete verified transport binding.
+    #[must_use]
+    pub fn safe_binding_fingerprint(&self) -> String {
+        let authenticator = match self.authenticator {
+            Authenticator::BrowserSession => "browser_session",
+            Authenticator::OauthBearer => "oauth_bearer",
+            Authenticator::StaticBearer => "static_bearer",
+            Authenticator::UnixPeer => "unix_peer",
+        };
+        let principal = self.principal_link.safe_fingerprint();
+        fingerprint(&format!(
+            "labby.verified-identity.binding.v1\0{}:{authenticator}{}:{}{}:{}",
+            authenticator.len(),
+            self.transport_credential_issuer.len(),
+            self.transport_credential_issuer,
+            principal.len(),
+            principal,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +300,36 @@ mod tests {
                 Err(VerifiedIdentityError::InvalidIssuer),
                 "unexpected canonicalization for {invalid}"
             );
+        }
+    }
+
+    #[test]
+    fn binding_fingerprint_covers_all_verified_transport_facts_without_leaking_them() {
+        let static_identity = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "issuer-secret-a",
+            "credential-secret",
+        )
+        .unwrap();
+        let other_authenticator = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::UnixPeer,
+            "issuer-secret-a",
+            "credential-secret",
+        )
+        .unwrap();
+        let other_issuer = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "issuer-secret-b",
+            "credential-secret",
+        )
+        .unwrap();
+
+        let fingerprint = static_identity.safe_binding_fingerprint();
+        assert_ne!(fingerprint, other_authenticator.safe_binding_fingerprint());
+        assert_ne!(fingerprint, other_issuer.safe_binding_fingerprint());
+        assert_eq!(fingerprint, static_identity.safe_binding_fingerprint());
+        for secret in ["issuer-secret-a", "credential-secret"] {
+            assert!(!fingerprint.contains(secret));
         }
     }
 }

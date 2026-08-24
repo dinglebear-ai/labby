@@ -55,6 +55,10 @@ impl ProjectRuntimeMcpCatalogContext {
     pub(crate) fn catalog(&self) -> &PublishedLoadoutMcpCatalogSnapshot {
         &self.catalog
     }
+
+    pub(crate) fn same_publication_as(&self, other: &Self) -> bool {
+        self.access == other.access && self.catalog.same_publication_as(&other.catalog)
+    }
 }
 
 #[derive(Debug, Error)]

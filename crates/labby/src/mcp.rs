@@ -4,6 +4,8 @@
 
 pub(crate) mod agent_error;
 #[cfg(feature = "gateway")]
+pub(crate) mod bound_access;
+#[cfg(feature = "gateway")]
 pub mod bridge;
 pub mod call_tool;
 #[cfg(feature = "gateway")]

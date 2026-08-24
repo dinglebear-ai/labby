@@ -138,6 +138,17 @@ impl PublishedProjectRouteSnapshot {
     pub fn effective_loadout(&self) -> &GatewayLoadoutConfig {
         &self.effective_loadout
     }
+
+    /// Whether both snapshots bind the same complete route publication.
+    #[must_use]
+    pub fn same_publication_as(&self, other: &Self) -> bool {
+        self.runtime_config_generation == other.runtime_config_generation
+            && self.route_name == other.route_name
+            && self.resource == other.resource
+            && self.project_id == other.project_id
+            && self.assigned_loadout_name == other.assigned_loadout_name
+            && self.effective_loadout == other.effective_loadout
+    }
 }
 
 impl std::fmt::Display for LoadoutMcpCatalogPublicationError {

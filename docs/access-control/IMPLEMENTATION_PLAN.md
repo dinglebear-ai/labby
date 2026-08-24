@@ -301,6 +301,12 @@ The bounded observation projects only the selected route and Loadout facts while
 
 The snapshot remains unmounted, non-cloneable observational evidence. It does not create a server-owned `BoundAccessContext`, filter discovery, authorize an exact action, mount transport, add caching, or perform the final-boundary revocation check. The next dependency is composing this route publication with Wave 20 before binding it to request/session lifecycle.
 
+### Wave 22 / Milestone 0Z: BoundAccessContext core
+
+The crate-private MCP lifecycle kernel now composes Wave 20 Project catalog evidence with Wave 21 protected-route evidence through a bounded C-R-C-R observation. It accepts only identical complete child publications with the same runtime-configuration generation, Project, assigned Loadout, and server-derived canonical route identity. Construction always requests `asset.discover`; stable semantic mismatches fail unavailable while transient cross-publication mismatches retry and sustained churn fails unstable. The result owns both immutable snapshots, a checked process-unique opaque ID, and redacted fingerprints over the binding plus the complete verified identity facts.
+
+This remains an unmounted core, not a bearer capability or dispatch grant. MCP params and `_meta` cannot construct it. Expiry, reconnect/resume and session validation, and credential-instance binding such as a browser session ID or JWT `jti` are deliberately deferred until the transport lifecycle mount; `VerifiedIdentity` currently supplies authenticator, transport issuer, and PrincipalLink facts only. `LabMcpServer` has no field for this context yet.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
