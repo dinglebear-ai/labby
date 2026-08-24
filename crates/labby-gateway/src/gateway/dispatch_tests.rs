@@ -1521,6 +1521,38 @@ async fn staged_route_update_preserves_project_binding_inside_mutation() {
 }
 
 #[tokio::test]
+async fn direct_route_update_ignores_project_preservation_flag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![protected_route_fixture("syslog")],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+    let mut replacement = protected_route_fixture("syslog");
+    replacement.public_path = "/updated".to_string();
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.update",
+        json!({
+            "name": "syslog",
+            "route": replacement,
+            "preserve_project_id": true,
+        }),
+    )
+    .await
+    .expect("ordinary direct update remains compatible");
+
+    assert_eq!(result["public_path"], "/updated");
+    assert!(result["target"].is_null());
+}
+
+#[tokio::test]
 async fn protected_route_dispatch_add_list_and_test_share_gateway_actions() {
     let dir = tempfile::tempdir().expect("tempdir");
     let manager = GatewayManager::new(

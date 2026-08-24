@@ -531,7 +531,7 @@ fn preserve_route_project_id(
             Some(ProtectedMcpRouteTarget::GatewaySubset(existing)),
             Some(ProtectedMcpRouteTarget::GatewaySubset(replacement)),
         ) => replacement.project_id.clone_from(&existing.project_id),
-        _ => {
+        (Some(ProtectedMcpRouteTarget::GatewaySubset(_)), _) => {
             return Err(ToolError::InvalidParam {
                 message:
                     "project binding can only be preserved while updating a gateway_subset route"
@@ -539,6 +539,7 @@ fn preserve_route_project_id(
                 param: "route.target".to_string(),
             });
         }
+        _ => {}
     }
     Ok(())
 }
