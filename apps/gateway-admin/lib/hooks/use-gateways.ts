@@ -369,8 +369,20 @@ export function gatewaysRuntimeRequestKey(
   includeRuntime: boolean,
   gateways: Gateway[] | undefined,
 ): [string, string] | null {
+  // Keying only on the id list meant SWR treated a disable/enable toggle as
+  // "the same request" — the id set doesn't change, so the cached runtime
+  // hydration never revalidated and the merged view (`runtime.data ??
+  // configured.data`) kept serving the pre-toggle snapshot until a full page
+  // reload discarded the cache (lab-gz4gk). Folding each gateway's enabled
+  // bit into the key makes any enable/disable a distinct cache entry, so it
+  // revalidates the same way an add/remove already does via the id list.
   return enabled && includeRuntime && gateways
-    ? ['/gateways/runtime', gateways.map((gateway) => gateway.id).join(',')]
+    ? [
+        '/gateways/runtime',
+        gateways
+          .map((gateway) => `${gateway.id}:${gateway.enabled ?? true ? 1 : 0}`)
+          .join(','),
+      ]
     : null
 }
 

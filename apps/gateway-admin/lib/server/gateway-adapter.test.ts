@@ -732,6 +732,99 @@ test('exposurePolicyFromConfig preserves expose none sentinel as an empty allowl
   )
 })
 
+test('exposurePolicyFromConfig distinguishes absent (expose all) from empty (expose none)', () => {
+  // The backend's `ToolExposurePolicy::from_optional` maps `None` to `All` and
+  // `Some([])` to an allowlist matching nothing. `expose_tools: []` became
+  // persistable when lab-sc8ba stopped collapsing it, so these two must not
+  // read back as the same policy.
+  assert.deepEqual(
+    exposurePolicyFromConfig({ name: 'fixture-http' }),
+    { mode: 'expose_all', patterns: [] },
+    'absent expose_tools means no filter at all',
+  )
+  assert.deepEqual(
+    exposurePolicyFromConfig({ name: 'fixture-http', expose_tools: null }),
+    { mode: 'expose_all', patterns: [] },
+    'explicit null expose_tools means no filter at all',
+  )
+  assert.deepEqual(
+    exposurePolicyFromConfig({ name: 'fixture-http', expose_tools: [] }),
+    { mode: 'allowlist', patterns: [] },
+    'an empty allowlist hides everything, it does not expose everything',
+  )
+})
+
+test('normalizeGateway reports an empty allowlist as hiding every tool, resource, and prompt', () => {
+  // Regression for the inverse-of-truth display bug: with `expose_*: []` the
+  // gateway serves nothing, so the UI must not badge each row "Exposed".
+  const gateway = normalizeGateway(
+    {
+      config: {
+        name: 'fixture-stdio',
+        command: 'npx',
+        args: ['-y', 'server'],
+        proxy_resources: true,
+        proxy_prompts: true,
+        expose_tools: [],
+        expose_resources: [],
+        expose_prompts: [],
+      },
+      runtime: {
+        name: 'fixture-stdio',
+        tool_count: 1,
+        resource_count: 1,
+        prompt_count: 1,
+      },
+    },
+    { connected: true, healthy: true },
+    {
+      tools: ['alpha.read'],
+      resources: ['res://one'],
+      prompts: [{ name: 'prompt.one' }],
+    },
+  )
+
+  assert.deepEqual(
+    gateway.discovery.tools.map((tool) => [tool.name, tool.exposed]),
+    [['alpha.read', false]],
+  )
+  assert.equal(gateway.discovery.resources[0]?.exposed, false)
+  assert.equal(gateway.discovery.prompts[0]?.exposed, false)
+})
+
+test('normalizeGateway still exposes everything when no allowlist is configured', () => {
+  const gateway = normalizeGateway(
+    {
+      config: {
+        name: 'fixture-stdio',
+        command: 'npx',
+        args: ['-y', 'server'],
+        proxy_resources: true,
+        proxy_prompts: true,
+      },
+      runtime: {
+        name: 'fixture-stdio',
+        tool_count: 1,
+        resource_count: 1,
+        prompt_count: 1,
+      },
+    },
+    { connected: true, healthy: true },
+    {
+      tools: ['alpha.read'],
+      resources: ['res://one'],
+      prompts: [{ name: 'prompt.one' }],
+    },
+  )
+
+  assert.deepEqual(
+    gateway.discovery.tools.map((tool) => [tool.name, tool.exposed]),
+    [['alpha.read', true]],
+  )
+  assert.equal(gateway.discovery.resources[0]?.exposed, true)
+  assert.equal(gateway.discovery.prompts[0]?.exposed, true)
+})
+
 test('probeStatusFromRuntime marks zero-capability gateways unhealthy', () => {
   assert.deepEqual(
     probeStatusFromRuntime({

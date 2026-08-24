@@ -91,7 +91,18 @@ export function filterGateways(gateways: Gateway[], state: GatewayFilterState): 
   const normalizedSearch = state.search.trim().toLowerCase()
   return gateways.filter((gateway) => {
     const enabled = gateway.enabled ?? true
-    if (state.primaryLens === 'enabled' && !enabled) return false
+    // The "Enabled" primary lens (the default view) hides disabled servers —
+    // but an operator can also check the "Disabled" STATUS facet chip
+    // independently of which lens tab is active. Applying the lens gate
+    // unconditionally made that combination self-contradictory: the lens
+    // excluded every disabled row before the facet check below ever ran, so
+    // the chip always rendered "No matching servers" no matter what
+    // (lab-gz4gk). An explicit "Disabled" facet selection means the operator
+    // is deliberately asking to see disabled servers, so it takes priority
+    // over the lens's default exclusion.
+    if (state.primaryLens === 'enabled' && !enabled && !state.status.includes('disabled')) {
+      return false
+    }
     if (state.primaryLens === 'healthy' && !(enabled && gateway.status.healthy && gateway.status.connected)) return false
     if (state.primaryLens === 'disconnected' && !(enabled && !gateway.status.connected)) return false
     if (state.primaryLens === 'configured' && !(gateway.configured ?? true)) return false

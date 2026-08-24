@@ -14,7 +14,9 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
 } from 'lucide-react'
+import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { Button } from '@/components/ui/button'
@@ -235,6 +237,8 @@ export function SnippetsPageContent() {
   const [createBody, setCreateBody] = React.useState('async () => {\n  return { ok: true }\n}')
   const [createError, setCreateError] = React.useState<string | null>(null)
   const [creating, setCreating] = React.useState(false)
+  const [removeConfirmKey, setRemoveConfirmKey] = React.useState<string | null>(null)
+  const [removing, setRemoving] = React.useState(false)
 
   const reload = React.useCallback(async () => {
     setLoading(true)
@@ -380,6 +384,31 @@ export function SnippetsPageContent() {
       setCreateError(errorMessage(err))
     } finally {
       setCreating(false)
+    }
+  }
+
+  const removeConfirmSnippet = removeConfirmKey
+    ? (snippets.find((snippet) => snippetKey(snippet) === removeConfirmKey) ?? null)
+    : null
+
+  const confirmRemove = async () => {
+    const snippet = removeConfirmSnippet
+    if (!snippet) {
+      setRemoveConfirmKey(null)
+      return
+    }
+    setRemoving(true)
+    try {
+      await snippetsApi.remove(snippet.name)
+      setRemoveConfirmKey(null)
+      await reload()
+      setActionState({ kind: 'success', label: 'Remove', detail: `Removed ${snippet.name}` })
+    } catch (err) {
+      // Leave the dialog open so the operator can see what went wrong
+      // (e.g. attempting to remove a built-in) and back out or retry.
+      setActionState({ kind: 'error', label: 'Remove', detail: errorMessage(err) })
+    } finally {
+      setRemoving(false)
     }
   }
 
@@ -765,6 +794,15 @@ export function SnippetsPageContent() {
                               )
                             }
                           />
+                          {snippet.source !== 'builtin' ? (
+                            <DetailButton
+                              label="Remove"
+                              icon={<Trash2 size={11} />}
+                              disabled={running !== null}
+                              danger
+                              onClick={() => setRemoveConfirmKey(snippetKey(snippet))}
+                            />
+                          ) : null}
                         </div>
 
                         <div
@@ -1020,6 +1058,17 @@ export function SnippetsPageContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ActionConfirmationDialog
+        open={removeConfirmKey !== null}
+        title="Remove snippet?"
+        description={`This permanently deletes ${removeConfirmSnippet?.name ?? 'this snippet'} from your user snippets. This cannot be undone.`}
+        confirmLabel="Remove snippet"
+        busy={removing}
+        onOpenChange={(open) => {
+          if (!open) setRemoveConfirmKey(null)
+        }}
+        onConfirm={() => void confirmRemove()}
+      />
     </>
   )
 }
@@ -1031,6 +1080,7 @@ function DetailButton({
   busy,
   disabled,
   primary,
+  danger,
 }: {
   label: string
   icon: React.ReactNode
@@ -1038,6 +1088,7 @@ function DetailButton({
   busy?: boolean
   disabled?: boolean
   primary?: boolean
+  danger?: boolean
 }) {
   return (
     <button
@@ -1053,11 +1104,19 @@ function DetailButton({
         borderRadius: 8,
         border: primary
           ? '1px solid color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))'
-          : '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
+          : danger
+            ? '1px solid color-mix(in srgb, var(--aurora-error) 45%, var(--aurora-border-strong))'
+            : '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
         background: primary
           ? 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))'
-          : 'var(--aurora-control-surface)',
-        color: primary ? 'var(--aurora-accent-strong)' : 'var(--aurora-text-muted)',
+          : danger
+            ? 'color-mix(in srgb, var(--aurora-error) 9%, var(--aurora-panel-strong))'
+            : 'var(--aurora-control-surface)',
+        color: primary
+          ? 'var(--aurora-accent-strong)'
+          : danger
+            ? 'var(--aurora-error)'
+            : 'var(--aurora-text-muted)',
         fontFamily: 'inherit',
         fontSize: 11.5,
         fontWeight: 650,

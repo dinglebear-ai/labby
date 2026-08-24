@@ -119,7 +119,12 @@ pub fn validate_stdio_command(
         .and_then(|n| n.to_str())
         .unwrap_or(command);
 
-    if ALLOWED_RUNTIME_HINTS.contains(&binary) || extra.iter().any(|e| e == binary) {
+    // Extra entries may be bare binary names ("my-server", matching any path
+    // with that file name) or full command paths ("/opt/bin/my-server",
+    // matching only that exact command) — the error text below tells operators
+    // to add the rejected command verbatim, so the verbatim form must match.
+    if ALLOWED_RUNTIME_HINTS.contains(&binary) || extra.iter().any(|e| e == binary || e == command)
+    {
         Ok(())
     } else {
         let mut allowed: Vec<&str> = ALLOWED_RUNTIME_HINTS.to_vec();
@@ -357,6 +362,19 @@ mod tests {
         assert!(validate_stdio_command("runarr", &extra, false).is_ok());
         // bash still rejected even with extras
         assert!(validate_stdio_command("bash", &extra, false).is_err());
+    }
+
+    #[test]
+    fn command_accepts_extra_allowlisted_absolute_path() {
+        // Operators paste the rejected command verbatim from the error message,
+        // so a full-path extra entry must match that exact command (lab-qtjnq).
+        let extra = vec!["/opt/tools/my-mcp-server".to_string()];
+        assert!(validate_stdio_command("/opt/tools/my-mcp-server", &extra, false).is_ok());
+        // A different path to the same basename is NOT matched by a full-path entry.
+        assert!(validate_stdio_command("/tmp/evil/my-mcp-server", &extra, false).is_err());
+        // A bare-name entry still matches any path with that file name.
+        let by_name = vec!["my-mcp-server".to_string()];
+        assert!(validate_stdio_command("/opt/tools/my-mcp-server", &by_name, false).is_ok());
     }
 
     #[test]

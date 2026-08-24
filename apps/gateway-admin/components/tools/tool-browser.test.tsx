@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
+import { SWRConfig } from 'swr'
 
 import { GatewayApiError } from '../../lib/api/gateway-client-core.ts'
 import { __setBrowserSessionStateForTests, loadBrowserSession } from '../../lib/auth/session-store.ts'
@@ -145,5 +146,51 @@ test('tool browser clears stale search results and retries the failed detail ope
     await waitFor(() => assert.match(view.container.textContent ?? '', /temporarily unavailable/))
     assert.doesNotMatch(view.container.textContent ?? '', /alpha\.ping/)
     assert.doesNotMatch(view.container.textContent ?? '', /No matching tools/)
+  } finally { await view.unmount() }
+})
+
+test('a completed empty browse names Code Mode being disabled, instead of looking unchanged', async () => {
+  // Previously a zero-result "Browse all" rendered the exact same placeholder
+  // text as before any search ran — an operator clicking it with Code Mode
+  // off saw no feedback that anything had happened at all.
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated', user: { sub: 'admin', email: 'admin@example.com' },
+    expiresAt: 100, csrfToken: 'csrf', isAdmin: true,
+  })
+  globalThis.fetch = async (input, init) => {
+    const path = String(input)
+    if (path.endsWith('/search')) {
+      return new Response(JSON.stringify({ results: [], total: 0, truncated: false }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (path.endsWith('/gateway')) {
+      const body = JSON.parse(String(init?.body)) as { action?: string }
+      if (body.action === 'gateway.code_mode.get') {
+        return new Response(JSON.stringify({
+          enabled: false, timeout_ms: 5000, max_tool_calls: 10, max_response_bytes: 1024, max_response_tokens: 1024,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+    }
+    return new Response('{}', { status: 404 })
+  }
+
+  const view = await renderClient(
+    // `ToolBrowser` also reads the code-mode config via SWR, whose cache is a
+    // module-level singleton — an isolated provider keeps this test's mock
+    // from reading whatever an earlier test in this file already cached
+    // under the same key.
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <ToolBrowser />
+    </SWRConfig>,
+  )
+  try {
+    assert.match(view.container.textContent ?? '', /Search, or browse the live catalog without a query/)
+    const form = view.container.querySelector('form'); assert.ok(form)
+    await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Code Mode is disabled/))
+    assert.doesNotMatch(view.container.textContent ?? '', /Search, or browse the live catalog without a query/)
   } finally { await view.unmount() }
 })

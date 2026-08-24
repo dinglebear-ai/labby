@@ -528,17 +528,27 @@ export const gatewayApi = {
   },
 
   async test(id: string, signal?: AbortSignal): Promise<TestGatewayResult> {
+    // The runtime view returned by `gateway.test` carries no timing field of
+    // its own, so this is the only latency figure available to show the
+    // operator — measure it around just the probe call, not the concurrent
+    // `gateway.get` fetch, so it reflects what "the connection test" actually
+    // took.
+    const startedAt = performance.now()
+    let elapsedMs: number | undefined
     const [runtime, view] = await Promise.all([
       gatewayAction<BackendGatewayRuntimeView>(
         'gateway.test',
         confirmGatewayParams({ name: id }),
         signal,
-      ),
+      ).then((result) => {
+        elapsedMs = Math.round(performance.now() - startedAt)
+        return result
+      }),
       gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
     ])
     const probe = probeStatusFromRuntime(runtime)
     const detail = humanizeProbeError(probe.last_error, view.config)
-    return testResultFromProbe(runtime, probe, detail)
+    return testResultFromProbe(runtime, probe, detail, elapsedMs)
   },
 
   async reload(id: string, signal?: AbortSignal): Promise<ReloadGatewayResult> {

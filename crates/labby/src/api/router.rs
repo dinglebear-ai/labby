@@ -1722,7 +1722,35 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
         }
     }
 
-    v1
+    // `nest("/v1", v1)` hands the whole subtree to this router; anything under
+    // /v1 that no route above matches (a typo, or — the case that motivated
+    // this — a service unmounted in the current deployment shape, like /v1/fs
+    // without auth or /v1/gateway without api_auth_configured) would otherwise
+    // fall through past this nest to the outer SPA fallback, which returns a
+    // bare empty-body 404. The frontend then has nothing to show but a generic
+    // "An error occurred" (lab-gug4m), which the agent-error-contract docs
+    // treat as exactly the failure mode surface code must not produce. Setting
+    // an explicit fallback here keeps every /v1 response — matched or not — a
+    // structured envelope.
+    v1.fallback(v1_route_not_found)
+}
+
+async fn v1_route_not_found(
+    method: Method,
+    // `OriginalUri`, not `Uri`: this fallback is nested under `/v1`, so a plain
+    // `Uri` extractor only sees the path remaining after the nest strips its
+    // prefix (often empty) — `OriginalUri` preserves the full incoming path
+    // for a message an operator can actually act on.
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> axum::response::Response {
+    ApiError::new(ToolError::Sdk {
+        sdk_kind: "not_found".into(),
+        message: format!(
+            "no route matches {method} {path}; the service may not be mounted in this deployment (see server logs for `*.mount.skipped`) or the path may be misspelled",
+            path = uri.path()
+        ),
+    })
+    .into_response()
 }
 
 async fn labby_discovery(State(state): State<AppState>) -> axum::response::Response {
@@ -2221,6 +2249,44 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn v1_unmounted_service_route_returns_structured_json_not_bare_404() {
+        // AppState::new() has no bearer/OAuth configured, so /v1/gateway is
+        // never nested (see the `gateway.mount.skipped` guard in
+        // build_v1_router) and previously fell through the SPA fallback to a
+        // bare, empty-body 404 — surfaced by the web UI as a generic "An error
+        // occurred" toast (lab-gug4m). It must now match the same structured
+        // agent-error-contract envelope as every other /v1 failure.
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/gateway")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(content_type.contains("application/json"));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!body.is_empty(), "fallback must not return an empty body");
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "not_found");
+        assert!(json["message"].as_str().unwrap().contains("/v1/gateway"));
     }
 
     #[tokio::test]

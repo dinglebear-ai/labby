@@ -269,31 +269,22 @@ pub(crate) fn update_upstream(
     if let Some(proxy_skills) = patch.proxy_skills {
         cfg.upstream[index].proxy_skills = proxy_skills;
     }
+    // All four exposure fields share one tri-state: null = expose all,
+    // [] = expose none, values = allowlist. `deserialize_nullable` on the patch
+    // distinguishes an explicit null (clear the filter) from an absent field,
+    // so collapsing [] to None is never needed to express "remove filter" —
+    // and doing so silently inverted an operator's explicit hide-everything
+    // decision into expose-everything (lab-sc8ba).
     if let Some(expose_tools) = patch.expose_tools {
-        // Treat empty array as "clear filter" — an empty allowlist that blocks
-        // all tools is never useful and is the natural way to say "remove filter".
-        cfg.upstream[index].expose_tools = match expose_tools {
-            Some(ref v) if v.is_empty() => None,
-            other => other,
-        };
+        cfg.upstream[index].expose_tools = expose_tools;
     }
     if let Some(expose_resources) = patch.expose_resources {
-        cfg.upstream[index].expose_resources = match expose_resources {
-            Some(ref v) if v.is_empty() => None,
-            other => other,
-        };
+        cfg.upstream[index].expose_resources = expose_resources;
     }
     if let Some(expose_prompts) = patch.expose_prompts {
-        cfg.upstream[index].expose_prompts = match expose_prompts {
-            Some(ref v) if v.is_empty() => None,
-            other => other,
-        };
+        cfg.upstream[index].expose_prompts = expose_prompts;
     }
     if let Some(expose_skills) = patch.expose_skills {
-        // Skills keep a real tri-state: null = expose all, [] = expose none,
-        // values = allowlist. Unlike the legacy primitive fields, collapsing an
-        // empty list to None would invert an operator's explicit hide-all
-        // decision and is unsafe for agent instructions.
         cfg.upstream[index].expose_skills = expose_skills;
     }
     if let Some(oauth) = patch.oauth {

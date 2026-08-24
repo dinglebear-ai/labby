@@ -38,6 +38,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -225,6 +226,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [isAggressiveCleanup, setIsAggressiveCleanup] = useState(false)
   const [configCopied, setConfigCopied] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
+  const [removeConfirmationOpen, setRemoveConfirmationOpen] = useState(false)
   const [manageToolsMode, setManageToolsMode] = useState(false)
   const [draftSelectedToolNames, setDraftSelectedToolNames] = useState<string[]>([])
   const [selectedRowToolNames, setSelectedRowToolNames] = useState<string[]>([])
@@ -374,6 +376,11 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to remove server'))
     }
+  }
+
+  const confirmDelete = () => {
+    setRemoveConfirmationOpen(false)
+    void handleDelete()
   }
 
   const handleEnableGateway = async () => {
@@ -658,7 +665,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
         <Pencil size={13} />
       </DetailTopbarButton>
       <DetailTopbarButton
-        onClick={() => void handleDelete()}
+        onClick={() => setRemoveConfirmationOpen(true)}
         aria-label="Remove server"
         title="Remove server"
       >
@@ -759,7 +766,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
           {
             label: 'Stale',
             value: gateway.status.likely_stale_count ?? 0,
-            sub: 'likely_stale_count',
+            sub: 'orphaned runtimes after reconciliation',
           },
         ]
       : [
@@ -1733,6 +1740,14 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       <CleanupResultPanel
         result={cleanupResult}
         onClose={() => setCleanupResult(null)}
+      />
+      <ActionConfirmationDialog
+        open={removeConfirmationOpen}
+        title="Remove server?"
+        description={`This permanently deletes ${gateway.name} from the gateway configuration. Connected clients lose access immediately and the configuration cannot be recovered.`}
+        confirmLabel="Remove server"
+        onOpenChange={setRemoveConfirmationOpen}
+        onConfirm={confirmDelete}
       />
     </>
   )

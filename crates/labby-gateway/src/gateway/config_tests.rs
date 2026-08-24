@@ -577,7 +577,7 @@ fn expose_tools_patch_distinguishes_absent_null_empty_and_values() {
     assert!(absent.expose_tools.is_none());
     // null → Some(None) (clear the filter)
     assert_eq!(null.expose_tools, Some(None));
-    // empty array → Some(Some([])) (will be normalized to clear)
+    // empty array → Some(Some([])) (explicit expose-none allowlist)
     assert_eq!(empty.expose_tools, Some(Some(vec![])));
     // values → Some(Some([...]))
     assert_eq!(
@@ -619,7 +619,7 @@ fn update_upstream_clears_expose_tools_with_null() {
 }
 
 #[test]
-fn update_upstream_clears_expose_tools_with_empty_array() {
+fn update_upstream_keeps_empty_expose_tools_as_expose_none() {
     let mut cfg = sample_config();
 
     // First set a filter
@@ -634,7 +634,10 @@ fn update_upstream_clears_expose_tools_with_empty_array() {
     .expect("set filter");
     assert!(cfg.upstream[1].expose_tools.is_some());
 
-    // Clear with empty array (normalized to None)
+    // An empty array is an explicit hide-everything allowlist and must persist
+    // as such — collapsing it to None silently re-exposed everything the
+    // operator just hid (lab-sc8ba). Clearing the filter is expressed with
+    // null (Some(None)), covered by the test above.
     update_upstream(
         &mut cfg,
         "b",
@@ -643,10 +646,11 @@ fn update_upstream_clears_expose_tools_with_empty_array() {
             ..GatewayUpdatePatch::default()
         },
     )
-    .expect("clear filter");
-    assert!(
-        cfg.upstream[1].expose_tools.is_none(),
-        "empty array should clear expose_tools"
+    .expect("set expose-none");
+    assert_eq!(
+        cfg.upstream[1].expose_tools,
+        Some(vec![]),
+        "empty array must persist as an expose-none allowlist"
     );
 }
 

@@ -226,6 +226,18 @@ impl UpstreamPool {
         if config.proxy_resources {
             self.refresh_resource_cache_for_upstream(&config.name).await;
         }
+        // Mirror the resource refresh for prompts: the startup discovery
+        // fan-out (discover.rs) probes prompt counts, but this is the only
+        // discovery a server gets when it's added/updated/re-enabled while
+        // the gateway is already running — without this,
+        // `discovered_prompt_count` stays 0 until a downstream client happens
+        // to call prompts/list (lab-zfyxk). This is the real production
+        // entrypoint; `ensure_tools_for_upstream_with_connector` below is a
+        // `#[cfg(test)]`-only seam and is never reached from live traffic, so
+        // fixing only that one (as an earlier pass here did) has no effect.
+        if config.proxy_prompts {
+            self.refresh_prompt_cache_for_upstream(&config.name).await;
+        }
         tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
@@ -306,6 +318,13 @@ impl UpstreamPool {
             .await;
         if config.proxy_resources {
             self.refresh_resource_cache_for_upstream(&config.name).await;
+        }
+        // Kept in sync with the resource/prompt refresh on the real
+        // `ensure_tools_for_upstream` above (lab-zfyxk) so this test-only
+        // connector seam exercises the same shape, even though production
+        // traffic never reaches this function.
+        if config.proxy_prompts {
+            self.refresh_prompt_cache_for_upstream(&config.name).await;
         }
         Ok(true)
     }
@@ -470,6 +489,12 @@ impl UpstreamPool {
     async fn refresh_resource_cache_for_upstream(&self, upstream_name: &str) {
         let allowed = BTreeSet::from([upstream_name.to_string()]);
         self.list_upstream_resources_allowed(Some(&allowed)).await;
+    }
+
+    async fn refresh_prompt_cache_for_upstream(&self, upstream_name: &str) {
+        let allowed = BTreeSet::from([upstream_name.to_string()]);
+        self.list_upstream_prompts_allowed(&[], Some(&allowed))
+            .await;
     }
 }
 

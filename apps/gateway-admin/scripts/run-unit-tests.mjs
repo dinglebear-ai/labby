@@ -15,6 +15,12 @@ const testSpecs = [
   { dir: "lib/dev", recursive: true, suffix: ".test.ts" },
   { dir: "lib/setup", recursive: false, suffix: ".test.ts" },
   { dir: "components", recursive: true, suffix: ".test.tsx" },
+  // Pure-logic component helpers (gateway-list-state, gateway-form-state,
+  // gateway-save-transaction, command-palette-model, ...) are colocated as
+  // `.test.ts`, not `.test.tsx` — the suffix above never matched them, so
+  // `pnpm test` silently never ran these files. Found while adding coverage
+  // for lab-gz4gk.
+  { dir: "components", recursive: true, suffix: ".test.ts" },
 ];
 
 function collectTests(dir, { recursive, suffix }) {
