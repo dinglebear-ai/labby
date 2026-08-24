@@ -37,6 +37,9 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
   installTestDom()
   const { SidebarProvider } = await import('@/components/ui/sidebar')
   const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
   const requests: Array<{ action?: string; params?: Record<string, unknown> }> = []
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
@@ -120,6 +123,7 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
   const view = await renderClient(
     <SidebarProvider>
       <SnippetsPageContent />
+      <Toaster />
     </SidebarProvider>,
   )
 
@@ -176,6 +180,9 @@ test('snippets table filters by tag pill and search, and dashes out absent metri
   installTestDom()
   const { SidebarProvider } = await import('@/components/ui/sidebar')
   const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
     if (payload.action === 'snippets.list') {
@@ -214,6 +221,7 @@ test('snippets table filters by tag pill and search, and dashes out absent metri
   const view = await renderClient(
     <SidebarProvider>
       <SnippetsPageContent />
+      <Toaster />
     </SidebarProvider>,
   )
 
@@ -251,6 +259,9 @@ test('user snippets can be removed after confirmation; built-ins offer no Remove
   installTestDom()
   const { SidebarProvider } = await import('@/components/ui/sidebar')
   const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
   const requests: Array<{ action?: string; params?: Record<string, unknown> }> = []
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
@@ -297,6 +308,7 @@ test('user snippets can be removed after confirmation; built-ins offer no Remove
   const view = await renderClient(
     <SidebarProvider>
       <SnippetsPageContent />
+      <Toaster />
     </SidebarProvider>,
   )
 
@@ -362,6 +374,9 @@ test('a failed snippet removal closes the dialog so the error is actually visibl
   installTestDom()
   const { SidebarProvider } = await import('@/components/ui/sidebar')
   const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
     if (payload.action === 'snippets.list') {
@@ -398,6 +413,7 @@ test('a failed snippet removal closes the dialog so the error is actually visibl
   const view = await renderClient(
     <SidebarProvider>
       <SnippetsPageContent />
+      <Toaster />
     </SidebarProvider>,
   )
   try {
@@ -432,8 +448,8 @@ test('a failed snippet removal closes the dialog so the error is actually visibl
     // The dialog must close, and the failure must be reported rather than
     // silently swallowed or shown as a success.
     await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
-    await waitFor(() => assert.match(view.container.textContent ?? '', /Remove failed/))
-    assert.doesNotMatch(view.container.textContent ?? '', /Removed beta-sweep/)
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Remove failed/))
+    assert.doesNotMatch(document.body.textContent ?? '', /Removed beta-sweep/)
   } finally {
     await view.unmount()
   }
@@ -443,6 +459,9 @@ test('removing the last snippet still reports the success somewhere visible', as
   installTestDom()
   const { SidebarProvider } = await import('@/components/ui/sidebar')
   const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
 
   // Removal destroys its own subject. Reporting through `actionState` — which
   // renders inside the *selected* snippet's detail row — meant the confirmation
@@ -489,6 +508,7 @@ test('removing the last snippet still reports the success somewhere visible', as
   const view = await renderClient(
     <SidebarProvider>
       <SnippetsPageContent />
+      <Toaster />
     </SidebarProvider>,
   )
   try {
@@ -518,9 +538,9 @@ test('removing the last snippet still reports the success somewhere visible', as
     })
 
     await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
-    // The list is now empty — there is no detail row left, so this can only
-    // pass if the confirmation reports at page level.
-    await waitFor(() => assert.match(view.container.textContent ?? '', /Removed only-one/))
+    // The list is now empty — there is no detail row left to host a message,
+    // so this can only pass because the toast lives outside the page content.
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Removed only-one/))
   } finally {
     await view.unmount()
   }

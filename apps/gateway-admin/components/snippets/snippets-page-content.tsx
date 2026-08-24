@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { toast } from 'sonner'
 import {
   ArrowDown,
   ArrowUp,
@@ -238,15 +239,6 @@ export function SnippetsPageContent() {
   const [createError, setCreateError] = React.useState<string | null>(null)
   const [creating, setCreating] = React.useState(false)
   const [removeConfirmKey, setRemoveConfirmKey] = React.useState<string | null>(null)
-  // Removal reports at page level, not through `actionState`. Every other
-  // action reports inside the selected snippet's detail row, which is correct
-  // for them because their subject is still selected afterwards. Removal
-  // destroys its own subject: `reload` moves the selection to another snippet
-  // (so "Removed X" would render under an unrelated snippet's row) or, if that
-  // was the last one, to null — no row, and the message renders nowhere at all.
-  const [removeNotice, setRemoveNotice] = React.useState<
-    { kind: 'success' | 'error'; detail: string } | null
-  >(null)
   const [removing, setRemoving] = React.useState(false)
 
   const reload = React.useCallback(async () => {
@@ -400,6 +392,15 @@ export function SnippetsPageContent() {
     ? (snippets.find((snippet) => snippetKey(snippet) === removeConfirmKey) ?? null)
     : null
 
+  // Removal reports through a toast, not `actionState`. Every other action on
+  // this page reports inside the selected snippet's detail row, which is right
+  // for them because their subject still exists afterwards. Removal destroys
+  // its own subject: `reload` moves the selection to a different snippet, or to
+  // null when that was the last one — so a detail-row message lands under an
+  // unrelated snippet or renders nowhere at all. A toast also sidesteps the
+  // original bug directly, since it portals above the confirmation dialog's
+  // modal overlay instead of behind it. This matches how the gateways page
+  // reports the same action (`toast.success('Server removed successfully')`).
   const confirmRemove = async () => {
     const snippet = removeConfirmSnippet
     if (!snippet) {
@@ -407,7 +408,6 @@ export function SnippetsPageContent() {
       return
     }
     setRemoving(true)
-    setRemoveNotice(null)
     try {
       const result = await snippetsApi.remove(snippet.name)
       // The backend signals refusal by throwing, so `removed: false` is not
@@ -415,19 +415,15 @@ export function SnippetsPageContent() {
       // the same unverified-success bug this page's Save flow already had.
       // Read it before `reload`, which can fail on its own and must not be
       // able to turn a completed removal into a "Remove failed".
-      const notice = result.removed
-        ? { kind: 'success' as const, detail: `Removed ${snippet.name}` }
-        : { kind: 'error' as const, detail: `${snippet.name} was not removed.` }
+      const removed = result.removed
       await reload()
-      setRemoveNotice(notice)
+      if (removed) {
+        toast.success(`Removed ${snippet.name}`)
+      } else {
+        toast.error(`${snippet.name} was not removed.`)
+      }
     } catch (err) {
-      // Close before surfacing: the action-result panel renders inside the
-      // snippet's detail row, which sits under this dialog's modal overlay
-      // (and is `aria-hidden` while it is open), so an error left behind it is
-      // invisible and unreachable — the operator just sees the button settle
-      // and nothing happen. The gateway remove/disable handlers close first
-      // for the same reason.
-      setRemoveNotice({ kind: 'error', detail: `Remove failed: ${errorMessage(err)}` })
+      toast.error(`Remove failed: ${errorMessage(err)}`)
     } finally {
       setRemoveConfirmKey(null)
       setRemoving(false)
@@ -590,23 +586,6 @@ export function SnippetsPageContent() {
               <span style={{ ...HEAD_LABEL, justifySelf: 'center' }}>History</span>
               <span />
             </div>
-
-            {removeNotice ? (
-              <div
-                role="status"
-                style={{
-                  padding: '14px 16px',
-                  fontSize: 12,
-                  color:
-                    removeNotice.kind === 'error'
-                      ? 'var(--aurora-error)'
-                      : 'var(--aurora-text-secondary)',
-                  background: 'var(--gw1-0_62)',
-                }}
-              >
-                {removeNotice.detail}
-              </div>
-            ) : null}
 
             {error ? (
               <div
