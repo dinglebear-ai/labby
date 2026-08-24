@@ -416,12 +416,13 @@ impl PublishedLoadoutPromptCatalogSnapshot {
 }
 
 /// One common-interval view of the Loadout's tools, regular Resources,
-/// ResourceTemplates, and services.
+/// ResourceTemplates, Prompts, and services.
 /// This remains observational and unmounted; it is not an execution grant.
 pub struct PublishedLoadoutMcpCatalogSnapshot {
     tools: PublishedLoadoutToolCatalogSnapshot,
     resources: PublishedLoadoutResourceCatalogSnapshot,
     resource_templates: PublishedLoadoutResourceTemplateCatalogSnapshot,
+    prompts: PublishedLoadoutPromptCatalogSnapshot,
     services: PublishedLoadoutServiceCatalogSnapshot,
 }
 
@@ -439,13 +440,17 @@ impl PublishedLoadoutMcpCatalogSnapshot {
         &self.resource_templates
     }
     #[must_use]
+    pub fn prompts(&self) -> &PublishedLoadoutPromptCatalogSnapshot {
+        &self.prompts
+    }
+    #[must_use]
     pub fn services(&self) -> &PublishedLoadoutServiceCatalogSnapshot {
         &self.services
     }
 
     /// Equality of every source publication identity in this unified snapshot.
-    /// Construction guarantees all four child snapshots carry the same runtime
-    /// generation, so one runtime identity plus the five remaining source
+    /// Construction guarantees all five child snapshots carry the same runtime
+    /// generation, so one runtime identity plus the six remaining source
     /// identities is the complete comparison tuple.
     #[must_use]
     pub fn same_publication_as(&self, other: &Self) -> bool {
@@ -460,6 +465,7 @@ impl PublishedLoadoutMcpCatalogSnapshot {
                 == other
                     .resource_templates
                     .resource_template_catalog_generation()
+            && self.prompts.prompt_catalog_generation() == other.prompts.prompt_catalog_generation()
             && self.services.service_registry_generation()
                 == other.services.service_registry_generation()
     }
@@ -634,6 +640,10 @@ impl GatewayManager {
                 Some(pool) => Some(pool.published_resource_template_catalog().await),
                 None => None,
             };
+            let first_prompts = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
+                None => None,
+            };
             let first_services = self.published_service_registry_snapshot();
             after_first_catalogs(attempt).await;
             let second_gateway = self.mcp_publication_observation(name).await;
@@ -650,6 +660,10 @@ impl GatewayManager {
             };
             let second_resource_templates = match second_gateway.pool_snapshot.pool() {
                 Some(pool) => Some(pool.published_resource_template_catalog().await),
+                None => None,
+            };
+            let second_prompts = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
                 None => None,
             };
             let second_services = self.published_service_registry_snapshot();
@@ -689,9 +703,18 @@ impl GatewayManager {
                     }
                     _ => continue,
                 };
+            let (first_prompts, second_prompts) = match (first_prompts, second_prompts) {
+                (None, None) => return Err(LoadoutMcpCatalogPublicationError::MissingPool),
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(LoadoutMcpCatalogPublicationError::CatalogUnavailable);
+                }
+                _ => continue,
+            };
             if first_tools.generation() != second_tools.generation()
                 || first_resources.generation() != second_resources.generation()
                 || first_resource_templates.generation() != second_resource_templates.generation()
+                || first_prompts.generation() != second_prompts.generation()
                 || first_services.generation() != second_services.generation()
             {
                 continue;
@@ -721,6 +744,12 @@ impl GatewayManager {
                 loadout,
                 &first_resource_templates,
             );
+            let prompts = build_prompt_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_prompts,
+            );
             debug_assert_eq!(
                 tools.runtime_config_generation(),
                 services.runtime_config_generation()
@@ -741,10 +770,19 @@ impl GatewayManager {
                 tools.pool_publication_generation(),
                 resource_templates.pool_publication_generation()
             );
+            debug_assert_eq!(
+                tools.runtime_config_generation(),
+                prompts.runtime_config_generation()
+            );
+            debug_assert_eq!(
+                tools.pool_publication_generation(),
+                prompts.pool_publication_generation()
+            );
             return Ok(PublishedLoadoutMcpCatalogSnapshot {
                 tools,
                 resources,
                 resource_templates,
+                prompts,
                 services,
             });
         }

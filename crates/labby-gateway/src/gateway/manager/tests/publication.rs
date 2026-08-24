@@ -1220,6 +1220,11 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
         ],
     )
     .await;
+    pool.insert_prompt_routes_for_tests(
+        "alpha",
+        vec![Prompt::new("deploy", Some("prompt metadata"), None)],
+    )
+    .await;
     runtime.swap(Some(Arc::clone(&pool))).await;
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone())
         .with_builtin_service_registry(publication_registry("deploy"));
@@ -1247,6 +1252,14 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
         Some("template metadata")
     );
     assert_eq!(
+        snapshot.prompts().routes()[0].native_name.as_ref(),
+        "deploy"
+    );
+    assert_eq!(
+        snapshot.prompts().routes()[0].prompt.description.as_deref(),
+        Some("prompt metadata")
+    );
+    assert_eq!(
         snapshot.tools().runtime_config_generation(),
         snapshot.services().runtime_config_generation()
     );
@@ -1271,6 +1284,14 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
         snapshot.tools().pool_publication_generation()
     );
     assert_eq!(
+        snapshot.prompts().runtime_config_generation(),
+        snapshot.tools().runtime_config_generation()
+    );
+    assert_eq!(
+        snapshot.prompts().pool_publication_generation(),
+        snapshot.tools().pool_publication_generation()
+    );
+    assert_eq!(
         snapshot.resources().resource_catalog_generation(),
         pool.published_resource_catalog()
             .await
@@ -1284,6 +1305,13 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
         pool.published_resource_template_catalog()
             .await
             .expect("resource templates")
+            .generation()
+    );
+    assert_eq!(
+        snapshot.prompts().prompt_catalog_generation(),
+        pool.published_prompt_catalog()
+            .await
+            .expect("prompts")
             .generation()
     );
     assert_eq!(
@@ -1501,6 +1529,10 @@ async fn unified_loadout_mcp_catalog_retries_resource_aba_independently() {
             .resource_templates()
             .resource_template_catalog_generation()
     );
+    assert_eq!(
+        snapshot.prompts().prompt_catalog_generation(),
+        before.prompts().prompt_catalog_generation()
+    );
     assert_ne!(
         snapshot.resources().resource_catalog_generation(),
         before.resources().resource_catalog_generation()
@@ -1610,6 +1642,10 @@ async fn unified_loadout_mcp_catalog_tracks_only_resource_template_generation() 
         after.resources().resource_catalog_generation()
     );
     assert_eq!(
+        before.prompts().prompt_catalog_generation(),
+        after.prompts().prompt_catalog_generation()
+    );
+    assert_eq!(
         before.services().service_registry_generation(),
         after.services().service_registry_generation()
     );
@@ -1662,6 +1698,160 @@ async fn unified_loadout_mcp_catalog_bounds_sustained_resource_template_churn() 
         vec![
             ResourceTemplate::new("file:///dup/{id}", "one"),
             ResourceTemplate::new("file:///dup/{id}", "two"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        manager
+            .published_loadout_mcp_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutMcpCatalogPublicationError::CatalogUnavailable)
+    );
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_tracks_only_prompt_generation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    pool.insert_resource_routes_for_tests(
+        "alpha",
+        vec![Resource::new("file:///resource", "resource")],
+    )
+    .await;
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![ResourceTemplate::new("file:///template/{id}", "template")],
+    )
+    .await;
+    pool.insert_prompt_routes_for_tests(
+        "alpha",
+        vec![Prompt::new("before", Some("metadata"), None)],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("prompt-only.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let before = manager
+        .published_loadout_mcp_catalog_snapshot("project")
+        .await
+        .expect("before");
+    let changing = Arc::clone(&pool);
+    let after = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let pool = Arc::clone(&changing);
+            async move {
+                if attempt == 0 {
+                    pool.insert_prompt_routes_for_tests(
+                        "alpha",
+                        vec![Prompt::new("transient", Some("changed"), None)],
+                    )
+                    .await;
+                    pool.insert_prompt_routes_for_tests(
+                        "alpha",
+                        vec![Prompt::new("before", Some("metadata"), None)],
+                    )
+                    .await;
+                }
+            }
+        })
+        .await
+        .expect("prompt ABA retries");
+
+    assert_eq!(after.prompts().routes()[0].native_name.as_ref(), "before");
+    assert_eq!(
+        before.tools().runtime_config_generation(),
+        after.tools().runtime_config_generation()
+    );
+    assert_eq!(
+        before.tools().pool_publication_generation(),
+        after.tools().pool_publication_generation()
+    );
+    assert_eq!(
+        before.tools().tool_catalog_generation(),
+        after.tools().tool_catalog_generation()
+    );
+    assert_eq!(
+        before.resources().resource_catalog_generation(),
+        after.resources().resource_catalog_generation()
+    );
+    assert_eq!(
+        before
+            .resource_templates()
+            .resource_template_catalog_generation(),
+        after
+            .resource_templates()
+            .resource_template_catalog_generation()
+    );
+    assert_eq!(
+        before.services().service_registry_generation(),
+        after.services().service_registry_generation()
+    );
+    assert_ne!(
+        before.prompts().prompt_catalog_generation(),
+        after.prompts().prompt_catalog_generation()
+    );
+    assert_eq!(
+        after.prompts().prompt_catalog_generation(),
+        pool.published_prompt_catalog()
+            .await
+            .expect("prompts")
+            .generation()
+    );
+    assert!(!before.same_publication_as(&after));
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_bounds_prompt_churn_and_maps_stable_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    pool.insert_prompt_routes_for_tests(
+        "alpha",
+        vec![Prompt::new("initial", None::<String>, None)],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("prompt-churn.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let changing = Arc::clone(&pool);
+    let result = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let pool = Arc::clone(&changing);
+            async move {
+                pool.insert_prompt_routes_for_tests(
+                    "alpha",
+                    vec![Prompt::new(
+                        format!("changed-{attempt}"),
+                        None::<String>,
+                        None,
+                    )],
+                )
+                .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutMcpCatalogPublicationError::Unstable)
+    );
+
+    pool.insert_prompt_routes_for_tests(
+        "alpha",
+        vec![
+            Prompt::new("duplicate", None::<String>, None),
+            Prompt::new("duplicate", None::<String>, None),
         ],
     )
     .await;

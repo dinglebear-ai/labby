@@ -407,6 +407,12 @@ Invalid/duplicate names and route, row-byte, retained-byte, or published-byte ov
 
 The snapshot preserves exact native Prompt provenance, metadata, and deterministic order. Its typed failures are stable and redacted. It is manager-only, observational, and unmounted—not `prompts/get` authority or a grant. Unified MCP catalog ownership, Project/Bound propagation, discovery shadowing, OAuth/subject/local/synthetic prompt families, execution, and enforcement remain deferred.
 
+### Wave 40 / Milestone 0AR: unified Project MCP catalog ownership includes Prompts
+
+The unified manager snapshot now reads tool, regular Resource, regular ResourceTemplate, and regular Prompt publications from the same exact pool plus the built-in service registry inside one bounded G-T-R-Q-P-S-G-T-R-Q-P-S common interval. It nests all five Loadout-filtered catalog children and compares the Prompt generation in publication equality, so prompt-only ABA, stable publication failure, and sustained churn cannot produce a torn Project context.
+
+The existing authorization-first Project composer and BoundAccessContext kernel inherit the Prompt child mechanically through nested ownership and equality. Cursor shadow identity carries the Prompt generation, preventing a cached Project snapshot from crossing a prompt-only publication change. Prompt discovery shadowing, `prompts/get`, OAuth/subject/local/synthetic prompt families, execution authority, and enforcement remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

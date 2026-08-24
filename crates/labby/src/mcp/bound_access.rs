@@ -205,6 +205,7 @@ impl ProjectDiscoveryShadow<'_> {
             resource_templates: catalog
                 .resource_templates()
                 .resource_template_catalog_generation(),
+            prompts: catalog.prompts().prompt_catalog_generation(),
             services: catalog.services().service_registry_generation(),
         })
     }
@@ -825,9 +826,10 @@ mod tests {
         use labby_gateway::upstream::pool::UpstreamPool;
         use labby_runtime::gateway_config::{
             GatewayConfig, GatewayLoadoutConfig, ProtectedGatewaySubsetTarget,
-            ProtectedMcpRouteConfig, ProtectedMcpRouteTarget, VirtualServerConfig,
+            ProtectedMcpRouteConfig, ProtectedMcpRouteTarget, UpstreamConfig, VirtualServerConfig,
             VirtualServerSurfacesConfig,
         };
+        use rmcp::model::Prompt;
 
         use crate::access::{AssignProjectLoadoutInput, BootstrapOwnerInput};
 
@@ -863,9 +865,13 @@ mod tests {
             .unwrap();
 
         let gateway_runtime = GatewayRuntimeHandle::default();
-        gateway_runtime
-            .swap(Some(Arc::new(UpstreamPool::new())))
-            .await;
+        let pool = Arc::new(UpstreamPool::new());
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("deploy", Some("prompt metadata"), None)],
+        )
+        .await;
+        gateway_runtime.swap(Some(Arc::clone(&pool))).await;
         let gateway_path = directory.path().join("bound-context.toml");
         let manager = GatewayManager::with_store(
             gateway_path.clone(),
@@ -874,8 +880,32 @@ mod tests {
         )
         .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry()));
         let config = || GatewayConfig {
+            upstream: vec![UpstreamConfig {
+                enabled: true,
+                name: "alpha".into(),
+                url: None,
+                transport: None,
+                socket_path: None,
+                headers: Default::default(),
+                bearer_token_env: None,
+                command: Some("node".into()),
+                args: Vec::new(),
+                env: Default::default(),
+                proxy_resources: false,
+                proxy_prompts: true,
+                expose_tools: None,
+                expose_resources: None,
+                expose_prompts: None,
+                proxy_skills: false,
+                expose_skills: None,
+                code_mode_hint: None,
+                oauth: None,
+                imported_from: None,
+                priority: 1.0,
+            }],
             loadouts: vec![GatewayLoadoutConfig {
                 name: "production".into(),
+                upstreams: vec!["alpha".into()],
                 services: vec!["fs-primary".into()],
                 ..Default::default()
             }],
@@ -947,6 +977,13 @@ mod tests {
                 .routes()
                 .is_empty()
         );
+        assert_eq!(
+            first.catalog().catalog().prompts().routes()[0]
+                .prompt
+                .description
+                .as_deref(),
+            Some("prompt metadata")
+        );
         assert!(first.id() != second.id());
         assert_ne!(first.safe_fingerprint(), second.safe_fingerprint());
         assert_eq!(
@@ -1017,6 +1054,47 @@ mod tests {
                     .unwrap(),
             "fresh context ids must not perturb the cursor shadow key"
         );
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("deploy-v2", Some("changed"), None)],
+        )
+        .await;
+        let changed_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .expect("prompt-only publication binding");
+        assert_eq!(
+            changed_core.catalog().catalog().prompts().routes()[0]
+                .native_name
+                .as_ref(),
+            "deploy-v2"
+        );
+        let changed_transport = TransportBoundAccessContext::new(
+            changed_core,
+            validate_transport_credential_binding("issuer", "request-jti", 101, now).unwrap(),
+            now,
+        )
+        .unwrap();
+        let changed_key = ProjectDiscoveryShadow::Bound(&changed_transport)
+            .snapshot_key(now)
+            .unwrap();
+        assert_eq!(snapshot_key.runtime, changed_key.runtime);
+        assert_eq!(snapshot_key.pool, changed_key.pool);
+        assert_eq!(snapshot_key.tools, changed_key.tools);
+        assert_eq!(snapshot_key.resources, changed_key.resources);
+        assert_eq!(
+            snapshot_key.resource_templates,
+            changed_key.resource_templates
+        );
+        assert_eq!(snapshot_key.services, changed_key.services);
+        assert_ne!(snapshot_key.prompts, changed_key.prompts);
+        assert!(snapshot_key != changed_key);
         let other_core = bind_access_context(
             &runtime,
             &manager,

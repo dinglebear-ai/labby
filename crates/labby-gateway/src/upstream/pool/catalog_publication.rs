@@ -1092,12 +1092,8 @@ impl UpstreamPool {
         self.catalog.read().await.published_resources.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) async fn insert_prompt_routes_for_tests(
-        &self,
-        upstream: &str,
-        prompts: Vec<Prompt>,
-    ) {
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn insert_prompt_routes_for_tests(&self, upstream: &str, prompts: Vec<Prompt>) {
         let mut catalog = self.catalog_write().await;
         if !catalog.contains_key(upstream) {
             catalog.insert(

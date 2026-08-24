@@ -13,7 +13,8 @@ use labby_gateway::gateway::ServiceRegistryPublicationGeneration;
 use labby_gateway::gateway::manager::{GatewayRuntimeConfigGeneration, PoolPublicationGeneration};
 #[cfg(feature = "gateway")]
 use labby_gateway::upstream::pool::{
-    ResourceCatalogGeneration, ResourceTemplateCatalogGeneration, ToolCatalogGeneration,
+    PromptCatalogGeneration, ResourceCatalogGeneration, ResourceTemplateCatalogGeneration,
+    ToolCatalogGeneration,
 };
 use rmcp::model::{Prompt, Resource, ResourceTemplate};
 use sha2::{Digest, Sha256};
@@ -33,6 +34,7 @@ pub(crate) struct ProjectShadowSnapshotKey {
     pub(crate) tools: ToolCatalogGeneration,
     pub(crate) resources: ResourceCatalogGeneration,
     pub(crate) resource_templates: ResourceTemplateCatalogGeneration,
+    pub(crate) prompts: PromptCatalogGeneration,
     pub(crate) services: ServiceRegistryPublicationGeneration,
 }
 
