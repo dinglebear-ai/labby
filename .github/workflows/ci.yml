@@ -605,7 +605,7 @@ jobs:
               --features gateway,proxy-testkit --all-targets --locked
           else
             cargo check -p labby --no-default-features \
-              --features "${{ matrix.slice }}" --all-targets --locked
+              --features ${{ matrix.slice }} --all-targets --locked
           fi
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         if: matrix.slice == 'gateway'
