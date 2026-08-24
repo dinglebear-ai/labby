@@ -127,6 +127,7 @@ pub use oauth_invalidation::OAuthSessionInvalidation;
 pub(crate) use prompts_get::ExactPromptCallError;
 pub use prompts_list::ListedUpstreamPrompt;
 pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate};
+pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
 pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};

@@ -39,6 +39,8 @@ pub(crate) mod provenance;
 pub mod registry;
 pub(crate) mod resource_errors;
 #[cfg(feature = "gateway")]
+pub(crate) mod resource_execution;
+#[cfg(feature = "gateway")]
 pub mod resource_proxy;
 pub mod resources;
 pub mod result_format;

@@ -211,6 +211,26 @@ impl BoundAccessContext {
                         && candidate.native_name.as_ref() == native_name
                 })
     }
+
+    pub(crate) fn allows_upstream_resource_pair(&self, upstream: &str, native_uri: &str) -> bool {
+        let route = self.route();
+        route.effective_loadout().expose_resources
+            && route
+                .effective_loadout()
+                .upstreams
+                .iter()
+                .any(|name| name == upstream)
+            && self
+                .catalog()
+                .catalog()
+                .resources()
+                .routes()
+                .iter()
+                .any(|candidate| {
+                    candidate.upstream_name.as_ref() == upstream
+                        && candidate.native_uri.as_ref() == native_uri
+                })
+    }
 }
 
 pub(crate) fn attach_project_access_observation(
@@ -381,26 +401,10 @@ impl ProjectDiscoveryShadow<'_> {
         if binding.validate_not_expired(now).is_err() {
             return None;
         }
-        let core = binding.core();
-        let route = core.route();
-        let published = core
-            .catalog()
-            .catalog()
-            .resources()
-            .routes()
-            .iter()
-            .any(|candidate| {
-                candidate.upstream_name.as_ref() == upstream
-                    && candidate.native_uri.as_ref() == native_uri
-            });
         Some(
-            published
-                && route.effective_loadout().expose_resources
-                && route
-                    .effective_loadout()
-                    .upstreams
-                    .iter()
-                    .any(|name| name == upstream),
+            binding
+                .core()
+                .allows_upstream_resource_pair(upstream, native_uri),
         )
     }
 

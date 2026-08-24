@@ -441,6 +441,10 @@ The Bound branch supports only the exact regular non-OAuth Prompt route publishe
 
 Add an unmounted pool-local kernel for regular non-OAuth Resource reads. It acquires the per-upstream permit before observing the target, uses one queue-plus-RPC deadline, and requires the exact current Resource publication generation/route plus connection/catalog incarnation before dispatch and before applying any result or health change. The immutable Resource publication is the authority for routability, proxying, exposure, non-UI classification, and source incarnation; the legacy `resource_upstreams` list is deliberately not consulted. Every returned text/blob URI is overwritten with the canonical gateway URI before the normalized response-size cap is enforced. Typed errors are redacted. Handler/manager/AssetUse mounting, OAuth, relay, UI/local/synthetic/Skills, and ResourceTemplate reads remain deferred.
 
+### Wave 46 / Milestone 0AX: AssetUse-bound exact regular Resource read seam
+
+Add an unmounted server-owned resolver/executor for regular non-OAuth Resources. A fresh `AssetUse` context uniquely resolves the exact canonical gateway URI against the coherent Project/Loadout Resource publication, rewrites only the outbound upstream request URI to its opaque native value, and rebinds the same Access/manager publication before exposing any result or error. The manager brackets Wave 45 outcome attribution with its exact pool-publication lease, so pool replacement or ABA cannot mutate current health or expose stale output. Generations remain observations rather than capabilities. This seam accepts trusted server-derived identity and protected-route facts but does not validate a transport token instance or expiry; a later handler mount must add that middleware boundary. Handlers, OAuth, relay, UI/local/synthetic/Skills, ResourceTemplates, wire mapping, and telemetry remain unchanged.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

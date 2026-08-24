@@ -1162,12 +1162,28 @@ impl UpstreamPool {
             .clone()
     }
 
-    #[cfg(test)]
-    pub(crate) async fn insert_resource_routes_for_tests(
-        &self,
-        upstream: &str,
-        resources: Vec<Resource>,
-    ) {
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn set_resource_last_error_for_tests(&self, upstream: &str, error: Option<String>) {
+        let mut catalog = self.catalog_write().await;
+        catalog
+            .get_mut(upstream)
+            .expect("test entry")
+            .resource_last_error = error;
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn resource_last_error_for_tests(&self, upstream: &str) -> Option<String> {
+        self.catalog
+            .read()
+            .await
+            .get(upstream)
+            .expect("test entry")
+            .resource_last_error
+            .clone()
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn insert_resource_routes_for_tests(&self, upstream: &str, resources: Vec<Resource>) {
         let mut catalog = self.catalog_write().await;
         if !catalog.contains_key(upstream) {
             catalog.insert(

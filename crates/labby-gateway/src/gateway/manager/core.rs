@@ -14,7 +14,9 @@ use labby_auth::upstream::manager::UpstreamOauthManager;
 use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
-use rmcp::model::{GetPromptRequestParams, GetPromptResult};
+use rmcp::model::{
+    GetPromptRequestParams, GetPromptResult, ReadResourceRequestParams, ReadResourceResult,
+};
 
 use crate::gateway::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use crate::gateway::config::{normalize_config, validate_config};
@@ -28,8 +30,8 @@ use crate::gateway::service_registry::{
 };
 use crate::gateway::types::CatalogChangeNotifier;
 use crate::upstream::pool::{
-    ExactPromptCallError, HeaderRecoveryMetricsStore, InProcessConnector, PromptCatalogGeneration,
-    UpstreamPool,
+    ExactPromptCallError, ExactResourceReadError, HeaderRecoveryMetricsStore, InProcessConnector,
+    PromptCatalogGeneration, ResourceCatalogGeneration, UpstreamPool,
 };
 
 use super::{GatewayManager, GatewayRuntimeHandle, PoolPublicationGeneration};
@@ -45,6 +47,21 @@ pub enum PublishedPromptCallError {
     Upstream,
     #[error("published prompt call timed out")]
     Timeout,
+}
+
+/// Redacted outcome of exact Resource publication freshness validation/read.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PublishedResourceReadError {
+    #[error("published resource target is unavailable")]
+    Unavailable,
+    #[error("published resource read queue is unavailable")]
+    QueueUnavailable,
+    #[error("published resource read failed")]
+    Upstream,
+    #[error("published resource read timed out")]
+    Timeout,
+    #[error("published resource response is too large")]
+    TooLarge,
 }
 
 // ── Gateway manager factory (A-H3) ────────────────────────────────────────────
@@ -463,6 +480,57 @@ impl GatewayManager {
             ExactPromptCallError::QueueUnavailable => PublishedPromptCallError::QueueUnavailable,
             ExactPromptCallError::Upstream => PublishedPromptCallError::Upstream,
             ExactPromptCallError::Timeout => PublishedPromptCallError::Timeout,
+        })
+    }
+
+    /// Read a caller-selected exact Resource target only while the manager
+    /// still publishes the caller's expected pool revision.
+    ///
+    /// Pool and Resource generations are observations, not capabilities. This
+    /// method validates publication/catalog/connection freshness but performs
+    /// no Project, route, Loadout, identity, or permission authorization.
+    pub async fn execute_published_resource_exact(
+        &self,
+        pool_generation: PoolPublicationGeneration,
+        resource_generation: ResourceCatalogGeneration,
+        upstream_name: &str,
+        native_uri: &str,
+        params: ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult, PublishedResourceReadError> {
+        let first = self.runtime.published_pool_snapshot();
+        if first.generation() != pool_generation {
+            return Err(PublishedResourceReadError::Unavailable);
+        }
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedResourceReadError::Unavailable);
+        };
+        let prepared = pool
+            .prepare_published_resource_exact(
+                upstream_name,
+                native_uri,
+                resource_generation,
+                params,
+            )
+            .await;
+        let applying_pool = Arc::clone(&pool);
+        let result = self
+            .runtime
+            .apply_to_exact_pool_publication(pool_generation, &pool, || async move {
+                match prepared {
+                    Ok(prepared) => applying_pool.apply_prepared_resource_exact(prepared).await,
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            .ok_or(PublishedResourceReadError::Unavailable)?;
+        result.map_err(|error| match error {
+            ExactResourceReadError::Unavailable => PublishedResourceReadError::Unavailable,
+            ExactResourceReadError::QueueUnavailable => {
+                PublishedResourceReadError::QueueUnavailable
+            }
+            ExactResourceReadError::Upstream => PublishedResourceReadError::Upstream,
+            ExactResourceReadError::Timeout => PublishedResourceReadError::Timeout,
+            ExactResourceReadError::TooLarge => PublishedResourceReadError::TooLarge,
         })
     }
 

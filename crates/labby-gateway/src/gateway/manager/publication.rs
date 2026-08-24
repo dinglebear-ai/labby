@@ -357,6 +357,28 @@ impl PublishedLoadoutResourceCatalogSnapshot {
     pub fn routes(&self) -> &[PublishedResourceRoute] {
         &self.routes
     }
+
+    /// Resolve a canonical gateway Resource URI only when exactly one route
+    /// constructs it. Ambiguous namespace shapes fail closed.
+    #[must_use]
+    pub fn unique_route_for_wire_uri(&self, wire_uri: &str) -> Option<&PublishedResourceRoute> {
+        unique_resource_route_for_wire_uri(&self.routes, wire_uri)
+    }
+}
+
+fn unique_resource_route_for_wire_uri<'a>(
+    routes: &'a [PublishedResourceRoute],
+    wire_uri: &str,
+) -> Option<&'a PublishedResourceRoute> {
+    let suffix = wire_uri.strip_prefix("lab://upstream/")?;
+    let mut matches = routes.iter().filter(|route| {
+        suffix
+            .strip_prefix(route.upstream_name.as_ref())
+            .and_then(|native| native.strip_prefix('/'))
+            .is_some_and(|native| native == route.native_uri.as_ref())
+    });
+    let route = matches.next()?;
+    matches.next().is_none().then_some(route)
 }
 
 /// Immutable observational ResourceTemplate projection for one running Loadout.
@@ -1475,12 +1497,15 @@ fn project_route_snapshot(
 }
 
 #[cfg(test)]
-mod prompt_route_match_tests {
+mod canonical_route_match_tests {
     use std::sync::Arc;
 
-    use rmcp::model::Prompt;
+    use rmcp::model::{Prompt, Resource};
 
-    use super::{PublishedPromptRoute, unique_prompt_route_for_wire_name};
+    use super::{
+        PublishedPromptRoute, PublishedResourceRoute, unique_prompt_route_for_wire_name,
+        unique_resource_route_for_wire_uri,
+    };
 
     #[test]
     fn canonical_prompt_wire_name_rejects_ambiguous_decompositions() {
@@ -1504,6 +1529,34 @@ mod prompt_route_match_tests {
                 .native_name
                 .as_ref(),
             "bravo/name"
+        );
+    }
+
+    #[test]
+    fn canonical_resource_wire_uri_rejects_ambiguous_decompositions() {
+        let routes = vec![
+            PublishedResourceRoute {
+                upstream_name: Arc::from("alpha"),
+                native_uri: Arc::from("bravo/file:///one"),
+                resource: Resource::new("bravo/file:///one", "one"),
+            },
+            PublishedResourceRoute {
+                upstream_name: Arc::from("alpha/bravo"),
+                native_uri: Arc::from("file:///one"),
+                resource: Resource::new("file:///one", "one"),
+            },
+        ];
+
+        let wire = "lab://upstream/alpha/bravo/file:///one";
+        assert!(unique_resource_route_for_wire_uri(&routes, wire).is_none());
+        let reversed = routes.iter().cloned().rev().collect::<Vec<_>>();
+        assert!(unique_resource_route_for_wire_uri(&reversed, wire).is_none());
+        assert_eq!(
+            unique_resource_route_for_wire_uri(&routes[..1], wire)
+                .unwrap()
+                .native_uri
+                .as_ref(),
+            "bravo/file:///one"
         );
     }
 }
