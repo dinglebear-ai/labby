@@ -49,6 +49,16 @@ pub struct ListedUpstreamResource {
     pub resource: Resource,
 }
 
+/// One template returned by the regular non-OAuth listing path with exact
+/// pre-rewrite provenance. Native UI templates may be present. This is
+/// observational metadata, not read authority or a grant.
+#[derive(Clone, Debug)]
+pub struct ListedUpstreamResourceTemplate {
+    pub upstream_name: String,
+    pub native_uri_template: String,
+    pub template: ResourceTemplate,
+}
+
 fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
     request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
 }
@@ -501,6 +511,17 @@ impl UpstreamPool {
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<ResourceTemplate> {
+        self.list_upstream_resource_templates_with_provenance_allowed(allowed)
+            .await
+            .into_iter()
+            .map(|listed| listed.template)
+            .collect()
+    }
+
+    pub async fn list_upstream_resource_templates_with_provenance_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ListedUpstreamResourceTemplate> {
         let observed_peers = self.observe_routable_resource_connections(allowed).await;
         if observed_peers.is_empty() {
             return Vec::new();
@@ -549,8 +570,13 @@ impl UpstreamPool {
                             );
                             break;
                         }
+                        let native_uri_template = template.uri_template.clone();
                         rewrite_resource_template(&mut template, &name);
-                        templates.push(template);
+                        templates.push(ListedUpstreamResourceTemplate {
+                            upstream_name: name.clone(),
+                            native_uri_template,
+                            template,
+                        });
                     }
                 }
                 Err(catalog_pagination::CatalogPaginationError::Service(error))
@@ -1097,10 +1123,23 @@ mod tests {
         let calls = Arc::clone(&server.calls);
         let pool = catalog_pool_with_server("paged", server).await;
 
-        let templates = pool.list_upstream_resource_templates_allowed(None).await;
+        let templates = pool
+            .list_upstream_resource_templates_with_provenance_allowed(None)
+            .await;
+        assert_eq!(templates[0].upstream_name, "paged");
+        assert_eq!(templates[0].native_uri_template, "file:///{path}");
+        assert_eq!(
+            templates[0].template.uri_template,
+            "lab://upstream/paged/file:///{path}"
+        );
         let rows = templates
             .iter()
-            .map(|template| (template.name.as_str(), template.uri_template.as_str()))
+            .map(|listed| {
+                (
+                    listed.template.name.as_str(),
+                    listed.template.uri_template.as_str(),
+                )
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(

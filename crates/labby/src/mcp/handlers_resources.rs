@@ -57,7 +57,9 @@ use crate::mcp::pagination::{
     CatalogSnapshotCollector, PageCollector, error_kind as pagination_error_kind, invalid_cursor,
     next_catalog_snapshot_revision,
 };
-use crate::mcp::runtime::{ResourceProvenance, catalog_snapshot_audience};
+use crate::mcp::runtime::{
+    ResourceProvenance, ResourceTemplateProvenance, catalog_snapshot_audience,
+};
 use crate::mcp::server::LabMcpServer;
 
 /// In-band error-contract discovery: the published JSON Schema for the
@@ -136,6 +138,33 @@ fn classify_regular_upstream_resources_with(
         }
     }
     (checked, would_suppress)
+}
+
+#[cfg(feature = "gateway")]
+fn classify_regular_upstream_resource_templates(
+    shadow: &ProjectDiscoveryShadow<'_>,
+    provenance: &[ResourceTemplateProvenance],
+) -> (usize, usize) {
+    let now = SystemTime::now();
+    classify_regular_upstream_resource_templates_with(provenance, |upstream, template| {
+        shadow.allows_upstream_resource_template(upstream, template, now)
+    })
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn classify_regular_upstream_resource_templates_with(
+    provenance: &[ResourceTemplateProvenance],
+    mut allows: impl FnMut(&str, &str) -> Option<bool>,
+) -> (usize, usize) {
+    provenance.iter().fold((0, 0), |(checked, denied), row| {
+        if is_ui_resource_uri(&row.native_uri_template) {
+            return (checked, denied);
+        }
+        match allows(&row.upstream, &row.native_uri_template) {
+            Some(allowed) => (checked + 1, denied + usize::from(!allowed)),
+            None => (checked, denied),
+        }
+    })
 }
 
 #[cfg(any(feature = "gateway", test))]
@@ -1067,6 +1096,8 @@ impl LabMcpServer {
         }
         let auth = auth_context_from_extensions(&context.extensions);
         let snapshot_audience = catalog_snapshot_audience(auth);
+        #[cfg(feature = "gateway")]
+        let project_shadow = project_discovery_shadow(&context.extensions, SystemTime::now());
         let mut page_collector = PageCollector::new(request)?;
 
         if let Some(revision) = page_collector.expected_revision().map(str::to_owned) {
@@ -1074,7 +1105,7 @@ impl LabMcpServer {
                 .route_runtime
                 .resource_template_snapshot(&snapshot_audience, &revision)
                 .await;
-            let Some(snapshot) = snapshot else {
+            let Some((snapshot, provenance, stored_shadow_key)) = snapshot else {
                 return Err(invalid_cursor(
                     "resource-template snapshot expired or is unavailable; restart from the first page",
                 ));
@@ -1087,6 +1118,29 @@ impl LabMcpServer {
                 }
             }
             let (templates, next_cursor) = page_collector.finish()?;
+            #[cfg(feature = "gateway")]
+            let (mut shadow_checked, mut shadow_would_suppress) =
+                classify_regular_upstream_resource_templates(&project_shadow, &provenance);
+            #[cfg(feature = "gateway")]
+            let shadow_key_matches = stored_shadow_key
+                .as_ref()
+                .zip(project_shadow.snapshot_key(SystemTime::now()).as_ref())
+                .is_some_and(|(stored, current)| stored == current);
+            #[cfg(feature = "gateway")]
+            let current_shadow_state = project_shadow.state_label_at(SystemTime::now());
+            #[cfg(feature = "gateway")]
+            let project_shadow_state = if current_shadow_state == "bound" && !shadow_key_matches {
+                "unavailable"
+            } else {
+                current_shadow_state
+            };
+            #[cfg(feature = "gateway")]
+            if project_shadow_state != "bound" {
+                shadow_checked = 0;
+                shadow_would_suppress = 0;
+            }
+            #[cfg(not(feature = "gateway"))]
+            let (project_shadow_state, shadow_checked, shadow_would_suppress) = ("legacy", 0, 0);
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 surface = "mcp",
@@ -1096,6 +1150,9 @@ impl LabMcpServer {
                 template_count = templates.len(),
                 catalog_template_count = snapshot.len(),
                 catalog_source = "snapshot",
+                project_shadow_state,
+                project_shadow_checked_template_count = shadow_checked,
+                project_shadow_would_suppress_template_count = shadow_would_suppress,
                 has_next_cursor = next_cursor.is_some(),
                 elapsed_ms,
                 "resource template list ok"
@@ -1123,12 +1180,20 @@ impl LabMcpServer {
 
         let mut templates = CatalogSnapshotCollector::new(page_collector);
         #[cfg(feature = "gateway")]
+        let mut regular_template_provenance = Vec::new();
+        #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
-            for template in pool
-                .list_upstream_resource_templates_allowed(self.route_scope.allowed_upstreams())
+            for listed in pool
+                .list_upstream_resource_templates_with_provenance_allowed(
+                    self.route_scope.allowed_upstreams(),
+                )
                 .await
             {
-                templates.accept(template);
+                regular_template_provenance.push(ResourceTemplateProvenance {
+                    upstream: listed.upstream_name,
+                    native_uri_template: listed.native_uri_template,
+                });
+                templates.accept(listed.template);
             }
         }
 
@@ -1136,12 +1201,35 @@ impl LabMcpServer {
         templates.bind_revision(&revision)?;
         let (templates, next_cursor, complete_catalog) = templates.finish()?;
         let catalog_template_count = complete_catalog.len();
+        #[cfg(feature = "gateway")]
+        let (mut shadow_checked, mut shadow_would_suppress) =
+            classify_regular_upstream_resource_templates(
+                &project_shadow,
+                &regular_template_provenance,
+            );
+        #[cfg(feature = "gateway")]
+        let project_shadow_state = project_shadow.state_label_at(SystemTime::now());
+        #[cfg(feature = "gateway")]
+        if project_shadow_state != "bound" {
+            shadow_checked = 0;
+            shadow_would_suppress = 0;
+        }
+        #[cfg(not(feature = "gateway"))]
+        let (project_shadow_state, shadow_checked, shadow_would_suppress) = ("legacy", 0, 0);
+        #[cfg(not(feature = "gateway"))]
+        let regular_template_provenance = Vec::new();
         if next_cursor.is_some() {
+            #[cfg(feature = "gateway")]
+            let stored_shadow_key = project_shadow.snapshot_key(SystemTime::now());
+            #[cfg(not(feature = "gateway"))]
+            let stored_shadow_key = None;
             self.route_runtime
                 .store_resource_template_snapshot(
                     snapshot_audience,
                     revision,
                     Arc::from(complete_catalog),
+                    Arc::from(regular_template_provenance),
+                    stored_shadow_key,
                 )
                 .await;
         }
@@ -1155,6 +1243,9 @@ impl LabMcpServer {
             template_count = templates.len(),
             catalog_template_count,
             catalog_source = "live_snapshot",
+            project_shadow_state,
+            project_shadow_checked_template_count = shadow_checked,
+            project_shadow_would_suppress_template_count = shadow_would_suppress,
             has_next_cursor = next_cursor.is_some(),
             elapsed_ms,
             "resource template list ok"
@@ -2381,6 +2472,30 @@ mod tests {
             }),
             (2, 1),
             "only exact built-in action resources are classified"
+        );
+    }
+
+    #[test]
+    fn regular_template_shadow_uses_exact_provenance_and_skips_ui() {
+        let candidates = [
+            ResourceTemplateProvenance {
+                upstream: "alpha".into(),
+                native_uri_template: "file:///{id}".into(),
+            },
+            ResourceTemplateProvenance {
+                upstream: "bravo".into(),
+                native_uri_template: "file:///{id}".into(),
+            },
+            ResourceTemplateProvenance {
+                upstream: "alpha".into(),
+                native_uri_template: "UI://widget/{id}".into(),
+            },
+        ];
+        assert_eq!(
+            classify_regular_upstream_resource_templates_with(&candidates, |upstream, template| {
+                Some(upstream == "alpha" && template == "file:///{id}")
+            }),
+            (2, 1)
         );
     }
 
@@ -3799,6 +3914,62 @@ for (const value of [
             serde_json::to_vec(&second).unwrap(),
             serde_json::to_vec(&unavailable).unwrap(),
             "Project shadow state must not mutate a retained resources/list page"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_resource_templates_resumes_provenance_snapshot_without_refanout() {
+        let server = code_mode_server().await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+        let audience = catalog_snapshot_audience(auth_context_from_extensions(&context.extensions));
+        let templates = (0..101)
+            .map(|index| ResourceTemplate::new(format!("file:///{index}/{{id}}"), "row"))
+            .collect::<Vec<_>>();
+        let provenance = templates
+            .iter()
+            .map(|template| ResourceTemplateProvenance {
+                upstream: "alpha".into(),
+                native_uri_template: template.uri_template.clone(),
+            })
+            .collect::<Vec<_>>();
+        running
+            .service()
+            .route_runtime
+            .store_resource_template_snapshot(
+                audience,
+                "template-revision".into(),
+                Arc::from(templates),
+                Arc::from(provenance),
+                None,
+            )
+            .await;
+        let request =
+            PaginatedRequestParams::default().with_cursor(Some("v1:100:template-revision".into()));
+        let legacy = running
+            .service()
+            .list_resource_templates_impl(Some(request.clone()), context)
+            .await
+            .expect("retained template page");
+        let mut unavailable_context = scoped_context(running.peer().clone(), &["lab:read"]);
+        unavailable_context
+            .extensions
+            .get_mut::<axum::http::request::Parts>()
+            .expect("HTTP parts")
+            .extensions
+            .insert(crate::mcp::bound_access::ProjectAccessObservation::Unavailable);
+        let unavailable = running
+            .service()
+            .list_resource_templates_impl(Some(request), unavailable_context)
+            .await
+            .expect("unavailable shadow retains page");
+        assert_eq!(legacy.resource_templates.len(), 1);
+        assert_eq!(
+            serde_json::to_vec(&legacy).unwrap(),
+            serde_json::to_vec(&unavailable).unwrap()
         );
     }
 

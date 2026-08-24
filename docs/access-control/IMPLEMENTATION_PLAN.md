@@ -383,6 +383,12 @@ The unified manager snapshot reads tool, regular Resource, and regular ResourceT
 
 The existing authorization-first Project composer and BoundAccessContext kernel inherit the template child mechanically through nested ownership and equality. Cursor shadow identity also carries the template generation, preventing a cached Project snapshot from crossing a template-only publication change. No discovery handler, read path, transport authorization, or enforcement boundary consumes templates yet.
 
+### Wave 36 / Milestone 0AN: Project-bound regular ResourceTemplate discovery shadow
+
+`resources/templates/list` retains exact `(upstream, native_uri_template)` provenance for regular non-OAuth rows and classifies it against the Bound unified template publication plus the protected route's `expose_resources` and upstream narrowing. Continuation snapshots retain provenance and the Q-aware stable Project key; mismatch or expiry reports unavailable/zero shadow telemetry without refanout. UI templates are excluded case-insensitively from classification.
+
+Wire templates, metadata, ordering, pagination revisions/cursors, notifications, and legacy behavior remain unchanged. This is shadow observation only: no filtering, template expansion/read authority, OAuth/UI/local/synthetic classification, or enforcement is added.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

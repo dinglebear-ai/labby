@@ -337,6 +337,40 @@ impl ProjectDiscoveryShadow<'_> {
                     .any(|name| name == upstream),
         )
     }
+
+    pub(crate) fn allows_upstream_resource_template(
+        &self,
+        upstream: &str,
+        native_uri_template: &str,
+        now: SystemTime,
+    ) -> Option<bool> {
+        let Self::Bound(binding) = self else {
+            return None;
+        };
+        if binding.validate_not_expired(now).is_err() {
+            return None;
+        }
+        let core = binding.core();
+        let route = core.route();
+        Some(
+            route.effective_loadout().expose_resources
+                && route
+                    .effective_loadout()
+                    .upstreams
+                    .iter()
+                    .any(|name| name == upstream)
+                && core
+                    .catalog()
+                    .catalog()
+                    .resource_templates()
+                    .routes()
+                    .iter()
+                    .any(|candidate| {
+                        candidate.upstream_name.as_ref() == upstream
+                            && candidate.native_uri_template.as_ref() == native_uri_template
+                    }),
+        )
+    }
 }
 
 pub(crate) fn project_discovery_shadow(
@@ -1132,6 +1166,136 @@ mod tests {
         assert!(mismatched_logs.contains("project_shadow_state=\"unavailable\""));
         assert!(mismatched_logs.contains("project_shadow_checked_resource_count=0"));
         assert!(mismatched_logs.contains("project_shadow_would_suppress_resource_count=0"));
+
+        let template_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let template_transport = TransportBoundAccessContext::new(
+            template_core,
+            validate_transport_credential_binding(
+                "issuer",
+                "cursor-request-jti",
+                cursor_expiry,
+                cursor_now,
+            )
+            .unwrap(),
+            cursor_now,
+        )
+        .unwrap();
+        let template_key = ProjectDiscoveryShadow::Bound(&template_transport)
+            .snapshot_key(cursor_now)
+            .unwrap();
+        let template_other_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let template_other_transport = TransportBoundAccessContext::new(
+            template_other_core,
+            validate_transport_credential_binding(
+                "issuer",
+                "cursor-other-jti",
+                cursor_expiry,
+                cursor_now,
+            )
+            .unwrap(),
+            cursor_now,
+        )
+        .unwrap();
+        let template_items = (0..101)
+            .map(|index| {
+                rmcp::model::ResourceTemplate::new(
+                    format!("file:///{index}/{{id}}"),
+                    index.to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        snapshot_running
+            .service()
+            .route_runtime
+            .store_resource_template_snapshot(
+                crate::mcp::runtime::catalog_snapshot_audience(None),
+                "wave36".into(),
+                Arc::from(template_items),
+                Arc::from([crate::mcp::runtime::ResourceTemplateProvenance {
+                    upstream: "alpha".into(),
+                    native_uri_template: "file:///100/{id}".into(),
+                }]),
+                Some(template_key),
+            )
+            .await;
+        let template_cursor = rmcp::model::PaginatedRequestParams::default()
+            .with_cursor(Some("v1:100:wave36".into()));
+        let template_matching_logs = CapturedLogs::default();
+        let template_matching_subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(template_matching_logs.clone())
+            .finish();
+        let template_matching = snapshot_running
+            .service()
+            .list_resource_templates_impl(
+                Some(template_cursor.clone()),
+                project_shadow_context(
+                    snapshot_running.peer().clone(),
+                    Some(ProjectAccessObservation::Bound(Arc::new(
+                        template_transport,
+                    ))),
+                ),
+            )
+            .with_subscriber(tracing::Dispatch::new(template_matching_subscriber))
+            .await
+            .unwrap();
+        let template_matching_logs =
+            String::from_utf8(template_matching_logs.0.lock().unwrap().clone()).unwrap();
+        let template_mismatched_logs = CapturedLogs::default();
+        let template_mismatched_subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(template_mismatched_logs.clone())
+            .finish();
+        let template_mismatched = snapshot_running
+            .service()
+            .list_resource_templates_impl(
+                Some(template_cursor),
+                project_shadow_context(
+                    snapshot_running.peer().clone(),
+                    Some(ProjectAccessObservation::Bound(Arc::new(
+                        template_other_transport,
+                    ))),
+                ),
+            )
+            .with_subscriber(tracing::Dispatch::new(template_mismatched_subscriber))
+            .await
+            .unwrap();
+        let template_mismatched_logs =
+            String::from_utf8(template_mismatched_logs.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&template_matching).unwrap(),
+            serde_json::to_vec(&template_mismatched).unwrap()
+        );
+        assert!(template_matching_logs.contains("project_shadow_state=\"bound\""));
+        assert!(template_matching_logs.contains("project_shadow_checked_template_count=1"));
+        assert!(template_matching_logs.contains("project_shadow_would_suppress_template_count=1"));
+        assert!(template_mismatched_logs.contains("project_shadow_state=\"unavailable\""));
+        assert!(template_mismatched_logs.contains("project_shadow_checked_template_count=0"));
+        assert!(
+            template_mismatched_logs.contains("project_shadow_would_suppress_template_count=0")
+        );
         assert_eq!(shadow.allows_builtin_service("fs", now), Some(true));
         assert_eq!(shadow.allows_builtin_service("setup", now), Some(false));
         assert_eq!(

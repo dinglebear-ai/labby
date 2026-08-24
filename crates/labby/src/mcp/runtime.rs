@@ -45,6 +45,7 @@ struct CatalogSnapshot<T> {
     revision: String,
     items: Arc<[T]>,
     resource_provenance: Arc<[ResourceProvenance]>,
+    resource_template_provenance: Arc<[ResourceTemplateProvenance]>,
     project_shadow_key: Option<ProjectShadowSnapshotKey>,
 }
 
@@ -52,6 +53,12 @@ struct CatalogSnapshot<T> {
 pub(crate) struct ResourceProvenance {
     pub(crate) upstream: String,
     pub(crate) native_uri: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct ResourceTemplateProvenance {
+    pub(crate) upstream: String,
+    pub(crate) native_uri_template: String,
 }
 
 struct CatalogSnapshotStore<T> {
@@ -99,6 +106,35 @@ impl<T> CatalogSnapshotStore<T> {
             revision,
             items,
             resource_provenance,
+            resource_template_provenance: Arc::from([]),
+            project_shadow_key,
+        });
+        while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
+            self.entries.pop_front();
+        }
+    }
+
+    fn insert_with_template_provenance(
+        &mut self,
+        audience: String,
+        revision: String,
+        items: Arc<[T]>,
+        resource_template_provenance: Arc<[ResourceTemplateProvenance]>,
+        project_shadow_key: Option<ProjectShadowSnapshotKey>,
+    ) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push_back(CatalogSnapshot {
+            audience,
+            revision,
+            items,
+            resource_provenance: Arc::from([]),
+            resource_template_provenance,
             project_shadow_key,
         });
         while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
@@ -166,8 +202,24 @@ impl McpRouteRuntime {
         &self,
         audience: &str,
         revision: &str,
-    ) -> Option<Arc<[ResourceTemplate]>> {
-        self.resource_templates.read().await.get(audience, revision)
+    ) -> Option<(
+        Arc<[ResourceTemplate]>,
+        Arc<[ResourceTemplateProvenance]>,
+        Option<ProjectShadowSnapshotKey>,
+    )> {
+        let templates = self.resource_templates.read().await;
+        templates
+            .entries
+            .iter()
+            .rev()
+            .find(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
+            .map(|snapshot| {
+                (
+                    Arc::clone(&snapshot.items),
+                    Arc::clone(&snapshot.resource_template_provenance),
+                    snapshot.project_shadow_key.clone(),
+                )
+            })
     }
 
     pub(crate) async fn store_resource_template_snapshot(
@@ -175,11 +227,19 @@ impl McpRouteRuntime {
         audience: String,
         revision: String,
         templates: Arc<[ResourceTemplate]>,
+        provenance: Arc<[ResourceTemplateProvenance]>,
+        project_shadow_key: Option<ProjectShadowSnapshotKey>,
     ) {
         self.resource_templates
             .write()
             .await
-            .insert(audience, revision, templates);
+            .insert_with_template_provenance(
+                audience,
+                revision,
+                templates,
+                provenance,
+                project_shadow_key,
+            );
     }
 
     pub(crate) async fn prompt_snapshot(
