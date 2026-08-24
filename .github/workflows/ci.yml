@@ -860,6 +860,11 @@ jobs:
           install_args: cargo:cargo-nextest
       - name: Warm normal Linux test targets
         run: cargo build -p labby --all-features --lib --bins --locked
+      - name: Warm gateway lib-test harness
+        # Keep this large harness from linking concurrently with Labby's test
+        # targets during nextest discovery; that overlap exceeds the runner's
+        # memory ceiling even though either harness fits on its own.
+        run: cargo test -p labby-gateway --all-features --lib --no-run --locked
       - run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()

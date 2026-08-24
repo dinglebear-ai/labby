@@ -771,7 +771,7 @@ async fn add_server_app_is_hidden_without_gateway_manager() {
 }
 
 #[tokio::test]
-async fn hidden_add_server_synthetic_tool_does_not_shadow_upstream_tool() {
+async fn hidden_add_server_name_is_reserved_from_discovery_but_legacy_call_still_routes() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let upstream_tool = fixture_upstream_tool(&upstream_name, ADD_SERVER_TOOL_NAME, None);
     let pool = Arc::new(UpstreamPool::new());
@@ -805,8 +805,8 @@ async fn hidden_add_server_synthetic_tool_does_not_shadow_upstream_tool() {
         tools
             .tools
             .iter()
-            .any(|tool| tool.name.as_ref() == ADD_SERVER_TOOL_NAME),
-        "the upstream tool should remain advertised when the synthetic app is hidden"
+            .all(|tool| tool.name.as_ref() != ADD_SERVER_TOOL_NAME),
+        "Labby-owned names stay conservatively reserved even when their synthetic app is hidden"
     );
 
     let result = running
@@ -818,7 +818,7 @@ async fn hidden_add_server_synthetic_tool_does_not_shadow_upstream_tool() {
     let text = result.content[0].as_text().expect("text").text.as_str();
     assert!(
         text.contains("upstream_error") && !text.contains("lab:admin"),
-        "the call should reach normal upstream routing: {text}"
+        "Legacy calls retain their existing upstream fallback even though discovery is conservative: {text}"
     );
 }
 
