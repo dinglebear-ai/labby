@@ -1683,6 +1683,7 @@ mod tests {
         assert!(prompt_mismatched_logs.contains("project_shadow_state=\"unavailable\""));
         assert!(prompt_mismatched_logs.contains("project_shadow_checked_prompt_count=0"));
         assert!(prompt_mismatched_logs.contains("project_shadow_would_suppress_prompt_count=0"));
+        #[cfg(feature = "fs")]
         assert_eq!(
             shadow.allows_builtin_service("fs", now),
             Some(true),
@@ -1698,70 +1699,77 @@ mod tests {
                 .map(|service| service.name())
                 .collect::<Vec<_>>()
         );
+        #[cfg(not(feature = "fs"))]
+        assert_eq!(shadow.allows_builtin_service("fs", now), Some(false));
         assert_eq!(shadow.allows_builtin_service("setup", now), Some(false));
-        let registry = crate::registry::build_default_registry();
-        let fs_service = registry.service("fs").expect("fs registry service");
-        assert_eq!(
-            shadow.allows_builtin_service_descriptor(fs_service, now),
-            Some(true)
-        );
-        let changed_fs = RegisteredService {
-            name: fs_service.name,
-            description: "description changed after publication",
-            category: fs_service.category,
-            kind: fs_service.kind,
-            status: fs_service.status,
-            actions: fs_service.actions,
-            dispatch: fs_service.dispatch,
-        };
-        assert_eq!(
-            shadow.allows_builtin_service_descriptor(&changed_fs, now),
-            Some(false),
-            "live service description must not drift from the immutable Bound descriptor"
-        );
-        let service_with_actions =
-            |actions: &'static [labby_primitives::action::ActionSpec]| RegisteredService {
-                description: fs_service.description,
-                actions,
-                ..changed_fs
-            };
-        let mut reordered = fs_service.actions.to_vec();
-        reordered.reverse();
-        let reordered = Box::leak(reordered.into_boxed_slice());
-        assert_eq!(
-            shadow.allows_builtin_service_descriptor(&service_with_actions(reordered), now),
-            Some(true),
-            "canonical action order must not depend on live registry insertion order"
-        );
-        let mutate_first = |mutate: fn(&mut labby_primitives::action::ActionSpec)| {
-            let mut actions = fs_service.actions.to_vec();
-            mutate(&mut actions[0]);
-            let leaked: &'static mut [labby_primitives::action::ActionSpec] =
-                Box::leak(actions.into_boxed_slice());
-            &*leaked
-        };
-        let changed_description = mutate_first(|action| action.description = "changed");
-        let changed_destructive = mutate_first(|action| action.destructive = !action.destructive);
-        let changed_admin = mutate_first(|action| action.requires_admin = !action.requires_admin);
-        for (label, actions) in [
-            ("description", changed_description),
-            ("destructive", changed_destructive),
-            ("requires_admin", changed_admin),
-        ] {
+        #[cfg(feature = "fs")]
+        {
+            let registry = crate::registry::build_default_registry();
+            let fs_service = registry.service("fs").expect("fs registry service");
             assert_eq!(
-                shadow.allows_builtin_service_descriptor(&service_with_actions(actions), now),
+                shadow.allows_builtin_service_descriptor(fs_service, now),
+                Some(true)
+            );
+            let changed_fs = RegisteredService {
+                name: fs_service.name,
+                description: "description changed after publication",
+                category: fs_service.category,
+                kind: fs_service.kind,
+                status: fs_service.status,
+                actions: fs_service.actions,
+                dispatch: fs_service.dispatch,
+            };
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(&changed_fs, now),
                 Some(false),
-                "same-name/same-count {label} drift must be rejected"
+                "live service description must not drift from the immutable Bound descriptor"
+            );
+            let service_with_actions =
+                |actions: &'static [labby_primitives::action::ActionSpec]| RegisteredService {
+                    description: fs_service.description,
+                    actions,
+                    ..changed_fs
+                };
+            let mut reordered = fs_service.actions.to_vec();
+            reordered.reverse();
+            let reordered = Box::leak(reordered.into_boxed_slice());
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(&service_with_actions(reordered), now),
+                Some(true),
+                "canonical action order must not depend on live registry insertion order"
+            );
+            let mutate_first = |mutate: fn(&mut labby_primitives::action::ActionSpec)| {
+                let mut actions = fs_service.actions.to_vec();
+                mutate(&mut actions[0]);
+                let leaked: &'static mut [labby_primitives::action::ActionSpec] =
+                    Box::leak(actions.into_boxed_slice());
+                &*leaked
+            };
+            let changed_description = mutate_first(|action| action.description = "changed");
+            let changed_destructive =
+                mutate_first(|action| action.destructive = !action.destructive);
+            let changed_admin =
+                mutate_first(|action| action.requires_admin = !action.requires_admin);
+            for (label, actions) in [
+                ("description", changed_description),
+                ("destructive", changed_destructive),
+                ("requires_admin", changed_admin),
+            ] {
+                assert_eq!(
+                    shadow.allows_builtin_service_descriptor(&service_with_actions(actions), now),
+                    Some(false),
+                    "same-name/same-count {label} drift must be rejected"
+                );
+            }
+            let mut changed_name = fs_service.actions.to_vec();
+            changed_name[0].name = "changed.action";
+            let changed_actions = service_with_actions(Box::leak(changed_name.into_boxed_slice()));
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(&changed_actions, now),
+                Some(false),
+                "live action metadata must not widen the immutable Bound service descriptor"
             );
         }
-        let mut changed_name = fs_service.actions.to_vec();
-        changed_name[0].name = "changed.action";
-        let changed_actions = service_with_actions(Box::leak(changed_name.into_boxed_slice()));
-        assert_eq!(
-            shadow.allows_builtin_service_descriptor(&changed_actions, now),
-            Some(false),
-            "live action metadata must not widen the immutable Bound service descriptor"
-        );
         assert_eq!(
             shadow.allows_upstream_tool("unpublished", "missing", now),
             Some(false)
