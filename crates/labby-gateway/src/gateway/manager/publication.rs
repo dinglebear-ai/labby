@@ -8,9 +8,11 @@ use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, ProtectedMcpRouteTa
 
 use crate::gateway::runtime::{PoolPublicationGeneration, PublishedPoolSnapshot};
 use crate::upstream::pool::{
-    PublishedResourceCatalogSnapshot, PublishedResourceRoute, PublishedToolCatalogSnapshot,
-    PublishedToolRoute, ResourceCatalogGeneration, ResourceCatalogPublicationError,
-    ToolCatalogGeneration, ToolCatalogPublicationError,
+    PublishedResourceCatalogSnapshot, PublishedResourceRoute,
+    PublishedResourceTemplateCatalogSnapshot, PublishedResourceTemplateRoute,
+    PublishedToolCatalogSnapshot, PublishedToolRoute, ResourceCatalogGeneration,
+    ResourceCatalogPublicationError, ResourceTemplateCatalogGeneration,
+    ResourceTemplateCatalogPublicationError, ToolCatalogGeneration, ToolCatalogPublicationError,
 };
 
 use super::GatewayManager;
@@ -83,6 +85,26 @@ impl std::fmt::Display for LoadoutResourceCatalogPublicationError {
     }
 }
 impl std::error::Error for LoadoutResourceCatalogPublicationError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutResourceTemplateCatalogPublicationError {
+    MissingLoadout,
+    MissingPool,
+    CatalogUnavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for LoadoutResourceTemplateCatalogPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingLoadout => "runtime Loadout is unavailable",
+            Self::MissingPool => "runtime upstream pool is unavailable",
+            Self::CatalogUnavailable => "runtime resource template catalog is unavailable",
+            Self::Unstable => "runtime resource template catalog changed during observation",
+        })
+    }
+}
+impl std::error::Error for LoadoutResourceTemplateCatalogPublicationError {}
 
 /// A fail-closed reason that a coherent Loadout built-in service projection
 /// could not be observed.
@@ -312,6 +334,34 @@ impl PublishedLoadoutResourceCatalogSnapshot {
     }
     #[must_use]
     pub fn routes(&self) -> &[PublishedResourceRoute] {
+        &self.routes
+    }
+}
+
+/// Immutable observational ResourceTemplate projection for one running Loadout.
+/// This is unmounted and is neither read authority nor an authorization grant.
+pub struct PublishedLoadoutResourceTemplateCatalogSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    resource_template_catalog_generation: ResourceTemplateCatalogGeneration,
+    routes: std::sync::Arc<[PublishedResourceTemplateRoute]>,
+}
+
+impl PublishedLoadoutResourceTemplateCatalogSnapshot {
+    #[must_use]
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+    #[must_use]
+    pub fn pool_publication_generation(&self) -> PoolPublicationGeneration {
+        self.pool_publication_generation
+    }
+    #[must_use]
+    pub fn resource_template_catalog_generation(&self) -> ResourceTemplateCatalogGeneration {
+        self.resource_template_catalog_generation
+    }
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedResourceTemplateRoute] {
         &self.routes
     }
 }
@@ -817,6 +867,70 @@ impl GatewayManager {
         Err(LoadoutResourceCatalogPublicationError::Unstable)
     }
 
+    pub async fn published_loadout_resource_template_catalog_snapshot(
+        &self,
+        name: &str,
+    ) -> Result<
+        PublishedLoadoutResourceTemplateCatalogSnapshot,
+        LoadoutResourceTemplateCatalogPublicationError,
+    > {
+        self.compose_loadout_resource_template_catalog(name, |_: usize| ready(()))
+            .await
+    }
+
+    pub(super) async fn compose_loadout_resource_template_catalog<F, Fut>(
+        &self,
+        name: &str,
+        mut after_first_catalog: F,
+    ) -> Result<
+        PublishedLoadoutResourceTemplateCatalogSnapshot,
+        LoadoutResourceTemplateCatalogPublicationError,
+    >
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first_gateway = self.manager_publication_observation(name).await;
+            let first_catalog = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_template_catalog().await),
+                None => None,
+            };
+            after_first_catalog(attempt).await;
+            let second_gateway = self.manager_publication_observation(name).await;
+            if !first_gateway.same_publication(&second_gateway) {
+                continue;
+            }
+            let second_catalog = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_template_catalog().await),
+                None => None,
+            };
+            let Some(loadout) = first_gateway.loadout.as_ref() else {
+                return Err(LoadoutResourceTemplateCatalogPublicationError::MissingLoadout);
+            };
+            let (first_catalog, second_catalog) = match (first_catalog, second_catalog) {
+                (None, None) => {
+                    return Err(LoadoutResourceTemplateCatalogPublicationError::MissingPool);
+                }
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(map_resource_template_catalog_error(first));
+                }
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                _ => continue,
+            };
+            if first_catalog.generation() != second_catalog.generation() {
+                continue;
+            }
+            return Ok(build_resource_template_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_catalog,
+            ));
+        }
+        Err(LoadoutResourceTemplateCatalogPublicationError::Unstable)
+    }
+
     /// Resolve a named Loadout from one coherent published runtime revision.
     pub async fn published_runtime_loadout_snapshot(
         &self,
@@ -871,6 +985,12 @@ fn map_resource_catalog_error(
     _error: ResourceCatalogPublicationError,
 ) -> LoadoutResourceCatalogPublicationError {
     LoadoutResourceCatalogPublicationError::CatalogUnavailable
+}
+
+fn map_resource_template_catalog_error(
+    _error: ResourceTemplateCatalogPublicationError,
+) -> LoadoutResourceTemplateCatalogPublicationError {
+    LoadoutResourceTemplateCatalogPublicationError::CatalogUnavailable
 }
 
 fn map_service_catalog_error(
@@ -933,6 +1053,35 @@ fn build_resource_snapshot(
         runtime_config_generation,
         pool_publication_generation,
         resource_catalog_generation: catalog.generation(),
+        routes: std::sync::Arc::from(routes),
+    }
+}
+
+fn build_resource_template_snapshot(
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    loadout: &GatewayLoadoutConfig,
+    catalog: &PublishedResourceTemplateCatalogSnapshot,
+) -> PublishedLoadoutResourceTemplateCatalogSnapshot {
+    let routes = if loadout.expose_resources {
+        let upstreams = loadout
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        catalog
+            .routes()
+            .iter()
+            .filter(|route| upstreams.contains(route.upstream_name.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    PublishedLoadoutResourceTemplateCatalogSnapshot {
+        runtime_config_generation,
+        pool_publication_generation,
+        resource_template_catalog_generation: catalog.generation(),
         routes: std::sync::Arc::from(routes),
     }
 }

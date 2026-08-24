@@ -371,6 +371,12 @@ The pool now publishes a bounded immutable catalog of regular non-OAuth upstream
 
 This pool snapshot is observational and unmounted. It deliberately follows existing template wire semantics: concrete Resource exposure allowlists do not filter URI patterns. It is neither read authority nor a grant, and manager/Project composition, discovery shadowing, reads, and enforcement remain deferred.
 
+### Wave 34 / Milestone 0AL: immutable Loadout ResourceTemplate publication
+
+`GatewayManager` composes one immutable regular ResourceTemplate view across a bounded G-Q-G-Q observation of the active runtime configuration, exact pool publication, and pool template-catalog generation. It filters exact Loadout upstream membership and the Loadout-level `expose_resources` capability while deliberately not applying per-upstream concrete-URI exposure allowlists to URI patterns. Staged desired configuration is excluded; config, pool, and template ABA retry boundedly.
+
+The snapshot is observational and unmounted, not read authority or a grant. Unified MCP catalog ownership, Project/Bound propagation, discovery shadowing, reads, and enforcement remain deferred to later waves.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

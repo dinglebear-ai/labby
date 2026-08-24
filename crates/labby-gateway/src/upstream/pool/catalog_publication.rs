@@ -872,6 +872,31 @@ impl UpstreamPool {
             .collect();
         catalog.set_resource_source(upstream, incarnation, &resources);
     }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_resource_template_routes_for_tests(
+        &self,
+        upstream: &str,
+        templates: Vec<ResourceTemplate>,
+    ) {
+        let mut catalog = self.catalog_write().await;
+        if !catalog.contains_key(upstream) {
+            catalog.insert(
+                upstream.to_string(),
+                super::entries::healthy_in_process_entry(Arc::from(upstream), HashMap::new()),
+            );
+        }
+        let incarnation = match catalog.incarnation(upstream) {
+            Some(incarnation) => incarnation,
+            None => {
+                let incarnation =
+                    super::incarnation::next_connection_incarnation().expect("test identity");
+                catalog.bind_incarnation(upstream, incarnation);
+                incarnation
+            }
+        };
+        catalog.set_resource_template_source(upstream, incarnation, &templates);
+    }
 }
 
 #[cfg(test)]

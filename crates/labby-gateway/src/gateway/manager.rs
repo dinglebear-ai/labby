@@ -87,9 +87,10 @@ pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, dif
 pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
 pub use self::publication::{
     LoadoutMcpCatalogPublicationError, LoadoutResourceCatalogPublicationError,
-    LoadoutServiceCatalogPublicationError, LoadoutToolCatalogPublicationError,
-    ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot,
-    PublishedLoadoutResourceCatalogSnapshot, PublishedLoadoutService,
+    LoadoutResourceTemplateCatalogPublicationError, LoadoutServiceCatalogPublicationError,
+    LoadoutToolCatalogPublicationError, ProjectRoutePublicationError,
+    PublishedLoadoutMcpCatalogSnapshot, PublishedLoadoutResourceCatalogSnapshot,
+    PublishedLoadoutResourceTemplateCatalogSnapshot, PublishedLoadoutService,
     PublishedLoadoutServiceCatalogSnapshot, PublishedLoadoutToolCatalogSnapshot,
     PublishedProjectRouteSnapshot,
 };

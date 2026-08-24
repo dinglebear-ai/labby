@@ -2,14 +2,15 @@
 
 use crate::gateway::config::write_gateway_config;
 use crate::gateway::manager::{
-    LoadoutResourceCatalogPublicationError, LoadoutToolCatalogPublicationError,
+    LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
+    LoadoutToolCatalogPublicationError,
 };
 use labby_runtime::gateway_config::{
     GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
     ProtectedMcpRouteTarget, VirtualServerConfig, VirtualServerMcpPolicyConfig,
     VirtualServerSurfacesConfig,
 };
-use rmcp::model::Resource;
+use rmcp::model::{Resource, ResourceTemplate};
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,6 +21,298 @@ struct PublicationRegistry {
         Vec<crate::gateway::service_registry::ServiceActionInfo>,
     )>,
     reads: Arc<AtomicUsize>,
+}
+
+#[tokio::test]
+async fn loadout_resource_template_catalog_filters_upstreams_and_expose_resources() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![ResourceTemplate::new("file:///alpha/{id}", "alpha").with_description("metadata")],
+    )
+    .await;
+    pool.insert_resource_template_routes_for_tests(
+        "bravo",
+        vec![ResourceTemplate::new("file:///bravo/{id}", "bravo")],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("templates.toml"), runtime.clone());
+    let mut hidden = loadout("hidden", &["alpha"]);
+    hidden.expose_resources = false;
+    hidden.expose_skills = false;
+    let mut config = config_with_loadout(loadout("project", &["bravo", "alpha"]));
+    config.loadouts.push(hidden);
+    manager.seed_config(config).await;
+    let snapshot = manager
+        .published_loadout_resource_template_catalog_snapshot("project")
+        .await
+        .expect("template snapshot");
+    assert_eq!(
+        snapshot.runtime_config_generation(),
+        manager
+            .published_runtime_loadout_snapshot("project")
+            .await
+            .generation()
+    );
+    assert_eq!(
+        snapshot.pool_publication_generation(),
+        runtime.published_pool_snapshot().generation()
+    );
+    assert_eq!(
+        snapshot.resource_template_catalog_generation(),
+        pool.published_resource_template_catalog()
+            .await
+            .expect("pool template publication")
+            .generation()
+    );
+    assert_eq!(snapshot.routes().len(), 2);
+    assert_eq!(snapshot.routes()[0].upstream_name.as_ref(), "alpha");
+    assert_eq!(
+        snapshot.routes()[0].native_uri_template.as_ref(),
+        "file:///alpha/{id}"
+    );
+    assert_eq!(
+        snapshot.routes()[0].template.description.as_deref(),
+        Some("metadata")
+    );
+    assert_eq!(snapshot.routes()[1].upstream_name.as_ref(), "bravo");
+    assert_eq!(
+        snapshot.routes()[1].native_uri_template.as_ref(),
+        "file:///bravo/{id}"
+    );
+    assert!(
+        manager
+            .published_loadout_resource_template_catalog_snapshot("hidden")
+            .await
+            .expect("hidden")
+            .routes()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn loadout_resource_template_catalog_redacts_errors_and_bounds_config_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let no_pool = GatewayManager::new(
+        dir.path().join("none.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    no_pool
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    assert_eq!(
+        no_pool
+            .published_loadout_resource_template_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutResourceTemplateCatalogPublicationError::MissingPool)
+    );
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![ResourceTemplate::new("file:///{id}", "row")],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("churn.toml"), runtime);
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    assert_eq!(
+        manager
+            .published_loadout_resource_template_catalog_snapshot("missing")
+            .await
+            .err(),
+        Some(LoadoutResourceTemplateCatalogPublicationError::MissingLoadout)
+    );
+    let changing = manager.clone();
+    let result = manager
+        .compose_loadout_resource_template_catalog("project", move |_| {
+            let manager = changing.clone();
+            async move {
+                manager
+                    .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+                    .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutResourceTemplateCatalogPublicationError::Unstable)
+    );
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![
+            ResourceTemplate::new("file:///dup/{id}", "one"),
+            ResourceTemplate::new("file:///dup/{id}", "two"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        manager
+            .published_loadout_resource_template_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutResourceTemplateCatalogPublicationError::CatalogUnavailable)
+    );
+    let churning_pool = Arc::clone(&pool);
+    let result = manager
+        .compose_loadout_resource_template_catalog("project", move |attempt| {
+            let pool = Arc::clone(&churning_pool);
+            async move {
+                pool.insert_resource_template_routes_for_tests(
+                    "alpha",
+                    vec![ResourceTemplate::new(
+                        format!("file:///churn/{attempt}/{{id}}"),
+                        "churn",
+                    )],
+                )
+                .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutResourceTemplateCatalogPublicationError::Unstable)
+    );
+}
+
+#[tokio::test]
+async fn loadout_resource_template_catalog_retries_template_and_pool_aba() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let original = Arc::new(UpstreamPool::new());
+    original
+        .insert_resource_template_routes_for_tests(
+            "alpha",
+            vec![ResourceTemplate::new("file:///a/{id}", "A")],
+        )
+        .await;
+    runtime.swap(Some(Arc::clone(&original))).await;
+    let manager = GatewayManager::new(dir.path().join("template-aba.toml"), runtime.clone());
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    let initial_template = original
+        .published_resource_template_catalog()
+        .await
+        .expect("initial")
+        .generation();
+    let initial_pool = runtime.published_pool_snapshot().generation();
+    let transient = Arc::new(UpstreamPool::new());
+    transient
+        .insert_resource_template_routes_for_tests(
+            "alpha",
+            vec![ResourceTemplate::new("file:///transient/{id}", "transient")],
+        )
+        .await;
+    let hook_pool = Arc::clone(&original);
+    let hook_runtime = runtime.clone();
+    let hook_transient = Arc::clone(&transient);
+    let hook_original = Arc::clone(&original);
+    let snapshot = manager
+        .compose_loadout_resource_template_catalog("project", move |attempt| {
+            let pool = Arc::clone(&hook_pool);
+            let runtime = hook_runtime.clone();
+            let transient = Arc::clone(&hook_transient);
+            let original = Arc::clone(&hook_original);
+            async move {
+                if attempt == 0 {
+                    pool.insert_resource_template_routes_for_tests(
+                        "alpha",
+                        vec![ResourceTemplate::new("file:///b/{id}", "B")],
+                    )
+                    .await;
+                    pool.insert_resource_template_routes_for_tests(
+                        "alpha",
+                        vec![ResourceTemplate::new("file:///a/{id}", "A")],
+                    )
+                    .await;
+                } else if attempt == 1 {
+                    runtime.swap(Some(transient)).await;
+                    runtime.swap(Some(original)).await;
+                }
+            }
+        })
+        .await
+        .expect("ABA retries");
+    assert_eq!(
+        snapshot.routes()[0].native_uri_template.as_ref(),
+        "file:///a/{id}"
+    );
+    assert_ne!(
+        snapshot.resource_template_catalog_generation(),
+        initial_template
+    );
+    assert_ne!(snapshot.pool_publication_generation(), initial_pool);
+    assert_eq!(
+        snapshot.resource_template_catalog_generation(),
+        original
+            .published_resource_template_catalog()
+            .await
+            .expect("final")
+            .generation()
+    );
+    assert_eq!(
+        snapshot.pool_publication_generation(),
+        runtime.published_pool_snapshot().generation()
+    );
+    assert_eq!(
+        snapshot.runtime_config_generation(),
+        manager
+            .published_runtime_loadout_snapshot("project")
+            .await
+            .generation()
+    );
+}
+
+#[tokio::test]
+async fn loadout_resource_template_catalog_retries_config_aba() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![ResourceTemplate::new("file:///a/{id}", "A")],
+    )
+    .await;
+    runtime.swap(Some(pool)).await;
+    let manager = GatewayManager::new(dir.path().join("template-config-aba.toml"), runtime);
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    let initial = manager
+        .published_runtime_loadout_snapshot("project")
+        .await
+        .generation();
+    let changing = manager.clone();
+    let snapshot = manager
+        .compose_loadout_resource_template_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            async move {
+                if attempt == 0 {
+                    manager
+                        .seed_config(config_with_loadout(loadout("project", &["bravo"])))
+                        .await;
+                    manager
+                        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+                        .await;
+                }
+            }
+        })
+        .await
+        .expect("config ABA retries");
+    let current = manager
+        .published_runtime_loadout_snapshot("project")
+        .await
+        .generation();
+    assert_ne!(initial, current);
+    assert_eq!(snapshot.runtime_config_generation(), current);
+    assert_eq!(snapshot.routes().len(), 1);
 }
 
 #[tokio::test]
