@@ -3,8 +3,8 @@
 //! This crate-private kernel is deliberately unmounted and is freshness-only:
 //! it does not authorize AssetUse/admin/destructive execution or perform
 //! elicitation. Usage telemetry is scheduled only after exact checked apply and
-//! remains unattributed for this regular pool path. SEP-2243 header recovery is
-//! omitted because its peer-cache mutation is not yet incarnation-safe.
+//! remains unattributed for this regular pool path. SEP-2243 recovery treats
+//! rmcp's peer-object schema cache only as a non-authoritative transport hint.
 #![allow(dead_code)]
 #![allow(
     clippy::items_after_test_module,
@@ -55,7 +55,7 @@ pub(crate) enum ExactToolCallError {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use rmcp::model::{
@@ -68,7 +68,10 @@ mod tests {
     use rmcp::{RoleServer, ServerHandler};
     use tokio::sync::{Mutex, Notify};
 
-    use super::{ExactToolCallError, PreparedExactToolCall, PreparedOutcome, UpstreamPool};
+    use super::{
+        ExactToolCallError, HeaderRecoveryFacts, PreparedExactToolCall, PreparedOutcome,
+        UpstreamPool,
+    };
     use crate::upstream::pool::testsupport::catalog_pool_with_server;
     use crate::upstream::types::UpstreamTool;
 
@@ -142,6 +145,140 @@ mod tests {
     struct HeaderMismatchToolServer {
         calls: Arc<AtomicUsize>,
         lists: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone)]
+    struct RecoveringHeaderToolServer {
+        calls: Arc<AtomicUsize>,
+        lists: Arc<AtomicUsize>,
+        refreshed: Arc<AtomicBool>,
+    }
+
+    #[derive(Clone)]
+    struct FailingRefreshToolServer {
+        calls: Arc<AtomicUsize>,
+        lists: Arc<AtomicUsize>,
+    }
+
+    #[derive(Clone)]
+    struct DelayedRefreshToolServer {
+        calls: Arc<AtomicUsize>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[derive(Clone)]
+    struct DelayedRetryToolServer {
+        calls: Arc<AtomicUsize>,
+        retry_started: Arc<Notify>,
+        retry_release: Arc<Notify>,
+    }
+
+    impl ServerHandler for DelayedRetryToolServer {
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            Ok(ListToolsResult::with_all_items(Vec::new()))
+        }
+
+        async fn call_tool(
+            &self,
+            _: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(ErrorData::new(
+                    rmcp::model::ErrorCode::HEADER_MISMATCH,
+                    "stale headers",
+                    None,
+                ))
+            } else {
+                self.retry_started.notify_one();
+                self.retry_release.notified().await;
+                Ok(CallToolResult::success(vec![ContentBlock::text("retry")]).into())
+            }
+        }
+    }
+
+    impl ServerHandler for DelayedRefreshToolServer {
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(ListToolsResult::with_all_items(Vec::new()))
+        }
+
+        async fn call_tool(
+            &self,
+            _: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ErrorData::new(
+                rmcp::model::ErrorCode::HEADER_MISMATCH,
+                "stale headers",
+                None,
+            ))
+        }
+    }
+
+    impl ServerHandler for FailingRefreshToolServer {
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            self.lists.fetch_add(1, Ordering::SeqCst);
+            Err(ErrorData::internal_error("private refresh failure", None))
+        }
+
+        async fn call_tool(
+            &self,
+            _: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ErrorData::new(
+                rmcp::model::ErrorCode::HEADER_MISMATCH,
+                "stale headers",
+                None,
+            ))
+        }
+    }
+
+    impl ServerHandler for RecoveringHeaderToolServer {
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            self.lists.fetch_add(1, Ordering::SeqCst);
+            self.refreshed.store(true, Ordering::SeqCst);
+            Ok(ListToolsResult::with_all_items(Vec::new()))
+        }
+
+        async fn call_tool(
+            &self,
+            _: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0
+                || !self.refreshed.load(Ordering::SeqCst)
+            {
+                Err(ErrorData::new(
+                    rmcp::model::ErrorCode::HEADER_MISMATCH,
+                    "stale headers",
+                    None,
+                ))
+            } else {
+                Ok(CallToolResult::success(vec![ContentBlock::text("recovered")]).into())
+            }
+        }
     }
 
     impl ServerHandler for HeaderMismatchToolServer {
@@ -268,6 +405,39 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    async fn reinstall_same_connection(
+        pool: &UpstreamPool,
+    ) -> Option<super::super::UpstreamConnection> {
+        let replacement = catalog_pool_with_server(
+            "alpha",
+            InspectingToolServer {
+                calls: Arc::new(AtomicUsize::new(0)),
+                received: Arc::new(Mutex::new(Vec::new())),
+                error: None,
+            },
+        )
+        .await;
+        let (connection_b, entry_b) = replacement.remove_connection_catalog_entry("alpha").await;
+        let previous_a = pool
+            .install_connection_catalog_entry(
+                "alpha".into(),
+                connection_b.unwrap(),
+                entry_b.unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let (removed_b, _) = pool.remove_connection_catalog_entry("alpha").await;
+        let mut entry_a =
+            super::super::entries::healthy_in_process_entry(Arc::from("alpha"), HashMap::new());
+        entry_a.tool_last_error = Some("sentinel".into());
+        pool.install_connection_catalog_entry("alpha".into(), previous_a, entry_a)
+            .await
+            .unwrap();
+        set_tool(pool, "restored", false).await;
+        removed_b
     }
 
     #[tokio::test]
@@ -626,6 +796,7 @@ mod tests {
                     native_name: "nested/tool".into(),
                     outcome: PreparedOutcome::Response(expected.clone()),
                     elapsed_ms: 1,
+                    header_recovery: None,
                 })
                 .await
                 .unwrap();
@@ -841,7 +1012,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exact_tool_kernel_does_not_retry_header_mismatch() {
+    async fn exact_tool_kernel_refreshes_and_retries_header_mismatch_once() {
         let calls = Arc::new(AtomicUsize::new(0));
         let lists = Arc::new(AtomicUsize::new(0));
         let pool = catalog_pool_with_server(
@@ -866,13 +1037,404 @@ mod tests {
         assert!(
             matches!(error, ExactToolCallError::Mcp(data) if data.code == rmcp::model::ErrorCode::HEADER_MISMATCH)
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(lists.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(lists.load(Ordering::SeqCst), 1);
         let metrics = pool.header_recovery_metrics("alpha");
-        assert_eq!(metrics.mismatch_detected, 0);
-        assert_eq!(metrics.schema_refreshes, 0);
+        assert_eq!(metrics.mismatch_detected, 1);
+        assert_eq!(metrics.schema_refreshes, 1);
         assert_eq!(metrics.retry_successes, 0);
-        assert_eq!(metrics.retry_failures, 0);
+        assert_eq!(metrics.retry_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn exact_tool_kernel_commits_successful_header_recovery() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let lists = Arc::new(AtomicUsize::new(0));
+        let refreshed = Arc::new(AtomicBool::new(false));
+        let pool = catalog_pool_with_server(
+            "alpha",
+            RecoveringHeaderToolServer {
+                calls: Arc::clone(&calls),
+                lists: Arc::clone(&lists),
+                refreshed: Arc::clone(&refreshed),
+            },
+        )
+        .await;
+        set_tool(&pool, "header", false).await;
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        assert!(
+            pool.call_published_tool_exact(
+                "alpha",
+                "nested/tool",
+                generation,
+                CallToolRequestParams::new("nested/tool"),
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(
+            (calls.load(Ordering::SeqCst), lists.load(Ordering::SeqCst)),
+            (2, 1)
+        );
+        assert!(refreshed.load(Ordering::SeqCst));
+        assert_eq!(
+            pool.header_recovery_metrics("alpha"),
+            super::super::HeaderRecoveryMetrics {
+                mismatch_detected: 1,
+                schema_refreshes: 1,
+                retry_successes: 1,
+                retry_failures: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_tool_kernel_commits_refresh_failure_without_retry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let lists = Arc::new(AtomicUsize::new(0));
+        let pool = catalog_pool_with_server(
+            "alpha",
+            FailingRefreshToolServer {
+                calls: Arc::clone(&calls),
+                lists: Arc::clone(&lists),
+            },
+        )
+        .await;
+        set_tool(&pool, "header", false).await;
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        assert!(
+            pool.call_published_tool_exact(
+                "alpha",
+                "nested/tool",
+                generation,
+                CallToolRequestParams::new("nested/tool"),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            (calls.load(Ordering::SeqCst), lists.load(Ordering::SeqCst)),
+            (1, 1)
+        );
+        let metrics = pool.header_recovery_metrics("alpha");
+        assert_eq!(
+            (metrics.mismatch_detected, metrics.schema_refreshes),
+            (1, 1)
+        );
+        assert_eq!((metrics.retry_successes, metrics.retry_failures), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn tool_publication_change_during_refresh_stops_retry_and_attribution() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedRefreshToolServer {
+                calls: Arc::clone(&calls),
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            },
+        )
+        .await;
+        set_tool(&pool, "before", false).await;
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().tool_last_error = Some("sentinel".into());
+        }
+        let calling = Arc::clone(&pool);
+        let task = tokio::spawn(async move {
+            calling
+                .call_published_tool_exact(
+                    "alpha",
+                    "nested/tool",
+                    generation,
+                    CallToolRequestParams::new("nested/tool"),
+                )
+                .await
+        });
+        started.notified().await;
+        set_tool(&pool, "after", false).await;
+        release.notify_one();
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(ExactToolCallError::Unavailable)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.header_recovery_metrics("alpha"), Default::default());
+        assert_eq!(
+            pool.upstream_tool_last_error("alpha").await.as_deref(),
+            Some("sentinel")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_header_refresh_releases_permit_without_attribution() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedRefreshToolServer {
+                calls,
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            },
+        )
+        .await;
+        let pool = with_usage_store(pool, &store);
+        set_tool(&pool, "cancel-refresh", false).await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().tool_last_error = Some("sentinel".into());
+        }
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        let calling = Arc::clone(&pool);
+        let task = tokio::spawn(async move {
+            calling
+                .call_published_tool_exact(
+                    "alpha",
+                    "nested/tool",
+                    generation,
+                    CallToolRequestParams::new("nested/tool"),
+                )
+                .await
+        });
+        started.notified().await;
+        task.abort();
+        release.notify_one();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(pool.header_recovery_metrics("alpha"), Default::default());
+        assert_eq!(
+            pool.upstream_tool_last_error("alpha").await.as_deref(),
+            Some("sentinel")
+        );
+        assert_eq!(total_usage_count(&store).await, 0);
+        let _permit = tokio::time::timeout(
+            Duration::from_millis(50),
+            pool.acquire_upstream_call_permit("alpha"),
+        )
+        .await
+        .expect("cancelled refresh releases permit")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_header_retry_releases_permit_without_attribution() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let retry_started = Arc::new(Notify::new());
+        let retry_release = Arc::new(Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedRetryToolServer {
+                calls,
+                retry_started: Arc::clone(&retry_started),
+                retry_release: Arc::clone(&retry_release),
+            },
+        )
+        .await;
+        let pool = with_usage_store(pool, &store);
+        set_tool(&pool, "cancel-retry", false).await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().tool_last_error = Some("sentinel".into());
+        }
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        let calling = Arc::clone(&pool);
+        let task = tokio::spawn(async move {
+            calling
+                .call_published_tool_exact(
+                    "alpha",
+                    "nested/tool",
+                    generation,
+                    CallToolRequestParams::new("nested/tool"),
+                )
+                .await
+        });
+        retry_started.notified().await;
+        task.abort();
+        retry_release.notify_one();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(pool.header_recovery_metrics("alpha"), Default::default());
+        assert_eq!(
+            pool.upstream_tool_last_error("alpha").await.as_deref(),
+            Some("sentinel")
+        );
+        assert_eq!(total_usage_count(&store).await, 0);
+        let _permit = tokio::time::timeout(
+            Duration::from_millis(50),
+            pool.acquire_upstream_call_permit("alpha"),
+        )
+        .await
+        .expect("cancelled retry releases permit")
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn same_connection_aba_during_refresh_or_retry_discards_all_attribution() {
+        for retry_stage in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                    .await
+                    .unwrap(),
+            );
+            let started = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let calls = Arc::new(AtomicUsize::new(0));
+            let pool = if retry_stage {
+                catalog_pool_with_server(
+                    "alpha",
+                    DelayedRetryToolServer {
+                        calls: Arc::clone(&calls),
+                        retry_started: Arc::clone(&started),
+                        retry_release: Arc::clone(&release),
+                    },
+                )
+                .await
+            } else {
+                catalog_pool_with_server(
+                    "alpha",
+                    DelayedRefreshToolServer {
+                        calls: Arc::clone(&calls),
+                        started: Arc::clone(&started),
+                        release: Arc::clone(&release),
+                    },
+                )
+                .await
+            };
+            let pool = with_usage_store(pool, &store);
+            set_tool(&pool, "aba", false).await;
+            let generation = pool.published_tool_catalog().await.unwrap().generation();
+            let calling = Arc::clone(&pool);
+            let task = tokio::spawn(async move {
+                calling
+                    .call_published_tool_exact(
+                        "alpha",
+                        "nested/tool",
+                        generation,
+                        CallToolRequestParams::new("nested/tool"),
+                    )
+                    .await
+            });
+            started.notified().await;
+            let removed_b = reinstall_same_connection(&pool).await;
+            assert_ne!(
+                pool.published_tool_catalog().await.unwrap().generation(),
+                generation
+            );
+            release.notify_one();
+            assert!(matches!(
+                task.await.unwrap(),
+                Err(ExactToolCallError::Unavailable)
+            ));
+            assert_eq!(pool.header_recovery_metrics("alpha"), Default::default());
+            assert_eq!(
+                pool.upstream_tool_last_error("alpha").await.as_deref(),
+                Some("sentinel")
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(total_usage_count(&store).await, 0);
+            if let Some(connection) = removed_b {
+                connection.shutdown("alpha", "test.exact-header-aba").await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn old_connection_incarnation_is_rejected_independently_of_current_tool_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let (pool, _, _) = fixture(None, false).await;
+        let pool = with_usage_store(pool, &store);
+        let old_generation = pool.published_tool_catalog().await.unwrap().generation();
+        let old_observed = pool
+            .observe_tool_call("alpha", "nested/tool", old_generation)
+            .await
+            .unwrap();
+        let removed_b = reinstall_same_connection(&pool).await;
+        let current_generation = pool.published_tool_catalog().await.unwrap().generation();
+        assert_ne!(old_generation, current_generation);
+        assert!(matches!(
+            pool.apply_prepared_tool_exact(PreparedExactToolCall {
+                observed: old_observed,
+                generation: current_generation,
+                native_name: "nested/tool".into(),
+                outcome: PreparedOutcome::Response(
+                    CallToolResult::success(vec![ContentBlock::text("stale")]).into(),
+                ),
+                elapsed_ms: 1,
+                header_recovery: Some(HeaderRecoveryFacts::RetrySucceeded),
+            })
+            .await,
+            Err(ExactToolCallError::Unavailable)
+        ));
+        assert_eq!(pool.header_recovery_metrics("alpha"), Default::default());
+        assert_eq!(
+            pool.upstream_tool_last_error("alpha").await.as_deref(),
+            Some("sentinel")
+        );
+        assert_eq!(total_usage_count(&store).await, 0);
+        if let Some(connection) = removed_b {
+            connection
+                .shutdown("alpha", "test.exact-header-incarnation")
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn refreshed_without_retry_commits_only_completed_phases() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let (pool, _, _) = fixture(None, false).await;
+        let pool = with_usage_store(pool, &store);
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        let observed = pool
+            .observe_tool_call("alpha", "nested/tool", generation)
+            .await
+            .unwrap();
+        assert!(matches!(
+            pool.apply_prepared_tool_exact(PreparedExactToolCall {
+                observed,
+                generation,
+                native_name: "nested/tool".into(),
+                outcome: PreparedOutcome::Timeout,
+                elapsed_ms: 25,
+                header_recovery: Some(HeaderRecoveryFacts::RefreshedOnly),
+            })
+            .await,
+            Err(ExactToolCallError::Timeout)
+        ));
+        let metrics = pool.header_recovery_metrics("alpha");
+        assert_eq!(
+            (metrics.mismatch_detected, metrics.schema_refreshes),
+            (1, 1)
+        );
+        assert_eq!((metrics.retry_successes, metrics.retry_failures), (0, 0));
+        assert_eq!(wait_for_usage_count(&store, "timeout").await, 1);
+        assert!(pool.upstream_tool_last_error("alpha").await.is_some());
     }
 
     #[tokio::test]
@@ -977,12 +1539,95 @@ enum PreparedOutcome {
     Other,
 }
 
+#[derive(Clone, Copy)]
+enum HeaderRecoveryFacts {
+    MismatchOnly,
+    RefreshFailed,
+    RefreshedOnly,
+    RetrySucceeded,
+    RetryFailed,
+}
+
+fn classify_service_error(error: rmcp::ServiceError) -> PreparedOutcome {
+    match bound_upstream_service_error(error) {
+        rmcp::ServiceError::McpError(data) => PreparedOutcome::Mcp(data),
+        rmcp::ServiceError::Timeout { .. } => PreparedOutcome::Timeout,
+        rmcp::ServiceError::TransportSend(_)
+        | rmcp::ServiceError::TransportClosed
+        | rmcp::ServiceError::SubscriptionLagged { .. } => PreparedOutcome::Transport,
+        rmcp::ServiceError::UnexpectedResponse => PreparedOutcome::Protocol,
+        rmcp::ServiceError::Cancelled { .. } => PreparedOutcome::Cancelled,
+        rmcp::ServiceError::InputRequiredRoundsExceeded { .. } => {
+            PreparedOutcome::InputRequiredRoundsExceeded
+        }
+        _ => PreparedOutcome::Other,
+    }
+}
+
+fn classify_refresh_error(
+    error: super::catalog_pagination::CatalogPaginationError,
+) -> PreparedOutcome {
+    match error {
+        super::catalog_pagination::CatalogPaginationError::Service(error) => {
+            classify_service_error(error)
+        }
+        super::catalog_pagination::CatalogPaginationError::Deadline { .. } => {
+            PreparedOutcome::Timeout
+        }
+        _ => PreparedOutcome::Protocol,
+    }
+}
+
+fn commit_header_recovery(
+    pool: &UpstreamPool,
+    upstream: &str,
+    recovery: Option<HeaderRecoveryFacts>,
+) {
+    let Some(recovery) = recovery else { return };
+    let mismatch_count = pool.record_header_mismatch_detected(upstream);
+    tracing::warn!(
+        upstream,
+        mismatch_count,
+        "exact Tool call detected SEP-2243 header mismatch"
+    );
+    if !matches!(recovery, HeaderRecoveryFacts::MismatchOnly) {
+        let refresh_count = pool.record_header_schema_refresh(upstream);
+        if matches!(recovery, HeaderRecoveryFacts::RefreshFailed) {
+            tracing::warn!(
+                upstream,
+                refresh_count,
+                "exact Tool SEP-2243 schema refresh failed"
+            );
+        } else {
+            tracing::info!(
+                upstream,
+                refresh_count,
+                "exact Tool call refreshed SEP-2243 schema hint"
+            );
+        }
+    }
+    match recovery {
+        HeaderRecoveryFacts::RetrySucceeded => {
+            pool.record_header_schema_retry_success(upstream);
+            tracing::info!(upstream, "exact Tool SEP-2243 retry succeeded");
+        }
+        HeaderRecoveryFacts::RetryFailed => {
+            pool.record_header_schema_retry_failure(upstream);
+            tracing::warn!(upstream, "exact Tool SEP-2243 retry failed");
+        }
+        HeaderRecoveryFacts::MismatchOnly
+        | HeaderRecoveryFacts::RefreshFailed
+        | HeaderRecoveryFacts::RefreshedOnly => {}
+    }
+}
+
 pub(crate) struct PreparedExactToolCall {
     observed: super::incarnation::ObservedConnectionCatalogEntry,
     generation: ToolCatalogGeneration,
     native_name: String,
     outcome: PreparedOutcome,
     elapsed_ms: u128,
+    header_recovery: Option<HeaderRecoveryFacts>,
 }
 
 impl UpstreamPool {
@@ -1029,30 +1674,90 @@ impl UpstreamPool {
         if remaining.is_zero() {
             return Err(ExactToolCallError::QueueUnavailable);
         }
-        let outcome =
-            match tokio::time::timeout(remaining, observed.peer.call_tool_once(params)).await {
-                Err(_) => PreparedOutcome::Timeout,
-                Ok(Ok(response)) => PreparedOutcome::Response(response),
-                Ok(Err(error)) => match bound_upstream_service_error(error) {
-                    rmcp::ServiceError::McpError(data) => PreparedOutcome::Mcp(data),
-                    rmcp::ServiceError::Timeout { .. } => PreparedOutcome::Timeout,
-                    rmcp::ServiceError::TransportSend(_)
-                    | rmcp::ServiceError::TransportClosed
-                    | rmcp::ServiceError::SubscriptionLagged { .. } => PreparedOutcome::Transport,
-                    rmcp::ServiceError::UnexpectedResponse => PreparedOutcome::Protocol,
-                    rmcp::ServiceError::Cancelled { .. } => PreparedOutcome::Cancelled,
-                    rmcp::ServiceError::InputRequiredRoundsExceeded { .. } => {
-                        PreparedOutcome::InputRequiredRoundsExceeded
+        let first =
+            tokio::time::timeout(remaining, observed.peer.call_tool_once(params.clone())).await;
+        let (outcome, header_recovery) = match first {
+            Err(_) => (PreparedOutcome::Timeout, None),
+            Ok(Ok(response)) => (PreparedOutcome::Response(response), None),
+            Ok(Err(error)) if super::tools_call::is_tool_header_mismatch(&error) => {
+                if !self
+                    .observed_tool_call_is_current(&observed, generation, native_name)
+                    .await
+                {
+                    return Err(ExactToolCallError::Unavailable);
+                }
+                let remaining = self.request_timeout.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    (
+                        PreparedOutcome::Timeout,
+                        Some(HeaderRecoveryFacts::MismatchOnly),
+                    )
+                } else if let Err(error) = tokio::time::timeout(
+                    remaining,
+                    super::tools_call::refresh_tool_header_cache_raw(&observed.peer, remaining),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(
+                        super::catalog_pagination::CatalogPaginationError::Deadline {
+                            deadline_ms: remaining.as_millis(),
+                        },
+                    )
+                }) {
+                    (
+                        classify_refresh_error(error),
+                        Some(HeaderRecoveryFacts::RefreshFailed),
+                    )
+                } else {
+                    if !self
+                        .observed_tool_call_is_current(&observed, generation, native_name)
+                        .await
+                    {
+                        return Err(ExactToolCallError::Unavailable);
                     }
-                    _ => PreparedOutcome::Other,
-                },
-            };
+                    let remaining = self.request_timeout.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        return Ok(PreparedExactToolCall {
+                            observed,
+                            generation,
+                            native_name: native_name.to_string(),
+                            outcome: PreparedOutcome::Timeout,
+                            elapsed_ms: start.elapsed().as_millis(),
+                            header_recovery: Some(HeaderRecoveryFacts::RefreshedOnly),
+                        });
+                    }
+                    let retry = {
+                        match tokio::time::timeout(remaining, observed.peer.call_tool_once(params))
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => Err(rmcp::ServiceError::Timeout {
+                                timeout: self.request_timeout,
+                            }),
+                        }
+                    };
+                    let succeeded = retry.is_ok();
+                    let outcome =
+                        retry.map_or_else(classify_service_error, PreparedOutcome::Response);
+                    (
+                        outcome,
+                        Some(if succeeded {
+                            HeaderRecoveryFacts::RetrySucceeded
+                        } else {
+                            HeaderRecoveryFacts::RetryFailed
+                        }),
+                    )
+                }
+            }
+            Ok(Err(error)) => (classify_service_error(error), None),
+        };
         Ok(PreparedExactToolCall {
             observed,
             generation,
             native_name: native_name.to_string(),
             outcome,
             elapsed_ms: start.elapsed().as_millis(),
+            header_recovery,
         })
     }
 
@@ -1061,6 +1766,7 @@ impl UpstreamPool {
         prepared: PreparedExactToolCall,
     ) -> Result<CallToolResponse, ExactToolCallError> {
         let upstream = prepared.observed.upstream().to_string();
+        let header_recovery = prepared.header_recovery;
         match prepared.outcome {
             PreparedOutcome::Response(response) => {
                 let response_bytes = estimate_call_tool_response_size(&response);
@@ -1072,6 +1778,7 @@ impl UpstreamPool {
                         prepared.generation,
                         &prepared.native_name,
                         |entry| {
+                            commit_header_recovery(self, &upstream, header_recovery);
                             super::health::record_success_on_entry(
                                 &upstream,
                                 entry,
@@ -1108,6 +1815,7 @@ impl UpstreamPool {
                         prepared.generation,
                         &prepared.native_name,
                         |entry| {
+                            commit_header_recovery(self, &upstream, header_recovery);
                             super::health::record_success_on_entry(
                                 &upstream,
                                 entry,
@@ -1140,6 +1848,7 @@ impl UpstreamPool {
                     prepared.generation,
                     &prepared.native_name,
                     |_| {
+                        commit_header_recovery(self, &upstream, header_recovery);
                         record_usage_call(
                             self,
                             UpstreamRequestLog::tool(&upstream, &prepared.native_name, false),
@@ -1186,6 +1895,7 @@ impl UpstreamPool {
                         prepared.generation,
                         &prepared.native_name,
                         |entry| {
+                            commit_header_recovery(self, &upstream, header_recovery);
                             super::health::record_failure_on_entry(
                                 &upstream,
                                 entry,

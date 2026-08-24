@@ -78,6 +78,26 @@ impl UpstreamPool {
         })
     }
 
+    pub(super) async fn observed_tool_call_is_current(
+        &self,
+        observed: &ObservedConnectionCatalogEntry,
+        generation: super::ToolCatalogGeneration,
+        native_name: &str,
+    ) -> bool {
+        let _binding = self.connection_catalog_binding.lock().await;
+        let connections = self.connections.read().await;
+        let Some(connection) = connections.get(observed.upstream()) else {
+            return false;
+        };
+        if connection.incarnation != Some(observed.incarnation()) {
+            return false;
+        }
+        drop(connections);
+        let catalog = self.catalog.read().await;
+        catalog.incarnation(observed.upstream()) == Some(observed.incarnation())
+            && catalog.contains_tool_route(generation, observed.upstream(), native_name)
+    }
+
     pub(super) async fn observe_prompt_call(
         &self,
         upstream: &str,

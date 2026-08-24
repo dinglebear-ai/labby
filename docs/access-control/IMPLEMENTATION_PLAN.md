@@ -457,6 +457,10 @@ Add an unmounted pool-local freshness kernel for regular non-OAuth Tool calls. I
 
 Attach the existing best-effort usage recorder to the Wave 48 kernel only inside its successful exact publication/incarnation checked-apply closure. Regular pool calls are recorded as unscoped and unattributed with bounded static outcomes, elapsed time, and response bytes where applicable; arguments, metadata, MCP payloads, and private causes never enter usage rows. Queue rejection, pre-apply cancellation, and stale outcomes record nothing. SEP-2243 recovery/cache mutation and counters remain deferred because peer-cache refresh cannot yet be made stale-side-effect-free; manager generation, authorization, Project/Bound, handler mounting, OAuth, and relay remain unchanged.
 
+### Wave 50 / Milestone 0BB: exact Tool SEP-2243 recovery
+
+Add one bounded SEP-2243 recovery attempt to the unmounted exact Tool kernel under the original permit and absolute deadline. A structured header mismatch triggers an exact read-only publication/incarnation check, one bounded raw `tools/list` refresh, a second exact check, and at most one retry; final health, usage, recovery counters, and outcome exposure remain gated by checked apply. rmcp's peer-object-local schema cache is a non-authoritative transport hint and cannot be rolled back, including across same-object ABA, so it never grants routing or execution. Stale and cancelled attempts publish no recovery counters, checked-attribution logs, health, usage, or results; bounded pagination may still emit its generic policy diagnostics. Manager generation, authorization, destructive/admin policy, Project/Bound, handler mounting, OAuth, and relay remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
