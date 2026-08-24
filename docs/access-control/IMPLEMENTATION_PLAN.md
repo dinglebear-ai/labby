@@ -437,6 +437,10 @@ The live `prompts/get` handler now consumes Project access observation before ev
 
 The Bound branch supports only the exact regular non-OAuth Prompt route published by its coherent Project/Loadout catalog. It always uses the bounded pooled exact kernel, even when request metadata advertises relay capabilities. Unknown or ambiguous names, builtins, OAuth/subject-scoped targets, and relay execution are terminal in this branch and never fall through. Legacy builtin, regular pooled/relay, OAuth, and local behavior remains unchanged. This is request-start authorization rather than a revocation lease; cancellation and expiry can discard a result but cannot unsend an upstream request already in flight. Resource reads, Prompt completion, other capability families, and broader execution enforcement remain deferred.
 
+### Wave 45 / Milestone 0AW: incarnation-bound exact regular Resource read kernel
+
+Add an unmounted pool-local kernel for regular non-OAuth Resource reads. It acquires the per-upstream permit before observing the target, uses one queue-plus-RPC deadline, and requires the exact current Resource publication generation/route plus connection/catalog incarnation before dispatch and before applying any result or health change. The immutable Resource publication is the authority for routability, proxying, exposure, non-UI classification, and source incarnation; the legacy `resource_upstreams` list is deliberately not consulted. Every returned text/blob URI is overwritten with the canonical gateway URI before the normalized response-size cap is enforced. Typed errors are redacted. Handler/manager/AssetUse mounting, OAuth, relay, UI/local/synthetic/Skills, and ResourceTemplate reads remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

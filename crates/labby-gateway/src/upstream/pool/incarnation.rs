@@ -339,6 +339,54 @@ impl UpstreamPool {
         .flatten()
     }
 
+    pub(super) async fn observe_resource_call(
+        &self,
+        upstream: &str,
+        native_uri: &str,
+        generation: super::ResourceCatalogGeneration,
+    ) -> Option<ObservedConnectionCatalogEntry> {
+        let _binding = self.connection_catalog_binding.lock().await;
+        let (peer, incarnation) = {
+            let connections = self.connections.read().await;
+            let connection = connections.get(upstream)?;
+            (connection.peer.clone(), connection.incarnation?)
+        };
+        let catalog = self.catalog.read().await;
+        if catalog.incarnation(upstream) != Some(incarnation)
+            || !catalog.contains_resource_route(generation, upstream, native_uri)
+        {
+            return None;
+        }
+        Some(ObservedConnectionCatalogEntry {
+            upstream: upstream.to_string(),
+            peer,
+            incarnation,
+        })
+    }
+
+    pub(super) async fn apply_to_observed_resource_call<R>(
+        &self,
+        observed: &ObservedConnectionCatalogEntry,
+        generation: super::ResourceCatalogGeneration,
+        native_uri: &str,
+        apply: impl FnOnce(&mut UpstreamEntry) -> R,
+    ) -> Option<R> {
+        let _binding = self.connection_catalog_binding.lock().await;
+        let connections = self.connections.read().await;
+        let connection = connections.get(observed.upstream())?;
+        if connection.incarnation != Some(observed.incarnation) {
+            return None;
+        }
+        drop(connections);
+        let mut catalog = self.catalog_write().await;
+        if catalog.incarnation(observed.upstream()) != Some(observed.incarnation)
+            || !catalog.contains_resource_route(generation, observed.upstream(), native_uri)
+        {
+            return None;
+        }
+        catalog.get_mut(observed.upstream()).map(apply)
+    }
+
     pub(super) async fn apply_to_observed_catalog<R>(
         &self,
         observed: &ObservedConnectionCatalogEntry,

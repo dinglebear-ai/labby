@@ -393,6 +393,21 @@ struct RouteDeterminant {
 }
 
 impl CatalogState {
+    pub(super) fn contains_resource_route(
+        &self,
+        generation: ResourceCatalogGeneration,
+        upstream: &str,
+        native_uri: &str,
+    ) -> bool {
+        self.published_resources.as_ref().is_ok_and(|snapshot| {
+            snapshot.generation() == generation
+                && snapshot.routes().iter().any(|route| {
+                    route.upstream_name.as_ref() == upstream
+                        && route.native_uri.as_ref() == native_uri
+                })
+        })
+    }
+
     pub(super) fn contains_prompt_route(
         &self,
         generation: PromptCatalogGeneration,
