@@ -79,6 +79,7 @@ mod virtual_servers;
 pub use self::code_mode_resolve::CallbackToolLookup;
 #[allow(unused_imports)]
 pub use self::config_ops::BatchAddOutcome;
+pub use self::core::PublishedPromptCallError;
 pub use self::core::{GatewayManagerConfig, GatewayOauthConfig};
 pub use self::import_matchers::ImportTombstoneSelector;
 pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_discovered_for_import};

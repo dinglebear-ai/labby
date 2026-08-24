@@ -46,6 +46,13 @@ pub(crate) enum ExactPromptCallError {
     Timeout,
 }
 
+pub(crate) struct PreparedExactPromptCall {
+    observed: super::incarnation::ObservedConnectionCatalogEntry,
+    generation: PromptCatalogGeneration,
+    native_name: String,
+    outcome: RawCallOutcome<GetPromptResult>,
+}
+
 impl UpstreamPool {
     /// Execute one regular Prompt call only when its exact current publication
     /// route and connection incarnation still agree. This kernel is unmounted.
@@ -56,6 +63,19 @@ impl UpstreamPool {
         generation: PromptCatalogGeneration,
         params: GetPromptRequestParams,
     ) -> Result<GetPromptResult, ExactPromptCallError> {
+        let prepared = self
+            .prepare_published_prompt_exact(upstream_name, native_name, generation, params)
+            .await?;
+        self.apply_prepared_prompt_exact(prepared).await
+    }
+
+    pub(crate) async fn prepare_published_prompt_exact(
+        &self,
+        upstream_name: &str,
+        native_name: &str,
+        generation: PromptCatalogGeneration,
+        params: GetPromptRequestParams,
+    ) -> Result<PreparedExactPromptCall, ExactPromptCallError> {
         if params.name != native_name {
             return Err(ExactPromptCallError::Unavailable);
         }
@@ -82,16 +102,34 @@ impl UpstreamPool {
         let outcome = classify_timeout_result(
             tokio::time::timeout(remaining, observed.peer.get_prompt(params)).await,
         );
-        match outcome {
+        Ok(PreparedExactPromptCall {
+            observed,
+            generation,
+            native_name: native_name.to_string(),
+            outcome,
+        })
+    }
+
+    pub(crate) async fn apply_prepared_prompt_exact(
+        &self,
+        prepared: PreparedExactPromptCall,
+    ) -> Result<GetPromptResult, ExactPromptCallError> {
+        let upstream_name = prepared.observed.upstream().to_string();
+        match prepared.outcome {
             RawCallOutcome::Ok(result) => {
                 let applied = self
-                    .apply_to_observed_prompt_call(&observed, generation, native_name, |entry| {
-                        super::health::record_success_on_entry(
-                            upstream_name,
-                            entry,
-                            UpstreamCapability::Prompts,
-                        );
-                    })
+                    .apply_to_observed_prompt_call(
+                        &prepared.observed,
+                        prepared.generation,
+                        &prepared.native_name,
+                        |entry| {
+                            super::health::record_success_on_entry(
+                                &upstream_name,
+                                entry,
+                                UpstreamCapability::Prompts,
+                            );
+                        },
+                    )
                     .await;
                 applied
                     .map(|()| result)
@@ -101,22 +139,27 @@ impl UpstreamPool {
                 let affects_health = service_error_affects_connection_health(&error);
                 let message = super::capability_call::bounded_service_error_text(&error);
                 let applied = self
-                    .apply_to_observed_prompt_call(&observed, generation, native_name, |entry| {
-                        if affects_health {
-                            super::health::record_failure_on_entry(
-                                upstream_name,
-                                entry,
-                                UpstreamCapability::Prompts,
-                                format!("upstream prompt get failed: {message}"),
-                            );
-                        } else {
-                            super::health::record_success_on_entry(
-                                upstream_name,
-                                entry,
-                                UpstreamCapability::Prompts,
-                            );
-                        }
-                    })
+                    .apply_to_observed_prompt_call(
+                        &prepared.observed,
+                        prepared.generation,
+                        &prepared.native_name,
+                        |entry| {
+                            if affects_health {
+                                super::health::record_failure_on_entry(
+                                    &upstream_name,
+                                    entry,
+                                    UpstreamCapability::Prompts,
+                                    format!("upstream prompt get failed: {message}"),
+                                );
+                            } else {
+                                super::health::record_success_on_entry(
+                                    &upstream_name,
+                                    entry,
+                                    UpstreamCapability::Prompts,
+                                );
+                            }
+                        },
+                    )
                     .await;
                 if applied.is_none() {
                     Err(ExactPromptCallError::Unavailable)
@@ -130,14 +173,19 @@ impl UpstreamPool {
                     self.request_timeout.as_millis()
                 );
                 let applied = self
-                    .apply_to_observed_prompt_call(&observed, generation, native_name, |entry| {
-                        super::health::record_failure_on_entry(
-                            upstream_name,
-                            entry,
-                            UpstreamCapability::Prompts,
-                            message.clone(),
-                        );
-                    })
+                    .apply_to_observed_prompt_call(
+                        &prepared.observed,
+                        prepared.generation,
+                        &prepared.native_name,
+                        |entry| {
+                            super::health::record_failure_on_entry(
+                                &upstream_name,
+                                entry,
+                                UpstreamCapability::Prompts,
+                                message.clone(),
+                            );
+                        },
+                    )
                     .await;
                 if applied.is_none() {
                     Err(ExactPromptCallError::Unavailable)

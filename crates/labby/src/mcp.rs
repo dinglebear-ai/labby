@@ -32,6 +32,8 @@ pub(crate) mod pagination;
 pub(crate) mod peer_contract;
 pub mod peers;
 pub(crate) mod permanent_tools;
+#[cfg(feature = "gateway")]
+pub(crate) mod prompt_execution;
 pub mod prompts;
 pub(crate) mod provenance;
 pub mod registry;

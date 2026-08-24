@@ -237,7 +237,7 @@ impl AccessStore {
     }
 
     #[cfg(test)]
-    pub(super) async fn execute_test_statement(&self, sql: &'static str) -> AccessStoreResult<()> {
+    pub(crate) async fn execute_test_statement(&self, sql: &'static str) -> AccessStoreResult<()> {
         self.with_connection(move |connection| {
             connection.execute_batch(sql).map_err(map_sqlite_error)
         })

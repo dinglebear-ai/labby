@@ -413,6 +413,29 @@ impl PublishedLoadoutPromptCatalogSnapshot {
     pub fn routes(&self) -> &[PublishedPromptRoute] {
         &self.routes
     }
+
+    /// Resolve one canonical gateway Prompt name (`upstream/native`) only when
+    /// exactly one published route produces it. Ambiguous namespace shapes
+    /// fail closed rather than parsing the owner at the first slash or relying
+    /// on route order.
+    #[must_use]
+    pub fn unique_route_for_wire_name(&self, wire_name: &str) -> Option<&PublishedPromptRoute> {
+        unique_prompt_route_for_wire_name(&self.routes, wire_name)
+    }
+}
+
+fn unique_prompt_route_for_wire_name<'a>(
+    routes: &'a [PublishedPromptRoute],
+    wire_name: &str,
+) -> Option<&'a PublishedPromptRoute> {
+    let mut matches = routes.iter().filter(|route| {
+        wire_name
+            .strip_prefix(route.upstream_name.as_ref())
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .is_some_and(|native| native == route.native_name.as_ref())
+    });
+    let route = matches.next()?;
+    matches.next().is_none().then_some(route)
 }
 
 /// One common-interval view of the Loadout's tools, regular Resources,
@@ -1449,4 +1472,38 @@ fn project_route_snapshot(
                 .collect::<Vec<_>>(),
         ),
     })
+}
+
+#[cfg(test)]
+mod prompt_route_match_tests {
+    use std::sync::Arc;
+
+    use rmcp::model::Prompt;
+
+    use super::{PublishedPromptRoute, unique_prompt_route_for_wire_name};
+
+    #[test]
+    fn canonical_prompt_wire_name_rejects_ambiguous_decompositions() {
+        let routes = vec![
+            PublishedPromptRoute {
+                upstream_name: Arc::from("alpha"),
+                native_name: Arc::from("bravo/name"),
+                prompt: Prompt::new("bravo/name", None::<String>, None),
+            },
+            PublishedPromptRoute {
+                upstream_name: Arc::from("alpha/bravo"),
+                native_name: Arc::from("name"),
+                prompt: Prompt::new("name", None::<String>, None),
+            },
+        ];
+
+        assert!(unique_prompt_route_for_wire_name(&routes, "alpha/bravo/name").is_none());
+        assert_eq!(
+            unique_prompt_route_for_wire_name(&routes[..1], "alpha/bravo/name")
+                .unwrap()
+                .native_name
+                .as_ref(),
+            "bravo/name"
+        );
+    }
 }

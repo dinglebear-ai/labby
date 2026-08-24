@@ -14,6 +14,7 @@ use labby_auth::upstream::manager::UpstreamOauthManager;
 use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
+use rmcp::model::{GetPromptRequestParams, GetPromptResult};
 
 use crate::gateway::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use crate::gateway::config::{normalize_config, validate_config};
@@ -26,9 +27,25 @@ use crate::gateway::service_registry::{
     PublishedServiceRegistryState, ServiceRegistryPublicationError,
 };
 use crate::gateway::types::CatalogChangeNotifier;
-use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector, UpstreamPool};
+use crate::upstream::pool::{
+    ExactPromptCallError, HeaderRecoveryMetricsStore, InProcessConnector, PromptCatalogGeneration,
+    UpstreamPool,
+};
 
-use super::{GatewayManager, GatewayRuntimeHandle};
+use super::{GatewayManager, GatewayRuntimeHandle, PoolPublicationGeneration};
+
+/// Redacted outcome of exact Prompt publication freshness validation/execution.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PublishedPromptCallError {
+    #[error("published prompt target is unavailable")]
+    Unavailable,
+    #[error("published prompt call queue is unavailable")]
+    QueueUnavailable,
+    #[error("published prompt call failed")]
+    Upstream,
+    #[error("published prompt call timed out")]
+    Timeout,
+}
 
 // ── Gateway manager factory (A-H3) ────────────────────────────────────────────
 
@@ -401,6 +418,52 @@ impl GatewayManager {
 
     pub async fn current_pool(&self) -> Option<Arc<UpstreamPool>> {
         self.runtime.current_pool().await
+    }
+
+    /// Execute a caller-selected exact Prompt target only while the manager
+    /// still publishes the caller's expected pool revision.
+    ///
+    /// Pool and Prompt generations are observations, not capabilities. This
+    /// method validates publication/catalog/connection freshness but performs
+    /// no Project, route, Loadout, identity, or permission authorization.
+    /// Callers must separately derive the target from a trusted, current
+    /// `AssetUse` decision. The live MCP handler does not call this unmounted
+    /// prerequisite yet.
+    pub async fn execute_published_prompt_exact(
+        &self,
+        pool_generation: PoolPublicationGeneration,
+        prompt_generation: PromptCatalogGeneration,
+        upstream_name: &str,
+        native_name: &str,
+        params: GetPromptRequestParams,
+    ) -> Result<GetPromptResult, PublishedPromptCallError> {
+        let first = self.runtime.published_pool_snapshot();
+        if first.generation() != pool_generation {
+            return Err(PublishedPromptCallError::Unavailable);
+        }
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedPromptCallError::Unavailable);
+        };
+        let prepared = pool
+            .prepare_published_prompt_exact(upstream_name, native_name, prompt_generation, params)
+            .await;
+        let applying_pool = Arc::clone(&pool);
+        let result = self
+            .runtime
+            .apply_to_exact_pool_publication(pool_generation, &pool, || async move {
+                match prepared {
+                    Ok(prepared) => applying_pool.apply_prepared_prompt_exact(prepared).await,
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            .ok_or(PublishedPromptCallError::Unavailable)?;
+        result.map_err(|error| match error {
+            ExactPromptCallError::Unavailable => PublishedPromptCallError::Unavailable,
+            ExactPromptCallError::QueueUnavailable => PublishedPromptCallError::QueueUnavailable,
+            ExactPromptCallError::Upstream => PublishedPromptCallError::Upstream,
+            ExactPromptCallError::Timeout => PublishedPromptCallError::Timeout,
+        })
     }
 
     /// Clone the config and pool from one published gateway revision.

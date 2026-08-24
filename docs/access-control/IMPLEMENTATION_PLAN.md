@@ -425,6 +425,12 @@ The pool owns a separate, unmounted regular non-OAuth Prompt call kernel that re
 
 This prerequisite does not alter the live `prompts/get` handler, owner resolution, relay, OAuth/subject-scoped behavior, Project authorization, wire errors, execution grants, telemetry/usage accounting, or enforcement. A later mount must bind manager pool identity and current Project/route/access authorization in addition to this pool-local evidence, and the mounted handler remains the single accounting owner.
 
+### Wave 43 / Milestone 0AU: AssetUse-bound exact regular Prompt execution seam
+
+The product owns one unmounted, crate-private resolver/executor for regular non-OAuth Prompts. It derives fresh `AssetUse` authorization and coherent Project route/Loadout/catalog evidence before dispatch, resolves exactly one canonical `upstream/native` Prompt route, rewrites only the outbound upstream name to the native name, and rechecks the same authorization/publication interval before exposing the result. The manager brackets final Prompt outcome attribution with its pool-publication lease, so pool replacement or ABA cannot apply stale health or return stale output.
+
+Authorization is checked when the upstream request starts and again before its result is exposed; it is not a revocation lease and cannot unsend a request already in flight. Pool and Prompt generations remain observations rather than capabilities. This unmounted seam does not bind or validate a protected transport token instance or its expiry. A future handler mount must supply only middleware-derived `VerifiedIdentity` and protected-route facts and must validate the current request's `TransportBoundAccessContext` token instance and expiry before calling this resolver and again before exposing its result. Built-ins, OAuth/subject-scoped Prompts, capability relay, live `prompts/get` mounting, wire-error mapping, and telemetry/usage accounting remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

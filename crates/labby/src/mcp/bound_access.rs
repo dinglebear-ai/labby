@@ -146,6 +146,32 @@ impl BoundAccessContext {
     pub(crate) fn credential_binding_fingerprint(&self) -> &str {
         &self.credential_binding_fingerprint
     }
+
+    pub(crate) fn same_publication_as(&self, other: &Self) -> bool {
+        self.credential_binding_fingerprint == other.credential_binding_fingerprint
+            && self.catalog.same_publication_as(&other.catalog)
+            && self.route.same_publication_as(&other.route)
+    }
+
+    pub(crate) fn allows_upstream_prompt_pair(&self, upstream: &str, native_name: &str) -> bool {
+        let route = self.route();
+        route.effective_loadout().expose_prompts
+            && route
+                .effective_loadout()
+                .upstreams
+                .iter()
+                .any(|name| name == upstream)
+            && self
+                .catalog()
+                .catalog()
+                .prompts()
+                .routes()
+                .iter()
+                .any(|candidate| {
+                    candidate.upstream_name.as_ref() == upstream
+                        && candidate.native_name.as_ref() == native_name
+                })
+    }
 }
 
 pub(crate) fn attach_project_access_observation(
@@ -385,25 +411,10 @@ impl ProjectDiscoveryShadow<'_> {
         if binding.validate_not_expired(now).is_err() {
             return None;
         }
-        let core = binding.core();
-        let route = core.route();
         Some(
-            route.effective_loadout().expose_prompts
-                && route
-                    .effective_loadout()
-                    .upstreams
-                    .iter()
-                    .any(|name| name == upstream)
-                && core
-                    .catalog()
-                    .catalog()
-                    .prompts()
-                    .routes()
-                    .iter()
-                    .any(|candidate| {
-                        candidate.upstream_name.as_ref() == upstream
-                            && candidate.native_name.as_ref() == native_name
-                    }),
+            binding
+                .core()
+                .allows_upstream_prompt_pair(upstream, native_name),
         )
     }
 }
@@ -441,6 +452,27 @@ pub(crate) async fn bind_access_context(
     resource: &str,
     project_id: &str,
 ) -> Result<BoundAccessContext, BoundAccessContextError> {
+    bind_access_context_with_permission(
+        runtime,
+        manager,
+        identity,
+        route_name,
+        resource,
+        project_id,
+        Permission::AssetDiscover,
+    )
+    .await
+}
+
+async fn bind_access_context_with_permission(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    identity: VerifiedIdentity,
+    route_name: &str,
+    resource: &str,
+    project_id: &str,
+    permission: Permission,
+) -> Result<BoundAccessContext, BoundAccessContextError> {
     let context_identity = identity.clone();
     bind_stable_context(
         || async {
@@ -449,7 +481,7 @@ pub(crate) async fn bind_access_context(
                 manager,
                 context_identity.clone(),
                 project_id,
-                Permission::AssetDiscover,
+                permission,
             )
             .await
             .map_err(map_context_error)
@@ -463,6 +495,26 @@ pub(crate) async fn bind_access_context(
         identity,
         route_name,
         resource,
+    )
+    .await
+}
+
+pub(crate) async fn bind_asset_use_access_context(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    identity: VerifiedIdentity,
+    route_name: &str,
+    resource: &str,
+    project_id: &str,
+) -> Result<BoundAccessContext, BoundAccessContextError> {
+    bind_access_context_with_permission(
+        runtime,
+        manager,
+        identity,
+        route_name,
+        resource,
+        project_id,
+        Permission::AssetUse,
     )
     .await
 }

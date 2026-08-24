@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -79,7 +80,7 @@ impl PublishedPoolSnapshot {
 #[derive(Clone)]
 pub struct GatewayRuntimeHandle {
     published_pool: Arc<ArcSwap<PublishedPoolState>>,
-    pool_publication: Arc<tokio::sync::Mutex<()>>,
+    pool_publication: Arc<tokio::sync::RwLock<()>>,
     pool_changes: tokio::sync::watch::Sender<Option<Arc<UpstreamPool>>>,
 }
 
@@ -91,13 +92,35 @@ impl Default for GatewayRuntimeHandle {
                 generation: PoolPublicationGeneration(next_pool_publication_generation()),
                 pool: None,
             })),
-            pool_publication: Arc::new(tokio::sync::Mutex::new(())),
+            pool_publication: Arc::new(tokio::sync::RwLock::new(())),
             pool_changes,
         }
     }
 }
 
 impl GatewayRuntimeHandle {
+    pub(crate) async fn apply_to_exact_pool_publication<T, F, Fut>(
+        &self,
+        expected_generation: PoolPublicationGeneration,
+        expected_pool: &Arc<UpstreamPool>,
+        apply: F,
+    ) -> Option<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _publication = self.pool_publication.read().await;
+        let current = self.published_pool_snapshot();
+        if current.generation() != expected_generation
+            || current
+                .pool()
+                .is_none_or(|pool| !Arc::ptr_eq(pool, expected_pool))
+        {
+            return None;
+        }
+        Some(apply().await)
+    }
+
     pub fn current_pool_sync(&self) -> Option<Arc<UpstreamPool>> {
         self.published_pool_snapshot().into_pool()
     }
@@ -110,7 +133,7 @@ impl GatewayRuntimeHandle {
         // Keep generation allocation, coherent-state publication, and the
         // compatibility watch notification in one total order. Without this
         // lease concurrent swaps could publish generations out of order.
-        let _publication = self.pool_publication.lock().await;
+        let _publication = self.pool_publication.write().await;
         self.published_pool.store(Arc::new(PublishedPoolState {
             generation: PoolPublicationGeneration(next_pool_publication_generation()),
             pool: pool.clone(),
