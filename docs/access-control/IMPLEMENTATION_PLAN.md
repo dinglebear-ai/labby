@@ -287,6 +287,12 @@ The immutable result is unmounted observational input only. It does not rebuild 
 
 This unified snapshot is still observational and unmounted. It does not bind a Project, Principal, protected route, OAuth subject, session, exact dispatch action, or final-boundary authorization; it also excludes resources, prompts, skills, Code Mode, MCP Apps, tasks, and pagination. The next boundary is application-layer composition with the stable Project runtime context, followed later by server-owned request/session binding and uncached exact-action reauthorization.
 
+### Wave 20 / Milestone 0X: stable Project runtime MCP catalog context
+
+The gateway-feature-only access composer now performs bounded authorization-first A-M-A-M observation across the AccessStore and Wave 19's unified manager snapshot. It returns only when the complete Project permission snapshots match and all runtime-config, pool, tool-catalog, and service-registry publication identities match. Ordinary Project denial reaches no manager lookup; a second authorization denial prevents the second lookup; stable manager failures collapse to one non-enumerating catalog-unavailable result. Three outer attempts cap work at six Access reads and six manager invocations, whose internal publication protocol is independently bounded.
+
+The crate-private, non-cloneable result owns the existing permission snapshot and unified catalog snapshot without copying authority facts. It remains observational and unmounted: no session `BoundAccessContext`, protected-route intersection, discovery filtering, exact action authorization, transport enforcement, caching, or final-boundary revocation check is enabled.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
