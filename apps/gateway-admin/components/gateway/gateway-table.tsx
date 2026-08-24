@@ -1092,16 +1092,23 @@ export function GatewayTable({
         }}
         onConfirm={confirmDisableGateway}
       />
-      <ActionConfirmationDialog
-        open={removeConfirmationGateway !== null}
-        title={REMOVE_GATEWAY_TITLE}
-        description={removeGatewayDescription(removeConfirmationGateway?.name ?? '')}
-        confirmLabel={REMOVE_GATEWAY_CONFIRM_LABEL}
-        onOpenChange={(open) => {
-          if (!open) setRemoveConfirmationGatewayId(null)
-        }}
-        onConfirm={confirmRemoveGateway}
-      />
+      {/* Mounted only with a resolved target, so the description always has a
+          real name to use. `?? ''` here would have contradicted
+          `removeGatewayDescription`'s own contract, which deliberately has no
+          "this server" fallback — an unnamed delete confirmation is exactly
+          what that helper exists to prevent. */}
+      {removeConfirmationGateway !== null && (
+        <ActionConfirmationDialog
+          open
+          title={REMOVE_GATEWAY_TITLE}
+          description={removeGatewayDescription(removeConfirmationGateway.name)}
+          confirmLabel={REMOVE_GATEWAY_CONFIRM_LABEL}
+          onOpenChange={(open) => {
+            if (!open) setRemoveConfirmationGatewayId(null)
+          }}
+          onConfirm={confirmRemoveGateway}
+        />
+      )}
     </>
   )
 }

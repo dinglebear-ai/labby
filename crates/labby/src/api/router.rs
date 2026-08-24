@@ -1760,7 +1760,7 @@ async fn v1_route_not_found(
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
 ) -> axum::response::Response {
     ApiError::new(ToolError::Sdk {
-        sdk_kind: "not_found".into(),
+        sdk_kind: "route_not_found".into(),
         message: format!("no route matches {method} {path}", path = uri.path()),
     })
     .into_response()
@@ -2298,7 +2298,7 @@ mod tests {
             .unwrap();
         assert!(!body.is_empty(), "fallback must not return an empty body");
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["kind"], "not_found");
+        assert_eq!(json["kind"], "route_not_found");
         assert!(json["message"].as_str().unwrap().contains("/v1/gateway"));
     }
 
@@ -2326,7 +2326,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["kind"], "not_found");
+        assert_eq!(json["kind"], "route_not_found");
 
         let message = json["message"].as_str().unwrap();
         assert!(message.contains("/v1/no-such-service"));
