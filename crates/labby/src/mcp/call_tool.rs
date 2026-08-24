@@ -326,6 +326,7 @@ impl LabMcpServer {
             route = "project_exact_complete",
             "dispatch start"
         );
+        let access_context_unavailable = binding.is_none();
         let result = match (binding, self.gateway_manager.as_deref()) {
             (Some((transport, identity)), Some(manager)) => {
                 crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
@@ -417,7 +418,14 @@ impl LabMcpServer {
                     &service,
                     "call_tool",
                     elapsed_ms,
-                    DispatchLogOutcome::Failure { level, kind },
+                    DispatchLogOutcome::Failure {
+                        level,
+                        kind: if access_context_unavailable {
+                            "access_context_unavailable"
+                        } else {
+                            kind
+                        },
+                    },
                 )
                 .await;
                 let envelope = extra.as_ref().map_or_else(

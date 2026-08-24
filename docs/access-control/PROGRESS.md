@@ -228,7 +228,14 @@ Wave 2's private persistence kernel and Wave 3's store-only explicit owner boots
 - [ ] destinations/mirror state.
 - [x] bootstrap restart/concurrency/rollback and v1 migration safety tests.
 
-The bootstrap facade remains crate-private and is not called by product startup. One narrow `POST /v1/access/bootstrap-owner` adapter is mounted only with OAuth browser state and invokes it only after browser session, CSRF, middleware-derived `VerifiedIdentity`, `lab:admin`, and configured-admin-email gates. It returns only `created` or `already_applied`, uses canonical agent errors, and has no MCP/CLI/stdio/bearer/loopback bypass; without OAuth the route is absent and returns `404` before body validation. Doctor `access.check` and `audit.full`, plus setup check/repair reports, project observational AccessStore health without creating, migrating, bootstrapping, chmodding, checkpointing, or repairing the database. Missing/uninitialized stores remain advisory while enforcement is disabled; unsafe or unusable states are blocking. The stale AppState-only ownership assumption is superseded: AccessStore owns its connection/transaction boundary, and future application/runtime state may carry a cloneable store handle without owning policy semantics. The Loadout assignment and desired-config admission adapter are crate-private and unmounted; no API, CLI, MCP, or automatic compatibility projection invokes them. Broader mutations and transport enforcement remain unimplemented, so access control is not active merely because the store/bootstrap/health kernel exists.
+Historical Wave 3 checkpoint: the bootstrap facade was crate-private and not
+called by product startup at that point. The narrow
+`POST /v1/access/bootstrap-owner` adapter subsequently mounted behind OAuth
+browser session, CSRF, middleware-derived `VerifiedIdentity`, `lab:admin`, and
+configured-admin-email gates. Later completed waves also mounted protected
+Project discovery and exact prompt/resource/tool enforcement; consult the
+current-state summary and completed-wave entries below. Broader mutation,
+destructive-tool, OAuth/relay, and task-lifecycle enforcement remains deferred.
 
 ### Phase 3: AuthContext identity integration
 

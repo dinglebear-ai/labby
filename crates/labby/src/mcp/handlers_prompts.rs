@@ -412,7 +412,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "upstream_error",
+                        kind: "access_context_unavailable",
                     },
                 )
                 .await;

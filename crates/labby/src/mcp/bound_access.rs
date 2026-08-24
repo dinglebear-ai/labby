@@ -29,7 +29,6 @@ pub(crate) struct BoundAccessContextId(u64);
 /// request params and `_meta` never participate. It is not a dispatch grant.
 /// Resume/session validation remains deferred; the protected HTTP transport
 /// wraps this core with the current access-token instance and expiry.
-#[allow(dead_code)] // Owned in shadow mode; enforcement consumers land in the next slice.
 pub(crate) struct BoundAccessContext {
     id: BoundAccessContextId,
     catalog: ProjectRuntimeMcpCatalogContext,
@@ -39,7 +38,6 @@ pub(crate) struct BoundAccessContext {
 }
 
 /// Request-owned protected HTTP binding around the coherent core evidence.
-#[allow(dead_code)] // Request-owned in shadow mode; not yet enforced by handlers.
 pub(crate) struct TransportBoundAccessContext {
     core: BoundAccessContext,
     credential_instance_fingerprint: String,
@@ -51,7 +49,6 @@ pub(crate) struct TransportCredentialBinding {
     expires_at_unix: u64,
 }
 
-#[allow(dead_code)]
 impl TransportBoundAccessContext {
     pub(crate) fn new(
         core: BoundAccessContext,
@@ -128,7 +125,6 @@ pub(crate) fn project_execution_binding(
 }
 
 #[derive(Clone)]
-#[allow(dead_code)] // Bound payload is intentionally only observed by tests in shadow mode.
 pub(crate) enum ProjectAccessObservation {
     Bound(Arc<TransportBoundAccessContext>),
     Unavailable,
@@ -2105,9 +2101,29 @@ mod tests {
         let first_transport = make_transport("first-request-jti", long_expiry).await;
         let resume_transport = make_transport("first-request-jti", long_expiry).await;
         let replay_transport = make_transport("different-request-jti", long_expiry).await;
-        let expiring_at = usize::try_from(unix_seconds(now).unwrap() + 3).unwrap();
-        let expiring_first_transport = make_transport("expiring-request-jti", expiring_at).await;
-        let expiring_resume_transport = make_transport("expiring-request-jti", expiring_at).await;
+        let expiring_first_transport = make_transport("expiring-request-jti", long_expiry).await;
+        let expired_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let expired_resume_transport = TransportBoundAccessContext::new(
+            expired_core,
+            validate_transport_credential_binding(
+                "issuer",
+                "expiring-request-jti",
+                101,
+                UNIX_EPOCH + std::time::Duration::from_secs(100),
+            )
+            .unwrap(),
+            UNIX_EPOCH + std::time::Duration::from_secs(100),
+        )
+        .unwrap();
 
         let server = crate::mcp::server::LabMcpServer {
             registry,
@@ -2188,12 +2204,11 @@ mod tests {
             .await
             .expect("first expiring Project page");
         let expiring_cursor = expiring_first.next_cursor.expect("expiring Project cursor");
-        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         let expired = running
             .service()
             .list_tools_impl(
                 Some(PaginatedRequestParams::default().with_cursor(Some(expiring_cursor))),
-                context(expiring_resume_transport),
+                context(expired_resume_transport),
             )
             .await
             .expect("expired Project binding fails closed without revealing rows");

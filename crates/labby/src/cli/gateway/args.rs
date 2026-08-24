@@ -598,6 +598,12 @@ pub struct GatewayProtectedRouteUpdateArgs {
     /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
+    /// Bind this gateway subset to an access-control project.
+    #[arg(long, conflicts_with = "clear_project_id")]
+    pub project_id: Option<String>,
+    /// Explicitly remove the existing access-control project binding.
+    #[arg(long, conflicts_with = "project_id")]
+    pub clear_project_id: bool,
     /// Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields.
     #[arg(long, conflicts_with_all = ["target_upstream", "target_service", "expose_code_mode"])]
     pub loadout: Option<String>,
@@ -638,6 +644,9 @@ pub struct GatewayProtectedRouteUpsertArgs {
     /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
+    /// Bind this gateway subset to an access-control project.
+    #[arg(long)]
+    pub project_id: Option<String>,
     /// Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields.
     #[arg(long, conflicts_with_all = ["target_upstream", "target_service", "expose_code_mode"])]
     pub loadout: Option<String>,

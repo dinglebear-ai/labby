@@ -86,7 +86,8 @@ fn resolve_exact_target<'a>(
 }
 
 /// Authorize and execute one exact regular non-OAuth Prompt against a bounded
-/// common interval. This remains unmounted from every MCP handler.
+/// common interval. MCP handlers reach this primitive only through the
+/// transport-bound wrapper below.
 pub(crate) async fn execute_exact_project_prompt(
     runtime: &AccessRuntime,
     manager: &GatewayManager,

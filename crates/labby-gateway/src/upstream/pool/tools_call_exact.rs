@@ -11,7 +11,7 @@
     reason = "the focused exact-kernel fixtures stay adjacent to the public error contract"
 )]
 
-use std::time::Instant;
+use tokio::time::Instant;
 
 use rmcp::model::{CallToolRequestParams, CallToolResponse, ErrorData};
 
@@ -127,6 +127,7 @@ mod tests {
     struct SlowToolServer {
         calls: Arc<AtomicUsize>,
         delay: Duration,
+        started: Option<Arc<Notify>>,
     }
 
     impl ServerHandler for SlowToolServer {
@@ -136,6 +137,9 @@ mod tests {
             _: RequestContext<RoleServer>,
         ) -> Result<CallToolResponse, ErrorData> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = &self.started {
+                started.notify_one();
+            }
             tokio::time::sleep(self.delay).await;
             Ok(CallToolResult::success(vec![ContentBlock::text("slow")]).into())
         }
@@ -364,26 +368,20 @@ mod tests {
     }
 
     async fn wait_for_usage_count(store: &crate::usage::UsageStore, outcome: &str) -> i64 {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let expected = outcome.to_string();
-            let count = store
-                .with_conn(move |connection| {
-                    connection
-                        .query_row(
-                            "SELECT COUNT(*) FROM upstream_calls WHERE upstream_name = 'alpha' AND tool_name = 'nested/tool' AND subject_scoped = 0 AND actor = 'unattributed' AND outcome = ?1",
-                            [expected],
-                            |row| row.get(0),
-                        )
-                        .map_err(crate::usage::store::sqlite_error)
-                })
-                .await
-                .unwrap();
-            if count > 0 || std::time::Instant::now() >= deadline {
-                return count;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        store.drain_pending_writes().await;
+        let expected = outcome.to_string();
+        store
+            .with_conn(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM upstream_calls WHERE upstream_name = 'alpha' AND tool_name = 'nested/tool' AND subject_scoped = 0 AND actor = 'unattributed' AND outcome = ?1",
+                        [expected],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .unwrap()
     }
 
     fn with_usage_store(
@@ -397,6 +395,7 @@ mod tests {
     }
 
     async fn total_usage_count(store: &crate::usage::UsageStore) -> i64 {
+        store.drain_pending_writes().await;
         store
             .with_conn(|connection| {
                 connection
@@ -515,7 +514,6 @@ mod tests {
             pool.apply_prepared_tool_exact(prepared).await,
             Err(ExactToolCallError::Unavailable)
         ));
-        tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(total_usage_count(&store).await, 0);
     }
 
@@ -567,6 +565,7 @@ mod tests {
             SlowToolServer {
                 calls: Arc::new(AtomicUsize::new(0)),
                 delay: Duration::from_millis(80),
+                started: None,
             },
         )
         .await;
@@ -599,6 +598,7 @@ mod tests {
             SlowToolServer {
                 calls: Arc::new(AtomicUsize::new(0)),
                 delay: Duration::from_millis(1),
+                started: None,
             },
         )
         .await;
@@ -658,7 +658,6 @@ mod tests {
         task.abort();
         release.notify_one();
         assert!(task.await.unwrap_err().is_cancelled());
-        tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(total_usage_count(&abort_store).await, 0);
     }
 
@@ -926,7 +925,6 @@ mod tests {
                 pool.upstream_tool_last_error("alpha").await.as_deref(),
                 Some("sentinel")
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(total_usage_count(&store).await, 0);
             if let Some(connection) = removed_b {
                 connection.shutdown("alpha", "test.tool-call.aba").await;
@@ -934,14 +932,16 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exact_tool_kernel_uses_one_queue_and_rpc_deadline() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
         let mut pool = catalog_pool_with_server(
             "alpha",
             SlowToolServer {
                 calls: Arc::clone(&calls),
                 delay: Duration::from_millis(80),
+                started: Some(Arc::clone(&started)),
             },
         )
         .await;
@@ -963,8 +963,11 @@ mod tests {
                 )
                 .await
         });
-        tokio::time::sleep(Duration::from_millis(70)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(70)).await;
         drop(held);
+        started.notified().await;
+        tokio::time::advance(Duration::from_millis(30)).await;
         assert!(matches!(
             task.await.unwrap(),
             Err(ExactToolCallError::Timeout)
@@ -980,6 +983,7 @@ mod tests {
             SlowToolServer {
                 calls: Arc::clone(&calls),
                 delay: Duration::from_millis(1),
+                started: None,
             },
         )
         .await;
@@ -1347,7 +1351,6 @@ mod tests {
                 pool.upstream_tool_last_error("alpha").await.as_deref(),
                 Some("sentinel")
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
             assert_eq!(total_usage_count(&store).await, 0);
             if let Some(connection) = removed_b {
                 connection.shutdown("alpha", "test.exact-header-aba").await;

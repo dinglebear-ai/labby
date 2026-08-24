@@ -93,7 +93,10 @@ impl LabMcpServer {
             "lab",
             "list_tools",
             elapsed_ms,
-            DispatchLogOutcome::Success,
+            DispatchLogOutcome::Failure {
+                level: LoggingLevel::Warning,
+                kind: "access_context_unavailable",
+            },
         )
         .await;
         ListToolsResult::with_all_items(Vec::new())

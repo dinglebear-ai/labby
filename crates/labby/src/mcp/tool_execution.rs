@@ -142,7 +142,8 @@ fn resolve_exact_target(context: &BoundAccessContext, wire_name: &str) -> Option
 }
 
 /// Authorize and execute one exact nondestructive regular non-OAuth Tool over
-/// a bounded Access/manager common interval. This remains unmounted.
+/// a bounded Access/manager common interval. MCP handlers reach this primitive
+/// only through the transport-bound Complete-only wrapper below.
 pub(crate) async fn execute_exact_project_tool(
     runtime: &AccessRuntime,
     manager: &GatewayManager,
@@ -195,7 +196,8 @@ pub(crate) async fn execute_exact_project_tool(
 /// Route, resource, and Project facts are derived only from the immutable
 /// request-owned binding. The exact token expiry and independently derived
 /// identity binding are checked before dispatch and again before any result or
-/// error is exposed. This remains unmounted.
+/// error is exposed. This primitive is mounted only through the Complete-only
+/// terminal adapter; handlers do not expose incomplete upstream responses.
 pub(crate) async fn execute_transport_bound_project_tool(
     runtime: &AccessRuntime,
     manager: &GatewayManager,

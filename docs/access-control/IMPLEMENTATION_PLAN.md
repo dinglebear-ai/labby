@@ -13,7 +13,12 @@ Implementation SHALL follow test-driven development. Each slice begins with fail
 
 No transport-specific authorization shortcut is accepted as a temporary implementation if it changes policy semantics. CLI/API/MCP/Code Mode/web adapters may land incrementally, but they must all call the same shared access layer.
 
-The first implementation should be opt-in/shadowed until migration, uncached direct-invocation enforcement, storage/session failure behavior, and adversarial gates are proven. Cache invalidation becomes a gate only when a later measured cache is introduced.
+The initial rollout was required to remain opt-in/shadowed until migration,
+uncached direct-invocation enforcement, storage/session failure behavior, and
+adversarial gates were proven. Protected Project routes now enforce the landed
+discovery and exact-execution slices; incomplete roadmap surfaces remain
+fail-closed or legacy-only as documented in PROGRESS.md. Cache invalidation
+becomes a gate only when a later measured cache is introduced.
 
 ## Engineering-review delivery order
 
@@ -30,7 +35,7 @@ The numbered phases below are the complete initiative roadmap, not one release. 
 
 Implement only principals, external identities, Organizations, Projects, direct Principal membership with the code-owned Project roles Owner/Admin/Member/Viewer, and Project-to-existing-named-Loadout selection. Project Owner is Project-scoped and does not imply Organization Owner. Start in a private surface-neutral `crates/labby/src/access/` module; extract `labby-access` only after a second consumer or an architecture/dependency test proves the need.
 
-Bind each MCP request/session to a server-owned `BoundAccessContext`; intersect discovery with the existing route/Loadout scope; repeat an uncached authorization read at final direct dispatch. Include reconnect, tasks, pagination, Code Mode, MCP Apps, in-process, stdio/Unix, and revoke/check/dispatch race tests. Ship shadowed/opt-in only.
+Bind each MCP request/session to a server-owned `BoundAccessContext`; intersect discovery with the existing route/Loadout scope; repeat an uncached authorization read at final direct dispatch. Include reconnect, tasks, pagination, Code Mode, MCP Apps, in-process, stdio/Unix, and revoke/check/dispatch race tests. The historical initial delivery gate was shadowed/opt-in; the completed protected-route slices listed in PROGRESS.md are now enforced.
 
 ### Milestone 2: policy expansion
 
@@ -471,7 +476,7 @@ This is freshness and nondestructive filtering, not complete Tool authority. The
 
 Wrap the Wave 51 exact nondestructive regular Tool seam in the immutable middleware-owned protected-transport binding. The wrapper validates the exact token expiry and independently derived identity before dispatch and again before exposing any success or error, while deriving route, resource, and Project facts exclusively from the bound core. A post-dispatch expiry discards the result deterministically; pre-dispatch expiry or identity mismatch performs no RPC. The wrapper preserves every Wave 51 response and redacted error class when the transport remains valid.
 
-This wrapper remains unmounted. The generic pooled unit client still cannot negotiate Task or InputRequired capabilities or own their follow-up lifecycle. A future handler may either solve that relay/task authority contract or mount an explicitly Complete-only terminal path that drops unsupported variants without fallback. Handler dispatch, capability negotiation, task and elicitation continuation, destructive/admin policy, OAuth, relay, Code Mode, built-ins, notifications, and surface accounting remain unchanged.
+At this wave the wrapper remained unmounted. The generic pooled unit client still cannot negotiate Task or InputRequired capabilities or own their follow-up lifecycle. Waves 53-54 subsequently mounted an explicitly Complete-only terminal path that drops unsupported variants without fallback; capability negotiation, task and elicitation continuation, destructive/admin policy, OAuth, and relay remain deferred.
 
 ### Wave 53 / Milestone 0BE: Complete-only protected Tool terminal adapter
 

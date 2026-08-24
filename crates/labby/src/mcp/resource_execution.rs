@@ -87,7 +87,8 @@ fn resolve_exact_target<'a>(
 }
 
 /// Authorize and read one exact regular non-OAuth Resource against a bounded
-/// Access/manager common interval. This remains unmounted from MCP handlers.
+/// Access/manager common interval. MCP handlers reach this primitive only
+/// through the transport-bound wrapper below.
 pub(crate) async fn read_exact_project_resource(
     runtime: &AccessRuntime,
     manager: &GatewayManager,

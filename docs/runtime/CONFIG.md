@@ -13,8 +13,16 @@ Labby separates non-secret preferences from secrets and endpoint credentials.
 Configuration lookup stops at the first existing TOML file:
 
 1. `./config.toml`
-2. `~/.labby/config.toml`
-3. `~/.config/labby/config.toml`
+2. `$LABBY_HOME/config.toml`, when `LABBY_HOME` is set
+3. `~/.labby/config.toml`
+4. `~/.config/labby/config.toml`
+
+`LABBY_HOME` must be an absolute path. When set, it replaces the two user-home
+candidates rather than adding another fallback. The access-control store is
+always `$LABBY_HOME/access.db`; without an override it is
+`~/.labby/access.db`. Relative state roots fail closed. Keep the database and
+its `-wal`/`-shm` sidecars together under a service-owned directory; there is
+no separate access-database path override.
 
 Runtime precedence is:
 
@@ -65,6 +73,11 @@ The code-owned proxy key inventory lives in
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
+
+Gateway-subset protected routes may set `target.project_id` to bind the route
+to one access-control Project. The value is opaque authorization context, not a
+display name. CLI updates preserve an existing binding when `--project-id` is
+omitted and remove it only when `--clear-project-id` is explicit.
 
 ## Gateway Upstreams
 
