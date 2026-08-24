@@ -461,6 +461,12 @@ Attach the existing best-effort usage recorder to the Wave 48 kernel only inside
 
 Add one bounded SEP-2243 recovery attempt to the unmounted exact Tool kernel under the original permit and absolute deadline. A structured header mismatch triggers an exact read-only publication/incarnation check, one bounded raw `tools/list` refresh, a second exact check, and at most one retry; final health, usage, recovery counters, and outcome exposure remain gated by checked apply. rmcp's peer-object-local schema cache is a non-authoritative transport hint and cannot be rolled back, including across same-object ABA, so it never grants routing or execution. Stale and cancelled attempts publish no recovery counters, checked-attribution logs, health, usage, or results; bounded pagination may still emit its generic policy diagnostics. Manager generation, authorization, destructive/admin policy, Project/Bound, handler mounting, OAuth, and relay remain deferred.
 
+### Wave 51 / Milestone 0BC: AssetUse exact nondestructive Tool seam
+
+Add an unmounted server-owned resolver for regular non-OAuth Tool calls. A fresh AssetUse Access/manager common interval uniquely resolves the raw MCP Tool name, rejects duplicate upstream owners, dynamic built-in service names, all centrally classified reserved synthetic names, and published destructive tools. The manager brackets the Wave 48-50 prepare/apply path with the exact pool publication lease; a second fresh common interval must preserve the same Tool target and destructive classification before any result or error is exposed. Only the outbound Tool name is rewritten to its native value; arguments and metadata remain opaque. Structured MCP failures cross the product boundary as stable kind and numeric code only, without upstream message or data.
+
+This is freshness and nondestructive filtering, not complete Tool authority. The wrapper preserves Task and InputRequired responses once accepted by the exact pool boundary, but the generic pooled unit client cannot negotiate those capabilities; negotiation and follow-up remain mounting prerequisites. Transport token binding, handler mounting, admin/destructive confirmation, elicitation/task follow-up, OAuth, relay, Code Mode, built-in dispatch, and surface accounting remain deferred. A future handler must derive permanent and App ownership from the same centralized classifier and descriptor assembly used by discovery.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

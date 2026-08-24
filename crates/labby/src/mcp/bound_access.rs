@@ -212,6 +212,26 @@ impl BoundAccessContext {
                 })
     }
 
+    pub(crate) fn allows_upstream_tool_pair(&self, upstream: &str, native_name: &str) -> bool {
+        let route = self.route();
+        route.effective_loadout().expose_tools
+            && route
+                .effective_loadout()
+                .upstreams
+                .iter()
+                .any(|name| name == upstream)
+            && self
+                .catalog()
+                .catalog()
+                .tools()
+                .routes()
+                .iter()
+                .any(|candidate| {
+                    candidate.upstream_name.as_ref() == upstream
+                        && candidate.tool_name.as_ref() == native_name
+                })
+    }
+
     pub(crate) fn allows_upstream_resource_pair(&self, upstream: &str, native_uri: &str) -> bool {
         let route = self.route();
         route.effective_loadout().expose_resources
@@ -366,25 +386,7 @@ impl ProjectDiscoveryShadow<'_> {
         if binding.validate_not_expired(now).is_err() {
             return None;
         }
-        let core = binding.core();
-        let route = core.route();
-        Some(
-            route.effective_loadout().expose_tools
-                && route
-                    .effective_loadout()
-                    .upstreams
-                    .iter()
-                    .any(|name| name == upstream)
-                && core
-                    .catalog()
-                    .catalog()
-                    .tools()
-                    .routes()
-                    .iter()
-                    .any(|route| {
-                        route.upstream_name.as_ref() == upstream && route.tool_name.as_ref() == tool
-                    }),
-        )
+        Some(binding.core().allows_upstream_tool_pair(upstream, tool))
     }
 
     /// Classify one regular non-OAuth upstream Resource by exact provenance.

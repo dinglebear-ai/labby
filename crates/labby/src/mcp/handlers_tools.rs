@@ -318,7 +318,8 @@ impl LabMcpServer {
             };
             for ut in upstream_tools {
                 let tool_name = ut.tool.name.as_ref();
-                if builtin_names.contains(tool_name)
+                if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(tool_name)
+                    || builtin_names.contains(tool_name)
                     || !advertised_names.insert(tool_name.to_string())
                 {
                     tracing::debug!(
@@ -361,7 +362,9 @@ impl LabMcpServer {
                 {
                     for ut in upstream_tools {
                         let tool_name = ut.name.as_ref();
-                        if builtin_names.contains(tool_name)
+                        if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(
+                            tool_name,
+                        ) || builtin_names.contains(tool_name)
                             || !advertised_names.insert(tool_name.to_string())
                         {
                             continue;

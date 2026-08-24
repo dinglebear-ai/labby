@@ -132,6 +132,7 @@ pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
 pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
+pub(crate) use tools_call_exact::ExactToolCallError;
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
 
@@ -688,6 +689,21 @@ impl UpstreamPool {
         self
     }
 
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn usage_row_count_for_tests(&self) -> i64 {
+        let Some(store) = self.usage_store.as_ref() else {
+            return 0;
+        };
+        store
+            .with_conn(|connection| {
+                connection
+                    .query_row("SELECT COUNT(*) FROM upstream_calls", [], |row| row.get(0))
+                    .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .expect("test usage count")
+    }
+
     /// Configured wall-clock request budget used by surface adapters that must
     /// compose multiple upstream passes under one absolute deadline.
     pub fn request_timeout(&self) -> Duration {
@@ -739,6 +755,11 @@ impl UpstreamPool {
     #[must_use]
     pub(crate) fn header_recovery_metrics(&self, upstream_name: &str) -> HeaderRecoveryMetrics {
         self.header_recovery_metrics_store.snapshot(upstream_name)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn header_recovery_is_empty_for_tests(&self, upstream_name: &str) -> bool {
+        self.header_recovery_metrics(upstream_name) == HeaderRecoveryMetrics::default()
     }
 }
 

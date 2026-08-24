@@ -15,7 +15,8 @@ use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
 use rmcp::model::{
-    GetPromptRequestParams, GetPromptResult, ReadResourceRequestParams, ReadResourceResult,
+    CallToolRequestParams, CallToolResponse, ErrorData, GetPromptRequestParams, GetPromptResult,
+    ReadResourceRequestParams, ReadResourceResult,
 };
 
 use crate::gateway::code_mode::{CodeModeHistory, CodeModeSourceStore};
@@ -30,8 +31,9 @@ use crate::gateway::service_registry::{
 };
 use crate::gateway::types::CatalogChangeNotifier;
 use crate::upstream::pool::{
-    ExactPromptCallError, ExactResourceReadError, HeaderRecoveryMetricsStore, InProcessConnector,
-    PromptCatalogGeneration, ResourceCatalogGeneration, UpstreamPool,
+    ExactPromptCallError, ExactResourceReadError, ExactToolCallError, HeaderRecoveryMetricsStore,
+    InProcessConnector, PromptCatalogGeneration, ResourceCatalogGeneration, ToolCatalogGeneration,
+    UpstreamPool,
 };
 
 use super::{GatewayManager, GatewayRuntimeHandle, PoolPublicationGeneration};
@@ -61,6 +63,30 @@ pub enum PublishedResourceReadError {
     #[error("published resource read timed out")]
     Timeout,
     #[error("published resource response is too large")]
+    TooLarge,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PublishedToolCallError {
+    #[error("published tool target is unavailable")]
+    Unavailable,
+    #[error("published tool call queue is unavailable")]
+    QueueUnavailable,
+    #[error("upstream tool returned an MCP error")]
+    Mcp(ErrorData),
+    #[error("upstream tool transport failed")]
+    Transport,
+    #[error("upstream tool protocol failed")]
+    Protocol,
+    #[error("published tool call timed out")]
+    Timeout,
+    #[error("published tool call was cancelled")]
+    Cancelled,
+    #[error("upstream tool input-required rounds were exceeded")]
+    InputRequiredRoundsExceeded,
+    #[error("published tool call failed")]
+    Other,
+    #[error("published tool response is too large")]
     TooLarge,
 }
 
@@ -480,6 +506,54 @@ impl GatewayManager {
             ExactPromptCallError::QueueUnavailable => PublishedPromptCallError::QueueUnavailable,
             ExactPromptCallError::Upstream => PublishedPromptCallError::Upstream,
             ExactPromptCallError::Timeout => PublishedPromptCallError::Timeout,
+        })
+    }
+
+    /// Execute a caller-selected exact Tool target while the expected pool
+    /// publication remains current. Generations are observations, not grants;
+    /// this method performs no identity, Project, destructive, or admin policy.
+    pub async fn execute_published_tool_exact(
+        &self,
+        pool_generation: PoolPublicationGeneration,
+        tool_generation: ToolCatalogGeneration,
+        upstream_name: &str,
+        native_name: &str,
+        params: CallToolRequestParams,
+    ) -> Result<CallToolResponse, PublishedToolCallError> {
+        let first = self.runtime.published_pool_snapshot();
+        if first.generation() != pool_generation {
+            return Err(PublishedToolCallError::Unavailable);
+        }
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedToolCallError::Unavailable);
+        };
+        let prepared = pool
+            .prepare_published_tool_exact(upstream_name, native_name, tool_generation, params)
+            .await;
+        let applying_pool = Arc::clone(&pool);
+        let result = self
+            .runtime
+            .apply_to_exact_pool_publication(pool_generation, &pool, || async move {
+                match prepared {
+                    Ok(prepared) => applying_pool.apply_prepared_tool_exact(prepared).await,
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            .ok_or(PublishedToolCallError::Unavailable)?;
+        result.map_err(|error| match error {
+            ExactToolCallError::Unavailable => PublishedToolCallError::Unavailable,
+            ExactToolCallError::QueueUnavailable => PublishedToolCallError::QueueUnavailable,
+            ExactToolCallError::Mcp(data) => PublishedToolCallError::Mcp(data),
+            ExactToolCallError::Transport => PublishedToolCallError::Transport,
+            ExactToolCallError::Protocol => PublishedToolCallError::Protocol,
+            ExactToolCallError::Timeout => PublishedToolCallError::Timeout,
+            ExactToolCallError::Cancelled => PublishedToolCallError::Cancelled,
+            ExactToolCallError::InputRequiredRoundsExceeded => {
+                PublishedToolCallError::InputRequiredRoundsExceeded
+            }
+            ExactToolCallError::Other => PublishedToolCallError::Other,
+            ExactToolCallError::TooLarge => PublishedToolCallError::TooLarge,
         })
     }
 

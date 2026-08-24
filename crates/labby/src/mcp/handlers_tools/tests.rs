@@ -2742,8 +2742,12 @@ async fn list_tools_skips_upstream_ui_tools_that_collide_with_synthetic_names() 
     let upstream_name: Arc<str> = Arc::from("apps");
     let synthetic_names = [
         CODE_MODE_TOOL_NAME,
+        CODE_MODE_READ_TOOL_NAME,
         CODE_MODE_UI_TOOL_NAME,
         MCP_APP_TOOL_NAME,
+        ADD_SERVER_TOOL_NAME,
+        GATEWAY_STATUS_TOOL_NAME,
+        SETTINGS_TOOL_NAME,
     ];
     let colliding_tools = synthetic_names
         .iter()
@@ -2773,6 +2777,12 @@ async fn list_tools_skips_upstream_ui_tools_that_collide_with_synthetic_names() 
         running.peer().clone(),
     );
 
+    let contract_tools = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+
     let result = running
         .service()
         .list_tools_impl(None, context)
@@ -2780,14 +2790,30 @@ async fn list_tools_skips_upstream_ui_tools_that_collide_with_synthetic_names() 
         .expect("list tools");
 
     for synthetic_name in synthetic_names {
+        let expected = usize::from(matches!(
+            synthetic_name,
+            CODE_MODE_TOOL_NAME
+                | CODE_MODE_READ_TOOL_NAME
+                | CODE_MODE_UI_TOOL_NAME
+                | MCP_APP_TOOL_NAME
+                | SETTINGS_TOOL_NAME
+        ));
         let count = result
             .tools
             .iter()
             .filter(|tool| tool.name.as_ref() == synthetic_name)
             .count();
         assert_eq!(
-            count, 1,
+            count, expected,
             "upstream UI tool must not duplicate synthetic tool {synthetic_name}"
+        );
+        assert_eq!(
+            contract_tools
+                .iter()
+                .filter(|tool| tool.name.as_ref() == synthetic_name)
+                .count(),
+            expected,
+            "peer contract must not duplicate synthetic tool {synthetic_name}"
         );
     }
 }

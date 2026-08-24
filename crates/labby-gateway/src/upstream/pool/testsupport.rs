@@ -410,6 +410,15 @@ impl UpstreamPool {
             .await
             .push(upstream_name.to_string());
     }
+    /// Install an incarnation-bound in-process server for cross-crate Tool
+    /// execution fixtures. Product code cannot call this outside `testkit`.
+    pub async fn install_tool_server_for_tests<S>(&self, upstream_name: &str, server: S)
+    where
+        S: ServerHandler,
+    {
+        self.install_prompt_server_for_tests(upstream_name, server)
+            .await;
+    }
     /// Install an incarnation-bound in-process server for cross-crate Prompt
     /// execution fixtures. Product code cannot call this outside `testkit`.
     pub async fn install_prompt_server_for_tests<S>(&self, upstream_name: &str, server: S)

@@ -1158,12 +1158,37 @@ impl UpstreamPool {
     }
 
     #[cfg(any(test, feature = "testkit"))]
+    pub async fn insert_tool_routes_for_tests(&self, upstream: &str, tools: Vec<UpstreamTool>) {
+        let mut catalog = self.catalog_write().await;
+        if !catalog.contains_key(upstream) {
+            catalog.insert(
+                upstream.to_string(),
+                super::entries::healthy_in_process_entry(Arc::from(upstream), HashMap::new()),
+            );
+        }
+        let entry = catalog.get_mut(upstream).expect("test entry");
+        entry.tools = tools
+            .into_iter()
+            .map(|tool| (tool.tool.name.to_string(), tool))
+            .collect();
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
     pub async fn set_prompt_last_error_for_tests(&self, upstream: &str, error: Option<String>) {
         let mut catalog = self.catalog_write().await;
         catalog
             .get_mut(upstream)
             .expect("test entry")
             .prompt_last_error = error;
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn set_tool_last_error_for_tests(&self, upstream: &str, error: Option<String>) {
+        let mut catalog = self.catalog_write().await;
+        catalog
+            .get_mut(upstream)
+            .expect("test entry")
+            .tool_last_error = error;
     }
 
     #[cfg(any(test, feature = "testkit"))]

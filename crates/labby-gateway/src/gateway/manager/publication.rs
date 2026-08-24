@@ -329,6 +329,24 @@ impl PublishedLoadoutToolCatalogSnapshot {
     pub fn routes(&self) -> &[PublishedToolRoute] {
         &self.routes
     }
+
+    /// Resolve a raw advertised Tool name only when exactly one published
+    /// regular upstream route matches it.
+    #[must_use]
+    pub fn unique_route_for_wire_name(&self, wire_name: &str) -> Option<&PublishedToolRoute> {
+        unique_tool_route_for_wire_name(&self.routes, wire_name)
+    }
+}
+
+fn unique_tool_route_for_wire_name<'a>(
+    routes: &'a [PublishedToolRoute],
+    wire_name: &str,
+) -> Option<&'a PublishedToolRoute> {
+    let mut matches = routes
+        .iter()
+        .filter(|route| route.tool_name.as_ref() == wire_name);
+    let route = matches.next()?;
+    matches.next().is_none().then_some(route)
 }
 
 /// Immutable observational Resource projection for one running Loadout.
@@ -1497,15 +1515,47 @@ fn project_route_snapshot(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // Test fixture constructs upstream-owned descriptors directly.
 mod canonical_route_match_tests {
     use std::sync::Arc;
 
-    use rmcp::model::{Prompt, Resource};
+    use rmcp::model::{Prompt, Resource, Tool};
 
     use super::{
-        PublishedPromptRoute, PublishedResourceRoute, unique_prompt_route_for_wire_name,
-        unique_resource_route_for_wire_uri,
+        PublishedPromptRoute, PublishedResourceRoute, PublishedToolRoute,
+        unique_prompt_route_for_wire_name, unique_resource_route_for_wire_uri,
+        unique_tool_route_for_wire_name,
     };
+    use crate::upstream::types::UpstreamTool;
+
+    #[test]
+    fn raw_tool_name_is_unique_and_order_independent() {
+        let make = |upstream: &str, native: &str| PublishedToolRoute {
+            upstream_name: Arc::from(upstream),
+            tool_name: Arc::from(native),
+            tool: UpstreamTool {
+                tool: Tool::new(native.to_string(), "test", serde_json::Map::new()),
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::from(upstream),
+                destructive: false,
+            },
+        };
+        let routes = vec![make("alpha", "nested/name"), make("bravo", "nested/name")];
+        let wire = "nested/name";
+        assert!(unique_tool_route_for_wire_name(&routes, wire).is_none());
+        let reversed = routes.iter().cloned().rev().collect::<Vec<_>>();
+        assert!(unique_tool_route_for_wire_name(&reversed, wire).is_none());
+        assert_eq!(
+            unique_tool_route_for_wire_name(&routes[..1], wire)
+                .unwrap()
+                .tool_name
+                .as_ref(),
+            "nested/name"
+        );
+        assert!(unique_tool_route_for_wire_name(&routes[..1], "alpha::nested/name").is_none());
+        assert!(unique_tool_route_for_wire_name(&routes[..1], "alpha/nested/name").is_none());
+    }
 
     #[test]
     fn canonical_prompt_wire_name_rejects_ambiguous_decompositions() {

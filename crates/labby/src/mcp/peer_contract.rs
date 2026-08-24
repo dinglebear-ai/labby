@@ -474,7 +474,10 @@ impl PeerContract {
                 .await;
             for upstream_tool in upstream_tools {
                 let name = upstream_tool.tool.name.as_ref();
-                if builtin_names.contains(name) || !advertised_names.insert(name.to_string()) {
+                if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
+                    || builtin_names.contains(name)
+                    || !advertised_names.insert(name.to_string())
+                {
                     continue;
                 }
                 descriptors.push(upstream_tool.tool);
@@ -490,7 +493,8 @@ impl PeerContract {
                 {
                     for tool in tools {
                         let name = tool.name.as_ref();
-                        if builtin_names.contains(name)
+                        if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
+                            || builtin_names.contains(name)
                             || !advertised_names.insert(name.to_string())
                         {
                             continue;
