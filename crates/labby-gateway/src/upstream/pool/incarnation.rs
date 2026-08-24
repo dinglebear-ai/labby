@@ -48,6 +48,10 @@ impl ObservedConnectionCatalogEntry {
     pub(super) fn upstream(&self) -> &str {
         &self.upstream
     }
+
+    pub(super) fn incarnation(&self) -> ConnectionIncarnation {
+        self.incarnation
+    }
 }
 
 impl UpstreamPool {
@@ -255,6 +259,18 @@ impl UpstreamPool {
         observed: &ObservedConnectionCatalogEntry,
         apply: impl FnOnce(&mut UpstreamEntry) -> R,
     ) -> Option<R> {
+        self.apply_to_observed_catalog(observed, |catalog| {
+            catalog.get_mut(&observed.upstream).map(apply)
+        })
+        .await
+        .flatten()
+    }
+
+    pub(super) async fn apply_to_observed_catalog<R>(
+        &self,
+        observed: &ObservedConnectionCatalogEntry,
+        apply: impl FnOnce(&mut super::catalog_publication::CatalogState) -> R,
+    ) -> Option<R> {
         let _binding = self.connection_catalog_binding.lock().await;
         let connections = self.connections.read().await;
         let connection = connections.get(&observed.upstream)?;
@@ -266,7 +282,9 @@ impl UpstreamPool {
         if catalog.incarnation(&observed.upstream) != Some(observed.incarnation) {
             return None;
         }
-        catalog.get_mut(&observed.upstream).map(apply)
+        catalog
+            .contains_key(&observed.upstream)
+            .then(|| apply(&mut catalog))
     }
 }
 

@@ -62,12 +62,15 @@ impl UpstreamPool {
             .iter()
             .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
             .collect::<Vec<_>>();
-        self.apply_to_observed_entry(observed, |entry| {
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
             let changed = entry.resource_uris != resource_uris;
             entry.resource_count = resources.len();
             entry.resource_uris = resource_uris;
-            (entry.resource_exposure_policy.clone(), changed)
+            let policy = entry.resource_exposure_policy.clone();
+            catalog.set_resource_source(name, observed.incarnation(), resources);
+            (policy, changed)
         })
         .await
     }
@@ -78,7 +81,8 @@ impl UpstreamPool {
         error_text: &str,
     ) -> bool {
         let name = observed.upstream();
-        self.apply_to_observed_entry(observed, |entry| {
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_failure_on_entry(
                 name,
                 entry,
@@ -87,6 +91,7 @@ impl UpstreamPool {
             );
             entry.resource_count = 0;
             entry.resource_uris.clear();
+            catalog.remove_resource_source(name);
         })
         .await
         .is_some()
@@ -1098,6 +1103,19 @@ mod tests {
             ]
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let published = pool
+            .published_resource_catalog()
+            .await
+            .expect("published resource catalog");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| route.native_uri.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["file:///first", "file:///second"]
+        );
+        assert_eq!(published.routes()[0].resource.name, "first");
         assert_eq!(
             pool.catalog
                 .read()

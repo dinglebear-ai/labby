@@ -337,6 +337,12 @@ Regular non-OAuth `resources/list` fanout now acquires routable peers together w
 
 This is still not a resource publication or Project enforcement wave. OAuth/subject-scoped resources, templates, reads, UI and synthetic resources, prompts, Skills, and notifications keep their existing paths. Regular resource wire rewriting, filtering, caps, partial-failure behavior, and ordering are unchanged. A later milestone must build the bounded immutable resource publication before Project discovery can classify regular upstream resources.
 
+### Wave 28 / Milestone 0AF: immutable regular-upstream resource publication
+
+The pool now retains bounded, incarnation-tagged regular non-OAuth `resources/list` source facts inside `CatalogState` and reprojects them atomically whenever the existing `CatalogWriteGuard` closes. The independent resource publication requires the current connection/catalog identity, Resources routability and proxy policy, and the current exposure allowlist. Routes preserve exact upstream/native-URI/Resource provenance, sort deterministically, reject within-owner duplicates and invalid structure, and fail closed at checked row, aggregate retained-byte, published-byte, and route bounds. Every semantic transition, including A-B-A identity replacement, receives a process-unique generation while unchanged facts retain their Arc and generation; older snapshots remain immutable.
+
+This snapshot is observational and unmounted. It is not read authority, authorization evidence, or a grant, and excludes UI resources, templates, OAuth/subject-scoped, synthetic/local, Skills, and application families. Manager Loadout projection, Project composition, handler shadow consumption, reads, and enforcement remain later milestones.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

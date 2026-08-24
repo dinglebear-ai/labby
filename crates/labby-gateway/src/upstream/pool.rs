@@ -106,8 +106,9 @@ mod validate;
 
 pub use capability_call::CapabilityCallError;
 pub use catalog_publication::{
-    PublishedToolCatalogSnapshot, PublishedToolRoute, ToolCatalogGeneration,
-    ToolCatalogPublicationError,
+    PublishedResourceCatalogSnapshot, PublishedResourceRoute, PublishedToolCatalogSnapshot,
+    PublishedToolRoute, ResourceCatalogGeneration, ResourceCatalogPublicationError,
+    ToolCatalogGeneration, ToolCatalogPublicationError,
 };
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};

@@ -1,7 +1,7 @@
-//! Immutable publication of the pool's routable tool projection.
+//! Immutable publication of the pool's routable tool and regular-resource projections.
 //!
-//! The snapshot deliberately excludes prompts, resources, skills, connections,
-//! OAuth subjects, and capability health other than tool routability. Those
+//! The snapshots deliberately exclude prompts, templates, UI resources, skills,
+//! OAuth subjects, and unrelated capability health. Those
 //! concerns have separate lifecycles and must not perturb tool generations.
 
 use std::collections::HashMap;
@@ -9,6 +9,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rmcp::model::Resource;
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::upstream::types::{UpstreamEntry, UpstreamTool};
@@ -17,6 +18,14 @@ use super::UpstreamPool;
 use super::tools::MAX_UPSTREAM_TOOLS;
 
 static NEXT_TOOL_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_RESOURCE_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
+const MAX_RESOURCE_CATALOG_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RESOURCE_ROW_BYTES: usize = 1024 * 1024;
+
+pub(super) fn is_ui_resource_uri(uri: &str) -> bool {
+    uri.get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("ui://"))
+}
 
 fn next_generation() -> ToolCatalogGeneration {
     ToolCatalogGeneration(
@@ -28,9 +37,59 @@ fn next_generation() -> ToolCatalogGeneration {
     )
 }
 
+fn next_resource_generation() -> ResourceCatalogGeneration {
+    ResourceCatalogGeneration(
+        NEXT_RESOURCE_CATALOG_GENERATION
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .expect("resource catalog generation exhausted"),
+    )
+}
+
 /// Opaque process-local identity of one published tool catalog revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolCatalogGeneration(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceCatalogGeneration(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceCatalogPublicationError {
+    TooManyRoutes,
+    TooManyBytes,
+    InvalidResource,
+    DuplicateResource,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublishedResourceRoute {
+    pub upstream_name: Arc<str>,
+    pub native_uri: Arc<str>,
+    pub resource: Resource,
+}
+
+/// Immutable observational catalog of generic non-OAuth upstream resources.
+///
+/// UI resources, templates, OAuth/subject-scoped, synthetic, local, Skills, and
+/// application resources are excluded. This is neither read authority,
+/// authorization evidence, nor a dispatch grant.
+#[derive(Debug, Clone)]
+pub struct PublishedResourceCatalogSnapshot {
+    generation: ResourceCatalogGeneration,
+    routes: Arc<[PublishedResourceRoute]>,
+}
+
+impl PublishedResourceCatalogSnapshot {
+    #[must_use]
+    pub fn generation(&self) -> ResourceCatalogGeneration {
+        self.generation
+    }
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedResourceRoute] {
+        &self.routes
+    }
+}
 
 /// Fail-closed reason that no routable tool snapshot can be published.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,6 +130,37 @@ pub(super) struct CatalogState {
     incarnations: HashMap<String, super::incarnation::ConnectionIncarnation>,
     published: Result<Arc<PublishedToolCatalogSnapshot>, ToolCatalogPublicationError>,
     determinant: ProjectionDeterminant,
+    resource_sources: HashMap<String, ResourceSourceState>,
+    published_resources:
+        Result<Arc<PublishedResourceCatalogSnapshot>, ResourceCatalogPublicationError>,
+    resource_determinant: ResourceProjectionDeterminant,
+}
+
+#[derive(PartialEq, Eq)]
+enum ResourceProjectionDeterminant {
+    Ready(Vec<ResourceRouteDeterminant>),
+    Failed(ResourceCatalogPublicationError),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ResourceRouteDeterminant {
+    upstream_name: String,
+    native_uri: String,
+    incarnation: super::incarnation::ConnectionIncarnation,
+    resource: serde_json::Value,
+}
+
+struct ResourceSource {
+    incarnation: super::incarnation::ConnectionIncarnation,
+    resources: Arc<[Resource]>,
+    retained_bytes: usize,
+}
+enum ResourceSourceState {
+    Ready(ResourceSource),
+    Failed {
+        incarnation: super::incarnation::ConnectionIncarnation,
+        error: ResourceCatalogPublicationError,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -96,6 +186,7 @@ impl CatalogState {
         incarnation: super::incarnation::ConnectionIncarnation,
     ) {
         self.incarnations.insert(upstream.to_string(), incarnation);
+        self.resource_sources.remove(upstream);
     }
 
     pub(super) fn incarnation(
@@ -107,10 +198,12 @@ impl CatalogState {
 
     pub(super) fn remove_incarnation(&mut self, upstream: &str) {
         self.incarnations.remove(upstream);
+        self.resource_sources.remove(upstream);
     }
 
     pub(super) fn clear_incarnations(&mut self) {
         self.incarnations.clear();
+        self.resource_sources.clear();
     }
 
     pub(super) fn new() -> Self {
@@ -122,7 +215,201 @@ impl CatalogState {
                 routes: Arc::from([]),
             })),
             determinant: ProjectionDeterminant::Ready(Vec::new()),
+            resource_sources: HashMap::new(),
+            published_resources: Ok(Arc::new(PublishedResourceCatalogSnapshot {
+                generation: next_resource_generation(),
+                routes: Arc::from([]),
+            })),
+            resource_determinant: ResourceProjectionDeterminant::Ready(Vec::new()),
         }
+    }
+
+    pub(super) fn set_resource_source(
+        &mut self,
+        upstream: &str,
+        incarnation: super::incarnation::ConnectionIncarnation,
+        resources: &[Resource],
+    ) {
+        let resources = resources
+            .iter()
+            .filter(|resource| !is_ui_resource_uri(&resource.uri))
+            .collect::<Vec<_>>();
+        let existing_retained = self
+            .resource_sources
+            .iter()
+            .filter(|(name, _)| name.as_str() != upstream)
+            .filter_map(|(_, source)| match source {
+                ResourceSourceState::Ready(source) => Some(source.retained_bytes),
+                ResourceSourceState::Failed { .. } => None,
+            })
+            .try_fold(0usize, usize::checked_add);
+        let mut source_uris = resources
+            .iter()
+            .map(|resource| resource.uri.as_str())
+            .collect::<Vec<_>>();
+        source_uris.sort_unstable();
+        let structural = if source_uris
+            .iter()
+            .any(|uri| uri.is_empty() || uri.chars().any(char::is_control))
+        {
+            Err(ResourceCatalogPublicationError::InvalidResource)
+        } else if source_uris.windows(2).any(|pair| pair[0] == pair[1]) {
+            Err(ResourceCatalogPublicationError::DuplicateResource)
+        } else {
+            Ok(())
+        };
+        let candidate = resources.iter().try_fold(0usize, |total, resource| {
+            let bytes = serde_json::to_vec(resource)
+                .map_err(|_| ResourceCatalogPublicationError::InvalidResource)?
+                .len();
+            if bytes > MAX_RESOURCE_ROW_BYTES {
+                return Err(ResourceCatalogPublicationError::TooManyBytes);
+            }
+            total
+                .checked_add(bytes)
+                .ok_or(ResourceCatalogPublicationError::TooManyBytes)
+        });
+        let retained_bytes = structural.and(candidate).and_then(|candidate| {
+            existing_retained
+                .and_then(|existing| existing.checked_add(candidate))
+                .filter(|total| *total <= MAX_RESOURCE_CATALOG_BYTES)
+                .map(|_| candidate)
+                .ok_or(ResourceCatalogPublicationError::TooManyBytes)
+        });
+        let source = if let Ok(retained_bytes) = retained_bytes {
+            ResourceSourceState::Ready(ResourceSource {
+                incarnation,
+                resources: resources.into_iter().cloned().collect::<Vec<_>>().into(),
+                retained_bytes,
+            })
+        } else {
+            ResourceSourceState::Failed {
+                incarnation,
+                error: retained_bytes.expect_err("failed source"),
+            }
+        };
+        self.resource_sources.insert(upstream.to_string(), source);
+    }
+
+    pub(super) fn remove_resource_source(&mut self, upstream: &str) {
+        self.resource_sources.remove(upstream);
+    }
+
+    fn resource_projection(
+        &self,
+    ) -> Result<
+        (Vec<ResourceRouteDeterminant>, Arc<[PublishedResourceRoute]>),
+        ResourceCatalogPublicationError,
+    > {
+        let mut upstreams = self.entries.iter().collect::<Vec<_>>();
+        upstreams.sort_unstable_by_key(|(name, _)| name.as_str());
+        let mut determinant = Vec::new();
+        let mut routes = Vec::new();
+        let mut total_bytes = 0usize;
+        let mut total_retained_bytes = 0usize;
+        let mut sources = self.resource_sources.iter().collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|(upstream, _)| upstream.as_str());
+        for (upstream, source) in sources {
+            let entry = self
+                .entries
+                .get(upstream)
+                .ok_or(ResourceCatalogPublicationError::InvalidResource)?;
+            let source = match source {
+                ResourceSourceState::Ready(source) => source,
+                ResourceSourceState::Failed { incarnation, error } => {
+                    if self.incarnation(upstream) != Some(*incarnation) {
+                        return Err(ResourceCatalogPublicationError::InvalidResource);
+                    }
+                    if entry.proxy_resources && entry.resource_health.is_routable() {
+                        return Err(*error);
+                    }
+                    continue;
+                }
+            };
+            if entry.name.as_ref() != upstream {
+                return Err(ResourceCatalogPublicationError::InvalidResource);
+            }
+            if self.incarnation(upstream) != Some(source.incarnation)
+                || source
+                    .resources
+                    .iter()
+                    .map(|resource| resource.uri.as_str())
+                    .ne(entry
+                        .resource_uris
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|uri| !is_ui_resource_uri(uri)))
+            {
+                return Err(ResourceCatalogPublicationError::InvalidResource);
+            }
+            total_retained_bytes = total_retained_bytes
+                .checked_add(source.retained_bytes)
+                .ok_or(ResourceCatalogPublicationError::TooManyBytes)?;
+            if total_retained_bytes > MAX_RESOURCE_CATALOG_BYTES {
+                return Err(ResourceCatalogPublicationError::TooManyBytes);
+            }
+        }
+        for (upstream, entry) in upstreams {
+            let Some(ResourceSourceState::Ready(source)) = self.resource_sources.get(upstream)
+            else {
+                continue;
+            };
+            let Some(incarnation) = self.incarnation(upstream) else {
+                continue;
+            };
+            if !entry.proxy_resources || !entry.resource_health.is_routable() {
+                continue;
+            }
+            if entry.name.as_ref() != upstream {
+                return Err(ResourceCatalogPublicationError::InvalidResource);
+            }
+            let mut resources = source
+                .resources
+                .iter()
+                .filter(|resource| {
+                    !is_ui_resource_uri(&resource.uri)
+                        && entry.resource_exposure_policy.matches(&resource.uri)
+                })
+                .collect::<Vec<_>>();
+            resources.sort_unstable_by_key(|resource| resource.uri.as_str());
+            let mut previous = None;
+            for resource in resources {
+                if routes.len() == super::tools::MAX_UPSTREAM_RESOURCES {
+                    return Err(ResourceCatalogPublicationError::TooManyRoutes);
+                }
+                let uri = resource.uri.as_str();
+                if uri.is_empty() || uri.chars().any(char::is_control) {
+                    return Err(ResourceCatalogPublicationError::InvalidResource);
+                }
+                if previous == Some(uri) {
+                    return Err(ResourceCatalogPublicationError::DuplicateResource);
+                }
+                previous = Some(uri);
+                let bytes = serde_json::to_vec(resource)
+                    .map_err(|_| ResourceCatalogPublicationError::InvalidResource)?
+                    .len();
+                total_bytes = total_bytes
+                    .checked_add(bytes)
+                    .ok_or(ResourceCatalogPublicationError::TooManyBytes)?;
+                if total_bytes > MAX_RESOURCE_CATALOG_BYTES {
+                    return Err(ResourceCatalogPublicationError::TooManyBytes);
+                }
+                let value = serde_json::to_value(resource)
+                    .map_err(|_| ResourceCatalogPublicationError::InvalidResource)?;
+                determinant.push(ResourceRouteDeterminant {
+                    upstream_name: upstream.clone(),
+                    native_uri: uri.to_string(),
+                    incarnation,
+                    resource: value,
+                });
+                routes.push(PublishedResourceRoute {
+                    upstream_name: Arc::from(upstream.as_str()),
+                    native_uri: Arc::from(uri),
+                    resource: resource.clone(),
+                });
+            }
+        }
+        Ok((determinant, Arc::from(routes)))
     }
 
     fn projection(
@@ -178,6 +465,8 @@ impl CatalogState {
     }
 
     fn publish_if_changed(&mut self) {
+        self.resource_sources
+            .retain(|upstream, _| self.entries.contains_key(upstream));
         let projection = self.projection();
         let determinant = match &projection {
             Ok((determinant, _)) => ProjectionDeterminant::Ready(determinant.clone()),
@@ -188,6 +477,20 @@ impl CatalogState {
             self.published = projection.map(|(_, routes)| {
                 Arc::new(PublishedToolCatalogSnapshot {
                     generation: next_generation(),
+                    routes,
+                })
+            });
+        }
+        let resource_projection = self.resource_projection();
+        let resource_determinant = match &resource_projection {
+            Ok((determinant, _)) => ResourceProjectionDeterminant::Ready(determinant.clone()),
+            Err(error) => ResourceProjectionDeterminant::Failed(*error),
+        };
+        if resource_determinant != self.resource_determinant {
+            self.resource_determinant = resource_determinant;
+            self.published_resources = resource_projection.map(|(_, routes)| {
+                Arc::new(PublishedResourceCatalogSnapshot {
+                    generation: next_resource_generation(),
                     routes,
                 })
             });
@@ -243,6 +546,12 @@ impl UpstreamPool {
         let state: RwLockReadGuard<'_, CatalogState> = self.catalog.read().await;
         state.published.clone()
     }
+
+    pub async fn published_resource_catalog(
+        &self,
+    ) -> Result<Arc<PublishedResourceCatalogSnapshot>, ResourceCatalogPublicationError> {
+        self.catalog.read().await.published_resources.clone()
+    }
 }
 
 #[cfg(test)]
@@ -251,12 +560,368 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use rmcp::model::Tool;
+    use rmcp::model::{Resource, Tool};
 
     use super::*;
     use crate::upstream::pool::entries::healthy_in_process_entry;
     use crate::upstream::types::ToolExposurePolicy;
 
+    fn install_resource_source(state: &mut CatalogState, upstream: &str, resources: Vec<Resource>) {
+        let incarnation =
+            super::super::incarnation::next_connection_incarnation().expect("identity");
+        let mut entry = healthy_in_process_entry(Arc::from(upstream), HashMap::new());
+        entry.resource_count = resources.len();
+        entry.resource_uris = resources
+            .iter()
+            .map(|resource| resource.uri.clone())
+            .collect();
+        state.entries.insert(upstream.to_string(), entry);
+        state.bind_incarnation(upstream, incarnation);
+        state.set_resource_source(upstream, incarnation, &resources);
+    }
+
+    #[test]
+    fn resource_projection_is_deterministic_bounded_and_immutable() {
+        let mut state = CatalogState::new();
+        install_resource_source(
+            &mut state,
+            "zeta",
+            vec![
+                Resource::new("file:///b", "b"),
+                Resource::new("UI://widget", "widget"),
+                Resource::new("file:///a", "a"),
+            ],
+        );
+        install_resource_source(&mut state, "alpha", vec![Resource::new("https://a", "a")]);
+        state.publish_if_changed();
+        let first = state.published_resources.clone().expect("published");
+        assert_eq!(
+            first
+                .routes()
+                .iter()
+                .map(|route| (route.upstream_name.as_ref(), route.native_uri.as_ref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha", "https://a"),
+                ("zeta", "file:///a"),
+                ("zeta", "file:///b")
+            ]
+        );
+
+        state.entries.get_mut("zeta").expect("zeta").resource_health =
+            crate::upstream::types::UpstreamHealth::Unhealthy {
+                consecutive_failures: 3,
+            };
+        state.publish_if_changed();
+        let narrowed = state.published_resources.clone().expect("narrowed");
+        assert_ne!(first.generation(), narrowed.generation());
+        assert_eq!(first.routes().len(), 3, "old snapshot remains immutable");
+        assert_eq!(narrowed.routes().len(), 1);
+
+        state.entries.get_mut("zeta").expect("zeta").resource_health =
+            crate::upstream::types::UpstreamHealth::Healthy;
+        state.publish_if_changed();
+        let restored = state.published_resources.clone().expect("restored");
+        assert_eq!(restored.routes().len(), 3);
+        assert_ne!(
+            restored.generation(),
+            first.generation(),
+            "ABA receives fresh identity"
+        );
+    }
+
+    #[test]
+    fn resource_projection_rejects_duplicate_and_recovers_without_losing_other_sources() {
+        let mut state = CatalogState::new();
+        install_resource_source(&mut state, "alpha", vec![Resource::new("file:///ok", "ok")]);
+        install_resource_source(
+            &mut state,
+            "beta",
+            vec![
+                Resource::new("file:///dup", "one"),
+                Resource::new("file:///dup", "two"),
+            ],
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resources,
+            Err(ResourceCatalogPublicationError::DuplicateResource)
+        ));
+        let incarnation = state.incarnation("beta").expect("beta identity");
+        state.set_resource_source(
+            "beta",
+            incarnation,
+            &[Resource::new("file:///fixed", "fixed")],
+        );
+        state.entries.get_mut("beta").expect("beta").resource_count = 1;
+        state.entries.get_mut("beta").expect("beta").resource_uris = vec!["file:///fixed".into()];
+        state.publish_if_changed();
+        let recovered = state.published_resources.clone().expect("recovered");
+        assert_eq!(
+            recovered
+                .routes()
+                .iter()
+                .map(|route| route.native_uri.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["file:///ok", "file:///fixed"]
+        );
+    }
+
+    #[test]
+    fn hidden_multi_upstream_source_bytes_fail_closed_globally() {
+        let mut state = CatalogState::new();
+        for upstream in ["alpha", "beta", "gamma"] {
+            let resources = (0..3)
+                .map(|index| {
+                    Resource::new(format!("file:///{upstream}/{index}"), "x".repeat(950_000))
+                })
+                .collect();
+            install_resource_source(&mut state, upstream, resources);
+            state
+                .entries
+                .get_mut(upstream)
+                .expect("entry")
+                .resource_exposure_policy = ToolExposurePolicy::AllowList(Vec::new());
+        }
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resources,
+            Err(ResourceCatalogPublicationError::TooManyBytes)
+        ));
+    }
+
+    #[test]
+    fn resource_generation_tracks_source_identity_and_policy_without_relisting() {
+        let mut state = CatalogState::new();
+        let rows = vec![Resource::new("file:///same", "same")];
+        install_resource_source(&mut state, "alpha", rows.clone());
+        state.publish_if_changed();
+        let first = state.published_resources.clone().expect("first");
+        let incarnation = state.incarnation("alpha").expect("identity");
+        state.set_resource_source("alpha", incarnation, &rows);
+        state.publish_if_changed();
+        let identical = state.published_resources.clone().expect("identical");
+        assert!(Arc::ptr_eq(&first, &identical));
+
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .proxy_resources = false;
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_resources
+                .clone()
+                .expect("hidden")
+                .routes()
+                .is_empty()
+        );
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .proxy_resources = true;
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_resources
+                .clone()
+                .expect("restored")
+                .routes()
+                .len(),
+            1
+        );
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .resource_exposure_policy = ToolExposurePolicy::AllowList(Vec::new());
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_resources
+                .clone()
+                .expect("allowlist hidden")
+                .routes()
+                .is_empty()
+        );
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .resource_exposure_policy = ToolExposurePolicy::All;
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_resources
+                .clone()
+                .expect("allowlist restored")
+                .routes()
+                .len(),
+            1
+        );
+
+        let replacement =
+            super::super::incarnation::next_connection_incarnation().expect("replacement identity");
+        state.bind_incarnation("alpha", replacement);
+        state.publish_if_changed();
+        let empty = state
+            .published_resources
+            .clone()
+            .expect("old source cleared");
+        assert!(empty.routes().is_empty());
+        state.set_resource_source("alpha", replacement, &rows);
+        state.publish_if_changed();
+        let rebound = state.published_resources.clone().expect("rebound");
+        assert_eq!(rebound.routes().len(), 1);
+        assert_ne!(first.generation(), rebound.generation());
+        state.entries.remove("alpha");
+        state.remove_incarnation("alpha");
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_resources
+                .clone()
+                .expect("removed")
+                .routes()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn resource_route_and_structure_failures_recover() {
+        let mut state = CatalogState::new();
+        let too_many = (0..=super::super::tools::MAX_UPSTREAM_RESOURCES)
+            .map(|index| Resource::new(format!("file:///{index}"), "row"))
+            .collect::<Vec<_>>();
+        install_resource_source(&mut state, "alpha", too_many);
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resources,
+            Err(ResourceCatalogPublicationError::TooManyRoutes)
+        ));
+        let incarnation = state.incarnation("alpha").expect("identity");
+        state.set_resource_source("alpha", incarnation, &[Resource::new("bad\nuri", "bad")]);
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .resource_count = 1;
+        state.entries.get_mut("alpha").expect("alpha").resource_uris = vec!["bad\nuri".into()];
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resources,
+            Err(ResourceCatalogPublicationError::InvalidResource)
+        ));
+        state.set_resource_source(
+            "alpha",
+            incarnation,
+            &[Resource::new("file:///fixed", "fixed")],
+        );
+        state.entries.get_mut("alpha").expect("alpha").resource_uris = vec!["file:///fixed".into()];
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_resources
+                .clone()
+                .expect("recovered")
+                .routes()
+                .len(),
+            1
+        );
+    }
+
+    fn resource_with_serialized_size(uri: &str, target: usize) -> Resource {
+        let base = Resource::new(uri, "row").with_description("");
+        let base_len = serde_json::to_vec(&base).expect("serialize base").len();
+        assert!(base_len <= target);
+        let resource = Resource::new(uri, "row").with_description("x".repeat(target - base_len));
+        assert_eq!(
+            serde_json::to_vec(&resource).expect("serialize row").len(),
+            target
+        );
+        resource
+    }
+
+    #[test]
+    fn resource_bounds_accept_exact_limits_and_reject_next_unit() {
+        let mut state = CatalogState::new();
+        let exact_routes = (0..super::super::tools::MAX_UPSTREAM_RESOURCES)
+            .map(|index| Resource::new(format!("file:///{index}"), "row"))
+            .collect::<Vec<_>>();
+        install_resource_source(&mut state, "alpha", exact_routes);
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_resources
+                .clone()
+                .expect("exact route cap")
+                .routes()
+                .len(),
+            super::super::tools::MAX_UPSTREAM_RESOURCES
+        );
+
+        let incarnation = state.incarnation("alpha").expect("identity");
+        let exact_bytes = (0..8)
+            .map(|index| {
+                resource_with_serialized_size(
+                    &format!("file:///exact/{index}"),
+                    MAX_RESOURCE_ROW_BYTES,
+                )
+            })
+            .collect::<Vec<_>>();
+        state.set_resource_source("alpha", incarnation, &exact_bytes);
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .resource_count = exact_bytes.len();
+        state.entries.get_mut("alpha").expect("alpha").resource_uris =
+            exact_bytes.iter().map(|row| row.uri.clone()).collect();
+        state.publish_if_changed();
+        assert!(
+            state.published_resources.is_ok(),
+            "exact aggregate and row byte caps pass"
+        );
+
+        let oversized = vec![resource_with_serialized_size(
+            "file:///oversized",
+            MAX_RESOURCE_ROW_BYTES + 1,
+        )];
+        state.set_resource_source("alpha", incarnation, &oversized);
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .resource_count = 1;
+        state.entries.get_mut("alpha").expect("alpha").resource_uris =
+            vec!["file:///oversized".into()];
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resources,
+            Err(ResourceCatalogPublicationError::TooManyBytes)
+        ));
+    }
+
+    #[test]
+    fn unrelated_no_source_mutation_preserves_resource_arc_and_generation() {
+        let mut state = CatalogState::new();
+        install_resource_source(
+            &mut state,
+            "alpha",
+            vec![Resource::new("file:///alpha", "alpha")],
+        );
+        state.publish_if_changed();
+        let first = state.published_resources.clone().expect("first");
+        let mut unrelated = healthy_in_process_entry(Arc::from("tools-only"), HashMap::new());
+        unrelated.prompt_count = 99;
+        state.entries.insert("tools-only".into(), unrelated);
+        state.publish_if_changed();
+        let second = state.published_resources.clone().expect("second");
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.generation(), second.generation());
+    }
     fn entry(upstream: &str, tool_name: &str) -> UpstreamEntry {
         let upstream_name: Arc<str> = Arc::from(upstream);
         let tool = Tool::new(
