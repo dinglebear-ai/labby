@@ -218,6 +218,19 @@ impl PublishedLoadoutMcpCatalogSnapshot {
     pub fn services(&self) -> &PublishedLoadoutServiceCatalogSnapshot {
         &self.services
     }
+
+    /// Equality of every source publication identity in this unified snapshot.
+    /// Construction guarantees both child snapshots carry the same runtime
+    /// generation, so one runtime identity plus the three remaining source
+    /// identities is the complete comparison tuple.
+    #[must_use]
+    pub fn same_publication_as(&self, other: &Self) -> bool {
+        self.tools.runtime_config_generation() == other.tools.runtime_config_generation()
+            && self.tools.pool_publication_generation() == other.tools.pool_publication_generation()
+            && self.tools.tool_catalog_generation() == other.tools.tool_catalog_generation()
+            && self.services.service_registry_generation()
+                == other.services.service_registry_generation()
+    }
 }
 
 struct ManagerPublicationObservation {
@@ -366,6 +379,10 @@ impl GatewayManager {
                 &first_services,
             )
             .map_err(|_| LoadoutMcpCatalogPublicationError::CatalogUnavailable)?;
+            debug_assert_eq!(
+                tools.runtime_config_generation(),
+                services.runtime_config_generation()
+            );
             return Ok(PublishedLoadoutMcpCatalogSnapshot { tools, services });
         }
         Err(LoadoutMcpCatalogPublicationError::Unstable)

@@ -3,7 +3,8 @@ use std::future::Future;
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::manager::GatewayManager;
 use labby_gateway::gateway::manager::{
-    GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot,
+    GatewayRuntimeConfigGeneration, LoadoutMcpCatalogPublicationError,
+    PublishedLoadoutMcpCatalogSnapshot, PublishedRuntimeLoadoutSnapshot,
 };
 use labby_runtime::gateway_config::GatewayLoadoutConfig;
 use thiserror::Error;
@@ -14,7 +15,7 @@ use super::{
     AuthorizeProjectInput, Permission, ProjectPermissionSnapshot,
 };
 
-const RUNTIME_CONTEXT_ATTEMPTS: usize = 3;
+const CONTEXT_ATTEMPTS: usize = 3;
 
 /// One coherent, point-in-time Project and published-runtime Loadout view.
 ///
@@ -37,6 +38,121 @@ impl ProjectRuntimeLoadoutContext {
 
     pub(crate) fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
         self.runtime_config_generation
+    }
+}
+
+/// Stable Project authorization/runtime-Loadout evidence paired with one
+/// common-interval MCP catalog. Observational and unmounted; not a grant.
+pub(crate) struct ProjectRuntimeMcpCatalogContext {
+    access: ProjectPermissionSnapshot,
+    catalog: PublishedLoadoutMcpCatalogSnapshot,
+}
+
+impl ProjectRuntimeMcpCatalogContext {
+    pub(crate) fn access(&self) -> &ProjectPermissionSnapshot {
+        &self.access
+    }
+    pub(crate) fn catalog(&self) -> &PublishedLoadoutMcpCatalogSnapshot {
+        &self.catalog
+    }
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ProjectRuntimeMcpCatalogError {
+    #[error("access runtime is unavailable")]
+    RuntimeUnavailable,
+    #[error("project access is unavailable")]
+    ProjectAccessUnavailable,
+    #[error("access persistence is unavailable")]
+    AccessUnavailable,
+    #[error("gateway MCP catalog is unavailable")]
+    CatalogUnavailable,
+    #[error("project MCP catalog snapshot is unstable")]
+    SnapshotUnstable,
+}
+
+pub(crate) async fn project_runtime_mcp_catalog_context(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    identity: VerifiedIdentity,
+    project_id: impl Into<String>,
+    permission: Permission,
+) -> Result<ProjectRuntimeMcpCatalogContext, ProjectRuntimeMcpCatalogError> {
+    let store = runtime
+        .store()
+        .await
+        .map_err(|_| ProjectRuntimeMcpCatalogError::RuntimeUnavailable)?;
+    let project_id = project_id.into();
+    stable_project_mcp_context(
+        || {
+            let store = store.clone();
+            let identity = identity.clone();
+            let project_id = project_id.clone();
+            async move {
+                store
+                    .authorize_project(AuthorizeProjectInput::new(identity, project_id, permission))
+                    .await
+            }
+        },
+        |name| async move { manager.published_loadout_mcp_catalog_snapshot(&name).await },
+    )
+    .await
+}
+
+/// At most three outer attempts: six Access reads and six manager snapshot
+/// invocations. Each manager invocation independently caps its internal
+/// G-C-S protocol at three attempts (18 inner attempts worst case).
+async fn stable_project_mcp_context<PF, PFut, MF, MFut>(
+    mut read_project: PF,
+    mut read_catalog: MF,
+) -> Result<ProjectRuntimeMcpCatalogContext, ProjectRuntimeMcpCatalogError>
+where
+    PF: FnMut() -> PFut,
+    PFut: Future<Output = Result<ProjectPermissionSnapshot, AccessStoreError>>,
+    MF: FnMut(String) -> MFut,
+    MFut: Future<
+        Output = Result<PublishedLoadoutMcpCatalogSnapshot, LoadoutMcpCatalogPublicationError>,
+    >,
+{
+    for _ in 0..CONTEXT_ATTEMPTS {
+        let first_access = read_project().await.map_err(map_mcp_context_access_error)?;
+        let first_catalog = read_catalog(first_access.loadout_name.clone())
+            .await
+            .map_err(map_mcp_catalog_error)?;
+        let second_access = read_project().await.map_err(map_mcp_context_access_error)?;
+        let second_catalog = read_catalog(second_access.loadout_name.clone())
+            .await
+            .map_err(map_mcp_catalog_error)?;
+        if first_access == second_access && first_catalog.same_publication_as(&second_catalog) {
+            return Ok(ProjectRuntimeMcpCatalogContext {
+                access: second_access,
+                catalog: second_catalog,
+            });
+        }
+    }
+    Err(ProjectRuntimeMcpCatalogError::SnapshotUnstable)
+}
+
+fn map_mcp_context_access_error(error: AccessStoreError) -> ProjectRuntimeMcpCatalogError {
+    if is_project_access_denial(&error) {
+        ProjectRuntimeMcpCatalogError::ProjectAccessUnavailable
+    } else {
+        ProjectRuntimeMcpCatalogError::AccessUnavailable
+    }
+}
+
+fn map_mcp_catalog_error(
+    error: LoadoutMcpCatalogPublicationError,
+) -> ProjectRuntimeMcpCatalogError {
+    match error {
+        LoadoutMcpCatalogPublicationError::MissingLoadout
+        | LoadoutMcpCatalogPublicationError::MissingPool
+        | LoadoutMcpCatalogPublicationError::CatalogUnavailable => {
+            ProjectRuntimeMcpCatalogError::CatalogUnavailable
+        }
+        LoadoutMcpCatalogPublicationError::Unstable => {
+            ProjectRuntimeMcpCatalogError::SnapshotUnstable
+        }
     }
 }
 
@@ -97,7 +213,7 @@ where
     GF: FnMut(String) -> GFut,
     GFut: Future<Output = PublishedRuntimeLoadoutSnapshot>,
 {
-    for _ in 0..RUNTIME_CONTEXT_ATTEMPTS {
+    for _ in 0..CONTEXT_ATTEMPTS {
         let first_access = read_access()
             .await
             .map_err(map_runtime_context_access_error)?;
@@ -123,15 +239,21 @@ where
 }
 
 fn map_runtime_context_access_error(error: AccessStoreError) -> ProjectRuntimeLoadoutError {
-    match error {
-        AccessStoreError::NotAuthorized
-        | AccessStoreError::IdentityUnavailable
-        | AccessStoreError::ProjectAccessUnavailable
-        | AccessStoreError::InvalidProjectLoadoutInput => {
-            ProjectRuntimeLoadoutError::ProjectAccessUnavailable
-        }
-        _ => ProjectRuntimeLoadoutError::AccessUnavailable,
+    if is_project_access_denial(&error) {
+        ProjectRuntimeLoadoutError::ProjectAccessUnavailable
+    } else {
+        ProjectRuntimeLoadoutError::AccessUnavailable
     }
+}
+
+fn is_project_access_denial(error: &AccessStoreError) -> bool {
+    matches!(
+        error,
+        AccessStoreError::NotAuthorized
+            | AccessStoreError::IdentityUnavailable
+            | AccessStoreError::ProjectAccessUnavailable
+            | AccessStoreError::InvalidProjectLoadoutInput
+    )
 }
 
 /// Redacted failure contract for the unmounted Gateway compatibility adapter.
@@ -250,7 +372,11 @@ mod tests {
     #[cfg(feature = "proxy-testkit")]
     use labby_gateway::gateway::manager::GatewayRuntimeHandle;
     #[cfg(feature = "proxy-testkit")]
-    use labby_runtime::gateway_config::{GatewayConfig, GatewayLoadoutConfig};
+    use labby_gateway::upstream::pool::UpstreamPool;
+    #[cfg(feature = "proxy-testkit")]
+    use labby_runtime::gateway_config::{
+        GatewayConfig, GatewayLoadoutConfig, VirtualServerConfig, VirtualServerSurfacesConfig,
+    };
 
     use super::*;
     use crate::access::BootstrapOwnerInput;
@@ -476,6 +602,271 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "proxy-testkit")]
+    async fn stable_project_mcp_catalog_context_returns_exact_authorized_catalog() {
+        let (directory, runtime, owner) = fixture().await;
+        let gateway_runtime = GatewayRuntimeHandle::default();
+        gateway_runtime
+            .swap(Some(Arc::new(UpstreamPool::new())))
+            .await;
+        let gateway_path = directory.path().join("project-mcp-context.toml");
+        let manager = GatewayManager::with_store(
+            gateway_path.clone(),
+            gateway_runtime,
+            Arc::new(FsGatewayConfigStore::new(gateway_path)),
+        )
+        .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry()));
+        manager
+            .try_seed_config(GatewayConfig {
+                loadouts: vec![GatewayLoadoutConfig {
+                    name: "production".into(),
+                    services: vec!["setup".into()],
+                    ..Default::default()
+                }],
+                virtual_servers: vec![VirtualServerConfig {
+                    id: "setup".into(),
+                    service: "setup".into(),
+                    enabled: true,
+                    surfaces: VirtualServerSurfacesConfig {
+                        mcp: true,
+                        ..Default::default()
+                    },
+                    mcp_policy: None,
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        runtime.store().await.unwrap().execute_test_statement(
+            "INSERT INTO project_loadouts VALUES ('bootstrap-local','bootstrap-default','production','bootstrap-owner',2,2)"
+        ).await.unwrap();
+
+        let access_reads = Arc::new(AtomicUsize::new(0));
+        let manager_reads = Arc::new(AtomicUsize::new(0));
+        let store = runtime.store().await.unwrap();
+        let context = stable_project_mcp_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                let reads = Arc::clone(&access_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                let reads = Arc::clone(&manager_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    manager.published_loadout_mcp_catalog_snapshot(&name).await
+                }
+            },
+        )
+        .await
+        .expect("stable context");
+        assert_eq!(context.access().project_id, "bootstrap-default");
+        assert_eq!(context.access().loadout_name, "production");
+        assert!(context.catalog().tools().routes().is_empty());
+        assert_eq!(context.catalog().services().services()[0].name(), "setup");
+        assert_eq!(access_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(manager_reads.load(Ordering::SeqCst), 2);
+
+        let access_reads = Arc::new(AtomicUsize::new(0));
+        let manager_reads = Arc::new(AtomicUsize::new(0));
+        let denied = stable_project_mcp_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                let reads = Arc::clone(&access_reads);
+                async move {
+                    if reads.fetch_add(1, Ordering::SeqCst) == 1 {
+                        return Err(AccessStoreError::NotAuthorized);
+                    }
+                    store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                let reads = Arc::clone(&manager_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    manager.published_loadout_mcp_catalog_snapshot(&name).await
+                }
+            },
+        )
+        .await;
+        assert!(matches!(
+            denied,
+            Err(ProjectRuntimeMcpCatalogError::ProjectAccessUnavailable)
+        ));
+        assert_eq!(access_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(manager_reads.load(Ordering::SeqCst), 1);
+
+        let access_reads = Arc::new(AtomicUsize::new(0));
+        let manager_reads = Arc::new(AtomicUsize::new(0));
+        let unstable = stable_project_mcp_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                let reads = Arc::clone(&access_reads);
+                async move {
+                    let mut access = store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await?;
+                    access.global_revision += reads.fetch_add(1, Ordering::SeqCst) as u64;
+                    Ok(access)
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                let reads = Arc::clone(&manager_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    manager.published_loadout_mcp_catalog_snapshot(&name).await
+                }
+            },
+        )
+        .await;
+        assert!(matches!(
+            unstable,
+            Err(ProjectRuntimeMcpCatalogError::SnapshotUnstable)
+        ));
+        assert_eq!(access_reads.load(Ordering::SeqCst), CONTEXT_ATTEMPTS * 2);
+        assert_eq!(manager_reads.load(Ordering::SeqCst), CONTEXT_ATTEMPTS * 2);
+
+        let access_reads = Arc::new(AtomicUsize::new(0));
+        let manager_reads = Arc::new(AtomicUsize::new(0));
+        let unavailable = stable_project_mcp_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                let reads = Arc::clone(&access_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await
+                }
+            },
+            |_| {
+                let manager = manager.clone();
+                let reads = Arc::clone(&manager_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    manager
+                        .published_loadout_mcp_catalog_snapshot("missing")
+                        .await
+                }
+            },
+        )
+        .await;
+        assert!(matches!(
+            unavailable,
+            Err(ProjectRuntimeMcpCatalogError::CatalogUnavailable)
+        ));
+        assert_eq!(access_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(manager_reads.load(Ordering::SeqCst), 1);
+
+        let access_reads = Arc::new(AtomicUsize::new(0));
+        let manager_reads = Arc::new(AtomicUsize::new(0));
+        let aba = stable_project_mcp_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                let reads = Arc::clone(&access_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                let reads = Arc::clone(&manager_reads);
+                async move {
+                    let call = reads.fetch_add(1, Ordering::SeqCst);
+                    let snapshot = manager.published_loadout_mcp_catalog_snapshot(&name).await;
+                    if call == 0 {
+                        let config = manager.current_config().await;
+                        manager.try_seed_config(config.clone()).await.unwrap();
+                        manager.try_seed_config(config).await.unwrap();
+                    }
+                    snapshot
+                }
+            },
+        )
+        .await
+        .expect("manager ABA retries");
+        assert_eq!(aba.access().project_id, "bootstrap-default");
+        assert_eq!(access_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(manager_reads.load(Ordering::SeqCst), 4);
+
+        let access_reads = Arc::new(AtomicUsize::new(0));
+        let manager_reads = Arc::new(AtomicUsize::new(0));
+        let unstable_manager = stable_project_mcp_context(
+            || {
+                let store = store.clone();
+                let owner = owner.clone();
+                let reads = Arc::clone(&access_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    store
+                        .authorize_project(AuthorizeProjectInput::new(
+                            owner,
+                            "bootstrap-default",
+                            Permission::AssetUse,
+                        ))
+                        .await
+                }
+            },
+            |name| {
+                let manager = manager.clone();
+                let reads = Arc::clone(&manager_reads);
+                async move {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    let snapshot = manager.published_loadout_mcp_catalog_snapshot(&name).await;
+                    let config = manager.current_config().await;
+                    manager.try_seed_config(config).await.unwrap();
+                    snapshot
+                }
+            },
+        )
+        .await;
+        assert!(matches!(
+            unstable_manager,
+            Err(ProjectRuntimeMcpCatalogError::SnapshotUnstable)
+        ));
+        assert_eq!(access_reads.load(Ordering::SeqCst), CONTEXT_ATTEMPTS * 2);
+        assert_eq!(manager_reads.load(Ordering::SeqCst), CONTEXT_ATTEMPTS * 2);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
     async fn unauthorized_or_malformed_project_is_denied_before_gateway_resolution() {
         let (directory, runtime, _owner) = fixture().await;
         let gateway_path = directory.path().join("denial-gateway.toml");
@@ -518,6 +909,26 @@ mod tests {
             Err(ProjectRuntimeLoadoutError::ProjectAccessUnavailable)
         ));
         assert_eq!(gateway_reads.load(Ordering::SeqCst), 0);
+
+        let manager_reads = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&manager_reads);
+        let result = stable_project_mcp_context(
+            || async { Err(AccessStoreError::NotAuthorized) },
+            |name| {
+                let manager = manager.clone();
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    manager.published_loadout_mcp_catalog_snapshot(&name).await
+                }
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ProjectRuntimeMcpCatalogError::ProjectAccessUnavailable)
+        ));
+        assert_eq!(manager_reads.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -618,7 +1029,7 @@ mod tests {
             Err(error) => error,
         };
 
-        assert_eq!(reads.load(Ordering::SeqCst), RUNTIME_CONTEXT_ATTEMPTS * 2);
+        assert_eq!(reads.load(Ordering::SeqCst), CONTEXT_ATTEMPTS * 2);
         assert!(matches!(
             error,
             ProjectRuntimeLoadoutError::SnapshotUnstable
@@ -764,10 +1175,7 @@ mod tests {
             result,
             Err(ProjectRuntimeLoadoutError::SnapshotUnstable)
         ));
-        assert_eq!(
-            gateway_reads.load(Ordering::SeqCst),
-            RUNTIME_CONTEXT_ATTEMPTS * 2
-        );
+        assert_eq!(gateway_reads.load(Ordering::SeqCst), CONTEXT_ATTEMPTS * 2);
     }
 
     #[tokio::test]

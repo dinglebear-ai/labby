@@ -26,7 +26,9 @@ pub(crate) use gateway_loadout::{GatewayLoadoutAssignmentError, assign_admitted_
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]
 pub(crate) use gateway_loadout::{
-    ProjectRuntimeLoadoutContext, ProjectRuntimeLoadoutError, project_runtime_loadout_context,
+    ProjectRuntimeLoadoutContext, ProjectRuntimeLoadoutError, ProjectRuntimeMcpCatalogContext,
+    ProjectRuntimeMcpCatalogError, project_runtime_loadout_context,
+    project_runtime_mcp_catalog_context,
 };
 pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 #[allow(unused_imports)]
