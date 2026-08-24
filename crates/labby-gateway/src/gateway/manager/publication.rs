@@ -43,6 +43,13 @@ pub(super) fn next_runtime_config_generation() -> u64 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GatewayRuntimeConfigGeneration(u64);
 
+impl GatewayRuntimeConfigGeneration {
+    #[must_use]
+    pub fn fingerprint_bytes(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+}
+
 /// A Loadout resolved only from the runtime configuration published by this
 /// process, paired with the exact publication generation that supplied it.
 ///
@@ -253,6 +260,10 @@ impl PublishedLoadoutService {
     #[must_use]
     pub fn name(&self) -> &str {
         self.service.name()
+    }
+    #[must_use]
+    pub fn description(&self) -> &str {
+        self.service.description()
     }
     #[must_use]
     pub fn actions(&self) -> &[crate::gateway::service_registry::PublishedServiceAction] {

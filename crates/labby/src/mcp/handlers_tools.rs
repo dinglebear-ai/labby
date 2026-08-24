@@ -23,7 +23,9 @@ use serde_json::Value;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
 #[cfg(feature = "gateway")]
-use crate::mcp::bound_access::project_discovery_shadow;
+use crate::mcp::bound_access::{
+    ProjectDiscoveryShadow, ProjectExecutionBinding, project_execution_binding,
+};
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
@@ -70,6 +72,35 @@ pub(crate) fn strip_resource_backed_ui_meta(meta: &mut Option<MetaObject>) {
 }
 
 impl LabMcpServer {
+    async fn unavailable_project_tool_list(
+        &self,
+        context: &RequestContext<RoleServer>,
+        start: Instant,
+    ) -> ListToolsResult {
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "list_tools",
+            elapsed_ms,
+            project_binding = "unavailable",
+            page_tool_count = 0,
+            has_next_cursor = false,
+            "tool list unavailable for Project transport"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "list_tools",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+        ListToolsResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(rmcp::model::CacheScope::Private)
+    }
+
     pub(crate) async fn list_tools_impl(
         &self,
         request: Option<PaginatedRequestParams>,
@@ -84,6 +115,29 @@ impl LabMcpServer {
             subject,
             "dispatch start"
         );
+        #[cfg(feature = "gateway")]
+        let project_listing =
+            match project_execution_binding(&context.extensions, SystemTime::now()) {
+                ProjectExecutionBinding::Legacy => ProjectDiscoveryShadow::Legacy,
+                ProjectExecutionBinding::Unavailable => {
+                    return Ok(self.unavailable_project_tool_list(&context, start).await);
+                }
+                ProjectExecutionBinding::Bound { transport, .. } => {
+                    ProjectDiscoveryShadow::Bound(transport)
+                }
+            };
+        #[cfg(feature = "gateway")]
+        let project_cursor_binding = match &project_listing {
+            ProjectDiscoveryShadow::Legacy => None,
+            ProjectDiscoveryShadow::Unavailable => unreachable!("unavailable returned above"),
+            ProjectDiscoveryShadow::Bound(_) => {
+                let Some(binding) = project_listing.cursor_binding_fingerprint(SystemTime::now())
+                else {
+                    return Ok(self.unavailable_project_tool_list(&context, start).await);
+                };
+                Some(binding)
+            }
+        };
         let page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
@@ -150,7 +204,7 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
-        let project_shadow = project_discovery_shadow(&context.extensions, SystemTime::now());
+        let project_shadow = project_listing;
         #[cfg(feature = "gateway")]
         let mcp_apps_config = self.mcp_apps_config().await;
         let server_logs_app_visible = {
@@ -178,19 +232,20 @@ impl LabMcpServer {
         for svc in self.registry.services() {
             // `service_visible_on_mcp` already checks `route_scope.allows_service`.
             if self.service_visible_on_mcp(svc.name).await {
+                #[cfg(feature = "gateway")]
+                if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)) {
+                    project_shadow_checked_tool_count += 1;
+                    if project_shadow.allows_builtin_service_descriptor(svc, SystemTime::now())
+                        != Some(true)
+                    {
+                        project_shadow_would_suppress_tool_count += 1;
+                        continue;
+                    }
+                }
                 builtin_names.insert(svc.name.to_string());
                 if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
                     suppressed_builtin_tool_count += 1;
                 } else {
-                    #[cfg(feature = "gateway")]
-                    if let Some(allowed) =
-                        project_shadow.allows_builtin_service(svc.name, SystemTime::now())
-                    {
-                        project_shadow_checked_tool_count += 1;
-                        if !allowed {
-                            project_shadow_would_suppress_tool_count += 1;
-                        }
-                    }
                     advertised_names.insert(svc.name.to_string());
                     descriptors.push(
                         self.registry
@@ -205,6 +260,8 @@ impl LabMcpServer {
         // cursors are only safe when every catalog rebuild produces the same global order.
         #[cfg(feature = "gateway")]
         if visibility.exposes_synthetic_tools()
+            && (!matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_code_mode_tools(SystemTime::now()) == Some(true))
             && (code_mode_read_scope_allowed(auth) || tool_execute_scope_allowed(auth))
         {
             // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
@@ -212,7 +269,11 @@ impl LabMcpServer {
             // `codemode.describe()`.
             // See mcp/CLAUDE.md for the exception rationale and
             // dispatch/gateway/dispatch.rs guard.
-            let code_mode_upstreams = peer_contract.code_mode_upstreams_for_description().await;
+            let code_mode_upstreams =
+                crate::mcp::peer_contract::project_code_mode_description_upstreams(
+                    matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)),
+                    peer_contract.code_mode_upstreams_for_description().await,
+                );
             if code_mode_read_scope_allowed(auth) {
                 descriptors.push(
                     self.registry
@@ -268,28 +329,42 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if self.route_scope.is_root() && tool_execute_scope_allowed(auth) {
+        if matches!(&project_shadow, ProjectDiscoveryShadow::Legacy)
+            && self.route_scope.is_root()
+            && tool_execute_scope_allowed(auth)
+        {
             descriptors.push(self.registry.permanent_tools().mcp_app_tool());
             advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
         #[cfg(feature = "gateway")]
-        if add_server_app_visible {
+        if add_server_app_visible
+            && (!matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("gateway", SystemTime::now())
+                    == Some(true))
+        {
             descriptors.push(self.registry.permanent_tools().add_server_tool());
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
         #[cfg(feature = "gateway")]
-        if gateway_status_app_visible {
+        if gateway_status_app_visible
+            && (!matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("gateway", SystemTime::now())
+                    == Some(true))
+        {
             descriptors.push(self.registry.permanent_tools().gateway_status_tool());
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
             gateway_tool_count += 1;
         }
 
         #[cfg(feature = "gateway")]
-        if settings_app_visible {
+        if settings_app_visible
+            && (!matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("setup", SystemTime::now()) == Some(true))
+        {
             descriptors.push(self.registry.permanent_tools().settings_tool());
             advertised_names.insert(SETTINGS_TOOL_NAME.to_string());
             gateway_tool_count += 1;
@@ -318,6 +393,18 @@ impl LabMcpServer {
             };
             for ut in upstream_tools {
                 let tool_name = ut.tool.name.as_ref();
+                if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)) {
+                    project_shadow_checked_tool_count += 1;
+                    if project_shadow.allows_upstream_tool(
+                        ut.upstream_name.as_ref(),
+                        tool_name,
+                        SystemTime::now(),
+                    ) != Some(true)
+                    {
+                        project_shadow_would_suppress_tool_count += 1;
+                        continue;
+                    }
+                }
                 if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(tool_name)
                     || builtin_names.contains(tool_name)
                     || !advertised_names.insert(tool_name.to_string())
@@ -331,22 +418,13 @@ impl LabMcpServer {
                     );
                     continue;
                 }
-                if let Some(allowed) = project_shadow.allows_upstream_tool(
-                    ut.upstream_name.as_ref(),
-                    tool_name,
-                    SystemTime::now(),
-                ) {
-                    project_shadow_checked_tool_count += 1;
-                    if !allowed {
-                        project_shadow_would_suppress_tool_count += 1;
-                    }
-                }
                 descriptors.push(ut.tool);
                 upstream_tool_count += 1;
             }
             let oauth_subject =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            if !hide_raw_tools
+            if matches!(&project_shadow, ProjectDiscoveryShadow::Legacy)
+                && !hide_raw_tools
                 && self.route_scope.exposes_tools()
                 && let Some(oauth_subject) = oauth_subject.as_ref()
             {
@@ -404,9 +482,27 @@ impl LabMcpServer {
             });
         }
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        #[cfg(feature = "gateway")]
+        if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
+            && project_shadow.cursor_binding_fingerprint(SystemTime::now())
+                != project_cursor_binding
+        {
+            return Ok(self.unavailable_project_tool_list(&context, start).await);
+        }
         let mut page_collector = page_collector;
         let complete_contract = ToolCatalogSnapshot::from_descriptors(&descriptors);
-        let contract_revision = hex::encode(complete_contract.contract_hash);
+        let descriptor_revision = hex::encode(complete_contract.contract_hash);
+        #[cfg(feature = "gateway")]
+        let contract_revision =
+            project_cursor_binding
+                .as_ref()
+                .map_or(descriptor_revision.clone(), |binding| {
+                    labby_auth::util::fingerprint(&format!(
+                        "labby.mcp.project-tools-result.v1\0{binding}\0{descriptor_revision}"
+                    ))
+                });
+        #[cfg(not(feature = "gateway"))]
+        let contract_revision = descriptor_revision;
         if let Err(error) = page_collector.bind_revision(&contract_revision) {
             let elapsed_ms = start.elapsed().as_millis();
             let kind = pagination_error_kind(&error);

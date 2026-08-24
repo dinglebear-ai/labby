@@ -487,6 +487,16 @@ The mounted regular branch inherits Wave 51-53's zero-RPC rejection for duplicat
 
 This wave does not add capability negotiation, Task/InputRequired lifecycle support, destructive/admin confirmation, OAuth execution, relay execution, Code Mode behavior, widget behavior, or new service dispatch. Those remain separate future work.
 
+### Wave 55 / Milestone 0BG: Project-bound `tools/list` enforcement
+
+Enforce the immutable middleware-owned Project observation at the beginning of `tools/list`. Legacy requests retain the existing catalog, ordering, pagination, hash, and cursor behavior. Explicitly Unavailable evidence returns an empty private zero-TTL Complete result without catalog enumeration. Bound requests require matching middleware identity and a live transport credential, then filter candidates before collision handling, advertised-name reservation, capability shaping, sorting, contract hashing, and pagination.
+
+Built-in service tools require publication by the same Bound service catalog and route loadout. Regular non-OAuth tools require the exact upstream/name pair from the Bound Tool publication. Subject-scoped OAuth and provenance-unknown rows are absent. Centrally owned synthetics retain their existing authentication gates while also obeying Project publication: Code Mode twins require `expose_code_mode`; Add Server and Gateway Status require the `gateway` service; Settings requires `setup`; the root-only MCP App tool is absent from protected Bound routes. PeerContract consumes the identical owned Project policy before its deduplication, sorting, and contract hash so `list_changed` cannot disclose or compare a wider catalog.
+
+Bound Code Mode descriptors deliberately omit all upstream names and hint text. The existing description source reads mutable desired/current configuration rather than the immutable Bound runtime publication, so even an in-loadout same-name hint is not exposed until hint metadata becomes publication-owned. This is a description-quality limitation, not a fallback to live configuration; the Code Mode tools themselves remain visible only when the Bound loadout enables Code Mode.
+
+Bound cursors bind the exact credential instance, credential identity, route, Access revision, and runtime/pool/catalog/service publication generations. Expiry or any identity/publication change fails closed; a cursor cannot resume across same-content ABA. Destructive regular tools remain discoverable when their exact published row is otherwise allowed: discovery is not execution authorization, and Wave 54 continues to reject destructive calls until a separate confirmation/admin contract is implemented. This wave does not add destructive execution, OAuth execution, relay/task/elicitation lifecycle support, or filtering for other discovery families.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

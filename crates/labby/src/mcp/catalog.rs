@@ -206,6 +206,9 @@ impl LabMcpServer {
                     self.request_subject(context),
                 )
                 .map(std::borrow::Cow::into_owned),
+                project_listing: crate::mcp::peer_contract::ProjectPeerListing::from_extensions(
+                    &context.extensions,
+                ),
             }
         };
         #[cfg(not(feature = "gateway"))]

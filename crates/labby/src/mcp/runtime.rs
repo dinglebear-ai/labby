@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 const MAX_CATALOG_SNAPSHOTS_PER_KIND: usize = 8;
 
 #[cfg(feature = "gateway")]
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectShadowSnapshotKey {
     pub(crate) credential_instance_fingerprint: String,
     pub(crate) credential_binding_fingerprint: String,
@@ -36,6 +36,31 @@ pub(crate) struct ProjectShadowSnapshotKey {
     pub(crate) resource_templates: ResourceTemplateCatalogGeneration,
     pub(crate) prompts: PromptCatalogGeneration,
     pub(crate) services: ServiceRegistryPublicationGeneration,
+}
+
+#[cfg(feature = "gateway")]
+impl ProjectShadowSnapshotKey {
+    pub(crate) fn tools_cursor_fingerprint(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"labby.mcp.project-tools-cursor.v1\0");
+        for value in [
+            self.credential_instance_fingerprint.as_bytes(),
+            self.credential_binding_fingerprint.as_bytes(),
+            self.route_binding_fingerprint.as_bytes(),
+        ] {
+            hasher.update(value.len().to_be_bytes());
+            hasher.update(value);
+        }
+        hasher.update(self.access_global_revision.to_be_bytes());
+        hasher.update(self.runtime.fingerprint_bytes());
+        hasher.update(self.pool.fingerprint_bytes());
+        hasher.update(self.tools.fingerprint_bytes());
+        hasher.update(self.resources.fingerprint_bytes());
+        hasher.update(self.resource_templates.fingerprint_bytes());
+        hasher.update(self.prompts.fingerprint_bytes());
+        hasher.update(self.services.fingerprint_bytes());
+        hex::encode(hasher.finalize())
+    }
 }
 
 #[cfg(not(feature = "gateway"))]

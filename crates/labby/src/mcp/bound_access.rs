@@ -14,6 +14,7 @@ use crate::access::{
     AccessRuntime, Permission, ProjectRuntimeMcpCatalogContext, project_runtime_mcp_catalog_context,
 };
 use crate::mcp::runtime::ProjectShadowSnapshotKey;
+use crate::registry::RegisteredService;
 
 const BIND_ATTEMPTS: usize = 3;
 static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -285,6 +286,11 @@ pub(crate) enum ProjectDiscoveryShadow<'a> {
 }
 
 impl ProjectDiscoveryShadow<'_> {
+    pub(crate) fn cursor_binding_fingerprint(&self, now: SystemTime) -> Option<String> {
+        self.snapshot_key(now)
+            .map(|key| key.tools_cursor_fingerprint())
+    }
+
     pub(crate) fn snapshot_key(&self, now: SystemTime) -> Option<ProjectShadowSnapshotKey> {
         let Self::Bound(binding) = self else {
             return None;
@@ -346,6 +352,48 @@ impl ProjectDiscoveryShadow<'_> {
                     .services()
                     .iter()
                     .any(|published| published.name() == service),
+        )
+    }
+
+    pub(crate) fn allows_code_mode_tools(&self, now: SystemTime) -> Option<bool> {
+        let Self::Bound(binding) = self else {
+            return None;
+        };
+        binding.validate_not_expired(now).ok()?;
+        Some(binding.core().route().effective_loadout().expose_code_mode)
+    }
+
+    pub(crate) fn allows_builtin_service_descriptor(
+        &self,
+        service: &RegisteredService,
+        now: SystemTime,
+    ) -> Option<bool> {
+        let Self::Bound(binding) = self else {
+            return None;
+        };
+        binding.validate_not_expired(now).ok()?;
+        if self.allows_builtin_service(service.name, now) != Some(true) {
+            return Some(false);
+        }
+        let published = binding
+            .core()
+            .catalog()
+            .catalog()
+            .services()
+            .services()
+            .iter()
+            .find(|candidate| candidate.name() == service.name)?;
+        Some(
+            published.description() == service.description
+                && published.actions().len() == service.actions.len()
+                && published.actions().iter().all(|published| {
+                    service.actions.iter().any(|current| {
+                        published.name() == current.name
+                            && published.description() == current.description
+                            && published.destructive() == current.destructive
+                            && published.requires_admin() == current.requires_admin
+                    })
+                }),
         )
     }
 
@@ -724,8 +772,6 @@ mod tests {
 
     #[cfg(feature = "proxy-testkit")]
     fn project_shadow_test_server() -> crate::mcp::server::LabMcpServer {
-        use std::sync::atomic::AtomicU8;
-
         crate::mcp::server::LabMcpServer {
             registry: Arc::new(crate::registry::build_default_registry()),
             access_runtime: Arc::new(AccessRuntime::blocked_unavailable()),
@@ -736,7 +782,7 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(AtomicU8::new(0)),
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
                 "project-route",
                 std::iter::empty::<&str>(),
@@ -766,6 +812,7 @@ mod tests {
     #[cfg(feature = "proxy-testkit")]
     async fn list_tools_with_project_observation(
         observation: Option<ProjectAccessObservation>,
+        identity: Option<VerifiedIdentity>,
     ) -> (rmcp::model::ListToolsResult, String) {
         use tracing::instrument::WithSubscriber as _;
 
@@ -775,7 +822,15 @@ mod tests {
             transport,
             None,
         );
-        let context = project_shadow_context(running.peer().clone(), observation);
+        let mut context = project_shadow_context(running.peer().clone(), observation);
+        if let Some(identity) = identity {
+            context
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .expect("request parts")
+                .extensions
+                .insert(identity);
+        }
         let logs = CapturedLogs::default();
         let subscriber = tracing_subscriber::fmt()
             .without_time()
@@ -1225,7 +1280,7 @@ mod tests {
         );
         assert_eq!(snapshot_key.services, changed_key.services);
         assert_ne!(snapshot_key.prompts, changed_key.prompts);
-        assert!(snapshot_key != changed_key);
+        assert_ne!(snapshot_key, changed_key);
         let other_core = bind_access_context(
             &runtime,
             &manager,
@@ -1632,8 +1687,85 @@ mod tests {
         assert!(prompt_mismatched_logs.contains("project_shadow_state=\"unavailable\""));
         assert!(prompt_mismatched_logs.contains("project_shadow_checked_prompt_count=0"));
         assert!(prompt_mismatched_logs.contains("project_shadow_would_suppress_prompt_count=0"));
-        assert_eq!(shadow.allows_builtin_service("fs", now), Some(true));
+        assert_eq!(
+            shadow.allows_builtin_service("fs", now),
+            Some(true),
+            "route={:?} catalog={:?}",
+            observed.core().route().effective_service_names(),
+            observed
+                .core()
+                .catalog()
+                .catalog()
+                .services()
+                .services()
+                .iter()
+                .map(|service| service.name())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(shadow.allows_builtin_service("setup", now), Some(false));
+        let registry = crate::registry::build_default_registry();
+        let fs_service = registry.service("fs").expect("fs registry service");
+        assert_eq!(
+            shadow.allows_builtin_service_descriptor(fs_service, now),
+            Some(true)
+        );
+        let changed_fs = RegisteredService {
+            name: fs_service.name,
+            description: "description changed after publication",
+            category: fs_service.category,
+            kind: fs_service.kind,
+            status: fs_service.status,
+            actions: fs_service.actions,
+            dispatch: fs_service.dispatch,
+        };
+        assert_eq!(
+            shadow.allows_builtin_service_descriptor(&changed_fs, now),
+            Some(false),
+            "live service description must not drift from the immutable Bound descriptor"
+        );
+        let service_with_actions =
+            |actions: &'static [labby_primitives::action::ActionSpec]| RegisteredService {
+                description: fs_service.description,
+                actions,
+                ..changed_fs
+            };
+        let mut reordered = fs_service.actions.to_vec();
+        reordered.reverse();
+        let reordered = Box::leak(reordered.into_boxed_slice());
+        assert_eq!(
+            shadow.allows_builtin_service_descriptor(&service_with_actions(reordered), now),
+            Some(true),
+            "canonical action order must not depend on live registry insertion order"
+        );
+        let mutate_first = |mutate: fn(&mut labby_primitives::action::ActionSpec)| {
+            let mut actions = fs_service.actions.to_vec();
+            mutate(&mut actions[0]);
+            let leaked: &'static mut [labby_primitives::action::ActionSpec] =
+                Box::leak(actions.into_boxed_slice());
+            &*leaked
+        };
+        let changed_description = mutate_first(|action| action.description = "changed");
+        let changed_destructive = mutate_first(|action| action.destructive = !action.destructive);
+        let changed_admin = mutate_first(|action| action.requires_admin = !action.requires_admin);
+        for (label, actions) in [
+            ("description", changed_description),
+            ("destructive", changed_destructive),
+            ("requires_admin", changed_admin),
+        ] {
+            assert_eq!(
+                shadow.allows_builtin_service_descriptor(&service_with_actions(actions), now),
+                Some(false),
+                "same-name/same-count {label} drift must be rejected"
+            );
+        }
+        let mut changed_name = fs_service.actions.to_vec();
+        changed_name[0].name = "changed.action";
+        let changed_actions = service_with_actions(Box::leak(changed_name.into_boxed_slice()));
+        assert_eq!(
+            shadow.allows_builtin_service_descriptor(&changed_actions, now),
+            Some(false),
+            "live action metadata must not widen the immutable Bound service descriptor"
+        );
         assert_eq!(
             shadow.allows_upstream_tool("unpublished", "missing", now),
             Some(false)
@@ -1661,20 +1793,21 @@ mod tests {
             TransportBoundAccessContext::new(live_core, live_credential, live_now)
                 .expect("live transport"),
         ));
-        let (legacy_result, _) = list_tools_with_project_observation(None).await;
+        let (legacy_result, _) = list_tools_with_project_observation(None, None).await;
         let (unavailable_result, _) =
-            list_tools_with_project_observation(Some(ProjectAccessObservation::Unavailable)).await;
-        let (bound_result, bound_logs) =
-            list_tools_with_project_observation(Some(bound_observation.clone())).await;
-        assert_eq!(
-            serde_json::to_value(&legacy_result).unwrap(),
-            serde_json::to_value(&unavailable_result).unwrap(),
-            "explicit shadow unavailability must not filter tools/list"
-        );
-        assert_eq!(
+            list_tools_with_project_observation(Some(ProjectAccessObservation::Unavailable), None)
+                .await;
+        let (bound_result, bound_logs) = list_tools_with_project_observation(
+            Some(bound_observation.clone()),
+            Some(identity.clone()),
+        )
+        .await;
+        assert!(unavailable_result.tools.is_empty());
+        assert!(unavailable_result.next_cursor.is_none());
+        assert_ne!(
             serde_json::to_value(&legacy_result).unwrap(),
             serde_json::to_value(&bound_result).unwrap(),
-            "Bound shadow differences must not filter tools/list"
+            "Bound listing must enforce its published Project catalog"
         );
         assert!(
             legacy_result
@@ -1682,6 +1815,13 @@ mod tests {
                 .iter()
                 .any(|tool| tool.name.as_ref() == "setup"),
             "the unchanged response must retain a service absent from the Bound catalog"
+        );
+        assert!(
+            !bound_result
+                .tools
+                .iter()
+                .any(|tool| tool.name.as_ref() == "setup"),
+            "a service absent from the Bound catalog must be suppressed"
         );
         assert!(bound_logs.contains("project_shadow_state=\"bound\""));
         assert!(bound_logs.contains("project_shadow_would_suppress_tool_count=1"));
@@ -1790,5 +1930,276 @@ mod tests {
         .expect("stable mismatch");
         assert_eq!(mismatch, BoundAccessContextError::Unavailable);
         assert_eq!(mismatch.to_string(), "MCP access context is unavailable");
+    }
+
+    #[cfg(feature = "proxy-testkit")]
+    #[tokio::test]
+    async fn project_bound_tools_cursor_requires_the_exact_credential_snapshot() {
+        use labby_auth::Authenticator;
+        use labby_gateway::gateway::config_store::FsGatewayConfigStore;
+        use labby_gateway::gateway::manager::GatewayRuntimeHandle;
+        use labby_runtime::gateway_config::{
+            GatewayConfig, GatewayLoadoutConfig, ProtectedGatewaySubsetTarget,
+            ProtectedMcpRouteConfig, ProtectedMcpRouteTarget, VirtualServerConfig,
+            VirtualServerSurfacesConfig,
+        };
+        use rmcp::model::PaginatedRequestParams;
+
+        use crate::access::{AssignProjectLoadoutInput, BootstrapOwnerInput};
+        use crate::registry::{RegisteredService, RegisteredServiceKind, ToolRegistry};
+
+        const ACTIONS: &[labby_primitives::action::ActionSpec] =
+            &[labby_primitives::action::ActionSpec {
+                name: "status.get",
+                description: "Get status",
+                destructive: false,
+                requires_admin: false,
+                params: &[],
+                returns: "object",
+            }];
+
+        fn dispatch(
+            _action: String,
+            _params: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<Output = Result<serde_json::Value, crate::dispatch::error::ToolError>>
+                    + Send,
+            >,
+        > {
+            Box::pin(async { Ok(serde_json::Value::Null) })
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let runtime = Arc::new(AccessRuntime::initialize(directory.path().join("access.db")).await);
+        let identity = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "server-static-issuer",
+            "server-credential",
+        )
+        .unwrap();
+        runtime
+            .bootstrap_owner(
+                BootstrapOwnerInput::new(identity.clone(), "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .assign_project_loadout(
+                AssignProjectLoadoutInput::new(identity.clone(), "bootstrap-default", "production")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        let mut services = Vec::new();
+        let mut virtual_servers = Vec::new();
+        for index in 0..105 {
+            let name: &'static str =
+                Box::leak(format!("project_service_{index:03}").into_boxed_str());
+            registry.register(RegisteredService {
+                name,
+                description: "Project pagination fixture",
+                category: "test",
+                kind: RegisteredServiceKind::BootstrapOperator,
+                status: "available",
+                actions: ACTIONS,
+                dispatch,
+            });
+            services.push(name.to_string());
+            virtual_servers.push(VirtualServerConfig {
+                id: name.to_string(),
+                service: name.to_string(),
+                enabled: true,
+                surfaces: VirtualServerSurfacesConfig {
+                    mcp: true,
+                    ..Default::default()
+                },
+                mcp_policy: None,
+            });
+        }
+        let registry = Arc::new(registry);
+        let gateway_registry: Arc<dyn labby_gateway::gateway::GatewayServiceRegistry> =
+            registry.clone();
+        let gateway_runtime = GatewayRuntimeHandle::default();
+        gateway_runtime
+            .swap(Some(Arc::new(
+                labby_gateway::upstream::pool::UpstreamPool::new(),
+            )))
+            .await;
+        let gateway_path = directory.path().join("project-pagination.toml");
+        let manager = Arc::new(
+            GatewayManager::with_store(
+                gateway_path.clone(),
+                gateway_runtime,
+                Arc::new(FsGatewayConfigStore::new(gateway_path)),
+            )
+            .with_builtin_service_registry(gateway_registry),
+        );
+        manager
+            .try_seed_config(GatewayConfig {
+                loadouts: vec![GatewayLoadoutConfig {
+                    name: "production".into(),
+                    services: services.clone(),
+                    ..Default::default()
+                }],
+                virtual_servers,
+                protected_mcp_routes: vec![ProtectedMcpRouteConfig {
+                    name: "project-route".into(),
+                    enabled: true,
+                    public_host: "mcp.example.com".into(),
+                    public_path: "/project".into(),
+                    upstream: None,
+                    backend_url: String::new(),
+                    backend_mcp_path: "/mcp".into(),
+                    scopes: vec![],
+                    health_path: None,
+                    target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+                        ProtectedGatewaySubsetTarget {
+                            project_id: Some("bootstrap-default".into()),
+                            loadout: Some("production".into()),
+                            ..Default::default()
+                        },
+                    )),
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let now = SystemTime::now();
+        let long_expiry = usize::try_from(unix_seconds(now).unwrap() + 3_600).unwrap();
+        let make_transport = |jti: &'static str, expiry| {
+            let runtime = Arc::clone(&runtime);
+            let manager = Arc::clone(&manager);
+            let identity = identity.clone();
+            async move {
+                let core = bind_access_context(
+                    &runtime,
+                    &manager,
+                    identity,
+                    "project-route",
+                    "https://mcp.example.com/project",
+                    "bootstrap-default",
+                )
+                .await
+                .unwrap();
+                TransportBoundAccessContext::new(
+                    core,
+                    validate_transport_credential_binding("issuer", jti, expiry, now).unwrap(),
+                    now,
+                )
+                .unwrap()
+            }
+        };
+        let first_transport = make_transport("first-request-jti", long_expiry).await;
+        let resume_transport = make_transport("first-request-jti", long_expiry).await;
+        let replay_transport = make_transport("different-request-jti", long_expiry).await;
+        let expiring_at = usize::try_from(unix_seconds(now).unwrap() + 3).unwrap();
+        let expiring_first_transport = make_transport("expiring-request-jti", expiring_at).await;
+        let expiring_resume_transport = make_transport("expiring-request-jti", expiring_at).await;
+
+        let server = crate::mcp::server::LabMcpServer {
+            registry,
+            access_runtime: Arc::clone(&runtime),
+            gateway_manager: Some(manager),
+            peers: Default::default(),
+            code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
+            client_registry: Default::default(),
+            transport_label: "test",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "project-route",
+                std::iter::empty::<&str>(),
+                services,
+                false,
+            ),
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        };
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
+            server, transport, None,
+        );
+        let context = |binding| {
+            let mut context = project_shadow_context(
+                running.peer().clone(),
+                Some(ProjectAccessObservation::Bound(Arc::new(binding))),
+            );
+            context
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .unwrap()
+                .extensions
+                .insert(identity.clone());
+            context
+        };
+
+        let first = running
+            .service()
+            .list_tools_impl(None, context(first_transport))
+            .await
+            .expect("first Project page");
+        assert_eq!(
+            first.tools.len(),
+            crate::mcp::pagination::MCP_LIST_PAGE_SIZE
+        );
+        let cursor = first.next_cursor.clone().expect("Project cursor");
+
+        let second = running
+            .service()
+            .list_tools_impl(
+                Some(PaginatedRequestParams::default().with_cursor(Some(cursor.clone()))),
+                context(resume_transport),
+            )
+            .await
+            .expect("same credential snapshot resumes");
+        assert_eq!(second.tools.len(), 5);
+        assert!(second.next_cursor.is_none());
+
+        let replay = running
+            .service()
+            .list_tools_impl(
+                Some(PaginatedRequestParams::default().with_cursor(Some(cursor))),
+                context(replay_transport),
+            )
+            .await
+            .expect_err("different credential must not replay a Project cursor");
+        assert_eq!(
+            replay.data.as_ref().expect("error data")["kind"],
+            serde_json::json!("invalid_cursor")
+        );
+
+        let expiring_first = running
+            .service()
+            .list_tools_impl(None, context(expiring_first_transport))
+            .await
+            .expect("first expiring Project page");
+        let expiring_cursor = expiring_first.next_cursor.expect("expiring Project cursor");
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        let expired = running
+            .service()
+            .list_tools_impl(
+                Some(PaginatedRequestParams::default().with_cursor(Some(expiring_cursor))),
+                context(expiring_resume_transport),
+            )
+            .await
+            .expect("expired Project binding fails closed without revealing rows");
+        assert!(expired.tools.is_empty());
+        assert!(expired.next_cursor.is_none());
+        assert_eq!(expired.ttl_ms, Some(0));
+        assert_eq!(expired.cache_scope, Some(rmcp::model::CacheScope::Private));
     }
 }

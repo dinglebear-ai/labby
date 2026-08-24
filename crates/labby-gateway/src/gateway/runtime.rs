@@ -47,6 +47,13 @@ fn next_pool_publication_generation() -> u64 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PoolPublicationGeneration(u64);
 
+impl PoolPublicationGeneration {
+    #[must_use]
+    pub fn fingerprint_bytes(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+}
+
 struct PublishedPoolState {
     // Consumed by the manager publication composer in the next bounded wave.
     #[allow(dead_code)]

@@ -130,6 +130,24 @@ pub struct ResourceTemplateCatalogGeneration(u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PromptCatalogGeneration(u64);
 
+macro_rules! generation_fingerprint_bytes {
+    ($($generation:ty),+ $(,)?) => {
+        $(impl $generation {
+            #[must_use]
+            pub fn fingerprint_bytes(self) -> [u8; 8] {
+                self.0.to_be_bytes()
+            }
+        })+
+    };
+}
+
+generation_fingerprint_bytes!(
+    ToolCatalogGeneration,
+    ResourceCatalogGeneration,
+    ResourceTemplateCatalogGeneration,
+    PromptCatalogGeneration,
+);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceCatalogPublicationError {
     TooManyRoutes,
