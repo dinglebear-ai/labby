@@ -313,6 +313,12 @@ Explicit Project-bound gateway-subset routes now derive `VerifiedIdentity` from 
 
 This is ownership-only shadow rollout. Successful binding attaches `Bound`; authorization/catalog failure attaches explicit `Unavailable` and current dispatch continues. Invalid or expired credentials still reject before dispatch. Legacy protected routes without `project_id`, root MCP, stdio and its live bridge, Unix-only identity, and in-process peers remain unchanged and receive no Project observation. No discovery or dispatch enforcement consumes the observation yet, and no `LabMcpServer` field or client-controlled Project selector is introduced.
 
+### Wave 24 / Milestone 0AB: tools/list Project discovery shadow
+
+`tools/list` now consumes the request-owned Wave 23 observation without enforcing it. A live `Bound` observation compares provenance-known built-in services and non-OAuth upstream tool pairs against both the immutable Project catalog and the same-generation protected-route narrowing snapshot. Legacy absence, explicit binding unavailability, and expiry remain distinct shadow states; expiry is rechecked while classifying and immediately before telemetry.
+
+This wave emits only state and aggregate counts. It does not log Project, route, service, upstream, tool, token, JTI, or binding fingerprints. It does not mutate descriptors, pagination, contract hashes, baselines, notifications, Code Mode, OAuth-subject catalogs, MCP Apps, resources, prompts, Skills, or dispatch. Bound differences and unavailable observations therefore preserve the exact current `ListToolsResult`; enforcement remains deferred until direct-invocation authorization and all discovery families share the same proven boundary.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

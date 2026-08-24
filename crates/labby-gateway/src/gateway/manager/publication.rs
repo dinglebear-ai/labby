@@ -117,6 +117,7 @@ pub struct PublishedProjectRouteSnapshot {
     project_id: std::sync::Arc<str>,
     assigned_loadout_name: std::sync::Arc<str>,
     effective_loadout: GatewayLoadoutConfig,
+    effective_service_names: std::sync::Arc<[std::sync::Arc<str>]>,
 }
 
 impl PublishedProjectRouteSnapshot {
@@ -138,6 +139,9 @@ impl PublishedProjectRouteSnapshot {
     pub fn effective_loadout(&self) -> &GatewayLoadoutConfig {
         &self.effective_loadout
     }
+    pub fn effective_service_names(&self) -> &[std::sync::Arc<str>] {
+        &self.effective_service_names
+    }
 
     /// Whether both snapshots bind the same complete route publication.
     #[must_use]
@@ -148,6 +152,7 @@ impl PublishedProjectRouteSnapshot {
             && self.project_id == other.project_id
             && self.assigned_loadout_name == other.assigned_loadout_name
             && self.effective_loadout == other.effective_loadout
+            && self.effective_service_names == other.effective_service_names
     }
 }
 
@@ -367,6 +372,7 @@ impl GatewayManager {
                 generation,
                 &config.protected_mcp_routes,
                 &config.loadouts,
+                &config.virtual_servers,
                 route_name,
                 project_id,
                 assigned_loadout_name,
@@ -762,10 +768,7 @@ fn build_service_snapshot(
             .map(|service| (service.name(), service))
             .collect::<std::collections::BTreeMap<_, _>>();
         for member in &loadout.services {
-            let Some(server) = virtual_servers
-                .iter()
-                .find(|server| server.service == *member || server.id == *member)
-            else {
+            let Some(server) = resolve_virtual_server_member(virtual_servers, member) else {
                 continue;
             };
             let Some(service) = by_name.get(server.service.as_str()) else {
@@ -804,6 +807,15 @@ fn build_service_snapshot(
     })
 }
 
+fn resolve_virtual_server_member<'a>(
+    virtual_servers: &'a [VirtualServerConfig],
+    member: &str,
+) -> Option<&'a VirtualServerConfig> {
+    virtual_servers
+        .iter()
+        .find(|server| server.service == member || server.id == member)
+}
+
 struct RoutePublicationObservation {
     generation: GatewayRuntimeConfigGeneration,
     snapshot: Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError>,
@@ -813,6 +825,7 @@ fn project_route_snapshot(
     generation: GatewayRuntimeConfigGeneration,
     routes: &[ProtectedMcpRouteConfig],
     loadouts: &[GatewayLoadoutConfig],
+    virtual_servers: &[VirtualServerConfig],
     route_name: &str,
     project_id: &str,
     assigned_loadout_name: &str,
@@ -858,6 +871,15 @@ fn project_route_snapshot(
     let effective = assigned
         .intersect_gateway_subset(target)
         .map_err(|_| ProjectRoutePublicationError::Unavailable)?;
+    let mut effective_service_names = std::collections::BTreeSet::new();
+    for member in &effective.services {
+        let Some(server) = resolve_virtual_server_member(virtual_servers, member) else {
+            continue;
+        };
+        if !effective_service_names.insert(server.service.as_str()) {
+            return Err(ProjectRoutePublicationError::Unavailable);
+        }
+    }
     Ok(PublishedProjectRouteSnapshot {
         runtime_config_generation: generation,
         route_name: std::sync::Arc::from(route.name.as_str()),
@@ -865,5 +887,11 @@ fn project_route_snapshot(
         project_id: std::sync::Arc::from(project_id),
         assigned_loadout_name: std::sync::Arc::from(assigned_loadout_name),
         effective_loadout: effective,
+        effective_service_names: std::sync::Arc::from(
+            effective_service_names
+                .into_iter()
+                .map(std::sync::Arc::from)
+                .collect::<Vec<_>>(),
+        ),
     })
 }

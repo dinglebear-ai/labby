@@ -119,6 +119,10 @@ fn project_route_config(project: &str, loadout_ref: Option<&str>) -> GatewayConf
             expose_code_mode: true,
             ..Default::default()
         }],
+        virtual_servers: vec![
+            mcp_virtual_server("setup", "setup", &[]),
+            mcp_virtual_server("gateway", "gateway", &[]),
+        ],
         protected_mcp_routes: vec![ProtectedMcpRouteConfig {
             name: "project-route".into(),
             enabled: true,
@@ -169,8 +173,46 @@ async fn project_route_publication_binds_canonical_identity_and_narrows() {
     assert_eq!(snapshot.project_id(), "project-a");
     assert_eq!(snapshot.effective_loadout().upstreams, vec!["alpha"]);
     assert_eq!(snapshot.effective_loadout().services, vec!["setup"]);
+    assert_eq!(
+        snapshot
+            .effective_service_names()
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&str>>(),
+        vec!["setup"]
+    );
     assert!(!snapshot.effective_loadout().expose_code_mode);
     assert!(snapshot.effective_loadout().expose_tools);
+}
+
+#[tokio::test]
+async fn project_route_publication_canonicalizes_service_alias_and_rejects_collision() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut config = project_route_config("project-a", Some("production"));
+    config.loadouts[0].services = vec!["setup-primary".into()];
+    config.virtual_servers = vec![mcp_virtual_server("setup-primary", "setup", &[])];
+    manager
+        .seed_config_unchecked_for_tests(config.clone())
+        .await;
+    let snapshot = manager
+        .published_project_route_snapshot("project-route", "project-a", "production")
+        .await
+        .expect("aliased route");
+    assert_eq!(snapshot.effective_service_names()[0].as_ref(), "setup");
+
+    config.loadouts[0].services.push("setup".into());
+    manager.seed_config_unchecked_for_tests(config).await;
+    assert_eq!(
+        manager
+            .published_project_route_snapshot("project-route", "project-a", "production")
+            .await
+            .err(),
+        Some(crate::gateway::manager::ProjectRoutePublicationError::Unavailable)
+    );
 }
 
 #[tokio::test]

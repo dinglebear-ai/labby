@@ -10,6 +10,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
+#[cfg(feature = "gateway")]
+use std::time::SystemTime;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -20,6 +22,8 @@ use serde_json::Value;
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
+#[cfg(feature = "gateway")]
+use crate::mcp::bound_access::project_tool_discovery_shadow;
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
@@ -116,6 +120,14 @@ impl LabMcpServer {
         let mut gateway_tool_count = 0usize;
         let upstream_ui_tool_count = 0usize;
         let mut suppressed_builtin_tool_count = 0usize;
+        #[cfg(feature = "gateway")]
+        let mut project_shadow_checked_tool_count = 0usize;
+        #[cfg(not(feature = "gateway"))]
+        let project_shadow_checked_tool_count = 0usize;
+        #[cfg(feature = "gateway")]
+        let mut project_shadow_would_suppress_tool_count = 0usize;
+        #[cfg(not(feature = "gateway"))]
+        let project_shadow_would_suppress_tool_count = 0usize;
         let mut pool_present = false;
         let mut catalog_upstream_count = 0usize;
         let mut upstream_tool_error_count = 0usize;
@@ -137,6 +149,8 @@ impl LabMcpServer {
         }
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
+        #[cfg(feature = "gateway")]
+        let project_shadow = project_tool_discovery_shadow(&context.extensions, SystemTime::now());
         #[cfg(feature = "gateway")]
         let mcp_apps_config = self.mcp_apps_config().await;
         let server_logs_app_visible = {
@@ -168,6 +182,15 @@ impl LabMcpServer {
                 if hide_raw_tools && svc.name != SERVER_LOGS_TOOL_NAME {
                     suppressed_builtin_tool_count += 1;
                 } else {
+                    #[cfg(feature = "gateway")]
+                    if let Some(allowed) =
+                        project_shadow.allows_builtin_service(svc.name, SystemTime::now())
+                    {
+                        project_shadow_checked_tool_count += 1;
+                        if !allowed {
+                            project_shadow_would_suppress_tool_count += 1;
+                        }
+                    }
                     advertised_names.insert(svc.name.to_string());
                     descriptors.push(
                         self.registry
@@ -307,6 +330,16 @@ impl LabMcpServer {
                     );
                     continue;
                 }
+                if let Some(allowed) = project_shadow.allows_upstream_tool(
+                    ut.upstream_name.as_ref(),
+                    tool_name,
+                    SystemTime::now(),
+                ) {
+                    project_shadow_checked_tool_count += 1;
+                    if !allowed {
+                        project_shadow_would_suppress_tool_count += 1;
+                    }
+                }
                 descriptors.push(ut.tool);
                 upstream_tool_count += 1;
             }
@@ -440,6 +473,16 @@ impl LabMcpServer {
                 .publish(subject_key, complete_contract);
         }
 
+        #[cfg(feature = "gateway")]
+        let project_shadow_state = project_shadow.state_label_at(SystemTime::now());
+        #[cfg(not(feature = "gateway"))]
+        let project_shadow_state = "legacy";
+        #[cfg(feature = "gateway")]
+        if project_shadow_state != "bound" {
+            project_shadow_checked_tool_count = 0;
+            project_shadow_would_suppress_tool_count = 0;
+        }
+
         let elapsed_ms = start.elapsed().as_millis();
         tracing::info!(
             surface = "mcp",
@@ -468,6 +511,9 @@ impl LabMcpServer {
             process_code_mode_enabled,
             hide_raw_tools,
             visibility_mode,
+            project_shadow_state,
+            project_shadow_checked_tool_count,
+            project_shadow_would_suppress_tool_count,
             page_tool_count,
             has_next_cursor,
             "tool list ok"
