@@ -479,6 +479,14 @@ Add one unmounted terminal adapter above Wave 52 for the regular pooled connecti
 
 This creates a safe prerequisite for a future explicitly Complete-only Project Tool mount; it does not mount `tools/call`. Capability mirroring, relay connections, native task-handle translation, task get/cancel/result/status, elicitation continuation, destructive/admin policy, OAuth, Code Mode, built-ins, wire mapping, notifications, and surface accounting remain deferred.
 
+### Wave 54 / Milestone 0BF: protected Complete-only Tool handler mount
+
+Mount the Wave 53 Complete-only adapter at the beginning of `tools/call` for middleware-observed Project transports. `Legacy` requests retain the existing handler order and raw proxy behavior. `Unavailable` observations terminate as a static redacted Complete error. For a valid `Bound` observation, ownership comes only from the same immutable transport publication: centrally reserved names and services published by that bound loadout remain Labby-owned, while every other name enters the exact regular adapter and terminates without fallback. A Labby-owned name that is absent or disabled in the handler registry is fenced before the legacy upstream tail and returns `not_found`; global registry membership that is absent from the bound publication does not grant ownership.
+
+The mounted regular branch inherits Wave 51-53's zero-RPC rejection for duplicate raw names, excluded upstreams, hidden Tool publication, destructive Tools, insufficient Project permission, identity mismatch, expired transport credentials, and publication/access ABA. Request arguments and opaque MCP metadata reach only the exact selected pooled call; route, resource, Project, and identity facts remain transport-derived. The terminal branch never enters OAuth subject selection, interactive relay, widget callbacks, elicitation, or task registration. Post-dispatch expiry discards both success and failure before Complete error mapping. Each terminal handler outcome has one structural dispatch-notification site: success after a valid Complete response, or failure after the single redacted mapping.
+
+This wave does not add capability negotiation, Task/InputRequired lifecycle support, destructive/admin confirmation, OAuth execution, relay execution, Code Mode behavior, widget behavior, or new service dispatch. Those remain separate future work.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

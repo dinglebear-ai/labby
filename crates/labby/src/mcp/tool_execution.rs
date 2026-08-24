@@ -81,6 +81,32 @@ struct ExactToolTarget {
     destructive: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectToolOwnership {
+    OwnedLabby,
+    Regular,
+}
+
+pub(crate) fn transport_bound_tool_ownership(
+    transport: &TransportBoundAccessContext,
+    wire_name: &str,
+) -> ProjectToolOwnership {
+    if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(wire_name)
+        || transport
+            .core()
+            .catalog()
+            .catalog()
+            .services()
+            .services()
+            .iter()
+            .any(|service| service.name() == wire_name)
+    {
+        ProjectToolOwnership::OwnedLabby
+    } else {
+        ProjectToolOwnership::Regular
+    }
+}
+
 fn resolve_exact_target(context: &BoundAccessContext, wire_name: &str) -> Option<ExactToolTarget> {
     if context.catalog().access().permission != Permission::AssetUse {
         return None;
@@ -325,7 +351,8 @@ mod tests {
     use labby_gateway::upstream::types::UpstreamTool;
     use labby_runtime::gateway_config::{
         GatewayConfig, GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
-        ProtectedMcpRouteTarget, UpstreamConfig, VirtualServerConfig, VirtualServerSurfacesConfig,
+        ProtectedMcpRouteTarget, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
+        UpstreamOauthRegistration, VirtualServerConfig, VirtualServerSurfacesConfig,
     };
     use rmcp::model::{
         BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
@@ -339,19 +366,24 @@ mod tests {
     use tokio::sync::{Mutex, Notify};
 
     use super::{
-        ToolExecutionResolutionError, ToolExecutionResolutionInput, execute_exact_project_tool,
-        execute_transport_bound_project_complete_tool_with_clock,
+        ProjectToolOwnership, ToolExecutionResolutionError, ToolExecutionResolutionInput,
+        execute_exact_project_tool, execute_transport_bound_project_complete_tool_with_clock,
         execute_transport_bound_project_tool_with_clock, finish_complete_tool_response,
         finish_transport_bound_tool_result, map_manager_error, map_manager_result,
+        transport_bound_tool_ownership,
     };
     use crate::access::{AccessRuntime, AssignProjectLoadoutInput, BootstrapOwnerInput};
     use crate::mcp::bound_access::{
-        TransportBoundAccessContext, bind_access_context, validate_transport_credential_binding,
+        TransportBoundAccessContext, attach_project_access_observation, bind_access_context,
+        validate_transport_credential_binding,
     };
     use crate::mcp::catalog::{
         ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME,
         CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
     };
+    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
+    use crate::mcp::route_scope::McpRouteScope;
+    use crate::mcp::server::LabMcpServer;
     use labby_gateway::gateway::manager::PublishedToolCallError;
 
     #[test]
@@ -597,7 +629,9 @@ mod tests {
                     bearer_token_env: None,
                     command: Some("node".into()),
                     args: Vec::new(),
-                    env: Default::default(),
+                    env: [("MCP_UPSTREAM_RELAY_MODE".into(), "pooled".into())]
+                        .into_iter()
+                        .collect(),
                     proxy_resources: false,
                     proxy_prompts: false,
                     expose_tools: None,
@@ -651,7 +685,12 @@ mod tests {
     }
 
     fn upstream_tool(name: &str, destructive: bool) -> UpstreamTool {
-        let tool = Tool::new(name.to_string(), "exact", Arc::new(serde_json::Map::new()));
+        let tool = Tool::new(name.to_string(), "exact", Arc::new(serde_json::Map::new()))
+            .with_annotations(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(!destructive)
+                    .destructive(destructive),
+            );
         UpstreamTool {
             input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
             output_schema: None,
@@ -682,6 +721,95 @@ mod tests {
             validate_transport_credential_binding("issuer", "request-jti", expires_at, now)
                 .unwrap();
         TransportBoundAccessContext::new(core, credential, now).unwrap()
+    }
+
+    fn handler_server(runtime: Arc<AccessRuntime>, manager: Arc<GatewayManager>) -> LabMcpServer {
+        LabMcpServer {
+            registry: Arc::new(crate::registry::build_default_registry()),
+            access_runtime: runtime,
+            gateway_manager: Some(manager),
+            peers: Default::default(),
+            code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
+            client_registry: Default::default(),
+            transport_label: "test",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
+                LoggingLevel::Emergency,
+            ))),
+            route_scope: McpRouteScope::protected_subset(
+                "project-route",
+                ["alpha"],
+                ["gateway"],
+                false,
+            ),
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        }
+    }
+
+    fn handler_context(
+        peer: rmcp::service::Peer<RoleServer>,
+        identity: Option<VerifiedIdentity>,
+        binding: Result<
+            TransportBoundAccessContext,
+            crate::mcp::bound_access::BoundAccessContextError,
+        >,
+    ) -> RequestContext<RoleServer> {
+        let mut context = RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        if let Some(identity) = identity {
+            parts.extensions.insert(identity);
+        }
+        parts
+            .extensions
+            .insert(labby_auth::auth_context::AuthContext {
+                sub: "reader".into(),
+                actor_key: None,
+                scopes: vec!["lab".into()],
+                issuer: "https://issuer.example".into(),
+                via_session: true,
+                csrf_token: None,
+                email: None,
+            });
+        attach_project_access_observation(&mut parts.extensions, binding);
+        context.extensions.insert(parts);
+        context
+    }
+
+    fn assert_complete_not_found(response: CallToolResponse) {
+        let CallToolResponse::Complete(response) = response else {
+            panic!("terminal project handler response must be Complete")
+        };
+        assert!(
+            serde_json::to_string(&response)
+                .unwrap()
+                .contains("not_found")
+        );
+    }
+
+    fn legacy_handler_context(peer: rmcp::service::Peer<RoleServer>) -> RequestContext<RoleServer> {
+        RequestContext::new(rmcp::model::NumberOrString::Number(1), peer)
+    }
+
+    fn legacy_oauth_handler_context(
+        peer: rmcp::service::Peer<RoleServer>,
+    ) -> RequestContext<RoleServer> {
+        let mut context = legacy_handler_context(peer);
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        parts
+            .extensions
+            .insert(labby_auth::auth_context::AuthContext {
+                sub: "reader".into(),
+                actor_key: None,
+                scopes: vec!["lab".into()],
+                issuer: "https://issuer.example".into(),
+                via_session: true,
+                csrf_token: None,
+                email: None,
+            });
+        context.extensions.insert(parts);
+        context
     }
 
     async fn start_delayed_call(
@@ -1611,5 +1739,414 @@ mod tests {
         assert!(transport_cancel_task.await.unwrap_err().is_cancelled());
         transport_cancel_release.notify_one();
         assert_eq!(transport_cancel_calls.load(Ordering::SeqCst), 1);
+
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        pool.install_tool_server_for_tests(
+            "alpha",
+            EchoToolServer {
+                calls: Arc::clone(&handler_calls),
+                received_meta: Arc::new(Mutex::new(Vec::new())),
+            },
+        )
+        .await;
+        pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", false)])
+            .await;
+        let mut handler_config = config(true);
+        handler_config
+            .upstream
+            .retain(|upstream| upstream.name == "alpha");
+        handler_config.loadouts[0].upstreams = vec!["alpha".into()];
+        manager.try_seed_config(handler_config).await.unwrap();
+        let (handler_transport, mut handler_client) = tokio::io::duplex(64 * 1024);
+        let _handler_client_drain = tokio::spawn(async move {
+            let mut sink = tokio::io::sink();
+            let _copy_result = tokio::io::copy(&mut handler_client, &mut sink).await;
+        });
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(Arc::clone(&runtime), Arc::clone(&manager)),
+            handler_transport,
+            None,
+        );
+        let ownership =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        assert_eq!(
+            transport_bound_tool_ownership(&ownership, "gateway"),
+            ProjectToolOwnership::OwnedLabby
+        );
+        assert_eq!(
+            transport_bound_tool_ownership(&ownership, CODE_MODE_TOOL_NAME),
+            ProjectToolOwnership::OwnedLabby
+        );
+        assert_eq!(
+            transport_bound_tool_ownership(&ownership, "doctor"),
+            ProjectToolOwnership::Regular,
+            "global registration cannot grant ownership when absent from the bound publication"
+        );
+        assert_eq!(
+            transport_bound_tool_ownership(&ownership, "nested/tool"),
+            ProjectToolOwnership::Regular
+        );
+        let bound =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool").with_arguments(
+                    serde_json::Map::from_iter([("value".into(), serde_json::json!("handler"))]),
+                ),
+                handler_context(running.peer().clone(), Some(identity.clone()), Ok(bound)),
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(response) = response else {
+            panic!("Project regular handler must be Complete-only")
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["content"][0]["text"],
+            "nested/tool:\"handler\""
+        );
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 1);
+
+        let (legacy_upstream, legacy_tool) = manager
+            .resolve_raw_upstream_tool("nested/tool", None, None)
+            .await
+            .unwrap();
+        assert_eq!(legacy_upstream, "alpha");
+        assert!(!legacy_tool.destructive);
+        assert_eq!(
+            manager
+                .upstream_config("alpha")
+                .await
+                .unwrap()
+                .env
+                .get("MCP_UPSTREAM_RELAY_MODE")
+                .map(String::as_str),
+            Some("pooled")
+        );
+        assert!(
+            !tokio::time::timeout(
+                Duration::from_secs(5),
+                running.service().tool_request_is_destructive(
+                    &CallToolRequestParams::new("nested/tool"),
+                    &legacy_handler_context(running.peer().clone()),
+                ),
+            )
+            .await
+            .expect("Legacy destructive classification must be bounded")
+        );
+        let legacy_response = tokio::time::timeout(
+            Duration::from_secs(5),
+            running.service().call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool").with_arguments(
+                    serde_json::Map::from_iter([("value".into(), serde_json::json!("legacy"))]),
+                ),
+                legacy_handler_context(running.peer().clone()),
+            ),
+        )
+        .await
+        .expect("Legacy pooled raw proxy must not enter relay")
+        .unwrap();
+        let CallToolResponse::Complete(legacy_response) = legacy_response else {
+            panic!("Legacy pooled raw proxy path changed response variant")
+        };
+        assert_eq!(
+            serde_json::to_value(legacy_response).unwrap()["content"][0]["text"],
+            "nested/tool:\"legacy\""
+        );
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let owned =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let owned_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+                    ("action".into(), serde_json::json!("help")),
+                ])),
+                handler_context(running.peer().clone(), Some(identity.clone()), Ok(owned)),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(owned_response, CallToolResponse::Complete(_)));
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let (owned_guard_transport, _owned_guard_client) = tokio::io::duplex(64 * 1024);
+        let mut owned_guard_server = handler_server(Arc::clone(&runtime), Arc::clone(&manager));
+        owned_guard_server.registry = Arc::new(crate::registry::ToolRegistry::default());
+        let owned_guard_running =
+            rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+                owned_guard_server,
+                owned_guard_transport,
+                None,
+            );
+        let owned_guard =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let owned_guard_response = owned_guard_running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("gateway"),
+                handler_context(
+                    owned_guard_running.peer().clone(),
+                    Some(identity.clone()),
+                    Ok(owned_guard),
+                ),
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(owned_guard_response) = owned_guard_response else {
+            panic!("Owned but undispatchable Tool must remain a Complete error")
+        };
+        assert!(
+            serde_json::to_string(&owned_guard_response)
+                .unwrap()
+                .contains("not_found")
+        );
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let unknown =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let unknown_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("unknown-project-tool"),
+                handler_context(running.peer().clone(), Some(identity.clone()), Ok(unknown)),
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(unknown_response) = unknown_response else {
+            panic!("Project unknown handler response must remain Complete-only")
+        };
+        assert!(
+            serde_json::to_string(&unknown_response)
+                .unwrap()
+                .contains("not_found")
+        );
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let unavailable_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool"),
+                handler_context(
+                    running.peer().clone(),
+                    Some(identity.clone()),
+                    Err(crate::mcp::bound_access::BoundAccessContextError::Unavailable),
+                ),
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(unavailable_response) = unavailable_response else {
+            panic!("Unavailable Project observation must be terminal Complete error")
+        };
+        assert!(
+            serde_json::to_string(&unavailable_response)
+                .unwrap()
+                .contains("not_found")
+        );
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let missing_identity =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let missing_identity_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool"),
+                handler_context(running.peer().clone(), None, Ok(missing_identity)),
+            )
+            .await
+            .unwrap();
+        assert_complete_not_found(missing_identity_response);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let mismatched =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let mismatched_identity = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "server-static-issuer",
+            "other-credential",
+        )
+        .unwrap();
+        let mismatched_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool"),
+                handler_context(
+                    running.peer().clone(),
+                    Some(mismatched_identity),
+                    Ok(mismatched),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_complete_not_found(mismatched_response);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let expired = transport_binding(&runtime, &manager, identity.clone(), 101, before).await;
+        let expired_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool"),
+                handler_context(running.peer().clone(), Some(identity.clone()), Ok(expired)),
+            )
+            .await
+            .unwrap();
+        assert_complete_not_found(expired_response);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let mut oauth_config = config(true);
+        oauth_config
+            .upstream
+            .retain(|upstream| upstream.name == "alpha");
+        let mut oauth = oauth_config.upstream[0].clone();
+        oauth.name = "oauth".into();
+        oauth.command = None;
+        oauth.url = Some("http://127.0.0.1:9/mcp".into());
+        oauth.oauth = Some(UpstreamOauthConfig {
+            mode: UpstreamOauthMode::AuthorizationCodePkce,
+            registration: UpstreamOauthRegistration::Dynamic,
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        });
+        oauth_config.upstream.push(oauth.clone());
+        oauth_config.loadouts[0].upstreams = vec!["alpha".into(), "oauth".into()];
+        manager.try_seed_config(oauth_config).await.unwrap();
+        let oauth_calls = Arc::new(AtomicUsize::new(0));
+        pool.install_test_subject_server_for_upstream(
+            &oauth,
+            "reader",
+            McpErrorToolServer {
+                calls: Arc::clone(&oauth_calls),
+                code: -32_602,
+                message: "private oauth subject failure",
+            },
+        )
+        .await;
+        pool.install_test_subject_tools_for_upstream(
+            &oauth,
+            "reader",
+            vec![
+                Tool::new("oauth-tool", "subject", Arc::new(serde_json::Map::new()))
+                    .with_annotations(
+                        rmcp::model::ToolAnnotations::new()
+                            .read_only(true)
+                            .destructive(false),
+                    ),
+            ],
+        )
+        .await;
+        let (oauth_transport, mut oauth_client) = tokio::io::duplex(64 * 1024);
+        let _oauth_client_drain = tokio::spawn(async move {
+            let mut sink = tokio::io::sink();
+            let _copy_result = tokio::io::copy(&mut oauth_client, &mut sink).await;
+        });
+        let mut oauth_server = handler_server(Arc::clone(&runtime), Arc::clone(&manager));
+        oauth_server.route_scope = McpRouteScope::protected_subset(
+            "project-route",
+            ["alpha", "oauth"],
+            ["gateway"],
+            false,
+        );
+        let oauth_running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            oauth_server,
+            oauth_transport,
+            None,
+        );
+        let oauth_bound =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let oauth_response = oauth_running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("oauth-tool"),
+                handler_context(
+                    oauth_running.peer().clone(),
+                    Some(identity.clone()),
+                    Ok(oauth_bound),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_complete_not_found(oauth_response);
+        assert_eq!(oauth_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        let legacy_oauth_response = tokio::time::timeout(
+            Duration::from_secs(5),
+            oauth_running.service().call_tool_response_impl(
+                CallToolRequestParams::new("oauth-tool"),
+                legacy_oauth_handler_context(oauth_running.peer().clone()),
+            ),
+        )
+        .await
+        .expect("Legacy OAuth subject Tool must reach its existing branch")
+        .unwrap();
+        let CallToolResponse::Complete(legacy_oauth_response) = legacy_oauth_response else {
+            panic!("Legacy OAuth error must remain Complete")
+        };
+        let legacy_oauth_json = serde_json::to_string(&legacy_oauth_response).unwrap();
+        assert!(
+            legacy_oauth_json.contains("\"kind\":\"upstream_error\"")
+                && legacy_oauth_json.contains("\"upstream\":\"oauth\"")
+                && legacy_oauth_json.contains("upstream is not connected"),
+            "{legacy_oauth_json}"
+        );
+        assert!(!legacy_oauth_json.contains("private oauth subject failure"));
+        assert_eq!(oauth_calls.load(Ordering::SeqCst), 0);
+
+        let mut handler_config = config(true);
+        handler_config
+            .upstream
+            .retain(|upstream| upstream.name == "alpha");
+        handler_config.loadouts[0].upstreams = vec!["alpha".into()];
+        manager.try_seed_config(handler_config).await.unwrap();
+
+        pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("danger", true)])
+            .await;
+        let destructive =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let destructive_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("danger"),
+                handler_context(
+                    running.peer().clone(),
+                    Some(identity.clone()),
+                    Ok(destructive),
+                ),
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(destructive_response) = destructive_response else {
+            panic!("Project destructive regular Tool must not elicit")
+        };
+        assert!(
+            serde_json::to_string(&destructive_response)
+                .unwrap()
+                .contains("not_found")
+        );
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", false)])
+            .await;
+        let viewer =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let store = runtime.store().await.unwrap();
+        store
+            .execute_test_statement(
+                "UPDATE project_memberships SET role='viewer' WHERE project_id='bootstrap-default';
+                 UPDATE access_metadata SET global_revision=global_revision+1 WHERE singleton=1",
+            )
+            .await
+            .unwrap();
+        let viewer_response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool"),
+                handler_context(running.peer().clone(), Some(identity), Ok(viewer)),
+            )
+            .await
+            .unwrap();
+        assert_complete_not_found(viewer_response);
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
     }
 }
