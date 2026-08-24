@@ -58,6 +58,40 @@ fn validated_lazy_entry(config: &UpstreamConfig) -> Option<super::super::types::
 }
 
 impl UpstreamPool {
+    pub(super) async fn install_connected_tools(
+        &self,
+        config: &UpstreamConfig,
+        connection: super::UpstreamConnection,
+        tools: Vec<rmcp::model::Tool>,
+        supports_skills: Option<bool>,
+    ) -> anyhow::Result<()> {
+        let exposure_policies = resolve_upstream_exposure_policies(config);
+        let upstream_name: Arc<str> = Arc::from(config.name.as_str());
+        let tools = tools
+            .into_iter()
+            .map(|tool| cached_upstream_tool(tool, &upstream_name))
+            .collect::<HashMap<_, _>>();
+        let previous = self
+            .install_connection_and_apply_entry(config.name.clone(), connection, |entry| {
+                entry.tools = tools;
+                entry.exposure_policy = exposure_policies.tools;
+                entry.resource_exposure_policy = exposure_policies.resources;
+                entry.prompt_exposure_policy = exposure_policies.prompts;
+                entry.skill_exposure_policy = exposure_policies.skills;
+                entry.proxy_skills = config.proxy_skills;
+                if supports_skills.is_some() {
+                    entry.supports_skills = supports_skills;
+                }
+            })
+            .await?;
+        if let Some(previous) = previous {
+            previous
+                .shutdown(&config.name, "upstream.connection.replace")
+                .await;
+        }
+        Ok(())
+    }
+
     /// Seed the upstream catalog from config without starting any upstream runtime.
     pub async fn seed_lazy_upstreams(&self, configs: &[UpstreamConfig]) {
         let mut catalog = self.catalog_write().await;
@@ -153,10 +187,7 @@ impl UpstreamPool {
         }
 
         self.ensure_lazy_upstream_entry(config).await;
-        let stale_connection = {
-            let mut connections = self.connections.write().await;
-            connections.remove(&config.name)
-        };
+        let stale_connection = self.remove_connection_binding(&config.name).await;
         if let Some(connection) = stale_connection {
             connection
                 .shutdown(&config.name, "upstream.lazy.ensure.before_connect")
@@ -204,10 +235,8 @@ impl UpstreamPool {
         };
         let tool_count = tools.len();
         let supports_skills = peer_declares_skills(&conn.peer);
-        self.connections
-            .write()
-            .await
-            .insert(config.name.clone(), conn);
+        self.install_connected_tools(config, conn, tools, Some(supports_skills))
+            .await?;
         if let Some(subject) = subject {
             self.generic_oauth_subjects
                 .write()
@@ -219,8 +248,6 @@ impl UpstreamPool {
                 .await
                 .remove(&config.name);
         }
-        self.replace_catalog_tools(config, tools, Some(supports_skills))
-            .await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         if config.proxy_resources {
@@ -269,10 +296,7 @@ impl UpstreamPool {
         }
 
         self.ensure_lazy_upstream_entry(config).await;
-        let stale_connection = {
-            let mut connections = self.connections.write().await;
-            connections.remove(&config.name)
-        };
+        let stale_connection = self.remove_connection_binding(&config.name).await;
         if let Some(connection) = stale_connection {
             connection
                 .shutdown(&config.name, "upstream.lazy.ensure.before_connect")
@@ -284,10 +308,8 @@ impl UpstreamPool {
             .as_ref()
             .map(|connection| peer_declares_skills(&connection.peer));
         if let Some(connection) = connection {
-            self.connections
-                .write()
-                .await
-                .insert(config.name.clone(), connection);
+            self.install_connected_tools(config, connection, tools, supports_skills)
+                .await?;
             if let Some(subject) = oauth_subject {
                 self.generic_oauth_subjects
                     .write()
@@ -299,9 +321,10 @@ impl UpstreamPool {
                     .await
                     .remove(&config.name);
             }
+        } else {
+            self.replace_catalog_tools(config, tools, supports_skills)
+                .await;
         }
-        self.replace_catalog_tools(config, tools, supports_skills)
-            .await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         if config.proxy_resources {

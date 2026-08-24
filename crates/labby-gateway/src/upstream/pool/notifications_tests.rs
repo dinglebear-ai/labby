@@ -169,6 +169,7 @@ async fn add_subscription_server(pool: &UpstreamPool, upstream: &str, server: Su
             _server_task: Some(server_task),
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         },
     );
     pool.resource_upstreams

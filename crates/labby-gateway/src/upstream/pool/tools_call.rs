@@ -674,6 +674,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -784,6 +785,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -870,6 +872,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -965,6 +968,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1062,6 +1066,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer: peer.clone(),
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1170,6 +1175,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1256,6 +1262,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1336,6 +1343,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 

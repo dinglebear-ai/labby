@@ -325,6 +325,12 @@ This wave emits only state and aggregate counts. It does not log Project, route,
 
 This wave is discovery-only and non-enforcing. Live and revision-bound continuation results, cursors, snapshots, revisions, notifications, and resource bytes remain unchanged. Telemetry contains only state and aggregate checked/would-suppress counts. Templates, reads, regular and OAuth upstream resources, MCP Apps, Code Mode, Skills, contracts, gateway synthetic resources, and every direct-dispatch boundary remain unclassified. A generation-bearing regular-upstream resource publication is deferred until connection/catalog incarnation can prevent stale asynchronous list results from being attributed across replacement or ABA.
 
+### Wave 26 / Milestone 0AD: connection/catalog incarnation kernel
+
+The generic upstream pool now assigns an opaque checked incarnation on every structural connection install and records the same identity beside its catalog entry. One stable pool-wide mutex linearizes binding mutations in the audited `binding → connections → catalog` lock order; all guards are acquired before mutation, so cancellation cannot publish half a pair. Observe/apply helpers carry the identity across an asynchronous gap and reject removal, replacement, and A-B-same-connection-A ABA while unrelated catalog mutations do not invalidate the binding. Production discovery, lazy ensure, reprobe, reconciliation/drain, OAuth invalidation, and in-process registration structural paths use the coordinator.
+
+This is an unmounted identity prerequisite only. Existing resources, prompts, Skills, notification, and other asynchronous capability-result consumers do not yet use the observe/apply helpers, so this wave alone does not close stale result attribution and publishes no resource catalog. The next capability-publication wave must acquire an observed peer, perform the RPC without locks, and route every success/failure health, cache, and subscription mutation through checked apply before treating the result as current.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

@@ -524,6 +524,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
         pool.resource_upstreams
@@ -618,6 +619,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -712,6 +714,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -806,6 +809,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -905,6 +909,7 @@ mod tests {
                     _server_task: Some(server_task),
                     peer,
                     runtime: UpstreamRuntimeMetadata::default(),
+                    incarnation: None,
                 },
             );
         }

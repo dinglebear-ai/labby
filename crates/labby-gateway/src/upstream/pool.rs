@@ -49,6 +49,7 @@ pub mod entries;
 mod health;
 mod helpers;
 mod http_cancellation;
+mod incarnation;
 mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
@@ -238,6 +239,8 @@ pub struct UpstreamPool {
     /// Live client connections, keyed by upstream name.
     /// Each is an `Arc<Peer<RoleClient>>` that can `call_tool` / `list_tools`.
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
+    /// Linearizes generic connection/catalog-entry identity publication.
+    connection_catalog_binding: Arc<Mutex<()>>,
     /// OAuth subject provenance for entries in the generic connection map.
     /// Absence means the generic peer was connected without upstream OAuth.
     generic_oauth_subjects: Arc<RwLock<HashMap<String, String>>>,
@@ -428,6 +431,7 @@ where
     pub(crate) peer: rmcp::service::Peer<RoleClient>,
     /// Runtime metadata for process-backed upstreams.
     pub(crate) runtime: UpstreamRuntimeMetadata,
+    incarnation: Option<incarnation::ConnectionIncarnation>,
 }
 
 impl<H> UpstreamConnection<H>
@@ -460,6 +464,7 @@ where
             _server_task: server_task,
             peer,
             runtime,
+            incarnation: None,
         }
     }
 }
@@ -513,6 +518,7 @@ impl UpstreamPool {
         Self {
             catalog: Arc::new(RwLock::new(catalog_publication::CatalogState::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
+            connection_catalog_binding: Arc::new(Mutex::new(())),
             generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,

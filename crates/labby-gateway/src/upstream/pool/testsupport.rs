@@ -193,19 +193,21 @@ where
 
     let pool = Arc::new(UpstreamPool::new());
     let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-    pool.catalog_write().await.insert(
-        upstream_name.to_string(),
-        healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
-    );
-    pool.connections.write().await.insert(
-        upstream_name.to_string(),
-        UpstreamConnection {
-            _client_service: client_service.into(),
-            _server_task: Some(server_task),
-            peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-        },
-    );
+    let previous = pool
+        .install_connection_catalog_entry(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
+            },
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        )
+        .await
+        .expect("connection identity");
+    assert!(previous.is_none());
     pool.resource_upstreams
         .write()
         .await
@@ -296,6 +298,7 @@ pub(super) async fn slow_response_pool(upstream_name: &str) -> Arc<UpstreamPool>
             _server_task: Some(server_task),
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         },
     );
     pool.resource_upstreams
@@ -460,6 +463,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }
@@ -511,6 +515,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }
@@ -584,6 +589,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }

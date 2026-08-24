@@ -3602,6 +3602,7 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         };
         (
             RelayCachedConnection {
@@ -4339,6 +4340,7 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         };
         pool.relay_connections.write().await.insert(
             relay_cache_key(&config.name, 1, None),
@@ -4476,6 +4478,7 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         };
         pool.relay_connections.write().await.insert(
             relay_cache_key(&config.name, 1, None),

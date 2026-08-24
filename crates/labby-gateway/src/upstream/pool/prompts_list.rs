@@ -393,6 +393,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: super::super::UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }

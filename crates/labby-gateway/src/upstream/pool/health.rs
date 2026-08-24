@@ -132,6 +132,7 @@ impl UpstreamPool {
     }
 
     /// Test-only: insert a fully-formed `UpstreamEntry` into the catalog.
+    #[cfg(any(test, feature = "testkit"))]
     pub async fn insert_entry_for_test(&self, name: &str, entry: UpstreamEntry) {
         self.catalog_write().await.insert(name.to_string(), entry);
     }

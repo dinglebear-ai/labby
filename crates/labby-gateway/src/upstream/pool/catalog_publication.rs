@@ -68,6 +68,7 @@ impl PublishedToolCatalogSnapshot {
 
 pub(super) struct CatalogState {
     entries: HashMap<String, UpstreamEntry>,
+    incarnations: HashMap<String, super::incarnation::ConnectionIncarnation>,
     published: Result<Arc<PublishedToolCatalogSnapshot>, ToolCatalogPublicationError>,
     determinant: ProjectionDeterminant,
 }
@@ -89,9 +90,33 @@ struct RouteDeterminant {
 }
 
 impl CatalogState {
+    pub(super) fn bind_incarnation(
+        &mut self,
+        upstream: &str,
+        incarnation: super::incarnation::ConnectionIncarnation,
+    ) {
+        self.incarnations.insert(upstream.to_string(), incarnation);
+    }
+
+    pub(super) fn incarnation(
+        &self,
+        upstream: &str,
+    ) -> Option<super::incarnation::ConnectionIncarnation> {
+        self.incarnations.get(upstream).copied()
+    }
+
+    pub(super) fn remove_incarnation(&mut self, upstream: &str) {
+        self.incarnations.remove(upstream);
+    }
+
+    pub(super) fn clear_incarnations(&mut self) {
+        self.incarnations.clear();
+    }
+
     pub(super) fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            incarnations: HashMap::new(),
             published: Ok(Arc::new(PublishedToolCatalogSnapshot {
                 generation: next_generation(),
                 routes: Arc::from([]),
