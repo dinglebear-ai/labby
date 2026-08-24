@@ -377,6 +377,12 @@ This pool snapshot is observational and unmounted. It deliberately follows exist
 
 The snapshot is observational and unmounted, not read authority or a grant. Unified MCP catalog ownership, Project/Bound propagation, discovery shadowing, reads, and enforcement remain deferred to later waves.
 
+### Wave 35 / Milestone 0AM: unified Project MCP catalog ownership includes ResourceTemplates
+
+The unified manager snapshot reads tool, regular Resource, and regular ResourceTemplate publications from the same exact pool plus the built-in service registry inside one bounded G-T-R-Q-S-G-T-R-Q-S common interval. It nests all four Loadout-filtered catalog children and compares the ResourceTemplate generation in publication equality, so template-only ABA and sustained churn cannot produce a torn Project context.
+
+The existing authorization-first Project composer and BoundAccessContext kernel inherit the template child mechanically through nested ownership and equality. Cursor shadow identity also carries the template generation, preventing a cached Project snapshot from crossing a template-only publication change. No discovery handler, read path, transport authorization, or enforcement boundary consumes templates yet.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

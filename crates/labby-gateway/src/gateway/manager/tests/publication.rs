@@ -2,8 +2,8 @@
 
 use crate::gateway::config::write_gateway_config;
 use crate::gateway::manager::{
-    LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
-    LoadoutToolCatalogPublicationError,
+    LoadoutMcpCatalogPublicationError, LoadoutResourceCatalogPublicationError,
+    LoadoutResourceTemplateCatalogPublicationError, LoadoutToolCatalogPublicationError,
 };
 use labby_runtime::gateway_config::{
     GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
@@ -919,6 +919,14 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
         vec![Resource::new("file:///alpha", "alpha").with_description("metadata")],
     )
     .await;
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![
+            ResourceTemplate::new("file:///alpha/{id}", "template")
+                .with_description("template metadata"),
+        ],
+    )
+    .await;
     runtime.swap(Some(Arc::clone(&pool))).await;
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone())
         .with_builtin_service_registry(publication_registry("deploy"));
@@ -939,6 +947,13 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
         Some("metadata")
     );
     assert_eq!(
+        snapshot.resource_templates().routes()[0]
+            .template
+            .description
+            .as_deref(),
+        Some("template metadata")
+    );
+    assert_eq!(
         snapshot.tools().runtime_config_generation(),
         snapshot.services().runtime_config_generation()
     );
@@ -955,10 +970,27 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
         snapshot.tools().runtime_config_generation()
     );
     assert_eq!(
+        snapshot.resource_templates().runtime_config_generation(),
+        snapshot.tools().runtime_config_generation()
+    );
+    assert_eq!(
+        snapshot.resource_templates().pool_publication_generation(),
+        snapshot.tools().pool_publication_generation()
+    );
+    assert_eq!(
         snapshot.resources().resource_catalog_generation(),
         pool.published_resource_catalog()
             .await
             .expect("resources")
+            .generation()
+    );
+    assert_eq!(
+        snapshot
+            .resource_templates()
+            .resource_template_catalog_generation(),
+        pool.published_resource_template_catalog()
+            .await
+            .expect("resource templates")
             .generation()
     );
     assert_eq!(
@@ -1168,6 +1200,14 @@ async fn unified_loadout_mcp_catalog_retries_resource_aba_independently() {
         snapshot.services().service_registry_generation(),
         before.services().service_registry_generation()
     );
+    assert_eq!(
+        snapshot
+            .resource_templates()
+            .resource_template_catalog_generation(),
+        before
+            .resource_templates()
+            .resource_template_catalog_generation()
+    );
     assert_ne!(
         snapshot.resources().resource_catalog_generation(),
         before.resources().resource_catalog_generation()
@@ -1208,7 +1248,136 @@ async fn unified_loadout_mcp_catalog_bounds_sustained_resource_churn() {
         .await;
     assert_eq!(
         result.err(),
-        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::Unstable)
+        Some(LoadoutMcpCatalogPublicationError::Unstable)
+    );
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_tracks_only_resource_template_generation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    pool.insert_resource_routes_for_tests(
+        "alpha",
+        vec![Resource::new("file:///resource", "resource")],
+    )
+    .await;
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![ResourceTemplate::new("file:///before/{id}", "before")],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("template-only.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let before = manager
+        .published_loadout_mcp_catalog_snapshot("project")
+        .await
+        .expect("before");
+    let changing = Arc::clone(&pool);
+    let after = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let pool = Arc::clone(&changing);
+            async move {
+                if attempt == 0 {
+                    pool.insert_resource_template_routes_for_tests(
+                        "alpha",
+                        vec![ResourceTemplate::new("file:///transient/{id}", "transient")],
+                    )
+                    .await;
+                    pool.insert_resource_template_routes_for_tests(
+                        "alpha",
+                        vec![ResourceTemplate::new("file:///before/{id}", "before")],
+                    )
+                    .await;
+                }
+            }
+        })
+        .await
+        .expect("template ABA retries");
+    assert_eq!(
+        before.tools().runtime_config_generation(),
+        after.tools().runtime_config_generation()
+    );
+    assert_eq!(
+        before.tools().pool_publication_generation(),
+        after.tools().pool_publication_generation()
+    );
+    assert_eq!(
+        before.tools().tool_catalog_generation(),
+        after.tools().tool_catalog_generation()
+    );
+    assert_eq!(
+        before.resources().resource_catalog_generation(),
+        after.resources().resource_catalog_generation()
+    );
+    assert_eq!(
+        before.services().service_registry_generation(),
+        after.services().service_registry_generation()
+    );
+    assert_ne!(
+        before
+            .resource_templates()
+            .resource_template_catalog_generation(),
+        after
+            .resource_templates()
+            .resource_template_catalog_generation()
+    );
+    assert!(!before.same_publication_as(&after));
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_bounds_sustained_resource_template_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("template-churn.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let changing = Arc::clone(&pool);
+    let result = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let pool = Arc::clone(&changing);
+            async move {
+                pool.insert_resource_template_routes_for_tests(
+                    "alpha",
+                    vec![ResourceTemplate::new(
+                        format!("file:///{attempt}/{{id}}"),
+                        "changed",
+                    )],
+                )
+                .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutMcpCatalogPublicationError::Unstable)
+    );
+    pool.insert_resource_template_routes_for_tests(
+        "alpha",
+        vec![
+            ResourceTemplate::new("file:///dup/{id}", "one"),
+            ResourceTemplate::new("file:///dup/{id}", "two"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        manager
+            .published_loadout_mcp_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutMcpCatalogPublicationError::CatalogUnavailable)
     );
 }
 
@@ -1225,7 +1394,7 @@ async fn unified_loadout_mcp_catalog_maps_stable_missing_states() {
             .published_loadout_mcp_catalog_snapshot("project")
             .await
             .err(),
-        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::MissingLoadout)
+        Some(LoadoutMcpCatalogPublicationError::MissingLoadout)
     );
 
     let no_pool = GatewayManager::new(
@@ -1241,7 +1410,7 @@ async fn unified_loadout_mcp_catalog_maps_stable_missing_states() {
             .published_loadout_mcp_catalog_snapshot("project")
             .await
             .err(),
-        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::MissingPool)
+        Some(LoadoutMcpCatalogPublicationError::MissingPool)
     );
 }
 
@@ -1275,7 +1444,7 @@ async fn unified_loadout_mcp_catalog_fails_closed_under_sustained_churn() {
         .await;
     assert_eq!(
         result.err(),
-        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::Unstable)
+        Some(LoadoutMcpCatalogPublicationError::Unstable)
     );
 }
 

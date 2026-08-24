@@ -202,6 +202,9 @@ impl ProjectDiscoveryShadow<'_> {
             pool: catalog.tools().pool_publication_generation(),
             tools: catalog.tools().tool_catalog_generation(),
             resources: catalog.resources().resource_catalog_generation(),
+            resource_templates: catalog
+                .resource_templates()
+                .resource_template_catalog_generation(),
             services: catalog.services().service_registry_generation(),
         })
     }
@@ -902,6 +905,14 @@ mod tests {
         assert_eq!(first.catalog().access().project_id, "bootstrap-default");
         assert_eq!(first.route().route_name(), "project-route");
         assert_eq!(first.route().resource(), "https://mcp.example.com/project");
+        assert!(
+            first
+                .catalog()
+                .catalog()
+                .resource_templates()
+                .routes()
+                .is_empty()
+        );
         assert!(first.id() != second.id());
         assert_ne!(first.safe_fingerprint(), second.safe_fingerprint());
         assert_eq!(
@@ -934,6 +945,19 @@ mod tests {
                 "labby.mcp.transport-binding.v1\0",
                 "6:issuer11:request-jti"
             ))
+        );
+        let shadow = ProjectDiscoveryShadow::Bound(observed.as_ref());
+        let key = shadow
+            .snapshot_key(now)
+            .expect("template-bound snapshot key");
+        assert_eq!(
+            key.resource_templates,
+            observed
+                .core()
+                .catalog()
+                .catalog()
+                .resource_templates()
+                .resource_template_catalog_generation()
         );
         let shadow = project_discovery_shadow(&extensions, now);
         assert_eq!(shadow.state_label_at(now), "bound");
