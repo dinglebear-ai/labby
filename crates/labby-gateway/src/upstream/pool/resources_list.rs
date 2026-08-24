@@ -40,6 +40,16 @@ use super::tools::MAX_UPSTREAM_RESOURCES;
 
 const RESOURCE_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// One regular upstream Resource with its exact pre-rewrite provenance.
+///
+/// This is observational listing metadata, not read authority or a grant.
+#[derive(Clone, Debug)]
+pub struct ListedUpstreamResource {
+    pub upstream_name: String,
+    pub native_uri: String,
+    pub resource: Resource,
+}
+
 fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
     request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
 }
@@ -282,6 +292,17 @@ impl UpstreamPool {
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<Resource> {
+        self.list_upstream_resources_with_provenance_allowed(allowed)
+            .await
+            .into_iter()
+            .map(|listed| listed.resource)
+            .collect()
+    }
+
+    pub async fn list_upstream_resources_with_provenance_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ListedUpstreamResource> {
         let observed_peers = self.observe_routable_resource_connections(allowed).await;
         if observed_peers.is_empty() {
             return Vec::new();
@@ -402,10 +423,15 @@ impl UpstreamPool {
                         // verbatim (routed via `read_upstream_ui_resource`).
                         // Rewriting to the `lab://upstream/{name}/…` gateway form
                         // would break that reference, so skip the rewrite here.
+                        let native_uri = resource.uri.clone();
                         if !resource.uri.starts_with("ui://") {
                             rewrite_resource_uri(&mut resource, &name);
                         }
-                        resources.push(resource);
+                        resources.push(ListedUpstreamResource {
+                            upstream_name: name.clone(),
+                            native_uri,
+                            resource,
+                        });
                         exposed_count += 1;
                     }
                     log_exposure_filter(&name, "resources", hidden_count, exposed_count, false);
@@ -1089,7 +1115,16 @@ mod tests {
         let calls = Arc::clone(&server.calls);
         let pool = catalog_pool_with_server("paged", server).await;
 
-        let resources = pool.list_upstream_resources().await;
+        let listed = pool
+            .list_upstream_resources_with_provenance_allowed(None)
+            .await;
+        assert_eq!(listed[0].upstream_name, "paged");
+        assert_eq!(listed[0].native_uri, "file:///first");
+        assert_eq!(listed[0].resource.uri, "lab://upstream/paged/file:///first");
+        let resources = listed
+            .into_iter()
+            .map(|listed| listed.resource)
+            .collect::<Vec<_>>();
         let uris = resources
             .iter()
             .map(|resource| resource.uri.as_str())

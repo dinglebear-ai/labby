@@ -7,16 +7,48 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+#[cfg(feature = "gateway")]
+use labby_gateway::gateway::ServiceRegistryPublicationGeneration;
+#[cfg(feature = "gateway")]
+use labby_gateway::gateway::manager::{GatewayRuntimeConfigGeneration, PoolPublicationGeneration};
+#[cfg(feature = "gateway")]
+use labby_gateway::upstream::pool::{ResourceCatalogGeneration, ToolCatalogGeneration};
 use rmcp::model::{Prompt, Resource, ResourceTemplate};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 const MAX_CATALOG_SNAPSHOTS_PER_KIND: usize = 8;
 
+#[cfg(feature = "gateway")]
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct ProjectShadowSnapshotKey {
+    pub(crate) credential_instance_fingerprint: String,
+    pub(crate) credential_binding_fingerprint: String,
+    pub(crate) route_binding_fingerprint: String,
+    pub(crate) access_global_revision: u64,
+    pub(crate) runtime: GatewayRuntimeConfigGeneration,
+    pub(crate) pool: PoolPublicationGeneration,
+    pub(crate) tools: ToolCatalogGeneration,
+    pub(crate) resources: ResourceCatalogGeneration,
+    pub(crate) services: ServiceRegistryPublicationGeneration,
+}
+
+#[cfg(not(feature = "gateway"))]
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct ProjectShadowSnapshotKey;
+
 struct CatalogSnapshot<T> {
     audience: String,
     revision: String,
     items: Arc<[T]>,
+    resource_provenance: Arc<[ResourceProvenance]>,
+    project_shadow_key: Option<ProjectShadowSnapshotKey>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ResourceProvenance {
+    pub(crate) upstream: String,
+    pub(crate) native_uri: String,
 }
 
 struct CatalogSnapshotStore<T> {
@@ -41,6 +73,17 @@ impl<T> CatalogSnapshotStore<T> {
     }
 
     fn insert(&mut self, audience: String, revision: String, items: Arc<[T]>) {
+        self.insert_with_provenance(audience, revision, items, Arc::from([]), None);
+    }
+
+    fn insert_with_provenance(
+        &mut self,
+        audience: String,
+        revision: String,
+        items: Arc<[T]>,
+        resource_provenance: Arc<[ResourceProvenance]>,
+        project_shadow_key: Option<ProjectShadowSnapshotKey>,
+    ) {
         if let Some(index) = self
             .entries
             .iter()
@@ -52,6 +95,8 @@ impl<T> CatalogSnapshotStore<T> {
             audience,
             revision,
             items,
+            resource_provenance,
+            project_shadow_key,
         });
         while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
             self.entries.pop_front();
@@ -77,8 +122,24 @@ impl McpRouteRuntime {
         &self,
         audience: &str,
         revision: &str,
-    ) -> Option<Arc<[Resource]>> {
-        self.resources.read().await.get(audience, revision)
+    ) -> Option<(
+        Arc<[Resource]>,
+        Arc<[ResourceProvenance]>,
+        Option<ProjectShadowSnapshotKey>,
+    )> {
+        let resources = self.resources.read().await;
+        resources
+            .entries
+            .iter()
+            .rev()
+            .find(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
+            .map(|snapshot| {
+                (
+                    Arc::clone(&snapshot.items),
+                    Arc::clone(&snapshot.resource_provenance),
+                    snapshot.project_shadow_key.clone(),
+                )
+            })
     }
 
     pub(crate) async fn store_resource_snapshot(
@@ -86,11 +147,16 @@ impl McpRouteRuntime {
         audience: String,
         revision: String,
         resources: Arc<[Resource]>,
+        resource_provenance: Arc<[ResourceProvenance]>,
+        project_shadow_key: Option<ProjectShadowSnapshotKey>,
     ) {
-        self.resources
-            .write()
-            .await
-            .insert(audience, revision, resources);
+        self.resources.write().await.insert_with_provenance(
+            audience,
+            revision,
+            resources,
+            resource_provenance,
+            project_shadow_key,
+        );
     }
 
     pub(crate) async fn resource_template_snapshot(
@@ -174,6 +240,8 @@ mod tests {
                 "alice".to_string(),
                 "r1".to_string(),
                 Arc::from(vec![Resource::new("file:///one", "one")]),
+                Arc::from([]),
+                None,
             )
             .await;
         runtime
@@ -189,7 +257,8 @@ mod tests {
             runtime
                 .resource_snapshot("alice", "r1")
                 .await
-                .expect("resource snapshot")[0]
+                .expect("resource snapshot")
+                .0[0]
                 .uri,
             "file:///one"
         );

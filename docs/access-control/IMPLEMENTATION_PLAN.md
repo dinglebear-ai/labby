@@ -355,6 +355,10 @@ The unified manager snapshot now reads tool and regular Resource publications fr
 
 The existing authorization-first A-M-A-M Project composer and C-R-C-R BoundAccessContext kernel inherit the Resource child solely through nested ownership, getters, and publication equality. Denial still reaches no manager, old contexts remain immutable, and no discovery handler, read path, transport, or enforcement boundary consumes the Resource child yet.
 
+### Wave 31 / Milestone 0AI: Project-bound regular Resource discovery shadow
+
+`resources/list` classifies regular non-OAuth upstream Resources by exact `(upstream, native_uri)` provenance retained beside the pagination snapshot. Classification intersects the unified Project Resource publication with the protected route's effective `expose_resources` and upstream narrowing. Cursor pages require the same unexpired, non-sensitive Project/credential/publication snapshot key before replaying aggregate classification; mismatch is reported only as unavailable/zero telemetry. Wire resources, ordering, cursors, revisions, notifications, and legacy behavior remain unchanged. This is shadow observation only: Resources read, templates, OAuth, UI, synthetic/local/Skills/app families, and enforcement remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

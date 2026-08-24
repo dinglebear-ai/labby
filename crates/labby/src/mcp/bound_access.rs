@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::access::{
     AccessRuntime, Permission, ProjectRuntimeMcpCatalogContext, project_runtime_mcp_catalog_context,
 };
+use crate::mcp::runtime::ProjectShadowSnapshotKey;
 
 const BIND_ATTEMPTS: usize = 3;
 static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -179,6 +180,31 @@ pub(crate) enum ProjectDiscoveryShadow<'a> {
 }
 
 impl ProjectDiscoveryShadow<'_> {
+    pub(crate) fn snapshot_key(&self, now: SystemTime) -> Option<ProjectShadowSnapshotKey> {
+        let Self::Bound(binding) = self else {
+            return None;
+        };
+        binding.validate_not_expired(now).ok()?;
+        let core = binding.core();
+        let route = core.route();
+        let catalog = core.catalog().catalog();
+        Some(ProjectShadowSnapshotKey {
+            credential_instance_fingerprint: binding.credential_instance_fingerprint().to_owned(),
+            credential_binding_fingerprint: core.credential_binding_fingerprint().to_owned(),
+            route_binding_fingerprint: labby_auth::util::fingerprint(&format!(
+                "labby.mcp.project-shadow-route.v1\0{}\0{}\0{}",
+                route.project_id(),
+                route.route_name(),
+                route.resource()
+            )),
+            access_global_revision: core.catalog().access().global_revision,
+            runtime: catalog.tools().runtime_config_generation(),
+            pool: catalog.tools().pool_publication_generation(),
+            tools: catalog.tools().tool_catalog_generation(),
+            resources: catalog.resources().resource_catalog_generation(),
+            services: catalog.services().service_registry_generation(),
+        })
+    }
     pub(crate) fn state_label_at(&self, now: SystemTime) -> &'static str {
         match self {
             Self::Legacy => "legacy",
@@ -269,6 +295,43 @@ impl ProjectDiscoveryShadow<'_> {
                     .any(|route| {
                         route.upstream_name.as_ref() == upstream && route.tool_name.as_ref() == tool
                     }),
+        )
+    }
+
+    /// Classify one regular non-OAuth upstream Resource by exact provenance.
+    /// `None` means the request is legacy/unavailable, not allow or deny.
+    pub(crate) fn allows_upstream_resource(
+        &self,
+        upstream: &str,
+        native_uri: &str,
+        now: SystemTime,
+    ) -> Option<bool> {
+        let Self::Bound(binding) = self else {
+            return None;
+        };
+        if binding.validate_not_expired(now).is_err() {
+            return None;
+        }
+        let core = binding.core();
+        let route = core.route();
+        let published = core
+            .catalog()
+            .catalog()
+            .resources()
+            .routes()
+            .iter()
+            .any(|candidate| {
+                candidate.upstream_name.as_ref() == upstream
+                    && candidate.native_uri.as_ref() == native_uri
+            });
+        Some(
+            published
+                && route.effective_loadout().expose_resources
+                && route
+                    .effective_loadout()
+                    .upstreams
+                    .iter()
+                    .any(|name| name == upstream),
         )
     }
 }
@@ -874,6 +937,177 @@ mod tests {
         );
         let shadow = project_discovery_shadow(&extensions, now);
         assert_eq!(shadow.state_label_at(now), "bound");
+        let snapshot_key = shadow.snapshot_key(now).expect("stable shadow key");
+        let same_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .expect("same publication binding");
+        let same_credential =
+            validate_transport_credential_binding("issuer", "request-jti", 101, now).unwrap();
+        let same_transport =
+            TransportBoundAccessContext::new(same_core, same_credential, now).unwrap();
+        assert!(
+            snapshot_key
+                == ProjectDiscoveryShadow::Bound(&same_transport)
+                    .snapshot_key(now)
+                    .unwrap(),
+            "fresh context ids must not perturb the cursor shadow key"
+        );
+        let other_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let other_credential =
+            validate_transport_credential_binding("issuer", "other-request-jti", 101, now).unwrap();
+        let other_transport =
+            TransportBoundAccessContext::new(other_core, other_credential, now).unwrap();
+        assert!(
+            snapshot_key
+                != ProjectDiscoveryShadow::Bound(&other_transport)
+                    .snapshot_key(now)
+                    .unwrap(),
+            "a different credential instance must not reuse cursor shadow telemetry"
+        );
+        let cursor_now = SystemTime::now();
+        let cursor_expiry = usize::try_from(unix_seconds(cursor_now).unwrap() + 3_600).unwrap();
+        let cursor_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let cursor_transport = TransportBoundAccessContext::new(
+            cursor_core,
+            validate_transport_credential_binding(
+                "issuer",
+                "cursor-request-jti",
+                cursor_expiry,
+                cursor_now,
+            )
+            .unwrap(),
+            cursor_now,
+        )
+        .unwrap();
+        let cursor_key = ProjectDiscoveryShadow::Bound(&cursor_transport)
+            .snapshot_key(cursor_now)
+            .unwrap();
+        let cursor_other_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let cursor_other_transport = TransportBoundAccessContext::new(
+            cursor_other_core,
+            validate_transport_credential_binding(
+                "issuer",
+                "cursor-other-jti",
+                cursor_expiry,
+                cursor_now,
+            )
+            .unwrap(),
+            cursor_now,
+        )
+        .unwrap();
+        let snapshot_server = project_shadow_test_server();
+        let snapshot_items = (0..101)
+            .map(|index| rmcp::model::Resource::new(format!("file:///{index}"), index.to_string()))
+            .collect::<Vec<_>>();
+        snapshot_server
+            .route_runtime
+            .store_resource_snapshot(
+                crate::mcp::runtime::catalog_snapshot_audience(None),
+                "wave31".into(),
+                Arc::from(snapshot_items),
+                Arc::from([crate::mcp::runtime::ResourceProvenance {
+                    upstream: "alpha".into(),
+                    native_uri: "file:///100".into(),
+                }]),
+                Some(cursor_key),
+            )
+            .await;
+        let (snapshot_transport, _snapshot_client) = tokio::io::duplex(64 * 1024);
+        let snapshot_running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
+            snapshot_server,
+            snapshot_transport,
+            None,
+        );
+        let cursor = rmcp::model::PaginatedRequestParams::default()
+            .with_cursor(Some("v1:100:wave31".into()));
+        use tracing::instrument::WithSubscriber as _;
+        let matching_logs = CapturedLogs::default();
+        let matching_subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(matching_logs.clone())
+            .finish();
+        let matching = snapshot_running
+            .service()
+            .list_resources_impl(
+                Some(cursor.clone()),
+                project_shadow_context(
+                    snapshot_running.peer().clone(),
+                    Some(ProjectAccessObservation::Bound(Arc::new(cursor_transport))),
+                ),
+            )
+            .with_subscriber(tracing::Dispatch::new(matching_subscriber))
+            .await
+            .unwrap();
+        let matching_logs = String::from_utf8(matching_logs.0.lock().unwrap().clone()).unwrap();
+        let mismatched_logs = CapturedLogs::default();
+        let mismatched_subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(mismatched_logs.clone())
+            .finish();
+        let mismatched = snapshot_running
+            .service()
+            .list_resources_impl(
+                Some(cursor),
+                project_shadow_context(
+                    snapshot_running.peer().clone(),
+                    Some(ProjectAccessObservation::Bound(Arc::new(
+                        cursor_other_transport,
+                    ))),
+                ),
+            )
+            .with_subscriber(tracing::Dispatch::new(mismatched_subscriber))
+            .await
+            .unwrap();
+        let mismatched_logs = String::from_utf8(mismatched_logs.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&matching).unwrap(),
+            serde_json::to_vec(&mismatched).unwrap(),
+            "cursor shadow-key mismatch must not alter the retained page"
+        );
+        assert!(matching_logs.contains("project_shadow_state=\"bound\""));
+        assert!(matching_logs.contains("project_shadow_checked_resource_count=1"));
+        assert!(matching_logs.contains("project_shadow_would_suppress_resource_count=1"));
+        assert!(mismatched_logs.contains("project_shadow_state=\"unavailable\""));
+        assert!(mismatched_logs.contains("project_shadow_checked_resource_count=0"));
+        assert!(mismatched_logs.contains("project_shadow_would_suppress_resource_count=0"));
         assert_eq!(shadow.allows_builtin_service("fs", now), Some(true));
         assert_eq!(shadow.allows_builtin_service("setup", now), Some(false));
         assert_eq!(
