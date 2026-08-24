@@ -265,6 +265,36 @@ impl VerifiedIdentity {
     }
 }
 
+/// Derive verified transport identity solely from already validated access-token claims.
+pub fn verified_identity_from_access_claims(
+    claims: &crate::jwt::AccessClaims,
+    config: &crate::config::AuthConfig,
+) -> Result<VerifiedIdentity, VerifiedIdentityError> {
+    match (
+        claims.identity_issuer.as_deref(),
+        claims.identity_credential_id.as_deref(),
+    ) {
+        (Some(provider_issuer), None) => VerifiedIdentity::external_from_allowed_issuers(
+            Authenticator::OauthBearer,
+            claims.iss.clone(),
+            provider_issuer,
+            claims.sub.clone(),
+            std::iter::once(crate::google::GOOGLE_ISSUER).chain(
+                config
+                    .enterprise_issuers
+                    .iter()
+                    .map(|issuer| issuer.issuer.as_str()),
+            ),
+        ),
+        (None, Some(credential_id)) => VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::OauthBearer,
+            claims.iss.clone(),
+            credential_id,
+        ),
+        _ => Err(VerifiedIdentityError::InvalidIdentityProvenance),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +360,54 @@ mod tests {
         assert_eq!(fingerprint, static_identity.safe_binding_fingerprint());
         for secret in ["issuer-secret-a", "credential-secret"] {
             assert!(!fingerprint.contains(secret));
+        }
+    }
+
+    #[test]
+    fn access_claim_identity_derivation_is_exact_and_rejects_ambiguous_provenance() {
+        let config = crate::config::AuthConfig::default();
+        let claims = |identity_issuer: Option<&str>, credential: Option<&str>, jti: &str| {
+            crate::jwt::AccessClaims {
+                iss: "https://lab.example.com".into(),
+                sub: "opaque-subject".into(),
+                aud: "https://mcp.example.com/project".into(),
+                exp: usize::MAX,
+                nbf: None,
+                iat: 1,
+                jti: jti.into(),
+                scope: "mcp:read".into(),
+                azp: "client".into(),
+                identity_issuer: identity_issuer.map(str::to_string),
+                identity_credential_id: credential.map(str::to_string),
+            }
+        };
+        let external = verified_identity_from_access_claims(
+            &claims(Some(crate::google::GOOGLE_ISSUER), None, "jti-a"),
+            &config,
+        )
+        .unwrap();
+        assert!(matches!(
+            external.principal_link(),
+            PrincipalLink::External { .. }
+        ));
+        let local = verified_identity_from_access_claims(
+            &claims(None, Some("credential-a"), "jti-b"),
+            &config,
+        )
+        .unwrap();
+        assert!(matches!(
+            local.principal_link(),
+            PrincipalLink::LocalCredential { .. }
+        ));
+        for invalid in [
+            claims(None, None, "jti"),
+            claims(
+                Some(crate::google::GOOGLE_ISSUER),
+                Some("credential"),
+                "jti",
+            ),
+        ] {
+            assert!(verified_identity_from_access_claims(&invalid, &config).is_err());
         }
     }
 }

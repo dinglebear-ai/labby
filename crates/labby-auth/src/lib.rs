@@ -35,6 +35,7 @@ mod verified_identity;
 
 pub use verified_identity::{
     Authenticator, PrincipalLink, VerifiedIdentity, VerifiedIdentityError,
+    verified_identity_from_access_claims,
 };
 
 #[cfg(feature = "http-axum")]

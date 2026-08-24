@@ -305,7 +305,13 @@ The snapshot remains unmounted, non-cloneable observational evidence. It does no
 
 The crate-private MCP lifecycle kernel now composes Wave 20 Project catalog evidence with Wave 21 protected-route evidence through a bounded C-R-C-R observation. It accepts only identical complete child publications with the same runtime-configuration generation, Project, assigned Loadout, and server-derived canonical route identity. Construction always requests `asset.discover`; stable semantic mismatches fail unavailable while transient cross-publication mismatches retry and sustained churn fails unstable. The result owns both immutable snapshots, a checked process-unique opaque ID, and redacted fingerprints over the binding plus the complete verified identity facts.
 
-This remains an unmounted core, not a bearer capability or dispatch grant. MCP params and `_meta` cannot construct it. Expiry, reconnect/resume and session validation, and credential-instance binding such as a browser session ID or JWT `jti` are deliberately deferred until the transport lifecycle mount; `VerifiedIdentity` currently supplies authenticator, transport issuer, and PrincipalLink facts only. `LabMcpServer` has no field for this context yet.
+This core remains unmounted by itself, not a bearer capability or dispatch grant. MCP params and `_meta` cannot construct it. The protected HTTP shadow mount in Wave 23 wraps it with JWT-instance expiry and binding; reconnect/resume, stateful session validation, and browser-session identity remain deferred. `LabMcpServer` has no field for this context.
+
+### Wave 23 / Milestone 0AA: protected HTTP ownership shadow
+
+Explicit Project-bound gateway-subset routes now derive `VerifiedIdentity` from validated access-token provenance, validate a bounded nonempty token ID and exact expiry before Access/Gateway reads, and attach one request-owned transport binding through HTTP Parts before the scoped stateless MCP service runs. The credential-instance fingerprint is domain-separated and redacted over issuer plus JWT ID; the wrapper owns the Wave 22 core evidence and rejects the exact expiry boundary.
+
+This is ownership-only shadow rollout. Successful binding attaches `Bound`; authorization/catalog failure attaches explicit `Unavailable` and current dispatch continues. Invalid or expired credentials still reject before dispatch. Legacy protected routes without `project_id`, root MCP, stdio and its live bridge, Unix-only identity, and in-process peers remain unchanged and receive no Project observation. No discovery or dispatch enforcement consumes the observation yet, and no `LabMcpServer` field or client-controlled Project selector is introduced.
 
 ## Phase 4: Membership, role, and permission resolver
 

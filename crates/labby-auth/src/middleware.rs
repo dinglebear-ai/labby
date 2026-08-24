@@ -384,37 +384,11 @@ async fn authenticate(
                 &expected_issuer,
             ) {
                 Ok(claims) => {
-                    let identity = match (
-                        claims.identity_issuer.as_deref(),
-                        claims.identity_credential_id.as_deref(),
-                    ) {
-                        (Some(provider_issuer), None) => {
-                            let allowed_issuers = std::iter::once(crate::google::GOOGLE_ISSUER)
-                                .chain(
-                                    auth_state
-                                        .config
-                                        .enterprise_issuers
-                                        .iter()
-                                        .map(|issuer| issuer.issuer.as_str()),
-                                );
-                            VerifiedIdentity::external_from_allowed_issuers(
-                                Authenticator::OauthBearer,
-                                claims.iss.clone(),
-                                provider_issuer,
-                                claims.sub.clone(),
-                                allowed_issuers,
-                            )
-                        }
-                        (None, Some(credential_id)) => {
-                            VerifiedIdentity::local_credential_with_issuer(
-                                Authenticator::OauthBearer,
-                                claims.iss.clone(),
-                                credential_id,
-                            )
-                        }
-                        _ => Err(crate::VerifiedIdentityError::InvalidIdentityProvenance),
-                    }
-                    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
+                    let identity =
+                        crate::verified_identity_from_access_claims(&claims, &auth_state.config)
+                            .map_err(|_| {
+                                auth_error_response("invalid authenticated identity", layer)
+                            })?;
                     let actor_key =
                         derive_actor_key(layer.actor_key_deriver.as_deref(), &claims.sub);
                     let auth = AuthContext {

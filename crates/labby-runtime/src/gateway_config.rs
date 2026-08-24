@@ -1117,6 +1117,7 @@ impl Default for GatewayLoadoutConfig {
 }
 
 impl GatewayLoadoutConfig {
+    #[allow(clippy::result_unit_err)] // The caller intentionally maps every mismatch to one redacted boundary.
     pub fn intersect_gateway_subset(
         &self,
         target: &ProtectedGatewaySubsetTarget,

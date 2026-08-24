@@ -1,9 +1,9 @@
-//! Unmounted MCP access-context lifecycle kernel.
-
-#![allow(dead_code)] // Intentionally unmounted until the transport lifecycle milestone.
+//! MCP access-context lifecycle kernel and protected-HTTP shadow binding.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::PublishedProjectRouteSnapshot;
@@ -25,9 +25,9 @@ pub(crate) struct BoundAccessContextId(u64);
 /// This type is deliberately non-`Clone`, non-`Debug`, and non-serializable.
 /// Its inputs are server-derived authentication and protected-route facts; MCP
 /// request params and `_meta` never participate. It is not a dispatch grant.
-/// Expiry, resume/session validation, and token-instance binding (browser
-/// session ID or JWT `jti`) are deferred until the transport lifecycle mount;
-/// the current identity fingerprint covers only `VerifiedIdentity` facts.
+/// Resume/session validation remains deferred; the protected HTTP transport
+/// wraps this core with the current access-token instance and expiry.
+#[allow(dead_code)] // Owned in shadow mode; enforcement consumers land in the next slice.
 pub(crate) struct BoundAccessContext {
     id: BoundAccessContextId,
     catalog: ProjectRuntimeMcpCatalogContext,
@@ -36,6 +36,95 @@ pub(crate) struct BoundAccessContext {
     safe_fingerprint: String,
 }
 
+/// Request-owned protected HTTP binding around the coherent core evidence.
+#[allow(dead_code)] // Request-owned in shadow mode; not yet enforced by handlers.
+pub(crate) struct TransportBoundAccessContext {
+    core: BoundAccessContext,
+    credential_instance_fingerprint: String,
+    expires_at_unix: u64,
+}
+
+pub(crate) struct TransportCredentialBinding {
+    fingerprint: String,
+    expires_at_unix: u64,
+}
+
+#[allow(dead_code)]
+impl TransportBoundAccessContext {
+    pub(crate) fn new(
+        core: BoundAccessContext,
+        credential: TransportCredentialBinding,
+        now: SystemTime,
+    ) -> Result<Self, BoundAccessContextError> {
+        if unix_seconds(now)? >= credential.expires_at_unix {
+            return Err(BoundAccessContextError::Unavailable);
+        }
+        Ok(Self {
+            core,
+            credential_instance_fingerprint: credential.fingerprint,
+            expires_at_unix: credential.expires_at_unix,
+        })
+    }
+
+    pub(crate) fn core(&self) -> &BoundAccessContext {
+        &self.core
+    }
+
+    pub(crate) fn credential_instance_fingerprint(&self) -> &str {
+        &self.credential_instance_fingerprint
+    }
+
+    pub(crate) fn validate_not_expired(
+        &self,
+        now: SystemTime,
+    ) -> Result<(), BoundAccessContextError> {
+        if unix_seconds(now)? >= self.expires_at_unix {
+            Err(BoundAccessContextError::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Clone)]
+#[allow(dead_code)] // Bound payload is intentionally only observed by tests in shadow mode.
+pub(crate) enum ProjectAccessObservation {
+    Bound(Arc<TransportBoundAccessContext>),
+    Unavailable,
+}
+
+fn unix_seconds(now: SystemTime) -> Result<u64, BoundAccessContextError> {
+    now.duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| BoundAccessContextError::Unavailable)
+}
+
+pub(crate) fn validate_transport_credential_binding(
+    issuer: &str,
+    token_id: &str,
+    expires_at_unix: usize,
+    now: SystemTime,
+) -> Result<TransportCredentialBinding, BoundAccessContextError> {
+    let expires_at_unix =
+        u64::try_from(expires_at_unix).map_err(|_| BoundAccessContextError::Unavailable)?;
+    if !labby_auth::jwt::is_canonical_access_token_id(token_id)
+        || unix_seconds(now)? >= expires_at_unix
+    {
+        return Err(BoundAccessContextError::Unavailable);
+    }
+    Ok(TransportCredentialBinding {
+        fingerprint: labby_auth::util::fingerprint(&format!(
+            "labby.mcp.transport-binding.v1\0{}:{}{}:{}",
+            issuer.len(),
+            issuer,
+            token_id.len(),
+            token_id
+        )),
+        expires_at_unix,
+    })
+}
+
+#[allow(dead_code)]
 impl BoundAccessContext {
     pub(crate) fn id(&self) -> BoundAccessContextId {
         self.id
@@ -56,6 +145,28 @@ impl BoundAccessContext {
     pub(crate) fn credential_binding_fingerprint(&self) -> &str {
         &self.credential_binding_fingerprint
     }
+}
+
+pub(crate) fn attach_project_access_observation(
+    extensions: &mut axum::http::Extensions,
+    binding: Result<TransportBoundAccessContext, BoundAccessContextError>,
+) {
+    let observation = match binding {
+        Ok(binding) => ProjectAccessObservation::Bound(Arc::new(binding)),
+        Err(_) => ProjectAccessObservation::Unavailable,
+    };
+    extensions.insert(observation);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn project_access_observation_from_mcp_extensions(
+    extensions: &rmcp::model::Extensions,
+) -> Option<&ProjectAccessObservation> {
+    extensions
+        .get::<axum::http::request::Parts>()?
+        .extensions
+        .get::<ProjectAccessObservation>()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
@@ -225,6 +336,27 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn transport_binding_fingerprint_is_token_specific_redacted_and_expiring() {
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let first =
+            validate_transport_credential_binding("issuer-secret", "jti-secret-a", 101, now)
+                .expect("live token");
+        let second =
+            validate_transport_credential_binding("issuer-secret", "jti-secret-b", 101, now)
+                .expect("distinct live token");
+        assert_ne!(first.fingerprint, second.fingerprint);
+        assert!(!first.fingerprint.contains("issuer-secret"));
+        assert!(!first.fingerprint.contains("jti-secret-a"));
+        assert_eq!(
+            validate_transport_credential_binding("issuer", "jti", 100, now).err(),
+            Some(BoundAccessContextError::Unavailable)
+        );
+        for invalid in ["", " padded", &"x".repeat(257)] {
+            assert!(validate_transport_credential_binding("issuer", invalid, 101, now).is_err());
+        }
+    }
 
     #[derive(Clone, Copy)]
     struct Observation {
@@ -447,6 +579,72 @@ mod tests {
             first.credential_binding_fingerprint(),
             identity.safe_binding_fingerprint()
         );
+
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let credential = validate_transport_credential_binding("issuer", "request-jti", 101, now)
+            .expect("transport credential");
+        let transport = TransportBoundAccessContext::new(second, credential, now)
+            .expect("still live at attachment");
+        let request = {
+            let mut request = axum::http::Request::new(());
+            attach_project_access_observation(request.extensions_mut(), Ok(transport));
+            request
+        };
+        let (parts, _) = request.into_parts();
+        let mut extensions = rmcp::model::Extensions::new();
+        extensions.insert(parts);
+        let ProjectAccessObservation::Bound(observed) =
+            project_access_observation_from_mcp_extensions(&extensions)
+                .expect("bound observation crosses HTTP Parts")
+        else {
+            panic!("expected bound observation");
+        };
+        assert_eq!(
+            observed.credential_instance_fingerprint(),
+            labby_auth::util::fingerprint(concat!(
+                "labby.mcp.transport-binding.v1\0",
+                "6:issuer11:request-jti"
+            ))
+        );
+
+        let mut unavailable_request = axum::http::Request::new(());
+        attach_project_access_observation(
+            unavailable_request.extensions_mut(),
+            Err(BoundAccessContextError::Unavailable),
+        );
+        assert!(matches!(
+            unavailable_request
+                .extensions()
+                .get::<ProjectAccessObservation>(),
+            Some(ProjectAccessObservation::Unavailable)
+        ));
+        assert!(
+            axum::http::Request::new(())
+                .extensions()
+                .get::<ProjectAccessObservation>()
+                .is_none()
+        );
+
+        let expiring_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .expect("expiring core");
+        let expiring = validate_transport_credential_binding("issuer", "expiring-jti", 101, now)
+            .expect("valid at preflight");
+        assert!(matches!(
+            TransportBoundAccessContext::new(
+                expiring_core,
+                expiring,
+                UNIX_EPOCH + std::time::Duration::from_secs(101),
+            ),
+            Err(BoundAccessContextError::Unavailable)
+        ));
 
         manager.try_seed_config(config()).await.unwrap();
         assert_eq!(first.route().resource(), "https://mcp.example.com/project");
