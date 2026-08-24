@@ -438,3 +438,90 @@ test('a failed snippet removal closes the dialog so the error is actually visibl
     await view.unmount()
   }
 })
+
+test('removing the last snippet still reports the success somewhere visible', async () => {
+  installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+
+  // Removal destroys its own subject. Reporting through `actionState` — which
+  // renders inside the *selected* snippet's detail row — meant the confirmation
+  // landed under an unrelated snippet, or, when the removed one was the last,
+  // nowhere at all: `reload` sets `selectedKey` to null, so no row exists to
+  // host it and the operator saw the row vanish with no confirmation.
+  let listed = false
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
+    if (payload.action === 'snippets.list') {
+      const snippets = listed
+        ? []
+        : [{
+            name: 'only-one',
+            description: 'The only snippet',
+            tags: [],
+            source: 'user',
+            path: '/home/u/.labby/snippets/only-one.md',
+            shadowed: false,
+          }]
+      listed = true
+      return new Response(JSON.stringify({ snippets }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (payload.action === 'snippets.remove') {
+      return new Response(JSON.stringify({ removed: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({
+      name: 'only-one',
+      description: 'The only snippet',
+      tags: [],
+      source: 'user',
+      path: '/home/u/.labby/snippets/only-one.md',
+      shadowed: false,
+      body: '---\nname: only-one\n---\n\n```js\nasync () => ({ ok: true })\n```',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+
+  const view = await renderClient(
+    <SidebarProvider>
+      <SnippetsPageContent />
+    </SidebarProvider>,
+  )
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /only-one/))
+    await waitFor(() =>
+      assert.ok(
+        Array.from(view.container.querySelectorAll('button')).some(
+          (candidate) => candidate.textContent?.trim() === 'Remove',
+        ),
+      ),
+    )
+    const removeButton = Array.from(view.container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.trim() === 'Remove',
+    )
+    assert.ok(removeButton)
+    await act(async () => {
+      removeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Remove snippet\?/))
+    const confirmButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Remove snippet',
+    )
+    assert.ok(confirmButton)
+    await act(async () => {
+      confirmButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
+    // The list is now empty — there is no detail row left, so this can only
+    // pass if the confirmation reports at page level.
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Removed only-one/))
+  } finally {
+    await view.unmount()
+  }
+})

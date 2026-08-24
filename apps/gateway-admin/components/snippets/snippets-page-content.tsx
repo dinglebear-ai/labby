@@ -238,6 +238,15 @@ export function SnippetsPageContent() {
   const [createError, setCreateError] = React.useState<string | null>(null)
   const [creating, setCreating] = React.useState(false)
   const [removeConfirmKey, setRemoveConfirmKey] = React.useState<string | null>(null)
+  // Removal reports at page level, not through `actionState`. Every other
+  // action reports inside the selected snippet's detail row, which is correct
+  // for them because their subject is still selected afterwards. Removal
+  // destroys its own subject: `reload` moves the selection to another snippet
+  // (so "Removed X" would render under an unrelated snippet's row) or, if that
+  // was the last one, to null — no row, and the message renders nowhere at all.
+  const [removeNotice, setRemoveNotice] = React.useState<
+    { kind: 'success' | 'error'; detail: string } | null
+  >(null)
   const [removing, setRemoving] = React.useState(false)
 
   const reload = React.useCallback(async () => {
@@ -398,21 +407,19 @@ export function SnippetsPageContent() {
       return
     }
     setRemoving(true)
+    setRemoveNotice(null)
     try {
       const result = await snippetsApi.remove(snippet.name)
-      await reload()
       // The backend signals refusal by throwing, so `removed: false` is not
       // reachable today — but reporting "Removed X" without looking would be
       // the same unverified-success bug this page's Save flow already had.
-      setActionState(
-        result.removed
-          ? { kind: 'success', label: 'Remove', detail: `Removed ${snippet.name}` }
-          : {
-              kind: 'error',
-              label: 'Remove',
-              detail: `${snippet.name} was not removed.`,
-            },
-      )
+      // Read it before `reload`, which can fail on its own and must not be
+      // able to turn a completed removal into a "Remove failed".
+      const notice = result.removed
+        ? { kind: 'success' as const, detail: `Removed ${snippet.name}` }
+        : { kind: 'error' as const, detail: `${snippet.name} was not removed.` }
+      await reload()
+      setRemoveNotice(notice)
     } catch (err) {
       // Close before surfacing: the action-result panel renders inside the
       // snippet's detail row, which sits under this dialog's modal overlay
@@ -420,7 +427,7 @@ export function SnippetsPageContent() {
       // invisible and unreachable — the operator just sees the button settle
       // and nothing happen. The gateway remove/disable handlers close first
       // for the same reason.
-      setActionState({ kind: 'error', label: 'Remove', detail: errorMessage(err) })
+      setRemoveNotice({ kind: 'error', detail: `Remove failed: ${errorMessage(err)}` })
     } finally {
       setRemoveConfirmKey(null)
       setRemoving(false)
@@ -583,6 +590,23 @@ export function SnippetsPageContent() {
               <span style={{ ...HEAD_LABEL, justifySelf: 'center' }}>History</span>
               <span />
             </div>
+
+            {removeNotice ? (
+              <div
+                role="status"
+                style={{
+                  padding: '14px 16px',
+                  fontSize: 12,
+                  color:
+                    removeNotice.kind === 'error'
+                      ? 'var(--aurora-error)'
+                      : 'var(--aurora-text-secondary)',
+                  background: 'var(--gw1-0_62)',
+                }}
+              >
+                {removeNotice.detail}
+              </div>
+            ) : null}
 
             {error ? (
               <div
