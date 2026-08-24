@@ -419,6 +419,12 @@ The existing authorization-first Project composer and BoundAccessContext kernel 
 
 Wire Prompts, metadata, ordering, pagination revisions/cursors, notifications, and legacy behavior remain unchanged. This is shadow observation only: built-in, OAuth/subject/local/synthetic Prompts remain unclassified, and `prompts/get`, execution authority, filtering, and enforcement are deferred.
 
+### Wave 42 / Milestone 0AT: incarnation-bound exact regular Prompt call kernel
+
+The pool owns a separate, unmounted regular non-OAuth Prompt call kernel that requires the exact current Prompt publication generation and `(upstream, native_name)` route. Acquisition atomically validates the current connection/catalog incarnation, Prompt routability, and compiled exposure policy; every RPC outcome revalidates the same generation, route, and incarnation before returning or changing health. Queue saturation remains local and does not affect upstream health.
+
+This prerequisite does not alter the live `prompts/get` handler, owner resolution, relay, OAuth/subject-scoped behavior, Project authorization, wire errors, execution grants, telemetry/usage accounting, or enforcement. A later mount must bind manager pool identity and current Project/route/access authorization in addition to this pool-local evidence, and the mounted handler remains the single accounting owner.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

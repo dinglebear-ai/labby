@@ -55,6 +55,31 @@ impl ObservedConnectionCatalogEntry {
 }
 
 impl UpstreamPool {
+    pub(super) async fn observe_prompt_call(
+        &self,
+        upstream: &str,
+        native_name: &str,
+        generation: super::PromptCatalogGeneration,
+    ) -> Option<ObservedConnectionCatalogEntry> {
+        let _binding = self.connection_catalog_binding.lock().await;
+        let connections = self.connections.read().await;
+        let catalog = self.catalog.read().await;
+        let entry = catalog.get(upstream)?;
+        if !entry.prompt_health.is_routable()
+            || !catalog.contains_prompt_route(generation, upstream, native_name)
+        {
+            return None;
+        }
+        let connection = connections.get(upstream)?;
+        let incarnation = connection.incarnation?;
+        (catalog.incarnation(upstream) == Some(incarnation)).then(|| {
+            ObservedConnectionCatalogEntry {
+                upstream: upstream.to_string(),
+                peer: connection.peer.clone(),
+                incarnation,
+            }
+        })
+    }
     pub(super) async fn observe_routable_prompt_connections(
         &self,
         allowed: Option<&BTreeSet<String>>,
@@ -292,6 +317,23 @@ impl UpstreamPool {
     ) -> Option<R> {
         self.apply_to_observed_catalog(observed, |catalog| {
             catalog.get_mut(&observed.upstream).map(apply)
+        })
+        .await
+        .flatten()
+    }
+
+    pub(super) async fn apply_to_observed_prompt_call<R>(
+        &self,
+        observed: &ObservedConnectionCatalogEntry,
+        generation: super::PromptCatalogGeneration,
+        native_name: &str,
+        apply: impl FnOnce(&mut UpstreamEntry) -> R,
+    ) -> Option<R> {
+        self.apply_to_observed_catalog(observed, |catalog| {
+            if !catalog.contains_prompt_route(generation, observed.upstream(), native_name) {
+                return None;
+            }
+            catalog.get_mut(observed.upstream()).map(apply)
         })
         .await
         .flatten()

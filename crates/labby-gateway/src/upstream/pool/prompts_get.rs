@@ -20,8 +20,12 @@ use rmcp::model::{GetPromptRequestParams, GetPromptResult, Prompt};
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::UpstreamCapability;
+use super::PromptCatalogGeneration;
 use super::UpstreamPool;
 use super::capability_call::timed_capability_call_str;
+use super::capability_call::{
+    RawCallOutcome, classify_timeout_result, service_error_affects_connection_health,
+};
 use super::catalog_pagination;
 use super::entries::{log_exposure_filter, prompt_exposed, resolve_request_prompt_exposure_policy};
 use super::helpers::{
@@ -30,7 +34,119 @@ use super::helpers::{
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub(crate) enum ExactPromptCallError {
+    #[error("published prompt target is unavailable")]
+    Unavailable,
+    #[error("published prompt call queue is unavailable")]
+    QueueUnavailable,
+    #[error("upstream prompt call failed")]
+    Upstream,
+    #[error("upstream prompt call timed out")]
+    Timeout,
+}
+
 impl UpstreamPool {
+    /// Execute one regular Prompt call only when its exact current publication
+    /// route and connection incarnation still agree. This kernel is unmounted.
+    pub(crate) async fn get_published_prompt_exact(
+        &self,
+        upstream_name: &str,
+        native_name: &str,
+        generation: PromptCatalogGeneration,
+        params: GetPromptRequestParams,
+    ) -> Result<GetPromptResult, ExactPromptCallError> {
+        if params.name != native_name {
+            return Err(ExactPromptCallError::Unavailable);
+        }
+        let start = Instant::now();
+        let permit = tokio::time::timeout(
+            self.request_timeout,
+            self.acquire_upstream_call_permit(upstream_name),
+        )
+        .await;
+        let _permit = match permit {
+            Ok(Ok(permit)) => permit,
+            _ => return Err(ExactPromptCallError::QueueUnavailable),
+        };
+        let Some(observed) = self
+            .observe_prompt_call(upstream_name, native_name, generation)
+            .await
+        else {
+            return Err(ExactPromptCallError::Unavailable);
+        };
+        let remaining = self.request_timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return Err(ExactPromptCallError::QueueUnavailable);
+        }
+        let outcome = classify_timeout_result(
+            tokio::time::timeout(remaining, observed.peer.get_prompt(params)).await,
+        );
+        match outcome {
+            RawCallOutcome::Ok(result) => {
+                let applied = self
+                    .apply_to_observed_prompt_call(&observed, generation, native_name, |entry| {
+                        super::health::record_success_on_entry(
+                            upstream_name,
+                            entry,
+                            UpstreamCapability::Prompts,
+                        );
+                    })
+                    .await;
+                applied
+                    .map(|()| result)
+                    .ok_or(ExactPromptCallError::Unavailable)
+            }
+            RawCallOutcome::UpstreamError(error) => {
+                let affects_health = service_error_affects_connection_health(&error);
+                let message = super::capability_call::bounded_service_error_text(&error);
+                let applied = self
+                    .apply_to_observed_prompt_call(&observed, generation, native_name, |entry| {
+                        if affects_health {
+                            super::health::record_failure_on_entry(
+                                upstream_name,
+                                entry,
+                                UpstreamCapability::Prompts,
+                                format!("upstream prompt get failed: {message}"),
+                            );
+                        } else {
+                            super::health::record_success_on_entry(
+                                upstream_name,
+                                entry,
+                                UpstreamCapability::Prompts,
+                            );
+                        }
+                    })
+                    .await;
+                if applied.is_none() {
+                    Err(ExactPromptCallError::Unavailable)
+                } else {
+                    Err(ExactPromptCallError::Upstream)
+                }
+            }
+            RawCallOutcome::Timeout => {
+                let message = format!(
+                    "upstream prompt get timed out after {}ms",
+                    self.request_timeout.as_millis()
+                );
+                let applied = self
+                    .apply_to_observed_prompt_call(&observed, generation, native_name, |entry| {
+                        super::health::record_failure_on_entry(
+                            upstream_name,
+                            entry,
+                            UpstreamCapability::Prompts,
+                            message.clone(),
+                        );
+                    })
+                    .await;
+                if applied.is_none() {
+                    Err(ExactPromptCallError::Unavailable)
+                } else {
+                    Err(ExactPromptCallError::Timeout)
+                }
+            }
+        }
+    }
     /// Discover prompts from all OAuth upstreams visible to `subject`.
     ///
     /// P-C1 fix: uses `acquire_or_connect_subject` so connections are cached;
@@ -392,9 +508,103 @@ impl UpstreamPool {
 
 #[cfg(test)]
 mod tests {
-    use rmcp::model::GetPromptRequestParams;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use rmcp::model::{
+        ErrorData, GetPromptRequestParams, GetPromptResponse, GetPromptResult, Prompt,
+        PromptMessage, Role,
+    };
+    use rmcp::service::RequestContext;
+    use rmcp::{RoleServer, ServerHandler};
+    use tokio::sync::{Mutex, Notify};
 
     use super::super::testsupport::*;
+    use super::ExactPromptCallError;
+    use crate::upstream::types::{CIRCUIT_BREAKER_THRESHOLD, ToolExposurePolicy, UpstreamHealth};
+
+    #[derive(Clone)]
+    struct DelayedGetPromptServer {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+        fail: bool,
+    }
+
+    impl ServerHandler for DelayedGetPromptServer {
+        async fn get_prompt(
+            &self,
+            request: GetPromptRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            if self.fail {
+                return Err(ErrorData::internal_error("delayed private failure", None));
+            }
+            Ok(
+                GetPromptResult::new(vec![PromptMessage::new_text(Role::User, request.name)])
+                    .into(),
+            )
+        }
+    }
+
+    #[derive(Clone)]
+    struct InspectingGetPromptServer {
+        received: Arc<Mutex<Vec<GetPromptRequestParams>>>,
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl ServerHandler for InspectingGetPromptServer {
+        async fn get_prompt(
+            &self,
+            request: GetPromptRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.received.lock().await.push(request.clone());
+            if self.fail {
+                return Err(ErrorData::invalid_params(
+                    "private application detail",
+                    None,
+                ));
+            }
+            let argument = request
+                .arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get("target"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("missing");
+            Ok(GetPromptResult::new(vec![PromptMessage::new_text(
+                Role::User,
+                format!("{}:{argument}", request.name),
+            )])
+            .into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct SlowCountingPromptServer {
+        calls: Arc<AtomicUsize>,
+        delay: Duration,
+    }
+
+    impl ServerHandler for SlowCountingPromptServer {
+        async fn get_prompt(
+            &self,
+            request: GetPromptRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            Ok(
+                GetPromptResult::new(vec![PromptMessage::new_text(Role::User, request.name)])
+                    .into(),
+            )
+        }
+    }
 
     #[tokio::test]
     async fn get_prompt_times_out_slow_upstream_response() {
@@ -407,5 +617,589 @@ mod tests {
             .expect_err("slow prompt get should time out");
 
         assert!(result.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_requires_current_publication_and_native_name() {
+        let pool = slow_response_pool("slow").await;
+        pool.insert_prompt_routes_for_tests(
+            "slow",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+        let generation = pool
+            .published_prompt_catalog()
+            .await
+            .expect("prompt publication")
+            .generation();
+
+        let wrong_name = pool
+            .get_published_prompt_exact(
+                "slow",
+                "nested/name",
+                generation,
+                GetPromptRequestParams::new("other"),
+            )
+            .await
+            .expect_err("request envelope must match exact native name");
+        assert_eq!(wrong_name, ExactPromptCallError::Unavailable);
+
+        pool.insert_prompt_routes_for_tests(
+            "slow",
+            vec![Prompt::new("replacement", None::<String>, None)],
+        )
+        .await;
+        let stale = pool
+            .get_published_prompt_exact(
+                "slow",
+                "nested/name",
+                generation,
+                GetPromptRequestParams::new("nested/name"),
+            )
+            .await
+            .expect_err("stale publication must fail closed before RPC");
+        assert_eq!(stale, ExactPromptCallError::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_discards_prompt_generation_aba_outcomes() {
+        for fail in [false, true] {
+            let started = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let pool = catalog_pool_with_server(
+                "alpha",
+                DelayedGetPromptServer {
+                    started: Arc::clone(&started),
+                    release: Arc::clone(&release),
+                    fail,
+                },
+            )
+            .await;
+            pool.insert_prompt_routes_for_tests(
+                "alpha",
+                vec![Prompt::new("nested/name", None::<String>, None)],
+            )
+            .await;
+            {
+                let mut catalog = pool.catalog_write().await;
+                catalog.get_mut("alpha").unwrap().prompt_last_error = Some("sentinel".into());
+            }
+            let generation = pool.published_prompt_catalog().await.unwrap().generation();
+            let calling = Arc::clone(&pool);
+            let task = tokio::spawn(async move {
+                calling
+                    .get_published_prompt_exact(
+                        "alpha",
+                        "nested/name",
+                        generation,
+                        GetPromptRequestParams::new("nested/name"),
+                    )
+                    .await
+            });
+            started.notified().await;
+            pool.insert_prompt_routes_for_tests(
+                "alpha",
+                vec![Prompt::new("other", None::<String>, None)],
+            )
+            .await;
+            pool.insert_prompt_routes_for_tests(
+                "alpha",
+                vec![Prompt::new("nested/name", None::<String>, None)],
+            )
+            .await;
+            release.notify_one();
+            assert_eq!(task.await.unwrap(), Err(ExactPromptCallError::Unavailable));
+            assert_eq!(
+                pool.catalog
+                    .read()
+                    .await
+                    .get("alpha")
+                    .unwrap()
+                    .prompt_last_error
+                    .as_deref(),
+                Some("sentinel")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_returns_current_success_and_attributes_timeout() {
+        let pool = static_catalog_pool("alpha").await;
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("upstream.prompt.one", None::<String>, None)],
+        )
+        .await;
+        let generation = pool.published_prompt_catalog().await.unwrap().generation();
+        let result = pool
+            .get_published_prompt_exact(
+                "alpha",
+                "upstream.prompt.one",
+                generation,
+                GetPromptRequestParams::new("upstream.prompt.one"),
+            )
+            .await
+            .expect("current exact call");
+        assert_eq!(result.messages.len(), 1);
+        assert!(
+            pool.catalog
+                .read()
+                .await
+                .get("alpha")
+                .unwrap()
+                .prompt_last_error
+                .is_none()
+        );
+
+        let mut slow = catalog_pool_with_server(
+            "slow",
+            SlowCountingPromptServer {
+                calls: Arc::new(AtomicUsize::new(0)),
+                delay: Duration::from_millis(200),
+            },
+        )
+        .await;
+        Arc::get_mut(&mut slow)
+            .expect("test owns pool")
+            .request_timeout = Duration::from_millis(25);
+        slow.insert_prompt_routes_for_tests(
+            "slow",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+        let generation = slow.published_prompt_catalog().await.unwrap().generation();
+        let timeout = slow
+            .get_published_prompt_exact(
+                "slow",
+                "nested/name",
+                generation,
+                GetPromptRequestParams::new("nested/name"),
+            )
+            .await;
+        assert_eq!(timeout, Err(ExactPromptCallError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_cancellation_does_not_apply_outcome() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedGetPromptServer {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                fail: false,
+            },
+        )
+        .await;
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+        let generation = pool.published_prompt_catalog().await.unwrap().generation();
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().prompt_last_error = Some("sentinel".into());
+        }
+        let calling = Arc::clone(&pool);
+        let task = tokio::spawn(async move {
+            calling
+                .get_published_prompt_exact(
+                    "alpha",
+                    "nested/name",
+                    generation,
+                    GetPromptRequestParams::new("nested/name"),
+                )
+                .await
+        });
+        started.notified().await;
+        task.abort();
+        release.notify_one();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            pool.catalog
+                .read()
+                .await
+                .get("alpha")
+                .unwrap()
+                .prompt_last_error
+                .as_deref(),
+            Some("sentinel")
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_discards_connection_aba_success_and_failure() {
+        for fail in [false, true] {
+            let started = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let pool = catalog_pool_with_server(
+                "alpha",
+                DelayedGetPromptServer {
+                    started: Arc::clone(&started),
+                    release: Arc::clone(&release),
+                    fail,
+                },
+            )
+            .await;
+            pool.insert_prompt_routes_for_tests(
+                "alpha",
+                vec![Prompt::new("nested/name", None::<String>, None)],
+            )
+            .await;
+            let generation = pool.published_prompt_catalog().await.unwrap().generation();
+            let calling = Arc::clone(&pool);
+            let task = tokio::spawn(async move {
+                calling
+                    .get_published_prompt_exact(
+                        "alpha",
+                        "nested/name",
+                        generation,
+                        GetPromptRequestParams::new("nested/name"),
+                    )
+                    .await
+            });
+            started.notified().await;
+            let replacement =
+                catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+            let (connection_b, entry_b) =
+                replacement.remove_connection_catalog_entry("alpha").await;
+            let previous_a = pool
+                .install_connection_catalog_entry(
+                    "alpha".into(),
+                    connection_b.unwrap(),
+                    entry_b.unwrap(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let (removed_b, _) = pool.remove_connection_catalog_entry("alpha").await;
+            let mut entry_a =
+                super::super::entries::healthy_in_process_entry(Arc::from("alpha"), HashMap::new());
+            entry_a.prompt_last_error = Some("replacement sentinel".into());
+            pool.install_connection_catalog_entry("alpha".into(), previous_a, entry_a)
+                .await
+                .unwrap();
+            pool.insert_prompt_routes_for_tests(
+                "alpha",
+                vec![Prompt::new("nested/name", None::<String>, None)],
+            )
+            .await;
+            release.notify_one();
+            assert_eq!(task.await.unwrap(), Err(ExactPromptCallError::Unavailable));
+            assert_eq!(
+                pool.catalog
+                    .read()
+                    .await
+                    .get("alpha")
+                    .unwrap()
+                    .prompt_last_error
+                    .as_deref(),
+                Some("replacement sentinel")
+            );
+            if let Some(connection) = removed_b {
+                connection.shutdown("alpha", "test.prompt-get.aba").await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_forwards_nested_name_and_arguments() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let pool = catalog_pool_with_server(
+            "alpha",
+            InspectingGetPromptServer {
+                received: Arc::clone(&received),
+                calls: Arc::clone(&calls),
+                fail: false,
+            },
+        )
+        .await;
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("owner/nested/name", None::<String>, None)],
+        )
+        .await;
+        let generation = pool.published_prompt_catalog().await.unwrap().generation();
+        let arguments = serde_json::Map::from_iter([(
+            "target".to_string(),
+            serde_json::Value::String("exact-value".to_string()),
+        )]);
+        let result = pool
+            .get_published_prompt_exact(
+                "alpha",
+                "owner/nested/name",
+                generation,
+                GetPromptRequestParams::new("owner/nested/name").with_arguments(arguments.clone()),
+            )
+            .await
+            .expect("current exact nested call");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let received = received.lock().await;
+        assert_eq!(received[0].name, "owner/nested/name");
+        assert_eq!(received[0].arguments.as_ref(), Some(&arguments));
+        assert_eq!(result.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_treats_current_mcp_error_as_healthy() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let pool = catalog_pool_with_server(
+            "alpha",
+            InspectingGetPromptServer {
+                received,
+                calls: Arc::new(AtomicUsize::new(0)),
+                fail: true,
+            },
+        )
+        .await;
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().prompt_last_error = Some("sentinel".into());
+        }
+        let generation = pool.published_prompt_catalog().await.unwrap().generation();
+        let error = pool
+            .get_published_prompt_exact(
+                "alpha",
+                "nested/name",
+                generation,
+                GetPromptRequestParams::new("nested/name"),
+            )
+            .await
+            .expect_err("MCP application error remains an upstream error");
+
+        assert_eq!(error, ExactPromptCallError::Upstream);
+        assert!(!error.to_string().contains("private application detail"));
+        let catalog = pool.catalog.read().await;
+        let entry = catalog.get("alpha").unwrap();
+        assert_eq!(entry.prompt_health, UpstreamHealth::Healthy);
+        assert!(entry.prompt_last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_queue_and_rpc_share_one_deadline() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut pool = catalog_pool_with_server(
+            "alpha",
+            SlowCountingPromptServer {
+                calls: Arc::clone(&calls),
+                delay: Duration::from_millis(80),
+            },
+        )
+        .await;
+        let pool_mut = Arc::get_mut(&mut pool).expect("test owns the sole pool Arc");
+        pool_mut.request_timeout = Duration::from_millis(100);
+        pool_mut.call_concurrency = 1;
+        pool_mut.call_semaphores = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().prompt_last_error = Some("sentinel".into());
+        }
+        let generation = pool.published_prompt_catalog().await.unwrap().generation();
+        let held = pool.acquire_upstream_call_permit("alpha").await.unwrap();
+        let calling = Arc::clone(&pool);
+        let task = tokio::spawn(async move {
+            calling
+                .get_published_prompt_exact(
+                    "alpha",
+                    "nested/name",
+                    generation,
+                    GetPromptRequestParams::new("nested/name"),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        drop(held);
+        let result = task.await.unwrap();
+
+        assert_eq!(result, Err(ExactPromptCallError::Timeout));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            pool.catalog
+                .read()
+                .await
+                .get("alpha")
+                .unwrap()
+                .prompt_last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("timed out"))
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_queue_saturation_does_not_call_or_mutate_health() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut pool = catalog_pool_with_server(
+            "alpha",
+            SlowCountingPromptServer {
+                calls: Arc::clone(&calls),
+                delay: Duration::from_millis(1),
+            },
+        )
+        .await;
+        let pool_mut = Arc::get_mut(&mut pool).expect("test owns pool");
+        pool_mut.request_timeout = Duration::from_millis(25);
+        pool_mut.call_concurrency = 1;
+        pool_mut.call_semaphores = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().prompt_last_error = Some("sentinel".into());
+        }
+        let generation = pool.published_prompt_catalog().await.unwrap().generation();
+        let _held = pool.acquire_upstream_call_permit("alpha").await.unwrap();
+        assert_eq!(
+            pool.get_published_prompt_exact(
+                "alpha",
+                "nested/name",
+                generation,
+                GetPromptRequestParams::new("nested/name"),
+            )
+            .await,
+            Err(ExactPromptCallError::QueueUnavailable)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            pool.catalog
+                .read()
+                .await
+                .get("alpha")
+                .unwrap()
+                .prompt_last_error
+                .as_deref(),
+            Some("sentinel")
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_observes_target_after_queue_wait() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut pool = catalog_pool_with_server(
+            "alpha",
+            InspectingGetPromptServer {
+                received,
+                calls: Arc::clone(&calls),
+                fail: false,
+            },
+        )
+        .await;
+        let pool_mut = Arc::get_mut(&mut pool).expect("test owns pool");
+        pool_mut.request_timeout = Duration::from_millis(100);
+        pool_mut.call_concurrency = 1;
+        pool_mut.call_semaphores = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+        let generation = pool.published_prompt_catalog().await.unwrap().generation();
+        let held = pool.acquire_upstream_call_permit("alpha").await.unwrap();
+        let calling = Arc::clone(&pool);
+        let task = tokio::spawn(async move {
+            calling
+                .get_published_prompt_exact(
+                    "alpha",
+                    "nested/name",
+                    generation,
+                    GetPromptRequestParams::new("nested/name"),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("replacement", None::<String>, None)],
+        )
+        .await;
+        drop(held);
+
+        assert_eq!(task.await.unwrap(), Err(ExactPromptCallError::Unavailable));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn exact_prompt_kernel_rejects_hidden_unhealthy_and_missing_without_rpc() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let pool = catalog_pool_with_server(
+            "alpha",
+            InspectingGetPromptServer {
+                received,
+                calls: Arc::clone(&calls),
+                fail: false,
+            },
+        )
+        .await;
+        pool.insert_prompt_routes_for_tests(
+            "alpha",
+            vec![Prompt::new("nested/name", None::<String>, None)],
+        )
+        .await;
+
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.get_mut("alpha").unwrap().prompt_exposure_policy =
+                ToolExposurePolicy::from_patterns(vec!["other".to_string()]).unwrap();
+        }
+        let hidden_generation = pool.published_prompt_catalog().await.unwrap().generation();
+        assert_eq!(
+            pool.get_published_prompt_exact(
+                "alpha",
+                "nested/name",
+                hidden_generation,
+                GetPromptRequestParams::new("nested/name"),
+            )
+            .await,
+            Err(ExactPromptCallError::Unavailable)
+        );
+
+        {
+            let mut catalog = pool.catalog_write().await;
+            let entry = catalog.get_mut("alpha").unwrap();
+            entry.prompt_exposure_policy = ToolExposurePolicy::All;
+            entry.prompt_health = UpstreamHealth::Unhealthy {
+                consecutive_failures: CIRCUIT_BREAKER_THRESHOLD,
+            };
+        }
+        let unhealthy_generation = pool.published_prompt_catalog().await.unwrap().generation();
+        assert_eq!(
+            pool.get_published_prompt_exact(
+                "alpha",
+                "nested/name",
+                unhealthy_generation,
+                GetPromptRequestParams::new("nested/name"),
+            )
+            .await,
+            Err(ExactPromptCallError::Unavailable)
+        );
+        assert_eq!(
+            pool.get_published_prompt_exact(
+                "missing",
+                "nested/name",
+                unhealthy_generation,
+                GetPromptRequestParams::new("nested/name"),
+            )
+            .await,
+            Err(ExactPromptCallError::Unavailable)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

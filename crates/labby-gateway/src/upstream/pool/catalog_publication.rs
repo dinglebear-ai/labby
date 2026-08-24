@@ -393,6 +393,20 @@ struct RouteDeterminant {
 }
 
 impl CatalogState {
+    pub(super) fn contains_prompt_route(
+        &self,
+        generation: PromptCatalogGeneration,
+        upstream: &str,
+        native_name: &str,
+    ) -> bool {
+        self.published_prompts.as_ref().is_ok_and(|snapshot| {
+            snapshot.generation() == generation
+                && snapshot.routes().iter().any(|route| {
+                    route.upstream_name.as_ref() == upstream
+                        && route.native_name.as_ref() == native_name
+                })
+        })
+    }
     pub(super) fn bind_incarnation(
         &mut self,
         upstream: &str,
