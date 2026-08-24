@@ -453,6 +453,10 @@ Mount the Wave 46 resolver at the MCP `resources/read` boundary. Immediately aft
 
 Add an unmounted pool-local freshness kernel for regular non-OAuth Tool calls. It acquires the per-upstream permit before observing the exact current Tool publication generation/route and connection/catalog incarnation, uses one queue-plus-RPC deadline, preserves every `CallToolResponse` variant accepted from the peer through checked apply, bounds successful responses and structured MCP errors, and revalidates the exact facts before applying health or exposing an outcome. Valid MCP application errors record connection success; cancellation and exhausted input-required rounds are checked but do not poison health; infrastructure failures retain only a static redacted class. This kernel intentionally performs no AssetUse/admin/destructive authorization or elicitation. SEP-2243 header recovery/cache counters and usage telemetry are compatibility blockers deliberately deferred until their mutations can be exact-publication checked; the kernel must not be mounted before those follow-up contracts are complete. OAuth, relay, builtin/Code Mode, handler, manager, Project, normalization, and dispatch telemetry remain unchanged.
 
+### Wave 49 / Milestone 0BA: exact regular Tool usage attribution
+
+Attach the existing best-effort usage recorder to the Wave 48 kernel only inside its successful exact publication/incarnation checked-apply closure. Regular pool calls are recorded as unscoped and unattributed with bounded static outcomes, elapsed time, and response bytes where applicable; arguments, metadata, MCP payloads, and private causes never enter usage rows. Queue rejection, pre-apply cancellation, and stale outcomes record nothing. SEP-2243 recovery/cache mutation and counters remain deferred because peer-cache refresh cannot yet be made stale-side-effect-free; manager generation, authorization, Project/Bound, handler mounting, OAuth, and relay remain unchanged.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

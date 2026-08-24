@@ -2,8 +2,9 @@
 //!
 //! This crate-private kernel is deliberately unmounted and is freshness-only:
 //! it does not authorize AssetUse/admin/destructive execution or perform
-//! elicitation. SEP-2243 header recovery and usage telemetry are also omitted;
-//! both require exact checked attribution before this path can be mounted.
+//! elicitation. Usage telemetry is scheduled only after exact checked apply and
+//! remains unattributed for this regular pool path. SEP-2243 header recovery is
+//! omitted because its peer-cache mutation is not yet incarnation-safe.
 #![allow(dead_code)]
 #![allow(
     clippy::items_after_test_module,
@@ -16,6 +17,8 @@ use rmcp::model::{CallToolRequestParams, CallToolResponse, ErrorData};
 
 use super::capability_call::bound_upstream_service_error;
 use super::helpers::{estimate_call_tool_response_size, max_response_bytes};
+use super::logging::UpstreamRequestLog;
+use super::usage_record::{record_usage_call, record_usage_call_with_response};
 use super::{ToolCatalogGeneration, UpstreamPool};
 use crate::upstream::types::UpstreamCapability;
 
@@ -223,6 +226,272 @@ mod tests {
         (pool, calls, received)
     }
 
+    async fn wait_for_usage_count(store: &crate::usage::UsageStore, outcome: &str) -> i64 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let expected = outcome.to_string();
+            let count = store
+                .with_conn(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM upstream_calls WHERE upstream_name = 'alpha' AND tool_name = 'nested/tool' AND subject_scoped = 0 AND actor = 'unattributed' AND outcome = ?1",
+                            [expected],
+                            |row| row.get(0),
+                        )
+                        .map_err(crate::usage::store::sqlite_error)
+                })
+                .await
+                .unwrap();
+            if count > 0 || std::time::Instant::now() >= deadline {
+                return count;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    fn with_usage_store(
+        pool: Arc<UpstreamPool>,
+        store: &Arc<crate::usage::UsageStore>,
+    ) -> Arc<UpstreamPool> {
+        let Some(pool) = Arc::into_inner(pool) else {
+            panic!("fixture pool has one owner")
+        };
+        Arc::new(pool.with_usage_store(Some(Arc::clone(store))))
+    }
+
+    async fn total_usage_count(store: &crate::usage::UsageStore) -> i64 {
+        store
+            .with_conn(|connection| {
+                connection
+                    .query_row("SELECT COUNT(*) FROM upstream_calls", [], |row| row.get(0))
+                    .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn exact_tool_kernel_records_usage_only_after_current_checked_apply() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        for (error, outcome) in [
+            (None, "ok"),
+            (
+                Some(ErrorData::internal_error("private", None)),
+                "upstream_error",
+            ),
+        ] {
+            let (pool, _, _) = fixture(error, false).await;
+            let pool = with_usage_store(pool, &store);
+            let generation = pool.published_tool_catalog().await.unwrap().generation();
+            let _result = pool
+                .call_published_tool_exact(
+                    "alpha",
+                    "nested/tool",
+                    generation,
+                    CallToolRequestParams::new("nested/tool"),
+                )
+                .await;
+            assert_eq!(wait_for_usage_count(&store, outcome).await, 1);
+            if outcome == "ok" {
+                let row: (String, String, String, i64, i64) = store
+                    .with_conn(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT capability, operation, actor, elapsed_ms, response_bytes FROM upstream_calls WHERE outcome = 'ok'",
+                                [],
+                                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                            )
+                            .map_err(crate::usage::store::sqlite_error)
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (row.0.as_str(), row.1.as_str(), row.2.as_str()),
+                    ("tools", "tool.call", "unattributed")
+                );
+                assert!(row.3 >= 0);
+                assert!(row.4 > 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_prepared_tool_outcome_records_no_usage() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let (pool, _, _) = fixture(None, false).await;
+        let pool = with_usage_store(pool, &store);
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        let prepared = pool
+            .prepare_published_tool_exact(
+                "alpha",
+                "nested/tool",
+                generation,
+                CallToolRequestParams::new("nested/tool"),
+            )
+            .await
+            .unwrap();
+        set_tool(&pool, "replacement", false).await;
+        assert!(matches!(
+            pool.apply_prepared_tool_exact(prepared).await,
+            Err(ExactToolCallError::Unavailable)
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(total_usage_count(&store).await, 0);
+    }
+
+    #[tokio::test]
+    async fn exact_tool_usage_records_too_large_and_timeout_but_not_queue_or_abort() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+
+        let pool = catalog_pool_with_server("alpha", SizedToolServer(12 * 1024 * 1024)).await;
+        let pool = with_usage_store(pool, &store);
+        set_tool(&pool, "large", false).await;
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        assert!(matches!(
+            pool.call_published_tool_exact(
+                "alpha",
+                "nested/tool",
+                generation,
+                CallToolRequestParams::new("nested/tool")
+            )
+            .await,
+            Err(ExactToolCallError::TooLarge)
+        ));
+        assert_eq!(wait_for_usage_count(&store, "response_too_large").await, 1);
+        let bytes: i64 = store
+            .with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT response_bytes FROM upstream_calls WHERE outcome = 'response_too_large'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert!(bytes > 10 * 1024 * 1024);
+
+        let timeout_store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("timeout.db"))
+                .await
+                .unwrap(),
+        );
+        let pool = catalog_pool_with_server(
+            "alpha",
+            SlowToolServer {
+                calls: Arc::new(AtomicUsize::new(0)),
+                delay: Duration::from_millis(80),
+            },
+        )
+        .await;
+        let Some(mut pool) = Arc::into_inner(pool) else {
+            panic!("fixture pool has one owner")
+        };
+        pool.request_timeout = Duration::from_millis(25);
+        let pool = Arc::new(pool.with_usage_store(Some(Arc::clone(&timeout_store))));
+        set_tool(&pool, "slow", false).await;
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        assert!(matches!(
+            pool.call_published_tool_exact(
+                "alpha",
+                "nested/tool",
+                generation,
+                CallToolRequestParams::new("nested/tool")
+            )
+            .await,
+            Err(ExactToolCallError::Timeout)
+        ));
+        assert_eq!(wait_for_usage_count(&timeout_store, "timeout").await, 1);
+
+        let queue_store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("queue.db"))
+                .await
+                .unwrap(),
+        );
+        let pool = catalog_pool_with_server(
+            "alpha",
+            SlowToolServer {
+                calls: Arc::new(AtomicUsize::new(0)),
+                delay: Duration::from_millis(1),
+            },
+        )
+        .await;
+        let Some(mut pool) = Arc::into_inner(pool) else {
+            panic!("fixture pool has one owner")
+        };
+        pool.request_timeout = Duration::from_millis(20);
+        pool.call_concurrency = 1;
+        pool.call_semaphores = Arc::new(tokio::sync::RwLock::new(HashMap::new()));
+        let pool = Arc::new(pool.with_usage_store(Some(Arc::clone(&queue_store))));
+        set_tool(&pool, "queue", false).await;
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        let _held = pool.acquire_upstream_call_permit("alpha").await.unwrap();
+        assert!(matches!(
+            pool.call_published_tool_exact(
+                "alpha",
+                "nested/tool",
+                generation,
+                CallToolRequestParams::new("nested/tool")
+            )
+            .await,
+            Err(ExactToolCallError::QueueUnavailable)
+        ));
+        assert_eq!(total_usage_count(&queue_store).await, 0);
+
+        let abort_store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("abort.db"))
+                .await
+                .unwrap(),
+        );
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedToolServer {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                fail: false,
+            },
+        )
+        .await;
+        let pool = with_usage_store(pool, &abort_store);
+        set_tool(&pool, "abort", false).await;
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        let calling = Arc::clone(&pool);
+        let task = tokio::spawn(async move {
+            calling
+                .call_published_tool_exact(
+                    "alpha",
+                    "nested/tool",
+                    generation,
+                    CallToolRequestParams::new("nested/tool"),
+                )
+                .await
+        });
+        started.notified().await;
+        task.abort();
+        release.notify_one();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(total_usage_count(&abort_store).await, 0);
+    }
+
     #[tokio::test]
     async fn exact_tool_kernel_forwards_native_params_and_preserves_complete_response() {
         let (pool, calls, received) = fixture(None, true).await;
@@ -356,6 +625,7 @@ mod tests {
                     generation,
                     native_name: "nested/tool".into(),
                     outcome: PreparedOutcome::Response(expected.clone()),
+                    elapsed_ms: 1,
                 })
                 .await
                 .unwrap();
@@ -419,6 +689,12 @@ mod tests {
     #[tokio::test]
     async fn exact_tool_kernel_discards_connection_aba_success_and_error() {
         for fail in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                    .await
+                    .unwrap(),
+            );
             let started = Arc::new(Notify::new());
             let release = Arc::new(Notify::new());
             let delayed = DelayedToolServer {
@@ -427,6 +703,7 @@ mod tests {
                 fail,
             };
             let pool = catalog_pool_with_server("alpha", delayed.clone()).await;
+            let pool = with_usage_store(pool, &store);
             set_tool(&pool, "exact", false).await;
             let generation = pool.published_tool_catalog().await.unwrap().generation();
             let task_pool = Arc::clone(&pool);
@@ -478,6 +755,8 @@ mod tests {
                 pool.upstream_tool_last_error("alpha").await.as_deref(),
                 Some("sentinel")
             );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(total_usage_count(&store).await, 0);
             if let Some(connection) = removed_b {
                 connection.shutdown("alpha", "test.tool-call.aba").await;
             }
@@ -703,6 +982,7 @@ pub(crate) struct PreparedExactToolCall {
     generation: ToolCatalogGeneration,
     native_name: String,
     outcome: PreparedOutcome,
+    elapsed_ms: u128,
 }
 
 impl UpstreamPool {
@@ -772,6 +1052,7 @@ impl UpstreamPool {
             generation,
             native_name: native_name.to_string(),
             outcome,
+            elapsed_ms: start.elapsed().as_millis(),
         })
     }
 
@@ -782,7 +1063,9 @@ impl UpstreamPool {
         let upstream = prepared.observed.upstream().to_string();
         match prepared.outcome {
             PreparedOutcome::Response(response) => {
-                let too_large = estimate_call_tool_response_size(&response) > max_response_bytes();
+                let response_bytes = estimate_call_tool_response_size(&response);
+                let too_large = response_bytes > max_response_bytes();
+                let elapsed_ms = prepared.elapsed_ms;
                 let applied = self
                     .apply_to_observed_tool_call(
                         &prepared.observed,
@@ -793,6 +1076,18 @@ impl UpstreamPool {
                                 &upstream,
                                 entry,
                                 UpstreamCapability::Tools,
+                            );
+                            record_usage_call_with_response(
+                                self,
+                                UpstreamRequestLog::tool(&upstream, &prepared.native_name, false),
+                                None,
+                                if too_large {
+                                    "response_too_large"
+                                } else {
+                                    "ok"
+                                },
+                                elapsed_ms,
+                                Some(response_bytes),
                             );
                         },
                     )
@@ -806,6 +1101,7 @@ impl UpstreamPool {
                 }
             }
             PreparedOutcome::Mcp(data) => {
+                let elapsed_ms = prepared.elapsed_ms;
                 let applied = self
                     .apply_to_observed_tool_call(
                         &prepared.observed,
@@ -816,6 +1112,13 @@ impl UpstreamPool {
                                 &upstream,
                                 entry,
                                 UpstreamCapability::Tools,
+                            );
+                            record_usage_call(
+                                self,
+                                UpstreamRequestLog::tool(&upstream, &prepared.native_name, false),
+                                None,
+                                "upstream_error",
+                                elapsed_ms,
                             );
                         },
                     )
@@ -831,11 +1134,20 @@ impl UpstreamPool {
                 } else {
                     ExactToolCallError::InputRequiredRoundsExceeded
                 };
+                let elapsed_ms = prepared.elapsed_ms;
                 self.apply_to_observed_tool_call(
                     &prepared.observed,
                     prepared.generation,
                     &prepared.native_name,
-                    |_| (),
+                    |_| {
+                        record_usage_call(
+                            self,
+                            UpstreamRequestLog::tool(&upstream, &prepared.native_name, false),
+                            None,
+                            "upstream_error",
+                            elapsed_ms,
+                        );
+                    },
                 )
                 .await
                 .map(|()| error)
@@ -862,6 +1174,12 @@ impl UpstreamPool {
                     }
                     _ => (ExactToolCallError::Other, "upstream tool call failed"),
                 };
+                let usage_outcome = if matches!(outcome, PreparedOutcome::Timeout) {
+                    "timeout"
+                } else {
+                    "upstream_error"
+                };
+                let elapsed_ms = prepared.elapsed_ms;
                 let applied = self
                     .apply_to_observed_tool_call(
                         &prepared.observed,
@@ -873,6 +1191,13 @@ impl UpstreamPool {
                                 entry,
                                 UpstreamCapability::Tools,
                                 reason.to_string(),
+                            );
+                            record_usage_call(
+                                self,
+                                UpstreamRequestLog::tool(&upstream, &prepared.native_name, false),
+                                None,
+                                usage_outcome,
+                                elapsed_ms,
                             );
                         },
                     )
