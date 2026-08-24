@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+#[cfg(feature = "gateway")]
+use std::time::SystemTime;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -38,6 +40,8 @@ pub(crate) use crate::app_assets::{
 pub(crate) use crate::app_assets::{
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
 };
+#[cfg(feature = "gateway")]
+use crate::mcp::bound_access::{ProjectDiscoveryShadow, project_discovery_shadow};
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
@@ -68,6 +72,45 @@ const AGENT_ERROR_CONTRACT_SCHEMA: &str =
 const CODE_MODE_CALL_ERROR_CONTRACT_SCHEMA: &str =
     include_str!("../../../../docs/contracts/schemas/code-mode-call-error.schema.json");
 const CONTRACT_SCHEMA_MIME: &str = "application/schema+json";
+
+/// Parse only the canonical built-in action-resource URI family.
+///
+/// Parsing identifies provenance, not authority; callers must still apply the
+/// bound Project route publication.
+#[cfg(any(feature = "gateway", test))]
+pub(crate) fn builtin_action_resource_service(uri: &str) -> Option<&str> {
+    let service = uri.strip_prefix("lab://")?.strip_suffix("/actions")?;
+    (!service.is_empty() && !service.contains('/')).then_some(service)
+}
+
+#[cfg(feature = "gateway")]
+fn classify_builtin_action_resources<'a>(
+    shadow: &ProjectDiscoveryShadow<'_>,
+    resources: impl IntoIterator<Item = &'a Resource>,
+) -> (usize, usize) {
+    classify_builtin_action_resources_with(resources, |service| {
+        shadow.allows_builtin_action_resource(service, SystemTime::now())
+    })
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn classify_builtin_action_resources_with<'a>(
+    resources: impl IntoIterator<Item = &'a Resource>,
+    mut allows: impl FnMut(&str) -> Option<bool>,
+) -> (usize, usize) {
+    let mut checked = 0usize;
+    let mut would_suppress = 0usize;
+    for resource in resources {
+        let Some(service) = builtin_action_resource_service(&resource.uri) else {
+            continue;
+        };
+        if let Some(allowed) = allows(service) {
+            checked += 1;
+            would_suppress += usize::from(!allowed);
+        }
+    }
+    (checked, would_suppress)
+}
 /// In-band discovery for the Skills extension (SEP-2640).
 ///
 /// Published so a client that does not speak the extension can still discover
@@ -459,6 +502,8 @@ impl LabMcpServer {
             "dispatch start"
         );
         let auth = auth_context_from_extensions(&context.extensions);
+        #[cfg(feature = "gateway")]
+        let project_shadow = project_discovery_shadow(&context.extensions, SystemTime::now());
         if !self.route_scope.exposes_resources() {
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
@@ -562,6 +607,25 @@ impl LabMcpServer {
                 }
             }
             let (resources, next_cursor) = page_collector.finish()?;
+            #[cfg(feature = "gateway")]
+            let (
+                mut project_shadow_checked_resource_count,
+                mut project_shadow_would_suppress_resource_count,
+            ) = classify_builtin_action_resources(&project_shadow, snapshot.iter());
+            #[cfg(feature = "gateway")]
+            let project_shadow_state = project_shadow.state_label_at(SystemTime::now());
+            #[cfg(feature = "gateway")]
+            if project_shadow_state != "bound" {
+                project_shadow_checked_resource_count = 0;
+                project_shadow_would_suppress_resource_count = 0;
+            }
+            #[cfg(not(feature = "gateway"))]
+            let project_shadow_state = "legacy";
+            #[cfg(not(feature = "gateway"))]
+            let (
+                project_shadow_checked_resource_count,
+                project_shadow_would_suppress_resource_count,
+            ) = (0usize, 0usize);
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 surface = "mcp",
@@ -573,6 +637,9 @@ impl LabMcpServer {
                 catalog_resource_count = snapshot.len(),
                 page_resource_count = resources.len(),
                 has_next_cursor = next_cursor.is_some(),
+                project_shadow_state,
+                project_shadow_checked_resource_count,
+                project_shadow_would_suppress_resource_count,
                 "resource list ok"
             );
             self.emit_dispatch_notification(
@@ -846,6 +913,23 @@ impl LabMcpServer {
             }
         };
         let catalog_resource_count = complete_catalog.len();
+        #[cfg(feature = "gateway")]
+        let (
+            mut project_shadow_checked_resource_count,
+            mut project_shadow_would_suppress_resource_count,
+        ) = classify_builtin_action_resources(&project_shadow, complete_catalog.iter());
+        #[cfg(feature = "gateway")]
+        let project_shadow_state = project_shadow.state_label_at(SystemTime::now());
+        #[cfg(feature = "gateway")]
+        if project_shadow_state != "bound" {
+            project_shadow_checked_resource_count = 0;
+            project_shadow_would_suppress_resource_count = 0;
+        }
+        #[cfg(not(feature = "gateway"))]
+        let project_shadow_state = "legacy";
+        #[cfg(not(feature = "gateway"))]
+        let (project_shadow_checked_resource_count, project_shadow_would_suppress_resource_count) =
+            (0usize, 0usize);
         if next_cursor.is_some() {
             self.route_runtime
                 .store_resource_snapshot(snapshot_audience, revision, Arc::from(complete_catalog))
@@ -863,6 +947,9 @@ impl LabMcpServer {
             catalog_resource_count,
             page_resource_count = resources.len(),
             has_next_cursor = next_cursor.is_some(),
+            project_shadow_state,
+            project_shadow_checked_resource_count,
+            project_shadow_would_suppress_resource_count,
             "resource list ok"
         );
         self.emit_dispatch_notification(
@@ -2190,6 +2277,37 @@ mod tests {
 
     const UPSTREAM_UI_URI: &str = "ui://quick-shell/app.html";
     const UPSTREAM_UI_TOOL_NAME: &str = "quick_shell_ui";
+
+    #[test]
+    fn builtin_action_resource_parser_accepts_only_exact_canonical_family() {
+        assert_eq!(
+            builtin_action_resource_service("lab://gateway/actions"),
+            Some("gateway")
+        );
+        for uri in [
+            "lab:///actions",
+            "lab://gateway/foo/actions",
+            "lab://gateway/actions/",
+            "lab://gateway/actions?cursor=1",
+            "ui://gateway/actions",
+        ] {
+            assert_eq!(builtin_action_resource_service(uri), None, "{uri}");
+        }
+
+        let resources = [
+            Resource::new("lab://fs/actions", "fs/actions"),
+            Resource::new("lab://setup/actions", "setup/actions"),
+            Resource::new("lab://setup/nested/actions", "nested"),
+            Resource::new("lab://catalog", "catalog"),
+        ];
+        assert_eq!(
+            classify_builtin_action_resources_with(resources.iter(), |service| {
+                Some(service == "fs")
+            }),
+            (2, 1),
+            "only exact built-in action resources are classified"
+        );
+    }
 
     fn complete_resource(response: ReadResourceResponse) -> ReadResourceResult {
         match response {

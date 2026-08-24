@@ -23,7 +23,7 @@ use serde_json::Value;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
 #[cfg(feature = "gateway")]
-use crate::mcp::bound_access::project_tool_discovery_shadow;
+use crate::mcp::bound_access::project_discovery_shadow;
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
@@ -150,7 +150,7 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
-        let project_shadow = project_tool_discovery_shadow(&context.extensions, SystemTime::now());
+        let project_shadow = project_discovery_shadow(&context.extensions, SystemTime::now());
         #[cfg(feature = "gateway")]
         let mcp_apps_config = self.mcp_apps_config().await;
         let server_logs_app_visible = {

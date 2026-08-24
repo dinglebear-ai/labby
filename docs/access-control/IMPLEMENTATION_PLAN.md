@@ -319,6 +319,12 @@ This is ownership-only shadow rollout. Successful binding attaches `Bound`; auth
 
 This wave emits only state and aggregate counts. It does not log Project, route, service, upstream, tool, token, JTI, or binding fingerprints. It does not mutate descriptors, pagination, contract hashes, baselines, notifications, Code Mode, OAuth-subject catalogs, MCP Apps, resources, prompts, Skills, or dispatch. Bound differences and unavailable observations therefore preserve the exact current `ListToolsResult`; enforcement remains deferred until direct-invocation authorization and all discovery families share the same proven boundary.
 
+### Wave 25 / Milestone 0AC: built-in action-resource discovery shadow
+
+`resources/list` now classifies only exact canonical `lab://<service>/actions` built-in resources against the request-owned Project binding and its same-generation protected-route effective Loadout. Resource exposure and canonical service membership come from that immutable route publication rather than a potentially older handler route scope. Expiry is rechecked per candidate and immediately before aggregate telemetry; legacy, unavailable, and bound states remain distinct.
+
+This wave is discovery-only and non-enforcing. Live and revision-bound continuation results, cursors, snapshots, revisions, notifications, and resource bytes remain unchanged. Telemetry contains only state and aggregate checked/would-suppress counts. Templates, reads, regular and OAuth upstream resources, MCP Apps, Code Mode, Skills, contracts, gateway synthetic resources, and every direct-dispatch boundary remain unclassified. A generation-bearing regular-upstream resource publication is deferred until connection/catalog incarnation can prevent stale asynchronous list results from being attributed across replacement or ABA.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

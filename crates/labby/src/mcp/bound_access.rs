@@ -167,18 +167,18 @@ pub(crate) fn project_access_observation_from_mcp_extensions(
         .get::<ProjectAccessObservation>()
 }
 
-/// Non-enforcing Project discovery policy observed by `tools/list`.
+/// Non-enforcing Project discovery policy observed by discovery handlers.
 ///
 /// `Legacy` means the request was not opted into Project binding. `Unavailable`
 /// is an explicit opted-in failure (including expiry) and must never be treated
 /// as legacy fallback. Only `Bound` can classify catalog-backed candidates.
-pub(crate) enum ProjectToolDiscoveryShadow<'a> {
+pub(crate) enum ProjectDiscoveryShadow<'a> {
     Legacy,
     Unavailable,
     Bound(&'a TransportBoundAccessContext),
 }
 
-impl ProjectToolDiscoveryShadow<'_> {
+impl ProjectDiscoveryShadow<'_> {
     pub(crate) fn state_label_at(&self, now: SystemTime) -> &'static str {
         match self {
             Self::Legacy => "legacy",
@@ -211,6 +211,30 @@ impl ProjectToolDiscoveryShadow<'_> {
                     .services()
                     .iter()
                     .any(|published| published.name() == service),
+        )
+    }
+
+    /// Classify a built-in action resource using the route publication rather
+    /// than the handler's potentially older route scope. `None` means shadow
+    /// policy is unavailable/legacy, not allow or deny.
+    pub(crate) fn allows_builtin_action_resource(
+        &self,
+        service: &str,
+        now: SystemTime,
+    ) -> Option<bool> {
+        let Self::Bound(binding) = self else {
+            return None;
+        };
+        if binding.validate_not_expired(now).is_err() {
+            return None;
+        }
+        let route = binding.core().route();
+        Some(
+            route.effective_loadout().expose_resources
+                && route
+                    .effective_service_names()
+                    .iter()
+                    .any(|name| name.as_ref() == service),
         )
     }
 
@@ -249,18 +273,18 @@ impl ProjectToolDiscoveryShadow<'_> {
     }
 }
 
-pub(crate) fn project_tool_discovery_shadow(
+pub(crate) fn project_discovery_shadow(
     extensions: &rmcp::model::Extensions,
     now: SystemTime,
-) -> ProjectToolDiscoveryShadow<'_> {
+) -> ProjectDiscoveryShadow<'_> {
     match project_access_observation_from_mcp_extensions(extensions) {
-        None => ProjectToolDiscoveryShadow::Legacy,
-        Some(ProjectAccessObservation::Unavailable) => ProjectToolDiscoveryShadow::Unavailable,
+        None => ProjectDiscoveryShadow::Legacy,
+        Some(ProjectAccessObservation::Unavailable) => ProjectDiscoveryShadow::Unavailable,
         Some(ProjectAccessObservation::Bound(binding)) => {
             if binding.validate_not_expired(now).is_ok() {
-                ProjectToolDiscoveryShadow::Bound(binding)
+                ProjectDiscoveryShadow::Bound(binding)
             } else {
-                ProjectToolDiscoveryShadow::Unavailable
+                ProjectDiscoveryShadow::Unavailable
             }
         }
     }
@@ -467,13 +491,10 @@ mod tests {
     }
 
     #[cfg(feature = "proxy-testkit")]
-    async fn list_tools_with_project_observation(
-        observation: Option<ProjectAccessObservation>,
-    ) -> (rmcp::model::ListToolsResult, String) {
+    fn project_shadow_test_server() -> crate::mcp::server::LabMcpServer {
         use std::sync::atomic::AtomicU8;
-        use tracing::instrument::WithSubscriber as _;
 
-        let server = crate::mcp::server::LabMcpServer {
+        crate::mcp::server::LabMcpServer {
             registry: Arc::new(crate::registry::build_default_registry()),
             access_runtime: Arc::new(AccessRuntime::blocked_unavailable()),
             gateway_manager: None,
@@ -492,20 +513,37 @@ mod tests {
             ),
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
-        };
-        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
-        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
-            server, transport, None,
-        );
-        let mut context = rmcp::service::RequestContext::new(
-            rmcp::model::NumberOrString::Number(1),
-            running.peer().clone(),
-        );
+        }
+    }
+
+    #[cfg(feature = "proxy-testkit")]
+    fn project_shadow_context(
+        peer: rmcp::service::Peer<rmcp::RoleServer>,
+        observation: Option<ProjectAccessObservation>,
+    ) -> rmcp::service::RequestContext<rmcp::RoleServer> {
+        let mut context =
+            rmcp::service::RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
         if let Some(observation) = observation {
             let mut parts = axum::http::Request::new(()).into_parts().0;
             parts.extensions.insert(observation);
             context.extensions.insert(parts);
         }
+        context
+    }
+
+    #[cfg(feature = "proxy-testkit")]
+    async fn list_tools_with_project_observation(
+        observation: Option<ProjectAccessObservation>,
+    ) -> (rmcp::model::ListToolsResult, String) {
+        use tracing::instrument::WithSubscriber as _;
+
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
+            project_shadow_test_server(),
+            transport,
+            None,
+        );
+        let context = project_shadow_context(running.peer().clone(), observation);
         let logs = CapturedLogs::default();
         let subscriber = tracing_subscriber::fmt()
             .without_time()
@@ -519,6 +557,36 @@ mod tests {
             .with_subscriber(tracing::Dispatch::new(subscriber))
             .await
             .expect("tools/list");
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        (result, logs)
+    }
+
+    #[cfg(feature = "proxy-testkit")]
+    async fn list_resources_with_project_observation(
+        observation: Option<ProjectAccessObservation>,
+    ) -> (rmcp::model::ListResourcesResult, String) {
+        use tracing::instrument::WithSubscriber as _;
+
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
+            project_shadow_test_server(),
+            transport,
+            None,
+        );
+        let context = project_shadow_context(running.peer().clone(), observation);
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(logs.clone())
+            .finish();
+        let result = running
+            .service()
+            .list_resources_impl(None, context)
+            .with_subscriber(tracing::Dispatch::new(subscriber))
+            .await
+            .expect("resources/list");
         let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
         (result, logs)
     }
@@ -804,7 +872,7 @@ mod tests {
                 "6:issuer11:request-jti"
             ))
         );
-        let shadow = project_tool_discovery_shadow(&extensions, now);
+        let shadow = project_discovery_shadow(&extensions, now);
         assert_eq!(shadow.state_label_at(now), "bound");
         assert_eq!(shadow.allows_builtin_service("fs", now), Some(true));
         assert_eq!(shadow.allows_builtin_service("setup", now), Some(false));
@@ -839,7 +907,7 @@ mod tests {
         let (unavailable_result, _) =
             list_tools_with_project_observation(Some(ProjectAccessObservation::Unavailable)).await;
         let (bound_result, bound_logs) =
-            list_tools_with_project_observation(Some(bound_observation)).await;
+            list_tools_with_project_observation(Some(bound_observation.clone())).await;
         assert_eq!(
             serde_json::to_value(&legacy_result).unwrap(),
             serde_json::to_value(&unavailable_result).unwrap(),
@@ -869,6 +937,43 @@ mod tests {
             assert!(!bound_logs.contains(secret), "shadow log leaked {secret}");
         }
 
+        let (legacy_resources, _) = list_resources_with_project_observation(None).await;
+        let (unavailable_resources, _) =
+            list_resources_with_project_observation(Some(ProjectAccessObservation::Unavailable))
+                .await;
+        let (bound_resources, bound_resource_logs) =
+            list_resources_with_project_observation(Some(bound_observation)).await;
+        assert_eq!(
+            serde_json::to_vec(&legacy_resources).unwrap(),
+            serde_json::to_vec(&unavailable_resources).unwrap(),
+            "explicit shadow unavailability must not filter resources/list"
+        );
+        assert_eq!(
+            serde_json::to_vec(&legacy_resources).unwrap(),
+            serde_json::to_vec(&bound_resources).unwrap(),
+            "Bound shadow differences must not filter resources/list"
+        );
+        assert!(
+            legacy_resources
+                .resources
+                .iter()
+                .any(|resource| { resource.uri == "lab://setup/actions" })
+        );
+        assert!(bound_resource_logs.contains("project_shadow_state=\"bound\""));
+        assert!(bound_resource_logs.contains("project_shadow_would_suppress_resource_count=1"));
+        for secret in [
+            "bootstrap-default",
+            "project-route",
+            "live-jti",
+            "server-credential",
+            "fs-primary",
+        ] {
+            assert!(
+                !bound_resource_logs.contains(secret),
+                "resource shadow log leaked {secret}"
+            );
+        }
+
         let mut unavailable_request = axum::http::Request::new(());
         attach_project_access_observation(
             unavailable_request.extensions_mut(),
@@ -887,7 +992,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            project_tool_discovery_shadow(&rmcp::model::Extensions::new(), now).state_label_at(now),
+            project_discovery_shadow(&rmcp::model::Extensions::new(), now).state_label_at(now),
             "legacy"
         );
 
