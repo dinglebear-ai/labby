@@ -108,6 +108,243 @@ fn mcp_virtual_server(id: &str, service: &str, allowed: &[&str]) -> VirtualServe
     }
 }
 
+fn unified_config(upstream: &str) -> GatewayConfig {
+    let mut selected = loadout("project", &[upstream]);
+    selected.services = vec!["deploy".to_string()];
+    GatewayConfig {
+        loadouts: vec![selected],
+        virtual_servers: vec![mcp_virtual_server("deploy", "deploy", &["a.action"])],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone())
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let snapshot = manager
+        .published_loadout_mcp_catalog_snapshot("project")
+        .await
+        .expect("unified");
+    assert_eq!(snapshot.tools().routes()[0].tool_name.as_ref(), "echo");
+    assert_eq!(snapshot.services().services()[0].name(), "deploy");
+    assert_eq!(
+        snapshot.tools().runtime_config_generation(),
+        snapshot.services().runtime_config_generation()
+    );
+    assert_eq!(
+        snapshot.tools().pool_publication_generation(),
+        runtime.published_pool_snapshot().generation()
+    );
+    assert_eq!(
+        snapshot.tools().tool_catalog_generation(),
+        pool.published_tool_catalog()
+            .await
+            .expect("catalog")
+            .generation()
+    );
+    assert_eq!(
+        snapshot.services().service_registry_generation(),
+        manager
+            .published_service_registry_snapshot()
+            .expect("services")
+            .generation()
+    );
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_retries_all_family_aba() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let original = Arc::new(UpstreamPool::new());
+    original
+        .insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "original"))
+        .await;
+    let transient = Arc::new(UpstreamPool::new());
+    transient
+        .insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "transient"))
+        .await;
+    runtime.swap(Some(Arc::clone(&original))).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone())
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let initial_runtime = manager
+        .published_runtime_loadout_snapshot("project")
+        .await
+        .generation();
+    let initial_pool = runtime.published_pool_snapshot().generation();
+    let changing = manager.clone();
+    let swapping = runtime.clone();
+    let original_for_hook = Arc::clone(&original);
+    let snapshot = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            let runtime = swapping.clone();
+            let transient = Arc::clone(&transient);
+            let original = Arc::clone(&original_for_hook);
+            async move {
+                if attempt == 0 {
+                    manager
+                        .seed_config_unchecked_for_tests(unified_config("bravo"))
+                        .await;
+                    manager
+                        .seed_config_unchecked_for_tests(unified_config("alpha"))
+                        .await;
+                    runtime.swap(Some(transient)).await;
+                    runtime.swap(Some(Arc::clone(&original))).await;
+                }
+            }
+        })
+        .await
+        .expect("ABA retry");
+    assert_eq!(snapshot.tools().routes()[0].tool_name.as_ref(), "original");
+    assert_eq!(snapshot.services().services()[0].name(), "deploy");
+    assert_ne!(
+        snapshot.tools().runtime_config_generation(),
+        initial_runtime
+    );
+    assert_ne!(snapshot.tools().pool_publication_generation(), initial_pool);
+    assert_eq!(
+        snapshot.tools().runtime_config_generation(),
+        snapshot.services().runtime_config_generation()
+    );
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_retries_tool_and_registry_aba_independently() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "original"))
+        .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let initial_tools = pool
+        .published_tool_catalog()
+        .await
+        .expect("tools")
+        .generation();
+    let initial_services = manager
+        .published_service_registry_snapshot()
+        .expect("services")
+        .generation();
+    let changing = manager.clone();
+    let changing_pool = Arc::clone(&pool);
+    let snapshot = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            let pool = Arc::clone(&changing_pool);
+            async move {
+                if attempt == 0 {
+                    pool.insert_entry_for_tests(
+                        "alpha",
+                        healthy_entry_with_tool("alpha", "changed"),
+                    )
+                    .await;
+                    pool.insert_entry_for_tests(
+                        "alpha",
+                        healthy_entry_with_tool("alpha", "original"),
+                    )
+                    .await;
+                } else if attempt == 1 {
+                    manager.set_builtin_service_registry(publication_registry("transient"));
+                    manager.set_builtin_service_registry(publication_registry("deploy"));
+                }
+            }
+        })
+        .await
+        .expect("catalog ABA retries");
+    assert_ne!(snapshot.tools().tool_catalog_generation(), initial_tools);
+    assert_ne!(
+        snapshot.services().service_registry_generation(),
+        initial_services
+    );
+    assert_eq!(snapshot.tools().routes()[0].tool_name.as_ref(), "original");
+    assert_eq!(snapshot.services().services()[0].name(), "deploy");
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_maps_stable_missing_states() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = GatewayManager::new(
+        dir.path().join("missing.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("deploy"));
+    assert_eq!(
+        missing
+            .published_loadout_mcp_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::MissingLoadout)
+    );
+
+    let no_pool = GatewayManager::new(
+        dir.path().join("no-pool.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_builtin_service_registry(publication_registry("deploy"));
+    no_pool
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    assert_eq!(
+        no_pool
+            .published_loadout_mcp_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::MissingPool)
+    );
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_fails_closed_under_sustained_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    runtime.swap(Some(pool)).await;
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let changing = manager.clone();
+    let result = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            async move {
+                manager
+                    .seed_config_unchecked_for_tests(unified_config(if attempt % 2 == 0 {
+                        "bravo"
+                    } else {
+                        "alpha"
+                    }))
+                    .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::Unstable)
+    );
+}
+
 #[tokio::test]
 async fn loadout_service_catalog_applies_alias_visibility_policy_and_metadata() {
     let dir = tempfile::tempdir().expect("tempdir");

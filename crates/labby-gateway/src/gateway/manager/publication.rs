@@ -7,15 +7,18 @@ use labby_runtime::gateway_config::{GatewayLoadoutConfig, VirtualServerConfig};
 
 use crate::gateway::runtime::{PoolPublicationGeneration, PublishedPoolSnapshot};
 use crate::upstream::pool::{
-    PublishedToolRoute, ToolCatalogGeneration, ToolCatalogPublicationError,
+    PublishedToolCatalogSnapshot, PublishedToolRoute, ToolCatalogGeneration,
+    ToolCatalogPublicationError,
 };
 
 use super::GatewayManager;
 use crate::gateway::service_registry::{
-    PublishedService, ServiceRegistryPublicationError, ServiceRegistryPublicationGeneration,
+    PublishedService, PublishedServiceRegistrySnapshot, ServiceRegistryPublicationError,
+    ServiceRegistryPublicationGeneration,
 };
 
 static NEXT_RUNTIME_CONFIG_GENERATION: AtomicU64 = AtomicU64::new(1);
+const PUBLICATION_ATTEMPTS: usize = 3;
 
 pub(super) fn next_runtime_config_generation() -> u64 {
     NEXT_RUNTIME_CONFIG_GENERATION
@@ -79,6 +82,27 @@ impl std::fmt::Display for LoadoutServiceCatalogPublicationError {
 }
 
 impl std::error::Error for LoadoutServiceCatalogPublicationError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutMcpCatalogPublicationError {
+    MissingLoadout,
+    MissingPool,
+    CatalogUnavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for LoadoutMcpCatalogPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingLoadout => "runtime Loadout is unavailable",
+            Self::MissingPool => "runtime upstream pool is unavailable",
+            Self::CatalogUnavailable => "runtime MCP catalog is unavailable",
+            Self::Unstable => "runtime MCP catalog changed during observation",
+        })
+    }
+}
+
+impl std::error::Error for LoadoutMcpCatalogPublicationError {}
 
 /// Immutable built-in service/action projection for one running Loadout.
 ///
@@ -178,10 +202,49 @@ impl PublishedLoadoutToolCatalogSnapshot {
     }
 }
 
+/// One common-interval view of the Loadout's upstream and built-in MCP tools.
+/// This remains observational and unmounted; it is not an execution grant.
+pub struct PublishedLoadoutMcpCatalogSnapshot {
+    tools: PublishedLoadoutToolCatalogSnapshot,
+    services: PublishedLoadoutServiceCatalogSnapshot,
+}
+
+impl PublishedLoadoutMcpCatalogSnapshot {
+    #[must_use]
+    pub fn tools(&self) -> &PublishedLoadoutToolCatalogSnapshot {
+        &self.tools
+    }
+    #[must_use]
+    pub fn services(&self) -> &PublishedLoadoutServiceCatalogSnapshot {
+        &self.services
+    }
+}
+
 struct ManagerPublicationObservation {
     runtime_generation: GatewayRuntimeConfigGeneration,
     loadout: Option<GatewayLoadoutConfig>,
     pool_snapshot: PublishedPoolSnapshot,
+}
+
+struct McpManagerPublicationObservation {
+    runtime_generation: GatewayRuntimeConfigGeneration,
+    loadout: Option<GatewayLoadoutConfig>,
+    virtual_servers: Vec<VirtualServerConfig>,
+    pool_snapshot: PublishedPoolSnapshot,
+}
+
+impl McpManagerPublicationObservation {
+    fn same_publication(&self, other: &Self) -> bool {
+        self.runtime_generation == other.runtime_generation
+            && self.loadout == other.loadout
+            && self.virtual_servers == other.virtual_servers
+            && self.pool_snapshot.generation() == other.pool_snapshot.generation()
+            && match (self.pool_snapshot.pool(), other.pool_snapshot.pool()) {
+                (Some(left), Some(right)) => std::sync::Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 impl ManagerPublicationObservation {
@@ -215,6 +278,98 @@ impl PublishedRuntimeLoadoutSnapshot {
 }
 
 impl GatewayManager {
+    async fn mcp_publication_observation(&self, name: &str) -> McpManagerPublicationObservation {
+        let _publication = self.publication_barrier.read().await;
+        let config = self.config.read().await;
+        McpManagerPublicationObservation {
+            runtime_generation: GatewayRuntimeConfigGeneration(
+                self.runtime_config_generation.load(Ordering::Relaxed),
+            ),
+            loadout: config
+                .loadouts
+                .iter()
+                .find(|loadout| loadout.name == name)
+                .cloned(),
+            virtual_servers: config.virtual_servers.clone(),
+            pool_snapshot: self.runtime.published_pool_snapshot(),
+        }
+    }
+
+    pub async fn published_loadout_mcp_catalog_snapshot(
+        &self,
+        name: &str,
+    ) -> Result<PublishedLoadoutMcpCatalogSnapshot, LoadoutMcpCatalogPublicationError> {
+        self.compose_loadout_mcp_catalog(name, |_: usize| ready(()))
+            .await
+    }
+
+    pub(super) async fn compose_loadout_mcp_catalog<F, Fut>(
+        &self,
+        name: &str,
+        mut after_first_catalogs: F,
+    ) -> Result<PublishedLoadoutMcpCatalogSnapshot, LoadoutMcpCatalogPublicationError>
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first_gateway = self.mcp_publication_observation(name).await;
+            let first_tools = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_tool_catalog().await),
+                None => None,
+            };
+            let first_services = self.published_service_registry_snapshot();
+            after_first_catalogs(attempt).await;
+            let second_gateway = self.mcp_publication_observation(name).await;
+            if !first_gateway.same_publication(&second_gateway) {
+                continue;
+            }
+            let second_tools = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_tool_catalog().await),
+                None => None,
+            };
+            let second_services = self.published_service_registry_snapshot();
+            let loadout = first_gateway
+                .loadout
+                .as_ref()
+                .ok_or(LoadoutMcpCatalogPublicationError::MissingLoadout)?;
+            let (first_tools, second_tools) = match (first_tools, second_tools) {
+                (None, None) => return Err(LoadoutMcpCatalogPublicationError::MissingPool),
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(LoadoutMcpCatalogPublicationError::CatalogUnavailable);
+                }
+                _ => continue,
+            };
+            let (first_services, second_services) = match (first_services, second_services) {
+                (Ok(first), Ok(second)) => (first, second),
+                (Err(first), Err(second)) if first == second => {
+                    return Err(LoadoutMcpCatalogPublicationError::CatalogUnavailable);
+                }
+                _ => continue,
+            };
+            if first_tools.generation() != second_tools.generation()
+                || first_services.generation() != second_services.generation()
+            {
+                continue;
+            }
+            let tools = build_tool_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_tools,
+            );
+            let services = build_service_snapshot(
+                first_gateway.runtime_generation,
+                loadout,
+                &first_gateway.virtual_servers,
+                &first_services,
+            )
+            .map_err(|_| LoadoutMcpCatalogPublicationError::CatalogUnavailable)?;
+            return Ok(PublishedLoadoutMcpCatalogSnapshot { tools, services });
+        }
+        Err(LoadoutMcpCatalogPublicationError::Unstable)
+    }
     async fn manager_publication_observation(&self, name: &str) -> ManagerPublicationObservation {
         let _publication = self.publication_barrier.read().await;
         let config = self.config.read().await;
@@ -271,9 +426,7 @@ impl GatewayManager {
         F: FnMut(usize) -> Fut,
         Fut: Future<Output = ()>,
     {
-        const MAX_ATTEMPTS: usize = 3;
-
-        for attempt in 0..MAX_ATTEMPTS {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
             let first_gateway = self.service_publication_observation(name).await;
             let first_catalog = self.published_service_registry_snapshot();
             after_first_catalog(attempt).await;
@@ -296,60 +449,12 @@ impl GatewayManager {
                 .loadout
                 .as_ref()
                 .ok_or(LoadoutServiceCatalogPublicationError::MissingLoadout)?;
-            let selected = if loadout.expose_tools {
-                let by_name = first_catalog
-                    .services()
-                    .iter()
-                    .map(|service| (service.name(), service))
-                    .collect::<std::collections::BTreeMap<_, _>>();
-                let mut selected = std::collections::BTreeMap::new();
-                for member in &loadout.services {
-                    let Some(server) = first_gateway
-                        .virtual_servers
-                        .iter()
-                        .find(|server| server.service == *member || server.id == *member)
-                    else {
-                        continue;
-                    };
-                    let Some(service) = by_name.get(server.service.as_str()) else {
-                        continue;
-                    };
-                    let projected = match super::views::mcp_service_policy_for_config(
-                        &first_gateway.virtual_servers,
-                        member,
-                    ) {
-                        super::views::McpServicePolicy::Absent
-                        | super::views::McpServicePolicy::Hidden => continue,
-                        super::views::McpServicePolicy::Unrestricted => (*service).clone(),
-                        super::views::McpServicePolicy::Allowlisted(actions) => {
-                            let allowed = actions
-                                .iter()
-                                .map(String::as_str)
-                                .collect::<std::collections::BTreeSet<_>>();
-                            PublishedService::from_filtered_actions(service, |action| {
-                                matches!(action, "help" | "schema") || allowed.contains(action)
-                            })
-                        }
-                    };
-                    if selected
-                        .insert(
-                            projected.name().to_string(),
-                            PublishedLoadoutService { service: projected },
-                        )
-                        .is_some()
-                    {
-                        return Err(LoadoutServiceCatalogPublicationError::CatalogUnavailable);
-                    }
-                }
-                selected.into_values().collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            return Ok(PublishedLoadoutServiceCatalogSnapshot {
-                runtime_config_generation: first_gateway.runtime_generation,
-                service_registry_generation: first_catalog.generation(),
-                services: std::sync::Arc::from(selected),
-            });
+            return build_service_snapshot(
+                first_gateway.runtime_generation,
+                loadout,
+                &first_gateway.virtual_servers,
+                &first_catalog,
+            );
         }
         Err(LoadoutServiceCatalogPublicationError::Unstable)
     }
@@ -376,9 +481,7 @@ impl GatewayManager {
         F: FnMut(usize) -> Fut,
         Fut: Future<Output = ()>,
     {
-        const MAX_ATTEMPTS: usize = 3;
-
-        for attempt in 0..MAX_ATTEMPTS {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
             let first_gateway = self.manager_publication_observation(name).await;
             let first_catalog = match first_gateway.pool_snapshot.pool() {
                 Some(pool) => Some(pool.published_tool_catalog().await),
@@ -411,28 +514,12 @@ impl GatewayManager {
                 continue;
             }
 
-            let selected = if loadout.expose_tools {
-                let upstreams = loadout
-                    .upstreams
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<std::collections::BTreeSet<_>>();
-                first_catalog
-                    .routes()
-                    .iter()
-                    .filter(|route| upstreams.contains(route.upstream_name.as_ref()))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-
-            return Ok(PublishedLoadoutToolCatalogSnapshot {
-                runtime_config_generation: first_gateway.runtime_generation,
-                pool_publication_generation: first_gateway.pool_snapshot.generation(),
-                tool_catalog_generation: first_catalog.generation(),
-                routes: std::sync::Arc::from(selected),
-            });
+            return Ok(build_tool_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_catalog,
+            ));
         }
         Err(LoadoutToolCatalogPublicationError::Unstable)
     }
@@ -491,4 +578,89 @@ fn map_service_catalog_error(
     _error: ServiceRegistryPublicationError,
 ) -> LoadoutServiceCatalogPublicationError {
     LoadoutServiceCatalogPublicationError::CatalogUnavailable
+}
+
+fn build_tool_snapshot(
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    loadout: &GatewayLoadoutConfig,
+    catalog: &PublishedToolCatalogSnapshot,
+) -> PublishedLoadoutToolCatalogSnapshot {
+    let routes = if loadout.expose_tools {
+        let upstreams = loadout
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        catalog
+            .routes()
+            .iter()
+            .filter(|route| upstreams.contains(route.upstream_name.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    PublishedLoadoutToolCatalogSnapshot {
+        runtime_config_generation,
+        pool_publication_generation,
+        tool_catalog_generation: catalog.generation(),
+        routes: std::sync::Arc::from(routes),
+    }
+}
+
+fn build_service_snapshot(
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    loadout: &GatewayLoadoutConfig,
+    virtual_servers: &[VirtualServerConfig],
+    catalog: &PublishedServiceRegistrySnapshot,
+) -> Result<PublishedLoadoutServiceCatalogSnapshot, LoadoutServiceCatalogPublicationError> {
+    let mut selected = std::collections::BTreeMap::new();
+    if loadout.expose_tools {
+        let by_name = catalog
+            .services()
+            .iter()
+            .map(|service| (service.name(), service))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for member in &loadout.services {
+            let Some(server) = virtual_servers
+                .iter()
+                .find(|server| server.service == *member || server.id == *member)
+            else {
+                continue;
+            };
+            let Some(service) = by_name.get(server.service.as_str()) else {
+                continue;
+            };
+            let projected =
+                match super::views::mcp_service_policy_for_config(virtual_servers, member) {
+                    super::views::McpServicePolicy::Absent
+                    | super::views::McpServicePolicy::Hidden => continue,
+                    super::views::McpServicePolicy::Unrestricted => (*service).clone(),
+                    super::views::McpServicePolicy::Allowlisted(actions) => {
+                        let allowed = actions
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<std::collections::BTreeSet<_>>();
+                        PublishedService::from_filtered_actions(service, |action| {
+                            matches!(action, "help" | "schema") || allowed.contains(action)
+                        })
+                    }
+                };
+            if selected
+                .insert(
+                    projected.name().to_string(),
+                    PublishedLoadoutService { service: projected },
+                )
+                .is_some()
+            {
+                return Err(LoadoutServiceCatalogPublicationError::CatalogUnavailable);
+            }
+        }
+    }
+    Ok(PublishedLoadoutServiceCatalogSnapshot {
+        runtime_config_generation,
+        service_registry_generation: catalog.generation(),
+        services: std::sync::Arc::from(selected.into_values().collect::<Vec<_>>()),
+    })
 }
