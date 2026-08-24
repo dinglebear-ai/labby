@@ -401,6 +401,12 @@ Delayed stale results contribute no wire prompts and cannot mutate replacement s
 
 Invalid/duplicate names and route, row-byte, retained-byte, or published-byte overflow fail closed without retaining oversized payloads. Bind/rebind, removal, Prompt routability, policy, and semantic source changes reproject atomically, while diagnostic prompt count/name hints and unrelated tool/Resource/ResourceTemplate changes preserve the Prompt Arc and generation. This pool-only snapshot is observational, not `prompts/get` authority or a grant. Manager/Project composition, discovery shadow, OAuth/subject/local/synthetic families, execution, and enforcement remain deferred.
 
+### Wave 39 / Milestone 0AQ: immutable Loadout Prompt publication
+
+`GatewayManager` composes one standalone immutable Prompt view through a bounded G-P-G-P observation of the active runtime Loadout, exact pool publication, and pool Prompt-catalog generation. It filters only the Loadout's exact upstream membership and Loadout-level `expose_prompts`; the pool publication already applies each upstream's Prompt exposure policy. Staged desired configuration is excluded, and independently decisive Prompt, pool, and config ABA retry while sustained churn fails boundedly.
+
+The snapshot preserves exact native Prompt provenance, metadata, and deterministic order. Its typed failures are stable and redacted. It is manager-only, observational, and unmounted—not `prompts/get` authority or a grant. Unified MCP catalog ownership, Project/Bound propagation, discovery shadowing, OAuth/subject/local/synthetic prompt families, execution, and enforcement remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

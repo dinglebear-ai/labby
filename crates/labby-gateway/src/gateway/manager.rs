@@ -86,10 +86,11 @@ pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_disco
 pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
 pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
 pub use self::publication::{
-    LoadoutMcpCatalogPublicationError, LoadoutResourceCatalogPublicationError,
-    LoadoutResourceTemplateCatalogPublicationError, LoadoutServiceCatalogPublicationError,
-    LoadoutToolCatalogPublicationError, ProjectRoutePublicationError,
-    PublishedLoadoutMcpCatalogSnapshot, PublishedLoadoutResourceCatalogSnapshot,
+    LoadoutMcpCatalogPublicationError, LoadoutPromptCatalogPublicationError,
+    LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
+    LoadoutServiceCatalogPublicationError, LoadoutToolCatalogPublicationError,
+    ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot,
+    PublishedLoadoutPromptCatalogSnapshot, PublishedLoadoutResourceCatalogSnapshot,
     PublishedLoadoutResourceTemplateCatalogSnapshot, PublishedLoadoutService,
     PublishedLoadoutServiceCatalogSnapshot, PublishedLoadoutToolCatalogSnapshot,
     PublishedProjectRouteSnapshot,

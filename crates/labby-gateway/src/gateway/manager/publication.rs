@@ -8,7 +8,8 @@ use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, ProtectedMcpRouteTa
 
 use crate::gateway::runtime::{PoolPublicationGeneration, PublishedPoolSnapshot};
 use crate::upstream::pool::{
-    PublishedResourceCatalogSnapshot, PublishedResourceRoute,
+    PromptCatalogGeneration, PromptCatalogPublicationError, PublishedPromptCatalogSnapshot,
+    PublishedPromptRoute, PublishedResourceCatalogSnapshot, PublishedResourceRoute,
     PublishedResourceTemplateCatalogSnapshot, PublishedResourceTemplateRoute,
     PublishedToolCatalogSnapshot, PublishedToolRoute, ResourceCatalogGeneration,
     ResourceCatalogPublicationError, ResourceTemplateCatalogGeneration,
@@ -105,6 +106,26 @@ impl std::fmt::Display for LoadoutResourceTemplateCatalogPublicationError {
     }
 }
 impl std::error::Error for LoadoutResourceTemplateCatalogPublicationError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutPromptCatalogPublicationError {
+    MissingLoadout,
+    MissingPool,
+    CatalogUnavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for LoadoutPromptCatalogPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingLoadout => "runtime Loadout is unavailable",
+            Self::MissingPool => "runtime upstream pool is unavailable",
+            Self::CatalogUnavailable => "runtime prompt catalog is unavailable",
+            Self::Unstable => "runtime prompt catalog changed during observation",
+        })
+    }
+}
+impl std::error::Error for LoadoutPromptCatalogPublicationError {}
 
 /// A fail-closed reason that a coherent Loadout built-in service projection
 /// could not be observed.
@@ -362,6 +383,34 @@ impl PublishedLoadoutResourceTemplateCatalogSnapshot {
     }
     #[must_use]
     pub fn routes(&self) -> &[PublishedResourceTemplateRoute] {
+        &self.routes
+    }
+}
+
+/// Immutable observational Prompt projection for one running Loadout.
+/// This is unmounted and is neither prompt execution authority nor a grant.
+pub struct PublishedLoadoutPromptCatalogSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    prompt_catalog_generation: PromptCatalogGeneration,
+    routes: std::sync::Arc<[PublishedPromptRoute]>,
+}
+
+impl PublishedLoadoutPromptCatalogSnapshot {
+    #[must_use]
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+    #[must_use]
+    pub fn pool_publication_generation(&self) -> PoolPublicationGeneration {
+        self.pool_publication_generation
+    }
+    #[must_use]
+    pub fn prompt_catalog_generation(&self) -> PromptCatalogGeneration {
+        self.prompt_catalog_generation
+    }
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedPromptRoute] {
         &self.routes
     }
 }
@@ -976,6 +1025,62 @@ impl GatewayManager {
         Err(LoadoutResourceTemplateCatalogPublicationError::Unstable)
     }
 
+    pub async fn published_loadout_prompt_catalog_snapshot(
+        &self,
+        name: &str,
+    ) -> Result<PublishedLoadoutPromptCatalogSnapshot, LoadoutPromptCatalogPublicationError> {
+        self.compose_loadout_prompt_catalog(name, |_: usize| ready(()))
+            .await
+    }
+
+    pub(super) async fn compose_loadout_prompt_catalog<F, Fut>(
+        &self,
+        name: &str,
+        mut after_first_catalog: F,
+    ) -> Result<PublishedLoadoutPromptCatalogSnapshot, LoadoutPromptCatalogPublicationError>
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first_gateway = self.manager_publication_observation(name).await;
+            let first_catalog = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
+                None => None,
+            };
+            after_first_catalog(attempt).await;
+            let second_gateway = self.manager_publication_observation(name).await;
+            if !first_gateway.same_publication(&second_gateway) {
+                continue;
+            }
+            let second_catalog = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
+                None => None,
+            };
+            let Some(loadout) = first_gateway.loadout.as_ref() else {
+                return Err(LoadoutPromptCatalogPublicationError::MissingLoadout);
+            };
+            let (first_catalog, second_catalog) = match (first_catalog, second_catalog) {
+                (None, None) => return Err(LoadoutPromptCatalogPublicationError::MissingPool),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(map_prompt_catalog_error(first));
+                }
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                _ => continue,
+            };
+            if first_catalog.generation() != second_catalog.generation() {
+                continue;
+            }
+            return Ok(build_prompt_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_catalog,
+            ));
+        }
+        Err(LoadoutPromptCatalogPublicationError::Unstable)
+    }
+
     /// Resolve a named Loadout from one coherent published runtime revision.
     pub async fn published_runtime_loadout_snapshot(
         &self,
@@ -1036,6 +1141,12 @@ fn map_resource_template_catalog_error(
     _error: ResourceTemplateCatalogPublicationError,
 ) -> LoadoutResourceTemplateCatalogPublicationError {
     LoadoutResourceTemplateCatalogPublicationError::CatalogUnavailable
+}
+
+fn map_prompt_catalog_error(
+    _error: PromptCatalogPublicationError,
+) -> LoadoutPromptCatalogPublicationError {
+    LoadoutPromptCatalogPublicationError::CatalogUnavailable
 }
 
 fn map_service_catalog_error(
@@ -1127,6 +1238,35 @@ fn build_resource_template_snapshot(
         runtime_config_generation,
         pool_publication_generation,
         resource_template_catalog_generation: catalog.generation(),
+        routes: std::sync::Arc::from(routes),
+    }
+}
+
+fn build_prompt_snapshot(
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    loadout: &GatewayLoadoutConfig,
+    catalog: &PublishedPromptCatalogSnapshot,
+) -> PublishedLoadoutPromptCatalogSnapshot {
+    let routes = if loadout.expose_prompts {
+        let upstreams = loadout
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        catalog
+            .routes()
+            .iter()
+            .filter(|route| upstreams.contains(route.upstream_name.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    PublishedLoadoutPromptCatalogSnapshot {
+        runtime_config_generation,
+        pool_publication_generation,
+        prompt_catalog_generation: catalog.generation(),
         routes: std::sync::Arc::from(routes),
     }
 }

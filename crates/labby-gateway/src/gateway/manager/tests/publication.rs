@@ -2,15 +2,16 @@
 
 use crate::gateway::config::write_gateway_config;
 use crate::gateway::manager::{
-    LoadoutMcpCatalogPublicationError, LoadoutResourceCatalogPublicationError,
-    LoadoutResourceTemplateCatalogPublicationError, LoadoutToolCatalogPublicationError,
+    LoadoutMcpCatalogPublicationError, LoadoutPromptCatalogPublicationError,
+    LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
+    LoadoutToolCatalogPublicationError,
 };
 use labby_runtime::gateway_config::{
     GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
     ProtectedMcpRouteTarget, VirtualServerConfig, VirtualServerMcpPolicyConfig,
     VirtualServerSurfacesConfig,
 };
-use rmcp::model::{Resource, ResourceTemplate};
+use rmcp::model::{Prompt, Resource, ResourceTemplate};
 
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,6 +22,298 @@ struct PublicationRegistry {
         Vec<crate::gateway::service_registry::ServiceActionInfo>,
     )>,
     reads: Arc<AtomicUsize>,
+}
+
+#[tokio::test]
+async fn loadout_prompt_catalog_filters_orders_and_preserves_exact_generations() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_prompt_routes_for_tests(
+        "zeta",
+        vec![
+            Prompt::new("beta", Some("exact metadata"), None),
+            Prompt::new("alpha", Some(""), None),
+        ],
+    )
+    .await;
+    pool.insert_prompt_routes_for_tests(
+        "alpha",
+        vec![Prompt::new("remote", Some("remote metadata"), None)],
+    )
+    .await;
+    pool.insert_prompt_routes_for_tests("excluded", vec![Prompt::new("hidden", Some(""), None)])
+        .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("prompts.toml"), runtime.clone());
+    let mut hidden = loadout("hidden", &["alpha"]);
+    hidden.expose_prompts = false;
+    let mut config = config_with_loadout(loadout("project", &["zeta", "alpha"]));
+    config.loadouts.push(hidden);
+    manager.seed_config(config).await;
+
+    let snapshot = manager
+        .published_loadout_prompt_catalog_snapshot("project")
+        .await
+        .expect("prompt snapshot");
+    assert_eq!(
+        snapshot.runtime_config_generation(),
+        manager
+            .published_runtime_loadout_snapshot("project")
+            .await
+            .generation()
+    );
+    assert_eq!(
+        snapshot.pool_publication_generation(),
+        runtime.published_pool_snapshot().generation()
+    );
+    assert_eq!(
+        snapshot.prompt_catalog_generation(),
+        pool.published_prompt_catalog()
+            .await
+            .expect("pool prompt publication")
+            .generation()
+    );
+    assert_eq!(
+        snapshot
+            .routes()
+            .iter()
+            .map(|route| (route.upstream_name.as_ref(), route.native_name.as_ref()))
+            .collect::<Vec<_>>(),
+        vec![("alpha", "remote"), ("zeta", "alpha"), ("zeta", "beta")]
+    );
+    assert_eq!(
+        snapshot.routes()[0].prompt.description.as_deref(),
+        Some("remote metadata")
+    );
+    assert!(
+        manager
+            .published_loadout_prompt_catalog_snapshot("hidden")
+            .await
+            .expect("hidden")
+            .routes()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn loadout_prompt_catalog_redacts_errors_and_bounds_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let no_pool = GatewayManager::new(
+        dir.path().join("none.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    no_pool
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    assert_eq!(
+        no_pool
+            .published_loadout_prompt_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutPromptCatalogPublicationError::MissingPool)
+    );
+
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_prompt_routes_for_tests("alpha", vec![Prompt::new("row", Some(""), None)])
+        .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("churn.toml"), runtime.clone());
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    assert_eq!(
+        manager
+            .published_loadout_prompt_catalog_snapshot("missing")
+            .await
+            .err(),
+        Some(LoadoutPromptCatalogPublicationError::MissingLoadout)
+    );
+    pool.insert_prompt_routes_for_tests(
+        "alpha",
+        vec![
+            Prompt::new("duplicate", Some("one"), None),
+            Prompt::new("duplicate", Some("two"), None),
+        ],
+    )
+    .await;
+    assert_eq!(
+        manager
+            .published_loadout_prompt_catalog_snapshot("project")
+            .await
+            .err(),
+        Some(LoadoutPromptCatalogPublicationError::CatalogUnavailable)
+    );
+    pool.insert_prompt_routes_for_tests("alpha", vec![Prompt::new("row", Some(""), None)])
+        .await;
+
+    let churning_pool = Arc::clone(&pool);
+    let result = manager
+        .compose_loadout_prompt_catalog("project", move |attempt| {
+            let pool = Arc::clone(&churning_pool);
+            async move {
+                pool.insert_prompt_routes_for_tests(
+                    "alpha",
+                    vec![Prompt::new(format!("churn-{attempt}"), Some(""), None)],
+                )
+                .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutPromptCatalogPublicationError::Unstable)
+    );
+
+    let changing = manager.clone();
+    let result = manager
+        .compose_loadout_prompt_catalog("project", move |_| {
+            let manager = changing.clone();
+            async move {
+                manager
+                    .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+                    .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutPromptCatalogPublicationError::Unstable)
+    );
+
+    let transient = Arc::new(UpstreamPool::new());
+    transient
+        .insert_prompt_routes_for_tests("alpha", vec![Prompt::new("other", Some(""), None)])
+        .await;
+    let changing_runtime = runtime.clone();
+    let result = manager
+        .compose_loadout_prompt_catalog("project", move |attempt| {
+            let runtime = changing_runtime.clone();
+            let next = if attempt % 2 == 0 {
+                Arc::clone(&transient)
+            } else {
+                Arc::clone(&pool)
+            };
+            async move { runtime.swap(Some(next)).await }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(LoadoutPromptCatalogPublicationError::Unstable)
+    );
+}
+
+#[tokio::test]
+async fn loadout_prompt_catalog_retries_prompt_and_pool_aba_independently() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let original = Arc::new(UpstreamPool::new());
+    original
+        .insert_prompt_routes_for_tests("alpha", vec![Prompt::new("a", Some("A"), None)])
+        .await;
+    runtime.swap(Some(Arc::clone(&original))).await;
+    let manager = GatewayManager::new(dir.path().join("prompt-aba.toml"), runtime.clone());
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    let initial_prompt = original
+        .published_prompt_catalog()
+        .await
+        .expect("initial")
+        .generation();
+    let initial_pool = runtime.published_pool_snapshot().generation();
+    let transient = Arc::new(UpstreamPool::new());
+    transient
+        .insert_prompt_routes_for_tests("alpha", vec![Prompt::new("transient", Some(""), None)])
+        .await;
+    let hook_pool = Arc::clone(&original);
+    let hook_runtime = runtime.clone();
+    let hook_transient = Arc::clone(&transient);
+    let hook_original = Arc::clone(&original);
+    let snapshot = manager
+        .compose_loadout_prompt_catalog("project", move |attempt| {
+            let pool = Arc::clone(&hook_pool);
+            let runtime = hook_runtime.clone();
+            let transient = Arc::clone(&hook_transient);
+            let original = Arc::clone(&hook_original);
+            async move {
+                if attempt == 0 {
+                    pool.insert_prompt_routes_for_tests(
+                        "alpha",
+                        vec![Prompt::new("b", Some("B"), None)],
+                    )
+                    .await;
+                    pool.insert_prompt_routes_for_tests(
+                        "alpha",
+                        vec![Prompt::new("a", Some("A"), None)],
+                    )
+                    .await;
+                } else if attempt == 1 {
+                    runtime.swap(Some(transient)).await;
+                    runtime.swap(Some(original)).await;
+                }
+            }
+        })
+        .await
+        .expect("ABA retries");
+    assert_eq!(snapshot.routes()[0].native_name.as_ref(), "a");
+    assert_ne!(snapshot.prompt_catalog_generation(), initial_prompt);
+    assert_ne!(snapshot.pool_publication_generation(), initial_pool);
+    assert_eq!(
+        snapshot.prompt_catalog_generation(),
+        original
+            .published_prompt_catalog()
+            .await
+            .expect("final")
+            .generation()
+    );
+    assert_eq!(
+        snapshot.pool_publication_generation(),
+        runtime.published_pool_snapshot().generation()
+    );
+}
+
+#[tokio::test]
+async fn loadout_prompt_catalog_retries_config_aba_independently() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_prompt_routes_for_tests("alpha", vec![Prompt::new("a", Some(""), None)])
+        .await;
+    runtime.swap(Some(pool)).await;
+    let manager = GatewayManager::new(dir.path().join("prompt-config-aba.toml"), runtime);
+    manager
+        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+        .await;
+    let initial = manager
+        .published_runtime_loadout_snapshot("project")
+        .await
+        .generation();
+    let changing = manager.clone();
+    let snapshot = manager
+        .compose_loadout_prompt_catalog("project", move |attempt| {
+            let manager = changing.clone();
+            async move {
+                if attempt == 0 {
+                    manager
+                        .seed_config(config_with_loadout(loadout("project", &["bravo"])))
+                        .await;
+                    manager
+                        .seed_config(config_with_loadout(loadout("project", &["alpha"])))
+                        .await;
+                }
+            }
+        })
+        .await
+        .expect("config ABA retries");
+    let current = manager
+        .published_runtime_loadout_snapshot("project")
+        .await
+        .generation();
+    assert_ne!(initial, current);
+    assert_eq!(snapshot.runtime_config_generation(), current);
+    assert_eq!(snapshot.routes().len(), 1);
 }
 
 #[tokio::test]
