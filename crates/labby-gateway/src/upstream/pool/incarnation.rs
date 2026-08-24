@@ -55,6 +55,37 @@ impl ObservedConnectionCatalogEntry {
 }
 
 impl UpstreamPool {
+    pub(super) async fn observe_routable_prompt_connections(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ObservedConnectionCatalogEntry> {
+        let _binding = self.connection_catalog_binding.lock().await;
+        let connections = self.connections.read().await;
+        let catalog = self.catalog.read().await;
+        let mut observed = catalog
+            .iter()
+            .filter(|(name, entry)| {
+                allowed.is_none_or(|allowed| allowed.contains(*name))
+                    && entry
+                        .health_for(super::super::types::UpstreamCapability::Prompts)
+                        .is_routable()
+            })
+            .filter_map(|(upstream, _)| {
+                let connection = connections.get(upstream)?;
+                let incarnation = connection.incarnation?;
+                (catalog.incarnation(upstream) == Some(incarnation)).then(|| {
+                    ObservedConnectionCatalogEntry {
+                        upstream: upstream.clone(),
+                        peer: connection.peer.clone(),
+                        incarnation,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        observed.sort_by(|left, right| left.upstream.cmp(&right.upstream));
+        observed
+    }
+
     pub(super) async fn observe_routable_resource_connections(
         &self,
         allowed: Option<&BTreeSet<String>>,

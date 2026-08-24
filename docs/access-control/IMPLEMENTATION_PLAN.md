@@ -389,6 +389,12 @@ The existing authorization-first Project composer and BoundAccessContext kernel 
 
 Wire templates, metadata, ordering, pagination revisions/cursors, notifications, and legacy behavior remain unchanged. This is shadow observation only: no filtering, template expansion/read authority, OAuth/UI/local/synthetic classification, or enforcement is added.
 
+### Wave 37 / Milestone 0AO: incarnation-bound regular prompt listing
+
+Regular non-OAuth `prompts/list` fanout acquires the exact routable connection/catalog incarnation before each RPC. Success, unsupported capability, and failure update prompt health, errors, counts, and post-merge ownership names only through checked current-incarnation applies. Accepted rows use the exposure policy captured by that same checked result, so connection replacement or same-object A-B-A cannot reinterpret or attribute stale prompt data.
+
+Delayed stale results contribute no wire prompts and cannot mutate replacement state. Existing pagination, deadlines, deterministic namespacing/collision behavior, exposure filtering, partial results, and output remain unchanged. This is an attribution prerequisite only: no prompt publication, manager/Project catalog ownership, discovery shadow, prompt execution authority, OAuth/subject-scoped changes, or enforcement is added.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

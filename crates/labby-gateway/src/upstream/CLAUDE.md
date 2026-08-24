@@ -65,7 +65,7 @@ Dependency direction:
 | `pool/resources_read.rs` | `read_upstream_resource` + `subject_scoped_read_resource` + `read_upstream_ui_resource` (reverse-looks-up the owning upstream by cached native `ui://` `resource_uris`, forwards the read, preserves the native URI — **no** `lab://upstream/` rewrite — for mcp-ui widget resources). |
 | `pool/prompts_list.rs` | Prompt listing + ownership lookup (`collect_upstream_prompts`, `find_prompt_owner`, …). |
 | `pool/prompts_get.rs` | `subject_scoped_prompts`, `get_prompt`, `subject_scoped_get_prompt`. |
-| `pool/prompts_exposure.rs` | `retain_exposed_prompts` — applies the compiled `expose_prompts` policy to an already-merged prompt list. |
+| `pool/prompts_exposure.rs` | `retain_exposed_prompts` — applies incarnation-checked compiled `expose_prompts` policies to an already-merged prompt list. |
 | `pool/testsupport.rs` | `#[cfg(test)]` shared fixtures + mock servers (`pub(super)`). |
 
 **The 500-LOC limit (tests included) remains the target and the rule for new

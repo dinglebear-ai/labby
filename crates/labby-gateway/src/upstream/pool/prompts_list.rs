@@ -16,7 +16,6 @@ use rmcp::model::Prompt;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::catalog_pagination;
-use super::discover::routable_upstream_peers;
 use super::helpers::merge_upstream_prompts;
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_PROMPTS;
@@ -32,7 +31,7 @@ impl UpstreamPool {
         allowed: Option<&BTreeSet<String>>,
         deadline_at: tokio::time::Instant,
     ) -> (Vec<Prompt>, HashMap<String, String>) {
-        let peers = routable_upstream_peers(self, UpstreamCapability::Prompts, allowed).await;
+        let observed_peers = self.observe_routable_prompt_connections(allowed).await;
 
         // Deliberate bulkhead exception: this is a fan-out aggregation pass
         // over every routable upstream (catalog listing/refresh), not a
@@ -47,12 +46,13 @@ impl UpstreamPool {
         // Issue RPCs in parallel. merge_upstream_prompts sorts internally,
         // so completion order does not affect the final result.
         let mut futures = FuturesUnordered::new();
-        for (name, peer) in peers {
+        for observed in observed_peers {
+            let peer = observed.peer.clone();
             futures.push(async move {
                 let remaining = deadline_at.saturating_duration_since(tokio::time::Instant::now());
                 if remaining.is_zero() {
                     return (
-                        name,
+                        observed,
                         Err(catalog_pagination::CatalogPaginationError::Deadline {
                             deadline_ms: 0,
                         }),
@@ -60,24 +60,34 @@ impl UpstreamPool {
                 }
                 let result =
                     catalog_pagination::list_prompts(&peer, remaining, MAX_UPSTREAM_PROMPTS).await;
-                (name, result)
+                (observed, result)
             });
         }
 
         let mut upstream_prompts = Vec::new();
-        let mut prompt_name_updates: HashMap<String, Vec<String>> = HashMap::new();
-        while let Some((name, result)) = futures.next().await {
+        let mut prompt_name_updates = HashMap::new();
+        let mut prompt_policies = HashMap::new();
+        while let Some((observed, result)) = futures.next().await {
+            let name = observed.upstream().to_string();
             match result {
                 Ok(prompts) => {
-                    self.record_success_for(&name, UpstreamCapability::Prompts)
-                        .await;
-                    prompt_name_updates.insert(name.clone(), Vec::new());
-                    {
-                        let mut catalog = self.catalog_write().await;
-                        if let Some(entry) = catalog.get_mut(&name) {
+                    let Some(policy) = self
+                        .apply_to_observed_entry(&observed, |entry| {
+                            super::health::record_success_on_entry(
+                                &name,
+                                entry,
+                                UpstreamCapability::Prompts,
+                            );
                             entry.prompt_count = prompts.len();
-                        }
-                    }
+                            entry.prompt_exposure_policy.clone()
+                        })
+                        .await
+                    else {
+                        tracing::debug!(upstream = %name, "discarding stale prompts/list success");
+                        continue;
+                    };
+                    prompt_policies.insert(name.clone(), policy);
+                    prompt_name_updates.insert(name.clone(), (observed, Vec::new()));
                     upstream_prompts.push((name, prompts));
                 }
                 Err(catalog_pagination::CatalogPaginationError::Service(e))
@@ -87,15 +97,21 @@ impl UpstreamPool {
                     // (JSON-RPC -32601). This is expected capability negotiation,
                     // not a failure: treat it like an empty, successful listing so
                     // the upstream stays routable and accrues no phantom failures.
-                    self.record_success_for(&name, UpstreamCapability::Prompts)
-                        .await;
-                    prompt_name_updates.insert(name.clone(), Vec::new());
-                    {
-                        let mut catalog = self.catalog_write().await;
-                        if let Some(entry) = catalog.get_mut(&name) {
+                    let Some(()) = self
+                        .apply_to_observed_entry(&observed, |entry| {
+                            super::health::record_success_on_entry(
+                                &name,
+                                entry,
+                                UpstreamCapability::Prompts,
+                            );
                             entry.prompt_count = 0;
-                        }
-                    }
+                        })
+                        .await
+                    else {
+                        tracing::debug!(upstream = %name, "discarding stale unsupported prompts/list result");
+                        continue;
+                    };
+                    prompt_name_updates.insert(name.clone(), (observed, Vec::new()));
                     tracing::debug!(
                         upstream = %name,
                         error = %e,
@@ -104,6 +120,21 @@ impl UpstreamPool {
                 }
                 Err(e) => {
                     let error_text = e.bounded_text();
+                    let applied = self
+                        .apply_to_observed_entry(&observed, |entry| {
+                            super::health::record_failure_on_entry(
+                                &name,
+                                entry,
+                                UpstreamCapability::Prompts,
+                                format!("failed to list prompts from upstream: {error_text}"),
+                            );
+                            entry.prompt_count = 0;
+                        })
+                        .await;
+                    if applied.is_none() {
+                        tracing::debug!(upstream = %name, "discarding stale prompts/list failure");
+                        continue;
+                    }
                     if matches!(
                         e,
                         catalog_pagination::CatalogPaginationError::Deadline { .. }
@@ -115,18 +146,6 @@ impl UpstreamPool {
                             partial_result = true,
                             "prompt catalog upstream exceeded shared request deadline"
                         );
-                    }
-                    self.record_failure_for(
-                        &name,
-                        UpstreamCapability::Prompts,
-                        format!("failed to list prompts from upstream: {error_text}"),
-                    )
-                    .await;
-                    {
-                        let mut catalog = self.catalog_write().await;
-                        if let Some(entry) = catalog.get_mut(&name) {
-                            entry.prompt_count = 0;
-                        }
                     }
                     tracing::warn!(
                         upstream = %name,
@@ -149,15 +168,20 @@ impl UpstreamPool {
         if !prompt_name_updates.is_empty() {
             for prompt in &prompts {
                 if let Some(upstream_name) = owners.get(prompt.name.as_str())
-                    && let Some(names) = prompt_name_updates.get_mut(upstream_name)
+                    && let Some((_, names)) = prompt_name_updates.get_mut(upstream_name)
                 {
                     names.push(prompt.name.to_string());
                 }
             }
-            let mut catalog = self.catalog_write().await;
-            for (upstream_name, names) in prompt_name_updates {
-                if let Some(entry) = catalog.get_mut(&upstream_name) {
-                    entry.prompt_names = names;
+            for (upstream_name, (observed, names)) in prompt_name_updates {
+                if self
+                    .apply_to_observed_entry(&observed, |entry| {
+                        entry.prompt_names = names;
+                    })
+                    .await
+                    .is_none()
+                {
+                    tracing::debug!(upstream = %upstream_name, "discarding stale prompt ownership cache update");
                 }
             }
         }
@@ -169,7 +193,7 @@ impl UpstreamPool {
         // allowlist un-editable. The cache is only an ownership hint — routing a
         // hidden prompt through it still fails, because `get_prompt` re-checks
         // the policy before forwarding.
-        let prompts = self.retain_exposed_prompts(prompts, &owners).await;
+        let prompts = self.retain_exposed_prompts(prompts, &owners, &prompt_policies);
 
         (prompts, owners)
     }
@@ -349,6 +373,11 @@ mod tests {
     #[derive(Clone, Default)]
     struct StalledPromptServer;
 
+    #[derive(Clone, Default)]
+    struct UnsupportedPromptServer;
+
+    impl ServerHandler for UnsupportedPromptServer {}
+
     impl ServerHandler for StalledPromptServer {
         fn get_info(&self) -> ServerInfo {
             ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
@@ -382,20 +411,21 @@ mod tests {
             .expect("prompt client starts");
         let peer = client_service.peer().clone();
         let entry_name = Arc::<str>::from(upstream_name);
-        pool.catalog_write().await.insert(
-            upstream_name.to_string(),
-            super::super::entries::healthy_in_process_entry(entry_name, HashMap::new()),
-        );
-        pool.connections.write().await.insert(
-            upstream_name.to_string(),
-            super::super::UpstreamConnection {
-                _client_service: client_service.into(),
-                _server_task: Some(server_task),
-                peer,
-                runtime: super::super::UpstreamRuntimeMetadata::default(),
-                incarnation: None,
-            },
-        );
+        let previous = pool
+            .install_connection_catalog_entry(
+                upstream_name.to_string(),
+                super::super::UpstreamConnection {
+                    _client_service: client_service.into(),
+                    _server_task: Some(server_task),
+                    peer,
+                    runtime: super::super::UpstreamRuntimeMetadata::default(),
+                    incarnation: None,
+                },
+                super::super::entries::healthy_in_process_entry(entry_name, HashMap::new()),
+            )
+            .await
+            .expect("prompt connection identity");
+        assert!(previous.is_none());
     }
 
     #[tokio::test]
@@ -446,6 +476,60 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn prompt_observation_requires_allowlist_health_and_current_binding() {
+        let pool = static_catalog_pool("alpha").await;
+        assert_eq!(
+            pool.observe_routable_prompt_connections(None).await.len(),
+            1
+        );
+        assert!(
+            pool.observe_routable_prompt_connections(Some(&BTreeSet::new()))
+                .await
+                .is_empty()
+        );
+        let allowed = BTreeSet::from(["alpha".to_string()]);
+        assert_eq!(
+            pool.observe_routable_prompt_connections(Some(&allowed))
+                .await
+                .len(),
+            1
+        );
+        for failure in 0..types::CIRCUIT_BREAKER_THRESHOLD {
+            pool.record_failure_for(
+                "alpha",
+                UpstreamCapability::Prompts,
+                format!("failure {failure}"),
+            )
+            .await;
+        }
+        assert!(
+            pool.observe_routable_prompt_connections(None)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn current_unsupported_prompt_listing_is_successful_empty_capability() {
+        let pool = catalog_pool_with_server("unsupported", UnsupportedPromptServer).await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            let entry = catalog.get_mut("unsupported").expect("catalog entry");
+            entry.prompt_count = 9;
+            entry.prompt_names = vec!["unsupported/old".to_string()];
+            entry.prompt_last_error = Some("old error".to_string());
+        }
+
+        assert!(pool.list_upstream_prompts(&[]).await.is_empty());
+        let catalog = pool.catalog.read().await;
+        let entry = &catalog["unsupported"];
+        assert_eq!(entry.prompt_count, 0);
+        assert!(entry.prompt_names.is_empty());
+        assert_eq!(entry.prompt_health, types::UpstreamHealth::Healthy);
+        assert!(entry.prompt_last_error.is_none());
+    }
+
     impl ServerHandler for PaginatedPromptServer {
         fn get_info(&self) -> ServerInfo {
             ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
@@ -481,6 +565,139 @@ mod tests {
             }
             Ok(result)
         }
+    }
+
+    #[derive(Clone)]
+    struct DelayedPromptServer {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        fail: bool,
+    }
+
+    impl ServerHandler for DelayedPromptServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        }
+
+        async fn list_prompts(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListPromptsResult, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            if self.fail {
+                Err(ErrorData::internal_error("old A failed", None))
+            } else {
+                Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
+                    "old-a",
+                    Some("old A"),
+                    None,
+                )]))
+            }
+        }
+    }
+
+    async fn assert_delayed_prompt_result_is_stale_after_same_object_aba(fail: bool) {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedPromptServer {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                fail,
+            },
+        )
+        .await;
+        let listing_pool = Arc::clone(&pool);
+        let listing = tokio::spawn(async move { listing_pool.list_upstream_prompts(&[]).await });
+        started.notified().await;
+
+        let replacement = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        let (connection_b, entry_b) = replacement.remove_connection_catalog_entry("alpha").await;
+        let previous_a = pool
+            .install_connection_catalog_entry(
+                "alpha".to_string(),
+                connection_b.expect("B connection"),
+                entry_b.expect("B entry"),
+            )
+            .await
+            .expect("install B")
+            .expect("old A remains alive");
+        let (removed_b, _) = pool.remove_connection_catalog_entry("alpha").await;
+        let mut reinstalled_a =
+            super::super::entries::healthy_in_process_entry(Arc::from("alpha"), HashMap::new());
+        reinstalled_a.prompt_count = 7;
+        reinstalled_a.prompt_names = vec!["alpha/replacement".to_string()];
+        reinstalled_a.prompt_last_error = Some("replacement sentinel".to_string());
+        assert!(
+            pool.install_connection_catalog_entry("alpha".to_string(), previous_a, reinstalled_a,)
+                .await
+                .expect("reinstall A with fresh identity")
+                .is_none()
+        );
+
+        release.notify_one();
+        assert!(listing.await.expect("listing task").is_empty());
+        if let Some(connection_b) = removed_b {
+            connection_b.shutdown("alpha", "test.prompt-list.aba").await;
+        }
+        let current = &pool.catalog.read().await["alpha"];
+        assert_eq!(current.prompt_count, 7);
+        assert_eq!(current.prompt_names, ["alpha/replacement"]);
+        assert_eq!(
+            current.prompt_last_error.as_deref(),
+            Some("replacement sentinel")
+        );
+        assert_eq!(current.prompt_health, types::UpstreamHealth::Healthy);
+    }
+
+    #[tokio::test]
+    async fn prompt_fanout_discards_delayed_success_after_same_object_aba() {
+        assert_delayed_prompt_result_is_stale_after_same_object_aba(false).await;
+    }
+
+    #[tokio::test]
+    async fn prompt_fanout_discards_delayed_failure_after_same_object_aba() {
+        assert_delayed_prompt_result_is_stale_after_same_object_aba(true).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_prompt_fanout_applies_no_result_state() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedPromptServer {
+                started: Arc::clone(&started),
+                release: Arc::new(tokio::sync::Notify::new()),
+                fail: false,
+            },
+        )
+        .await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            let entry = catalog.get_mut("alpha").expect("catalog entry");
+            entry.prompt_count = 7;
+            entry.prompt_names = vec!["alpha/sentinel".to_string()];
+            entry.prompt_last_error = Some("sentinel".to_string());
+        }
+        let listing_pool = Arc::clone(&pool);
+        let listing = tokio::spawn(async move { listing_pool.list_upstream_prompts(&[]).await });
+        started.notified().await;
+        listing.abort();
+        assert!(
+            listing
+                .await
+                .expect_err("listing is cancelled")
+                .is_cancelled()
+        );
+
+        let catalog = pool.catalog.read().await;
+        let entry = &catalog["alpha"];
+        assert_eq!(entry.prompt_count, 7);
+        assert_eq!(entry.prompt_names, ["alpha/sentinel"]);
+        assert_eq!(entry.prompt_last_error.as_deref(), Some("sentinel"));
     }
 
     #[tokio::test]
