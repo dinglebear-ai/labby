@@ -56,6 +56,7 @@ fn protected_route_target_from_args(
     (gateway_subset || loadout.is_some()).then_some(
         crate::config::ProtectedMcpRouteTarget::GatewaySubset(
             crate::config::ProtectedGatewaySubsetTarget {
+                project_id: None,
                 loadout,
                 upstreams,
                 services,

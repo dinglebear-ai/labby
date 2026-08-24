@@ -39,8 +39,8 @@ pub use config_store::GatewayConfigStore;
 pub use dispatch::{dispatch, dispatch_with_manager, dispatch_with_manager_scoped};
 pub use manager::{
     LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,
-    PublishedLoadoutMcpCatalogSnapshot, PublishedLoadoutService,
-    PublishedLoadoutServiceCatalogSnapshot,
+    ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot, PublishedLoadoutService,
+    PublishedLoadoutServiceCatalogSnapshot, PublishedProjectRouteSnapshot,
 };
 pub use params::GatewayEnrichmentScope;
 pub use service_registry::{

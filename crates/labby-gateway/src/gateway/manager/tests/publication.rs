@@ -3,7 +3,8 @@
 use crate::gateway::config::write_gateway_config;
 use crate::gateway::manager::LoadoutToolCatalogPublicationError;
 use labby_runtime::gateway_config::{
-    GatewayLoadoutConfig, VirtualServerConfig, VirtualServerMcpPolicyConfig,
+    GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
+    ProtectedMcpRouteTarget, VirtualServerConfig, VirtualServerMcpPolicyConfig,
     VirtualServerSurfacesConfig,
 };
 
@@ -106,6 +107,267 @@ fn mcp_virtual_server(id: &str, service: &str, allowed: &[&str]) -> VirtualServe
             allowed_actions: allowed.iter().map(|action| (*action).to_string()).collect(),
         }),
     }
+}
+
+fn project_route_config(project: &str, loadout_ref: Option<&str>) -> GatewayConfig {
+    let named = loadout_ref.is_some();
+    GatewayConfig {
+        loadouts: vec![GatewayLoadoutConfig {
+            name: "production".into(),
+            upstreams: vec!["alpha".into(), "bravo".into()],
+            services: vec!["setup".into(), "gateway".into()],
+            expose_code_mode: true,
+            ..Default::default()
+        }],
+        protected_mcp_routes: vec![ProtectedMcpRouteConfig {
+            name: "project-route".into(),
+            enabled: true,
+            public_host: "MCP.Example.com.".into(),
+            public_path: "/project".into(),
+            upstream: None,
+            backend_url: String::new(),
+            backend_mcp_path: "/mcp".into(),
+            scopes: vec![],
+            health_path: None,
+            target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    project_id: Some(project.into()),
+                    loadout: loadout_ref.map(str::to_string),
+                    upstreams: if named {
+                        Vec::new()
+                    } else {
+                        vec!["alpha".into()]
+                    },
+                    services: if named {
+                        Vec::new()
+                    } else {
+                        vec!["setup".into()]
+                    },
+                    expose_code_mode: false,
+                },
+            )),
+        }],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn project_route_publication_binds_canonical_identity_and_narrows() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(project_route_config("project-a", None))
+        .await;
+    let snapshot = manager
+        .published_project_route_snapshot("project-route", "project-a", "production")
+        .await
+        .expect("route");
+    assert_eq!(snapshot.resource(), "https://mcp.example.com/project");
+    assert_eq!(snapshot.project_id(), "project-a");
+    assert_eq!(snapshot.effective_loadout().upstreams, vec!["alpha"]);
+    assert_eq!(snapshot.effective_loadout().services, vec!["setup"]);
+    assert!(!snapshot.effective_loadout().expose_code_mode);
+    assert!(snapshot.effective_loadout().expose_tools);
+}
+
+#[tokio::test]
+async fn project_route_publication_redacts_failures_and_retries_aba() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(project_route_config("project-a", Some("production")))
+        .await;
+    assert_eq!(
+        manager
+            .published_project_route_snapshot("project-route", "project-b", "production")
+            .await
+            .err(),
+        Some(crate::gateway::manager::ProjectRoutePublicationError::Unavailable)
+    );
+    assert_eq!(
+        manager
+            .published_project_route_snapshot("project-route", "project-a", "wrong")
+            .await
+            .err(),
+        Some(crate::gateway::manager::ProjectRoutePublicationError::Unavailable)
+    );
+    let changing = manager.clone();
+    let snapshot = manager
+        .compose_project_route_snapshot(
+            "project-route",
+            "project-a",
+            "production",
+            move |attempt| {
+                let manager = changing.clone();
+                async move {
+                    if attempt == 0 {
+                        manager
+                            .seed_config_unchecked_for_tests(project_route_config(
+                                "project-b",
+                                Some("production"),
+                            ))
+                            .await;
+                        manager
+                            .seed_config_unchecked_for_tests(project_route_config(
+                                "project-a",
+                                Some("production"),
+                            ))
+                            .await;
+                    }
+                }
+            },
+        )
+        .await
+        .expect("ABA retry");
+    assert_eq!(snapshot.project_id(), "project-a");
+}
+
+#[tokio::test]
+async fn project_route_publication_rejects_unavailable_and_bounds_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut disabled = project_route_config("project-a", None);
+    disabled.protected_mcp_routes[0].enabled = false;
+    manager.seed_config_unchecked_for_tests(disabled).await;
+    assert_eq!(
+        manager
+            .published_project_route_snapshot("project-route", "project-a", "production")
+            .await
+            .err(),
+        Some(crate::gateway::manager::ProjectRoutePublicationError::Unavailable)
+    );
+
+    let mut duplicate = project_route_config("project-a", None);
+    let mut alias = duplicate.protected_mcp_routes[0].clone();
+    alias.name = "alias".into();
+    alias.public_host = "mcp.example.com:443".into();
+    duplicate.protected_mcp_routes.push(alias);
+    manager.seed_config_unchecked_for_tests(duplicate).await;
+    assert_eq!(
+        manager
+            .published_project_route_snapshot("project-route", "project-a", "production")
+            .await
+            .err(),
+        Some(crate::gateway::manager::ProjectRoutePublicationError::Unavailable)
+    );
+
+    manager
+        .seed_config_unchecked_for_tests(project_route_config("project-a", None))
+        .await;
+    let changing = manager.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let result = manager
+        .compose_project_route_snapshot("project-route", "project-a", "production", move |_| {
+            let manager = changing.clone();
+            let observed = Arc::clone(&observed);
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                manager
+                    .seed_config_unchecked_for_tests(project_route_config("project-a", None))
+                    .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(crate::gateway::manager::ProjectRoutePublicationError::Unstable)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn project_route_publication_failures_are_non_enumerating() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut cases = Vec::new();
+
+    let mut missing_project = project_route_config("project-a", None);
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+        missing_project.protected_mcp_routes[0].target.as_mut()
+    else {
+        unreachable!()
+    };
+    target.project_id = None;
+    cases.push(missing_project);
+
+    let mut non_gateway = project_route_config("project-a", None);
+    non_gateway.protected_mcp_routes[0].target = None;
+    cases.push(non_gateway);
+
+    let mut duplicate_name = project_route_config("project-a", None);
+    let mut duplicate = duplicate_name.protected_mcp_routes[0].clone();
+    duplicate.public_path = "/other".into();
+    duplicate_name.protected_mcp_routes.push(duplicate);
+    cases.push(duplicate_name);
+
+    let mut duplicate_loadout = project_route_config("project-a", None);
+    duplicate_loadout
+        .loadouts
+        .push(duplicate_loadout.loadouts[0].clone());
+    cases.push(duplicate_loadout);
+
+    for config in cases {
+        manager.seed_config_unchecked_for_tests(config).await;
+        let error = manager
+            .published_project_route_snapshot("project-route", "project-a", "production")
+            .await
+            .err()
+            .expect("semantic failure");
+        assert_eq!(
+            error,
+            crate::gateway::manager::ProjectRoutePublicationError::Unavailable
+        );
+        assert_eq!(
+            error.to_string(),
+            "project route publication is unavailable"
+        );
+    }
+
+    manager
+        .seed_config_unchecked_for_tests(project_route_config("project-a", None))
+        .await;
+    let missing = manager
+        .published_project_route_snapshot("missing", "project-a", "production")
+        .await
+        .err()
+        .expect("missing route");
+    assert_eq!(
+        missing.to_string(),
+        "project route publication is unavailable"
+    );
+}
+
+#[tokio::test]
+async fn project_route_publication_does_not_mutate_old_snapshots() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(project_route_config("project-a", None))
+        .await;
+    let old = manager
+        .published_project_route_snapshot("project-route", "project-a", "production")
+        .await
+        .expect("old snapshot");
+    let mut changed = project_route_config("project-a", None);
+    changed.loadouts[0].upstreams = vec!["charlie".into()];
+    manager.seed_config_unchecked_for_tests(changed).await;
+    assert_eq!(old.effective_loadout().upstreams, vec!["alpha"]);
 }
 
 fn unified_config(upstream: &str) -> GatewayConfig {

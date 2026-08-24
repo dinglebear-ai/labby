@@ -564,6 +564,17 @@ impl LabConfig {
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
             if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                if let Some(project_id) = target.project_id.take() {
+                    let project_id = project_id.trim().to_string();
+                    if !labby_runtime::gateway_config::is_canonical_project_id(&project_id) {
+                        return Err(ConfigError::InvalidProtectedRoute {
+                            name: route.name.clone(),
+                            field: "target.project_id",
+                            value: "project binding must not be empty".to_string(),
+                        });
+                    }
+                    target.project_id = Some(project_id);
+                }
                 target.loadout = target
                     .loadout
                     .take()
@@ -3828,6 +3839,7 @@ services = ["removed-service"]
         route.backend_url = String::new();
         route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
                 expose_code_mode: false,
@@ -3844,5 +3856,56 @@ services = ["removed-service"]
             .expect_err("the serve-path copy must reject the reserved prefix");
         let rendered = error.to_string();
         assert!(rendered.contains("__in_process__setup"), "{rendered}");
+    }
+
+    #[test]
+    fn serve_path_project_id_normalization_is_bounded_and_compatible() {
+        fn config(project_id: Option<String>) -> LabConfig {
+            let mut route: ProtectedMcpRouteConfig = toml::from_str(
+                "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+            )
+            .unwrap();
+            route.backend_url = String::new();
+            route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    project_id,
+                    ..Default::default()
+                },
+            ));
+            LabConfig {
+                protected_mcp_routes: vec![route],
+                ..Default::default()
+            }
+        }
+
+        let mut omitted = config(None);
+        omitted
+            .normalize_protected_mcp_routes()
+            .expect("legacy None");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            omitted.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id, None);
+
+        let max = labby_runtime::gateway_config::MAX_PROJECT_ID_LEN;
+        let expected = "x".repeat(max);
+        let mut trimmed = config(Some(format!("  {expected}  ")));
+        trimmed.normalize_protected_mcp_routes().expect("128 bytes");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            trimmed.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id.as_deref(), Some(expected.as_str()));
+
+        for invalid in ["   ".to_string(), "x".repeat(max + 1)] {
+            assert!(
+                config(Some(invalid))
+                    .normalize_protected_mcp_routes()
+                    .is_err()
+            );
+        }
     }
 }

@@ -5320,6 +5320,7 @@ mod tests {
                 health_path: None,
                 target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
                     crate::config::ProtectedGatewaySubsetTarget {
+                        project_id: None,
                         upstreams: vec!["gateway-alpha".to_string(), "hidden-upstream".to_string()],
                         services: vec!["gateway".to_string()],
                         expose_code_mode: true,

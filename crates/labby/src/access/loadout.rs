@@ -21,10 +21,7 @@ impl AssignProjectLoadoutInput {
     ) -> AccessStoreResult<Self> {
         let project_id = project_id.into();
         let loadout_name = loadout_name.into();
-        if project_id.trim().is_empty()
-            || project_id != project_id.trim()
-            || project_id.len() > 128
-            || project_id.chars().any(char::is_control)
+        if !labby_runtime::gateway_config::is_canonical_project_id(&project_id)
             || validate_loadout_name(&loadout_name).is_err()
         {
             return Err(AccessStoreError::InvalidProjectLoadoutInput);

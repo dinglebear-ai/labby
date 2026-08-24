@@ -1476,6 +1476,7 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
         health_path: None,
         target: Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 upstreams: vec!["gateway-alpha".to_string()],
                 services: Vec::new(),
                 expose_code_mode: false,

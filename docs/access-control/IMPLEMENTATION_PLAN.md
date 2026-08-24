@@ -293,6 +293,14 @@ The gateway-feature-only access composer now performs bounded authorization-firs
 
 The crate-private, non-cloneable result owns the existing permission snapshot and unified catalog snapshot without copying authority facts. It remains observational and unmounted: no session `BoundAccessContext`, protected-route intersection, discovery filtering, exact action authorization, transport enforcement, caching, or final-boundary revocation check is enabled.
 
+### Wave 21 / Milestone 0Y: Project-bound protected-route publication
+
+`GatewayManager` now publishes an immutable protected-route snapshot from one exact runtime-configuration generation. The publication requires one enabled, uniquely named explicit gateway-subset route, one canonical public resource identity, an exact canonical Project binding, and one uniquely named Access-assigned Loadout from that same configuration. Named route Loadouts must match the assignment; inline route policy may only intersect and narrow the assigned Loadout. A shared runtime intersection helper also drives the mounted MCP route scope so the two policy projections cannot drift.
+
+The bounded observation projects only the selected route and Loadout facts while holding the coherent configuration read. Identical and A-B-A publications advance generation identity, sustained churn fails closed, and missing routes, disabled or ambiguous identities, wrong Project or Loadout bindings, and invalid intersections all collapse to one non-enumerating unavailable error. The optional serialized `project_id` preserves legacy configuration compatibility, but this new Project-bound publication requires it; both host and gateway normalizers trim it and enforce the Access Project-ID bound.
+
+The snapshot remains unmounted, non-cloneable observational evidence. It does not create a server-owned `BoundAccessContext`, filter discovery, authorize an exact action, mount transport, add caching, or perform the final-boundary revocation check. The next dependency is composing this route publication with Wave 20 before binding it to request/session lifecycle.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

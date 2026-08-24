@@ -4,6 +4,7 @@ use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use labby_runtime::gateway_config::{GatewayLoadoutConfig, VirtualServerConfig};
+use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, ProtectedMcpRouteTarget};
 
 use crate::gateway::runtime::{PoolPublicationGeneration, PublishedPoolSnapshot};
 use crate::upstream::pool::{
@@ -89,6 +90,54 @@ pub enum LoadoutMcpCatalogPublicationError {
     MissingPool,
     CatalogUnavailable,
     Unstable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectRoutePublicationError {
+    Unavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for ProjectRoutePublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Unavailable => "project route publication is unavailable",
+            Self::Unstable => "project route publication changed during observation",
+        })
+    }
+}
+impl std::error::Error for ProjectRoutePublicationError {}
+
+/// Immutable Project-bound protected-route narrowing policy from one runtime
+/// configuration publication. Observational and unmounted; not a grant.
+pub struct PublishedProjectRouteSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    route_name: std::sync::Arc<str>,
+    resource: std::sync::Arc<str>,
+    project_id: std::sync::Arc<str>,
+    assigned_loadout_name: std::sync::Arc<str>,
+    effective_loadout: GatewayLoadoutConfig,
+}
+
+impl PublishedProjectRouteSnapshot {
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+    pub fn route_name(&self) -> &str {
+        &self.route_name
+    }
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+    pub fn assigned_loadout_name(&self) -> &str {
+        &self.assigned_loadout_name
+    }
+    pub fn effective_loadout(&self) -> &GatewayLoadoutConfig {
+        &self.effective_loadout
+    }
 }
 
 impl std::fmt::Display for LoadoutMcpCatalogPublicationError {
@@ -291,6 +340,68 @@ impl PublishedRuntimeLoadoutSnapshot {
 }
 
 impl GatewayManager {
+    async fn route_publication_observation(
+        &self,
+        route_name: &str,
+        project_id: &str,
+        assigned_loadout_name: &str,
+    ) -> RoutePublicationObservation {
+        let _publication = self.publication_barrier.read().await;
+        let config = self.config.read().await;
+        let generation =
+            GatewayRuntimeConfigGeneration(self.runtime_config_generation.load(Ordering::Relaxed));
+        RoutePublicationObservation {
+            generation,
+            snapshot: project_route_snapshot(
+                generation,
+                &config.protected_mcp_routes,
+                &config.loadouts,
+                route_name,
+                project_id,
+                assigned_loadout_name,
+            ),
+        }
+    }
+
+    pub async fn published_project_route_snapshot(
+        &self,
+        route_name: &str,
+        project_id: &str,
+        assigned_loadout_name: &str,
+    ) -> Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError> {
+        self.compose_project_route_snapshot(route_name, project_id, assigned_loadout_name, |_| {
+            ready(())
+        })
+        .await
+    }
+
+    pub(super) async fn compose_project_route_snapshot<F, Fut>(
+        &self,
+        route_name: &str,
+        project_id: &str,
+        assigned_loadout_name: &str,
+        mut after_first: F,
+    ) -> Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError>
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first = self
+                .route_publication_observation(route_name, project_id, assigned_loadout_name)
+                .await;
+            after_first(attempt).await;
+            let second = self
+                .route_publication_observation(route_name, project_id, assigned_loadout_name)
+                .await;
+            if first.generation != second.generation {
+                continue;
+            }
+            return first.snapshot;
+        }
+        Err(ProjectRoutePublicationError::Unstable)
+    }
+
     async fn mcp_publication_observation(&self, name: &str) -> McpManagerPublicationObservation {
         let _publication = self.publication_barrier.read().await;
         let config = self.config.read().await;
@@ -679,5 +790,69 @@ fn build_service_snapshot(
         runtime_config_generation,
         service_registry_generation: catalog.generation(),
         services: std::sync::Arc::from(selected.into_values().collect::<Vec<_>>()),
+    })
+}
+
+struct RoutePublicationObservation {
+    generation: GatewayRuntimeConfigGeneration,
+    snapshot: Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError>,
+}
+
+fn project_route_snapshot(
+    generation: GatewayRuntimeConfigGeneration,
+    routes: &[ProtectedMcpRouteConfig],
+    loadouts: &[GatewayLoadoutConfig],
+    route_name: &str,
+    project_id: &str,
+    assigned_loadout_name: &str,
+) -> Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError> {
+    let mut matching = routes.iter().filter(|route| route.name == route_name);
+    let route = matching
+        .next()
+        .ok_or(ProjectRoutePublicationError::Unavailable)?;
+    if matching.next().is_some() || !route.enabled {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let resource = crate::gateway::protected_routes::canonical_route_resource(route)
+        .ok_or(ProjectRoutePublicationError::Unavailable)?;
+    if routes
+        .iter()
+        .filter(|candidate| {
+            candidate.enabled
+                && crate::gateway::protected_routes::canonical_route_resource(candidate).as_deref()
+                    == Some(resource.as_str())
+        })
+        .count()
+        != 1
+    {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = route.target.as_ref() else {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    };
+    if !labby_runtime::gateway_config::is_canonical_project_id(project_id)
+        || target.canonical_project_id() != Some(project_id)
+    {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let mut assigned_matches = loadouts
+        .iter()
+        .filter(|loadout| loadout.name == assigned_loadout_name);
+    let assigned = assigned_matches
+        .next()
+        .ok_or(ProjectRoutePublicationError::Unavailable)?;
+    if assigned_matches.next().is_some() {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let effective = assigned
+        .intersect_gateway_subset(target)
+        .map_err(|_| ProjectRoutePublicationError::Unavailable)?;
+    Ok(PublishedProjectRouteSnapshot {
+        runtime_config_generation: generation,
+        route_name: std::sync::Arc::from(route.name.as_str()),
+        resource: std::sync::Arc::from(resource),
+        project_id: std::sync::Arc::from(project_id),
+        assigned_loadout_name: std::sync::Arc::from(assigned_loadout_name),
+        effective_loadout: effective,
     })
 }
