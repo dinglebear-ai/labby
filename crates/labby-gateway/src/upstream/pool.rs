@@ -97,6 +97,7 @@ mod tasks;
 mod testsupport;
 mod tools;
 mod tools_call;
+mod tools_call_exact;
 #[cfg(test)]
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]

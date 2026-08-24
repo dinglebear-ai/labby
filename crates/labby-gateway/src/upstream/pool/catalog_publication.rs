@@ -393,6 +393,21 @@ struct RouteDeterminant {
 }
 
 impl CatalogState {
+    pub(super) fn contains_tool_route(
+        &self,
+        generation: ToolCatalogGeneration,
+        upstream: &str,
+        native_name: &str,
+    ) -> bool {
+        self.published.as_ref().is_ok_and(|snapshot| {
+            snapshot.generation() == generation
+                && snapshot.routes().iter().any(|route| {
+                    route.upstream_name.as_ref() == upstream
+                        && route.tool_name.as_ref() == native_name
+                })
+        })
+    }
+
     pub(super) fn contains_resource_route(
         &self,
         generation: ResourceCatalogGeneration,

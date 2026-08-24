@@ -140,7 +140,7 @@ const UPSTREAM_ERROR_KIND_CAP_CHARS: usize = 64;
 /// unchanged — this is a size guard at the pool boundary, not a redaction pass;
 /// consumer-boundary sanitization (secret redaction, prompt-marker stripping)
 /// still happens in `code_mode_host.rs` / `tool_error.rs`.
-fn bound_upstream_service_error(error: rmcp::ServiceError) -> rmcp::ServiceError {
+pub(super) fn bound_upstream_service_error(error: rmcp::ServiceError) -> rmcp::ServiceError {
     match error {
         rmcp::ServiceError::McpError(data) => {
             rmcp::ServiceError::McpError(bound_upstream_error_data(data))
