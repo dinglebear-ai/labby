@@ -395,6 +395,12 @@ Regular non-OAuth `prompts/list` fanout acquires the exact routable connection/c
 
 Delayed stale results contribute no wire prompts and cannot mutate replacement state. Existing pagination, deadlines, deterministic namespacing/collision behavior, exposure filtering, partial results, and output remain unchanged. This is an attribution prerequisite only: no prompt publication, manager/Project catalog ownership, discovery shadow, prompt execution authority, OAuth/subject-scoped changes, or enforcement is added.
 
+### Wave 38 / Milestone 0AP: immutable regular Prompt pool publication
+
+`CatalogState` owns incarnation-tagged raw Prompt source facts populated only by Wave37's checked regular non-OAuth `prompts/list` results. It publishes an independent immutable catalog with exact `(upstream, native_name, Prompt)` provenance and metadata, deterministic ordering, existing `expose_prompts` policy, and process-unique generation identity. Unsupported capability publishes an empty source; current failure removes it; stale results cannot mutate either source or publication.
+
+Invalid/duplicate names and route, row-byte, retained-byte, or published-byte overflow fail closed without retaining oversized payloads. Bind/rebind, removal, Prompt routability, policy, and semantic source changes reproject atomically, while diagnostic prompt count/name hints and unrelated tool/Resource/ResourceTemplate changes preserve the Prompt Arc and generation. This pool-only snapshot is observational, not `prompts/get` authority or a grant. Manager/Project composition, discovery shadow, OAuth/subject/local/synthetic families, execution, and enforcement remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

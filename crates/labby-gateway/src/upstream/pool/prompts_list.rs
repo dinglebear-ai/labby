@@ -72,14 +72,17 @@ impl UpstreamPool {
             match result {
                 Ok(prompts) => {
                     let Some(policy) = self
-                        .apply_to_observed_entry(&observed, |entry| {
+                        .apply_to_observed_catalog(&observed, |catalog| {
+                            let entry = catalog.get_mut(&name).expect("observed entry validated");
                             super::health::record_success_on_entry(
                                 &name,
                                 entry,
                                 UpstreamCapability::Prompts,
                             );
                             entry.prompt_count = prompts.len();
-                            entry.prompt_exposure_policy.clone()
+                            let policy = entry.prompt_exposure_policy.clone();
+                            catalog.set_prompt_source(&name, observed.incarnation(), &prompts);
+                            policy
                         })
                         .await
                     else {
@@ -98,13 +101,15 @@ impl UpstreamPool {
                     // not a failure: treat it like an empty, successful listing so
                     // the upstream stays routable and accrues no phantom failures.
                     let Some(()) = self
-                        .apply_to_observed_entry(&observed, |entry| {
+                        .apply_to_observed_catalog(&observed, |catalog| {
+                            let entry = catalog.get_mut(&name).expect("observed entry validated");
                             super::health::record_success_on_entry(
                                 &name,
                                 entry,
                                 UpstreamCapability::Prompts,
                             );
                             entry.prompt_count = 0;
+                            catalog.set_prompt_source(&name, observed.incarnation(), &[]);
                         })
                         .await
                     else {
@@ -121,7 +126,8 @@ impl UpstreamPool {
                 Err(e) => {
                     let error_text = e.bounded_text();
                     let applied = self
-                        .apply_to_observed_entry(&observed, |entry| {
+                        .apply_to_observed_catalog(&observed, |catalog| {
+                            let entry = catalog.get_mut(&name).expect("observed entry validated");
                             super::health::record_failure_on_entry(
                                 &name,
                                 entry,
@@ -129,6 +135,7 @@ impl UpstreamPool {
                                 format!("failed to list prompts from upstream: {error_text}"),
                             );
                             entry.prompt_count = 0;
+                            catalog.remove_prompt_source(&name);
                         })
                         .await;
                     if applied.is_none() {
@@ -528,6 +535,36 @@ mod tests {
         assert!(entry.prompt_names.is_empty());
         assert_eq!(entry.prompt_health, types::UpstreamHealth::Healthy);
         assert!(entry.prompt_last_error.is_none());
+        drop(catalog);
+        assert!(
+            pool.published_prompt_catalog()
+                .await
+                .expect("unsupported publication")
+                .routes()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn current_prompt_failure_removes_published_source() {
+        let server = StaticCatalogServer::default();
+        let fail_list_prompts = Arc::clone(&server.fail_list_prompts);
+        let pool = static_catalog_pool_with_server("static", server).await;
+        assert_eq!(pool.list_upstream_prompts(&[]).await.len(), 2);
+        let before = pool
+            .published_prompt_catalog()
+            .await
+            .expect("initial publication");
+        assert_eq!(before.routes().len(), 2);
+
+        fail_list_prompts.store(true, Ordering::SeqCst);
+        assert!(pool.list_upstream_prompts(&[]).await.is_empty());
+        let after = pool
+            .published_prompt_catalog()
+            .await
+            .expect("failure clears publication");
+        assert!(after.routes().is_empty());
+        assert_ne!(before.generation(), after.generation());
     }
 
     impl ServerHandler for PaginatedPromptServer {
@@ -637,20 +674,32 @@ mod tests {
                 .expect("reinstall A with fresh identity")
                 .is_none()
         );
+        let before_stale = pool
+            .published_prompt_catalog()
+            .await
+            .expect("pre-stale publication");
 
         release.notify_one();
         assert!(listing.await.expect("listing task").is_empty());
         if let Some(connection_b) = removed_b {
             connection_b.shutdown("alpha", "test.prompt-list.aba").await;
         }
-        let current = &pool.catalog.read().await["alpha"];
-        assert_eq!(current.prompt_count, 7);
-        assert_eq!(current.prompt_names, ["alpha/replacement"]);
-        assert_eq!(
-            current.prompt_last_error.as_deref(),
-            Some("replacement sentinel")
-        );
-        assert_eq!(current.prompt_health, types::UpstreamHealth::Healthy);
+        {
+            let catalog = pool.catalog.read().await;
+            let current = &catalog["alpha"];
+            assert_eq!(current.prompt_count, 7);
+            assert_eq!(current.prompt_names, ["alpha/replacement"]);
+            assert_eq!(
+                current.prompt_last_error.as_deref(),
+                Some("replacement sentinel")
+            );
+            assert_eq!(current.prompt_health, types::UpstreamHealth::Healthy);
+        }
+        let after_stale = pool
+            .published_prompt_catalog()
+            .await
+            .expect("post-stale publication");
+        assert!(Arc::ptr_eq(&before_stale, &after_stale));
     }
 
     #[tokio::test]
@@ -722,6 +771,22 @@ mod tests {
                 .expect("paged catalog entry")
                 .prompt_count,
             2
+        );
+        let published = pool
+            .published_prompt_catalog()
+            .await
+            .expect("published prompts");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| (route.upstream_name.as_ref(), route.native_name.as_ref()))
+                .collect::<Vec<_>>(),
+            vec![("paged", "first"), ("paged", "second")]
+        );
+        assert_eq!(
+            published.routes()[0].prompt.description.as_deref(),
+            Some("first page")
         );
     }
 

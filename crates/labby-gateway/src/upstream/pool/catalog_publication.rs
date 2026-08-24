@@ -1,8 +1,8 @@
-//! Immutable publication of the pool's routable tool, regular-resource, and
-//! regular-resource-template projections.
+//! Immutable publication of the pool's routable tool, regular-resource,
+//! regular-resource-template, and regular-prompt projections.
 //!
-//! The snapshots deliberately exclude prompts, UI resources, skills, OAuth
-//! subjects, local and synthetic resources, and unrelated capability health.
+//! The snapshots deliberately exclude UI resources/templates, skills, OAuth
+//! subjects, local and synthetic rows, and unrelated capability health.
 //! Each projection has an independent generation so one catalog family cannot
 //! perturb another family's publication identity.
 
@@ -11,7 +11,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rmcp::model::{Resource, ResourceTemplate};
+use rmcp::model::{Prompt, Resource, ResourceTemplate};
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::upstream::types::{UpstreamEntry, UpstreamTool};
@@ -22,6 +22,7 @@ use super::tools::MAX_UPSTREAM_TOOLS;
 static NEXT_TOOL_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_RESOURCE_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_RESOURCE_TEMPLATE_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_PROMPT_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 const MAX_RESOURCE_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESOURCE_ROW_BYTES: usize = 1024 * 1024;
 
@@ -106,6 +107,16 @@ fn next_resource_template_generation() -> ResourceTemplateCatalogGeneration {
     )
 }
 
+fn next_prompt_generation() -> PromptCatalogGeneration {
+    PromptCatalogGeneration(
+        NEXT_PROMPT_CATALOG_GENERATION
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .expect("prompt catalog generation exhausted"),
+    )
+}
+
 /// Opaque process-local identity of one published tool catalog revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolCatalogGeneration(u64);
@@ -115,6 +126,9 @@ pub struct ResourceCatalogGeneration(u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResourceTemplateCatalogGeneration(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PromptCatalogGeneration(u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceCatalogPublicationError {
@@ -130,6 +144,14 @@ pub enum ResourceTemplateCatalogPublicationError {
     TooManyBytes,
     InvalidTemplate,
     DuplicateTemplate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PromptCatalogPublicationError {
+    TooManyRoutes,
+    TooManyBytes,
+    InvalidPrompt,
+    DuplicatePrompt,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +211,35 @@ impl PublishedResourceTemplateCatalogSnapshot {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PublishedPromptRoute {
+    pub upstream_name: Arc<str>,
+    pub native_name: Arc<str>,
+    pub prompt: Prompt,
+}
+
+/// Immutable observational catalog of regular non-OAuth upstream Prompts.
+///
+/// Built-in, OAuth/subject-scoped, synthetic, and local prompt families are
+/// excluded. This is neither prompt execution authority nor a grant.
+#[derive(Debug, Clone)]
+pub struct PublishedPromptCatalogSnapshot {
+    generation: PromptCatalogGeneration,
+    routes: Arc<[PublishedPromptRoute]>,
+}
+
+impl PublishedPromptCatalogSnapshot {
+    #[must_use]
+    pub fn generation(&self) -> PromptCatalogGeneration {
+        self.generation
+    }
+
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedPromptRoute] {
+        &self.routes
+    }
+}
+
 /// Fail-closed reason that no routable tool snapshot can be published.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolCatalogPublicationError {
@@ -238,6 +289,9 @@ pub(super) struct CatalogState {
         ResourceTemplateCatalogPublicationError,
     >,
     resource_template_determinant: ResourceTemplateProjectionDeterminant,
+    prompt_sources: HashMap<String, PromptSourceState>,
+    published_prompts: Result<Arc<PublishedPromptCatalogSnapshot>, PromptCatalogPublicationError>,
+    prompt_determinant: PromptProjectionDeterminant,
 }
 
 #[derive(PartialEq, Eq)]
@@ -266,6 +320,34 @@ struct ResourceTemplateRouteDeterminant {
     native_uri_template: String,
     incarnation: super::incarnation::ConnectionIncarnation,
     template: serde_json::Value,
+}
+
+#[derive(PartialEq, Eq)]
+enum PromptProjectionDeterminant {
+    Ready(Vec<PromptRouteDeterminant>),
+    Failed(PromptCatalogPublicationError),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PromptRouteDeterminant {
+    upstream_name: String,
+    native_name: String,
+    incarnation: super::incarnation::ConnectionIncarnation,
+    prompt: serde_json::Value,
+}
+
+struct PromptSource {
+    incarnation: super::incarnation::ConnectionIncarnation,
+    prompts: Arc<[Prompt]>,
+    retained_bytes: usize,
+}
+
+enum PromptSourceState {
+    Ready(PromptSource),
+    Failed {
+        incarnation: super::incarnation::ConnectionIncarnation,
+        error: PromptCatalogPublicationError,
+    },
 }
 
 struct ResourceTemplateSource {
@@ -319,6 +401,7 @@ impl CatalogState {
         self.incarnations.insert(upstream.to_string(), incarnation);
         self.resource_sources.remove(upstream);
         self.resource_template_sources.remove(upstream);
+        self.prompt_sources.remove(upstream);
     }
 
     pub(super) fn incarnation(
@@ -332,12 +415,14 @@ impl CatalogState {
         self.incarnations.remove(upstream);
         self.resource_sources.remove(upstream);
         self.resource_template_sources.remove(upstream);
+        self.prompt_sources.remove(upstream);
     }
 
     pub(super) fn clear_incarnations(&mut self) {
         self.incarnations.clear();
         self.resource_sources.clear();
         self.resource_template_sources.clear();
+        self.prompt_sources.clear();
     }
 
     pub(super) fn new() -> Self {
@@ -361,6 +446,12 @@ impl CatalogState {
                 routes: Arc::from([]),
             })),
             resource_template_determinant: ResourceTemplateProjectionDeterminant::Ready(Vec::new()),
+            prompt_sources: HashMap::new(),
+            published_prompts: Ok(Arc::new(PublishedPromptCatalogSnapshot {
+                generation: next_prompt_generation(),
+                routes: Arc::from([]),
+            })),
+            prompt_determinant: PromptProjectionDeterminant::Ready(Vec::new()),
         }
     }
 
@@ -410,6 +501,143 @@ impl CatalogState {
 
     pub(super) fn remove_resource_source(&mut self, upstream: &str) {
         self.resource_sources.remove(upstream);
+    }
+
+    pub(super) fn set_prompt_source(
+        &mut self,
+        upstream: &str,
+        incarnation: super::incarnation::ConnectionIncarnation,
+        prompts: &[Prompt],
+    ) {
+        let existing_retained = self
+            .prompt_sources
+            .iter()
+            .filter(|(name, _)| name.as_str() != upstream)
+            .filter_map(|(_, source)| match source {
+                PromptSourceState::Ready(source) => Some(source.retained_bytes),
+                PromptSourceState::Failed { .. } => None,
+            })
+            .try_fold(0usize, usize::checked_add);
+        let retained_bytes =
+            validate_source_rows(prompts.iter().map(|prompt| prompt.name.as_ref()), prompts)
+                .and_then(|candidate| checked_retained_bytes(existing_retained, candidate))
+                .map_err(|error| match error {
+                    SourceAdmissionError::Invalid => PromptCatalogPublicationError::InvalidPrompt,
+                    SourceAdmissionError::Duplicate => {
+                        PromptCatalogPublicationError::DuplicatePrompt
+                    }
+                    SourceAdmissionError::TooManyBytes => {
+                        PromptCatalogPublicationError::TooManyBytes
+                    }
+                });
+        let source = match retained_bytes {
+            Ok(retained_bytes) => PromptSourceState::Ready(PromptSource {
+                incarnation,
+                prompts: prompts.to_vec().into(),
+                retained_bytes,
+            }),
+            Err(error) => PromptSourceState::Failed { incarnation, error },
+        };
+        self.prompt_sources.insert(upstream.to_string(), source);
+    }
+
+    pub(super) fn remove_prompt_source(&mut self, upstream: &str) {
+        self.prompt_sources.remove(upstream);
+    }
+
+    fn prompt_projection(
+        &self,
+    ) -> Result<
+        (Vec<PromptRouteDeterminant>, Arc<[PublishedPromptRoute]>),
+        PromptCatalogPublicationError,
+    > {
+        let mut sources = self.prompt_sources.iter().collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|(upstream, _)| upstream.as_str());
+        let mut retained_bytes = 0usize;
+        for (upstream, source) in &sources {
+            let entry = self
+                .entries
+                .get(*upstream)
+                .ok_or(PromptCatalogPublicationError::InvalidPrompt)?;
+            let incarnation = self.incarnation(upstream);
+            match source {
+                PromptSourceState::Ready(source) => {
+                    if incarnation != Some(source.incarnation) || entry.name.as_ref() != *upstream {
+                        return Err(PromptCatalogPublicationError::InvalidPrompt);
+                    }
+                    retained_bytes = retained_bytes
+                        .checked_add(source.retained_bytes)
+                        .ok_or(PromptCatalogPublicationError::TooManyBytes)?;
+                    if retained_bytes > MAX_RESOURCE_CATALOG_BYTES {
+                        return Err(PromptCatalogPublicationError::TooManyBytes);
+                    }
+                }
+                PromptSourceState::Failed {
+                    incarnation: source_incarnation,
+                    error,
+                } => {
+                    if incarnation != Some(*source_incarnation) {
+                        return Err(PromptCatalogPublicationError::InvalidPrompt);
+                    }
+                    if entry.prompt_health.is_routable() {
+                        return Err(*error);
+                    }
+                }
+            }
+        }
+
+        let mut determinant = Vec::new();
+        let mut routes = Vec::new();
+        let mut published_bytes = 0usize;
+        for (upstream, source) in sources {
+            let PromptSourceState::Ready(source) = source else {
+                continue;
+            };
+            let entry = &self.entries[upstream];
+            if !entry.prompt_health.is_routable() {
+                continue;
+            }
+            let mut prompts = source
+                .prompts
+                .iter()
+                .filter(|prompt| {
+                    super::entries::prompt_exposed(
+                        &entry.prompt_exposure_policy,
+                        upstream,
+                        prompt.name.as_ref(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            prompts.sort_unstable_by_key(|prompt| prompt.name.as_str());
+            for prompt in prompts {
+                if routes.len() == super::tools::MAX_UPSTREAM_PROMPTS {
+                    return Err(PromptCatalogPublicationError::TooManyRoutes);
+                }
+                let bytes = serde_json::to_vec(prompt)
+                    .map_err(|_| PromptCatalogPublicationError::InvalidPrompt)?
+                    .len();
+                published_bytes = published_bytes
+                    .checked_add(bytes)
+                    .ok_or(PromptCatalogPublicationError::TooManyBytes)?;
+                if published_bytes > MAX_RESOURCE_CATALOG_BYTES {
+                    return Err(PromptCatalogPublicationError::TooManyBytes);
+                }
+                let value = serde_json::to_value(prompt)
+                    .map_err(|_| PromptCatalogPublicationError::InvalidPrompt)?;
+                determinant.push(PromptRouteDeterminant {
+                    upstream_name: upstream.clone(),
+                    native_name: prompt.name.to_string(),
+                    incarnation: source.incarnation,
+                    prompt: value,
+                });
+                routes.push(PublishedPromptRoute {
+                    upstream_name: Arc::from(upstream.as_str()),
+                    native_name: Arc::from(prompt.name.as_str()),
+                    prompt: prompt.clone(),
+                });
+            }
+        }
+        Ok((determinant, Arc::from(routes)))
     }
 
     pub(super) fn set_resource_template_source(
@@ -727,6 +955,8 @@ impl CatalogState {
             .retain(|upstream, _| self.entries.contains_key(upstream));
         self.resource_template_sources
             .retain(|upstream, _| self.entries.contains_key(upstream));
+        self.prompt_sources
+            .retain(|upstream, _| self.entries.contains_key(upstream));
         let projection = self.projection();
         let determinant = match &projection {
             Ok((determinant, _)) => ProjectionDeterminant::Ready(determinant.clone()),
@@ -767,6 +997,20 @@ impl CatalogState {
             self.published_resource_templates = template_projection.map(|(_, routes)| {
                 Arc::new(PublishedResourceTemplateCatalogSnapshot {
                     generation: next_resource_template_generation(),
+                    routes,
+                })
+            });
+        }
+        let prompt_projection = self.prompt_projection();
+        let prompt_determinant = match &prompt_projection {
+            Ok((determinant, _)) => PromptProjectionDeterminant::Ready(determinant.clone()),
+            Err(error) => PromptProjectionDeterminant::Failed(*error),
+        };
+        if prompt_determinant != self.prompt_determinant {
+            self.prompt_determinant = prompt_determinant;
+            self.published_prompts = prompt_projection.map(|(_, routes)| {
+                Arc::new(PublishedPromptCatalogSnapshot {
+                    generation: next_prompt_generation(),
                     routes,
                 })
             });
@@ -826,6 +1070,12 @@ impl UpstreamPool {
             .await
             .published_resource_templates
             .clone()
+    }
+
+    pub async fn published_prompt_catalog(
+        &self,
+    ) -> Result<Arc<PublishedPromptCatalogSnapshot>, PromptCatalogPublicationError> {
+        self.catalog.read().await.published_prompts.clone()
     }
 
     /// Observe generation and routes from the same locked catalog state.
@@ -905,11 +1155,11 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use rmcp::model::{Resource, Tool};
+    use rmcp::model::{Prompt, Resource, Tool};
 
     use super::*;
     use crate::upstream::pool::entries::healthy_in_process_entry;
-    use crate::upstream::types::ToolExposurePolicy;
+    use crate::upstream::types::{ToolExposurePolicy, ToolPattern};
 
     fn install_resource_source(state: &mut CatalogState, upstream: &str, resources: Vec<Resource>) {
         let incarnation =
@@ -923,6 +1173,347 @@ mod tests {
         state.entries.insert(upstream.to_string(), entry);
         state.bind_incarnation(upstream, incarnation);
         state.set_resource_source(upstream, incarnation, &resources);
+    }
+
+    fn install_prompt_source(state: &mut CatalogState, upstream: &str, prompts: Vec<Prompt>) {
+        let incarnation =
+            super::super::incarnation::next_connection_incarnation().expect("identity");
+        state.entries.insert(
+            upstream.to_string(),
+            healthy_in_process_entry(Arc::from(upstream), HashMap::new()),
+        );
+        state.bind_incarnation(upstream, incarnation);
+        state.set_prompt_source(upstream, incarnation, &prompts);
+    }
+
+    #[test]
+    fn prompt_projection_is_exact_deterministic_and_immutable() {
+        let mut state = CatalogState::new();
+        let beta = Prompt::new("beta", Some("exact metadata"), None);
+        install_prompt_source(
+            &mut state,
+            "zeta",
+            vec![beta.clone(), Prompt::new("alpha", Some(""), None)],
+        );
+        install_prompt_source(
+            &mut state,
+            "alpha",
+            vec![Prompt::new("remote", Some(""), None)],
+        );
+        state.publish_if_changed();
+        let first = state.published_prompts.clone().expect("published");
+        assert_eq!(
+            first
+                .routes()
+                .iter()
+                .map(|route| (route.upstream_name.as_ref(), route.native_name.as_ref()))
+                .collect::<Vec<_>>(),
+            vec![("alpha", "remote"), ("zeta", "alpha"), ("zeta", "beta")]
+        );
+        assert_eq!(first.routes()[2].prompt, beta);
+
+        state.publish_if_changed();
+        let identical = state.published_prompts.clone().expect("identical");
+        assert!(Arc::ptr_eq(&first, &identical));
+        assert_eq!(first.generation(), identical.generation());
+    }
+
+    #[test]
+    fn prompt_generation_tracks_source_identity_rebind_and_removal() {
+        let mut state = CatalogState::new();
+        let rows = vec![Prompt::new("same", Some("metadata"), None)];
+        install_prompt_source(&mut state, "alpha", rows.clone());
+        state.publish_if_changed();
+        let first = state.published_prompts.clone().expect("first");
+        let first_generation = first.generation();
+        let incarnation = state.incarnation("alpha").expect("identity");
+
+        state.set_prompt_source("alpha", incarnation, &rows);
+        state.publish_if_changed();
+        let identical = state.published_prompts.clone().expect("identical");
+        assert!(Arc::ptr_eq(&first, &identical));
+
+        let replacement =
+            super::super::incarnation::next_connection_incarnation().expect("replacement");
+        state.bind_incarnation("alpha", replacement);
+        state.publish_if_changed();
+        let rebound_empty = state.published_prompts.clone().expect("cleared on bind");
+        assert!(rebound_empty.routes().is_empty());
+        assert_ne!(rebound_empty.generation(), first_generation);
+        state.set_prompt_source("alpha", replacement, &rows);
+        state.publish_if_changed();
+        let rebound = state.published_prompts.clone().expect("rebound");
+        assert_eq!(rebound.routes()[0].native_name.as_ref(), "same");
+        assert_ne!(rebound.generation(), first_generation);
+        assert_eq!(first.routes()[0].native_name.as_ref(), "same");
+
+        state.entries.remove("alpha");
+        state.remove_incarnation("alpha");
+        state.publish_if_changed();
+        let removed = state.published_prompts.clone().expect("removed");
+        assert!(removed.routes().is_empty());
+        assert_ne!(removed.generation(), rebound.generation());
+    }
+
+    #[test]
+    fn prompt_projection_tracks_policy_health_and_incarnation_not_diagnostic_hints() {
+        let mut state = CatalogState::new();
+        let rows = vec![
+            Prompt::new("one", Some(""), None),
+            Prompt::new("two", Some(""), None),
+        ];
+        install_prompt_source(&mut state, "alpha", rows.clone());
+        state.publish_if_changed();
+        let first = state.published_prompts.clone().expect("first");
+
+        let entry = state.entries.get_mut("alpha").expect("entry");
+        entry.prompt_count = 99;
+        entry.prompt_names = vec!["unrelated/hint".to_string()];
+        state.publish_if_changed();
+        let hints_only = state.published_prompts.clone().expect("hints only");
+        assert!(Arc::ptr_eq(&first, &hints_only));
+
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("entry")
+            .prompt_exposure_policy =
+            ToolExposurePolicy::AllowList(vec![ToolPattern::Exact("one".to_string())]);
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_prompts
+                .clone()
+                .expect("filtered")
+                .routes()
+                .iter()
+                .map(|route| route.native_name.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["one"]
+        );
+        state.entries.get_mut("alpha").expect("entry").prompt_health =
+            crate::upstream::types::UpstreamHealth::Unhealthy {
+                consecutive_failures: crate::upstream::types::CIRCUIT_BREAKER_THRESHOLD,
+            };
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_prompts
+                .clone()
+                .expect("unroutable")
+                .routes()
+                .is_empty()
+        );
+
+        let replacement =
+            super::super::incarnation::next_connection_incarnation().expect("replacement");
+        state.bind_incarnation("alpha", replacement);
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_prompts
+                .clone()
+                .expect("rebound")
+                .routes()
+                .is_empty()
+        );
+        state.entries.remove("alpha");
+        state.remove_incarnation("alpha");
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_prompts
+                .clone()
+                .expect("removed")
+                .routes()
+                .is_empty()
+        );
+    }
+
+    fn prompt_with_serialized_size(name: &str, target: usize) -> Prompt {
+        let base = Prompt::new(name, Some(""), None);
+        let base_len = serde_json::to_vec(&base).expect("serialize base").len();
+        assert!(base_len <= target);
+        let prompt = Prompt::new(name, Some("x".repeat(target - base_len)), None);
+        assert_eq!(
+            serde_json::to_vec(&prompt).expect("serialize prompt").len(),
+            target
+        );
+        prompt
+    }
+
+    #[test]
+    fn prompt_bounds_and_structural_errors_fail_closed_and_recover() {
+        let mut state = CatalogState::new();
+        let exact_routes = (0..super::super::tools::MAX_UPSTREAM_PROMPTS)
+            .map(|index| Prompt::new(format!("prompt-{index}"), Some(""), None))
+            .collect::<Vec<_>>();
+        install_prompt_source(&mut state, "alpha", exact_routes);
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_prompts
+                .clone()
+                .expect("exact route cap")
+                .routes()
+                .len(),
+            super::super::tools::MAX_UPSTREAM_PROMPTS
+        );
+        let incarnation = state.incarnation("alpha").expect("identity");
+        let over_routes = (0..=super::super::tools::MAX_UPSTREAM_PROMPTS)
+            .map(|index| Prompt::new(format!("over-{index}"), Some(""), None))
+            .collect::<Vec<_>>();
+        state.set_prompt_source("alpha", incarnation, &over_routes);
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_prompts,
+            Err(PromptCatalogPublicationError::TooManyRoutes)
+        ));
+
+        state.set_prompt_source(
+            "alpha",
+            incarnation,
+            &[
+                Prompt::new("duplicate", Some(""), None),
+                Prompt::new("duplicate", Some(""), None),
+            ],
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_prompts,
+            Err(PromptCatalogPublicationError::DuplicatePrompt)
+        ));
+        state.set_prompt_source(
+            "alpha",
+            incarnation,
+            &[Prompt::new("bad\nname", Some(""), None)],
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_prompts,
+            Err(PromptCatalogPublicationError::InvalidPrompt)
+        ));
+
+        let exact_bytes = (0..8)
+            .map(|index| {
+                prompt_with_serialized_size(&format!("exact-{index}"), MAX_RESOURCE_ROW_BYTES)
+            })
+            .collect::<Vec<_>>();
+        state.set_prompt_source("alpha", incarnation, &exact_bytes);
+        state.publish_if_changed();
+        assert!(state.published_prompts.is_ok());
+        state.set_prompt_source(
+            "alpha",
+            incarnation,
+            &[prompt_with_serialized_size(
+                "oversized",
+                MAX_RESOURCE_ROW_BYTES + 1,
+            )],
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_prompts,
+            Err(PromptCatalogPublicationError::TooManyBytes)
+        ));
+        state.set_prompt_source(
+            "alpha",
+            incarnation,
+            &[Prompt::new("fixed", Some(""), None)],
+        );
+        state.publish_if_changed();
+        assert_eq!(
+            state.published_prompts.clone().expect("recovered").routes()[0]
+                .native_name
+                .as_ref(),
+            "fixed"
+        );
+    }
+
+    #[test]
+    fn prompt_retained_bytes_are_global_across_routable_sources() {
+        let mut state = CatalogState::new();
+        for upstream in ["alpha", "beta", "gamma"] {
+            let rows = (0..3)
+                .map(|index| prompt_with_serialized_size(&format!("{upstream}-{index}"), 950_000))
+                .collect();
+            install_prompt_source(&mut state, upstream, rows);
+        }
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_prompts,
+            Err(PromptCatalogPublicationError::TooManyBytes)
+        ));
+    }
+
+    #[test]
+    fn prompt_publication_is_independent_from_tool_resource_and_template_families() {
+        let mut state = CatalogState::new();
+        state.entries.insert("alpha".into(), entry("alpha", "read"));
+        let incarnation =
+            super::super::incarnation::next_connection_incarnation().expect("identity");
+        state.bind_incarnation("alpha", incarnation);
+        state.set_prompt_source("alpha", incarnation, &[Prompt::new("one", Some(""), None)]);
+        let resource = Resource::new("file:///one", "one");
+        state.entries.get_mut("alpha").expect("entry").resource_uris = vec![resource.uri.clone()];
+        state.set_resource_source("alpha", incarnation, &[resource]);
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[ResourceTemplate::new("file:///{id}", "template")],
+        );
+        state.publish_if_changed();
+        let tool = state.published.clone().expect("tool");
+        let resource = state.published_resources.clone().expect("resource");
+        let template = state
+            .published_resource_templates
+            .clone()
+            .expect("template");
+
+        state.set_prompt_source("alpha", incarnation, &[Prompt::new("two", Some(""), None)]);
+        state.publish_if_changed();
+        assert!(Arc::ptr_eq(
+            &tool,
+            &state.published.clone().expect("tool unchanged")
+        ));
+        assert!(Arc::ptr_eq(
+            &resource,
+            &state
+                .published_resources
+                .clone()
+                .expect("resource unchanged")
+        ));
+        assert!(Arc::ptr_eq(
+            &template,
+            &state
+                .published_resource_templates
+                .clone()
+                .expect("template unchanged")
+        ));
+        let prompt = state.published_prompts.clone().expect("prompt");
+
+        state.set_resource_source(
+            "alpha",
+            incarnation,
+            &[Resource::new("file:///changed", "changed")],
+        );
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[ResourceTemplate::new("https://changed/{id}", "changed")],
+        );
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("entry")
+            .tools
+            .get_mut("read")
+            .expect("tool")
+            .destructive = true;
+        state.publish_if_changed();
+        assert!(Arc::ptr_eq(
+            &prompt,
+            &state.published_prompts.clone().expect("prompt unchanged")
+        ));
     }
 
     #[test]

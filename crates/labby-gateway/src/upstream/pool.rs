@@ -106,7 +106,8 @@ mod validate;
 
 pub use capability_call::CapabilityCallError;
 pub use catalog_publication::{
-    PublishedResourceCatalogSnapshot, PublishedResourceRoute,
+    PromptCatalogGeneration, PromptCatalogPublicationError, PublishedPromptCatalogSnapshot,
+    PublishedPromptRoute, PublishedResourceCatalogSnapshot, PublishedResourceRoute,
     PublishedResourceTemplateCatalogSnapshot, PublishedResourceTemplateRoute,
     PublishedToolCatalogSnapshot, PublishedToolRoute, ResourceCatalogGeneration,
     ResourceCatalogPublicationError, ResourceTemplateCatalogGeneration,
