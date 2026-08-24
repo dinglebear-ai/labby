@@ -23,7 +23,6 @@ use super::capability_call::{
     timed_capability_call_with_timeout,
 };
 use super::catalog_pagination;
-use super::discover::routable_upstream_peers;
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
@@ -62,6 +61,36 @@ fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &st
 }
 
 impl UpstreamPool {
+    async fn apply_observed_resource_template_success(
+        &self,
+        observed: &super::incarnation::ObservedConnectionCatalogEntry,
+    ) -> bool {
+        let name = observed.upstream();
+        self.apply_to_observed_entry(observed, |entry| {
+            super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
+        })
+        .await
+        .is_some()
+    }
+
+    async fn apply_observed_resource_template_failure(
+        &self,
+        observed: &super::incarnation::ObservedConnectionCatalogEntry,
+        error_text: &str,
+    ) -> bool {
+        let name = observed.upstream();
+        self.apply_to_observed_entry(observed, |entry| {
+            super::health::record_failure_on_entry(
+                name,
+                entry,
+                UpstreamCapability::Resources,
+                format!("failed to list resource templates from upstream: {error_text}"),
+            );
+        })
+        .await
+        .is_some()
+    }
+
     async fn apply_observed_resource_list_success(
         &self,
         observed: &super::incarnation::ObservedConnectionCatalogEntry,
@@ -467,15 +496,16 @@ impl UpstreamPool {
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<ResourceTemplate> {
-        let peers = routable_upstream_peers(self, UpstreamCapability::Resources, allowed).await;
-        if peers.is_empty() {
+        let observed_peers = self.observe_routable_resource_connections(allowed).await;
+        if observed_peers.is_empty() {
             return Vec::new();
         }
 
         // Deliberate bulkhead exception + partial-result semantics — same
         // contract as `list_upstream_resources_allowed` above.
         let mut futures = FuturesUnordered::new();
-        for (name, peer) in peers {
+        for observed in observed_peers {
+            let peer = observed.peer.clone();
             futures.push(async move {
                 let result = catalog_pagination::list_resource_templates(
                     &peer,
@@ -483,7 +513,7 @@ impl UpstreamPool {
                     MAX_UPSTREAM_RESOURCES,
                 )
                 .await;
-                (name, result)
+                (observed, result)
             });
         }
 
@@ -491,14 +521,20 @@ impl UpstreamPool {
         while let Some(item) = futures.next().await {
             results.push(item);
         }
-        results.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        results.sort_unstable_by(|left, right| left.0.upstream().cmp(right.0.upstream()));
 
         let mut templates = Vec::new();
-        for (name, result) in results {
+        for (observed, result) in results {
+            let name = observed.upstream().to_string();
             match result {
                 Ok(upstream_templates) => {
-                    self.record_success_for(&name, UpstreamCapability::Resources)
-                        .await;
+                    if !self
+                        .apply_observed_resource_template_success(&observed)
+                        .await
+                    {
+                        tracing::debug!(upstream = %name, "discarding stale resources/templates/list success");
+                        continue;
+                    }
                     for mut template in upstream_templates {
                         if templates.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
@@ -515,8 +551,13 @@ impl UpstreamPool {
                 Err(catalog_pagination::CatalogPaginationError::Service(error))
                     if is_capability_unsupported(&error) =>
                 {
-                    self.record_success_for(&name, UpstreamCapability::Resources)
-                        .await;
+                    if !self
+                        .apply_observed_resource_template_success(&observed)
+                        .await
+                    {
+                        tracing::debug!(upstream = %name, "discarding stale resources/templates/list unsupported result");
+                        continue;
+                    }
                     tracing::debug!(
                         upstream = %name,
                         error = %bounded_service_error_text(&error),
@@ -525,12 +566,13 @@ impl UpstreamPool {
                 }
                 Err(error) => {
                     let error_text = error.bounded_text();
-                    self.record_failure_for(
-                        &name,
-                        UpstreamCapability::Resources,
-                        format!("failed to list resource templates from upstream: {error_text}"),
-                    )
-                    .await;
+                    if !self
+                        .apply_observed_resource_template_failure(&observed, &error_text)
+                        .await
+                    {
+                        tracing::debug!(upstream = %name, "discarding stale resources/templates/list failure");
+                        continue;
+                    }
                     tracing::warn!(
                         upstream = %name,
                         kind = error.kind(),
@@ -1288,6 +1330,126 @@ mod tests {
         assert_eq!(
             current.resource_last_error.as_deref(),
             Some("replacement sentinel")
+        );
+    }
+
+    #[derive(Clone)]
+    struct DelayedResourceTemplateServer {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        fail: bool,
+    }
+
+    impl ServerHandler for DelayedResourceTemplateServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resource_templates(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourceTemplatesResult, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            if self.fail {
+                Err(ErrorData::internal_error("old A failed", None))
+            } else {
+                Ok(ListResourceTemplatesResult::with_all_items(vec![
+                    ResourceTemplate::new("file:///{path}", "old-a"),
+                ]))
+            }
+        }
+    }
+
+    async fn assert_delayed_resource_template_result_is_discarded(fail: bool) {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedResourceTemplateServer {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                fail,
+            },
+        )
+        .await;
+        let listing_pool = Arc::clone(&pool);
+        let listing = tokio::spawn(async move {
+            listing_pool
+                .list_upstream_resource_templates_allowed(None)
+                .await
+        });
+        started.notified().await;
+        let mut original_entry = pool.catalog.read().await["alpha"].clone();
+
+        let replacement = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        let (connection, mut entry) = replacement.remove_connection_catalog_entry("alpha").await;
+        let entry = entry.as_mut().expect("replacement entry");
+        entry.resource_last_error = Some("replacement sentinel".to_string());
+        let previous_a = pool
+            .install_connection_catalog_entry(
+                "alpha".to_string(),
+                connection.expect("replacement connection"),
+                entry.clone(),
+            )
+            .await
+            .expect("install replacement")
+            .expect("previous A connection remains alive");
+
+        // Reinstall the exact same A connection object after B. Its fresh
+        // install incarnation must still invalidate the in-flight old-A result.
+        let (replacement_b, _) = pool.remove_connection_catalog_entry("alpha").await;
+        original_entry.resource_last_error = Some("reinstalled A sentinel".to_string());
+        let replacement_health = original_entry.resource_health;
+        let reinstalled_previous = pool
+            .install_connection_catalog_entry("alpha".to_string(), previous_a, original_entry)
+            .await
+            .expect("reinstall same A object");
+        assert!(reinstalled_previous.is_none());
+
+        release.notify_one();
+        assert!(listing.await.expect("listing task").is_empty());
+        if let Some(replacement_b) = replacement_b {
+            replacement_b
+                .shutdown("alpha", "test.resource-template-list.replaced")
+                .await;
+        }
+        let current = &pool.catalog.read().await["alpha"];
+        assert_eq!(current.resource_health, replacement_health);
+        assert_eq!(
+            current.resource_last_error.as_deref(),
+            Some("reinstalled A sentinel")
+        );
+    }
+
+    #[tokio::test]
+    async fn live_resource_template_fanout_discards_delayed_success_after_replacement() {
+        assert_delayed_resource_template_result_is_discarded(false).await;
+    }
+
+    #[tokio::test]
+    async fn live_resource_template_fanout_discards_delayed_failure_after_replacement() {
+        assert_delayed_resource_template_result_is_discarded(true).await;
+    }
+
+    #[tokio::test]
+    async fn current_resource_template_unsupported_result_records_success() {
+        let pool = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        pool.catalog_write()
+            .await
+            .get_mut("alpha")
+            .expect("alpha entry")
+            .resource_last_error = Some("sentinel".into());
+        assert!(
+            pool.list_upstream_resource_templates_allowed(None)
+                .await
+                .is_empty()
+        );
+        assert!(
+            pool.catalog.read().await["alpha"]
+                .resource_last_error
+                .is_none()
         );
     }
 

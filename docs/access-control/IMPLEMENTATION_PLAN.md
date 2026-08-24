@@ -359,6 +359,12 @@ The existing authorization-first A-M-A-M Project composer and C-R-C-R BoundAcces
 
 `resources/list` classifies regular non-OAuth upstream Resources by exact `(upstream, native_uri)` provenance retained beside the pagination snapshot. Classification intersects the unified Project Resource publication with the protected route's effective `expose_resources` and upstream narrowing. Cursor pages require the same unexpired, non-sensitive Project/credential/publication snapshot key before replaying aggregate classification; mismatch is reported only as unavailable/zero telemetry. Wire resources, ordering, cursors, revisions, notifications, and legacy behavior remain unchanged. This is shadow observation only: Resources read, templates, OAuth, UI, synthetic/local/Skills/app families, and enforcement remain deferred.
 
+### Wave 32 / Milestone 0AJ: incarnation-bound regular ResourceTemplate listing
+
+Regular non-OAuth `resources/templates/list` fanout now acquires the exact routable connection/catalog incarnation before each RPC and applies Resources health success, unsupported, or failure only through the checked current-incarnation gate. Delayed A results after replacement or same-object A-B-A reinstall contribute no wire templates and cannot mutate the replacement's shared Resources health/error state. Existing pagination, ordering, namespace rewriting, partial-failure behavior, allowlists, and output remain unchanged.
+
+This is an attribution prerequisite only. It adds no template cache, generation-bearing publication, Project catalog child, handler shadow, read authority, or enforcement. OAuth/subject-scoped, UI/local/synthetic/Skills/app families and `resources/read` remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
