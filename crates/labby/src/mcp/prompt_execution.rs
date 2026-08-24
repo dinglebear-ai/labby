@@ -4,10 +4,13 @@
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::manager::{GatewayManager, PublishedPromptCallError};
 use rmcp::model::{GetPromptRequestParams, GetPromptResult};
+use std::time::SystemTime;
 use thiserror::Error;
 
 use crate::access::{AccessRuntime, Permission};
-use crate::mcp::bound_access::{BoundAccessContext, bind_asset_use_access_context};
+use crate::mcp::bound_access::{
+    BoundAccessContext, TransportBoundAccessContext, bind_asset_use_access_context,
+};
 
 /// Server-owned inputs for one exact regular non-OAuth Prompt execution.
 ///
@@ -140,10 +143,72 @@ pub(crate) async fn execute_exact_project_prompt(
     })
 }
 
+/// Execute from one middleware-owned protected-transport binding.
+///
+/// The immutable request-owned transport binding carries the exact token
+/// instance. Its expiry and independently derived `VerifiedIdentity` binding
+/// are checked on both sides of the Wave 43 resolver. Route, resource, and
+/// Project facts come only from that middleware binding; no MCP parameter can
+/// select them.
+pub(crate) async fn execute_transport_bound_project_prompt(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: GetPromptRequestParams,
+) -> Result<GetPromptResult, PromptExecutionResolutionError> {
+    execute_transport_bound_project_prompt_with_clock(
+        runtime,
+        manager,
+        transport,
+        identity,
+        request,
+        SystemTime::now,
+    )
+    .await
+}
+
+async fn execute_transport_bound_project_prompt_with_clock(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: GetPromptRequestParams,
+    mut now: impl FnMut() -> SystemTime,
+) -> Result<GetPromptResult, PromptExecutionResolutionError> {
+    transport
+        .validate_not_expired(now())
+        .map_err(|_| PromptExecutionResolutionError::Unavailable)?;
+    if !transport.matches_identity(identity) {
+        return Err(PromptExecutionResolutionError::Unavailable);
+    }
+    let route = transport.core().route();
+    let result = execute_exact_project_prompt(
+        runtime,
+        manager,
+        PromptExecutionResolutionInput::new(
+            identity.clone(),
+            route.route_name(),
+            route.resource(),
+            route.project_id(),
+            request,
+        ),
+    )
+    .await;
+    transport
+        .validate_not_expired(now())
+        .map_err(|_| PromptExecutionResolutionError::Unavailable)?;
+    if !transport.matches_identity(identity) {
+        return Err(PromptExecutionResolutionError::Unavailable);
+    }
+    result
+}
+
 #[cfg(all(test, feature = "proxy-testkit"))]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, UNIX_EPOCH};
 
     use labby_auth::{Authenticator, VerifiedIdentity};
     use labby_gateway::gateway::config_store::FsGatewayConfigStore;
@@ -151,11 +216,13 @@ mod tests {
     use labby_gateway::upstream::pool::UpstreamPool;
     use labby_runtime::gateway_config::{
         GatewayConfig, GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
-        ProtectedMcpRouteTarget, UpstreamConfig,
+        ProtectedMcpRouteTarget, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
+        UpstreamOauthRegistration,
     };
     use rmcp::model::{
-        ErrorData, GetPromptRequestParams, GetPromptResponse, GetPromptResult, Prompt,
-        PromptMessage, Role,
+        ClientCapabilities, ErrorData, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
+        Implementation, ListPromptsResult, Prompt, PromptMessage, ProtocolVersion,
+        RequestMetaObject, Role,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -163,12 +230,19 @@ mod tests {
 
     use super::{
         PromptExecutionResolutionError, PromptExecutionResolutionInput,
-        execute_exact_project_prompt,
+        execute_exact_project_prompt, execute_transport_bound_project_prompt_with_clock,
     };
     use crate::access::{
         AccessRuntime, AssignProjectLoadoutInput, BootstrapOwnerInput, Permission,
         project_runtime_mcp_catalog_context,
     };
+    use crate::mcp::bound_access::{
+        TransportBoundAccessContext, attach_project_access_observation, bind_access_context,
+        validate_transport_credential_binding,
+    };
+    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
+    use crate::mcp::route_scope::McpRouteScope;
+    use crate::mcp::server::LabMcpServer;
 
     #[derive(Clone)]
     struct EchoPromptServer {
@@ -176,6 +250,18 @@ mod tests {
     }
 
     impl ServerHandler for EchoPromptServer {
+        async fn list_prompts(
+            &self,
+            _request: Option<rmcp::model::PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListPromptsResult, ErrorData> {
+            Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
+                "owner/nested/name",
+                Some("exact"),
+                None,
+            )]))
+        }
+
         async fn get_prompt(
             &self,
             request: GetPromptRequestParams,
@@ -201,6 +287,22 @@ mod tests {
         started: Arc<Notify>,
         release: Arc<Notify>,
         fail: bool,
+    }
+
+    #[derive(Clone)]
+    struct FailingPromptServer;
+
+    impl ServerHandler for FailingPromptServer {
+        async fn get_prompt(
+            &self,
+            _request: GetPromptRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<GetPromptResponse, ErrorData> {
+            Err(ErrorData::internal_error(
+                "private upstream prompt failure",
+                None,
+            ))
+        }
     }
 
     impl ServerHandler for DelayedPromptServer {
@@ -287,6 +389,32 @@ mod tests {
         }
     }
 
+    fn pooled_gateway_config() -> GatewayConfig {
+        let mut config = gateway_config(true);
+        config.upstream[0]
+            .env
+            .insert("MCP_UPSTREAM_RELAY_MODE".into(), "pooled".into());
+        config
+    }
+
+    fn oauth_gateway_config() -> (GatewayConfig, UpstreamConfig) {
+        let mut config = gateway_config(true);
+        let mut oauth = config.upstream[0].clone();
+        oauth.name = "oauth".into();
+        oauth.command = None;
+        oauth.url = Some("http://127.0.0.1:9/mcp".into());
+        oauth.oauth = Some(UpstreamOauthConfig {
+            mode: UpstreamOauthMode::AuthorizationCodePkce,
+            registration: UpstreamOauthRegistration::Dynamic,
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        });
+        config.upstream.push(oauth.clone());
+        config.loadouts[0].upstreams.push("oauth".into());
+        (config, oauth)
+    }
+
     async fn fixture() -> Fixture {
         let directory = tempfile::tempdir().unwrap();
         #[cfg(unix)]
@@ -365,6 +493,363 @@ mod tests {
             "bootstrap-default",
             GetPromptRequestParams::new("alpha/owner/nested/name").with_arguments(arguments),
         )
+    }
+
+    async fn transport_binding(
+        fixture: &Fixture,
+        expires_at: usize,
+        now: std::time::SystemTime,
+    ) -> TransportBoundAccessContext {
+        let core = bind_access_context(
+            &fixture.runtime,
+            &fixture.manager,
+            fixture.identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let credential =
+            validate_transport_credential_binding("issuer", "request-jti", expires_at, now)
+                .unwrap();
+        TransportBoundAccessContext::new(core, credential, now).unwrap()
+    }
+
+    fn handler_server(fixture: &Fixture) -> LabMcpServer {
+        LabMcpServer {
+            registry: Arc::new(crate::registry::build_default_registry()),
+            access_runtime: Arc::clone(&fixture.runtime),
+            gateway_manager: Some(Arc::clone(&fixture.manager)),
+            peers: Default::default(),
+            code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
+            client_registry: Default::default(),
+            transport_label: "test",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
+                LoggingLevel::Emergency,
+            ))),
+            route_scope: McpRouteScope::Root,
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        }
+    }
+
+    fn handler_context(
+        peer: rmcp::service::Peer<RoleServer>,
+        identity: Option<VerifiedIdentity>,
+        binding: Result<
+            TransportBoundAccessContext,
+            crate::mcp::bound_access::BoundAccessContextError,
+        >,
+    ) -> RequestContext<RoleServer> {
+        let mut context = RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        if let Some(identity) = identity {
+            parts.extensions.insert(identity);
+        }
+        attach_project_access_observation(&mut parts.extensions, binding);
+        context.extensions.insert(parts);
+        context
+    }
+
+    fn legacy_oauth_context(peer: rmcp::service::Peer<RoleServer>) -> RequestContext<RoleServer> {
+        let mut context = RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        parts
+            .extensions
+            .insert(labby_auth::auth_context::AuthContext {
+                sub: "reader".into(),
+                actor_key: None,
+                scopes: vec!["lab".into()],
+                issuer: "https://issuer.example".into(),
+                via_session: true,
+                csrf_token: None,
+                email: None,
+            });
+        context.extensions.insert(parts);
+        context
+    }
+
+    #[tokio::test]
+    async fn transport_binding_expiry_after_rpc_discards_result_deterministically() {
+        let fixture = fixture().await;
+        let before = UNIX_EPOCH + Duration::from_secs(100);
+        let after = UNIX_EPOCH + Duration::from_secs(102);
+        let transport = transport_binding(&fixture, 101, before).await;
+        let mut times = [before, after].into_iter();
+        let PromptExecutionResolutionInput { request, .. } = input(fixture.identity.clone());
+
+        assert_eq!(
+            execute_transport_bound_project_prompt_with_clock(
+                &fixture.runtime,
+                &fixture.manager,
+                &transport,
+                &fixture.identity,
+                request,
+                || times.next().unwrap(),
+            )
+            .await,
+            Err(PromptExecutionResolutionError::Unavailable)
+        );
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn handler_bound_regular_executes_and_bound_nonregular_never_falls_back() {
+        let fixture = fixture().await;
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let bound = transport_binding(&fixture, usize::MAX, now).await;
+        let mut request = GetPromptRequestParams::new("alpha/owner/nested/name").with_arguments(
+            serde_json::Map::from_iter([(
+                "target".into(),
+                serde_json::Value::String("handler".into()),
+            )]),
+        );
+        request.meta = Some(RequestMetaObject::with_client_context(
+            ProtocolVersion::V_2026_07_28,
+            Implementation::new("relay-capable-client", "1.0.0"),
+            ClientCapabilities::default(),
+        ));
+        let response = running
+            .service()
+            .get_prompt_impl(
+                request,
+                handler_context(
+                    running.peer().clone(),
+                    Some(fixture.identity.clone()),
+                    Ok(bound),
+                ),
+            )
+            .await
+            .expect("bound exact regular prompt");
+        let GetPromptResponse::Complete(response) = response else {
+            panic!("unexpected prompt response")
+        };
+        assert_eq!(
+            response.messages,
+            vec![PromptMessage::new_text(
+                Role::User,
+                "owner/nested/name:handler"
+            )]
+        );
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+
+        for name in ["service-discover", "alpha/missing"] {
+            let bound = transport_binding(&fixture, usize::MAX, now).await;
+            let error = running
+                .service()
+                .get_prompt_impl(
+                    GetPromptRequestParams::new(name),
+                    handler_context(
+                        running.peer().clone(),
+                        Some(fixture.identity.clone()),
+                        Ok(bound),
+                    ),
+                )
+                .await
+                .expect_err("Project-bound nonregular prompt is terminal");
+            assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+        }
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn handler_legacy_regular_path_preserves_existing_output() {
+        let fixture = fixture().await;
+        fixture
+            .manager
+            .try_seed_config(pooled_gateway_config())
+            .await
+            .unwrap();
+        fixture.pool.list_upstream_prompts_allowed(&[], None).await;
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let context = RequestContext::new(
+            rmcp::model::NumberOrString::Number(1),
+            running.peer().clone(),
+        );
+        let response = running
+            .service()
+            .get_prompt_impl(
+                GetPromptRequestParams::new("alpha/owner/nested/name").with_arguments(
+                    serde_json::Map::from_iter([(
+                        "target".into(),
+                        serde_json::Value::String("legacy".into()),
+                    )]),
+                ),
+                context,
+            )
+            .await
+            .expect("legacy regular path remains mounted");
+        let GetPromptResponse::Complete(response) = response else {
+            panic!("unexpected prompt response")
+        };
+        assert_eq!(
+            response.messages,
+            vec![PromptMessage::new_text(
+                Role::User,
+                "owner/nested/name:legacy"
+            )]
+        );
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn handler_bound_oauth_name_is_terminal_while_legacy_reaches_oauth_branch() {
+        let fixture = fixture().await;
+        let (config, oauth) = oauth_gateway_config();
+        fixture.manager.try_seed_config(config).await.unwrap();
+        fixture
+            .pool
+            .install_test_subject_server_for_upstream(
+                &oauth,
+                "reader",
+                EchoPromptServer {
+                    calls: Arc::clone(&fixture.calls),
+                },
+            )
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let bound = transport_binding(&fixture, usize::MAX, now).await;
+        let bound_error = running
+            .service()
+            .get_prompt_impl(
+                GetPromptRequestParams::new("oauth/owner/nested/name"),
+                handler_context(running.peer().clone(), Some(fixture.identity), Ok(bound)),
+            )
+            .await
+            .expect_err("Bound OAuth-shaped name must not fall through");
+        assert_eq!(
+            bound_error.data.as_ref().unwrap()["message"],
+            "Prompt `oauth/owner/nested/name` is unavailable."
+        );
+
+        let legacy_error = running
+            .service()
+            .get_prompt_impl(
+                GetPromptRequestParams::new("oauth/owner/nested/name"),
+                legacy_oauth_context(running.peer().clone()),
+            )
+            .await
+            .expect_err("legacy OAuth relay fixture intentionally cannot connect");
+        assert!(
+            legacy_error.data.as_ref().unwrap()["message"]
+                .as_str()
+                .unwrap()
+                .contains("Upstream `oauth` failed")
+        );
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn handler_rejects_unavailable_missing_or_mismatched_identity_before_rpc() {
+        let fixture = fixture().await;
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let other = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "other-issuer",
+            "other-credential",
+        )
+        .unwrap();
+        for identity in [None, Some(other)] {
+            let bound = transport_binding(&fixture, usize::MAX, now).await;
+            let error = running
+                .service()
+                .get_prompt_impl(
+                    GetPromptRequestParams::new("alpha/owner/nested/name"),
+                    handler_context(running.peer().clone(), identity, Ok(bound)),
+                )
+                .await
+                .expect_err("invalid transport binding must fail closed");
+            assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+        }
+        let expired = transport_binding(&fixture, 101, now).await;
+        let error = running
+            .service()
+            .get_prompt_impl(
+                GetPromptRequestParams::new("alpha/owner/nested/name"),
+                handler_context(
+                    running.peer().clone(),
+                    Some(fixture.identity.clone()),
+                    Ok(expired),
+                ),
+            )
+            .await
+            .expect_err("expired transport binding must fail before RPC");
+        assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+        let error = running
+            .service()
+            .get_prompt_impl(
+                GetPromptRequestParams::new("service-discover"),
+                handler_context(
+                    running.peer().clone(),
+                    Some(fixture.identity),
+                    Err(crate::mcp::bound_access::BoundAccessContextError::Unavailable),
+                ),
+            )
+            .await
+            .expect_err("explicit unavailable observation is terminal before builtin");
+        assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn handler_bound_upstream_failure_is_redacted_and_existing_shaped() {
+        let fixture = fixture().await;
+        fixture
+            .pool
+            .install_prompt_server_for_tests("alpha", FailingPromptServer)
+            .await;
+        fixture
+            .pool
+            .insert_prompt_routes_for_tests(
+                "alpha",
+                vec![Prompt::new("owner/nested/name", Some("exact"), None)],
+            )
+            .await;
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let bound = transport_binding(&fixture, usize::MAX, now).await;
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let error = running
+            .service()
+            .get_prompt_impl(
+                GetPromptRequestParams::new("alpha/owner/nested/name"),
+                handler_context(running.peer().clone(), Some(fixture.identity), Ok(bound)),
+            )
+            .await
+            .expect_err("upstream application error");
+        let serialized = serde_json::to_string(&error).unwrap();
+        assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+        assert!(!serialized.contains("private upstream prompt failure"));
     }
 
     #[tokio::test]

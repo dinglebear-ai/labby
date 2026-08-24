@@ -431,6 +431,12 @@ The product owns one unmounted, crate-private resolver/executor for regular non-
 
 Authorization is checked when the upstream request starts and again before its result is exposed; it is not a revocation lease and cannot unsend a request already in flight. Pool and Prompt generations remain observations rather than capabilities. This unmounted seam does not bind or validate a protected transport token instance or its expiry. A future handler mount must supply only middleware-derived `VerifiedIdentity` and protected-route facts and must validate the current request's `TransportBoundAccessContext` token instance and expiry before calling this resolver and again before exposing its result. Built-ins, OAuth/subject-scoped Prompts, capability relay, live `prompts/get` mounting, wire-error mapping, and telemetry/usage accounting remain deferred.
 
+### Wave 44 / Milestone 0AV: Project-bound exact regular `prompts/get` mount
+
+The live `prompts/get` handler now consumes Project access observation before every legacy route-scope, builtin, owner-cache, relay, or OAuth decision. A missing observation remains the byte-compatible legacy dispatch tree. Explicitly unavailable Project evidence terminates with a generic existing-shaped error. Bound evidence requires the middleware-owned `VerifiedIdentity` to match the immutable transport binding and requires token expiry validation before exact resolution and again before any result or error is exposed.
+
+The Bound branch supports only the exact regular non-OAuth Prompt route published by its coherent Project/Loadout catalog. It always uses the bounded pooled exact kernel, even when request metadata advertises relay capabilities. Unknown or ambiguous names, builtins, OAuth/subject-scoped targets, and relay execution are terminal in this branch and never fall through. Legacy builtin, regular pooled/relay, OAuth, and local behavior remains unchanged. This is request-start authorization rather than a revocation lease; cancellation and expiry can discard a result but cannot unsend an upstream request already in flight. Resource reads, Prompt completion, other capability families, and broader execution enforcement remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

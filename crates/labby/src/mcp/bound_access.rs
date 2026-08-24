@@ -75,6 +75,10 @@ impl TransportBoundAccessContext {
         &self.credential_instance_fingerprint
     }
 
+    pub(crate) fn matches_identity(&self, identity: &VerifiedIdentity) -> bool {
+        self.core.credential_binding_fingerprint() == identity.safe_binding_fingerprint()
+    }
+
     pub(crate) fn validate_not_expired(
         &self,
         now: SystemTime,
@@ -83,6 +87,41 @@ impl TransportBoundAccessContext {
             Err(BoundAccessContextError::Unavailable)
         } else {
             Ok(())
+        }
+    }
+}
+
+pub(crate) enum ProjectPromptExecutionBinding<'a> {
+    Legacy,
+    Unavailable,
+    Bound {
+        transport: &'a TransportBoundAccessContext,
+        identity: &'a VerifiedIdentity,
+    },
+}
+
+pub(crate) fn project_prompt_execution_binding(
+    extensions: &rmcp::model::Extensions,
+    now: SystemTime,
+) -> ProjectPromptExecutionBinding<'_> {
+    let Some(parts) = extensions.get::<axum::http::request::Parts>() else {
+        return ProjectPromptExecutionBinding::Legacy;
+    };
+    match parts.extensions.get::<ProjectAccessObservation>() {
+        None => ProjectPromptExecutionBinding::Legacy,
+        Some(ProjectAccessObservation::Unavailable) => ProjectPromptExecutionBinding::Unavailable,
+        Some(ProjectAccessObservation::Bound(transport)) => {
+            let Some(identity) = parts.extensions.get::<VerifiedIdentity>() else {
+                return ProjectPromptExecutionBinding::Unavailable;
+            };
+            if transport.validate_not_expired(now).is_err() || !transport.matches_identity(identity)
+            {
+                return ProjectPromptExecutionBinding::Unavailable;
+            }
+            ProjectPromptExecutionBinding::Bound {
+                transport,
+                identity,
+            }
         }
     }
 }

@@ -385,6 +385,37 @@ impl UpstreamPool {
         );
     }
 
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn install_test_subject_server_for_upstream<S>(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        server: S,
+    ) where
+        S: rmcp::ServerHandler,
+    {
+        use std::time::Instant;
+
+        let fixture = super::testsupport::catalog_pool_with_server(&config.name, server).await;
+        let connection = fixture
+            .connections
+            .write()
+            .await
+            .remove(&config.name)
+            .expect("fixture connection present");
+        let peer = connection.peer.clone();
+        self.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+        self.subject_connections.write().await.insert(
+            (config.name.clone(), subject.to_string()),
+            super::SubjectScopedConnection {
+                _connection: connection,
+                peer,
+                tools: Vec::new(),
+                last_used: Instant::now(),
+            },
+        );
+    }
+
     async fn lazy_connect_lock(&self, upstream_name: &str) -> Arc<Mutex<()>> {
         if let Some(lock) = self
             .lazy_connect_locks

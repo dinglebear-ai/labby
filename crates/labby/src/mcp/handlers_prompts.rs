@@ -29,7 +29,10 @@ use crate::mcp::agent_error::{
 };
 
 #[cfg(feature = "gateway")]
-use crate::mcp::bound_access::{ProjectDiscoveryShadow, project_discovery_shadow};
+use crate::mcp::bound_access::{
+    ProjectDiscoveryShadow, ProjectPromptExecutionBinding, project_discovery_shadow,
+    project_prompt_execution_binding,
+};
 use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::{forwardable_client_capabilities, oauth_upstream_subject_for_request};
@@ -397,6 +400,108 @@ impl LabMcpServer {
             prompt = %request.name,
             "dispatch start"
         );
+        #[cfg(feature = "gateway")]
+        match project_prompt_execution_binding(&context.extensions, SystemTime::now()) {
+            ProjectPromptExecutionBinding::Legacy => {}
+            ProjectPromptExecutionBinding::Unavailable => {
+                let elapsed_ms = start.elapsed().as_millis();
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "get_prompt",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "upstream_error",
+                    },
+                )
+                .await;
+                let error_context = prompt_error_context(&request.name, None, None);
+                return Err(invalid_params_agent_error(
+                    "upstream_error",
+                    format!("Prompt `{}` is unavailable.", request.name),
+                    None,
+                    &error_context,
+                ));
+            }
+            ProjectPromptExecutionBinding::Bound {
+                transport,
+                identity,
+            } => {
+                let prompt_name = request.name.clone();
+                let result = match self.gateway_manager.as_deref() {
+                    Some(manager) => {
+                        crate::mcp::prompt_execution::execute_transport_bound_project_prompt(
+                            self.access_runtime.as_ref(),
+                            manager,
+                            transport,
+                            identity,
+                            request,
+                        )
+                        .await
+                    }
+                    None => Err(
+                        crate::mcp::prompt_execution::PromptExecutionResolutionError::Unavailable,
+                    ),
+                };
+                let elapsed_ms = start.elapsed().as_millis();
+                return match result {
+                    Ok(response) => {
+                        self.emit_dispatch_notification(
+                            &context,
+                            "lab",
+                            "get_prompt",
+                            elapsed_ms,
+                            DispatchLogOutcome::Success,
+                        )
+                        .await;
+                        Ok(response.into())
+                    }
+                    Err(error) => {
+                        use crate::mcp::prompt_execution::PromptExecutionResolutionError;
+                        let unavailable =
+                            matches!(&error, PromptExecutionResolutionError::Unavailable);
+                        let (level, error_kind) = match &error {
+                            PromptExecutionResolutionError::Unavailable => {
+                                (LoggingLevel::Warning, "upstream_error")
+                            }
+                            PromptExecutionResolutionError::QueueUnavailable
+                            | PromptExecutionResolutionError::Upstream
+                            | PromptExecutionResolutionError::Timeout => {
+                                (LoggingLevel::Error, "internal_error")
+                            }
+                        };
+                        self.emit_dispatch_notification(
+                            &context,
+                            "lab",
+                            "get_prompt",
+                            elapsed_ms,
+                            DispatchLogOutcome::Failure {
+                                level,
+                                kind: error_kind,
+                            },
+                        )
+                        .await;
+                        let error_context = prompt_error_context(&prompt_name, None, None);
+                        if unavailable {
+                            Err(invalid_params_agent_error(
+                                "upstream_error",
+                                format!("Prompt `{prompt_name}` is unavailable."),
+                                None,
+                                &error_context,
+                            ))
+                        } else {
+                            Err(internal_agent_error(
+                                "upstream_error",
+                                format!("Prompt `{prompt_name}` could not be fetched."),
+                                None,
+                                &error_context,
+                            ))
+                        }
+                    }
+                };
+            }
+        }
         if !self.route_scope.exposes_prompts() {
             let elapsed_ms = start.elapsed().as_millis();
             let message = "MCP Prompts are disabled by this loadout; ask the operator to enable Prompts for this loadout";
