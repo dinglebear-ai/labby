@@ -26,6 +26,8 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
+#[cfg(feature = "gateway")]
+use crate::mcp::resource_errors::fetch as resource_fetch_error;
 use crate::mcp::resource_errors::{
     forbidden as forbidden_resource_error, render as resource_render_error,
     route_scope as route_scope_resource_error, unknown as unknown_resource_error,
@@ -41,7 +43,10 @@ pub(crate) use crate::app_assets::{
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
 };
 #[cfg(feature = "gateway")]
-use crate::mcp::bound_access::{ProjectDiscoveryShadow, project_discovery_shadow};
+use crate::mcp::bound_access::{
+    ProjectDiscoveryShadow, ProjectExecutionBinding, project_discovery_shadow,
+    project_execution_binding,
+};
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
@@ -1287,6 +1292,82 @@ impl LabMcpServer {
             resource_uri = %resource_uri_log,
             "dispatch start"
         );
+        #[cfg(feature = "gateway")]
+        match project_execution_binding(&context.extensions, SystemTime::now()) {
+            ProjectExecutionBinding::Legacy => {}
+            ProjectExecutionBinding::Unavailable => {
+                let elapsed_ms = start.elapsed().as_millis();
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "read_resource",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "not_found",
+                    },
+                )
+                .await;
+                return Err(unknown_resource_error(&uri, false));
+            }
+            ProjectExecutionBinding::Bound {
+                transport,
+                identity,
+            } => {
+                let result = match self.gateway_manager.as_deref() {
+                    Some(manager) => {
+                        crate::mcp::resource_execution::read_transport_bound_project_resource(
+                            self.access_runtime.as_ref(),
+                            manager,
+                            transport,
+                            identity,
+                            request,
+                        )
+                        .await
+                    }
+                    None => Err(
+                        crate::mcp::resource_execution::ResourceReadResolutionError::Unavailable,
+                    ),
+                };
+                let elapsed_ms = start.elapsed().as_millis();
+                return match result {
+                    Ok(response) => {
+                        self.emit_dispatch_notification(
+                            &context,
+                            "lab",
+                            "read_resource",
+                            elapsed_ms,
+                            DispatchLogOutcome::Success,
+                        )
+                        .await;
+                        Ok(response.into())
+                    }
+                    Err(error) => {
+                        use crate::mcp::resource_execution::ResourceReadResolutionError;
+                        let unavailable =
+                            matches!(&error, ResourceReadResolutionError::Unavailable);
+                        let (level, kind) = if unavailable {
+                            (LoggingLevel::Warning, "not_found")
+                        } else {
+                            (LoggingLevel::Error, "internal_error")
+                        };
+                        self.emit_dispatch_notification(
+                            &context,
+                            "lab",
+                            "read_resource",
+                            elapsed_ms,
+                            DispatchLogOutcome::Failure { level, kind },
+                        )
+                        .await;
+                        if unavailable {
+                            Err(unknown_resource_error(&uri, false))
+                        } else {
+                            Err(resource_fetch_error(&uri))
+                        }
+                    }
+                };
+            }
+        }
         if !self.route_scope.exposes_resources() {
             let elapsed_ms = start.elapsed().as_millis();
             let message = "MCP Resources are disabled by this loadout; ask the operator to enable Resources for this loadout (Agent Skills also require Resources)";

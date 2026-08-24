@@ -91,7 +91,7 @@ impl TransportBoundAccessContext {
     }
 }
 
-pub(crate) enum ProjectPromptExecutionBinding<'a> {
+pub(crate) enum ProjectExecutionBinding<'a> {
     Legacy,
     Unavailable,
     Bound {
@@ -100,25 +100,25 @@ pub(crate) enum ProjectPromptExecutionBinding<'a> {
     },
 }
 
-pub(crate) fn project_prompt_execution_binding(
+pub(crate) fn project_execution_binding(
     extensions: &rmcp::model::Extensions,
     now: SystemTime,
-) -> ProjectPromptExecutionBinding<'_> {
+) -> ProjectExecutionBinding<'_> {
     let Some(parts) = extensions.get::<axum::http::request::Parts>() else {
-        return ProjectPromptExecutionBinding::Legacy;
+        return ProjectExecutionBinding::Legacy;
     };
     match parts.extensions.get::<ProjectAccessObservation>() {
-        None => ProjectPromptExecutionBinding::Legacy,
-        Some(ProjectAccessObservation::Unavailable) => ProjectPromptExecutionBinding::Unavailable,
+        None => ProjectExecutionBinding::Legacy,
+        Some(ProjectAccessObservation::Unavailable) => ProjectExecutionBinding::Unavailable,
         Some(ProjectAccessObservation::Bound(transport)) => {
             let Some(identity) = parts.extensions.get::<VerifiedIdentity>() else {
-                return ProjectPromptExecutionBinding::Unavailable;
+                return ProjectExecutionBinding::Unavailable;
             };
             if transport.validate_not_expired(now).is_err() || !transport.matches_identity(identity)
             {
-                return ProjectPromptExecutionBinding::Unavailable;
+                return ProjectExecutionBinding::Unavailable;
             }
-            ProjectPromptExecutionBinding::Bound {
+            ProjectExecutionBinding::Bound {
                 transport,
                 identity,
             }

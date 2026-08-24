@@ -1,5 +1,6 @@
-//! Unmounted exact regular Resource read authorization seam.
-#![allow(dead_code)]
+//! Project-bound exact regular Resource read authorization and execution seam.
+
+use std::time::SystemTime;
 
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::manager::{GatewayManager, PublishedResourceReadError};
@@ -7,7 +8,9 @@ use rmcp::model::{ReadResourceRequestParams, ReadResourceResult};
 use thiserror::Error;
 
 use crate::access::{AccessRuntime, Permission};
-use crate::mcp::bound_access::{BoundAccessContext, bind_asset_use_access_context};
+use crate::mcp::bound_access::{
+    BoundAccessContext, TransportBoundAccessContext, bind_asset_use_access_context,
+};
 
 /// Server-owned inputs for one exact regular non-OAuth Resource read.
 ///
@@ -150,10 +153,70 @@ pub(crate) async fn read_exact_project_resource(
     })
 }
 
+/// Execute from one middleware-owned protected-transport binding.
+///
+/// The immutable request-owned transport binding carries the exact token
+/// instance. Its expiry and independently derived `VerifiedIdentity` binding
+/// are checked on both sides of the Wave 46 resolver.
+pub(crate) async fn read_transport_bound_project_resource(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: ReadResourceRequestParams,
+) -> Result<ReadResourceResult, ResourceReadResolutionError> {
+    read_transport_bound_project_resource_with_clock(
+        runtime,
+        manager,
+        transport,
+        identity,
+        request,
+        SystemTime::now,
+    )
+    .await
+}
+
+async fn read_transport_bound_project_resource_with_clock(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: ReadResourceRequestParams,
+    mut now: impl FnMut() -> SystemTime,
+) -> Result<ReadResourceResult, ResourceReadResolutionError> {
+    transport
+        .validate_not_expired(now())
+        .map_err(|_| ResourceReadResolutionError::Unavailable)?;
+    if !transport.matches_identity(identity) {
+        return Err(ResourceReadResolutionError::Unavailable);
+    }
+    let route = transport.core().route();
+    let result = read_exact_project_resource(
+        runtime,
+        manager,
+        ResourceReadResolutionInput::new(
+            identity.clone(),
+            route.route_name(),
+            route.resource(),
+            route.project_id(),
+            request,
+        ),
+    )
+    .await;
+    transport
+        .validate_not_expired(now())
+        .map_err(|_| ResourceReadResolutionError::Unavailable)?;
+    if !transport.matches_identity(identity) {
+        return Err(ResourceReadResolutionError::Unavailable);
+    }
+    result
+}
+
 #[cfg(all(test, feature = "proxy-testkit"))]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, UNIX_EPOCH};
 
     use labby_auth::{Authenticator, VerifiedIdentity};
     use labby_gateway::gateway::config_store::FsGatewayConfigStore;
@@ -161,7 +224,8 @@ mod tests {
     use labby_gateway::upstream::pool::UpstreamPool;
     use labby_runtime::gateway_config::{
         GatewayConfig, GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteConfig,
-        ProtectedMcpRouteTarget, UpstreamConfig,
+        ProtectedMcpRouteTarget, UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode,
+        UpstreamOauthRegistration,
     };
     use rmcp::model::{
         ErrorData, ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
@@ -173,11 +237,19 @@ mod tests {
 
     use super::{
         ResourceReadResolutionError, ResourceReadResolutionInput, read_exact_project_resource,
+        read_transport_bound_project_resource_with_clock,
     };
     use crate::access::{
         AccessRuntime, AssignProjectLoadoutInput, BootstrapOwnerInput, Permission,
         project_runtime_mcp_catalog_context,
     };
+    use crate::mcp::bound_access::{
+        TransportBoundAccessContext, attach_project_access_observation, bind_access_context,
+        validate_transport_credential_binding,
+    };
+    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
+    use crate::mcp::route_scope::McpRouteScope;
+    use crate::mcp::server::LabMcpServer;
 
     #[derive(Clone)]
     struct EchoResourceServer {
@@ -341,6 +413,24 @@ mod tests {
         }
     }
 
+    fn oauth_gateway_config() -> (GatewayConfig, UpstreamConfig) {
+        let mut config = gateway_config(true);
+        let mut oauth = config.upstream[0].clone();
+        oauth.name = "oauth".into();
+        oauth.command = None;
+        oauth.url = Some("http://127.0.0.1:9/mcp".into());
+        oauth.oauth = Some(UpstreamOauthConfig {
+            mode: UpstreamOauthMode::AuthorizationCodePkce,
+            registration: UpstreamOauthRegistration::Dynamic,
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        });
+        config.upstream.push(oauth.clone());
+        config.loadouts[0].upstreams.push("oauth".into());
+        (config, oauth)
+    }
+
     async fn fixture() -> Fixture {
         let directory = tempfile::tempdir().unwrap();
         #[cfg(unix)]
@@ -412,6 +502,83 @@ mod tests {
         }
     }
 
+    async fn transport_binding(
+        fixture: &Fixture,
+        expires_at: usize,
+        now: std::time::SystemTime,
+    ) -> TransportBoundAccessContext {
+        let core = bind_access_context(
+            &fixture.runtime,
+            &fixture.manager,
+            fixture.identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let credential =
+            validate_transport_credential_binding("issuer", "request-jti", expires_at, now)
+                .unwrap();
+        TransportBoundAccessContext::new(core, credential, now).unwrap()
+    }
+
+    fn handler_server(fixture: &Fixture) -> LabMcpServer {
+        LabMcpServer {
+            registry: Arc::new(crate::registry::build_default_registry()),
+            access_runtime: Arc::clone(&fixture.runtime),
+            gateway_manager: Some(Arc::clone(&fixture.manager)),
+            peers: Default::default(),
+            code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
+            client_registry: Default::default(),
+            transport_label: "test",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
+                LoggingLevel::Emergency,
+            ))),
+            route_scope: McpRouteScope::Root,
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        }
+    }
+
+    fn handler_context(
+        peer: rmcp::service::Peer<RoleServer>,
+        identity: Option<VerifiedIdentity>,
+        binding: Result<
+            TransportBoundAccessContext,
+            crate::mcp::bound_access::BoundAccessContextError,
+        >,
+    ) -> RequestContext<RoleServer> {
+        let mut context = RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        if let Some(identity) = identity {
+            parts.extensions.insert(identity);
+        }
+        attach_project_access_observation(&mut parts.extensions, binding);
+        context.extensions.insert(parts);
+        context
+    }
+
+    fn legacy_oauth_context(peer: rmcp::service::Peer<RoleServer>) -> RequestContext<RoleServer> {
+        let mut context = RequestContext::new(rmcp::model::NumberOrString::Number(1), peer);
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        parts
+            .extensions
+            .insert(labby_auth::auth_context::AuthContext {
+                sub: "reader".into(),
+                actor_key: None,
+                scopes: vec!["lab".into()],
+                issuer: "https://issuer.example".into(),
+                via_session: true,
+                csrf_token: None,
+                email: None,
+            });
+        context.extensions.insert(parts);
+        context
+    }
+
     fn input(identity: VerifiedIdentity) -> ResourceReadResolutionInput {
         let mut meta = RequestMetaObject::new();
         meta.insert("trace".into(), serde_json::json!("opaque"));
@@ -454,6 +621,271 @@ mod tests {
             "lab://upstream/alpha/lab://upstream/inner/file:///nested/value"
         );
         assert_eq!(value["contents"][1]["uri"], value["contents"][0]["uri"]);
+    }
+
+    #[tokio::test]
+    async fn transport_binding_expiry_after_resource_rpc_discards_result_deterministically() {
+        let fixture = fixture().await;
+        let before = UNIX_EPOCH + Duration::from_secs(100);
+        let after = UNIX_EPOCH + Duration::from_secs(102);
+        let transport = transport_binding(&fixture, 101, before).await;
+        let ResourceReadResolutionInput { request, .. } = input(fixture.identity.clone());
+        let mut times = [before, after].into_iter();
+
+        assert_eq!(
+            read_transport_bound_project_resource_with_clock(
+                &fixture.runtime,
+                &fixture.manager,
+                &transport,
+                &fixture.identity,
+                request,
+                || times.next().unwrap(),
+            )
+            .await,
+            Err(ResourceReadResolutionError::Unavailable)
+        );
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn handler_bound_regular_reads_and_nonregular_families_never_fall_back() {
+        let fixture = fixture().await;
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let bound = transport_binding(&fixture, usize::MAX, now).await;
+        let ResourceReadResolutionInput { request, .. } = input(fixture.identity.clone());
+        let response = running
+            .service()
+            .read_resource_impl(
+                request,
+                handler_context(
+                    running.peer().clone(),
+                    Some(fixture.identity.clone()),
+                    Ok(bound),
+                ),
+            )
+            .await
+            .expect("bound exact regular Resource");
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+        let ReadResourceResponse::Complete(response) = response else {
+            panic!("unexpected incomplete Resource response")
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(
+            value["contents"][0]["uri"],
+            "lab://upstream/alpha/lab://upstream/inner/file:///nested/value"
+        );
+
+        for uri in [
+            "lab://catalog",
+            "ui://lab/code-mode/app.html",
+            "lab://gateway/actions",
+            "lab://gateway/servers",
+            "skill://labby/using-labby/SKILL.md",
+            "lab://upstream/oauth/file:///subject",
+            "lab://upstream/alpha/missing",
+        ] {
+            let bound = transport_binding(&fixture, usize::MAX, now).await;
+            let error = running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(uri),
+                    handler_context(
+                        running.peer().clone(),
+                        Some(fixture.identity.clone()),
+                        Ok(bound),
+                    ),
+                )
+                .await
+                .expect_err("Project-bound nonregular Resource is terminal");
+            assert_eq!(error.data.as_ref().unwrap()["kind"], "not_found");
+        }
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn handler_unavailable_expired_and_identity_mismatch_are_terminal_without_rpc() {
+        let fixture = fixture().await;
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let expired = transport_binding(&fixture, 101, now).await;
+        let current = transport_binding(&fixture, usize::MAX, now).await;
+        let other_identity = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "other-issuer",
+            "other-credential",
+        )
+        .unwrap();
+        let contexts = [
+            handler_context(
+                running.peer().clone(),
+                Some(fixture.identity.clone()),
+                Err(crate::mcp::bound_access::BoundAccessContextError::Unavailable),
+            ),
+            handler_context(
+                running.peer().clone(),
+                Some(fixture.identity.clone()),
+                Ok(expired),
+            ),
+            handler_context(running.peer().clone(), None, Ok(current)),
+            handler_context(
+                running.peer().clone(),
+                Some(other_identity),
+                Ok(transport_binding(&fixture, usize::MAX, now).await),
+            ),
+        ];
+        for context in contexts {
+            let error = running
+                .service()
+                .read_resource_impl(ReadResourceRequestParams::new("lab://catalog"), context)
+                .await
+                .expect_err("unavailable Project binding is terminal");
+            assert_eq!(error.data.as_ref().unwrap()["kind"], "not_found");
+        }
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn handler_legacy_local_path_preserves_existing_output() {
+        let fixture = fixture().await;
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let local = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new("lab://catalog"),
+                RequestContext::new(
+                    rmcp::model::NumberOrString::Number(1),
+                    running.peer().clone(),
+                ),
+            )
+            .await
+            .expect("legacy local Resource remains mounted");
+        let ReadResourceResponse::Complete(local) = local else {
+            panic!("unexpected incomplete local response")
+        };
+        let ResourceContents::TextResourceContents { uri, .. } = &local.contents[0] else {
+            panic!("legacy catalog must remain text")
+        };
+        assert_eq!(uri, "lab://catalog");
+    }
+
+    #[tokio::test]
+    async fn handler_bound_oauth_uri_is_terminal_while_legacy_reaches_oauth_branch() {
+        let fixture = fixture().await;
+        let (config, oauth) = oauth_gateway_config();
+        fixture.manager.try_seed_config(config).await.unwrap();
+        fixture
+            .pool
+            .install_test_subject_server_for_upstream(
+                &oauth,
+                "reader",
+                EchoResourceServer {
+                    calls: Arc::clone(&fixture.calls),
+                    received: Arc::clone(&fixture.received),
+                },
+            )
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        let now = UNIX_EPOCH + Duration::from_secs(100);
+        let bound = transport_binding(&fixture, usize::MAX, now).await;
+        let uri = "lab://upstream/oauth/file:///subject";
+        let bound_error = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(uri),
+                handler_context(running.peer().clone(), Some(fixture.identity), Ok(bound)),
+            )
+            .await
+            .expect_err("Bound OAuth-shaped URI must not fall through");
+        assert_eq!(bound_error.data.as_ref().unwrap()["kind"], "not_found");
+
+        let legacy_error = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(uri),
+                legacy_oauth_context(running.peer().clone()),
+            )
+            .await
+            .expect_err("legacy OAuth fixture intentionally cannot connect");
+        assert_eq!(legacy_error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(legacy_error.message.contains("oauth"));
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn handler_operational_failures_are_redacted_upstream_errors() {
+        for oversized in [false, true] {
+            let fixture = fixture().await;
+            if oversized {
+                fixture
+                    .pool
+                    .install_prompt_server_for_tests("alpha", OversizedResourceServer)
+                    .await;
+            } else {
+                fixture
+                    .pool
+                    .install_prompt_server_for_tests("alpha", FailingResourceServer)
+                    .await;
+            }
+            fixture
+                .pool
+                .insert_resource_routes_for_tests(
+                    "alpha",
+                    vec![Resource::new(
+                        "lab://upstream/inner/file:///nested/value",
+                        "exact",
+                    )],
+                )
+                .await;
+            let now = UNIX_EPOCH + Duration::from_secs(100);
+            let bound = transport_binding(&fixture, usize::MAX, now).await;
+            let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+            let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+                handler_server(&fixture),
+                transport,
+                None,
+            );
+            let ResourceReadResolutionInput { request, .. } = input(fixture.identity.clone());
+            let error = running
+                .service()
+                .read_resource_impl(
+                    request,
+                    handler_context(
+                        running.peer().clone(),
+                        Some(fixture.identity.clone()),
+                        Ok(bound),
+                    ),
+                )
+                .await
+                .expect_err("operational Resource read failure");
+            assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+            assert!(!error.message.contains("private"));
+            assert!(
+                !error
+                    .to_string()
+                    .contains("private stable resource failure")
+            );
+        }
     }
 
     #[tokio::test]

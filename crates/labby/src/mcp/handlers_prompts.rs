@@ -30,8 +30,8 @@ use crate::mcp::agent_error::{
 
 #[cfg(feature = "gateway")]
 use crate::mcp::bound_access::{
-    ProjectDiscoveryShadow, ProjectPromptExecutionBinding, project_discovery_shadow,
-    project_prompt_execution_binding,
+    ProjectDiscoveryShadow, ProjectExecutionBinding, project_discovery_shadow,
+    project_execution_binding,
 };
 use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
@@ -401,9 +401,9 @@ impl LabMcpServer {
             "dispatch start"
         );
         #[cfg(feature = "gateway")]
-        match project_prompt_execution_binding(&context.extensions, SystemTime::now()) {
-            ProjectPromptExecutionBinding::Legacy => {}
-            ProjectPromptExecutionBinding::Unavailable => {
+        match project_execution_binding(&context.extensions, SystemTime::now()) {
+            ProjectExecutionBinding::Legacy => {}
+            ProjectExecutionBinding::Unavailable => {
                 let elapsed_ms = start.elapsed().as_millis();
                 self.emit_dispatch_notification(
                     &context,
@@ -424,7 +424,7 @@ impl LabMcpServer {
                     &error_context,
                 ));
             }
-            ProjectPromptExecutionBinding::Bound {
+            ProjectExecutionBinding::Bound {
                 transport,
                 identity,
             } => {
