@@ -1,15 +1,17 @@
-//! Immutable publication of the pool's routable tool and regular-resource projections.
+//! Immutable publication of the pool's routable tool, regular-resource, and
+//! regular-resource-template projections.
 //!
-//! The snapshots deliberately exclude prompts, templates, UI resources, skills,
-//! OAuth subjects, and unrelated capability health. Those
-//! concerns have separate lifecycles and must not perturb tool generations.
+//! The snapshots deliberately exclude prompts, UI resources, skills, OAuth
+//! subjects, local and synthetic resources, and unrelated capability health.
+//! Each projection has an independent generation so one catalog family cannot
+//! perturb another family's publication identity.
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use rmcp::model::Resource;
+use rmcp::model::{Resource, ResourceTemplate};
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::upstream::types::{UpstreamEntry, UpstreamTool};
@@ -19,8 +21,55 @@ use super::tools::MAX_UPSTREAM_TOOLS;
 
 static NEXT_TOOL_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_RESOURCE_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_RESOURCE_TEMPLATE_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 const MAX_RESOURCE_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESOURCE_ROW_BYTES: usize = 1024 * 1024;
+
+#[derive(Clone, Copy)]
+enum SourceAdmissionError {
+    Invalid,
+    Duplicate,
+    TooManyBytes,
+}
+
+fn validate_source_rows<'a, T: serde::Serialize + 'a>(
+    identifiers: impl IntoIterator<Item = &'a str>,
+    rows: impl IntoIterator<Item = &'a T>,
+) -> Result<usize, SourceAdmissionError> {
+    let mut identifiers = identifiers.into_iter().collect::<Vec<_>>();
+    identifiers.sort_unstable();
+    if identifiers
+        .iter()
+        .any(|identifier| identifier.is_empty() || identifier.chars().any(char::is_control))
+    {
+        return Err(SourceAdmissionError::Invalid);
+    }
+    if identifiers.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(SourceAdmissionError::Duplicate);
+    }
+    rows.into_iter().try_fold(0usize, |total, row| {
+        let bytes = serde_json::to_vec(row)
+            .map_err(|_| SourceAdmissionError::Invalid)?
+            .len();
+        if bytes > MAX_RESOURCE_ROW_BYTES {
+            return Err(SourceAdmissionError::TooManyBytes);
+        }
+        total
+            .checked_add(bytes)
+            .ok_or(SourceAdmissionError::TooManyBytes)
+    })
+}
+
+fn checked_retained_bytes(
+    existing: Option<usize>,
+    candidate: usize,
+) -> Result<usize, SourceAdmissionError> {
+    existing
+        .and_then(|existing| existing.checked_add(candidate))
+        .filter(|total| *total <= MAX_RESOURCE_CATALOG_BYTES)
+        .map(|_| candidate)
+        .ok_or(SourceAdmissionError::TooManyBytes)
+}
 
 pub(super) fn is_ui_resource_uri(uri: &str) -> bool {
     uri.get(..5)
@@ -47,6 +96,16 @@ fn next_resource_generation() -> ResourceCatalogGeneration {
     )
 }
 
+fn next_resource_template_generation() -> ResourceTemplateCatalogGeneration {
+    ResourceTemplateCatalogGeneration(
+        NEXT_RESOURCE_TEMPLATE_CATALOG_GENERATION
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .expect("resource template catalog generation exhausted"),
+    )
+}
+
 /// Opaque process-local identity of one published tool catalog revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolCatalogGeneration(u64);
@@ -55,11 +114,22 @@ pub struct ToolCatalogGeneration(u64);
 pub struct ResourceCatalogGeneration(u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceTemplateCatalogGeneration(u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceCatalogPublicationError {
     TooManyRoutes,
     TooManyBytes,
     InvalidResource,
     DuplicateResource,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceTemplateCatalogPublicationError {
+    TooManyRoutes,
+    TooManyBytes,
+    InvalidTemplate,
+    DuplicateTemplate,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +157,34 @@ impl PublishedResourceCatalogSnapshot {
     }
     #[must_use]
     pub fn routes(&self) -> &[PublishedResourceRoute] {
+        &self.routes
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PublishedResourceTemplateRoute {
+    pub upstream_name: Arc<str>,
+    pub native_uri_template: Arc<str>,
+    pub template: ResourceTemplate,
+}
+
+/// Immutable observational catalog of regular non-OAuth ResourceTemplates.
+///
+/// UI templates, OAuth/subject-scoped, synthetic, local, Skills, and app
+/// families are excluded. This is neither read authority nor a grant.
+#[derive(Debug, Clone)]
+pub struct PublishedResourceTemplateCatalogSnapshot {
+    generation: ResourceTemplateCatalogGeneration,
+    routes: Arc<[PublishedResourceTemplateRoute]>,
+}
+
+impl PublishedResourceTemplateCatalogSnapshot {
+    #[must_use]
+    pub fn generation(&self) -> ResourceTemplateCatalogGeneration {
+        self.generation
+    }
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedResourceTemplateRoute] {
         &self.routes
     }
 }
@@ -134,6 +232,12 @@ pub(super) struct CatalogState {
     published_resources:
         Result<Arc<PublishedResourceCatalogSnapshot>, ResourceCatalogPublicationError>,
     resource_determinant: ResourceProjectionDeterminant,
+    resource_template_sources: HashMap<String, ResourceTemplateSourceState>,
+    published_resource_templates: Result<
+        Arc<PublishedResourceTemplateCatalogSnapshot>,
+        ResourceTemplateCatalogPublicationError,
+    >,
+    resource_template_determinant: ResourceTemplateProjectionDeterminant,
 }
 
 #[derive(PartialEq, Eq)]
@@ -148,6 +252,33 @@ struct ResourceRouteDeterminant {
     native_uri: String,
     incarnation: super::incarnation::ConnectionIncarnation,
     resource: serde_json::Value,
+}
+
+#[derive(PartialEq, Eq)]
+enum ResourceTemplateProjectionDeterminant {
+    Ready(Vec<ResourceTemplateRouteDeterminant>),
+    Failed(ResourceTemplateCatalogPublicationError),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ResourceTemplateRouteDeterminant {
+    upstream_name: String,
+    native_uri_template: String,
+    incarnation: super::incarnation::ConnectionIncarnation,
+    template: serde_json::Value,
+}
+
+struct ResourceTemplateSource {
+    incarnation: super::incarnation::ConnectionIncarnation,
+    templates: Arc<[ResourceTemplate]>,
+    retained_bytes: usize,
+}
+enum ResourceTemplateSourceState {
+    Ready(ResourceTemplateSource),
+    Failed {
+        incarnation: super::incarnation::ConnectionIncarnation,
+        error: ResourceTemplateCatalogPublicationError,
+    },
 }
 
 struct ResourceSource {
@@ -187,6 +318,7 @@ impl CatalogState {
     ) {
         self.incarnations.insert(upstream.to_string(), incarnation);
         self.resource_sources.remove(upstream);
+        self.resource_template_sources.remove(upstream);
     }
 
     pub(super) fn incarnation(
@@ -199,11 +331,13 @@ impl CatalogState {
     pub(super) fn remove_incarnation(&mut self, upstream: &str) {
         self.incarnations.remove(upstream);
         self.resource_sources.remove(upstream);
+        self.resource_template_sources.remove(upstream);
     }
 
     pub(super) fn clear_incarnations(&mut self) {
         self.incarnations.clear();
         self.resource_sources.clear();
+        self.resource_template_sources.clear();
     }
 
     pub(super) fn new() -> Self {
@@ -221,6 +355,12 @@ impl CatalogState {
                 routes: Arc::from([]),
             })),
             resource_determinant: ResourceProjectionDeterminant::Ready(Vec::new()),
+            resource_template_sources: HashMap::new(),
+            published_resource_templates: Ok(Arc::new(PublishedResourceTemplateCatalogSnapshot {
+                generation: next_resource_template_generation(),
+                routes: Arc::from([]),
+            })),
+            resource_template_determinant: ResourceTemplateProjectionDeterminant::Ready(Vec::new()),
         }
     }
 
@@ -243,38 +383,15 @@ impl CatalogState {
                 ResourceSourceState::Failed { .. } => None,
             })
             .try_fold(0usize, usize::checked_add);
-        let mut source_uris = resources
-            .iter()
-            .map(|resource| resource.uri.as_str())
-            .collect::<Vec<_>>();
-        source_uris.sort_unstable();
-        let structural = if source_uris
-            .iter()
-            .any(|uri| uri.is_empty() || uri.chars().any(char::is_control))
-        {
-            Err(ResourceCatalogPublicationError::InvalidResource)
-        } else if source_uris.windows(2).any(|pair| pair[0] == pair[1]) {
-            Err(ResourceCatalogPublicationError::DuplicateResource)
-        } else {
-            Ok(())
-        };
-        let candidate = resources.iter().try_fold(0usize, |total, resource| {
-            let bytes = serde_json::to_vec(resource)
-                .map_err(|_| ResourceCatalogPublicationError::InvalidResource)?
-                .len();
-            if bytes > MAX_RESOURCE_ROW_BYTES {
-                return Err(ResourceCatalogPublicationError::TooManyBytes);
-            }
-            total
-                .checked_add(bytes)
-                .ok_or(ResourceCatalogPublicationError::TooManyBytes)
-        });
-        let retained_bytes = structural.and(candidate).and_then(|candidate| {
-            existing_retained
-                .and_then(|existing| existing.checked_add(candidate))
-                .filter(|total| *total <= MAX_RESOURCE_CATALOG_BYTES)
-                .map(|_| candidate)
-                .ok_or(ResourceCatalogPublicationError::TooManyBytes)
+        let retained_bytes = validate_source_rows(
+            resources.iter().map(|resource| resource.uri.as_str()),
+            resources.iter().copied(),
+        )
+        .and_then(|candidate| checked_retained_bytes(existing_retained, candidate))
+        .map_err(|error| match error {
+            SourceAdmissionError::Invalid => ResourceCatalogPublicationError::InvalidResource,
+            SourceAdmissionError::Duplicate => ResourceCatalogPublicationError::DuplicateResource,
+            SourceAdmissionError::TooManyBytes => ResourceCatalogPublicationError::TooManyBytes,
         });
         let source = if let Ok(retained_bytes) = retained_bytes {
             ResourceSourceState::Ready(ResourceSource {
@@ -293,6 +410,147 @@ impl CatalogState {
 
     pub(super) fn remove_resource_source(&mut self, upstream: &str) {
         self.resource_sources.remove(upstream);
+    }
+
+    pub(super) fn set_resource_template_source(
+        &mut self,
+        upstream: &str,
+        incarnation: super::incarnation::ConnectionIncarnation,
+        templates: &[ResourceTemplate],
+    ) {
+        let templates = templates
+            .iter()
+            .filter(|template| !is_ui_resource_uri(&template.uri_template))
+            .collect::<Vec<_>>();
+        let existing_retained = self
+            .resource_template_sources
+            .iter()
+            .filter(|(name, _)| name.as_str() != upstream)
+            .filter_map(|(_, source)| match source {
+                ResourceTemplateSourceState::Ready(source) => Some(source.retained_bytes),
+                ResourceTemplateSourceState::Failed { .. } => None,
+            })
+            .try_fold(0usize, usize::checked_add);
+        let retained_bytes = validate_source_rows(
+            templates
+                .iter()
+                .map(|template| template.uri_template.as_str()),
+            templates.iter().copied(),
+        )
+        .and_then(|candidate| checked_retained_bytes(existing_retained, candidate))
+        .map_err(|error| match error {
+            SourceAdmissionError::Invalid => {
+                ResourceTemplateCatalogPublicationError::InvalidTemplate
+            }
+            SourceAdmissionError::Duplicate => {
+                ResourceTemplateCatalogPublicationError::DuplicateTemplate
+            }
+            SourceAdmissionError::TooManyBytes => {
+                ResourceTemplateCatalogPublicationError::TooManyBytes
+            }
+        });
+        let source = match retained_bytes {
+            Ok(retained_bytes) => ResourceTemplateSourceState::Ready(ResourceTemplateSource {
+                incarnation,
+                templates: templates.into_iter().cloned().collect::<Vec<_>>().into(),
+                retained_bytes,
+            }),
+            Err(error) => ResourceTemplateSourceState::Failed { incarnation, error },
+        };
+        self.resource_template_sources
+            .insert(upstream.to_string(), source);
+    }
+
+    pub(super) fn remove_resource_template_source(&mut self, upstream: &str) {
+        self.resource_template_sources.remove(upstream);
+    }
+
+    fn resource_template_projection(
+        &self,
+    ) -> Result<
+        (
+            Vec<ResourceTemplateRouteDeterminant>,
+            Arc<[PublishedResourceTemplateRoute]>,
+        ),
+        ResourceTemplateCatalogPublicationError,
+    > {
+        let mut sources = self.resource_template_sources.iter().collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|(upstream, _)| upstream.as_str());
+        let mut retained_bytes = 0usize;
+        for (upstream, source) in &sources {
+            let entry = self
+                .entries
+                .get(*upstream)
+                .ok_or(ResourceTemplateCatalogPublicationError::InvalidTemplate)?;
+            let incarnation = self.incarnation(upstream);
+            match source {
+                ResourceTemplateSourceState::Ready(source) => {
+                    if incarnation != Some(source.incarnation) || entry.name.as_ref() != *upstream {
+                        return Err(ResourceTemplateCatalogPublicationError::InvalidTemplate);
+                    }
+                    retained_bytes = retained_bytes
+                        .checked_add(source.retained_bytes)
+                        .ok_or(ResourceTemplateCatalogPublicationError::TooManyBytes)?;
+                    if retained_bytes > MAX_RESOURCE_CATALOG_BYTES {
+                        return Err(ResourceTemplateCatalogPublicationError::TooManyBytes);
+                    }
+                }
+                ResourceTemplateSourceState::Failed {
+                    incarnation: source_incarnation,
+                    error,
+                } => {
+                    if incarnation != Some(*source_incarnation) {
+                        return Err(ResourceTemplateCatalogPublicationError::InvalidTemplate);
+                    }
+                    if entry.proxy_resources && entry.resource_health.is_routable() {
+                        return Err(*error);
+                    }
+                }
+            }
+        }
+
+        let mut determinant = Vec::new();
+        let mut routes = Vec::new();
+        let mut published_bytes = 0usize;
+        for (upstream, source) in sources {
+            let ResourceTemplateSourceState::Ready(source) = source else {
+                continue;
+            };
+            let entry = &self.entries[upstream];
+            if !entry.proxy_resources || !entry.resource_health.is_routable() {
+                continue;
+            }
+            let mut templates = source.templates.iter().collect::<Vec<_>>();
+            templates.sort_unstable_by_key(|template| template.uri_template.as_str());
+            for template in templates {
+                if routes.len() == super::tools::MAX_UPSTREAM_RESOURCES {
+                    return Err(ResourceTemplateCatalogPublicationError::TooManyRoutes);
+                }
+                let bytes = serde_json::to_vec(template)
+                    .map_err(|_| ResourceTemplateCatalogPublicationError::InvalidTemplate)?
+                    .len();
+                published_bytes = published_bytes
+                    .checked_add(bytes)
+                    .ok_or(ResourceTemplateCatalogPublicationError::TooManyBytes)?;
+                if published_bytes > MAX_RESOURCE_CATALOG_BYTES {
+                    return Err(ResourceTemplateCatalogPublicationError::TooManyBytes);
+                }
+                let value = serde_json::to_value(template)
+                    .map_err(|_| ResourceTemplateCatalogPublicationError::InvalidTemplate)?;
+                determinant.push(ResourceTemplateRouteDeterminant {
+                    upstream_name: upstream.clone(),
+                    native_uri_template: template.uri_template.clone(),
+                    incarnation: source.incarnation,
+                    template: value,
+                });
+                routes.push(PublishedResourceTemplateRoute {
+                    upstream_name: Arc::from(upstream.as_str()),
+                    native_uri_template: Arc::from(template.uri_template.as_str()),
+                    template: template.clone(),
+                });
+            }
+        }
+        Ok((determinant, Arc::from(routes)))
     }
 
     fn resource_projection(
@@ -467,6 +725,8 @@ impl CatalogState {
     fn publish_if_changed(&mut self) {
         self.resource_sources
             .retain(|upstream, _| self.entries.contains_key(upstream));
+        self.resource_template_sources
+            .retain(|upstream, _| self.entries.contains_key(upstream));
         let projection = self.projection();
         let determinant = match &projection {
             Ok((determinant, _)) => ProjectionDeterminant::Ready(determinant.clone()),
@@ -491,6 +751,22 @@ impl CatalogState {
             self.published_resources = resource_projection.map(|(_, routes)| {
                 Arc::new(PublishedResourceCatalogSnapshot {
                     generation: next_resource_generation(),
+                    routes,
+                })
+            });
+        }
+        let template_projection = self.resource_template_projection();
+        let template_determinant = match &template_projection {
+            Ok((determinant, _)) => {
+                ResourceTemplateProjectionDeterminant::Ready(determinant.clone())
+            }
+            Err(error) => ResourceTemplateProjectionDeterminant::Failed(*error),
+        };
+        if template_determinant != self.resource_template_determinant {
+            self.resource_template_determinant = template_determinant;
+            self.published_resource_templates = template_projection.map(|(_, routes)| {
+                Arc::new(PublishedResourceTemplateCatalogSnapshot {
+                    generation: next_resource_template_generation(),
                     routes,
                 })
             });
@@ -537,6 +813,19 @@ impl Drop for CatalogWriteGuard<'_> {
 impl UpstreamPool {
     pub(super) async fn catalog_write(&self) -> CatalogWriteGuard<'_> {
         CatalogWriteGuard(self.catalog.write().await)
+    }
+
+    pub async fn published_resource_template_catalog(
+        &self,
+    ) -> Result<
+        Arc<PublishedResourceTemplateCatalogSnapshot>,
+        ResourceTemplateCatalogPublicationError,
+    > {
+        self.catalog
+            .read()
+            .await
+            .published_resource_templates
+            .clone()
     }
 
     /// Observe generation and routes from the same locked catalog state.
@@ -953,6 +1242,372 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(first.generation(), second.generation());
     }
+
+    fn install_resource_template_source(
+        state: &mut CatalogState,
+        upstream: &str,
+        templates: Vec<ResourceTemplate>,
+    ) {
+        let incarnation =
+            super::super::incarnation::next_connection_incarnation().expect("identity");
+        state.entries.insert(
+            upstream.to_string(),
+            healthy_in_process_entry(Arc::from(upstream), HashMap::new()),
+        );
+        state.bind_incarnation(upstream, incarnation);
+        state.set_resource_template_source(upstream, incarnation, &templates);
+    }
+
+    #[test]
+    fn resource_template_projection_is_exact_deterministic_and_immutable() {
+        let mut state = CatalogState::new();
+        let beta =
+            ResourceTemplate::new("file:///beta/{id}", "beta").with_description("exact metadata");
+        install_resource_template_source(
+            &mut state,
+            "zeta",
+            vec![
+                beta.clone(),
+                ResourceTemplate::new("UI://widget/{id}", "widget"),
+                ResourceTemplate::new("file:///alpha/{id}", "alpha"),
+            ],
+        );
+        install_resource_template_source(
+            &mut state,
+            "alpha",
+            vec![ResourceTemplate::new("https://example/{id}", "remote")],
+        );
+        state.publish_if_changed();
+        let first = state
+            .published_resource_templates
+            .clone()
+            .expect("published");
+        assert_eq!(
+            first
+                .routes()
+                .iter()
+                .map(|route| (
+                    route.upstream_name.as_ref(),
+                    route.native_uri_template.as_ref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha", "https://example/{id}"),
+                ("zeta", "file:///alpha/{id}"),
+                ("zeta", "file:///beta/{id}"),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&first.routes()[2].template).expect("metadata"),
+            serde_json::to_value(&beta).expect("metadata")
+        );
+
+        state.entries.get_mut("zeta").expect("zeta").resource_health =
+            crate::upstream::types::UpstreamHealth::Unhealthy {
+                consecutive_failures: 3,
+            };
+        state.publish_if_changed();
+        let narrowed = state
+            .published_resource_templates
+            .clone()
+            .expect("narrowed");
+        assert_eq!(narrowed.routes().len(), 1);
+        assert_eq!(first.routes().len(), 3, "old snapshot remains immutable");
+    }
+
+    #[test]
+    fn resource_template_generation_tracks_incarnation_and_proxy_not_exposure_policy() {
+        let mut state = CatalogState::new();
+        let rows = vec![ResourceTemplate::new("file:///{id}", "same")];
+        install_resource_template_source(&mut state, "alpha", rows.clone());
+        state.publish_if_changed();
+        let first = state.published_resource_templates.clone().expect("first");
+        let incarnation = state.incarnation("alpha").expect("identity");
+        state.set_resource_template_source("alpha", incarnation, &rows);
+        state.publish_if_changed();
+        assert!(Arc::ptr_eq(
+            &first,
+            &state
+                .published_resource_templates
+                .clone()
+                .expect("identical")
+        ));
+
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .resource_exposure_policy = ToolExposurePolicy::AllowList(Vec::new());
+        state.publish_if_changed();
+        assert!(Arc::ptr_eq(
+            &first,
+            &state
+                .published_resource_templates
+                .clone()
+                .expect("exposure policy is unrelated")
+        ));
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .proxy_resources = false;
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("hidden")
+                .routes()
+                .is_empty()
+        );
+
+        let replacement =
+            super::super::incarnation::next_connection_incarnation().expect("replacement");
+        state.bind_incarnation("alpha", replacement);
+        state
+            .entries
+            .get_mut("alpha")
+            .expect("alpha")
+            .proxy_resources = true;
+        state.publish_if_changed();
+        assert!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("old source cleared")
+                .routes()
+                .is_empty()
+        );
+        state.set_resource_template_source("alpha", replacement, &rows);
+        state.publish_if_changed();
+        let rebound = state.published_resource_templates.clone().expect("rebound");
+        assert_eq!(rebound.routes().len(), 1);
+        assert_ne!(first.generation(), rebound.generation());
+        state.entries.remove("alpha");
+        state.remove_incarnation("alpha");
+        state.publish_if_changed();
+        let removed = state.published_resource_templates.clone().expect("removed");
+        assert!(removed.routes().is_empty());
+        assert_ne!(rebound.generation(), removed.generation());
+    }
+
+    #[test]
+    fn resource_template_structural_failures_are_typed_and_recover() {
+        let mut state = CatalogState::new();
+        install_resource_template_source(
+            &mut state,
+            "alpha",
+            vec![
+                ResourceTemplate::new("file:///{id}", "one"),
+                ResourceTemplate::new("file:///{id}", "two"),
+            ],
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resource_templates,
+            Err(ResourceTemplateCatalogPublicationError::DuplicateTemplate)
+        ));
+        let incarnation = state.incarnation("alpha").expect("identity");
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[ResourceTemplate::new("bad\ntemplate", "bad")],
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resource_templates,
+            Err(ResourceTemplateCatalogPublicationError::InvalidTemplate)
+        ));
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[ResourceTemplate::new("file:///fixed/{id}", "fixed")],
+        );
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("recovered")
+                .routes()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn resource_template_route_cap_fails_closed_and_unrelated_mutation_is_independent() {
+        let mut state = CatalogState::new();
+        install_resource_template_source(
+            &mut state,
+            "alpha",
+            (0..super::super::tools::MAX_UPSTREAM_RESOURCES)
+                .map(|index| ResourceTemplate::new(format!("file:///{{id}}/{index}"), "row"))
+                .collect(),
+        );
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("exact route cap")
+                .routes()
+                .len(),
+            super::super::tools::MAX_UPSTREAM_RESOURCES
+        );
+        let incarnation = state.incarnation("alpha").expect("identity");
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &(0..=super::super::tools::MAX_UPSTREAM_RESOURCES)
+                .map(|index| ResourceTemplate::new(format!("file:///{{id}}/{index}"), "row"))
+                .collect::<Vec<_>>(),
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resource_templates,
+            Err(ResourceTemplateCatalogPublicationError::TooManyRoutes)
+        ));
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[ResourceTemplate::new("file:///{id}", "fixed")],
+        );
+        state.publish_if_changed();
+        let recovered = state
+            .published_resource_templates
+            .clone()
+            .expect("recovered");
+        let mut unrelated = healthy_in_process_entry(Arc::from("tools-only"), HashMap::new());
+        unrelated.prompt_count = 99;
+        state.entries.insert("tools-only".into(), unrelated);
+        state.publish_if_changed();
+        assert!(Arc::ptr_eq(
+            &recovered,
+            &state
+                .published_resource_templates
+                .clone()
+                .expect("independent")
+        ));
+        install_resource_source(
+            &mut state,
+            "resources-only",
+            vec![Resource::new("file:///resource", "resource")],
+        );
+        state.publish_if_changed();
+        assert!(Arc::ptr_eq(
+            &recovered,
+            &state
+                .published_resource_templates
+                .clone()
+                .expect("resource publication is independent")
+        ));
+        let resource_snapshot = state
+            .published_resources
+            .clone()
+            .expect("resource snapshot");
+        let tool_snapshot = state.published.clone().expect("tool snapshot");
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[ResourceTemplate::new("file:///changed/{id}", "changed")],
+        );
+        state.publish_if_changed();
+        assert!(Arc::ptr_eq(
+            &resource_snapshot,
+            &state
+                .published_resources
+                .clone()
+                .expect("template-independent")
+        ));
+        assert!(Arc::ptr_eq(
+            &tool_snapshot,
+            &state.published.clone().expect("template-independent tools")
+        ));
+    }
+
+    fn template_with_serialized_size(uri: &str, target: usize) -> ResourceTemplate {
+        let base = ResourceTemplate::new(uri, "row").with_description("");
+        let base_len = serde_json::to_vec(&base).expect("serialize base").len();
+        assert!(base_len <= target);
+        let template =
+            ResourceTemplate::new(uri, "row").with_description("x".repeat(target - base_len));
+        assert_eq!(
+            serde_json::to_vec(&template)
+                .expect("serialize template")
+                .len(),
+            target
+        );
+        template
+    }
+
+    #[test]
+    fn resource_template_byte_bounds_are_exact_global_and_recoverable() {
+        let mut state = CatalogState::new();
+        let exact = (0..8)
+            .map(|index| {
+                template_with_serialized_size(
+                    &format!("file:///exact/{index}/{{id}}"),
+                    MAX_RESOURCE_ROW_BYTES,
+                )
+            })
+            .collect::<Vec<_>>();
+        install_resource_template_source(&mut state, "alpha", exact);
+        state.publish_if_changed();
+        assert_eq!(
+            state
+                .published_resource_templates
+                .clone()
+                .expect("exact byte limits pass")
+                .routes()
+                .len(),
+            8
+        );
+
+        let incarnation = state.incarnation("alpha").expect("identity");
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[template_with_serialized_size(
+                "file:///oversized/{id}",
+                MAX_RESOURCE_ROW_BYTES + 1,
+            )],
+        );
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resource_templates,
+            Err(ResourceTemplateCatalogPublicationError::TooManyBytes)
+        ));
+        state.set_resource_template_source(
+            "alpha",
+            incarnation,
+            &[ResourceTemplate::new("file:///fixed/{id}", "fixed")],
+        );
+        state.publish_if_changed();
+        assert!(state.published_resource_templates.is_ok());
+
+        for upstream in ["alpha", "beta", "gamma"] {
+            let rows = (0..3)
+                .map(|index| {
+                    ResourceTemplate::new(
+                        format!("file:///{upstream}/{index}/{{id}}"),
+                        "x".repeat(950_000),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if upstream == "alpha" {
+                state.set_resource_template_source(upstream, incarnation, &rows);
+            } else {
+                install_resource_template_source(&mut state, upstream, rows);
+            }
+        }
+        state.publish_if_changed();
+        assert!(matches!(
+            state.published_resource_templates,
+            Err(ResourceTemplateCatalogPublicationError::TooManyBytes)
+        ));
+    }
+
     fn entry(upstream: &str, tool_name: &str) -> UpstreamEntry {
         let upstream_name: Arc<str> = Arc::from(upstream);
         let tool = Tool::new(

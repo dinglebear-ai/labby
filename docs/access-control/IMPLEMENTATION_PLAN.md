@@ -365,6 +365,12 @@ Regular non-OAuth `resources/templates/list` fanout now acquires the exact routa
 
 This is an attribution prerequisite only. It adds no template cache, generation-bearing publication, Project catalog child, handler shadow, read authority, or enforcement. OAuth/subject-scoped, UI/local/synthetic/Skills/app families and `resources/read` remain deferred.
 
+### Wave 33 / Milestone 0AK: immutable regular ResourceTemplate pool publication
+
+The pool now publishes a bounded immutable catalog of regular non-OAuth upstream ResourceTemplates from only current-incarnation checked template-list results. The independent generation changes for template content, connection incarnation, Resources routability transitions, proxy enablement, removal, and ABA, while unrelated tool and Resource publications remain stable. Exact native URI-template provenance and metadata are retained; UI, OAuth, local, synthetic, Skills, and app families are excluded.
+
+This pool snapshot is observational and unmounted. It deliberately follows existing template wire semantics: concrete Resource exposure allowlists do not filter URI patterns. It is neither read authority nor a grant, and manager/Project composition, discovery shadowing, reads, and enforcement remain deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

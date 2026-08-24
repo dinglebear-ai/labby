@@ -64,10 +64,13 @@ impl UpstreamPool {
     async fn apply_observed_resource_template_success(
         &self,
         observed: &super::incarnation::ObservedConnectionCatalogEntry,
+        templates: &[ResourceTemplate],
     ) -> bool {
         let name = observed.upstream();
-        self.apply_to_observed_entry(observed, |entry| {
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
+            catalog.set_resource_template_source(name, observed.incarnation(), templates);
         })
         .await
         .is_some()
@@ -79,13 +82,15 @@ impl UpstreamPool {
         error_text: &str,
     ) -> bool {
         let name = observed.upstream();
-        self.apply_to_observed_entry(observed, |entry| {
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_failure_on_entry(
                 name,
                 entry,
                 UpstreamCapability::Resources,
                 format!("failed to list resource templates from upstream: {error_text}"),
             );
+            catalog.remove_resource_template_source(name);
         })
         .await
         .is_some()
@@ -529,7 +534,7 @@ impl UpstreamPool {
             match result {
                 Ok(upstream_templates) => {
                     if !self
-                        .apply_observed_resource_template_success(&observed)
+                        .apply_observed_resource_template_success(&observed, &upstream_templates)
                         .await
                     {
                         tracing::debug!(upstream = %name, "discarding stale resources/templates/list success");
@@ -552,7 +557,7 @@ impl UpstreamPool {
                     if is_capability_unsupported(&error) =>
                 {
                     if !self
-                        .apply_observed_resource_template_success(&observed)
+                        .apply_observed_resource_template_success(&observed, &[])
                         .await
                     {
                         tracing::debug!(upstream = %name, "discarding stale resources/templates/list unsupported result");
@@ -1109,6 +1114,17 @@ mod tests {
             ]
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let published = pool
+            .published_resource_template_catalog()
+            .await
+            .expect("published templates");
+        assert_eq!(published.routes().len(), 2);
+        assert_eq!(published.routes()[0].upstream_name.as_ref(), "paged");
+        assert_eq!(
+            published.routes()[0].native_uri_template.as_ref(),
+            "file:///{path}"
+        );
+        assert_eq!(published.routes()[0].template.name, "first");
     }
 
     #[derive(Clone, Default)]
