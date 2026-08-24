@@ -621,6 +621,11 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
     let pool = Arc::new(UpstreamPool::new());
     pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
         .await;
+    pool.insert_resource_routes_for_tests(
+        "alpha",
+        vec![Resource::new("file:///alpha", "alpha").with_description("metadata")],
+    )
+    .await;
     runtime.swap(Some(Arc::clone(&pool))).await;
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone())
         .with_builtin_service_registry(publication_registry("deploy"));
@@ -634,12 +639,34 @@ async fn unified_loadout_mcp_catalog_binds_exact_common_interval() {
     assert_eq!(snapshot.tools().routes()[0].tool_name.as_ref(), "echo");
     assert_eq!(snapshot.services().services()[0].name(), "deploy");
     assert_eq!(
+        snapshot.resources().routes()[0]
+            .resource
+            .description
+            .as_deref(),
+        Some("metadata")
+    );
+    assert_eq!(
         snapshot.tools().runtime_config_generation(),
         snapshot.services().runtime_config_generation()
     );
     assert_eq!(
         snapshot.tools().pool_publication_generation(),
         runtime.published_pool_snapshot().generation()
+    );
+    assert_eq!(
+        snapshot.resources().pool_publication_generation(),
+        snapshot.tools().pool_publication_generation()
+    );
+    assert_eq!(
+        snapshot.resources().runtime_config_generation(),
+        snapshot.tools().runtime_config_generation()
+    );
+    assert_eq!(
+        snapshot.resources().resource_catalog_generation(),
+        pool.published_resource_catalog()
+            .await
+            .expect("resources")
+            .generation()
     );
     assert_eq!(
         snapshot.tools().tool_catalog_generation(),
@@ -772,6 +799,124 @@ async fn unified_loadout_mcp_catalog_retries_tool_and_registry_aba_independently
     );
     assert_eq!(snapshot.tools().routes()[0].tool_name.as_ref(), "original");
     assert_eq!(snapshot.services().services()[0].name(), "deploy");
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_retries_resource_aba_independently() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    pool.insert_resource_routes_for_tests(
+        "alpha",
+        vec![Resource::new("file:///original", "original")],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("resource-aba.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let before = manager
+        .published_loadout_mcp_catalog_snapshot("project")
+        .await
+        .expect("before resource change");
+    let initial_tools = before.tools().tool_catalog_generation();
+    let initial = pool
+        .published_resource_catalog()
+        .await
+        .expect("initial")
+        .generation();
+    let changing_pool = Arc::clone(&pool);
+    let snapshot = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let pool = Arc::clone(&changing_pool);
+            async move {
+                if attempt == 0 {
+                    pool.insert_resource_routes_for_tests(
+                        "alpha",
+                        vec![Resource::new("file:///transient", "transient")],
+                    )
+                    .await;
+                    pool.insert_resource_routes_for_tests(
+                        "alpha",
+                        vec![Resource::new("file:///original", "original")],
+                    )
+                    .await;
+                }
+            }
+        })
+        .await
+        .expect("resource ABA retry");
+    assert_eq!(
+        snapshot.resources().routes()[0].native_uri.as_ref(),
+        "file:///original"
+    );
+    assert_ne!(snapshot.resources().resource_catalog_generation(), initial);
+    assert_eq!(
+        snapshot.resources().resource_catalog_generation(),
+        pool.published_resource_catalog()
+            .await
+            .expect("final")
+            .generation()
+    );
+    assert_eq!(snapshot.tools().tool_catalog_generation(), initial_tools);
+    assert_eq!(
+        snapshot.tools().runtime_config_generation(),
+        before.tools().runtime_config_generation()
+    );
+    assert_eq!(
+        snapshot.tools().pool_publication_generation(),
+        before.tools().pool_publication_generation()
+    );
+    assert_eq!(
+        snapshot.services().service_registry_generation(),
+        before.services().service_registry_generation()
+    );
+    assert_ne!(
+        snapshot.resources().resource_catalog_generation(),
+        before.resources().resource_catalog_generation()
+    );
+    assert!(!before.same_publication_as(&snapshot));
+}
+
+#[tokio::test]
+async fn unified_loadout_mcp_catalog_bounds_sustained_resource_churn() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "echo"))
+        .await;
+    pool.insert_resource_routes_for_tests(
+        "alpha",
+        vec![Resource::new("file:///initial", "initial")],
+    )
+    .await;
+    runtime.swap(Some(Arc::clone(&pool))).await;
+    let manager = GatewayManager::new(dir.path().join("resource-churn.toml"), runtime)
+        .with_builtin_service_registry(publication_registry("deploy"));
+    manager
+        .seed_config_unchecked_for_tests(unified_config("alpha"))
+        .await;
+    let changing_pool = Arc::clone(&pool);
+    let result = manager
+        .compose_loadout_mcp_catalog("project", move |attempt| {
+            let pool = Arc::clone(&changing_pool);
+            async move {
+                pool.insert_resource_routes_for_tests(
+                    "alpha",
+                    vec![Resource::new(format!("file:///{attempt}"), "changed")],
+                )
+                .await;
+            }
+        })
+        .await;
+    assert_eq!(
+        result.err(),
+        Some(crate::gateway::manager::LoadoutMcpCatalogPublicationError::Unstable)
+    );
 }
 
 #[tokio::test]

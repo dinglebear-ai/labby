@@ -559,17 +559,28 @@ impl UpstreamPool {
         upstream: &str,
         resources: Vec<Resource>,
     ) {
-        let incarnation = super::incarnation::next_connection_incarnation().expect("test identity");
         let mut catalog = self.catalog_write().await;
-        let mut entry =
-            super::entries::healthy_in_process_entry(Arc::from(upstream), HashMap::new());
+        if !catalog.contains_key(upstream) {
+            catalog.insert(
+                upstream.to_string(),
+                super::entries::healthy_in_process_entry(Arc::from(upstream), HashMap::new()),
+            );
+        }
+        let incarnation = match catalog.incarnation(upstream) {
+            Some(incarnation) => incarnation,
+            None => {
+                let incarnation =
+                    super::incarnation::next_connection_incarnation().expect("test identity");
+                catalog.bind_incarnation(upstream, incarnation);
+                incarnation
+            }
+        };
+        let entry = catalog.get_mut(upstream).expect("test entry");
         entry.resource_count = resources.len();
         entry.resource_uris = resources
             .iter()
             .map(|resource| resource.uri.clone())
             .collect();
-        catalog.insert(upstream.to_string(), entry);
-        catalog.bind_incarnation(upstream, incarnation);
         catalog.set_resource_source(upstream, incarnation, &resources);
     }
 }

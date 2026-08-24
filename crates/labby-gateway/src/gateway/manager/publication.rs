@@ -316,10 +316,11 @@ impl PublishedLoadoutResourceCatalogSnapshot {
     }
 }
 
-/// One common-interval view of the Loadout's upstream and built-in MCP tools.
+/// One common-interval view of the Loadout's tools, regular Resources, and services.
 /// This remains observational and unmounted; it is not an execution grant.
 pub struct PublishedLoadoutMcpCatalogSnapshot {
     tools: PublishedLoadoutToolCatalogSnapshot,
+    resources: PublishedLoadoutResourceCatalogSnapshot,
     services: PublishedLoadoutServiceCatalogSnapshot,
 }
 
@@ -329,19 +330,25 @@ impl PublishedLoadoutMcpCatalogSnapshot {
         &self.tools
     }
     #[must_use]
+    pub fn resources(&self) -> &PublishedLoadoutResourceCatalogSnapshot {
+        &self.resources
+    }
+    #[must_use]
     pub fn services(&self) -> &PublishedLoadoutServiceCatalogSnapshot {
         &self.services
     }
 
     /// Equality of every source publication identity in this unified snapshot.
-    /// Construction guarantees both child snapshots carry the same runtime
-    /// generation, so one runtime identity plus the three remaining source
+    /// Construction guarantees all three child snapshots carry the same runtime
+    /// generation, so one runtime identity plus the four remaining source
     /// identities is the complete comparison tuple.
     #[must_use]
     pub fn same_publication_as(&self, other: &Self) -> bool {
         self.tools.runtime_config_generation() == other.tools.runtime_config_generation()
             && self.tools.pool_publication_generation() == other.tools.pool_publication_generation()
             && self.tools.tool_catalog_generation() == other.tools.tool_catalog_generation()
+            && self.resources.resource_catalog_generation()
+                == other.resources.resource_catalog_generation()
             && self.services.service_registry_generation()
                 == other.services.service_registry_generation()
     }
@@ -508,6 +515,10 @@ impl GatewayManager {
                 Some(pool) => Some(pool.published_tool_catalog().await),
                 None => None,
             };
+            let first_resources = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_catalog().await),
+                None => None,
+            };
             let first_services = self.published_service_registry_snapshot();
             after_first_catalogs(attempt).await;
             let second_gateway = self.mcp_publication_observation(name).await;
@@ -516,6 +527,10 @@ impl GatewayManager {
             }
             let second_tools = match second_gateway.pool_snapshot.pool() {
                 Some(pool) => Some(pool.published_tool_catalog().await),
+                None => None,
+            };
+            let second_resources = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_catalog().await),
                 None => None,
             };
             let second_services = self.published_service_registry_snapshot();
@@ -538,7 +553,16 @@ impl GatewayManager {
                 }
                 _ => continue,
             };
+            let (first_resources, second_resources) = match (first_resources, second_resources) {
+                (None, None) => return Err(LoadoutMcpCatalogPublicationError::MissingPool),
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(LoadoutMcpCatalogPublicationError::CatalogUnavailable);
+                }
+                _ => continue,
+            };
             if first_tools.generation() != second_tools.generation()
+                || first_resources.generation() != second_resources.generation()
                 || first_services.generation() != second_services.generation()
             {
                 continue;
@@ -556,11 +580,29 @@ impl GatewayManager {
                 &first_services,
             )
             .map_err(|_| LoadoutMcpCatalogPublicationError::CatalogUnavailable)?;
+            let resources = build_resource_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_resources,
+            );
             debug_assert_eq!(
                 tools.runtime_config_generation(),
                 services.runtime_config_generation()
             );
-            return Ok(PublishedLoadoutMcpCatalogSnapshot { tools, services });
+            debug_assert_eq!(
+                tools.runtime_config_generation(),
+                resources.runtime_config_generation()
+            );
+            debug_assert_eq!(
+                tools.pool_publication_generation(),
+                resources.pool_publication_generation()
+            );
+            return Ok(PublishedLoadoutMcpCatalogSnapshot {
+                tools,
+                resources,
+                services,
+            });
         }
         Err(LoadoutMcpCatalogPublicationError::Unstable)
     }
