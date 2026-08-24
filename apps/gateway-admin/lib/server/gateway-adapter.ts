@@ -211,7 +211,22 @@ function matchTool(toolName: string, patterns?: string[] | null): string | null 
   return null
 }
 
-function primitiveExposed(name: string, patterns: string[] | null | undefined, proxyEnabled: boolean): boolean {
+// Resources and prompts resolve through the same matcher as tools. The backend
+// compiles all four exposure fields with `resolve_named_exposure_policy` and
+// matches them through `ToolExposurePolicy::matches`, which is wildcard-capable
+// — so an exact `includes()` here disagreed with the gateway for any pattern
+// containing `*`: `expose_resources = ["res://docs/*"]` badged every resource
+// "Hidden" while the gateway happily served them all.
+//
+// `subject` must be the same string the backend matches against. For prompts
+// that is the prompt name; for resources it is the bare, upstream-native URI
+// (see `resource_exposed`), NOT the display name — those differ whenever a
+// server gives its resources human-readable titles.
+function primitiveExposed(
+  subject: string,
+  patterns: string[] | null | undefined,
+  proxyEnabled: boolean,
+): boolean {
   if (!proxyEnabled) {
     return false
   }
@@ -220,7 +235,7 @@ function primitiveExposed(name: string, patterns: string[] | null | undefined, p
     return true
   }
 
-  return patterns.includes(name)
+  return patterns.some((pattern) => matchPattern(subject, pattern))
 }
 
 function matchVirtualServerAction(
@@ -586,9 +601,11 @@ export function normalizeGateway(
           name,
           uri,
           ...(typeof resource !== 'string' && resource.description ? { description: resource.description } : {}),
+          // Matched on `uri`, not `name`: the backend's `expose_resources`
+          // patterns are compared against the bare upstream URI.
           exposed: typeof resource === 'string'
-            ? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? true)
-            : resource.exposed ?? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? true),
+            ? primitiveExposed(uri, config.expose_resources, config.proxy_resources ?? true)
+            : resource.exposed ?? primitiveExposed(uri, config.expose_resources, config.proxy_resources ?? true),
         }
       }),
       prompts: discovery.prompts.map((prompt) => {

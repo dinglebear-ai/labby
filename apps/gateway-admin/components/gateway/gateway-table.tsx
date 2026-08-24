@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, type CSSProperties, type ReactNode, useMemo, useState } from 'react'
+import { Fragment, type CSSProperties, type ReactNode, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
   Check,
@@ -178,6 +178,18 @@ export function GatewayTable({
   const removeConfirmationGateway = removeConfirmationGatewayId
     ? gateways.find((gateway) => gateway.id === removeConfirmationGatewayId) ?? null
     : null
+
+  // The dialog is gated on the *resolved* gateway, so a target that leaves the
+  // list mid-confirmation closes it rather than asking the operator to confirm
+  // a removal against a server we can no longer name. Closing is the safe half;
+  // this reconciles the other half, since `onOpenChange` never fires in that
+  // case and the stale id would otherwise sit set forever, blocking the next
+  // confirmation for a different row.
+  useEffect(() => {
+    if (removeConfirmationGatewayId && !removeConfirmationGateway) {
+      setRemoveConfirmationGatewayId(null)
+    }
+  }, [removeConfirmationGatewayId, removeConfirmationGateway])
 
   const requestToggleEnabled = (gateway: Gateway) => {
     if (gateway.enabled ?? true) {

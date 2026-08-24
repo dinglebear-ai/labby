@@ -25,6 +25,66 @@ export function toolBrowserError(error: unknown, fallback: string): BrowserError
   return { message: error instanceof Error ? error.message : fallback }
 }
 
+export interface ResultsSummaryState {
+  total: number
+  shown: number
+  hasError: boolean
+  /** The query that produced the current results, or `null` before any search. */
+  executedQuery: string | null
+  loading: boolean
+  /** `codeModeConfig?.enabled` — `undefined` when unknown. */
+  codeModeEnabled: boolean | undefined
+  codeModeConfigMissing: boolean
+  codeModeConfigFailed: boolean
+}
+
+/**
+ * Pick the one-line label under the search box.
+ *
+ * Exported and pure because this is the whole point of the fix: a completed
+ * "Browse all" that finds nothing used to render the same placeholder as
+ * before any search ran, so nothing told the operator the request had
+ * happened — which is exactly what a disabled Code Mode looks like, since the
+ * search endpoint reports 0 tools rather than why. The rules are subtle enough
+ * to deserve direct tests, and they cannot be driven through the component:
+ * the unit-test DOM does not implement React's synthetic change events, so a
+ * simulated keystroke silently does nothing and any test written that way
+ * passes against the bug as readily as against the fix.
+ */
+export function resultsSummary(state: ResultsSummaryState): string {
+  // Keep the count when a *detail* fetch fails: `loadDetail` sets `error`
+  // without touching results, and blanking the label while result cards are
+  // still on screen just looks broken.
+  if (state.total > 0) {
+    return `${state.total} matches${state.shown < state.total ? ` · showing ${state.shown}` : ''}`
+  }
+  if (state.hasError) return ''
+  if (state.executedQuery === null || state.loading) {
+    return 'Search, or browse the live catalog without a query'
+  }
+  // Branch on the query that produced these results, not the live input —
+  // otherwise clearing the box after a failed search silently upgrades
+  // "no matches for zzz" into a claim about every connected server.
+  if (state.executedQuery.trim()) return 'No matching tools'
+  if (state.codeModeEnabled === false) {
+    return 'Code Mode is disabled, so this catalog is empty. Enable it from Gateway.'
+  }
+  // Check the failure before the missing check, not inside it. SWR serves the
+  // last-good `data` when a revalidation fails, so a stale-but-present config
+  // with a live fetch error would otherwise fall through to the confident
+  // gateway-wide claim below while we are in fact flying blind.
+  if (state.codeModeConfigFailed) {
+    return 'No tools returned, and the Code Mode setting could not be read to explain why.'
+  }
+  if (state.codeModeConfigMissing || state.codeModeEnabled === undefined) {
+    // Still loading, or loaded without a usable `enabled` flag. Either way we
+    // cannot say whether Code Mode is the reason, so do not assert that it is
+    // not.
+    return 'No tools returned.'
+  }
+  return 'No tools exposed by any connected server.'
+}
+
 export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {}) {
   const [query, setQuery] = useState(initialQuery)
   const [results, setResults] = useState<ToolSearchHit[]>([])
@@ -84,35 +144,16 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
-  // A completed "Browse all" (empty query) that finds nothing used to render
-  // the same placeholder as before any search ran, so nothing told the
-  // operator the request had happened — which is exactly what a disabled Code
-  // Mode looks like, since the search endpoint reports 0 tools rather than
-  // why. Report the executed search honestly, and only make a claim about the
-  // gateway when we actually know enough to make one.
-  function resultsSummary(): string {
-    // Keep the count when a *detail* fetch fails: `loadDetail` sets `error`
-    // without touching results, and blanking the label while result cards are
-    // still on screen just looks broken.
-    if (total > 0) return `${total} matches${results.length < total ? ` · showing ${results.length}` : ''}`
-    if (error) return ''
-    if (executedQuery === null || loading) return 'Search, or browse the live catalog without a query'
-    // Branch on the query that produced these results, not the live input —
-    // otherwise clearing the box after a failed search silently upgrades
-    // "no matches for zzz" into a claim about every connected server.
-    if (executedQuery.trim()) return 'No matching tools'
-    if (codeModeConfig?.enabled === false) {
-      return 'Code Mode is disabled, so this catalog is empty. Enable it from Gateway.'
-    }
-    if (codeModeConfig === undefined) {
-      // Either still loading or the config fetch failed. Either way we cannot
-      // say whether Code Mode is the reason, so do not assert that it is not.
-      return codeModeConfigError
-        ? 'No tools returned, and the Code Mode setting could not be read to explain why.'
-        : 'No tools returned.'
-    }
-    return 'No tools exposed by any connected server.'
-  }
+  const summary = resultsSummary({
+    total,
+    shown: results.length,
+    hasError: error !== null,
+    executedQuery,
+    loading,
+    codeModeEnabled: codeModeConfig?.enabled,
+    codeModeConfigMissing: codeModeConfig === undefined,
+    codeModeConfigFailed: Boolean(codeModeConfigError),
+  })
 
   return <main className="mx-auto w-full max-w-7xl p-6 lg:p-10">
     <div className="mb-8 flex items-start gap-4">
@@ -126,7 +167,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && error.retry && <Button variant="ghost" size="sm" onClick={error.retry}>Retry</Button>}</div>}
     <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
       <section aria-label="Tool results" className="space-y-3">
-        <p className="text-xs text-aurora-text-muted">{resultsSummary()}</p>
+        <p className="text-xs text-aurora-text-muted">{summary}</p>
         {results.map((hit) => <button key={hit.id} type="button" onClick={() => void selectTool(hit)} className="block w-full rounded-xl border border-aurora-border-default bg-aurora-panel-medium p-4 text-left transition hover:border-aurora-accent-primary/50 hover:bg-aurora-panel-strong">
           <div className="flex items-center justify-between gap-3"><code className="text-sm font-semibold text-aurora-accent-primary">{hit.path}</code><Safety safety={hit.safety} /></div>
           <p className="mt-2 line-clamp-2 text-sm text-aurora-text-secondary">{hit.description || 'No description provided.'}</p>

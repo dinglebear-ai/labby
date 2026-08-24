@@ -1055,3 +1055,51 @@ test('normalizeServerView does not fabricate created_at or updated_at when backe
   assert.equal(gateway.created_at, undefined)
   assert.equal(gateway.updated_at, undefined)
 })
+
+test('resource and prompt exposure use wildcard matching against the backend-matched subject', () => {
+  // The backend compiles all four exposure fields through
+  // `resolve_named_exposure_policy` and matches them with the wildcard-capable
+  // `ToolExposurePolicy::matches`. An exact `includes()` here disagreed with
+  // the gateway for every pattern containing `*` — badging resources "Hidden"
+  // that the gateway was serving. Resources additionally match on the bare
+  // upstream URI, not the display name.
+  const gateway = normalizeGateway(
+    {
+      config: {
+        name: 'fixture-http',
+        url: 'http://127.0.0.1:9001/mcp',
+        proxy_resources: true,
+        proxy_prompts: true,
+        expose_resources: ['res://docs/*'],
+        expose_prompts: ['review.*'],
+      },
+      runtime: { name: 'fixture-http', tool_count: 0, resource_count: 2, prompt_count: 2 },
+    },
+    { connected: true, healthy: true },
+    {
+      tools: [],
+      resources: [
+        { name: 'Handbook', uri: 'res://docs/handbook' },
+        { name: 'res://internal/secrets', uri: 'res://internal/secrets' },
+      ],
+      prompts: ['review.diff', 'deploy.run'],
+    }
+  )
+
+  assert.deepEqual(
+    gateway.discovery.resources.map((resource) => ({ uri: resource.uri, exposed: resource.exposed })),
+    [
+      // Matched by wildcard, and matched on the URI even though the display
+      // name ("Handbook") does not resemble it.
+      { uri: 'res://docs/handbook', exposed: true },
+      { uri: 'res://internal/secrets', exposed: false },
+    ]
+  )
+  assert.deepEqual(
+    gateway.discovery.prompts.map((prompt) => ({ name: prompt.name, exposed: prompt.exposed })),
+    [
+      { name: 'review.diff', exposed: true },
+      { name: 'deploy.run', exposed: false },
+    ]
+  )
+})

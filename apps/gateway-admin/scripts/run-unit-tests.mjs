@@ -14,10 +14,18 @@ const repoRoot = new URL("..", import.meta.url).pathname;
 const TEST_ROOTS = ["app", "components", "hooks", "lib"];
 const TEST_SUFFIXES = [".test.ts", ".test.tsx"];
 
-// `lib/browser/**` is owned by the separate `pnpm test:browser` command (see
-// package.json, pinned by lib/tooling-contract.test.ts) because those tests
-// need `--experimental-strip-types`. Everything else here is fair game.
-const EXCLUDED_DIRS = new Set(["node_modules", ".next", "out", "browser"]);
+// Names skipped at any depth — these never contain first-party tests.
+const EXCLUDED_DIR_NAMES = new Set(["node_modules", ".next", "out"]);
+
+// Skipped by exact path, not by name. `lib/browser/**` is owned by the separate
+// `pnpm test:browser` command (see package.json, pinned by
+// lib/tooling-contract.test.ts) because those tests need
+// `--experimental-strip-types`. Matching the bare name "browser" instead would
+// silently drop any future `components/**/browser/` directory — reintroducing
+// exactly the never-run-tests hole this walker exists to close.
+const EXCLUDED_PATHS = new Set(["lib/browser"]);
+
+const isTestFile = (name) => TEST_SUFFIXES.some((suffix) => name.endsWith(suffix));
 
 function collectTests(dir) {
   const root = join(repoRoot, dir);
@@ -33,13 +41,14 @@ function collectTests(dir) {
 
   return entries.flatMap((entry) => {
     const path = join(root, entry);
+    const relativePath = relative(repoRoot, path);
     const stats = statSync(path);
     if (stats.isDirectory()) {
-      return EXCLUDED_DIRS.has(entry) ? [] : collectTests(relative(repoRoot, path));
+      return EXCLUDED_DIR_NAMES.has(entry) || EXCLUDED_PATHS.has(relativePath)
+        ? []
+        : collectTests(relativePath);
     }
-    return TEST_SUFFIXES.some((suffix) => entry.endsWith(suffix))
-      ? [relative(repoRoot, path)]
-      : [];
+    return isTestFile(entry) ? [relativePath] : [];
   });
 }
 
@@ -52,10 +61,12 @@ if (tests.length === 0) {
 
 // Fail loudly if a test file exists outside the walked roots, so the next
 // misplaced file is a build error rather than another silently-skipped suite.
+// Covers both a stray directory and a stray file sitting at the package root —
+// the latter is the likelier accident, and `isDirectory()` alone would skip it.
 const strayRoots = readdirSync(repoRoot).filter((entry) => {
-  if (TEST_ROOTS.includes(entry) || EXCLUDED_DIRS.has(entry)) return false;
+  if (TEST_ROOTS.includes(entry) || EXCLUDED_DIR_NAMES.has(entry)) return false;
   const path = join(repoRoot, entry);
-  return statSync(path).isDirectory() && collectTests(entry).length > 0;
+  return statSync(path).isDirectory() ? collectTests(entry).length > 0 : isTestFile(entry);
 });
 if (strayRoots.length > 0) {
   console.error(

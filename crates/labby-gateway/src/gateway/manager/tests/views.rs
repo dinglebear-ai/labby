@@ -383,6 +383,68 @@ async fn runtime_view_ignores_method_not_found_capability_errors() {
     assert!(server.warnings.is_empty());
 }
 
+/// A prompt listing that *failed* must be visible, unlike one that is merely
+/// absent. Both are kept out of `last_error` (so neither marks the upstream
+/// disconnected), which used to mean both were discarded outright — leaving a
+/// timed-out `prompts/list` indistinguishable from a server that has no
+/// prompts. That is the confusion that hid bead lab-zfyxk.
+#[tokio::test]
+async fn genuine_prompt_discovery_failures_warn_without_marking_the_server_down() {
+    let pool = UpstreamPool::new();
+    let mut entry = fixture_upstream_entry("partial-upstream", HashMap::new());
+    entry.prompt_health = UpstreamHealth::Unhealthy {
+        consecutive_failures: 1,
+    };
+    entry.prompt_last_error =
+        Some("failed to list prompts from upstream: request timed out after 10s".to_string());
+    pool.insert_entry_for_tests("partial-upstream", entry).await;
+
+    let mut upstream = fixture_http_upstream("partial-upstream");
+    upstream.proxy_prompts = true;
+    let server = server_view_from_upstream(Some(&pool), &upstream).await;
+
+    let warning = server
+        .warnings
+        .iter()
+        .find(|warning| warning.code == "prompts_unavailable")
+        .expect("a failed prompt listing must reach the operator as a warning");
+    assert!(
+        warning.message.contains("request timed out after 10s"),
+        "the warning must carry the underlying cause, got: {}",
+        warning.message
+    );
+    assert!(
+        server.connected,
+        "an optional capability failing must not take the whole upstream down; \
+         its tools are unaffected"
+    );
+}
+
+/// The counterpart: an upstream that simply does not implement prompts is
+/// healthy, and must not be nagged about.
+#[tokio::test]
+async fn absent_prompt_capability_produces_no_warning() {
+    let pool = UpstreamPool::new();
+    let mut entry = fixture_upstream_entry("partial-upstream", HashMap::new());
+    entry.prompt_last_error = Some(
+        "failed to list prompts from upstream: Mcp error: -32601: Method not found".to_string(),
+    );
+    pool.insert_entry_for_tests("partial-upstream", entry).await;
+
+    let mut upstream = fixture_http_upstream("partial-upstream");
+    upstream.proxy_prompts = true;
+    let server = server_view_from_upstream(Some(&pool), &upstream).await;
+
+    assert!(
+        !server
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "prompts_unavailable"),
+        "a -32601 reply means the capability is absent, not broken; warnings: {:?}",
+        server.warnings
+    );
+}
+
 #[tokio::test]
 async fn custom_gateway_connected_includes_resources_and_prompts() {
     let pool = UpstreamPool::new();

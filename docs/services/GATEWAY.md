@@ -247,6 +247,24 @@ exposed capability counts, transport, and warnings. Its `refresh` callback
 delegates to `gateway.list`, and late launch output cannot overwrite a newer
 manual refresh.
 
+### Prompt and resource discovery warnings
+
+Prompts and resources are optional MCP capabilities, so a failure to list them
+never marks an upstream disconnected — its tools keep working and the row keeps
+reading **Connected**. That would otherwise make a broken capability look
+identical to an absent one, so a genuine failure raises a warning instead:
+
+| Code | Meaning |
+| --- | --- |
+| `prompts_unavailable` | `prompts/list` failed or timed out. The server's prompts are missing from the catalog; its tools are unaffected. |
+| `resources_unavailable` | `resources/list` failed or timed out, with the same consequences. |
+
+An upstream that simply does not implement the capability replies `-32601`, and
+that is treated as success — it produces no warning and no error. So seeing one
+of these codes means discovery genuinely broke, not that the server has nothing
+to offer. Reconnecting an upstream clears the capability's circuit breaker and
+retries discovery.
+
 The tool and resource require `lab:admin`. They are advertised only when the
 active MCP route has a gateway manager, includes the `gateway` service, and
 allows `gateway.list`; a protected gateway subset that omits any of those

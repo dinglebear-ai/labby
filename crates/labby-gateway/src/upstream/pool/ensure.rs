@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tokio::sync::Mutex;
 
@@ -24,18 +24,10 @@ use super::helpers::{
     cached_upstream_tool, upstream_discovery_timeout, upstream_name_is_uri_safe,
     upstream_target_redacted, upstream_transport,
 };
+use super::resources_list::catalog_listing_timeout;
 use super::skills_list::peer_declares_skills;
 use super::tools::tool_has_mcp_app_ui_resource;
 use super::validate::validate_upstream_config;
-
-/// Wall-clock cap for the post-connect prompt-cache refresh.
-///
-/// Mirrors `RESOURCE_CATALOG_TIMEOUT` in `resources_list.rs`, which bounds the
-/// sibling resource refresh on this same path. Both run while the lazy-connect
-/// mutex and the `oauth_invalidation_barrier` read guard are held, so an
-/// unbounded listing here would stall queued OAuth writers behind a single slow
-/// upstream.
-const PROMPT_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Validate an upstream config entry and, if valid, return the catalog entry
 /// that should be inserted for it.
@@ -488,9 +480,17 @@ impl UpstreamPool {
     /// That gap predates this function and is shared by resources and prompts.
     async fn refresh_capability_caches_after_connect(&self, config: &UpstreamConfig) {
         if config.proxy_resources {
+            // Reset before listing, not after: an open circuit would exclude
+            // this upstream from the very fan-out being kicked off here, making
+            // the refresh a silent no-op that can never close the circuit it is
+            // gated on. See `reset_capability_circuit` for the full latch.
+            self.reset_capability_circuit(&config.name, UpstreamCapability::Resources)
+                .await;
             self.refresh_resource_cache_for_upstream(&config.name).await;
         }
         if config.proxy_prompts {
+            self.reset_capability_circuit(&config.name, UpstreamCapability::Prompts)
+                .await;
             self.refresh_prompt_cache_for_upstream(&config.name).await;
         }
     }
@@ -502,9 +502,10 @@ impl UpstreamPool {
 
     /// Refresh one upstream's cached prompt listing after a lazy connect.
     ///
-    /// Bounded by `listing_catalog_timeout` (10s cap) rather than the raw
-    /// `request_timeout` (30s by default) that `list_upstream_prompts_allowed`
-    /// would apply on its own. This runs while the caller still holds both the
+    /// Bounded by the shared `catalog_listing_timeout` (10s cap) rather than
+    /// the raw `request_timeout` (30s by default) that
+    /// `list_upstream_prompts_allowed` would apply on its own. This runs while
+    /// the caller still holds both the
     /// per-upstream lazy-connect mutex and a read guard on
     /// `oauth_invalidation_barrier` — and that barrier is write-preferring, so
     /// a stalled `prompts/list` here delays every queued OAuth credential
@@ -519,11 +520,13 @@ impl UpstreamPool {
     ///
     /// The cap is applied here rather than inside `list_upstream_prompts_allowed`
     /// so only this connect-path refresh is bounded; the shared listing helper
-    /// keeps its existing budget for its other callers.
+    /// keeps its existing budget for its other callers. Use
+    /// `catalog_listing_timeout` rather than a local constant so the prompt
+    /// resource, and general listing budgets cannot drift apart silently.
     async fn refresh_prompt_cache_for_upstream(&self, upstream_name: &str) {
         let allowed = BTreeSet::from([upstream_name.to_string()]);
         let deadline_at =
-            tokio::time::Instant::now() + self.request_timeout.min(PROMPT_CATALOG_TIMEOUT);
+            tokio::time::Instant::now() + catalog_listing_timeout(self.request_timeout);
         self.list_upstream_prompts_allowed_until(&[], Some(&allowed), deadline_at)
             .await;
     }
@@ -850,6 +853,72 @@ mod tests {
             )],
             "connecting an upstream must populate its prompt cache, not leave \
              discovered_prompt_count at 0 until a client calls prompts/list"
+        );
+    }
+
+    /// A prompt circuit opened by earlier failures must not survive a reconnect.
+    ///
+    /// This is a latch, not just staleness: `routable_upstream_peers` filters
+    /// open circuits out of the prompt listing fan-out, and that fan-out is the
+    /// only place a prompt success is recorded — so without the reset, the
+    /// listing that would close the circuit is exactly the one being skipped,
+    /// forever. `is_open` has no quarantine expiry to rescue it. Asserting on
+    /// the refreshed cache (rather than on the health field) is what makes this
+    /// test fail if the reset is removed: a latched circuit yields an empty
+    /// cache even though the upstream serves two prompts.
+    #[tokio::test]
+    async fn connecting_an_upstream_recovers_a_latched_prompt_circuit() {
+        let mut alpha = named_test_upstream_config("alpha");
+        alpha.proxy_prompts = true;
+
+        let pool = UpstreamPool::new();
+        pool.seed_lazy_upstreams(std::slice::from_ref(&alpha)).await;
+        // Drive the circuit open the way repeated listing failures would.
+        for _ in 0..3 {
+            pool.record_failure_for(
+                "alpha",
+                UpstreamCapability::Prompts,
+                "failed to list prompts from upstream: connection reset".to_string(),
+            )
+            .await;
+        }
+        assert!(
+            !pool
+                .upstream_capability_health("alpha", UpstreamCapability::Prompts)
+                .await
+                .expect("seeded entry exists")
+                .is_routable(),
+            "fixture must start with an open prompt circuit for this to be a regression"
+        );
+
+        let connection = Arc::new(Mutex::new(Some(static_catalog_connection().await)));
+        let connector: TestUpstreamConnector = Arc::new(move |_config| {
+            let connection = Arc::clone(&connection);
+            Box::pin(async move {
+                let connection = connection
+                    .lock()
+                    .await
+                    .take()
+                    .expect("connector called once");
+                Ok((Some(connection), vec![test_tool("ping")]))
+            })
+        });
+        pool.ensure_tools_for_upstream_with_connector(&alpha, None, connector)
+            .await
+            .expect("lazy connect succeeds");
+
+        assert_eq!(
+            pool.cached_upstream_prompt_names_by_upstream().await,
+            vec![(
+                "alpha".to_string(),
+                vec![
+                    "alpha/upstream.prompt.one".to_string(),
+                    "alpha/upstream.prompt.two".to_string(),
+                ],
+            )],
+            "a reconnect must clear the prompt circuit; otherwise the refresh is \
+             filtered out of its own listing pass and the capability stays dark \
+             permanently"
         );
     }
 
