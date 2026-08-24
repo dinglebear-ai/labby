@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::manager::{GatewayManager, PublishedToolCallError};
 use labby_gateway::upstream::tool_error::mcp_error_data_kind;
-use rmcp::model::{CallToolRequestParams, CallToolResponse};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult};
 use thiserror::Error;
 
 use crate::access::{AccessRuntime, Permission};
@@ -68,6 +68,8 @@ pub(crate) enum ToolExecutionResolutionError {
     Other,
     #[error("tool response is too large")]
     TooLarge,
+    #[error("upstream returned a response unsupported by this execution path")]
+    UnsupportedTerminalResponse,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -231,6 +233,58 @@ fn finish_transport_bound_tool_result(
     result
 }
 
+/// Execute the unmounted protected Tool path under an explicit Complete-only
+/// terminal contract.
+///
+/// The regular exact pool truthfully negotiates no Task or InputRequired
+/// capabilities. A nonconforming upstream response is dropped immediately and
+/// mapped to one static class; its payload is never retained in the error,
+/// retried, relayed, or registered as a task.
+pub(crate) async fn execute_transport_bound_project_complete_tool(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: CallToolRequestParams,
+) -> Result<CallToolResult, ToolExecutionResolutionError> {
+    execute_transport_bound_project_complete_tool_with_clock(
+        runtime,
+        manager,
+        transport,
+        identity,
+        request,
+        SystemTime::now,
+    )
+    .await
+}
+
+async fn execute_transport_bound_project_complete_tool_with_clock(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: CallToolRequestParams,
+    now: impl FnMut() -> SystemTime,
+) -> Result<CallToolResult, ToolExecutionResolutionError> {
+    let response = execute_transport_bound_project_tool_with_clock(
+        runtime, manager, transport, identity, request, now,
+    )
+    .await;
+    match response {
+        Err(error) => Err(error),
+        Ok(response) => finish_complete_tool_response(response),
+    }
+}
+
+fn finish_complete_tool_response(
+    response: CallToolResponse,
+) -> Result<CallToolResult, ToolExecutionResolutionError> {
+    match response {
+        CallToolResponse::Complete(result) => Ok(result),
+        _ => Err(ToolExecutionResolutionError::UnsupportedTerminalResponse),
+    }
+}
+
 fn map_manager_result(
     result: Result<CallToolResponse, PublishedToolCallError>,
 ) -> Result<CallToolResponse, ToolExecutionResolutionError> {
@@ -286,8 +340,9 @@ mod tests {
 
     use super::{
         ToolExecutionResolutionError, ToolExecutionResolutionInput, execute_exact_project_tool,
-        execute_transport_bound_project_tool_with_clock, finish_transport_bound_tool_result,
-        map_manager_error, map_manager_result,
+        execute_transport_bound_project_complete_tool_with_clock,
+        execute_transport_bound_project_tool_with_clock, finish_complete_tool_response,
+        finish_transport_bound_tool_result, map_manager_error, map_manager_result,
     };
     use crate::access::{AccessRuntime, AssignProjectLoadoutInput, BootstrapOwnerInput};
     use crate::mcp::bound_access::{
@@ -478,6 +533,53 @@ mod tests {
                 return Err(ErrorData::internal_error("private delayed failure", None));
             }
             Ok(CallToolResult::success(vec![ContentBlock::text("delayed")]).into())
+        }
+    }
+
+    #[derive(Clone)]
+    struct TerminalVariantToolServer {
+        calls: Arc<AtomicUsize>,
+        response: CallToolResponse,
+    }
+
+    impl ServerHandler for TerminalVariantToolServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn call_tool(
+            &self,
+            _request: CallToolRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.response.clone())
+        }
+    }
+
+    #[derive(Clone)]
+    struct McpErrorToolServer {
+        calls: Arc<AtomicUsize>,
+        code: i32,
+        message: &'static str,
+    }
+
+    impl ServerHandler for McpErrorToolServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+
+        async fn call_tool(
+            &self,
+            _request: CallToolRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ErrorData::new(
+                ErrorCode(self.code),
+                self.message,
+                Some(serde_json::json!({"secret": "spoof-secret"})),
+            ))
         }
     }
 
@@ -1284,6 +1386,193 @@ mod tests {
             ));
         }
 
+        let complete_transport =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let complete = execute_transport_bound_project_complete_tool_with_clock(
+            &runtime,
+            &manager,
+            &complete_transport,
+            &identity,
+            CallToolRequestParams::new("nested/tool").with_arguments(serde_json::Map::from_iter([
+                ("value".into(), serde_json::json!("complete-only")),
+            ])),
+            || before,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(complete).unwrap()["content"][0]["text"],
+            "nested/tool:\"complete-only\""
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+
+        let secret_schema = ElicitationSchema::builder()
+            .required_property(
+                "secret-schema-field",
+                PrimitiveSchemaDefinition::Boolean(BooleanSchema::default()),
+            )
+            .build()
+            .unwrap();
+        let unsupported = [
+            (
+                CallToolResponse::Task(CreateTaskResult::new(Task::new(
+                    "secret-native-task-id",
+                    TaskStatus::Working,
+                    "2026-08-24T00:00:00Z",
+                    "2026-08-24T00:00:00Z",
+                ))),
+                [
+                    "secret-native-task-id",
+                    "secret-schema-field",
+                    "secret-message",
+                ],
+                ToolExecutionResolutionError::Mcp {
+                    kind: "validation_failed",
+                    code: -32_021,
+                },
+            ),
+            (
+                CallToolResponse::InputRequired(InputRequiredResult::from_input_requests(
+                    InputRequests::from([(
+                        "secret-input-key".into(),
+                        InputRequest::Elicitation(ElicitRequest::new(
+                            ElicitRequestParams::FormElicitationParams {
+                                meta: None,
+                                message: "secret-message".into(),
+                                requested_schema: secret_schema,
+                            },
+                        )),
+                    )]),
+                )),
+                ["secret-input-key", "secret-schema-field", "secret-message"],
+                ToolExecutionResolutionError::Mcp {
+                    kind: "upstream_error",
+                    code: -32_600,
+                },
+            ),
+        ];
+        for (response, secrets, expected_wire_error) in unsupported {
+            let injected_error = finish_complete_tool_response(response.clone()).unwrap_err();
+            assert_eq!(
+                injected_error,
+                ToolExecutionResolutionError::UnsupportedTerminalResponse
+            );
+            let injected_rendered = injected_error.to_string();
+            for secret in secrets {
+                assert!(!injected_rendered.contains(secret), "leaked {secret}");
+            }
+            let variant_calls = Arc::new(AtomicUsize::new(0));
+            pool.install_tool_server_for_tests(
+                "alpha",
+                TerminalVariantToolServer {
+                    calls: Arc::clone(&variant_calls),
+                    response,
+                },
+            )
+            .await;
+            pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", false)])
+                .await;
+            let variant_transport =
+                transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+            let error = execute_transport_bound_project_complete_tool_with_clock(
+                &runtime,
+                &manager,
+                &variant_transport,
+                &identity,
+                CallToolRequestParams::new("nested/tool"),
+                || before,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, expected_wire_error);
+            let rendered = error.to_string();
+            for secret in secrets {
+                assert!(!rendered.contains(secret), "leaked {secret}");
+            }
+            assert_eq!(variant_calls.load(Ordering::SeqCst), 1);
+            tokio::task::yield_now().await;
+            assert_eq!(variant_calls.load(Ordering::SeqCst), 1);
+        }
+
+        for (code, message, expected_kind) in [
+            (
+                -32_021,
+                "Missing required client capability",
+                "validation_failed",
+            ),
+            (
+                -32_600,
+                "InputRequiredResult requires negotiated protocol version 2026-07-28 or newer",
+                "upstream_error",
+            ),
+        ] {
+            let spoof_calls = Arc::new(AtomicUsize::new(0));
+            pool.install_tool_server_for_tests(
+                "alpha",
+                McpErrorToolServer {
+                    calls: Arc::clone(&spoof_calls),
+                    code,
+                    message,
+                },
+            )
+            .await;
+            pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", false)])
+                .await;
+            let spoof_transport =
+                transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+            let error = execute_transport_bound_project_complete_tool_with_clock(
+                &runtime,
+                &manager,
+                &spoof_transport,
+                &identity,
+                CallToolRequestParams::new("nested/tool"),
+                || before,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error,
+                ToolExecutionResolutionError::Mcp {
+                    kind: expected_kind,
+                    code,
+                }
+            );
+            assert!(!error.to_string().contains("spoof-secret"));
+            assert_eq!(spoof_calls.load(Ordering::SeqCst), 1);
+        }
+
+        let expired_variant_calls = Arc::new(AtomicUsize::new(0));
+        pool.install_tool_server_for_tests(
+            "alpha",
+            TerminalVariantToolServer {
+                calls: Arc::clone(&expired_variant_calls),
+                response: CallToolResponse::Task(CreateTaskResult::new(Task::new(
+                    "post-expiry-secret-task",
+                    TaskStatus::Working,
+                    "2026-08-24T00:00:00Z",
+                    "2026-08-24T00:00:00Z",
+                ))),
+            },
+        )
+        .await;
+        pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", false)])
+            .await;
+        let expiring = transport_binding(&runtime, &manager, identity.clone(), 101, before).await;
+        let mut variant_times = [before, after].into_iter();
+        assert!(matches!(
+            execute_transport_bound_project_complete_tool_with_clock(
+                &runtime,
+                &manager,
+                &expiring,
+                &identity,
+                CallToolRequestParams::new("nested/tool"),
+                || variant_times.next().unwrap(),
+            )
+            .await,
+            Err(ToolExecutionResolutionError::Unavailable)
+        ));
+        assert_eq!(expired_variant_calls.load(Ordering::SeqCst), 1);
+
         let transport_cancel_calls = Arc::new(AtomicUsize::new(0));
         let transport_cancel_started = Arc::new(Notify::new());
         let transport_cancel_release = Arc::new(Notify::new());
@@ -1305,7 +1594,7 @@ mod tests {
         let cancel_manager = Arc::clone(&manager);
         let cancel_identity = identity.clone();
         let transport_cancel_task = tokio::spawn(async move {
-            execute_transport_bound_project_tool_with_clock(
+            execute_transport_bound_project_complete_tool_with_clock(
                 &cancel_runtime,
                 &cancel_manager,
                 &transport,
