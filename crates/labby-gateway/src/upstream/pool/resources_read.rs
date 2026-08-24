@@ -82,7 +82,7 @@ impl UpstreamPool {
         if params.uri != native_uri {
             return Err(ExactResourceReadError::Unavailable);
         }
-        let start = Instant::now();
+        let start = tokio::time::Instant::now();
         let permit = tokio::time::timeout(
             self.request_timeout,
             self.acquire_upstream_call_permit(upstream_name),
@@ -625,6 +625,7 @@ mod tests {
     struct SlowResourceReadServer {
         calls: Arc<AtomicUsize>,
         delay: std::time::Duration,
+        started: Option<Arc<Notify>>,
     }
 
     #[derive(Clone)]
@@ -653,6 +654,9 @@ mod tests {
             _: ExactRequestContext<RoleServer>,
         ) -> Result<ExactReadResponse, ErrorData> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = &self.started {
+                started.notify_one();
+            }
             tokio::time::sleep(self.delay).await;
             Ok(ReadResourceResult::new(vec![ResourceContents::text("slow", request.uri)]).into())
         }
@@ -1194,14 +1198,16 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exact_resource_kernel_uses_one_queue_and_rpc_deadline() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
         let mut pool = catalog_pool_with_server(
             "alpha",
             SlowResourceReadServer {
                 calls: Arc::clone(&calls),
                 delay: std::time::Duration::from_millis(80),
+                started: Some(Arc::clone(&started)),
             },
         )
         .await;
@@ -1228,8 +1234,11 @@ mod tests {
                 )
                 .await
         });
-        tokio::time::sleep(std::time::Duration::from_millis(70)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(70)).await;
         drop(held);
+        started.notified().await;
+        tokio::time::advance(std::time::Duration::from_millis(30)).await;
         assert_eq!(task.await.unwrap(), Err(ExactResourceReadError::Timeout));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -1242,6 +1251,7 @@ mod tests {
             SlowResourceReadServer {
                 calls: Arc::clone(&calls),
                 delay: std::time::Duration::from_millis(1),
+                started: None,
             },
         )
         .await;

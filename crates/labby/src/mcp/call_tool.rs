@@ -445,34 +445,29 @@ impl LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         #[cfg(feature = "gateway")]
-        let project_owned = match project_execution_binding(&context.extensions, SystemTime::now())
-        {
-            ProjectExecutionBinding::Legacy => false,
+        match project_execution_binding(&context.extensions, SystemTime::now()) {
+            ProjectExecutionBinding::Legacy => {}
             ProjectExecutionBinding::Unavailable => {
                 return self
                     .call_project_regular_tool_terminal(request, &context, None)
                     .await;
             }
+            // Project discovery proves only AssetDiscover. Every Bound call enters the exact
+            // AssetUse seam; owned built-ins and synthetics fail closed there until they have
+            // their own exact execution authorization.
             ProjectExecutionBinding::Bound {
                 transport,
                 identity,
-            } => match crate::mcp::tool_execution::transport_bound_tool_ownership(
-                transport,
-                request.name.as_ref(),
-            ) {
-                crate::mcp::tool_execution::ProjectToolOwnership::OwnedLabby => true,
-                crate::mcp::tool_execution::ProjectToolOwnership::Regular => {
-                    return self
-                        .call_project_regular_tool_terminal(
-                            request,
-                            &context,
-                            Some((transport, identity)),
-                        )
-                        .await;
-                }
-            },
-        };
-        #[cfg(not(feature = "gateway"))]
+            } => {
+                return self
+                    .call_project_regular_tool_terminal(
+                        request,
+                        &context,
+                        Some((transport, identity)),
+                    )
+                    .await;
+            }
+        }
         let project_owned = false;
         if let Some(response) =
             Box::pin(self.destructive_confirmation_response(&request, &context)).await

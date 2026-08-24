@@ -1487,6 +1487,40 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
 }
 
 #[tokio::test]
+async fn staged_route_update_preserves_project_binding_inside_mutation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut current = protected_gateway_subset_route_fixture("ops");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = current.target.as_mut() else {
+        panic!("fixture is gateway subset")
+    };
+    target.project_id = Some("project-current".to_string());
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![current],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({
+            "name": "ops",
+            "route": protected_gateway_subset_route_fixture("ops"),
+            "preserve_project_id": true,
+        }),
+    )
+    .await
+    .expect("preserve binding under manager mutation lock");
+
+    assert_eq!(result["route"]["target"]["project_id"], "project-current");
+}
+
+#[tokio::test]
 async fn protected_route_dispatch_add_list_and_test_share_gateway_actions() {
     let dir = tempfile::tempdir().expect("tempdir");
     let manager = GatewayManager::new(

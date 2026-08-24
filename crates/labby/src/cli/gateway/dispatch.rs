@@ -100,16 +100,12 @@ fn protected_route_from_args(args: GatewayProtectedRouteUpsertArgs) -> Protected
 
 fn protected_route_from_update_args(
     args: GatewayProtectedRouteUpdateArgs,
-    preserved_project_id: Option<String>,
-) -> (String, ProtectedMcpRouteConfig) {
-    let project_id = if args.clear_project_id {
-        None
-    } else {
-        args.project_id.or(preserved_project_id)
-    };
+) -> (String, ProtectedMcpRouteConfig, bool) {
+    let preserve_project_id = args.project_id.is_none() && !args.clear_project_id;
+    let gateway_subset = args.gateway_subset || args.clear_project_id;
     let target = protected_route_target_from_args(
-        args.gateway_subset,
-        project_id,
+        gateway_subset,
+        args.project_id,
         args.loadout,
         args.target_upstream,
         args.target_service,
@@ -136,7 +132,7 @@ fn protected_route_from_update_args(
         health_path: args.health_path,
         target,
     };
-    (name, route)
+    (name, route, preserve_project_id)
 }
 
 fn loadout_from_create_args(args: GatewayLoadoutCreateArgs) -> GatewayLoadoutConfig {
@@ -439,33 +435,21 @@ pub(super) async fn dispatch_command(
                     }
                     GatewayProtectedRouteCommand::Update(args) => {
                         let stage_for_restart = args.stage_for_restart;
-                        let preserved_project_id =
-                            if args.project_id.is_none() && !args.clear_project_id {
-                                let current = dispatch_gateway_action(
-                                    manager,
-                                    config,
-                                    "gateway.protected_route.get".to_string(),
-                                    json!({ "name": args.name }),
-                                )
-                                .await?;
-                                serde_json::from_value::<ProtectedMcpRouteConfig>(current)?
-                                    .target
-                                    .and_then(|target| match target {
-                                        crate::config::ProtectedMcpRouteTarget::GatewaySubset(
-                                            target,
-                                        ) => target.project_id,
-                                    })
-                            } else {
-                                None
-                            };
-                        let (name, route) =
-                            protected_route_from_update_args(args, preserved_project_id);
+                        let (name, route, preserve_project_id) =
+                            protected_route_from_update_args(args);
                         let action = if stage_for_restart || route.is_gateway_subset() {
                             "gateway.protected_route.stage_update"
                         } else {
                             "gateway.protected_route.update"
                         };
-                        (action.to_string(), json!({ "name": name, "route": route }))
+                        (
+                            action.to_string(),
+                            json!({
+                                "name": name,
+                                "route": route,
+                                "preserve_project_id": preserve_project_id,
+                            }),
+                        )
                     }
                     GatewayProtectedRouteCommand::Remove(args) => (
                         if args.stage_for_restart {
@@ -842,24 +826,35 @@ mod tests {
         let GatewayProtectedRouteCommand::Update(args) = parsed_protected_route(&base) else {
             panic!("expected update");
         };
-        let (_, preserved) = protected_route_from_update_args(args, Some("project-42".to_string()));
+        let (_, preserved, preserve_project_id) = protected_route_from_update_args(args);
         let Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(target)) = preserved.target
         else {
             panic!("expected gateway-subset target");
         };
-        assert_eq!(target.project_id.as_deref(), Some("project-42"));
+        assert_eq!(target.project_id, None);
+        assert!(preserve_project_id);
 
-        let mut clear = base.to_vec();
-        clear.push("--clear-project-id");
-        let GatewayProtectedRouteCommand::Update(args) = parsed_protected_route(&clear) else {
+        let GatewayProtectedRouteCommand::Update(args) = parsed_protected_route(&[
+            "labby",
+            "gateway",
+            "protected-route",
+            "update",
+            "ops",
+            "--public-host",
+            "mcp.example.com",
+            "--public-path",
+            "/ops",
+            "--clear-project-id",
+        ]) else {
             panic!("expected update");
         };
-        let (_, cleared) = protected_route_from_update_args(args, Some("project-42".to_string()));
+        let (_, cleared, preserve_project_id) = protected_route_from_update_args(args);
         let Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(target)) = cleared.target
         else {
             panic!("expected gateway-subset target");
         };
         assert_eq!(target.project_id, None);
+        assert!(!preserve_project_id);
     }
 
     #[test]

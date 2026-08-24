@@ -15,8 +15,9 @@ use crate::mcp::bound_access::{
 /// Server-owned inputs for one exact regular non-OAuth Resource read.
 ///
 /// Deliberately non-`Clone`, non-`Debug`, and non-serializable. The identity
-/// and protected-route facts must be trusted server inputs. This unmounted seam
-/// does not itself prove a transport token instance or expiry.
+/// and protected-route facts must be trusted server inputs. This inner seam
+/// does not itself prove a transport token instance or expiry; the mounted
+/// handler reaches it only through the transport-bound wrapper.
 pub(crate) struct ResourceReadResolutionInput {
     identity: VerifiedIdentity,
     route_name: String,

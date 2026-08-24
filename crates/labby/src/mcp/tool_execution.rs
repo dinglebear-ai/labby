@@ -1,5 +1,4 @@
-//! Unmounted nondestructive regular Tool execution authorization seam.
-#![allow(dead_code)]
+//! Project-bound nondestructive regular Tool execution authorization seam.
 
 use std::time::SystemTime;
 
@@ -17,8 +16,9 @@ use crate::mcp::bound_access::{
 /// Server-owned inputs for one exact regular non-OAuth Tool execution.
 ///
 /// Deliberately non-`Clone`, non-`Debug`, and non-serializable. The identity
-/// and protected-route facts must be trusted server inputs. This unmounted
-/// seam does not prove a transport token instance or expiry.
+/// and protected-route facts must be trusted server inputs. This inner seam
+/// does not prove a transport token instance or expiry; the mounted handler
+/// reaches it only through the transport-bound Complete-only adapter.
 pub(crate) struct ToolExecutionResolutionInput {
     identity: VerifiedIdentity,
     route_name: String,
@@ -82,11 +82,13 @@ struct ExactToolTarget {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum ProjectToolOwnership {
     OwnedLabby,
     Regular,
 }
 
+#[cfg(test)]
 pub(crate) fn transport_bound_tool_ownership(
     transport: &TransportBoundAccessContext,
     wire_name: &str,
@@ -191,31 +193,6 @@ pub(crate) async fn execute_exact_project_tool(
     map_manager_result(result)
 }
 
-/// Execute from one middleware-owned protected-transport binding.
-///
-/// Route, resource, and Project facts are derived only from the immutable
-/// request-owned binding. The exact token expiry and independently derived
-/// identity binding are checked before dispatch and again before any result or
-/// error is exposed. This primitive is mounted only through the Complete-only
-/// terminal adapter; handlers do not expose incomplete upstream responses.
-pub(crate) async fn execute_transport_bound_project_tool(
-    runtime: &AccessRuntime,
-    manager: &GatewayManager,
-    transport: &TransportBoundAccessContext,
-    identity: &VerifiedIdentity,
-    request: CallToolRequestParams,
-) -> Result<CallToolResponse, ToolExecutionResolutionError> {
-    execute_transport_bound_project_tool_with_clock(
-        runtime,
-        manager,
-        transport,
-        identity,
-        request,
-        SystemTime::now,
-    )
-    .await
-}
-
 async fn execute_transport_bound_project_tool_with_clock(
     runtime: &AccessRuntime,
     manager: &GatewayManager,
@@ -261,7 +238,7 @@ fn finish_transport_bound_tool_result(
     result
 }
 
-/// Execute the unmounted protected Tool path under an explicit Complete-only
+/// Execute the protected Tool path under the handler's explicit Complete-only
 /// terminal contract.
 ///
 /// The regular exact pool truthfully negotiates no Task or InputRequired

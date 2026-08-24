@@ -127,6 +127,8 @@ pub(crate) struct ProtectedRouteSpecParams {
 pub(crate) struct ProtectedRouteUpdateParams {
     pub name: String,
     pub route: ProtectedMcpRouteConfig,
+    #[serde(default)]
+    pub preserve_project_id: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

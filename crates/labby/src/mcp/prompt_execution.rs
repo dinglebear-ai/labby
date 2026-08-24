@@ -1,5 +1,4 @@
-//! Unmounted exact regular Prompt execution authorization seam.
-#![allow(dead_code)]
+//! Project-bound exact regular Prompt execution authorization seam.
 
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::manager::{GatewayManager, PublishedPromptCallError};

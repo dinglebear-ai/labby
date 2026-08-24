@@ -79,7 +79,7 @@ impl UpstreamPool {
         if params.name != native_name {
             return Err(ExactPromptCallError::Unavailable);
         }
-        let start = Instant::now();
+        let start = tokio::time::Instant::now();
         let permit = tokio::time::timeout(
             self.request_timeout,
             self.acquire_upstream_call_permit(upstream_name),
@@ -637,6 +637,7 @@ mod tests {
     struct SlowCountingPromptServer {
         calls: Arc<AtomicUsize>,
         delay: Duration,
+        started: Option<Arc<Notify>>,
     }
 
     impl ServerHandler for SlowCountingPromptServer {
@@ -646,6 +647,9 @@ mod tests {
             _context: RequestContext<RoleServer>,
         ) -> Result<GetPromptResponse, ErrorData> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(started) = &self.started {
+                started.notify_one();
+            }
             tokio::time::sleep(self.delay).await;
             Ok(
                 GetPromptResult::new(vec![PromptMessage::new_text(Role::User, request.name)])
@@ -804,6 +808,7 @@ mod tests {
             SlowCountingPromptServer {
                 calls: Arc::new(AtomicUsize::new(0)),
                 delay: Duration::from_millis(200),
+                started: None,
             },
         )
         .await;
@@ -1032,14 +1037,16 @@ mod tests {
         assert!(entry.prompt_last_error.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exact_prompt_kernel_queue_and_rpc_share_one_deadline() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
         let mut pool = catalog_pool_with_server(
             "alpha",
             SlowCountingPromptServer {
                 calls: Arc::clone(&calls),
                 delay: Duration::from_millis(80),
+                started: Some(Arc::clone(&started)),
             },
         )
         .await;
@@ -1069,8 +1076,11 @@ mod tests {
                 )
                 .await
         });
-        tokio::time::sleep(Duration::from_millis(70)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(70)).await;
         drop(held);
+        started.notified().await;
+        tokio::time::advance(Duration::from_millis(30)).await;
         let result = task.await.unwrap();
 
         assert_eq!(result, Err(ExactPromptCallError::Timeout));
@@ -1095,6 +1105,7 @@ mod tests {
             SlowCountingPromptServer {
                 calls: Arc::clone(&calls),
                 delay: Duration::from_millis(1),
+                started: None,
             },
         )
         .await;

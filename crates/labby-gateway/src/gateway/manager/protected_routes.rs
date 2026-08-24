@@ -5,7 +5,9 @@ use crate::gateway::config::{
     insert_protected_mcp_route, remove_protected_mcp_route, update_protected_mcp_route,
 };
 use labby_runtime::error::ToolError;
-use labby_runtime::gateway_config::{GatewayConfig, ProtectedMcpRouteConfig};
+use labby_runtime::gateway_config::{
+    GatewayConfig, ProtectedMcpRouteConfig, ProtectedMcpRouteTarget,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -158,11 +160,15 @@ impl GatewayManager {
     pub async fn protected_route_update(
         &self,
         name: &str,
-        route: ProtectedMcpRouteConfig,
+        mut route: ProtectedMcpRouteConfig,
+        preserve_project_id: bool,
     ) -> Result<ProtectedMcpRouteConfig, ToolError> {
         let _mutation_guard = self.acquire_config_mutation().await?;
         let mut cfg = self.load_config_for_mutation().await?;
         let runtime_cfg = self.config.read().await.clone();
+        if preserve_project_id {
+            preserve_route_project_id(&cfg, name, &mut route)?;
+        }
         reject_pending_route_restart(&runtime_cfg, &cfg, "update")?;
         if let Some(existing) = cfg
             .protected_mcp_routes
@@ -305,7 +311,8 @@ impl GatewayManager {
     pub async fn protected_route_stage_update(
         &self,
         name: &str,
-        route: ProtectedMcpRouteConfig,
+        mut route: ProtectedMcpRouteConfig,
+        preserve_project_id: bool,
     ) -> Result<Value, ToolError> {
         let started = std::time::Instant::now();
         let _mutation_guard = self.acquire_config_mutation().await?;
@@ -315,6 +322,9 @@ impl GatewayManager {
             .iter()
             .find(|existing| existing.name == name)
             .cloned();
+        if preserve_project_id {
+            preserve_route_project_id(&cfg, name, &mut route)?;
+        }
         let runtime_cfg = self.config.read().await.clone();
         let runtime_existing = runtime_cfg
             .protected_mcp_routes
@@ -502,6 +512,35 @@ fn staged_route_result(
         "pending_operation": pending_operation,
         "restart_note": restart_note,
     })
+}
+
+fn preserve_route_project_id(
+    config: &GatewayConfig,
+    name: &str,
+    replacement: &mut ProtectedMcpRouteConfig,
+) -> Result<(), ToolError> {
+    let Some(existing) = config
+        .protected_mcp_routes
+        .iter()
+        .find(|route| route.name == name)
+    else {
+        return Ok(());
+    };
+    match (&existing.target, &mut replacement.target) {
+        (
+            Some(ProtectedMcpRouteTarget::GatewaySubset(existing)),
+            Some(ProtectedMcpRouteTarget::GatewaySubset(replacement)),
+        ) => replacement.project_id.clone_from(&existing.project_id),
+        _ => {
+            return Err(ToolError::InvalidParam {
+                message:
+                    "project binding can only be preserved while updating a gateway_subset route"
+                        .to_string(),
+                param: "route.target".to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn reject_pending_route_restart(
