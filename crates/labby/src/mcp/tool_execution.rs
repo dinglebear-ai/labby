@@ -1,6 +1,8 @@
 //! Unmounted nondestructive regular Tool execution authorization seam.
 #![allow(dead_code)]
 
+use std::time::SystemTime;
+
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::manager::{GatewayManager, PublishedToolCallError};
 use labby_gateway::upstream::tool_error::mcp_error_data_kind;
@@ -8,7 +10,9 @@ use rmcp::model::{CallToolRequestParams, CallToolResponse};
 use thiserror::Error;
 
 use crate::access::{AccessRuntime, Permission};
-use crate::mcp::bound_access::{BoundAccessContext, bind_asset_use_access_context};
+use crate::mcp::bound_access::{
+    BoundAccessContext, TransportBoundAccessContext, bind_asset_use_access_context,
+};
 
 /// Server-owned inputs for one exact regular non-OAuth Tool execution.
 ///
@@ -158,6 +162,75 @@ pub(crate) async fn execute_exact_project_tool(
     map_manager_result(result)
 }
 
+/// Execute from one middleware-owned protected-transport binding.
+///
+/// Route, resource, and Project facts are derived only from the immutable
+/// request-owned binding. The exact token expiry and independently derived
+/// identity binding are checked before dispatch and again before any result or
+/// error is exposed. This remains unmounted.
+pub(crate) async fn execute_transport_bound_project_tool(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: CallToolRequestParams,
+) -> Result<CallToolResponse, ToolExecutionResolutionError> {
+    execute_transport_bound_project_tool_with_clock(
+        runtime,
+        manager,
+        transport,
+        identity,
+        request,
+        SystemTime::now,
+    )
+    .await
+}
+
+async fn execute_transport_bound_project_tool_with_clock(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    request: CallToolRequestParams,
+    mut now: impl FnMut() -> SystemTime,
+) -> Result<CallToolResponse, ToolExecutionResolutionError> {
+    transport
+        .validate_not_expired(now())
+        .map_err(|_| ToolExecutionResolutionError::Unavailable)?;
+    if !transport.matches_identity(identity) {
+        return Err(ToolExecutionResolutionError::Unavailable);
+    }
+    let route = transport.core().route();
+    let result = execute_exact_project_tool(
+        runtime,
+        manager,
+        ToolExecutionResolutionInput::new(
+            identity.clone(),
+            route.route_name(),
+            route.resource(),
+            route.project_id(),
+            request,
+        ),
+    )
+    .await;
+    finish_transport_bound_tool_result(transport, identity, now(), result)
+}
+
+fn finish_transport_bound_tool_result(
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    now: SystemTime,
+    result: Result<CallToolResponse, ToolExecutionResolutionError>,
+) -> Result<CallToolResponse, ToolExecutionResolutionError> {
+    transport
+        .validate_not_expired(now)
+        .map_err(|_| ToolExecutionResolutionError::Unavailable)?;
+    if !transport.matches_identity(identity) {
+        return Err(ToolExecutionResolutionError::Unavailable);
+    }
+    result
+}
+
 fn map_manager_result(
     result: Result<CallToolResponse, PublishedToolCallError>,
 ) -> Result<CallToolResponse, ToolExecutionResolutionError> {
@@ -189,6 +262,7 @@ fn map_manager_error(error: PublishedToolCallError) -> ToolExecutionResolutionEr
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use labby_auth::{Authenticator, VerifiedIdentity};
     use labby_gateway::gateway::config_store::FsGatewayConfigStore;
@@ -212,9 +286,13 @@ mod tests {
 
     use super::{
         ToolExecutionResolutionError, ToolExecutionResolutionInput, execute_exact_project_tool,
+        execute_transport_bound_project_tool_with_clock, finish_transport_bound_tool_result,
         map_manager_error, map_manager_result,
     };
     use crate::access::{AccessRuntime, AssignProjectLoadoutInput, BootstrapOwnerInput};
+    use crate::mcp::bound_access::{
+        TransportBoundAccessContext, bind_access_context, validate_transport_credential_binding,
+    };
     use crate::mcp::catalog::{
         ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME,
         CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
@@ -479,6 +557,29 @@ mod tests {
             upstream_name: Arc::from("alpha"),
             tool,
         }
+    }
+
+    async fn transport_binding(
+        runtime: &AccessRuntime,
+        manager: &GatewayManager,
+        identity: VerifiedIdentity,
+        expires_at: usize,
+        now: SystemTime,
+    ) -> TransportBoundAccessContext {
+        let core = bind_access_context(
+            runtime,
+            manager,
+            identity,
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let credential =
+            validate_transport_credential_binding("issuer", "request-jti", expires_at, now)
+                .unwrap();
+        TransportBoundAccessContext::new(core, credential, now).unwrap()
     }
 
     async fn start_delayed_call(
@@ -993,5 +1094,233 @@ mod tests {
             Err(ToolExecutionResolutionError::Unavailable)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement(
+                "UPDATE project_memberships SET role='owner' WHERE project_id='bootstrap-default';
+                 UPDATE access_metadata SET global_revision=global_revision+1 WHERE singleton=1",
+            )
+            .await
+            .unwrap();
+        let before = UNIX_EPOCH + Duration::from_secs(100);
+        let after = UNIX_EPOCH + Duration::from_secs(102);
+        let transport =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let mut transport_request = CallToolRequestParams::new("nested/tool");
+        transport_request.arguments = Some(serde_json::Map::from_iter([(
+            "value".into(),
+            serde_json::json!("transport-kept"),
+        )]));
+        let mut untrusted_meta = rmcp::model::RequestMetaObject::new();
+        untrusted_meta.insert("route_name".into(), serde_json::json!("attacker-route"));
+        untrusted_meta.insert("project_id".into(), serde_json::json!("attacker-project"));
+        untrusted_meta.insert(
+            "resource".into(),
+            serde_json::json!("https://attacker.invalid"),
+        );
+        transport_request.meta = Some(untrusted_meta);
+        let transport_response = execute_transport_bound_project_tool_with_clock(
+            &runtime,
+            &manager,
+            &transport,
+            &identity,
+            transport_request,
+            || before,
+        )
+        .await
+        .unwrap();
+        let CallToolResponse::Complete(transport_response) = transport_response else {
+            panic!("transport fixture must complete")
+        };
+        assert_eq!(
+            serde_json::to_value(transport_response).unwrap()["content"][0]["text"],
+            "nested/tool:\"transport-kept\""
+        );
+        let received = received_meta.lock().await;
+        assert_eq!(received.last().unwrap()["route_name"], "attacker-route");
+        assert_eq!(received.last().unwrap()["project_id"], "attacker-project");
+        drop(received);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        let expiring = transport_binding(&runtime, &manager, identity.clone(), 101, before).await;
+        assert!(matches!(
+            execute_transport_bound_project_tool_with_clock(
+                &runtime,
+                &manager,
+                &expiring,
+                &identity,
+                CallToolRequestParams::new("nested/tool"),
+                || after,
+            )
+            .await,
+            Err(ToolExecutionResolutionError::Unavailable)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        let other_identity = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "other-issuer",
+            "other-credential",
+        )
+        .unwrap();
+        assert!(matches!(
+            execute_transport_bound_project_tool_with_clock(
+                &runtime,
+                &manager,
+                &transport,
+                &other_identity,
+                CallToolRequestParams::new("nested/tool"),
+                || before,
+            )
+            .await,
+            Err(ToolExecutionResolutionError::Unavailable)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+        let expiring = transport_binding(&runtime, &manager, identity.clone(), 101, before).await;
+        let mut times = [before, after].into_iter();
+        assert!(matches!(
+            execute_transport_bound_project_tool_with_clock(
+                &runtime,
+                &manager,
+                &expiring,
+                &identity,
+                CallToolRequestParams::new("nested/tool"),
+                || times.next().unwrap(),
+            )
+            .await,
+            Err(ToolExecutionResolutionError::Unavailable)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+
+        let valid_transport =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let variant_schema = ElicitationSchema::builder()
+            .required_property(
+                "confirm",
+                PrimitiveSchemaDefinition::Boolean(BooleanSchema::default()),
+            )
+            .build()
+            .unwrap();
+        for response in [
+            CallToolResponse::Task(CreateTaskResult::new(Task::new(
+                "transport-task",
+                TaskStatus::Working,
+                "2026-08-24T00:00:00Z",
+                "2026-08-24T00:00:00Z",
+            ))),
+            CallToolResponse::InputRequired(InputRequiredResult::from_input_requests(
+                InputRequests::from([(
+                    "confirmation".into(),
+                    InputRequest::Elicitation(ElicitRequest::new(
+                        ElicitRequestParams::FormElicitationParams {
+                            meta: None,
+                            message: "confirm?".into(),
+                            requested_schema: variant_schema.clone(),
+                        },
+                    )),
+                )]),
+            )),
+        ] {
+            let preserved = finish_transport_bound_tool_result(
+                &valid_transport,
+                &identity,
+                before,
+                Ok(response.clone()),
+            )
+            .unwrap();
+            match (preserved, response) {
+                (CallToolResponse::Task(actual), CallToolResponse::Task(expected)) => assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                ),
+                (
+                    CallToolResponse::InputRequired(actual),
+                    CallToolResponse::InputRequired(expected),
+                ) => assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                ),
+                _ => panic!("transport finish gate changed response variant"),
+            }
+        }
+        assert!(matches!(
+            finish_transport_bound_tool_result(
+                &valid_transport,
+                &identity,
+                before,
+                Err(ToolExecutionResolutionError::Mcp {
+                    kind: "internal_error",
+                    code: -32_603,
+                }),
+            ),
+            Err(ToolExecutionResolutionError::Mcp {
+                kind: "internal_error",
+                code: -32_603,
+            })
+        ));
+        assert!(matches!(
+            finish_transport_bound_tool_result(
+                &valid_transport,
+                &identity,
+                before,
+                Err(ToolExecutionResolutionError::Transport),
+            ),
+            Err(ToolExecutionResolutionError::Transport)
+        ));
+        for error in [
+            ToolExecutionResolutionError::Mcp {
+                kind: "internal_error",
+                code: -32_603,
+            },
+            ToolExecutionResolutionError::Transport,
+        ] {
+            assert!(matches!(
+                finish_transport_bound_tool_result(&expiring, &identity, after, Err(error),),
+                Err(ToolExecutionResolutionError::Unavailable)
+            ));
+        }
+
+        let transport_cancel_calls = Arc::new(AtomicUsize::new(0));
+        let transport_cancel_started = Arc::new(Notify::new());
+        let transport_cancel_release = Arc::new(Notify::new());
+        pool.install_tool_server_for_tests(
+            "alpha",
+            DelayedToolServer {
+                calls: Arc::clone(&transport_cancel_calls),
+                started: Arc::clone(&transport_cancel_started),
+                release: Arc::clone(&transport_cancel_release),
+                fail: false,
+            },
+        )
+        .await;
+        pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", false)])
+            .await;
+        let transport =
+            transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
+        let cancel_runtime = Arc::clone(&runtime);
+        let cancel_manager = Arc::clone(&manager);
+        let cancel_identity = identity.clone();
+        let transport_cancel_task = tokio::spawn(async move {
+            execute_transport_bound_project_tool_with_clock(
+                &cancel_runtime,
+                &cancel_manager,
+                &transport,
+                &cancel_identity,
+                CallToolRequestParams::new("nested/tool"),
+                || before,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), transport_cancel_started.notified())
+            .await
+            .expect("transport-bound exact call must reach upstream before cancellation");
+        transport_cancel_task.abort();
+        assert!(transport_cancel_task.await.unwrap_err().is_cancelled());
+        transport_cancel_release.notify_one();
+        assert_eq!(transport_cancel_calls.load(Ordering::SeqCst), 1);
     }
 }

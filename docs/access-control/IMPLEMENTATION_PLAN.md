@@ -467,6 +467,12 @@ Add an unmounted server-owned resolver for regular non-OAuth Tool calls. A fresh
 
 This is freshness and nondestructive filtering, not complete Tool authority. The wrapper preserves Task and InputRequired responses once accepted by the exact pool boundary, but the generic pooled unit client cannot negotiate those capabilities; negotiation and follow-up remain mounting prerequisites. Transport token binding, handler mounting, admin/destructive confirmation, elicitation/task follow-up, OAuth, relay, Code Mode, built-in dispatch, and surface accounting remain deferred. A future handler must derive permanent and App ownership from the same centralized classifier and descriptor assembly used by discovery.
 
+### Wave 52 / Milestone 0BD: transport-bound exact Tool wrapper
+
+Wrap the Wave 51 exact nondestructive regular Tool seam in the immutable middleware-owned protected-transport binding. The wrapper validates the exact token expiry and independently derived identity before dispatch and again before exposing any success or error, while deriving route, resource, and Project facts exclusively from the bound core. A post-dispatch expiry discards the result deterministically; pre-dispatch expiry or identity mismatch performs no RPC. The wrapper preserves every Wave 51 response and redacted error class when the transport remains valid.
+
+This wrapper remains unmounted. The generic pooled unit client still cannot negotiate Task or InputRequired capabilities or own their follow-up lifecycle, so `tools/call` handler enforcement must not land until that contract is solved. Handler dispatch, capability negotiation, task and elicitation continuation, destructive/admin policy, OAuth, relay, Code Mode, built-ins, notifications, and surface accounting remain unchanged.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red
