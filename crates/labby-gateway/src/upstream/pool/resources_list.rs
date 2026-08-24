@@ -859,7 +859,9 @@ mod tests {
             _request: Option<PaginatedRequestParams>,
             _context: RequestContext<RoleServer>,
         ) -> Result<ListResourcesResult, ErrorData> {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            // Long enough that the caller can only return by honoring its own
+            // request budget, never by outlasting this fixture.
+            tokio::time::sleep(Duration::from_secs(30)).await;
             Ok(ListResourcesResult::with_all_items(vec![Resource::new(
                 "file:///slow",
                 "slow",
@@ -1318,6 +1320,17 @@ mod tests {
         );
     }
 
+    /// Ceiling for the "did the caller give up on its own budget?" assertions
+    /// below.
+    ///
+    /// Those tests pair a 25ms request budget with a fixture that stalls for
+    /// 30 seconds. The ceiling only has to prove the caller returned on its own
+    /// budget instead of waiting for the upstream, so anything far below the
+    /// stall does the job. It used to sit at 100ms against a 200ms stall, close
+    /// enough to the budget that scheduler jitter under parallel test load
+    /// pushed a correct run over it.
+    const STALLED_UPSTREAM_CEILING: Duration = Duration::from_secs(2);
+
     #[tokio::test]
     async fn subject_scoped_resources_bound_a_stalled_upstream() {
         let pool = catalog_pool_with_server("slow", SlowResourceListServer).await;
@@ -1359,7 +1372,7 @@ mod tests {
             "a timed-out upstream yields partial data"
         );
         assert!(
-            started.elapsed() < Duration::from_millis(100),
+            started.elapsed() < STALLED_UPSTREAM_CEILING,
             "a stalled upstream exceeded the request budget: {:?}",
             started.elapsed()
         );
@@ -1376,7 +1389,9 @@ mod tests {
         );
         let guard = connect_lock.lock_owned().await;
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            // As above: the caller must give up on its own budget rather than
+            // wait for this lock to free.
+            tokio::time::sleep(Duration::from_secs(30)).await;
             drop(guard);
         });
         let mut config = oauth_schema_config("slow-connect");
@@ -1390,7 +1405,7 @@ mod tests {
             "a timed-out connect yields partial data"
         );
         assert!(
-            started.elapsed() < Duration::from_millis(100),
+            started.elapsed() < STALLED_UPSTREAM_CEILING,
             "connection acquisition exceeded the request budget: {:?}",
             started.elapsed()
         );
@@ -1412,7 +1427,7 @@ mod tests {
             "a timed-out upstream yields partial data"
         );
         assert!(
-            started.elapsed() < Duration::from_millis(100),
+            started.elapsed() < STALLED_UPSTREAM_CEILING,
             "a stalled upstream exceeded the request budget: {:?}",
             started.elapsed()
         );

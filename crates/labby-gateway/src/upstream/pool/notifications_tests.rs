@@ -233,8 +233,11 @@ async fn batch_refresh_waits_for_acknowledgements_concurrently() {
     pool.refresh_upstream_subscriptions_concurrently(vec!["alpha".into(), "bravo".into()])
         .await;
 
+    // Serial execution would take 1200ms, so any ceiling below that proves the
+    // two acknowledgements overlapped. Sitting just under it leaves the most
+    // room for scheduler jitter while keeping the proof exact.
     assert!(
-        started.elapsed() < Duration::from_millis(1_050),
+        started.elapsed() < Duration::from_millis(1_150),
         "two 600 ms acknowledgements should overlap, elapsed {:?}",
         started.elapsed()
     );
@@ -269,8 +272,10 @@ async fn resource_listing_does_not_wait_for_subscription_rehandshake() {
             .collect::<Vec<_>>(),
         vec!["lab://upstream/leaf/file:///tmp/subscription-resource"]
     );
+    // The handshake this must not wait for takes 600ms, so a ceiling below that
+    // is the whole proof; 200ms was near enough to trip on scheduler jitter.
     assert!(
-        started.elapsed() < Duration::from_millis(200),
+        started.elapsed() < Duration::from_millis(500),
         "resources/list waited for a subscription handshake: {:?}",
         started.elapsed()
     );

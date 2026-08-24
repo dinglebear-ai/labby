@@ -225,22 +225,26 @@ mod tests {
         let _guard = serial();
         reset_notification_history_for_test();
 
-        assert_eq!(in_flight_tool_calls(), 0);
+        // `serial()` orders the churn tests against each other, but the gauge is
+        // a process-global that production `call_tool` also drives, so a tool
+        // call from a test running in parallel can be open the whole time. Only
+        // this test's own deltas are meaningful; absolute counts are not.
+        let base = in_flight_tool_calls();
         {
             let _call = InFlightToolCall::enter();
-            assert_eq!(in_flight_tool_calls(), 1);
+            assert_eq!(in_flight_tool_calls(), base + 1);
             {
                 let _nested = InFlightToolCall::enter();
-                assert_eq!(in_flight_tool_calls(), 2);
+                assert_eq!(in_flight_tool_calls(), base + 2);
             }
-            assert_eq!(in_flight_tool_calls(), 1);
+            assert_eq!(in_flight_tool_calls(), base + 1);
 
             // The field that matters: a notification emitted here is marked as
             // landing while a caller's turn is open.
-            assert_eq!(record_notification().in_flight_tool_calls, 1);
+            assert_eq!(record_notification().in_flight_tool_calls, base + 1);
         }
-        assert_eq!(in_flight_tool_calls(), 0);
-        assert_eq!(record_notification().in_flight_tool_calls, 0);
+        assert_eq!(in_flight_tool_calls(), base);
+        assert_eq!(record_notification().in_flight_tool_calls, base);
     }
 
     #[test]
@@ -248,16 +252,22 @@ mod tests {
         let _guard = serial();
         reset_notification_history_for_test();
 
+        let base = in_flight_tool_calls();
         drop(InFlightToolCall::enter());
         drop(InFlightToolCall::enter());
 
-        assert_eq!(in_flight_tool_calls(), 0, "saturating decrement, no wrap");
+        assert_eq!(
+            in_flight_tool_calls(),
+            base,
+            "saturating decrement, no wrap"
+        );
     }
 
     #[test]
     fn resetting_notification_history_does_not_steal_live_call_ownership() {
         let _guard = serial();
         reset_notification_history_for_test();
+        let base = in_flight_tool_calls();
         let older_call = InFlightToolCall::enter();
 
         // A history reset may happen while an unrelated request is active. It
@@ -267,11 +277,11 @@ mod tests {
         drop(older_call);
         assert_eq!(
             in_flight_tool_calls(),
-            1,
+            base + 1,
             "dropping the older call must leave the current call accounted for"
         );
 
         drop(current_call);
-        assert_eq!(in_flight_tool_calls(), 0);
+        assert_eq!(in_flight_tool_calls(), base);
     }
 }

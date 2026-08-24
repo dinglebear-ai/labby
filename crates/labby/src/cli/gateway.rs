@@ -783,6 +783,12 @@ mod tests {
             "https://lab.example.com/auth/upstream/callback".to_string(),
         );
 
+        // Building a real manager runs `LabConfigStore::set_process_code_mode_enabled`,
+        // which writes the process-wide Code Mode atomic. Hold the same lock the
+        // Code Mode tests use so this does not clobber their setting mid-run —
+        // `cargo test` runs these in parallel. The guard also restores the
+        // previous value on drop.
+        let _code_mode_guard = crate::config::process_code_mode_test_guard();
         let manager = build_manager_with_upstream_oauth_runtime(&config, true, Some(oauth_runtime))
             .await
             .expect("build gateway manager");
