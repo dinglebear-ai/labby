@@ -194,3 +194,55 @@ test('a completed empty browse names Code Mode being disabled, instead of lookin
     assert.doesNotMatch(view.container.textContent ?? '', /Search, or browse the live catalog without a query/)
   } finally { await view.unmount() }
 })
+
+test('clearing the search box does not turn a stale no-match into a claim about every server', async () => {
+  // The summary must describe the query that produced the results, not the
+  // live input. Branching on `query` meant erasing the box after a failed
+  // search silently upgraded "No matching tools" into a positive assertion
+  // that no connected server exposes anything.
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated', user: { sub: 'admin', email: 'admin@example.com' },
+    expiresAt: 100, csrfToken: 'csrf', isAdmin: true,
+  })
+  globalThis.fetch = async (input) => {
+    const path = String(input)
+    if (path.endsWith('/search')) {
+      return new Response(JSON.stringify({ results: [], total: 0, truncated: false }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response('{}', { status: 404 })
+  }
+
+  const view = await renderClient(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <ToolBrowser initialQuery="zzz" />
+    </SWRConfig>,
+  )
+  try {
+    const form = view.container.querySelector('form'); assert.ok(form)
+    await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /No matching tools/))
+
+    // Clear the input WITHOUT submitting — the results still belong to "zzz".
+    const input = view.container.querySelector<HTMLInputElement>('input[aria-label="Search tools"]')
+    assert.ok(input)
+    await act(async () => {
+      input.value = ''
+      input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    })
+
+    assert.match(
+      view.container.textContent ?? '',
+      /No matching tools/,
+      'the summary must keep describing the executed query',
+    )
+    assert.doesNotMatch(
+      view.container.textContent ?? '',
+      /No tools exposed by any connected server/,
+      'clearing the box must not fabricate a gateway-wide claim',
+    )
+  } finally { await view.unmount() }
+})

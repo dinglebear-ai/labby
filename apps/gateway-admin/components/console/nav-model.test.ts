@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 
 import { consoleNavItems, consoleNavSections } from './nav-model'
 
-test('every nav item kbd accelerator matches its position in the flattened list (lab-vl9q6)', () => {
+// bead lab-vl9q6
+test('every nav item kbd accelerator matches its position in the flattened list', () => {
   // console-sidebar.tsx's ⌘/Ctrl+N handler jumps to
   // `consoleNavSections.flatMap(section => section.items)[N - 1]` — the
   // displayed accelerator must match that exact position or the hint lies

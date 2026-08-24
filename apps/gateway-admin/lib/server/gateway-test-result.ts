@@ -9,7 +9,7 @@ export function testResultFromProbe(
   // caller. The backend runtime view carries no timing field, so this is the
   // only latency figure available — attaching it here (rather than leaving
   // `latency_ms` unset) is what fixed the toast that used to read
-  // "Connection successful: undefinedms latency" (lab-bsblg).
+  // "Connection successful: undefinedms latency" (bead lab-bsblg).
   elapsedMs?: number,
 ): TestGatewayResult {
   if (!probe.connected) {

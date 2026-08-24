@@ -274,7 +274,7 @@ pub(crate) fn update_upstream(
     // distinguishes an explicit null (clear the filter) from an absent field,
     // so collapsing [] to None is never needed to express "remove filter" —
     // and doing so silently inverted an operator's explicit hide-everything
-    // decision into expose-everything (lab-sc8ba).
+    // decision into expose-everything (bead lab-sc8ba).
     if let Some(expose_tools) = patch.expose_tools {
         cfg.upstream[index].expose_tools = expose_tools;
     }

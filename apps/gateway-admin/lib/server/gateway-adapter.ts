@@ -196,7 +196,7 @@ export { matchPattern }
 // compiles to an `AllowList` that matches nothing (everything hidden).
 // Collapsing the two here renders every tool/resource/prompt as "Exposed" on a
 // server the gateway is actually hiding in full — the precise inverse of the
-// truth. See lab-sc8ba, which made `[]` persistable in the first place.
+// truth. See bead lab-sc8ba, which made `[]` persistable in the first place.
 function matchTool(toolName: string, patterns?: string[] | null): string | null {
   if (!patterns) {
     return '*'

@@ -373,7 +373,7 @@ export function gatewaysRuntimeRequestKey(
   // "the same request" — the id set doesn't change, so the cached runtime
   // hydration never revalidated and the merged view (`runtime.data ??
   // configured.data`) kept serving the pre-toggle snapshot until a full page
-  // reload discarded the cache (lab-gz4gk). Folding each gateway's enabled
+  // reload discarded the cache (bead lab-gz4gk). Folding each gateway's enabled
   // bit into the key makes any enable/disable a distinct cache entry, so it
   // revalidates the same way an add/remove already does via the id list.
   return enabled && includeRuntime && gateways

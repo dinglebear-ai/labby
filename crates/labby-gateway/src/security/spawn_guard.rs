@@ -119,10 +119,12 @@ pub fn validate_stdio_command(
         .and_then(|n| n.to_str())
         .unwrap_or(command);
 
-    // Extra entries may be bare binary names ("my-server", matching any path
-    // with that file name) or full command paths ("/opt/bin/my-server",
-    // matching only that exact command) — the error text below tells operators
-    // to add the rejected command verbatim, so the verbatim form must match.
+    // Extra entries may be a bare binary name ("my-server"), which matches that
+    // basename at any path, or a full command path ("/opt/bin/my-server"),
+    // which matches only that exact command. Accepting the full-path form is
+    // what makes the error text below true: it quotes the rejected command and
+    // tells the operator to add it, and previously adding exactly that string
+    // still did not work. bead lab-qtjnq.
     if ALLOWED_RUNTIME_HINTS.contains(&binary) || extra.iter().any(|e| e == binary || e == command)
     {
         Ok(())
@@ -133,11 +135,12 @@ pub fn validate_stdio_command(
         Err(ToolError::InvalidParam {
             param: "command".to_string(),
             message: format!(
-                "stdio command '{}' is not in the allowed list; must be one of: {} \
-                 (add to [gateway] extra_stdio_commands in config.toml to extend, \
-                 or set disable_spawn_guard = true to disable this check)",
-                command,
-                allowed.join(", ")
+                "stdio command '{command}' is not in the allowed list; must be one of: {allowed} \
+                 (to extend, add either '{command}' or just '{binary}' to [gateway] \
+                 extra_stdio_commands in config.toml — the full path allows only that exact \
+                 command, the bare name allows it at any path; or set disable_spawn_guard = true \
+                 to disable this check)",
+                allowed = allowed.join(", ")
             ),
         })
     }
@@ -367,7 +370,7 @@ mod tests {
     #[test]
     fn command_accepts_extra_allowlisted_absolute_path() {
         // Operators paste the rejected command verbatim from the error message,
-        // so a full-path extra entry must match that exact command (lab-qtjnq).
+        // so a full-path extra entry must match that exact command (bead lab-qtjnq).
         let extra = vec!["/opt/tools/my-mcp-server".to_string()];
         assert!(validate_stdio_command("/opt/tools/my-mcp-server", &extra, false).is_ok());
         // A different path to the same basename is NOT matched by a full-path entry.

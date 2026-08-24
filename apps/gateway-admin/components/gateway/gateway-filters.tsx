@@ -49,7 +49,7 @@ interface FilterPillProps {
    * ("Healthy", "Enabled", "Disconnected") are the same words the Gateway
    * hero's stat chips use for their own toggle buttons elsewhere on the
    * page — screen-reader and voice-control users navigating by name can't
-   * tell the two apart without this (lab-gxbhf). Leave unset for groups
+   * tell the two apart without this (bead lab-gxbhf). Leave unset for groups
    * whose labels are already unambiguous (Source, Transport, Exposure, ...).
    */
   ariaLabel?: string

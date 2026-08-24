@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
@@ -27,6 +27,15 @@ use super::helpers::{
 use super::skills_list::peer_declares_skills;
 use super::tools::tool_has_mcp_app_ui_resource;
 use super::validate::validate_upstream_config;
+
+/// Wall-clock cap for the post-connect prompt-cache refresh.
+///
+/// Mirrors `RESOURCE_CATALOG_TIMEOUT` in `resources_list.rs`, which bounds the
+/// sibling resource refresh on this same path. Both run while the lazy-connect
+/// mutex and the `oauth_invalidation_barrier` read guard are held, so an
+/// unbounded listing here would stall queued OAuth writers behind a single slow
+/// upstream.
+const PROMPT_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Validate an upstream config entry and, if valid, return the catalog entry
 /// that should be inserted for it.
@@ -223,21 +232,7 @@ impl UpstreamPool {
             .await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
-        if config.proxy_resources {
-            self.refresh_resource_cache_for_upstream(&config.name).await;
-        }
-        // Mirror the resource refresh for prompts: the startup discovery
-        // fan-out (discover.rs) probes prompt counts, but this is the only
-        // discovery a server gets when it's added/updated/re-enabled while
-        // the gateway is already running — without this,
-        // `discovered_prompt_count` stays 0 until a downstream client happens
-        // to call prompts/list (lab-zfyxk). This is the real production
-        // entrypoint; `ensure_tools_for_upstream_with_connector` below is a
-        // `#[cfg(test)]`-only seam and is never reached from live traffic, so
-        // fixing only that one (as an earlier pass here did) has no effect.
-        if config.proxy_prompts {
-            self.refresh_prompt_cache_for_upstream(&config.name).await;
-        }
+        self.refresh_capability_caches_after_connect(config).await;
         tracing::info!(
             surface = "dispatch",
             service = "upstream.pool",
@@ -316,16 +311,7 @@ impl UpstreamPool {
             .await;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
-        if config.proxy_resources {
-            self.refresh_resource_cache_for_upstream(&config.name).await;
-        }
-        // Kept in sync with the resource/prompt refresh on the real
-        // `ensure_tools_for_upstream` above (lab-zfyxk) so this test-only
-        // connector seam exercises the same shape, even though production
-        // traffic never reaches this function.
-        if config.proxy_prompts {
-            self.refresh_prompt_cache_for_upstream(&config.name).await;
-        }
+        self.refresh_capability_caches_after_connect(config).await;
         Ok(true)
     }
 
@@ -486,14 +472,59 @@ impl UpstreamPool {
         }
     }
 
+    /// Refresh every capability cache an upstream opts into, right after a
+    /// successful connect.
+    ///
+    /// This is the single post-connect finalization step, called by BOTH
+    /// `ensure_tools_for_upstream` and its `#[cfg(test)]` connector twin. It
+    /// exists as one function on purpose: prompts previously went unrefreshed
+    /// here (bead lab-zfyxk) and the first fix was applied to only one of two
+    /// copies of an inlined block — the production path kept the bug while the
+    /// suite stayed green, because no test could tell the two copies apart.
+    /// Keep new post-connect refreshes in here rather than at the call sites.
+    ///
+    /// Scope note: the subject-scoped OAuth branch of `ensure_tools_for_upstream`
+    /// returns before reaching this, so OAuth upstreams refresh neither cache.
+    /// That gap predates this function and is shared by resources and prompts.
+    async fn refresh_capability_caches_after_connect(&self, config: &UpstreamConfig) {
+        if config.proxy_resources {
+            self.refresh_resource_cache_for_upstream(&config.name).await;
+        }
+        if config.proxy_prompts {
+            self.refresh_prompt_cache_for_upstream(&config.name).await;
+        }
+    }
+
     async fn refresh_resource_cache_for_upstream(&self, upstream_name: &str) {
         let allowed = BTreeSet::from([upstream_name.to_string()]);
         self.list_upstream_resources_allowed(Some(&allowed)).await;
     }
 
+    /// Refresh one upstream's cached prompt listing after a lazy connect.
+    ///
+    /// Bounded by `listing_catalog_timeout` (10s cap) rather than the raw
+    /// `request_timeout` (30s by default) that `list_upstream_prompts_allowed`
+    /// would apply on its own. This runs while the caller still holds both the
+    /// per-upstream lazy-connect mutex and a read guard on
+    /// `oauth_invalidation_barrier` — and that barrier is write-preferring, so
+    /// a stalled `prompts/list` here delays every queued OAuth credential
+    /// mutation and, behind it, every peer acquisition fleet-wide. The
+    /// resource sibling is capped the same way for the same reason; keep the
+    /// two budgets equal.
+    ///
+    /// LOCK ORDER: whatever this calls must not `acquire_peer` or re-enter
+    /// `ensure_tools_for_upstream`. Re-taking `oauth_invalidation_barrier`
+    /// read while a writer is queued would deadlock. `collect_upstream_prompts`
+    /// satisfies this today (it resolves peers from the catalog directly).
+    ///
+    /// The cap is applied here rather than inside `list_upstream_prompts_allowed`
+    /// so only this connect-path refresh is bounded; the shared listing helper
+    /// keeps its existing budget for its other callers.
     async fn refresh_prompt_cache_for_upstream(&self, upstream_name: &str) {
         let allowed = BTreeSet::from([upstream_name.to_string()]);
-        self.list_upstream_prompts_allowed(&[], Some(&allowed))
+        let deadline_at =
+            tokio::time::Instant::now() + self.request_timeout.min(PROMPT_CATALOG_TIMEOUT);
+        self.list_upstream_prompts_allowed_until(&[], Some(&allowed), deadline_at)
             .await;
     }
 }
@@ -768,6 +799,72 @@ mod tests {
                     "lab://upstream/old-name/file:///tmp/upstream-two".to_string(),
                 ],
             )]
+        );
+    }
+
+    /// Drive a lazy connect through the connector seam with a live static
+    /// catalog peer, returning the pool for assertions.
+    ///
+    /// The seam and `ensure_tools_for_upstream` now share one post-connect
+    /// step (`refresh_capability_caches_after_connect`), so exercising the seam
+    /// exercises the production refresh — the two can no longer diverge the way
+    /// they did for bead lab-zfyxk.
+    async fn connect_via_seam(config: &UpstreamConfig) -> UpstreamPool {
+        let pool = UpstreamPool::new();
+        pool.seed_lazy_upstreams(std::slice::from_ref(config)).await;
+
+        let connection = Arc::new(Mutex::new(Some(static_catalog_connection().await)));
+        let connector: TestUpstreamConnector = Arc::new(move |_config| {
+            let connection = Arc::clone(&connection);
+            Box::pin(async move {
+                let connection = connection
+                    .lock()
+                    .await
+                    .take()
+                    .expect("connector called once");
+                Ok((Some(connection), vec![test_tool("ping")]))
+            })
+        });
+
+        pool.ensure_tools_for_upstream_with_connector(config, None, connector)
+            .await
+            .expect("lazy connect succeeds");
+        pool
+    }
+
+    #[tokio::test]
+    async fn connecting_an_upstream_refreshes_its_prompt_cache() {
+        let mut alpha = named_test_upstream_config("alpha");
+        alpha.proxy_prompts = true;
+
+        let pool = connect_via_seam(&alpha).await;
+
+        assert_eq!(
+            pool.cached_upstream_prompt_names_by_upstream().await,
+            vec![(
+                "alpha".to_string(),
+                vec![
+                    "alpha/upstream.prompt.one".to_string(),
+                    "alpha/upstream.prompt.two".to_string(),
+                ],
+            )],
+            "connecting an upstream must populate its prompt cache, not leave \
+             discovered_prompt_count at 0 until a client calls prompts/list"
+        );
+    }
+
+    #[tokio::test]
+    async fn connecting_an_upstream_skips_prompts_when_proxying_is_off() {
+        let alpha = named_test_upstream_config("alpha");
+        assert!(!alpha.proxy_prompts, "fixture defaults prompt proxying off");
+
+        let pool = connect_via_seam(&alpha).await;
+
+        assert!(
+            pool.cached_upstream_prompt_names_by_upstream()
+                .await
+                .is_empty(),
+            "an upstream that does not proxy prompts must not be listed"
         );
     }
 

@@ -15,7 +15,22 @@ test('configuration-only gateway loading never hydrates fleet runtime state', ()
   const gateways = [{ id: 'alpha' }] as Parameters<typeof gatewaysRuntimeRequestKey>[2]
   assert.equal(gatewaysRuntimeRequestKey(false, true, gateways), null)
   assert.equal(gatewaysRuntimeRequestKey(true, false, gateways), null)
-  assert.deepEqual(gatewaysRuntimeRequestKey(true, true, gateways), ['/gateways/runtime', 'alpha'])
+  assert.deepEqual(gatewaysRuntimeRequestKey(true, true, gateways), ['/gateways/runtime', 'alpha:1'])
+})
+
+test('the runtime key changes when a gateway is enabled or disabled', () => {
+  // Keying only on the id list meant a disable/enable was cache-identical, so
+  // the hydrated runtime view kept serving the pre-toggle snapshot until a
+  // full reload. bead lab-gz4gk.
+  const enabled = [{ id: 'alpha' }] as Parameters<typeof gatewaysRuntimeRequestKey>[2]
+  const disabled = [{ id: 'alpha', enabled: false }] as Parameters<typeof gatewaysRuntimeRequestKey>[2]
+
+  assert.deepEqual(gatewaysRuntimeRequestKey(true, true, enabled), ['/gateways/runtime', 'alpha:1'])
+  assert.deepEqual(gatewaysRuntimeRequestKey(true, true, disabled), ['/gateways/runtime', 'alpha:0'])
+  assert.notDeepEqual(
+    gatewaysRuntimeRequestKey(true, true, enabled),
+    gatewaysRuntimeRequestKey(true, true, disabled),
+  )
 })
 
 test('gateway snapshots stay idle until their consumer is enabled', async () => {

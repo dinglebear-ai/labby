@@ -32,15 +32,19 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
   const [detail, setDetail] = useState<ToolDescription | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<BrowserError | null>(null)
-  const [hasSearched, setHasSearched] = useState(false)
+  // The query that produced `results`/`total`, NOT the live input value.
+  // `query` changes on every keystroke while results only change on submit,
+  // so branching the summary on `query` let a cleared input turn a stale
+  // zero-result search into a confident claim about the whole gateway.
+  const [executedQuery, setExecutedQuery] = useState<string | null>(null)
   const activeRequest = useRef<AbortController | null>(null)
-  const { data: codeModeConfig } = useGatewayCodeModeConfig()
+  const { data: codeModeConfig, error: codeModeConfigError } = useGatewayCodeModeConfig()
 
   useEffect(() => {
     const clearForSessionChange = () => {
       activeRequest.current?.abort()
       activeRequest.current = null
-      setResults([]); setTotal(0); setDetail(null); setError(null); setLoading(false); setHasSearched(false)
+      setResults([]); setTotal(0); setDetail(null); setError(null); setLoading(false); setExecutedQuery(null)
     }
     const unsubscribe = subscribeToBrowserSession(clearForSessionChange)
     return () => { unsubscribe(); activeRequest.current?.abort() }
@@ -53,7 +57,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     try {
       const response = await searchCodeModeTools(value, controller.signal)
       if (activeRequest.current !== controller) return
-      setResults(response.results); setTotal(response.total); setHasSearched(true)
+      setResults(response.results); setTotal(response.total); setExecutedQuery(value)
     } catch (cause) {
       if (activeRequest.current === controller && !isAbortError(cause)) {
         setError({ ...toolBrowserError(cause, 'Tools unavailable'), retry: () => void runSearch(value) })
@@ -80,19 +84,32 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     finally { if (activeRequest.current === controller) setLoading(false) }
   }
 
-  // A completed "Browse all" (empty query) that finds nothing used to look
-  // identical to the pre-search placeholder — no visible change told the
-  // operator anything had happened, which is exactly what a disabled Code
-  // Mode looks like (the search endpoint reports 0 tools, not why). Track
-  // whether a search actually ran, and once it has, say so explicitly and
-  // point at the one thing most likely to cause it.
+  // A completed "Browse all" (empty query) that finds nothing used to render
+  // the same placeholder as before any search ran, so nothing told the
+  // operator the request had happened — which is exactly what a disabled Code
+  // Mode looks like, since the search endpoint reports 0 tools rather than
+  // why. Report the executed search honestly, and only make a claim about the
+  // gateway when we actually know enough to make one.
   function resultsSummary(): string {
-    if (error) return ''
+    // Keep the count when a *detail* fetch fails: `loadDetail` sets `error`
+    // without touching results, and blanking the label while result cards are
+    // still on screen just looks broken.
     if (total > 0) return `${total} matches${results.length < total ? ` · showing ${results.length}` : ''}`
-    if (!hasSearched || loading) return 'Search, or browse the live catalog without a query'
-    if (query.trim()) return 'No matching tools'
+    if (error) return ''
+    if (executedQuery === null || loading) return 'Search, or browse the live catalog without a query'
+    // Branch on the query that produced these results, not the live input —
+    // otherwise clearing the box after a failed search silently upgrades
+    // "no matches for zzz" into a claim about every connected server.
+    if (executedQuery.trim()) return 'No matching tools'
     if (codeModeConfig?.enabled === false) {
-      return 'No tools found — Code Mode is disabled, so no server exposes tools here. Enable it from Gateway.'
+      return 'Code Mode is disabled, so this catalog is empty. Enable it from Gateway.'
+    }
+    if (codeModeConfig === undefined) {
+      // Either still loading or the config fetch failed. Either way we cannot
+      // say whether Code Mode is the reason, so do not assert that it is not.
+      return codeModeConfigError
+        ? 'No tools returned, and the Code Mode setting could not be read to explain why.'
+        : 'No tools returned.'
     }
     return 'No tools exposed by any connected server.'
   }

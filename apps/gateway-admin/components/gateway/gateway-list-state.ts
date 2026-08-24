@@ -97,7 +97,7 @@ export function filterGateways(gateways: Gateway[], state: GatewayFilterState): 
     // unconditionally made that combination self-contradictory: the lens
     // excluded every disabled row before the facet check below ever ran, so
     // the chip always rendered "No matching servers" no matter what
-    // (lab-gz4gk). An explicit "Disabled" facet selection means the operator
+    // (bead lab-gz4gk). An explicit "Disabled" facet selection means the operator
     // is deliberately asking to see disabled servers, so it takes priority
     // over the lens's default exclusion.
     if (state.primaryLens === 'enabled' && !enabled && !state.status.includes('disabled')) {

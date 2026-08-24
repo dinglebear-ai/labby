@@ -57,8 +57,11 @@ built-in allowlist (`npx`, `uvx`, `docker`, `node`, `bun`, `python`, `python3`,
 
 ```toml
 [gateway]
-# Allow additional binaries beyond the built-in list.
-extra_stdio_commands = ["myserver", "labby"]
+# Allow additional binaries beyond the built-in list. An entry may be a bare
+# binary name, which matches that basename at any path ("myserver" allows
+# /usr/local/bin/myserver), or a full command path, which matches only that
+# exact command ("/opt/tools/myserver" does not allow /tmp/myserver).
+extra_stdio_commands = ["myserver", "/opt/tools/pinned-server"]
 
 # Or disable the guard entirely (operator takes full responsibility).
 disable_spawn_guard = true
@@ -76,7 +79,9 @@ republished by `lab`, via `expose_tools`, `expose_resources`, and
 
 - when an allowlist is unset, everything discovered for that capability remains exposed
 - allowlists accept exact names and simple `*` wildcards
-- an empty allowlist is treated as "clear the filter" rather than "block everything"
+- an empty allowlist blocks everything for that capability. To clear a filter and
+  go back to exposing everything, set it to `null` (omit the key in
+  `config.toml`, or send `null` in a `gateway.update` patch) — not `[]`
 - filtered items disappear from the merged MCP listing **and** cannot be reached
   directly through the proxy — `tools/call`, `resources/read`, `prompts/get`, and
   `completion/complete` all re-check the allowlist, on the shared, OAuth

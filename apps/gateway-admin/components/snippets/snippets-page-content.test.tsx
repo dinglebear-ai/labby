@@ -16,7 +16,7 @@ import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
 // own `mounted` state would never flip, so it would render `null` forever and
 // no dialog would ever appear in the DOM, regardless of `open` state. A
 // dynamic `await import(...)` after `installTestDom()` makes `document` exist
-// before Radix's module graph is ever evaluated. See lab-l9gpj.
+// before Radix's module graph is ever evaluated. See bead lab-l9gpj.
 
 async function waitFor(assertion: () => void) {
   const deadline = Date.now() + 2_000
@@ -246,7 +246,8 @@ test('snippets table filters by tag pill and search, and dashes out absent metri
   await view.unmount()
 })
 
-test('user snippets can be removed after confirmation; built-ins offer no Remove button (lab-l9gpj)', async () => {
+// bead lab-l9gpj
+test('user snippets can be removed after confirmation; built-ins offer no Remove button', async () => {
   installTestDom()
   const { SidebarProvider } = await import('@/components/ui/sidebar')
   const { SnippetsPageContent } = await import('./snippets-page-content')
@@ -352,4 +353,88 @@ test('user snippets can be removed after confirmation; built-ins offer no Remove
   await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
 
   await view.unmount()
+})
+
+test('a failed snippet removal closes the dialog so the error is actually visible', async () => {
+  // The error panel renders inside the snippet detail row, underneath this
+  // dialog's modal overlay. Leaving the dialog open on failure hid the error
+  // completely — the operator saw the button settle and nothing else change.
+  installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
+    if (payload.action === 'snippets.list') {
+      return new Response(JSON.stringify({
+        snippets: [
+          {
+            name: 'beta-sweep',
+            description: 'Beta sweep',
+            tags: ['research'],
+            source: 'user',
+            path: '/home/u/.labby/snippets/beta-sweep.md',
+            shadowed: false,
+          },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (payload.action === 'snippets.remove') {
+      return new Response(
+        JSON.stringify({ kind: 'invalid_param', message: 'snippet `beta-sweep` is built in' }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      )
+    }
+    return new Response(JSON.stringify({
+      name: 'beta-sweep',
+      description: 'Beta sweep',
+      tags: ['research'],
+      source: 'user',
+      path: '/home/u/.labby/snippets/beta-sweep.md',
+      shadowed: false,
+      body: '---\nname: beta-sweep\n---\n\n```js\nasync () => ({ ok: true })\n```',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+
+  const view = await renderClient(
+    <SidebarProvider>
+      <SnippetsPageContent />
+    </SidebarProvider>,
+  )
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /beta-sweep/))
+
+    const removeButton = await (async () => {
+      await waitFor(() =>
+        assert.ok(
+          Array.from(view.container.querySelectorAll('button')).some(
+            (candidate) => candidate.textContent?.trim() === 'Remove',
+          ),
+        ),
+      )
+      return Array.from(view.container.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Remove',
+      )
+    })()
+    assert.ok(removeButton)
+    await act(async () => {
+      removeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Remove snippet\?/))
+    const confirmButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Remove snippet',
+    )
+    assert.ok(confirmButton)
+    await act(async () => {
+      confirmButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // The dialog must close, and the failure must be reported rather than
+    // silently swallowed or shown as a success.
+    await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Remove failed/))
+    assert.doesNotMatch(view.container.textContent ?? '', /Removed beta-sweep/)
+  } finally {
+    await view.unmount()
+  }
 })

@@ -177,7 +177,8 @@ test('gateway table does not re-enable a server that changes state while disable
   await view.unmount()
 })
 
-test('gateway table asks before removing a persisted server (lab-muo4w)', async () => {
+// bead lab-muo4w
+test('gateway table asks before removing a persisted server', async () => {
   // gateway.remove is destructive:true in the shared action catalog, but the
   // row action used to call onDelete directly with no dialog at all — unlike
   // Disable (a non-destructive update) above, which always confirmed.

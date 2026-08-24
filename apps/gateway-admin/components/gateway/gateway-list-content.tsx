@@ -257,7 +257,7 @@ export function GatewayListContent() {
     // lens chip used to be a no-op, so a screen-reader user (or anyone else)
     // who "pressed" the chip to turn it off found nothing happened, and
     // there was otherwise no way to clear the lens back to "show everything"
-    // from the header itself (lab-gxbhf). 'configured' is the one lens with
+    // from the header itself (bead lab-gxbhf). 'configured' is the one lens with
     // no enabled/healthy/connected gate, so it's the natural "off" state.
     const nextLens = !showToolsView && lastGatewayFilters.primaryLens === lens ? 'configured' : lens
     const nextGatewayFilters = buildDefaultGatewayFilters(nextLens)

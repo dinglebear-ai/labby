@@ -399,15 +399,30 @@ export function SnippetsPageContent() {
     }
     setRemoving(true)
     try {
-      await snippetsApi.remove(snippet.name)
-      setRemoveConfirmKey(null)
+      const result = await snippetsApi.remove(snippet.name)
       await reload()
-      setActionState({ kind: 'success', label: 'Remove', detail: `Removed ${snippet.name}` })
+      // The backend signals refusal by throwing, so `removed: false` is not
+      // reachable today — but reporting "Removed X" without looking would be
+      // the same unverified-success bug this page's Save flow already had.
+      setActionState(
+        result.removed
+          ? { kind: 'success', label: 'Remove', detail: `Removed ${snippet.name}` }
+          : {
+              kind: 'error',
+              label: 'Remove',
+              detail: `${snippet.name} was not removed.`,
+            },
+      )
     } catch (err) {
-      // Leave the dialog open so the operator can see what went wrong
-      // (e.g. attempting to remove a built-in) and back out or retry.
+      // Close before surfacing: the action-result panel renders inside the
+      // snippet's detail row, which sits under this dialog's modal overlay
+      // (and is `aria-hidden` while it is open), so an error left behind it is
+      // invisible and unreachable — the operator just sees the button settle
+      // and nothing happen. The gateway remove/disable handlers close first
+      // for the same reason.
       setActionState({ kind: 'error', label: 'Remove', detail: errorMessage(err) })
     } finally {
+      setRemoveConfirmKey(null)
       setRemoving(false)
     }
   }

@@ -39,6 +39,11 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
+import {
+  REMOVE_GATEWAY_CONFIRM_LABEL,
+  REMOVE_GATEWAY_TITLE,
+  removeGatewayDescription,
+} from './gateway-confirmations'
 import { AppHeader } from '@/components/app-header'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -1743,9 +1748,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       />
       <ActionConfirmationDialog
         open={removeConfirmationOpen}
-        title="Remove server?"
-        description={`This permanently deletes ${gateway.name} from the gateway configuration. Connected clients lose access immediately and the configuration cannot be recovered.`}
-        confirmLabel="Remove server"
+        title={REMOVE_GATEWAY_TITLE}
+        description={removeGatewayDescription(gateway.name)}
+        confirmLabel={REMOVE_GATEWAY_CONFIRM_LABEL}
         onOpenChange={setRemoveConfirmationOpen}
         onConfirm={confirmDelete}
       />

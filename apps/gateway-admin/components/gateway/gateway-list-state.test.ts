@@ -165,7 +165,8 @@ test('enabled primary lens (the default view) hides disabled gateways when no st
   assert.deepEqual(result.map((gateway) => gateway.id), ['gw_lab', 'gw_http'])
 })
 
-test('the Disabled status facet surfaces disabled gateways even while the Enabled lens tab is active (lab-gz4gk)', () => {
+// bead lab-gz4gk
+test('the Disabled status facet surfaces disabled gateways even while the Enabled lens tab is active', () => {
   const result = filterGateways([configuredHealthyGateway, disconnectedGateway, disabledGateway], {
     primaryLens: 'enabled',
     search: '',

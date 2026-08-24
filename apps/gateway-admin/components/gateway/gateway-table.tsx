@@ -34,6 +34,11 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
+import {
+  REMOVE_GATEWAY_CONFIRM_LABEL,
+  REMOVE_GATEWAY_TITLE,
+  removeGatewayDescription,
+} from './gateway-confirmations'
 import { WarningsPill } from './warnings-pill'
 import type { Gateway } from '@/lib/types/gateway'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
@@ -1076,10 +1081,10 @@ export function GatewayTable({
         onConfirm={confirmDisableGateway}
       />
       <ActionConfirmationDialog
-        open={removeConfirmationGatewayId !== null}
-        title="Remove server?"
-        description={`This permanently deletes ${removeConfirmationGateway?.name ?? 'this server'} from the gateway configuration. Connected clients lose access immediately and the configuration cannot be recovered.`}
-        confirmLabel="Remove server"
+        open={removeConfirmationGateway !== null}
+        title={REMOVE_GATEWAY_TITLE}
+        description={removeGatewayDescription(removeConfirmationGateway?.name ?? '')}
+        confirmLabel={REMOVE_GATEWAY_CONFIRM_LABEL}
         onOpenChange={(open) => {
           if (!open) setRemoveConfirmationGatewayId(null)
         }}

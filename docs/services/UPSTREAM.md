@@ -115,9 +115,9 @@ clients without elicitation run without a parameter gate. See
 | `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. |
 | `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
 | `proxy_skills` | bool | no | Whether to aggregate this upstream's Agent Skills (SEP-2640). Default: **`false`**, unlike the other `proxy_*` flags — see below. |
-| `expose_tools` | string[] | no | Optional allowlist of tool names/patterns to expose from this upstream. Supports exact names and `*` wildcards. |
-| `expose_resources` | string[] | no | Optional allowlist of bare upstream resource URIs/patterns to expose. Same matching rules as `expose_tools`. |
-| `expose_prompts` | string[] | no | Optional allowlist of prompt names/patterns to expose. Accepts the bare or `{upstream}/{name}` spelling. |
+| `expose_tools` | string[] | no | Optional allowlist of tool names/patterns to expose from this upstream. Supports exact names and `*` wildcards. An empty list exposes nothing; omit the key to expose all. |
+| `expose_resources` | string[] | no | Optional allowlist of bare upstream resource URIs/patterns to expose. Same matching rules as `expose_tools`. An empty list exposes nothing; omit the key to expose all. |
+| `expose_prompts` | string[] | no | Optional allowlist of prompt names/patterns to expose. Accepts the bare or `{upstream}/{name}` spelling. An empty list exposes nothing; omit the key to expose all. |
 | `expose_skills` | string[] | no | Optional allowlist of skill names/patterns to expose. An empty list exposes nothing; omit the key to expose all. |
 
 When `transport` is omitted, an HTTP/WebSocket `url` or stdio `command` preserves legacy inference. `unix_socket` must be explicit and requires both `socket_path` and an HTTP(S) `url`; it cannot also configure `command`.
