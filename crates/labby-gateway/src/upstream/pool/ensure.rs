@@ -739,10 +739,12 @@ mod tests {
         pool.seed_lazy_upstreams(std::slice::from_ref(&alpha)).await;
 
         let connection = static_catalog_connection().await;
-        pool.connections
-            .write()
-            .await
-            .insert("alpha".to_string(), connection);
+        assert!(
+            pool.install_connection_and_apply_entry("alpha".to_string(), connection, |_| {})
+                .await
+                .expect("bind test connection")
+                .is_none()
+        );
         let mut ui_tool = test_tool("quick_shell_ui");
         ui_tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
             "ui".to_string(),

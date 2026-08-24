@@ -3,6 +3,7 @@
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use std::collections::BTreeSet;
 use thiserror::Error;
 
 use super::super::types::UpstreamEntry;
@@ -43,7 +44,66 @@ pub(super) struct ObservedConnectionCatalogEntry {
     incarnation: ConnectionIncarnation,
 }
 
+impl ObservedConnectionCatalogEntry {
+    pub(super) fn upstream(&self) -> &str {
+        &self.upstream
+    }
+}
+
 impl UpstreamPool {
+    pub(super) async fn observe_routable_resource_connections(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ObservedConnectionCatalogEntry> {
+        let _binding = self.connection_catalog_binding.lock().await;
+        let connections = self.connections.read().await;
+        let catalog = self.catalog.read().await;
+        // Match the existing catalog -> resource-routing lock order used by
+        // lazy seeding while the binding mutex pins connection incarnations.
+        let resource_upstreams = self.resource_upstreams.read().await;
+        let mut observed = catalog
+            .iter()
+            .filter(|(name, entry)| {
+                resource_upstreams.contains(name)
+                    && allowed.is_none_or(|allowed| allowed.contains(*name))
+                    && entry
+                        .health_for(super::super::types::UpstreamCapability::Resources)
+                        .is_routable()
+            })
+            .filter_map(|(upstream, _)| {
+                let connection = connections.get(upstream)?;
+                let incarnation = connection.incarnation?;
+                (catalog.incarnation(upstream) == Some(incarnation)).then(|| {
+                    ObservedConnectionCatalogEntry {
+                        upstream: upstream.clone(),
+                        peer: connection.peer.clone(),
+                        incarnation,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        observed.sort_by(|left, right| left.upstream.cmp(&right.upstream));
+        observed
+    }
+
+    pub(super) async fn observed_entry_is_current(
+        &self,
+        observed: &ObservedConnectionCatalogEntry,
+    ) -> bool {
+        let _binding = self.connection_catalog_binding.lock().await;
+        let connections = self.connections.read().await;
+        let Some(connection) = connections.get(&observed.upstream) else {
+            return false;
+        };
+        if connection.incarnation != Some(observed.incarnation) {
+            return false;
+        }
+        drop(connections);
+        let catalog = self.catalog.read().await;
+        catalog.incarnation(&observed.upstream) == Some(observed.incarnation)
+            && catalog.contains_key(&observed.upstream)
+    }
+
     pub(super) async fn remove_connection_catalog_entries<'a>(
         &self,
         upstreams: impl IntoIterator<Item = &'a String>,

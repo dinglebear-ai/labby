@@ -58,17 +58,17 @@ impl UpstreamPool {
 
         // Check if this upstream has resource proxying enabled.
         // Clone the vec and drop the lock before any async work.
-        let is_resource_enabled = {
+        let is_configured_for_resources = {
             let resource_names = self.resource_upstreams.read().await;
-            if !resource_names.iter().any(|n| n == upstream_name) {
-                false
-            } else {
-                let catalog = self.catalog.read().await;
-                catalog
-                    .get(upstream_name)
-                    .is_some_and(|entry| entry.resource_health.is_routable())
-            }
+            resource_names.iter().any(|name| name == upstream_name)
         };
+        let is_resource_enabled = is_configured_for_resources
+            && self
+                .catalog
+                .read()
+                .await
+                .get(upstream_name)
+                .is_some_and(|entry| entry.resource_health.is_routable());
         if !is_resource_enabled {
             return None;
         }

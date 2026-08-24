@@ -331,6 +331,12 @@ The generic upstream pool now assigns an opaque checked incarnation on every str
 
 This is an unmounted identity prerequisite only. Existing resources, prompts, Skills, notification, and other asynchronous capability-result consumers do not yet use the observe/apply helpers, so this wave alone does not close stale result attribution and publishes no resource catalog. The next capability-publication wave must acquire an observed peer, perform the RPC without locks, and route every success/failure health, cache, and subscription mutation through checked apply before treating the result as current.
 
+### Wave 27 / Milestone 0AE: incarnation-bound regular resources/list attribution
+
+Regular non-OAuth `resources/list` fanout now acquires routable peers together with their catalog-entry incarnation, performs each RPC without locks, and applies success or failure only if that exact connection/catalog pair remains current. One checked apply owns Resources health and circuit state, last error, unfiltered URI cache, count, and the exposure policy used for the wire result. Stale or missing observations contribute no rows and cannot mutate replacement state. Subscription refresh triggers carry the observation through a final current check; the queued operation intentionally reconciles only the current named connection and carries no result-derived resource facts.
+
+This is still not a resource publication or Project enforcement wave. OAuth/subject-scoped resources, templates, reads, UI and synthetic resources, prompts, Skills, and notifications keep their existing paths. Regular resource wire rewriting, filtering, caps, partial-failure behavior, and ordering are unchanged. A later milestone must build the bounded immutable resource publication before Project discovery can classify regular upstream resources.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

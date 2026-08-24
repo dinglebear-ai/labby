@@ -158,19 +158,21 @@ async fn add_subscription_server(pool: &UpstreamPool, upstream: &str, server: Su
 
     let mut entry = healthy_in_process_entry(Arc::from(upstream), HashMap::new());
     entry.resource_uris = vec![NATIVE_RESOURCE_URI.to_string()];
-    pool.catalog
-        .write()
+    assert!(
+        pool.install_connection_catalog_entry(
+            upstream.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
+            },
+            entry,
+        )
         .await
-        .insert(upstream.to_string(), entry);
-    pool.connections.write().await.insert(
-        upstream.to_string(),
-        UpstreamConnection {
-            _client_service: client_service.into(),
-            _server_task: Some(server_task),
-            peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-            incarnation: None,
-        },
+        .expect("bind subscription test connection")
+        .is_none()
     );
     pool.resource_upstreams
         .write()
