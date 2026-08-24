@@ -124,6 +124,7 @@ pub(crate) use helpers::{
 };
 pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
+pub use prompts_list::ListedUpstreamPrompt;
 pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate};
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;

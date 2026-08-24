@@ -413,6 +413,12 @@ The unified manager snapshot now reads tool, regular Resource, regular ResourceT
 
 The existing authorization-first Project composer and BoundAccessContext kernel inherit the Prompt child mechanically through nested ownership and equality. Cursor shadow identity carries the Prompt generation, preventing a cached Project snapshot from crossing a prompt-only publication change. Prompt discovery shadowing, `prompts/get`, OAuth/subject/local/synthetic prompt families, execution authority, and enforcement remain deferred.
 
+### Wave 41 / Milestone 0AS: Project-bound regular Prompt discovery shadow
+
+`prompts/list` retains exact `(upstream, native_name)` provenance for regular non-OAuth rows before gateway namespacing and classifies it against the Bound unified Prompt publication plus the protected route's `expose_prompts` and exact upstream narrowing. Continuation snapshots retain provenance and the Prompt-aware stable Project key; mismatch or expiry reports unavailable/zero aggregate telemetry without refanout.
+
+Wire Prompts, metadata, ordering, pagination revisions/cursors, notifications, and legacy behavior remain unchanged. This is shadow observation only: built-in, OAuth/subject/local/synthetic Prompts remain unclassified, and `prompts/get`, execution authority, filtering, and enforcement are deferred.
+
 ## Phase 4: Membership, role, and permission resolver
 
 ### Red

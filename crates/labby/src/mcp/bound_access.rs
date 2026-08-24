@@ -372,6 +372,40 @@ impl ProjectDiscoveryShadow<'_> {
                     }),
         )
     }
+
+    pub(crate) fn allows_upstream_prompt(
+        &self,
+        upstream: &str,
+        native_name: &str,
+        now: SystemTime,
+    ) -> Option<bool> {
+        let Self::Bound(binding) = self else {
+            return None;
+        };
+        if binding.validate_not_expired(now).is_err() {
+            return None;
+        }
+        let core = binding.core();
+        let route = core.route();
+        Some(
+            route.effective_loadout().expose_prompts
+                && route
+                    .effective_loadout()
+                    .upstreams
+                    .iter()
+                    .any(|name| name == upstream)
+                && core
+                    .catalog()
+                    .catalog()
+                    .prompts()
+                    .routes()
+                    .iter()
+                    .any(|candidate| {
+                        candidate.upstream_name.as_ref() == upstream
+                            && candidate.native_name.as_ref() == native_name
+                    }),
+        )
+    }
 }
 
 pub(crate) fn project_discovery_shadow(
@@ -1374,6 +1408,133 @@ mod tests {
         assert!(
             template_mismatched_logs.contains("project_shadow_would_suppress_template_count=0")
         );
+        let prompt_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let prompt_transport = TransportBoundAccessContext::new(
+            prompt_core,
+            validate_transport_credential_binding(
+                "issuer",
+                "prompt-cursor-jti",
+                cursor_expiry,
+                cursor_now,
+            )
+            .unwrap(),
+            cursor_now,
+        )
+        .unwrap();
+        let prompt_key = ProjectDiscoveryShadow::Bound(&prompt_transport)
+            .snapshot_key(cursor_now)
+            .unwrap();
+        let prompt_other_core = bind_access_context(
+            &runtime,
+            &manager,
+            identity.clone(),
+            "project-route",
+            "https://mcp.example.com/project",
+            "bootstrap-default",
+        )
+        .await
+        .unwrap();
+        let prompt_other_transport = TransportBoundAccessContext::new(
+            prompt_other_core,
+            validate_transport_credential_binding(
+                "issuer",
+                "prompt-other-jti",
+                cursor_expiry,
+                cursor_now,
+            )
+            .unwrap(),
+            cursor_now,
+        )
+        .unwrap();
+        let prompt_items = (0..101)
+            .map(|index| {
+                let name = if index == 100 {
+                    "alpha/deploy-v2".to_string()
+                } else {
+                    index.to_string()
+                };
+                Prompt::new(name, None::<String>, None)
+            })
+            .collect::<Vec<_>>();
+        snapshot_running
+            .service()
+            .route_runtime
+            .store_prompt_snapshot(
+                crate::mcp::runtime::catalog_snapshot_audience(None),
+                "wave41".into(),
+                Arc::from(prompt_items),
+                Arc::from([crate::mcp::runtime::PromptProvenance {
+                    upstream: "alpha".into(),
+                    native_name: "deploy-v2".into(),
+                }]),
+                Some(prompt_key),
+            )
+            .await;
+        let prompt_cursor = rmcp::model::PaginatedRequestParams::default()
+            .with_cursor(Some("v1:100:wave41".into()));
+        let prompt_matching_logs = CapturedLogs::default();
+        let prompt_matching_subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(prompt_matching_logs.clone())
+            .finish();
+        let prompt_matching = snapshot_running
+            .service()
+            .list_prompts_impl(
+                Some(prompt_cursor.clone()),
+                project_shadow_context(
+                    snapshot_running.peer().clone(),
+                    Some(ProjectAccessObservation::Bound(Arc::new(prompt_transport))),
+                ),
+            )
+            .with_subscriber(tracing::Dispatch::new(prompt_matching_subscriber))
+            .await
+            .unwrap();
+        let prompt_matching_logs =
+            String::from_utf8(prompt_matching_logs.0.lock().unwrap().clone()).unwrap();
+        let prompt_mismatched_logs = CapturedLogs::default();
+        let prompt_mismatched_subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(prompt_mismatched_logs.clone())
+            .finish();
+        let prompt_mismatched = snapshot_running
+            .service()
+            .list_prompts_impl(
+                Some(prompt_cursor),
+                project_shadow_context(
+                    snapshot_running.peer().clone(),
+                    Some(ProjectAccessObservation::Bound(Arc::new(
+                        prompt_other_transport,
+                    ))),
+                ),
+            )
+            .with_subscriber(tracing::Dispatch::new(prompt_mismatched_subscriber))
+            .await
+            .unwrap();
+        let prompt_mismatched_logs =
+            String::from_utf8(prompt_mismatched_logs.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&prompt_matching).unwrap(),
+            serde_json::to_vec(&prompt_mismatched).unwrap()
+        );
+        assert!(prompt_matching_logs.contains("project_shadow_state=\"bound\""));
+        assert!(prompt_matching_logs.contains("project_shadow_checked_prompt_count=1"));
+        assert!(prompt_matching_logs.contains("project_shadow_would_suppress_prompt_count=0"));
+        assert!(prompt_mismatched_logs.contains("project_shadow_state=\"unavailable\""));
+        assert!(prompt_mismatched_logs.contains("project_shadow_checked_prompt_count=0"));
+        assert!(prompt_mismatched_logs.contains("project_shadow_would_suppress_prompt_count=0"));
         assert_eq!(shadow.allows_builtin_service("fs", now), Some(true));
         assert_eq!(shadow.allows_builtin_service("setup", now), Some(false));
         assert_eq!(

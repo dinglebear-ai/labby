@@ -48,6 +48,7 @@ struct CatalogSnapshot<T> {
     items: Arc<[T]>,
     resource_provenance: Arc<[ResourceProvenance]>,
     resource_template_provenance: Arc<[ResourceTemplateProvenance]>,
+    prompt_provenance: Arc<[PromptProvenance]>,
     project_shadow_key: Option<ProjectShadowSnapshotKey>,
 }
 
@@ -63,6 +64,12 @@ pub(crate) struct ResourceTemplateProvenance {
     pub(crate) native_uri_template: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct PromptProvenance {
+    pub(crate) upstream: String,
+    pub(crate) native_name: String,
+}
+
 struct CatalogSnapshotStore<T> {
     entries: VecDeque<CatalogSnapshot<T>>,
 }
@@ -76,18 +83,6 @@ impl<T> Default for CatalogSnapshotStore<T> {
 }
 
 impl<T> CatalogSnapshotStore<T> {
-    fn get(&self, audience: &str, revision: &str) -> Option<Arc<[T]>> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
-            .map(|snapshot| Arc::clone(&snapshot.items))
-    }
-
-    fn insert(&mut self, audience: String, revision: String, items: Arc<[T]>) {
-        self.insert_with_provenance(audience, revision, items, Arc::from([]), None);
-    }
-
     fn insert_with_provenance(
         &mut self,
         audience: String,
@@ -109,6 +104,7 @@ impl<T> CatalogSnapshotStore<T> {
             items,
             resource_provenance,
             resource_template_provenance: Arc::from([]),
+            prompt_provenance: Arc::from([]),
             project_shadow_key,
         });
         while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
@@ -137,6 +133,36 @@ impl<T> CatalogSnapshotStore<T> {
             items,
             resource_provenance: Arc::from([]),
             resource_template_provenance,
+            prompt_provenance: Arc::from([]),
+            project_shadow_key,
+        });
+        while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
+            self.entries.pop_front();
+        }
+    }
+
+    fn insert_with_prompt_provenance(
+        &mut self,
+        audience: String,
+        revision: String,
+        items: Arc<[T]>,
+        prompt_provenance: Arc<[PromptProvenance]>,
+        project_shadow_key: Option<ProjectShadowSnapshotKey>,
+    ) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push_back(CatalogSnapshot {
+            audience,
+            revision,
+            items,
+            resource_provenance: Arc::from([]),
+            resource_template_provenance: Arc::from([]),
+            prompt_provenance,
             project_shadow_key,
         });
         while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
@@ -248,8 +274,24 @@ impl McpRouteRuntime {
         &self,
         audience: &str,
         revision: &str,
-    ) -> Option<Arc<[Prompt]>> {
-        self.prompts.read().await.get(audience, revision)
+    ) -> Option<(
+        Arc<[Prompt]>,
+        Arc<[PromptProvenance]>,
+        Option<ProjectShadowSnapshotKey>,
+    )> {
+        let prompts = self.prompts.read().await;
+        prompts
+            .entries
+            .iter()
+            .rev()
+            .find(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
+            .map(|snapshot| {
+                (
+                    Arc::clone(&snapshot.items),
+                    Arc::clone(&snapshot.prompt_provenance),
+                    snapshot.project_shadow_key.clone(),
+                )
+            })
     }
 
     pub(crate) async fn store_prompt_snapshot(
@@ -257,11 +299,16 @@ impl McpRouteRuntime {
         audience: String,
         revision: String,
         prompts: Arc<[Prompt]>,
+        provenance: Arc<[PromptProvenance]>,
+        project_shadow_key: Option<ProjectShadowSnapshotKey>,
     ) {
-        self.prompts
-            .write()
-            .await
-            .insert(audience, revision, prompts);
+        self.prompts.write().await.insert_with_prompt_provenance(
+            audience,
+            revision,
+            prompts,
+            provenance,
+            project_shadow_key,
+        );
     }
 }
 
@@ -314,6 +361,8 @@ mod tests {
                 "alice".to_string(),
                 "r1".to_string(),
                 Arc::from(vec![Prompt::new("prompt-one", None::<String>, None)]),
+                Arc::from([]),
+                None,
             )
             .await;
 
@@ -327,13 +376,12 @@ mod tests {
                 .uri,
             "file:///one"
         );
-        assert_eq!(
-            runtime
-                .prompt_snapshot("alice", "r1")
-                .await
-                .expect("prompt snapshot")[0]
-                .name,
-            "prompt-one"
-        );
+        let (prompts, provenance, key) = runtime
+            .prompt_snapshot("alice", "r1")
+            .await
+            .expect("prompt snapshot");
+        assert_eq!(prompts[0].name, "prompt-one");
+        assert!(provenance.is_empty());
+        assert!(key.is_none());
     }
 }

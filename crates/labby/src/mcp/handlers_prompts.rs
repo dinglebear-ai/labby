@@ -11,6 +11,8 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+#[cfg(any(feature = "gateway", test))]
+use std::time::SystemTime;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -26,6 +28,8 @@ use crate::mcp::agent_error::{
     internal as internal_agent_error, invalid_params as invalid_params_agent_error,
 };
 
+#[cfg(feature = "gateway")]
+use crate::mcp::bound_access::{ProjectDiscoveryShadow, project_discovery_shadow};
 use crate::mcp::context::auth_context_from_extensions;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::{forwardable_client_capabilities, oauth_upstream_subject_for_request};
@@ -34,8 +38,34 @@ use crate::mcp::pagination::{
     CatalogSnapshotCollector, PageCollector, error_kind as pagination_error_kind, invalid_cursor,
     next_catalog_snapshot_revision,
 };
+#[cfg(any(feature = "gateway", test))]
+use crate::mcp::runtime::PromptProvenance;
 use crate::mcp::runtime::catalog_snapshot_audience;
 use crate::mcp::server::LabMcpServer;
+
+#[cfg(feature = "gateway")]
+fn classify_regular_upstream_prompts(
+    shadow: &ProjectDiscoveryShadow<'_>,
+    provenance: &[PromptProvenance],
+    now: SystemTime,
+) -> (usize, usize) {
+    classify_regular_upstream_prompts_with(provenance, |upstream, native_name| {
+        shadow.allows_upstream_prompt(upstream, native_name, now)
+    })
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn classify_regular_upstream_prompts_with(
+    provenance: &[PromptProvenance],
+    mut allows: impl FnMut(&str, &str) -> Option<bool>,
+) -> (usize, usize) {
+    provenance.iter().fold((0, 0), |(checked, denied), row| {
+        match allows(&row.upstream, &row.native_name) {
+            Some(allowed) => (checked + 1, denied + usize::from(!allowed)),
+            None => (checked, denied),
+        }
+    })
+}
 
 fn prompt_error_context(
     prompt: &str,
@@ -127,7 +157,7 @@ impl LabMcpServer {
                 .route_runtime
                 .prompt_snapshot(&snapshot_audience, &revision)
                 .await;
-            let Some(snapshot) = snapshot else {
+            let Some((snapshot, provenance, stored_key)) = snapshot else {
                 return Err(invalid_cursor(
                     "prompt-list snapshot expired or is unavailable; restart from the first page",
                 ));
@@ -140,6 +170,27 @@ impl LabMcpServer {
                 }
             }
             let (prompts, next_cursor) = page_collector.finish()?;
+            #[cfg(feature = "gateway")]
+            let (project_shadow_state, project_shadow_checked, project_shadow_would_suppress) = {
+                let now = SystemTime::now();
+                let shadow = project_discovery_shadow(&context.extensions, now);
+                let mut state = shadow.state_label_at(now);
+                let key_matches = shadow.snapshot_key(now).as_ref() == stored_key.as_ref();
+                if state == "bound" && !key_matches {
+                    state = "unavailable";
+                }
+                let (checked, denied) = if state == "bound" {
+                    classify_regular_upstream_prompts(&shadow, &provenance, now)
+                } else {
+                    (0, 0)
+                };
+                (state, checked, denied)
+            };
+            #[cfg(not(feature = "gateway"))]
+            let _ = (&provenance, &stored_key);
+            #[cfg(not(feature = "gateway"))]
+            let (project_shadow_state, project_shadow_checked, project_shadow_would_suppress) =
+                ("legacy", 0usize, 0usize);
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 surface = "mcp",
@@ -151,6 +202,9 @@ impl LabMcpServer {
                 catalog_source = "snapshot",
                 has_next_cursor = next_cursor.is_some(),
                 elapsed_ms,
+                project_shadow_state,
+                project_shadow_checked_prompt_count = project_shadow_checked,
+                project_shadow_would_suppress_prompt_count = project_shadow_would_suppress,
                 "prompt list ok"
             );
             self.emit_dispatch_notification(
@@ -175,6 +229,10 @@ impl LabMcpServer {
         }
 
         let mut prompts = CatalogSnapshotCollector::new(page_collector);
+        #[cfg(feature = "gateway")]
+        let project_shadow = project_discovery_shadow(&context.extensions, SystemTime::now());
+        #[cfg(feature = "gateway")]
+        let mut regular_prompt_provenance = Vec::new();
         let builtin_prompts = crate::mcp::prompts::list_all().prompts;
         let builtin_names: Vec<String> = builtin_prompts
             .iter()
@@ -189,14 +247,18 @@ impl LabMcpServer {
             let catalog_deadline = tokio::time::Instant::now() + pool.request_timeout();
             let builtin_name_refs: Vec<&str> = builtin_names.iter().map(String::as_str).collect();
             let upstream_prompts = pool
-                .list_upstream_prompts_allowed_until(
+                .list_upstream_prompts_with_provenance_allowed_until(
                     &builtin_name_refs,
                     self.route_scope.allowed_upstreams(),
                     catalog_deadline,
                 )
                 .await;
-            for prompt in upstream_prompts {
-                prompts.accept(prompt);
+            for listed in upstream_prompts {
+                regular_prompt_provenance.push(PromptProvenance {
+                    upstream: listed.upstream_name,
+                    native_name: listed.native_name,
+                });
+                prompts.accept(listed.prompt);
             }
             if let Some(oauth_subject) =
                 oauth_upstream_subject_for_request(auth, self.request_subject(&context))
@@ -252,9 +314,39 @@ impl LabMcpServer {
             }
         };
         let catalog_prompt_count = complete_catalog.len();
+        #[cfg(feature = "gateway")]
+        let now = SystemTime::now();
+        #[cfg(feature = "gateway")]
+        let project_shadow_state = project_shadow.state_label_at(now);
+        #[cfg(feature = "gateway")]
+        let (project_shadow_checked, project_shadow_would_suppress) =
+            if project_shadow_state == "bound" {
+                classify_regular_upstream_prompts(&project_shadow, &regular_prompt_provenance, now)
+            } else {
+                (0, 0)
+            };
+        #[cfg(feature = "gateway")]
+        let project_shadow_snapshot_key = project_shadow.snapshot_key(now);
+        #[cfg(not(feature = "gateway"))]
+        let (project_shadow_state, project_shadow_checked, project_shadow_would_suppress) =
+            ("legacy", 0usize, 0usize);
         if next_cursor.is_some() {
+            #[cfg(feature = "gateway")]
+            let stored_provenance = Arc::from(regular_prompt_provenance);
+            #[cfg(not(feature = "gateway"))]
+            let stored_provenance = Arc::from([]);
+            #[cfg(feature = "gateway")]
+            let stored_key = project_shadow_snapshot_key;
+            #[cfg(not(feature = "gateway"))]
+            let stored_key = None;
             self.route_runtime
-                .store_prompt_snapshot(snapshot_audience, revision, Arc::from(complete_catalog))
+                .store_prompt_snapshot(
+                    snapshot_audience,
+                    revision,
+                    Arc::from(complete_catalog),
+                    stored_provenance,
+                    stored_key,
+                )
                 .await;
         }
 
@@ -269,6 +361,9 @@ impl LabMcpServer {
             catalog_source = "live_snapshot",
             has_next_cursor = next_cursor.is_some(),
             elapsed_ms,
+            project_shadow_state,
+            project_shadow_checked_prompt_count = project_shadow_checked,
+            project_shadow_would_suppress_prompt_count = project_shadow_would_suppress,
             "prompt list ok"
         );
         self.emit_dispatch_notification(
@@ -735,6 +830,30 @@ mod tests {
 
     fn request_context(peer: rmcp::service::Peer<RoleServer>) -> RequestContext<RoleServer> {
         RequestContext::new(NumberOrString::Number(1), peer)
+    }
+
+    #[test]
+    fn regular_prompt_shadow_uses_exact_upstream_and_native_name() {
+        let rows = [
+            PromptProvenance {
+                upstream: "alpha".into(),
+                native_name: "same".into(),
+            },
+            PromptProvenance {
+                upstream: "bravo".into(),
+                native_name: "same".into(),
+            },
+            PromptProvenance {
+                upstream: "alpha".into(),
+                native_name: "other".into(),
+            },
+        ];
+        assert_eq!(
+            classify_regular_upstream_prompts_with(&rows, |upstream, name| {
+                Some(upstream == "alpha" && name == "same")
+            }),
+            (3, 2)
+        );
     }
 
     #[tokio::test]

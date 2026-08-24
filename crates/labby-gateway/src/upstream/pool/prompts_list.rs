@@ -20,6 +20,37 @@ use super::helpers::merge_upstream_prompts;
 use super::logging::is_capability_unsupported;
 use super::tools::MAX_UPSTREAM_PROMPTS;
 
+/// One regular non-OAuth upstream Prompt with exact pre-namespace provenance.
+/// This is observational listing metadata, not prompt execution authority.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListedUpstreamPrompt {
+    pub upstream_name: String,
+    pub native_name: String,
+    pub prompt: Prompt,
+}
+
+fn attach_prompt_provenance(
+    prompts: Vec<Prompt>,
+    owners: &HashMap<String, String>,
+) -> Vec<ListedUpstreamPrompt> {
+    prompts
+        .into_iter()
+        .map(|prompt| {
+            let upstream_name = owners
+                .get(prompt.name.as_str())
+                .expect("merge_upstream_prompts must retain every accepted Prompt owner")
+                .clone();
+            let native_name =
+                super::helpers::bare_upstream_prompt_name(&upstream_name, &prompt.name).to_string();
+            ListedUpstreamPrompt {
+                upstream_name,
+                native_name,
+                prompt,
+            }
+        })
+        .collect()
+}
+
 impl UpstreamPool {
     /// Fetch prompts from all healthy upstreams and merge them, returning both the
     /// deduplicated prompt list and the ownership map (prompt_name -> upstream_name).
@@ -30,7 +61,7 @@ impl UpstreamPool {
         builtin_names: &[&str],
         allowed: Option<&BTreeSet<String>>,
         deadline_at: tokio::time::Instant,
-    ) -> (Vec<Prompt>, HashMap<String, String>) {
+    ) -> (Vec<ListedUpstreamPrompt>, HashMap<String, String>) {
         let observed_peers = self.observe_routable_prompt_connections(allowed).await;
 
         // Deliberate bulkhead exception: this is a fan-out aggregation pass
@@ -202,7 +233,8 @@ impl UpstreamPool {
         // the policy before forwarding.
         let prompts = self.retain_exposed_prompts(prompts, &owners, &prompt_policies);
 
-        (prompts, owners)
+        let listed = attach_prompt_provenance(prompts, &owners);
+        (listed, owners)
     }
 
     /// List prompts from all healthy upstreams, filtering built-in and cross-upstream collisions.
@@ -211,7 +243,7 @@ impl UpstreamPool {
         let (prompts, _) = self
             .collect_upstream_prompts(builtin_names, None, deadline_at)
             .await;
-        prompts
+        prompts.into_iter().map(|listed| listed.prompt).collect()
     }
 
     /// Return cached prompt names from all upstreams, excluding any that clash with builtins.
@@ -339,7 +371,18 @@ impl UpstreamPool {
         let (prompts, _) = self
             .collect_upstream_prompts(builtin_name_refs, allowed, deadline_at)
             .await;
-        prompts
+        prompts.into_iter().map(|listed| listed.prompt).collect()
+    }
+
+    pub async fn list_upstream_prompts_with_provenance_allowed_until(
+        &self,
+        builtin_name_refs: &[&str],
+        allowed: Option<&BTreeSet<String>>,
+        deadline_at: tokio::time::Instant,
+    ) -> Vec<ListedUpstreamPrompt> {
+        self.collect_upstream_prompts(builtin_name_refs, allowed, deadline_at)
+            .await
+            .0
     }
 
     pub async fn find_prompt_owner_allowed(
@@ -480,6 +523,63 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(2),
             "the caller deadline must bound the entire prompt aggregation: {:?}",
             started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn prompt_listing_preserves_exact_provenance_before_namespacing() {
+        let pool = catalog_pool_with_server("alpha", PaginatedPromptServer::default()).await;
+        let listed = pool
+            .list_upstream_prompts_with_provenance_allowed_until(
+                &[],
+                None,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            )
+            .await;
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].upstream_name, "alpha");
+        assert_eq!(listed[0].native_name, "first");
+        assert_eq!(listed[0].prompt.name.as_str(), "alpha/first");
+        assert_eq!(listed[1].native_name, "second");
+        assert_eq!(listed[1].prompt.name.as_str(), "alpha/second");
+    }
+
+    #[test]
+    fn prompt_provenance_preserves_collisions_and_nested_native_names() {
+        let (prompts, owners) = merge_upstream_prompts(
+            &["alpha/builtin"],
+            vec![
+                (
+                    "alpha".into(),
+                    vec![
+                        Prompt::new("builtin", None::<String>, None),
+                        Prompt::new("same", None::<String>, None),
+                        Prompt::new("same", None::<String>, None),
+                        Prompt::new("owner/nested/name", None::<String>, None),
+                    ],
+                ),
+                (
+                    "bravo".into(),
+                    vec![Prompt::new("same", None::<String>, None)],
+                ),
+            ],
+        );
+        let listed = attach_prompt_provenance(prompts, &owners);
+        assert_eq!(listed.len(), 3);
+        assert_eq!(
+            listed
+                .iter()
+                .map(|row| (
+                    row.upstream_name.as_str(),
+                    row.native_name.as_str(),
+                    row.prompt.name.as_str(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha", "same", "alpha/same"),
+                ("alpha", "owner/nested/name", "alpha/owner/nested/name"),
+                ("bravo", "same", "bravo/same"),
+            ]
         );
     }
 
