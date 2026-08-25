@@ -386,11 +386,25 @@ jobs:
               libxkbcommon0 \
               libxrandr2
           fi
-      # The self-hosted runner image carries the matching Playwright browser.
+      # The self-hosted runner image carries the matching Playwright browser, and
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
-      # already cached, so verify the image contract with a real headless launch
-      # instead of invoking the unsupported installer.
-      - name: Verify cached Playwright browser launch
+      # already cached — so the cache is checked first and the installer is only
+      # reached on images that do not pre-bake one. `ci-pool-typescript` spans
+      # both the self-hosted image and the ephemeral JIT pool; assuming the
+      # pre-baked cache failed every job that landed on the latter.
+      - name: Ensure a Playwright browser is available
+        run: |
+          set -euo pipefail
+          if node -e "const fs=require('node:fs');const {chromium}=require('playwright');process.exit(fs.existsSync(chromium.executablePath())?0:1)"; then
+            echo "Using the Playwright browser cached in this runner image."
+          else
+            echo "No cached browser at ${PLAYWRIGHT_BROWSERS_PATH}; installing chromium for this image."
+            mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
+            pnpm exec playwright install chromium
+          fi
+      # Both paths converge here: a real headless launch is the contract, not the
+      # mere presence of a file.
+      - name: Verify Playwright browser launch
         run: |
           node - <<'NODE'
           const fs = require("node:fs");
