@@ -64,7 +64,17 @@ fn write_executable(path: &Path, body: &str) {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_build_preflight_accepts_installed_libxdo_without_pkg_config_metadata() {
+fn linux_build_preflight_installs_nothing_when_prerequisites_are_present() {
+    // The preflight must be a no-op on an already-provisioned runner. It runs
+    // on every Rust job, so a probe that can never be satisfied would drag an
+    // `apt-get update` onto all of them.
+    //
+    // This replaces a test that pinned `libxdo-dev` being probed through
+    // `dpkg-query` rather than pkg-config (libxdo ships no `xdo.pc`, so
+    // `pkg-config --exists xdo` always fails and forced a reinstall every
+    // time). That probe is gone because the package is gone: desktop
+    // dependencies now belong to the one job that builds a GUI. The property
+    // worth keeping is the general one — present prerequisites mean no apt.
     let action =
         fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
             .expect("read setup-rust-kache action");
@@ -81,20 +91,8 @@ fn linux_build_preflight_accepts_installed_libxdo_without_pkg_config_metadata() 
     for command in ["cc", "ld.lld"] {
         write_executable(&fake_bin.join(command), "#!/bin/sh\nexit 0\n");
     }
-    write_executable(
-        &fake_bin.join("pkg-config"),
-        concat!(
-            "#!/bin/sh\n[ \"$",
-            "{",
-            "2:-",
-            "}",
-            "\" = xdo ] && exit 1\nexit 0\n"
-        ),
-    );
-    write_executable(
-        &fake_bin.join("dpkg-query"),
-        "#!/bin/sh\n: > \"$DPKG_MARKER\"\nprintf 'ii '\n",
-    );
+    // Every `pkg-config --exists` the preflight asks about is satisfied.
+    write_executable(&fake_bin.join("pkg-config"), "#!/bin/sh\nexit 0\n");
     write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
     write_executable(
         &fake_bin.join("apt-get"),
@@ -102,25 +100,60 @@ fn linux_build_preflight_accepts_installed_libxdo_without_pkg_config_metadata() 
     );
 
     let apt_marker = temp.path().join("apt-ran");
-    let dpkg_marker = temp.path().join("dpkg-queried");
     let status = Command::new("bash")
         .arg("-c")
         .arg(preflight)
         .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
         .env("APT_MARKER", &apt_marker)
-        .env("DPKG_MARKER", &dpkg_marker)
         .status()
         .expect("run Linux prerequisite preflight");
 
     assert!(status.success(), "prerequisite preflight must succeed");
     assert!(
-        dpkg_marker.exists(),
-        "libxdo-dev must be checked through Debian package metadata"
-    );
-    assert!(
         !apt_marker.exists(),
-        "an installed libxdo-dev package must not trigger apt-get just because xdo.pc is absent"
+        "a fully provisioned runner must not trigger apt-get"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_rust_setup_does_not_require_desktop_packages() {
+    // `setup-rust-kache` runs on every Rust job, so anything it installs has to
+    // exist on every image behind the `ci-pool-rust` label. That pool mixes
+    // runner images, and `libwebkit2gtk-4.1-dev` is absent on Ubuntu focal —
+    // when a job landed there, apt exited 100 and the job died in setup before
+    // compiling anything. Desktop dependencies belong to the single job that
+    // builds a GUI, which installs them itself and legitimately requires
+    // webkit2gtk 4.1 for Tauri v2.
+    let action =
+        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
+            .expect("read setup-rust-kache action");
+    let action: serde_yaml::Value = serde_yaml::from_str(&action).expect("parse composite action");
+    let preflight = action["runs"]["steps"]
+        .as_sequence()
+        .and_then(|steps| steps.first())
+        .and_then(|step| step["run"].as_str())
+        .expect("first action step has a shell preflight");
+
+    let packages = preflight
+        .lines()
+        .find(|line| line.trim_start().starts_with("packages="))
+        .expect("preflight declares a packages list");
+
+    for desktop in [
+        "libwebkit2gtk",
+        "libgtk-3-dev",
+        "libayatana-appindicator3-dev",
+        "librsvg2-dev",
+        "libxdo-dev",
+    ] {
+        assert!(
+            !packages.contains(desktop),
+            "shared Rust setup must stay portable across runner images, but its \
+             package list contains the desktop dependency `{desktop}`; install it \
+             in the job that needs a GUI instead"
+        );
+    }
 }
 
 #[test]
@@ -423,13 +456,30 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         !browser_job.contains("playwright install-deps"),
         "Ubuntu 26.04 runners must install explicit runtime libraries instead of using Playwright's unsupported distro detector"
     );
-    assert!(browser_job.contains("Verify cached Playwright browser launch"));
+    assert!(browser_job.contains("Ensure a Playwright browser is available"));
+    assert!(browser_job.contains("Verify Playwright browser launch"));
     assert!(browser_job.contains("chromium.executablePath()"));
     assert!(browser_job.contains("fs.existsSync(executable)"));
     assert!(browser_job.contains("chromium.launch({ headless: true })"));
+    // Playwright's installer rejects Ubuntu 26.04 even when the browser is
+    // already cached, so the self-hosted image must never reach it. It stays
+    // available for the ephemeral pool, whose images pre-bake nothing — but
+    // only behind the cache check. This used to forbid the installer outright,
+    // which was the stronger claim than the constraint required and left every
+    // JIT-pool run failing before it could test anything.
+    let ensure_step = browser_job
+        .split("- name: Ensure a Playwright browser is available")
+        .nth(1)
+        .expect("browser job ensures a Playwright browser before verifying it");
+    let cache_guard = ensure_step
+        .find("fs.existsSync(chromium.executablePath())")
+        .expect("the ensure step checks the image cache first");
+    let installer = ensure_step
+        .find("pnpm exec playwright install chromium")
+        .expect("the ensure step can install a browser on images without one");
     assert!(
-        !browser_job.contains("pnpm exec playwright install chromium"),
-        "Ubuntu 26.04 runners must use the image-provided Playwright browser"
+        cache_guard < installer,
+        "the Playwright installer must run only when the image has no cached browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));
 
