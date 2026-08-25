@@ -865,7 +865,12 @@ jobs:
         # targets during nextest discovery; that overlap exceeds the runner's
         # memory ceiling even though either harness fits on its own.
         run: cargo test -p labby-gateway --all-features --lib --no-run --locked
-      - run: cargo nextest run --workspace --all-features --locked --profile ci
+      - name: Run workspace tests
+        # The labby and labby-gateway test harnesses can otherwise link in
+        # parallel and exceed the hosted runner's memory ceiling.
+        env:
+          CARGO_BUILD_JOBS: 1
+        run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
