@@ -456,13 +456,30 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         !browser_job.contains("playwright install-deps"),
         "Ubuntu 26.04 runners must install explicit runtime libraries instead of using Playwright's unsupported distro detector"
     );
-    assert!(browser_job.contains("Verify cached Playwright browser launch"));
+    assert!(browser_job.contains("Ensure a Playwright browser is available"));
+    assert!(browser_job.contains("Verify Playwright browser launch"));
     assert!(browser_job.contains("chromium.executablePath()"));
     assert!(browser_job.contains("fs.existsSync(executable)"));
     assert!(browser_job.contains("chromium.launch({ headless: true })"));
+    // Playwright's installer rejects Ubuntu 26.04 even when the browser is
+    // already cached, so the self-hosted image must never reach it. It stays
+    // available for the ephemeral pool, whose images pre-bake nothing — but
+    // only behind the cache check. This used to forbid the installer outright,
+    // which was the stronger claim than the constraint required and left every
+    // JIT-pool run failing before it could test anything.
+    let ensure_step = browser_job
+        .split("- name: Ensure a Playwright browser is available")
+        .nth(1)
+        .expect("browser job ensures a Playwright browser before verifying it");
+    let cache_guard = ensure_step
+        .find("fs.existsSync(chromium.executablePath())")
+        .expect("the ensure step checks the image cache first");
+    let installer = ensure_step
+        .find("pnpm exec playwright install chromium")
+        .expect("the ensure step can install a browser on images without one");
     assert!(
-        !browser_job.contains("pnpm exec playwright install chromium"),
-        "Ubuntu 26.04 runners must use the image-provided Playwright browser"
+        cache_guard < installer,
+        "the Playwright installer must run only when the image has no cached browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));
 
