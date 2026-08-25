@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, type CSSProperties, type ReactNode, useMemo, useState } from 'react'
+import { Fragment, type CSSProperties, type ReactNode, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
   Check,
@@ -34,6 +34,11 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
+import {
+  REMOVE_GATEWAY_CONFIRM_LABEL,
+  REMOVE_GATEWAY_TITLE,
+  removeGatewayDescription,
+} from './gateway-confirmations'
 import { WarningsPill } from './warnings-pill'
 import type { Gateway } from '@/lib/types/gateway'
 import { gatewayDetailHref } from '@/lib/api/gateway-config'
@@ -163,12 +168,28 @@ export function GatewayTable({
   const [expandedMobileGatewayId, setExpandedMobileGatewayId] = useState<string | null>(null)
   const [expandedDesktopGatewayId, setExpandedDesktopGatewayId] = useState<string | null>(null)
   const [disableConfirmationGatewayId, setDisableConfirmationGatewayId] = useState<string | null>(null)
+  const [removeConfirmationGatewayId, setRemoveConfirmationGatewayId] = useState<string | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<StatusGroupId[]>([])
   const [attentionBannerDismissed, setAttentionBannerDismissed] = useState(false)
   const [selectedGatewayIds, setSelectedGatewayIds] = useState<string[]>([])
   const disableConfirmationGateway = disableConfirmationGatewayId
     ? gateways.find((gateway) => gateway.id === disableConfirmationGatewayId) ?? null
     : null
+  const removeConfirmationGateway = removeConfirmationGatewayId
+    ? gateways.find((gateway) => gateway.id === removeConfirmationGatewayId) ?? null
+    : null
+
+  // The dialog is gated on the *resolved* gateway, so a target that leaves the
+  // list mid-confirmation closes it rather than asking the operator to confirm
+  // a removal against a server we can no longer name. Closing is the safe half;
+  // this reconciles the other half, since `onOpenChange` never fires in that
+  // case and the stale id would otherwise sit set forever, blocking the next
+  // confirmation for a different row.
+  useEffect(() => {
+    if (removeConfirmationGatewayId && !removeConfirmationGateway) {
+      setRemoveConfirmationGatewayId(null)
+    }
+  }, [removeConfirmationGatewayId, removeConfirmationGateway])
 
   const requestToggleEnabled = (gateway: Gateway) => {
     if (gateway.enabled ?? true) {
@@ -183,6 +204,26 @@ export function GatewayTable({
     setDisableConfirmationGatewayId(null)
     if (!gateway || !(gateway.enabled ?? true)) return
     onToggleEnabled(gateway)
+  }
+
+  // gateway.remove is destructive (permanent, hard to recover); confirm
+  // before it fires. removeVirtualServer (in_process "stale service" rows)
+  // clears derived runtime bookkeeping, not persisted config, and is
+  // classified non-destructive in the shared action catalog — so it skips
+  // the extra step, matching the metadata instead of inventing a UI-only rule.
+  const requestRemoveGateway = (gateway: Gateway) => {
+    if (gateway.source === 'in_process') {
+      onDelete(gateway)
+      return
+    }
+    setRemoveConfirmationGatewayId(gateway.id)
+  }
+
+  const confirmRemoveGateway = () => {
+    const gateway = removeConfirmationGateway
+    setRemoveConfirmationGatewayId(null)
+    if (!gateway) return
+    onDelete(gateway)
   }
 
   const handleAction = async (
@@ -588,7 +629,7 @@ export function GatewayTable({
                 <button
                   type="button"
                   className={cn(GW_ROW_ACTION, 'text-aurora-error hover:text-aurora-error')}
-                  onClick={() => onDelete(gateway)}
+                  onClick={() => requestRemoveGateway(gateway)}
                   title="Remove stale service"
                 >
                   <Trash2 className="size-[11px]" aria-hidden="true" />
@@ -668,7 +709,7 @@ export function GatewayTable({
                     <>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
-                        onClick={() => onDelete(gateway)}
+                        onClick={() => requestRemoveGateway(gateway)}
                         className="text-destructive focus:text-destructive"
                       >
                         <Trash2 className="mr-2 size-4" />
@@ -884,7 +925,7 @@ export function GatewayTable({
                           {cleanupSummary ? <><DropdownMenuSeparator /><DropdownMenuItem onClick={() => onClearCleanupHistory(gateway)}><Trash2 className="mr-2 size-4" />Clear cleanup history</DropdownMenuItem></> : null}
                         </>
                       ) : null}
-                      {canRemoveGatewayRow ? <><DropdownMenuSeparator /><DropdownMenuItem onClick={() => onDelete(gateway)} className="text-aurora-error focus:text-aurora-error"><Trash2 className="mr-2 size-4" />{gateway.source === 'in_process' ? 'Remove stale service' : 'Remove server'}</DropdownMenuItem></> : null}
+                      {canRemoveGatewayRow ? <><DropdownMenuSeparator /><DropdownMenuItem onClick={() => requestRemoveGateway(gateway)} className="text-aurora-error focus:text-aurora-error"><Trash2 className="mr-2 size-4" />{gateway.source === 'in_process' ? 'Remove stale service' : 'Remove server'}</DropdownMenuItem></> : null}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -1051,6 +1092,23 @@ export function GatewayTable({
         }}
         onConfirm={confirmDisableGateway}
       />
+      {/* Mounted only with a resolved target, so the description always has a
+          real name to use. `?? ''` here would have contradicted
+          `removeGatewayDescription`'s own contract, which deliberately has no
+          "this server" fallback — an unnamed delete confirmation is exactly
+          what that helper exists to prevent. */}
+      {removeConfirmationGateway !== null && (
+        <ActionConfirmationDialog
+          open
+          title={REMOVE_GATEWAY_TITLE}
+          description={removeGatewayDescription(removeConfirmationGateway.name)}
+          confirmLabel={REMOVE_GATEWAY_CONFIRM_LABEL}
+          onOpenChange={(open) => {
+            if (!open) setRemoveConfirmationGatewayId(null)
+          }}
+          onConfirm={confirmRemoveGateway}
+        />
+      )}
     </>
   )
 }

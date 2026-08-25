@@ -4,8 +4,19 @@ import React from 'react'
 import { act } from 'react'
 
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
-import { SidebarProvider } from '@/components/ui/sidebar'
-import { SnippetsPageContent } from './snippets-page-content'
+
+// `SidebarProvider` and `SnippetsPageContent` are imported dynamically inside
+// each test, after `installTestDom()` — not statically here. Both transitively
+// pull in @radix-ui/react-use-layout-effect, which decides once at *module
+// evaluation time* (`globalThis?.document ? React.useLayoutEffect : () => {}`)
+// whether Radix's Portal-based components (Dialog, AlertDialog, ...) can ever
+// mount. ES module imports are hoisted and evaluated before any code in this
+// file's body runs, so a static top-level import here would permanently wire
+// every Radix layout effect to a no-op in this test file's process — Portal's
+// own `mounted` state would never flip, so it would render `null` forever and
+// no dialog would ever appear in the DOM, regardless of `open` state. A
+// dynamic `await import(...)` after `installTestDom()` makes `document` exist
+// before Radix's module graph is ever evaluated. See bead lab-l9gpj.
 
 async function waitFor(assertion: () => void) {
   const deadline = Date.now() + 2_000
@@ -24,6 +35,11 @@ async function waitFor(assertion: () => void) {
 
 test('snippets page renders fetched snippets and typed inputs', async () => {
   installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
   const requests: Array<{ action?: string; params?: Record<string, unknown> }> = []
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
@@ -107,6 +123,7 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
   const view = await renderClient(
     <SidebarProvider>
       <SnippetsPageContent />
+      <Toaster />
     </SidebarProvider>,
   )
 
@@ -161,6 +178,11 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
 
 test('snippets table filters by tag pill and search, and dashes out absent metrics', async () => {
   installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
     if (payload.action === 'snippets.list') {
@@ -199,6 +221,7 @@ test('snippets table filters by tag pill and search, and dashes out absent metri
   const view = await renderClient(
     <SidebarProvider>
       <SnippetsPageContent />
+      <Toaster />
     </SidebarProvider>,
   )
 
@@ -229,4 +252,296 @@ test('snippets table filters by tag pill and search, and dashes out absent metri
   assert.equal(search.getAttribute('placeholder'), 'Search snippets, tools, tags…')
 
   await view.unmount()
+})
+
+// bead lab-l9gpj
+test('user snippets can be removed after confirmation; built-ins offer no Remove button', async () => {
+  installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
+  const requests: Array<{ action?: string; params?: Record<string, unknown> }> = []
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
+    requests.push(payload)
+    if (payload.action === 'snippets.list') {
+      return new Response(JSON.stringify({
+        snippets: [
+          {
+            name: 'alpha-pulse',
+            description: 'Alpha check',
+            tags: ['homelab'],
+            source: 'builtin',
+            path: '/docs/snippets/alpha-pulse.md',
+            shadowed: false,
+          },
+          {
+            name: 'beta-sweep',
+            description: 'Beta sweep',
+            tags: ['research'],
+            source: 'user',
+            path: '/home/u/.labby/snippets/beta-sweep.md',
+            shadowed: false,
+          },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (payload.action === 'snippets.remove') {
+      return new Response(JSON.stringify({ name: payload.params?.name, removed: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({
+      name: 'alpha-pulse',
+      description: 'Alpha check',
+      tags: ['homelab'],
+      source: 'builtin',
+      path: '/docs/snippets/alpha-pulse.md',
+      shadowed: false,
+      body: '---\nname: alpha-pulse\n---\n\n```js\nasync () => ({ ok: true })\n```',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+
+  const view = await renderClient(
+    <SidebarProvider>
+      <SnippetsPageContent />
+      <Toaster />
+    </SidebarProvider>,
+  )
+
+  await waitFor(() => assert.match(view.container.textContent ?? '', /2 of 2 snippets/))
+
+  // alpha-pulse (builtin) is selected by default and offers no Remove button.
+  assert.equal(
+    Array.from(view.container.querySelectorAll('button')).some((button) => button.textContent?.trim() === 'Remove'),
+    false,
+    'built-in snippets must not offer a Remove button',
+  )
+
+  const betaRow = Array.from(view.container.querySelectorAll('[role="button"]')).find((row) =>
+    row.textContent?.includes('beta-sweep'),
+  )
+  assert.ok(betaRow, 'expected a beta-sweep row to select it')
+  await act(async () => {
+    betaRow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  await waitFor(() =>
+    assert.ok(
+      Array.from(view.container.querySelectorAll('button')).some(
+        (candidate) => candidate.textContent?.trim() === 'Remove',
+      ),
+      'expected a Remove button for the user-sourced snippet',
+    ),
+  )
+  const removeButton = Array.from(view.container.querySelectorAll('button')).find(
+    (candidate) => candidate.textContent?.trim() === 'Remove',
+  )
+  assert.ok(removeButton)
+  await act(async () => {
+    removeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  await waitFor(() => assert.match(document.body.textContent ?? '', /Remove snippet\?/))
+  assert.match(document.body.textContent ?? '', /beta-sweep/)
+
+  const confirmButton = Array.from(document.body.querySelectorAll('button')).find(
+    (button) => button.textContent?.trim() === 'Remove snippet',
+  )
+  assert.ok(confirmButton, 'expected a confirm button in the dialog')
+  await act(async () => {
+    confirmButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+
+  await waitFor(() =>
+    assert.ok(
+      requests.some((request) => request.action === 'snippets.remove' && request.params?.name === 'beta-sweep'),
+      'expected a snippets.remove request for beta-sweep',
+    ),
+  )
+  await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
+
+  await view.unmount()
+})
+
+test('a failed snippet removal closes the dialog so the error is actually visible', async () => {
+  // The error panel renders inside the snippet detail row, underneath this
+  // dialog's modal overlay. Leaving the dialog open on failure hid the error
+  // completely — the operator saw the button settle and nothing else change.
+  installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
+    if (payload.action === 'snippets.list') {
+      return new Response(JSON.stringify({
+        snippets: [
+          {
+            name: 'beta-sweep',
+            description: 'Beta sweep',
+            tags: ['research'],
+            source: 'user',
+            path: '/home/u/.labby/snippets/beta-sweep.md',
+            shadowed: false,
+          },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (payload.action === 'snippets.remove') {
+      return new Response(
+        JSON.stringify({ kind: 'invalid_param', message: 'snippet `beta-sweep` is built in' }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      )
+    }
+    return new Response(JSON.stringify({
+      name: 'beta-sweep',
+      description: 'Beta sweep',
+      tags: ['research'],
+      source: 'user',
+      path: '/home/u/.labby/snippets/beta-sweep.md',
+      shadowed: false,
+      body: '---\nname: beta-sweep\n---\n\n```js\nasync () => ({ ok: true })\n```',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+
+  const view = await renderClient(
+    <SidebarProvider>
+      <SnippetsPageContent />
+      <Toaster />
+    </SidebarProvider>,
+  )
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /beta-sweep/))
+
+    const removeButton = await (async () => {
+      await waitFor(() =>
+        assert.ok(
+          Array.from(view.container.querySelectorAll('button')).some(
+            (candidate) => candidate.textContent?.trim() === 'Remove',
+          ),
+        ),
+      )
+      return Array.from(view.container.querySelectorAll('button')).find(
+        (candidate) => candidate.textContent?.trim() === 'Remove',
+      )
+    })()
+    assert.ok(removeButton)
+    await act(async () => {
+      removeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Remove snippet\?/))
+    const confirmButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Remove snippet',
+    )
+    assert.ok(confirmButton)
+    await act(async () => {
+      confirmButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    // The dialog must close, and the failure must be reported rather than
+    // silently swallowed or shown as a success.
+    await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Remove failed/))
+    assert.doesNotMatch(document.body.textContent ?? '', /Removed beta-sweep/)
+  } finally {
+    await view.unmount()
+  }
+})
+
+test('removing the last snippet still reports the success somewhere visible', async () => {
+  installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  // Removal reports through a sonner toast, which portals to document.body —
+  // the same place these tests already look for the confirmation dialog.
+  const { Toaster } = await import('@/components/ui/sonner')
+
+  // Removal destroys its own subject. Reporting through `actionState` — which
+  // renders inside the *selected* snippet's detail row — meant the confirmation
+  // landed under an unrelated snippet, or, when the removed one was the last,
+  // nowhere at all: `reload` sets `selectedKey` to null, so no row exists to
+  // host it and the operator saw the row vanish with no confirmation.
+  let listed = false
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
+    if (payload.action === 'snippets.list') {
+      const snippets = listed
+        ? []
+        : [{
+            name: 'only-one',
+            description: 'The only snippet',
+            tags: [],
+            source: 'user',
+            path: '/home/u/.labby/snippets/only-one.md',
+            shadowed: false,
+          }]
+      listed = true
+      return new Response(JSON.stringify({ snippets }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (payload.action === 'snippets.remove') {
+      return new Response(JSON.stringify({ removed: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({
+      name: 'only-one',
+      description: 'The only snippet',
+      tags: [],
+      source: 'user',
+      path: '/home/u/.labby/snippets/only-one.md',
+      shadowed: false,
+      body: '---\nname: only-one\n---\n\n```js\nasync () => ({ ok: true })\n```',
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+
+  const view = await renderClient(
+    <SidebarProvider>
+      <SnippetsPageContent />
+      <Toaster />
+    </SidebarProvider>,
+  )
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /only-one/))
+    await waitFor(() =>
+      assert.ok(
+        Array.from(view.container.querySelectorAll('button')).some(
+          (candidate) => candidate.textContent?.trim() === 'Remove',
+        ),
+      ),
+    )
+    const removeButton = Array.from(view.container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.trim() === 'Remove',
+    )
+    assert.ok(removeButton)
+    await act(async () => {
+      removeButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Remove snippet\?/))
+    const confirmButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Remove snippet',
+    )
+    assert.ok(confirmButton)
+    await act(async () => {
+      confirmButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await waitFor(() => assert.doesNotMatch(document.body.textContent ?? '', /Remove snippet\?/))
+    // The list is now empty — there is no detail row left to host a message,
+    // so this can only pass because the toast lives outside the page content.
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Removed only-one/))
+  } finally {
+    await view.unmount()
+  }
 })

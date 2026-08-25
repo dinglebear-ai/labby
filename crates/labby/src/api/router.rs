@@ -1722,7 +1722,48 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
         }
     }
 
-    v1
+    // Anything under /v1 that no route above matches — a typo, or (the case
+    // that motivated this) a service deliberately not mounted in this
+    // deployment shape, like /v1/fs without auth or /v1/gateway without
+    // api_auth_configured — would otherwise fall through this nest to the
+    // outer SPA fallback, which answers non-GET requests with a bare
+    // empty-body 404. The frontend has nothing to render from that but a
+    // generic "An error occurred" (bead lab-gug4m), exactly the failure mode
+    // docs/contracts/agent-error-contract.md forbids.
+    //
+    // NOTE ON REACHABILITY AND WORDING. This handler answers UNAUTHENTICATED
+    // callers: `Router::nest` hoists an inner fallback into the outer
+    // `fallback_router`, and `Router::route_layer` passes `fallback_router`
+    // through unlayered by design, so the `/v1` auth layer never wraps it.
+    // (Registering it as a catch-all route instead — which would land in
+    // `path_router` and therefore be covered — is not possible: `/{*rest}`
+    // collides with the `/{service}/actions` route above.)
+    //
+    // Anyone can already distinguish "mounted but unauthorized" (401) from
+    // "not mounted" (404) by status code alone, and could before this change
+    // too, since unmounted paths previously reached the SPA fallback's 404.
+    // So the message deliberately states ONLY the method and path the caller
+    // already sent, and must stay that way: naming mount state, or pointing
+    // at `*.mount.skipped` logs, would add real deployment-shape detail to an
+    // anonymous response on the one surface that refuses to mount
+    // stdio-spawning gateway admin without auth. Operator-facing recovery
+    // belongs in the startup warnings (which do name the skipped service) and
+    // in the error contract's own `recovery` guidance, not here.
+    v1.fallback(v1_route_not_found)
+}
+
+async fn v1_route_not_found(
+    method: Method,
+    // `OriginalUri`, not `Uri`: this handler is nested under `/v1`, so a plain
+    // `Uri` extractor only sees the path remaining after the nest strips its
+    // prefix — `OriginalUri` preserves the full incoming path.
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> axum::response::Response {
+    ApiError::new(ToolError::Sdk {
+        sdk_kind: "route_not_found".into(),
+        message: format!("no route matches {method} {path}", path = uri.path()),
+    })
+    .into_response()
 }
 
 async fn labby_discovery(State(state): State<AppState>) -> axum::response::Response {
@@ -2221,6 +2262,121 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn v1_unmounted_service_route_returns_structured_json_not_bare_404() {
+        // AppState::new() has no bearer/OAuth configured, so /v1/gateway is
+        // never nested (see the `gateway.mount.skipped` guard in
+        // build_v1_router) and previously fell through the SPA fallback to a
+        // bare, empty-body 404 — surfaced by the web UI as a generic "An error
+        // occurred" toast (bead lab-gug4m). It must now match the same structured
+        // agent-error-contract envelope as every other /v1 failure.
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/gateway")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(content_type.contains("application/json"));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!body.is_empty(), "fallback must not return an empty body");
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "route_not_found");
+        assert!(json["message"].as_str().unwrap().contains("/v1/gateway"));
+    }
+
+    #[tokio::test]
+    async fn v1_unmatched_route_response_discloses_nothing_beyond_the_request() {
+        // This fallback is reachable unauthenticated (`nest` hoists it into
+        // the outer `fallback_router`, which `route_layer` leaves unlayered),
+        // so its body must not name mount state or point at internal logs —
+        // it may only echo the method and path the caller already sent.
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/no-such-service")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "route_not_found");
+
+        let message = json["message"].as_str().unwrap();
+        assert!(message.contains("/v1/no-such-service"));
+        for leak in ["mount", "skipped", "deployment", "log"] {
+            assert!(
+                !message.to_ascii_lowercase().contains(leak),
+                "anonymous 404 body must not mention `{leak}`; got: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_fallback_does_not_shadow_real_routes_or_swallow_405() {
+        // The fallback must lose to a more specific match, and must not
+        // absorb method-not-allowed for a path that does exist.
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+
+        let real_route = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/setup/actions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            real_route.status(),
+            StatusCode::OK,
+            "the fallback must not shadow a registered route"
+        );
+
+        let wrong_method = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/setup/actions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            wrong_method.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "an existing path with a wrong method must stay 405, not become 404"
+        );
     }
 
     #[tokio::test]
@@ -3234,7 +3390,7 @@ mod tests {
 
     // lab-0bl3m: resolve_web_ui_auth_disabled() defaults web_ui_auth_disabled
     // to true for the bearer-only + embedded-web-UI shape, and /auth/session
-    // is now registered unconditionally (lab-cfl3v) — together those mean
+    // is now registered unconditionally (bead lab-cfl3v) — together those mean
     // this dev-bypass branch is reachable by an unauthenticated caller in
     // that default deployment shape, not just in explicit local-dev setups.
     // This test pins the exact observable behavior so a future change to
