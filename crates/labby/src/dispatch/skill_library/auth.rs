@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use labby_auth::{Authenticator, VerifiedIdentity};
 use labby_runtime::artifacts::{
     LibraryActorId, LibraryAuthorization, LibraryGrant, LibraryOwnership, LibraryTenantId,
+    SkillVisibility,
 };
 
 use crate::access::{AccessRuntime, AccessStoreError, Permission, ProjectRole};
@@ -26,6 +27,7 @@ pub(crate) enum SkillLibraryAction {
     Get,
     Read,
     History,
+    Validate,
     Create,
     Save,
     Activate,
@@ -33,14 +35,16 @@ pub(crate) enum SkillLibraryAction {
     Archive,
     Rollback,
     Import,
+    Refresh,
 }
 
 impl SkillLibraryAction {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 13] = [
         Self::List,
         Self::Get,
         Self::Read,
         Self::History,
+        Self::Validate,
         Self::Create,
         Self::Save,
         Self::Activate,
@@ -48,6 +52,7 @@ impl SkillLibraryAction {
         Self::Archive,
         Self::Rollback,
         Self::Import,
+        Self::Refresh,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
@@ -56,6 +61,7 @@ impl SkillLibraryAction {
             Self::Get => "skill_library.get",
             Self::Read => "skill_library.read",
             Self::History => "skill_library.history",
+            Self::Validate => "skill_library.validate",
             Self::Create => "skill_library.create",
             Self::Save => "skill_library.save",
             Self::Activate => "skill_library.activate",
@@ -63,6 +69,7 @@ impl SkillLibraryAction {
             Self::Archive => "skill_library.archive",
             Self::Rollback => "skill_library.rollback",
             Self::Import => "skill_library.import",
+            Self::Refresh => "skill_library.refresh",
         }
     }
 
@@ -76,12 +83,13 @@ impl SkillLibraryAction {
                 | Self::Archive
                 | Self::Rollback
                 | Self::Import
+                | Self::Refresh
         )
     }
 }
 
 /// Product surface where the already-authenticated request entered.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum SkillLibrarySurface {
     ApiCookie,
     ApiBearer,
@@ -164,6 +172,7 @@ impl SkillLibraryTransport {
 /// Authenticated request facts supplied by a trusted surface adapter.
 ///
 /// Deliberately does not implement `Debug`: the verified identity remains opaque in diagnostics.
+#[derive(Clone)]
 pub(crate) struct SkillLibraryCaller {
     identity: VerifiedIdentity,
     scopes: BTreeSet<String>,
@@ -191,6 +200,7 @@ pub(crate) enum SkillLibraryTarget<'a> {
     Personal(&'a LibraryOwnership),
     Mutation(&'a LibraryOwnership),
     CreateForCaller,
+    LibraryRoot,
 }
 
 /// One current access snapshot projected into the runtime authority vocabulary.
@@ -204,11 +214,29 @@ pub(crate) struct SkillLibraryAuthorizationDecision {
 }
 
 impl SkillLibraryAuthorizationDecision {
+    pub(crate) fn tenant_id(&self) -> &LibraryTenantId {
+        &self.tenant_id
+    }
     /// Filter a previously loaded personal-record collection locally after one request snapshot.
     /// This makes list/get collision handling O(1) access queries rather than one query per Skill.
     pub(crate) fn permits_personal(&self, ownership: &LibraryOwnership) -> bool {
         ownership.tenant_id == self.tenant_id
             && (ownership.owner_id == self.actor_id || self.is_admin)
+    }
+
+    /// Apply record visibility after one current membership snapshot without another access read.
+    ///
+    /// Private records are visible only to their owner or a current project administrator. Tenant
+    /// records become shared only while active. Every cross-tenant record is rejected identically.
+    pub(crate) fn permits_record(
+        &self,
+        ownership: &LibraryOwnership,
+        visibility: SkillVisibility,
+        is_active: bool,
+    ) -> bool {
+        ownership.tenant_id == self.tenant_id
+            && (self.permits_personal(ownership)
+                || (visibility == SkillVisibility::Tenant && is_active))
     }
 }
 
@@ -491,7 +519,7 @@ fn validate_target_kind(
         matches!(
             target,
             SkillLibraryTarget::Mutation(_) | SkillLibraryTarget::CreateForCaller
-        )
+        ) || (action == SkillLibraryAction::Refresh && target == SkillLibraryTarget::LibraryRoot)
     } else {
         matches!(
             target,
@@ -521,6 +549,12 @@ fn resolve_grant(
         }
         SkillLibraryTarget::Personal(ownership) | SkillLibraryTarget::Mutation(ownership) => {
             ownership.clone()
+        }
+        SkillLibraryTarget::LibraryRoot => {
+            if !matches!(role, ProjectRole::Owner | ProjectRole::Admin) {
+                return None;
+            }
+            LibraryOwnership::canonical(tenant_id.clone(), actor_id.clone())
         }
         SkillLibraryTarget::SharedActive => unreachable!(),
     };
@@ -729,6 +763,60 @@ mod tests {
             member,
             Err(SkillLibraryAuthorizationError::Denied)
         ));
+    }
+
+    #[tokio::test]
+    async fn record_visibility_is_private_to_owner_admin_and_shares_only_active_tenant_records() {
+        let (_directory, runtime, _owner) = fixture().await;
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .seed_loadout_roles_for_test()
+            .await
+            .unwrap();
+        let owned_by_bootstrap = ownership("bootstrap-owner");
+        let member = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                local("static-bearer:member"),
+                ["lab:read".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::Resource, true),
+            ),
+            "member-project",
+            SkillLibraryAction::Read,
+            "shared-target",
+            SkillLibraryTarget::SharedActive,
+            "visibility-member",
+        )
+        .await
+        .unwrap();
+        assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Private, false));
+        assert!(!member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, false));
+        assert!(member.permits_record(&owned_by_bootstrap, SkillVisibility::Tenant, true));
+
+        let cross_tenant = LibraryOwnership::canonical(
+            LibraryTenantId::from_canonical_projection("other-tenant").unwrap(),
+            LibraryActorId::from_canonical_projection("bootstrap-owner").unwrap(),
+        );
+        assert!(!member.permits_record(&cross_tenant, SkillVisibility::Tenant, true));
+
+        let admin = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                local("static-bearer:admin"),
+                ["lab:read".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::Resource, true),
+            ),
+            "admin-project",
+            SkillLibraryAction::Read,
+            "private-target",
+            SkillLibraryTarget::SharedActive,
+            "visibility-admin",
+        )
+        .await
+        .unwrap();
+        assert!(admin.permits_record(&owned_by_bootstrap, SkillVisibility::Private, false));
     }
 
     #[tokio::test]

@@ -34,6 +34,88 @@ pub(crate) async fn dispatch_at_in_process_boundary(
 }
 
 impl LabMcpServer {
+    #[cfg(feature = "skills")]
+    async fn dispatch_skill_library_management(
+        &self,
+        context: &RequestContext<RoleServer>,
+        action: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, ToolError> {
+        let service =
+            crate::dispatch::skill_library::process_service().ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "service_unavailable".to_owned(),
+                message: "Skill Library is unavailable".to_owned(),
+            })?;
+        let parts = context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .ok_or_else(|| ToolError::Forbidden {
+                message: "Skill Library requires an authenticated transport context".to_owned(),
+                required_scopes: Vec::new(),
+            })?;
+        let identity = parts
+            .extensions
+            .get::<labby_auth::VerifiedIdentity>()
+            .cloned()
+            .ok_or_else(|| ToolError::Forbidden {
+                message: "Skill Library identity is required".to_owned(),
+                required_scopes: Vec::new(),
+            })?;
+        let auth = parts
+            .extensions
+            .get::<labby_auth::auth_context::AuthContext>()
+            .cloned()
+            .ok_or_else(|| ToolError::Forbidden {
+                message: "Skill Library authentication is required".to_owned(),
+                required_scopes: Vec::new(),
+            })?;
+        let project_id = parts
+            .headers
+            .get("x-labby-project-id")
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| ToolError::Forbidden {
+                message: "Skill Library project context is required".to_owned(),
+                required_scopes: Vec::new(),
+            })?;
+        static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let correlation = parts
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "mcp-{}",
+                    REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                )
+            });
+        let correlation =
+            crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(correlation)
+                .map_err(|()| ToolError::InvalidParam {
+                    message: "invalid request correlation".to_owned(),
+                    param: "x-request-id".to_owned(),
+                })?;
+        let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
+            identity,
+            auth.scopes,
+            crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
+                crate::dispatch::skill_library::auth::SkillLibrarySurface::Mcp,
+                true,
+            ),
+        );
+        service
+            .dispatch(
+                &self.access_runtime,
+                caller,
+                project_id,
+                action,
+                params,
+                &correlation,
+            )
+            .await
+            .map_err(crate::dispatch::skill_library::map_dispatch_error)
+    }
+
     /// Project MCP route/auth state into the transport-neutral Skills context.
     pub(crate) async fn skill_registry_context(
         &self,
@@ -128,6 +210,11 @@ impl LabMcpServer {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>>
     {
         Box::pin(async move {
+            if action.starts_with("skill_library.") {
+                return self
+                    .dispatch_skill_library_management(context, action, params)
+                    .await;
+            }
             let registry = self.skill_registry_context_for_tool(context, meta).await;
             dispatch_at_in_process_boundary(&registry, action, params).await
         })

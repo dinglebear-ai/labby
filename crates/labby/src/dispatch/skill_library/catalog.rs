@@ -1,0 +1,265 @@
+use labby_primitives::action::{ActionSpec, ParamSpec};
+
+#[cfg(test)]
+pub(crate) const ACTION_NAMES: &[&str] = &[
+    "skill_library.list",
+    "skill_library.get",
+    "skill_library.read",
+    "skill_library.history",
+    "skill_library.validate",
+    "skill_library.create",
+    "skill_library.save",
+    "skill_library.activate",
+    "skill_library.deactivate",
+    "skill_library.archive",
+    "skill_library.rollback",
+    "skill_library.import",
+    "skill_library.refresh",
+];
+
+const ARTIFACT: ParamSpec = ParamSpec {
+    name: "artifact_id",
+    ty: "string",
+    required: true,
+    description: "Canonical Skill Artifact id",
+};
+const REVISION: ParamSpec = ParamSpec {
+    name: "expected_revision_id",
+    ty: "string",
+    required: true,
+    description: "Expected immutable revision precondition",
+};
+const VERSION: ParamSpec = ParamSpec {
+    name: "expected_library_version",
+    ty: "integer",
+    required: true,
+    description: "Expected committed Skill Library version",
+};
+const IDEM: ParamSpec = ParamSpec {
+    name: "idempotency_key",
+    ty: "string",
+    required: true,
+    description: "Bounded request idempotency key (maximum 256 bytes)",
+};
+const PAGE: &[ParamSpec] = &[
+    ParamSpec {
+        name: "cursor",
+        ty: "string",
+        required: false,
+        description: "Opaque bounded pagination cursor",
+    },
+    ParamSpec {
+        name: "limit",
+        ty: "integer",
+        required: false,
+        description: "Page size, default 50 and maximum 100",
+    },
+];
+const FILES: ParamSpec = ParamSpec {
+    name: "files",
+    ty: "array",
+    required: true,
+    description: "Bounded logical UTF-8 Skill files; bodies are never returned by list/history",
+};
+const HISTORY_PARAMS: &[ParamSpec] = &[
+    ARTIFACT,
+    ParamSpec {
+        name: "cursor",
+        ty: "string",
+        required: false,
+        description: "Opaque bounded pagination cursor",
+    },
+    ParamSpec {
+        name: "limit",
+        ty: "integer",
+        required: false,
+        description: "Page size, default 50 and maximum 100",
+    },
+];
+
+pub(crate) const ACTIONS: [ActionSpec; 13] = [
+    spec(
+        "skill_library.list",
+        "List caller-visible stored Skill summaries",
+        false,
+        false,
+        "SkillLibraryPage",
+        PAGE,
+    ),
+    spec(
+        "skill_library.get",
+        "Get one stored Skill summary without file bodies",
+        false,
+        false,
+        "SkillLibrarySummary",
+        &[ARTIFACT],
+    ),
+    spec(
+        "skill_library.read",
+        "Read one bounded file from an immutable stored revision",
+        false,
+        false,
+        "RevisionFile",
+        &[
+            ARTIFACT,
+            ParamSpec {
+                name: "revision_id",
+                ty: "string",
+                required: true,
+                description: "Immutable revision id",
+            },
+            ParamSpec {
+                name: "path",
+                ty: "string",
+                required: true,
+                description: "Manifest-bound logical file path",
+            },
+        ],
+    ),
+    spec(
+        "skill_library.history",
+        "List immutable revision summaries in stable order",
+        false,
+        false,
+        "RevisionPage",
+        HISTORY_PARAMS,
+    ),
+    spec(
+        "skill_library.validate",
+        "Validate logical Skill files without storing or activating",
+        false,
+        false,
+        "SkillValidation",
+        &[
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Skill name",
+            },
+            FILES,
+        ],
+    ),
+    spec(
+        "skill_library.create",
+        "Create a private stored Skill without activating it",
+        false,
+        false,
+        "SkillMutationReceipt",
+        &[
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Skill name",
+            },
+            FILES,
+            VERSION,
+            IDEM,
+        ],
+    ),
+    spec(
+        "skill_library.save",
+        "Save a new immutable revision without activating it",
+        false,
+        false,
+        "SkillMutationReceipt",
+        &[ARTIFACT, REVISION, FILES, VERSION, IDEM],
+    ),
+    spec(
+        "skill_library.activate",
+        "Activate an exact stored revision as a new generation",
+        false,
+        false,
+        "SkillMutationReceipt",
+        &[ARTIFACT, REVISION, VERSION, IDEM],
+    ),
+    spec(
+        "skill_library.deactivate",
+        "Deactivate a Skill while retaining immutable revisions",
+        false,
+        false,
+        "SkillMutationReceipt",
+        &[ARTIFACT, VERSION, IDEM],
+    ),
+    spec(
+        "skill_library.archive",
+        "Archive a Skill while retaining immutable revision storage",
+        true,
+        false,
+        "SkillMutationReceipt",
+        &[ARTIFACT, VERSION, IDEM],
+    ),
+    spec(
+        "skill_library.rollback",
+        "Activate a prior immutable revision as a new generation",
+        false,
+        false,
+        "SkillMutationReceipt",
+        &[ARTIFACT, REVISION, VERSION, IDEM],
+    ),
+    spec(
+        "skill_library.import",
+        "Import bounded acquired Skill bytes without implicit activation",
+        false,
+        false,
+        "SkillMutationReceipt",
+        &[
+            ParamSpec {
+                name: "acquisition",
+                ty: "object",
+                required: true,
+                description: "Path-free ArtifactInterchange plus bounded UTF-8 logical payload files",
+            },
+            VERSION,
+            IDEM,
+        ],
+    ),
+    spec(
+        "skill_library.refresh",
+        "Explicitly rebuild and reconcile the committed active generation",
+        false,
+        false,
+        "SkillMutationReceipt",
+        &[VERSION, IDEM],
+    ),
+];
+
+const fn spec(
+    name: &'static str,
+    description: &'static str,
+    destructive: bool,
+    requires_admin: bool,
+    returns: &'static str,
+    params: &'static [ParamSpec],
+) -> ActionSpec {
+    ActionSpec {
+        name,
+        description,
+        destructive,
+        requires_admin,
+        returns,
+        params,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn names_and_destructive_policy_are_stable() {
+        assert_eq!(
+            ACTIONS.iter().map(|a| a.name).collect::<Vec<_>>(),
+            ACTION_NAMES
+        );
+        assert_eq!(
+            ACTIONS
+                .iter()
+                .filter(|a| a.destructive)
+                .map(|a| a.name)
+                .collect::<Vec<_>>(),
+            ["skill_library.archive"]
+        );
+        assert!(ACTIONS.iter().all(|a| !a.requires_admin));
+    }
+}

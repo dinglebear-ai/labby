@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::{
     Extension, Json, Router,
@@ -6,6 +7,7 @@ use axum::{
     http::HeaderMap,
     routing::post,
 };
+use labby_auth::VerifiedIdentity;
 use serde_json::Value;
 
 use crate::api::error::ApiError;
@@ -13,6 +15,108 @@ use crate::api::oauth::AuthContext;
 use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
+
+#[cfg(feature = "skills")]
+fn map_skill_library_error(
+    error: crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError,
+) -> ToolError {
+    use crate::dispatch::skill_library::auth::SkillLibraryAuthorizationError;
+    use crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError;
+    use labby_runtime::artifacts::ArtifactError;
+
+    match error {
+        SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied) => {
+            ToolError::Forbidden {
+                message: "Skill Library access denied".to_owned(),
+                required_scopes: Vec::new(),
+            }
+        }
+        SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Unavailable) => {
+            ToolError::Sdk {
+                sdk_kind: "service_unavailable".to_owned(),
+                message: "Skill Library authorization is unavailable".to_owned(),
+            }
+        }
+        SkillLibraryDispatchError::Artifact(ArtifactError::InvalidField { field, .. }) => {
+            ToolError::InvalidParam {
+                message: "Skill Library parameter is invalid".to_owned(),
+                param: field.to_owned(),
+            }
+        }
+        SkillLibraryDispatchError::Artifact(
+            ArtifactError::UnsupportedSchema
+            | ArtifactError::UnsafePath(_)
+            | ArtifactError::SecretMaterialDetected { .. }
+            | ArtifactError::SkillVerification
+            | ArtifactError::LogicalSkillFile { .. },
+        )
+        | SkillLibraryDispatchError::InvalidParams => ToolError::InvalidParam {
+            message: "Skill Library parameters are invalid".to_owned(),
+            param: "params".to_owned(),
+        },
+        SkillLibraryDispatchError::Artifact(ArtifactError::LimitExceeded { .. }) => {
+            ToolError::Sdk {
+                sdk_kind: "budget_exceeded".to_owned(),
+                message: "Skill Library request exceeds a safety budget".to_owned(),
+            }
+        }
+        SkillLibraryDispatchError::Artifact(ArtifactError::NotFound(_)) => ToolError::Sdk {
+            sdk_kind: "not_found".to_owned(),
+            message: "Skill Library item was not found".to_owned(),
+        },
+        SkillLibraryDispatchError::Artifact(ArtifactError::Conflict(reason)) => {
+            if reason == "blocking_work_failed" {
+                ToolError::Sdk {
+                    sdk_kind: "timeout".to_owned(),
+                    message: "Skill Library work did not complete in time".to_owned(),
+                }
+            } else {
+                ToolError::Conflict {
+                    message: if reason == "library_version_changed" {
+                        "Skill Library version is stale; re-list and retry"
+                    } else {
+                        "Skill Library state conflicts with this request"
+                    }
+                    .to_owned(),
+                    existing_id: "skill_library".to_owned(),
+                }
+            }
+        }
+        SkillLibraryDispatchError::Artifact(ArtifactError::Busy) => ToolError::Sdk {
+            sdk_kind: "queue_saturated".to_owned(),
+            message: "Skill Library is busy; retry later".to_owned(),
+        },
+        SkillLibraryDispatchError::Artifact(ArtifactError::CommittedPending {
+            committed_version,
+        }) => ToolError::contract(
+            "service_unavailable",
+            "Skill Library commit requires reconciliation",
+            serde_json::Map::from_iter([(
+                "committed_version".to_owned(),
+                committed_version.into(),
+            )]),
+            None,
+            None,
+            None,
+        ),
+        SkillLibraryDispatchError::Artifact(
+            ArtifactError::LibraryCorrupt(_) | ArtifactError::Io(_) | ArtifactError::Json(_),
+        )
+        | SkillLibraryDispatchError::Serialization
+        | SkillLibraryDispatchError::InjectedFault(_) => ToolError::Sdk {
+            sdk_kind: "internal_error".to_owned(),
+            message: "Skill Library operation failed".to_owned(),
+        },
+        SkillLibraryDispatchError::UnknownAction => ToolError::UnknownAction {
+            message: "unknown Skill Library action".to_owned(),
+            valid: crate::dispatch::skill_library::catalog::ACTIONS
+                .iter()
+                .map(|spec| spec.name.to_owned())
+                .collect(),
+            hint: Some("use skills schema to inspect supported actions".to_owned()),
+        },
+    }
+}
 
 async fn dispatch_at_api_boundary(
     registry: &crate::skills::facade::SkillRegistryContext,
@@ -24,6 +128,53 @@ async fn dispatch_at_api_boundary(
 
 pub fn routes(_state: AppState) -> Router<AppState> {
     Router::new().route("/", post(handle))
+}
+
+#[cfg(all(test, feature = "skills"))]
+mod skill_library_error_tests {
+    use super::*;
+    use crate::dispatch::skill_library::auth::SkillLibraryAuthorizationError;
+    use crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError;
+    use labby_runtime::artifacts::ArtifactError;
+
+    #[test]
+    fn management_errors_keep_stable_recovery_kinds() {
+        let cases = [
+            (
+                SkillLibraryDispatchError::Artifact(ArtifactError::Busy),
+                "queue_saturated",
+            ),
+            (
+                SkillLibraryDispatchError::Artifact(ArtifactError::Conflict(
+                    "library_version_changed",
+                )),
+                "conflict",
+            ),
+            (
+                SkillLibraryDispatchError::Artifact(ArtifactError::NotFound("library_record")),
+                "not_found",
+            ),
+            (
+                SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied),
+                "forbidden",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(map_skill_library_error(error).kind(), expected);
+        }
+    }
+
+    #[test]
+    fn management_internal_error_redacts_os_message_and_path() {
+        const CANARY: &str = "/private/canary/never-return-this";
+        let mapped = map_skill_library_error(SkillLibraryDispatchError::Artifact(
+            ArtifactError::Io(std::io::Error::other(CANARY)),
+        ));
+        let wire = serde_json::to_string(&mapped).expect("serialize ToolError");
+        assert_eq!(mapped.kind(), "internal_error");
+        assert!(!wire.contains(CANARY));
+        assert!(!wire.contains("private"));
+    }
 }
 
 fn has_read_scope(auth: Option<&Extension<AuthContext>>) -> bool {
@@ -72,6 +223,7 @@ async fn handle(
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers
@@ -83,6 +235,16 @@ async fn handle(
     let manager = state.gateway_manager.clone();
     #[cfg(feature = "gateway")]
     let auth_for_dispatch = auth.clone();
+    let skill_library = state.skill_library.clone();
+    let access_runtime = Arc::clone(&state.access_runtime);
+    let verified_identity = identity.map(|Extension(value)| value);
+    let project_id = headers
+        .get("x-labby-project-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let correlation = request_id.map(str::to_owned);
+    let auth_for_library = auth.clone().map(|Extension(value)| value);
+    let library_headers = headers.clone();
 
     handle_action_with_meta(
         "skills",
@@ -93,8 +255,76 @@ async fn handle(
             peer.map(|Extension(ConnectInfo(addr))| addr),
         ),
         req,
-        crate::dispatch::skills::ACTIONS,
+        crate::dispatch::skills::API_ACTIONS,
         move |action, params| async move {
+            if action.starts_with("skill_library.") {
+                let service = skill_library.ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "skill_library_unavailable".to_owned(),
+                    message: "Skill Library is unavailable".to_owned(),
+                })?;
+                let identity = verified_identity.ok_or_else(|| ToolError::Forbidden {
+                    message: "Skill Library identity is required".to_owned(),
+                    required_scopes: vec![],
+                })?;
+                let auth = auth_for_library.ok_or_else(|| ToolError::Forbidden {
+                    message: "Skill Library authentication is required".to_owned(),
+                    required_scopes: vec![],
+                })?;
+                let project_id = project_id.ok_or_else(|| ToolError::Forbidden {
+                    message: "Skill Library project context is required".to_owned(),
+                    required_scopes: vec![],
+                })?;
+                static REQUESTS: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(1);
+                let correlation = correlation.unwrap_or_else(|| {
+                    format!(
+                        "api-{}",
+                        REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    )
+                });
+                let csrf_verified = auth.via_session
+                    && auth.csrf_token.as_deref().is_some_and(|token| {
+                        library_headers
+                            .get("x-csrf-token")
+                            .and_then(|value| value.to_str().ok())
+                            == Some(token)
+                    });
+                let transport = if auth.via_session {
+                    crate::dispatch::skill_library::auth::SkillLibraryTransport::browser(
+                        true,
+                        csrf_verified,
+                    )
+                } else {
+                    crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
+                        crate::dispatch::skill_library::auth::SkillLibrarySurface::ApiBearer,
+                        true,
+                    )
+                };
+                let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
+                    identity,
+                    auth.scopes,
+                    transport,
+                );
+                let correlation =
+                    crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(
+                        correlation,
+                    )
+                    .map_err(|()| ToolError::InvalidParam {
+                        message: "invalid request correlation".to_owned(),
+                        param: "x-request-id".to_owned(),
+                    })?;
+                return service
+                    .dispatch(
+                        &access_runtime,
+                        caller,
+                        &project_id,
+                        &action,
+                        params,
+                        &correlation,
+                    )
+                    .await
+                    .map_err(map_skill_library_error);
+            }
             #[cfg(feature = "gateway")]
             if let Some(manager) = manager.as_ref() {
                 let auth = auth_for_dispatch.as_ref().map(|value| &value.0);
@@ -112,7 +342,7 @@ async fn handle(
                     crate::skills::aggregate::ToolAccess::Direct
                 };
                 let registry = crate::skills::facade::SkillRegistryContext::with_manager(
-                    std::sync::Arc::clone(manager),
+                    Arc::clone(manager),
                     crate::skills::facade::SkillCallerScope::root(oauth_subject, access),
                 );
                 return dispatch_at_api_boundary(&registry, &action, params).await;

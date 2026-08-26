@@ -130,6 +130,19 @@ async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Subcommand;
+
+    #[test]
+    fn cli_help_exposes_only_implemented_read_commands() {
+        let command = SkillsCommand::augment_subcommands(clap::Command::new("skills"));
+        let names = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["list", "search", "get", "read"]);
+        assert!(names.iter().all(|name| !name.contains("callback")));
+    }
+
     #[tokio::test]
     async fn cli_boundary_keeps_a_captured_generation_during_refresh() {
         use crate::skills::facade::SkillRegistryContext;

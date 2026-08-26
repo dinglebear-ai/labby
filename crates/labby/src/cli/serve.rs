@@ -439,6 +439,63 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .with_config(config.clone())
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_http_bind_host(host.clone());
+    #[cfg(feature = "skills")]
+    {
+        use crate::dispatch::skill_library::blocking::BoundedBlockingExecutor;
+        use crate::dispatch::skill_library::dispatch::{
+            ActivationCoordinator, ArtifactFirstPartyProjection, GenerationProjection,
+            SkillLibraryService,
+        };
+        use crate::skills::registry::{
+            GenerationSeed, first_party_generation_manager,
+            initialize_first_party_generation_manager,
+        };
+
+        let store = Arc::new(
+            labby_runtime::artifacts::ArtifactStore::new(
+                labby_runtime::lab_home().join("artifacts"),
+            )
+            .context("open Skill Library Artifact store")?,
+        );
+        let snapshot = store
+            .library_snapshot()
+            .context("load Skill Library metadata")?;
+        initialize_first_party_generation_manager(GenerationSeed {
+            version: snapshot.version,
+            active_digest: snapshot.active_generation_digest.clone(),
+        })
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "first-party Skill generation was initialized before persisted Skill Library state"
+            )
+        })?;
+        let projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection);
+        let candidate = projection
+            .prepare(&store, &snapshot, None)
+            .context("build persisted Skill Library generation")?;
+        let manager = first_party_generation_manager();
+        let coordinator = Arc::new(ActivationCoordinator::from_cell(
+            manager.generation_cell(),
+            snapshot.version,
+        ));
+        coordinator.reconcile(candidate, snapshot.version);
+        let blocking =
+            BoundedBlockingExecutor::new(8, Duration::from_secs(2), Duration::from_secs(30))
+                .map_err(|_| {
+                    anyhow::anyhow!("invalid Skill Library blocking executor configuration")
+                })?;
+        let skill_library = Arc::new(SkillLibraryService::new(
+            store,
+            blocking,
+            coordinator,
+            projection,
+        ));
+        crate::dispatch::skill_library::install_process_service(Arc::clone(&skill_library))
+            .map_err(|_| anyhow::anyhow!("Skill Library service was already initialized"))?;
+        state = state.with_skill_library(skill_library);
+    }
     let public_relay_store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
         crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
     );
