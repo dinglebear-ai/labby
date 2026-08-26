@@ -108,8 +108,12 @@ const fn api_actions() -> [ActionSpec; 19] {
     result
 }
 
-const ALL_API_ACTIONS: [ActionSpec; 19] = api_actions();
-pub(crate) const API_ACTIONS: &[ActionSpec] = &ALL_API_ACTIONS;
+const ALL_MANAGEMENT_ACTIONS: [ActionSpec; 19] = api_actions();
+/// Authenticated HTTP MCP/App contract: compatibility reads plus the bounded
+/// Skill Library management vocabulary. Stdio and private in-process callers
+/// intentionally retain [`ACTIONS`].
+pub(crate) const MCP_ACTIONS: &[ActionSpec] = &ALL_MANAGEMENT_ACTIONS;
+pub(crate) const API_ACTIONS: &[ActionSpec] = MCP_ACTIONS;
 
 #[cfg(test)]
 mod tests {

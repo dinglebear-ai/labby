@@ -20,7 +20,7 @@ async fn dispatch_at_cli_boundary(
 #[derive(Debug, Args)]
 pub struct SkillsArgs {
     /// Canonical Access project used to authorize Artifact-backed Skills.
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub project_id: String,
     #[command(subcommand)]
     pub command: SkillsCommand,
@@ -201,7 +201,7 @@ async fn cli_artifact_access_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Subcommand;
+    use clap::{CommandFactory, Parser, Subcommand};
     use labby_auth::{Authenticator, VerifiedIdentity};
 
     #[test]
@@ -213,6 +213,30 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, ["list", "search", "get", "read"]);
         assert!(names.iter().all(|name| !name.contains("callback")));
+    }
+
+    #[test]
+    fn project_id_is_required_only_below_the_skills_command() {
+        let unrelated = crate::cli::Cli::try_parse_from(["labby", "docs", "check"]);
+        assert!(
+            unrelated.is_ok(),
+            "unrelated commands must not inherit --project-id: {unrelated:?}"
+        );
+
+        let missing = crate::cli::Cli::try_parse_from(["labby", "skills", "list"])
+            .expect_err("Skills must require explicit project context");
+        assert_eq!(
+            missing.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(missing.to_string().contains("--project-id <PROJECT_ID>"));
+
+        let help = crate::cli::Cli::command()
+            .find_subcommand_mut("skills")
+            .expect("skills command")
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("--project-id <PROJECT_ID>"));
     }
 
     #[tokio::test]

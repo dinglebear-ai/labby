@@ -135,22 +135,7 @@ impl LabMcpServer {
                 message: "Skill Library requires an authenticated transport context".to_owned(),
                 required_scopes: Vec::new(),
             })?;
-        let identity = parts
-            .extensions
-            .get::<labby_auth::VerifiedIdentity>()
-            .cloned()
-            .ok_or_else(|| ToolError::Forbidden {
-                message: "Skill Library identity is required".to_owned(),
-                required_scopes: Vec::new(),
-            })?;
-        let auth = parts
-            .extensions
-            .get::<labby_auth::auth_context::AuthContext>()
-            .cloned()
-            .ok_or_else(|| ToolError::Forbidden {
-                message: "Skill Library authentication is required".to_owned(),
-                required_scopes: Vec::new(),
-            })?;
+        let boundary = super::call_tool::skill_library_callback_boundary(parts)?;
         let project_id = parts
             .headers
             .get("x-labby-project-id")
@@ -159,31 +144,16 @@ impl LabMcpServer {
                 message: "Skill Library project context is required".to_owned(),
                 required_scopes: Vec::new(),
             })?;
-        static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let correlation = parts
-            .headers
-            .get("x-request-id")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-            .unwrap_or_else(|| {
-                format!(
-                    "mcp-{}",
-                    REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                )
-            });
-        let correlation =
-            crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(correlation)
-                .map_err(|()| ToolError::InvalidParam {
-                    message: "invalid request correlation".to_owned(),
-                    param: "x-request-id".to_owned(),
-                })?;
+        let correlation = super::call_tool::skill_library_callback_correlation(
+            parts
+                .headers
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+        )?;
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
-            identity,
-            auth.scopes,
-            crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
-                crate::dispatch::skill_library::auth::SkillLibrarySurface::Mcp,
-                true,
-            ),
+            boundary.identity,
+            boundary.scopes,
+            crate::dispatch::skill_library::auth::SkillLibraryTransport::app_callback(true, true),
         );
         if action == "skill_library.import" {
             let imports = crate::dispatch::skill_library::process_imports().ok_or_else(|| {

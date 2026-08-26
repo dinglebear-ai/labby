@@ -38,6 +38,10 @@ pub(crate) use crate::app_assets::{
 pub(crate) use crate::app_assets::{
     SERVER_LOGS_APP_SKYBRIDGE_URI, SERVER_LOGS_APP_URI, SERVER_LOGS_APP_URI_PREFIX,
 };
+#[cfg(feature = "skills")]
+pub(crate) use crate::app_assets::{
+    SKILL_LIBRARY_APP_SKYBRIDGE_URI, SKILL_LIBRARY_APP_URI, SKILL_LIBRARY_APP_URI_PREFIX,
+};
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
@@ -55,6 +59,41 @@ use crate::mcp::pagination::{
 };
 use crate::mcp::runtime::catalog_snapshot_audience;
 use crate::mcp::server::LabMcpServer;
+
+#[cfg(feature = "skills")]
+fn skill_library_resource_error_correlation(context: &RequestContext<RoleServer>) -> String {
+    static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let supplied = context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.headers.get("x-request-id"))
+        .and_then(|value| value.to_str().ok());
+    if let Some(value) = supplied
+        && crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(value).is_ok()
+    {
+        return value.to_owned();
+    }
+    format!(
+        "mcp-skill-resource-{}",
+        REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+#[cfg(feature = "skills")]
+fn with_skill_library_resource_correlation(
+    mut error: ErrorData,
+    context: &RequestContext<RoleServer>,
+) -> ErrorData {
+    let correlation_id = skill_library_resource_error_correlation(context);
+    let mut data = error
+        .data
+        .take()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    data.insert("correlation_id".to_owned(), Value::String(correlation_id));
+    error.data = Some(Value::Object(data));
+    error
+}
 
 /// In-band error-contract discovery: the published JSON Schema for the
 /// versioned agent-error contract every error envelope carries
@@ -164,6 +203,8 @@ pub(crate) const CODE_MODE_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = 
 
 const CODE_MODE_APP_FALLBACK_HTML: &str = include_str!("assets/code_mode_app.html");
 const SERVER_LOGS_APP_FALLBACK_HTML: &str = crate::app_assets::SERVER_LOGS_APP_HTML;
+#[cfg(feature = "skills")]
+const SKILL_LIBRARY_APP_FALLBACK_HTML: &str = crate::app_assets::SKILL_LIBRARY_APP_HTML;
 #[cfg(feature = "gateway")]
 const ADD_SERVER_APP_FALLBACK_HTML: &str = crate::app_assets::ADD_SERVER_APP_HTML;
 #[cfg(feature = "gateway")]
@@ -190,6 +231,28 @@ pub(crate) const SERVER_LOGS_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] 
         resource_description: "Admin MCP App for Labby server process logs",
         skybridge_widget_description: Some(
             "Admin viewer for Labby's rolling server process logs with level, service, action, kind, and text filters.",
+        ),
+    },
+];
+
+#[cfg(feature = "skills")]
+pub(crate) const SKILL_LIBRARY_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor] = &[
+    AppResourceDescriptor {
+        uri: SKILL_LIBRARY_APP_URI,
+        name: "skill-library/app",
+        runtime: CodeModeRuntime::McpApp,
+        tool_name: Some("skills"),
+        resource_description: "MCP App shell for the authenticated Labby Skill Library",
+        skybridge_widget_description: None,
+    },
+    AppResourceDescriptor {
+        uri: SKILL_LIBRARY_APP_SKYBRIDGE_URI,
+        name: "skill-library/app.skybridge",
+        runtime: CodeModeRuntime::Skybridge,
+        tool_name: Some("skills"),
+        resource_description: "MCP App shell for the authenticated Labby Skill Library",
+        skybridge_widget_description: Some(
+            "Manage personal and shared Labby Skills through authenticated host callbacks.",
         ),
     },
 ];
@@ -315,6 +378,9 @@ static CODE_MODE_APP_VERSION: std::sync::LazyLock<String> = std::sync::LazyLock:
 });
 static SERVER_LOGS_APP_VERSION: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| bridged_app_content_version(SERVER_LOGS_APP_FALLBACK_HTML));
+#[cfg(feature = "skills")]
+static SKILL_LIBRARY_APP_VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| bridged_app_content_version(SKILL_LIBRARY_APP_FALLBACK_HTML));
 #[cfg(feature = "gateway")]
 static ADD_SERVER_APP_VERSION: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| bridged_app_content_version(ADD_SERVER_APP_FALLBACK_HTML));
@@ -395,6 +461,15 @@ fn server_logs_app() -> OwnedAppRegistration {
         descriptors: SERVER_LOGS_APP_RESOURCE_DESCRIPTORS,
         html: SERVER_LOGS_APP_FALLBACK_HTML,
         version: &SERVER_LOGS_APP_VERSION,
+    }
+}
+
+#[cfg(feature = "skills")]
+fn skill_library_app() -> OwnedAppRegistration {
+    OwnedAppRegistration {
+        descriptors: SKILL_LIBRARY_APP_RESOURCE_DESCRIPTORS,
+        html: SKILL_LIBRARY_APP_FALLBACK_HTML,
+        version: &SKILL_LIBRARY_APP_VERSION,
     }
 }
 
@@ -642,6 +717,21 @@ impl LabMcpServer {
                 )
                 .with_mime_type(CONTRACT_SCHEMA_MIME),
             );
+        }
+
+        #[cfg(feature = "skills")]
+        if !resources.finished()
+            && self.route_scope.exposes_skills()
+            && code_mode_read_scope_allowed(auth)
+            && self.route_scope.allows_service("skills")
+            && self.service_visible_on_mcp("skills").await
+        {
+            for resource in skill_library_app_resources() {
+                resources.accept(resource);
+                if resources.finished() {
+                    break;
+                }
+            }
         }
 
         #[cfg(feature = "gateway")]
@@ -1125,6 +1215,15 @@ impl LabMcpServer {
                 .map(Into::into);
         }
 
+        #[cfg(feature = "skills")]
+        if uri.starts_with(SKILL_LIBRARY_APP_URI_PREFIX) {
+            return self
+                .read_skill_library_app_resource_impl(&uri, &subject, start, &context)
+                .await
+                .map_err(|error| with_skill_library_resource_correlation(error, &context))
+                .map(Into::into);
+        }
+
         // Local Code Mode app resources own the `ui://lab/code-mode/*` namespace
         // and are served from the bundled HTML.
         if uri.starts_with(CODE_MODE_APP_URI_PREFIX) {
@@ -1437,6 +1536,62 @@ impl LabMcpServer {
                 Err(resource_render_error(uri, e.to_string()))
             }
         }
+    }
+
+    #[cfg(feature = "skills")]
+    async fn read_skill_library_app_resource_impl(
+        &self,
+        uri: &str,
+        subject: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        if !self.route_scope.exposes_skills()
+            || !self.route_scope.allows_service("skills")
+            || !self.service_visible_on_mcp("skills").await
+        {
+            return Err(unknown_resource_error(uri, true));
+        }
+        if !code_mode_read_scope_allowed(auth_context_from_extensions(&context.extensions)) {
+            return Err(forbidden_resource_error(
+                uri,
+                "Skill Library app resources require one of scopes: lab:read, lab, lab:admin",
+                &["lab:read", "lab", "lab:admin"],
+            ));
+        }
+        let app = skill_library_app();
+        let descriptor = app
+            .descriptor(uri)
+            .ok_or_else(|| unknown_resource_error(uri, true))?;
+        let html = app
+            .inline_html(descriptor)
+            .map_err(|message| resource_render_error(uri, message))?;
+        let mime_type = descriptor.runtime.mime();
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::info!(
+            surface = "mcp",
+            service = "labby",
+            action = "read_resource",
+            subject,
+            elapsed_ms,
+            resource_uri = uri,
+            mime_type,
+            html_bytes = html.len(),
+            "Skill Library app resource read ok"
+        );
+        self.emit_dispatch_notification(
+            context,
+            "lab",
+            "read_resource",
+            elapsed_ms,
+            DispatchLogOutcome::Success,
+        )
+        .await;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(html, uri.to_string())
+                .with_mime_type(mime_type)
+                .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
+        ]))
     }
 
     #[cfg(feature = "gateway")]
@@ -2050,6 +2205,11 @@ fn server_logs_app_resources() -> Vec<Resource> {
     server_logs_app().listed_resources()
 }
 
+#[cfg(feature = "skills")]
+fn skill_library_app_resources() -> Vec<Resource> {
+    skill_library_app().listed_resources()
+}
+
 #[cfg(feature = "gateway")]
 /// Build the discoverable Add Server app resources.
 fn add_server_app_resources() -> Vec<Resource> {
@@ -2091,6 +2251,18 @@ pub(crate) fn server_logs_app_resource_uri_for_tool(tool_name: &str) -> Option<S
 /// OpenAI Apps skybridge widget URI for the server log viewer tool.
 pub(crate) fn server_logs_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
     server_logs_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
+}
+
+/// MCP Apps resource URI for the Skill Library tool descriptor.
+#[cfg(feature = "skills")]
+pub(crate) fn skill_library_app_resource_uri_for_tool(tool_name: &str) -> Option<String> {
+    skill_library_app().uri_for_tool(CodeModeRuntime::McpApp, tool_name)
+}
+
+/// OpenAI skybridge URI for the Skill Library tool descriptor.
+#[cfg(feature = "skills")]
+pub(crate) fn skill_library_app_skybridge_uri_for_tool(tool_name: &str) -> Option<String> {
+    skill_library_app().uri_for_tool(CodeModeRuntime::Skybridge, tool_name)
 }
 
 #[cfg(feature = "gateway")]
@@ -2940,6 +3112,244 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
             server_logs_uris.iter().all(|uri| uri.contains("?v=")),
             "advertised server logs URI must carry a cache-bust token: {server_logs_uris:?}"
         );
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn skill_library_app_list_and_read_follow_skill_visibility_and_scope() {
+        let server = resource_scope_server(crate::mcp::route_scope::McpRouteScope::Root).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let denied = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["profile"]))
+            .await
+            .expect("list resources without read scope");
+        assert!(
+            denied
+                .resources
+                .iter()
+                .all(|resource| { !resource.uri.starts_with(SKILL_LIBRARY_APP_URI_PREFIX) })
+        );
+
+        let allowed = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .expect("list resources with read scope");
+        let listed = allowed
+            .resources
+            .iter()
+            .filter(|resource| resource.uri.starts_with(SKILL_LIBRARY_APP_URI_PREFIX))
+            .collect::<Vec<_>>();
+        assert_eq!(listed.len(), 1, "only the MCP Apps projection is listed");
+        assert_eq!(strip_app_version(&listed[0].uri), SKILL_LIBRARY_APP_URI);
+        assert!(listed[0].uri.contains("?v="));
+
+        let err = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SKILL_LIBRARY_APP_URI),
+                scoped_context(running.peer().clone(), &["profile"]),
+            )
+            .await
+            .expect_err("read without scope must be denied");
+        assert_eq!(
+            err.data.as_ref().expect("error data")["kind"],
+            json!("forbidden")
+        );
+
+        let result = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(listed[0].uri.clone()),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .expect("authorized versioned app read"),
+        );
+        let ResourceContents::TextResourceContents {
+            text,
+            mime_type,
+            meta,
+            ..
+        } = &result.contents[0]
+        else {
+            panic!("expected text app resource");
+        };
+        assert_eq!(mime_type.as_deref(), Some(CODE_MODE_APP_MIME));
+        assert!(text.contains("MCP_PROTOCOL_VERSION = \"2026-01-26\""));
+        assert!(text.contains("window.__LABBY_MCP_RESOURCE=true;"));
+        let ui = &meta.as_ref().expect("app metadata").0["ui"];
+        assert_eq!(ui["resourceUri"], listed[0].uri);
+        assert_eq!(ui["csp"]["connectDomains"], json!([]));
+        assert_eq!(ui["csp"]["resourceDomains"], json!([]));
+        assert_eq!(ui["csp"]["frameDomains"], json!([]));
+
+        let skybridge_uri = skill_library_app_skybridge_uri_for_tool("skills")
+            .expect("versioned Skill Library Skybridge URI");
+        let skybridge = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(skybridge_uri.clone()),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .expect("authorized Skybridge app read"),
+        );
+        let ResourceContents::TextResourceContents {
+            text,
+            mime_type,
+            meta,
+            ..
+        } = &skybridge.contents[0]
+        else {
+            panic!("expected text Skybridge resource");
+        };
+        assert_eq!(mime_type.as_deref(), Some(CODE_MODE_APP_SKYBRIDGE_MIME));
+        assert!(text.contains("window.openai"));
+        let meta = &meta.as_ref().expect("Skybridge metadata").0;
+        assert_eq!(meta["ui"]["resourceUri"], skybridge_uri);
+        assert_eq!(
+            meta["ui"]["mimeTypes"],
+            json!([CODE_MODE_APP_SKYBRIDGE_MIME])
+        );
+        assert!(meta["openai/widgetDescription"].is_string());
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn skill_library_resource_errors_expose_only_safe_correlation() {
+        let server = resource_scope_server(crate::mcp::route_scope::McpRouteScope::Root).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+
+        let mut accepted = scoped_context(running.peer().clone(), &["profile"]);
+        accepted
+            .extensions
+            .get_mut::<axum::http::request::Parts>()
+            .expect("request parts")
+            .headers
+            .insert("x-request-id", "client-safe-42".parse().expect("header"));
+        let accepted_error = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SKILL_LIBRARY_APP_URI),
+                accepted,
+            )
+            .await
+            .expect_err("missing read scope");
+        let accepted_data = accepted_error.data.expect("structured resource error");
+        assert_eq!(accepted_data["kind"], "forbidden");
+        assert_eq!(accepted_data["correlation_id"], "client-safe-42");
+
+        let hostile = "../../secret-authorization-value";
+        let mut rejected = scoped_context(running.peer().clone(), &["profile"]);
+        rejected
+            .extensions
+            .get_mut::<axum::http::request::Parts>()
+            .expect("request parts")
+            .headers
+            .insert("x-request-id", hostile.parse().expect("header"));
+        let rejected_error = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SKILL_LIBRARY_APP_URI),
+                rejected,
+            )
+            .await
+            .expect_err("unsafe correlation is replaced");
+        let rendered = format!("{rejected_error:?}");
+        let rejected_data = rejected_error.data.expect("structured resource error");
+        assert_eq!(rejected_data["kind"], "forbidden");
+        assert!(
+            rejected_data["correlation_id"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("mcp-skill-resource-"))
+        );
+        assert!(!rendered.contains(hostile));
+        assert!(!rejected_data.to_string().contains(hostile));
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn protected_scope_hides_skill_library_app_when_skills_service_is_not_allowed() {
+        let server =
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "ops",
+                std::iter::empty::<&str>(),
+                ["gateway"],
+                false,
+            ))
+            .await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+
+        let resources = running
+            .service()
+            .list_resources_impl(None, context.clone())
+            .await
+            .expect("list protected resources");
+        assert!(
+            resources
+                .resources
+                .iter()
+                .all(|resource| { !resource.uri.starts_with(SKILL_LIBRARY_APP_URI_PREFIX) })
+        );
+        let err = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SKILL_LIBRARY_APP_URI),
+                context,
+            )
+            .await
+            .expect_err("cached read must not bypass protected service selection");
+        assert!(err.message.contains("unknown UI resource"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_registration_is_versioned_bounded_and_runtime_specific() {
+        let app = skill_library_app();
+        let mcp_uri =
+            skill_library_app_resource_uri_for_tool("skills").expect("MCP Apps Skill Library URI");
+        let skybridge_uri = skill_library_app_skybridge_uri_for_tool("skills")
+            .expect("Skybridge Skill Library URI");
+        assert!(mcp_uri.starts_with(SKILL_LIBRARY_APP_URI));
+        assert!(skybridge_uri.starts_with(SKILL_LIBRARY_APP_SKYBRIDGE_URI));
+        assert!(mcp_uri.contains("?v="));
+        assert!(skybridge_uri.contains("?v="));
+        assert!(skill_library_app_resource_uri_for_tool("other").is_none());
+
+        let mcp = app.descriptor(&mcp_uri).expect("versioned MCP descriptor");
+        let skybridge = app
+            .descriptor(&skybridge_uri)
+            .expect("versioned Skybridge descriptor");
+        assert_eq!(mcp.runtime.mime(), CODE_MODE_APP_MIME);
+        assert_eq!(skybridge.runtime.mime(), CODE_MODE_APP_SKYBRIDGE_MIME);
+        assert!(mcp.runtime != skybridge.runtime);
+
+        let changed = bridged_app_content_version(&format!(
+            "{SKILL_LIBRARY_APP_FALLBACK_HTML}<!-- changed -->"
+        ));
+        assert_ne!(changed, *SKILL_LIBRARY_APP_VERSION);
+
+        let shell = SKILL_LIBRARY_APP_FALLBACK_HTML;
+        assert!(shell.contains("/apps/assets/labby-app-host.js"));
+        assert!(shell.contains("LabbyAppHost.hasBridge()"));
+        for forbidden in ["fetch(", "Authorization", "localStorage", "document.cookie"] {
+            assert!(!shell.contains(forbidden), "shell contains `{forbidden}`");
+        }
     }
 
     /// FR-2a (issue #210, lab-41e7m.5): the consolidated availability gate is
