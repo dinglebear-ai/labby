@@ -1462,6 +1462,41 @@
   },
   {
     "service": "gateway",
+    "action": "gateway.mcp.restart",
+    "description": "Replace one enabled upstream MCP connection, clean up stale runtime processes, and reconnect it",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "aggressive",
+        "ty": "boolean",
+        "required": false,
+        "description": "When true, use broader host-wide process matching during cleanup"
+      }
+    ],
+    "returns": "GatewayView + cleanup result",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
     "action": "gateway.oauth.clear",
     "description": "Clear stored upstream OAuth credentials for the shared gateway credential",
     "destructive": false,

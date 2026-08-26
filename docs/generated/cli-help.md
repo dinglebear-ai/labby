@@ -2476,6 +2476,7 @@ Commands:
   list     List upstream MCP runtime state, discovery counts, and likely stale process counts
   enable   Enable an upstream MCP server so new sessions discover and proxy it again
   disable  Disable an upstream MCP server and optionally clean up running processes
+  restart  Replace one enabled upstream MCP connection and clean up stale runtime processes
   cleanup  Kill or preview running processes associated with one upstream MCP server
   help     Print this message or the help of the given subcommand(s)
 
@@ -2770,6 +2771,34 @@ Options:
 
       --aggressive
 
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway mcp restart`
+
+```text
+Replace one enabled upstream MCP connection and clean up stale runtime processes
+
+Usage: restart [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          Name of the enabled upstream MCP server to reconnect
+
+Options:
+      --aggressive
+          Use broader host-wide process matching when cleaning up the old runtime
+
+      --json
+          Emit JSON instead of human-readable tables
 
       --color <COLOR>
           Control human-readable CLI styling

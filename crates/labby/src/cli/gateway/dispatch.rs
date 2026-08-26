@@ -332,6 +332,23 @@ pub(super) async fn dispatch_command(
                 )
                 .await;
             }
+            GatewayMcpCommand::Restart(args) => {
+                return run_action_command(
+                    "gateway",
+                    "gateway.mcp.restart".to_string(),
+                    json!({
+                        "name": args.name,
+                        "aggressive": args.aggressive,
+                        "origin": cli_origin,
+                        "owner": cli_owner,
+                    }),
+                    format,
+                    |action, params| async move {
+                        dispatch_gateway_action(manager, config, action, params).await
+                    },
+                )
+                .await;
+            }
             GatewayMcpCommand::Cleanup(args) => {
                 return run_action_command(
                     "gateway",
