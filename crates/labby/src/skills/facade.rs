@@ -5,9 +5,7 @@
 //! compatibility service, CLI, and API all consume this facade.
 
 use std::collections::BTreeSet;
-#[cfg(feature = "gateway")]
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
@@ -29,7 +27,7 @@ use labby_gateway::gateway::manager::GatewayManager;
 use labby_gateway::upstream::pool::{SepSkillProvider, UpstreamPool};
 
 use super::aggregate::{self, ToolAccess};
-use super::providers::FirstPartySkillProviders;
+use super::registry::{FirstPartyGeneration, first_party_generation_manager};
 
 /// Caller-dependent inputs that affect which skills may be observed.
 ///
@@ -104,7 +102,7 @@ impl SkillCallerScope {
 /// back to process-global gateway state because doing so would erase protected
 /// route and OAuth-subject boundaries.
 pub(crate) struct SkillRegistryContext {
-    first_party: &'static FirstPartySkillProviders,
+    first_party: Arc<FirstPartyGeneration>,
     #[cfg(feature = "gateway")]
     manager: Option<Arc<GatewayManager>>,
     scope: SkillCallerScope,
@@ -114,7 +112,7 @@ impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn first_party_only() -> Self {
         Self {
-            first_party: first_party_providers(),
+            first_party: first_party_generation_manager().generation(),
             #[cfg(feature = "gateway")]
             manager: None,
             scope: SkillCallerScope::first_party_only(),
@@ -125,16 +123,11 @@ impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn with_manager(manager: Arc<GatewayManager>, scope: SkillCallerScope) -> Self {
         Self {
-            first_party: first_party_providers(),
+            first_party: first_party_generation_manager().generation(),
             manager: Some(manager),
             scope,
         }
     }
-}
-
-fn first_party_providers() -> &'static FirstPartySkillProviders {
-    static PROVIDERS: OnceLock<FirstPartySkillProviders> = OnceLock::new();
-    PROVIDERS.get_or_init(FirstPartySkillProviders::load)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +144,7 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
     let mut listing = SkillsListResult {
         skills: context
             .first_party
+            .providers
             .discover()
             .iter()
             .cloned()
@@ -195,7 +189,7 @@ pub(crate) async fn get_visible_skill(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Option<SkillEntry> {
-    if let Some(entry) = context.first_party.find(uri) {
+    if let Some(entry) = context.first_party.providers.find(uri) {
         return Some(provider_entry_to_wire(entry.clone()));
     }
 
@@ -285,7 +279,7 @@ pub(crate) async fn read_visible_skill_file(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Result<VisibleSkillFile, ToolError> {
-    if let Some(provider_entry) = context.first_party.find(uri) {
+    if let Some(provider_entry) = context.first_party.providers.find(uri) {
         let entry = provider_entry_to_wire(provider_entry.clone());
         let resource = entry
             .resources
@@ -294,6 +288,7 @@ pub(crate) async fn read_visible_skill_file(
             .ok_or_else(|| stale_manifest(uri))?;
         let verified = context
             .first_party
+            .providers
             .read(&provider_entry, uri, limits::MAX_SKILL_RESOURCE_BYTES)
             .await
             .map_err(first_party_provider_error_to_tool)?;
