@@ -76,7 +76,7 @@ impl UpstreamPool {
             count
         };
         let removed_catalog_count = {
-            let mut catalog = self.catalog_write().await;
+            let mut catalog = self.catalog_tools_write().await;
             let mut count = 0usize;
             for upstream_name in reconnect_names {
                 if catalog.remove(upstream_name).is_some() {
@@ -176,7 +176,7 @@ impl UpstreamPool {
             count
         };
         let drained_catalog_count = {
-            let mut catalog = self.catalog_write().await;
+            let mut catalog = self.catalog_tools_write().await;
             let count = catalog.len();
             catalog.clear();
             count

@@ -235,6 +235,8 @@ impl HeaderRecoveryMetricsStore {
 pub struct UpstreamPool {
     /// Discovered upstream state, keyed by upstream name.
     catalog: Arc<RwLock<catalog_publication::CatalogState>>,
+    /// Single-flight gate for rebuilding the immutable tool projection.
+    catalog_publication: Arc<Mutex<()>>,
     /// Live client connections, keyed by upstream name.
     /// Each is an `Arc<Peer<RoleClient>>` that can `call_tool` / `list_tools`.
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
@@ -512,6 +514,7 @@ impl UpstreamPool {
         let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {
             catalog: Arc::new(RwLock::new(catalog_publication::CatalogState::new())),
+            catalog_publication: Arc::new(Mutex::new(())),
             connections: Arc::new(RwLock::new(HashMap::new())),
             generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),

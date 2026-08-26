@@ -142,6 +142,7 @@ impl VerifiedIdentity {
     }
 
     /// Construct an external identity from the configured provider allowlist.
+    #[cfg_attr(not(feature = "http-axum"), allow(dead_code))]
     pub(crate) fn external_from_allowed_issuers<I, S>(
         authenticator: Authenticator,
         transport_credential_issuer: impl Into<String>,

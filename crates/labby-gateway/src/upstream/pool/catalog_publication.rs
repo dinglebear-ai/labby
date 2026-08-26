@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
@@ -15,6 +16,12 @@ use crate::upstream::types::{UpstreamEntry, UpstreamTool};
 
 use super::UpstreamPool;
 use super::tools::MAX_UPSTREAM_TOOLS;
+
+// A single gateway projection is intentionally tighter than the 512 KiB
+// per-tool Code Mode admission limit: one valid tool cannot crowd every other
+// route out of the immutable snapshot.
+const MAX_AGGREGATE_SCHEMA_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PUBLICATION_RETRIES: usize = 3;
 
 static NEXT_TOOL_CATALOG_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -36,7 +43,9 @@ pub struct ToolCatalogGeneration(u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolCatalogPublicationError {
     TooManyRoutes,
+    TooManySchemaBytes,
     InvalidTool,
+    ConcurrentMutation,
 }
 
 /// One immutable, routable tool and its owning upstream.
@@ -70,6 +79,12 @@ pub(super) struct CatalogState {
     entries: HashMap<String, UpstreamEntry>,
     published: Result<Arc<PublishedToolCatalogSnapshot>, ToolCatalogPublicationError>,
     determinant: ProjectionDeterminant,
+    tool_revision: u64,
+    published_revision: u64,
+    #[cfg(test)]
+    rebuild_count: u64,
+    #[cfg(test)]
+    snapshot_clone_count: AtomicU64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -97,17 +112,24 @@ impl CatalogState {
                 routes: Arc::from([]),
             })),
             determinant: ProjectionDeterminant::Ready(Vec::new()),
+            tool_revision: 0,
+            published_revision: 0,
+            #[cfg(test)]
+            rebuild_count: 0,
+            #[cfg(test)]
+            snapshot_clone_count: AtomicU64::new(0),
         }
     }
 
     fn projection(
-        &self,
+        entries: &HashMap<String, UpstreamEntry>,
     ) -> Result<(Vec<RouteDeterminant>, Arc<[PublishedToolRoute]>), ToolCatalogPublicationError>
     {
-        let mut upstreams = self.entries.iter().collect::<Vec<_>>();
+        let mut upstreams = entries.iter().collect::<Vec<_>>();
         upstreams.sort_unstable_by_key(|(name, _)| name.as_str());
         let mut determinant = Vec::new();
         let mut routes = Vec::new();
+        let mut schema_bytes = 0usize;
 
         for (upstream, entry) in upstreams {
             if !entry.tool_health.is_routable() {
@@ -134,6 +156,21 @@ impl CatalogState {
                 let tool = source_tool.clone();
                 let tool_value = serde_json::to_value(&tool.tool)
                     .map_err(|_| ToolCatalogPublicationError::InvalidTool)?;
+                let input_bytes = tool.input_schema.as_ref().map_or(Ok(0), |schema| {
+                    serde_json::to_vec(schema).map(|bytes| bytes.len())
+                });
+                let output_bytes = tool.output_schema.as_ref().map_or(Ok(0), |schema| {
+                    serde_json::to_vec(schema).map(|bytes| bytes.len())
+                });
+                schema_bytes = schema_bytes
+                    .checked_add(
+                        input_bytes.map_err(|_| ToolCatalogPublicationError::InvalidTool)?
+                            + output_bytes.map_err(|_| ToolCatalogPublicationError::InvalidTool)?,
+                    )
+                    .ok_or(ToolCatalogPublicationError::TooManySchemaBytes)?;
+                if schema_bytes > MAX_AGGREGATE_SCHEMA_BYTES {
+                    return Err(ToolCatalogPublicationError::TooManySchemaBytes);
+                }
                 determinant.push(RouteDeterminant {
                     upstream_name: upstream.clone(),
                     tool_name: name.clone(),
@@ -152,13 +189,22 @@ impl CatalogState {
         Ok((determinant, Arc::from(routes)))
     }
 
-    fn publish_if_changed(&mut self) {
-        let projection = self.projection();
+    fn publish_if_changed(
+        &mut self,
+        revision: u64,
+        projection: Result<
+            (Vec<RouteDeterminant>, Arc<[PublishedToolRoute]>),
+            ToolCatalogPublicationError,
+        >,
+    ) {
         let determinant = match &projection {
             Ok((determinant, _)) => ProjectionDeterminant::Ready(determinant.clone()),
             Err(error) => ProjectionDeterminant::Failed(*error),
         };
-        if determinant != self.determinant {
+        // A single dirty revision that resolves to the same determinant is a
+        // true no-op. Multiple unseen revisions may be an ABA transition, so
+        // publish a fresh identity even when the final bytes match.
+        if determinant != self.determinant || revision > self.published_revision.saturating_add(1) {
             self.determinant = determinant;
             self.published = projection.map(|(_, routes)| {
                 Arc::new(PublishedToolCatalogSnapshot {
@@ -167,6 +213,11 @@ impl CatalogState {
                 })
             });
         }
+        self.published_revision = revision;
+    }
+
+    fn mark_tool_projection_dirty(&mut self) {
+        self.tool_revision = self.tool_revision.saturating_add(1);
     }
 }
 
@@ -184,39 +235,160 @@ impl DerefMut for CatalogState {
     }
 }
 
-pub(super) struct CatalogWriteGuard<'a>(RwLockWriteGuard<'a, CatalogState>);
+pub(super) struct CatalogWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, CatalogState>,
+    tool_projection_dirty: bool,
+}
 
 impl Deref for CatalogWriteGuard<'_> {
     type Target = CatalogState;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.guard
     }
 }
 
 impl DerefMut for CatalogWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.guard
     }
 }
 
 impl Drop for CatalogWriteGuard<'_> {
     fn drop(&mut self) {
-        self.0.publish_if_changed();
+        if self.tool_projection_dirty {
+            self.guard.mark_tool_projection_dirty();
+        }
+    }
+}
+
+impl CatalogWriteGuard<'_> {
+    /// Declare that this mutation may change tool routes or their schemas.
+    pub(super) fn mark_tool_projection_dirty(&mut self) {
+        self.tool_projection_dirty = true;
     }
 }
 
 impl UpstreamPool {
     pub(super) async fn catalog_write(&self) -> CatalogWriteGuard<'_> {
-        CatalogWriteGuard(self.catalog.write().await)
+        CatalogWriteGuard {
+            guard: self.catalog.write().await,
+            // Unit-test fixtures historically insert complete entries through
+            // this low-level seam. Production mutations must opt in explicitly.
+            tool_projection_dirty: cfg!(test),
+        }
+    }
+
+    pub(super) async fn catalog_tools_write(&self) -> CatalogWriteGuard<'_> {
+        let mut guard = self.catalog_write().await;
+        guard.mark_tool_projection_dirty();
+        guard
+    }
+
+    pub(super) async fn catalog_metadata_write(&self) -> CatalogWriteGuard<'_> {
+        CatalogWriteGuard {
+            guard: self.catalog.write().await,
+            tool_projection_dirty: false,
+        }
     }
 
     /// Observe generation and routes from the same locked catalog state.
     pub async fn published_tool_catalog(
         &self,
     ) -> Result<Arc<PublishedToolCatalogSnapshot>, ToolCatalogPublicationError> {
-        let state: RwLockReadGuard<'_, CatalogState> = self.catalog.read().await;
-        state.published.clone()
+        let started = Instant::now();
+        for attempt in 1..=MAX_PUBLICATION_RETRIES {
+            {
+                let state: RwLockReadGuard<'_, CatalogState> = self.catalog.read().await;
+                if state.published_revision == state.tool_revision {
+                    return state.published.clone();
+                }
+            }
+
+            let wait_started = Instant::now();
+            let _publication = self.catalog_publication.lock().await;
+            let publication_wait = wait_started.elapsed();
+            let lock_started = Instant::now();
+            let (revision, entries) = {
+                let state = self.catalog.read().await;
+                if state.published_revision == state.tool_revision {
+                    tracing::debug!(
+                        action = "tool_catalog.rebuild",
+                        outcome = "coalesced",
+                        attempt,
+                        wait_ms = publication_wait.as_millis(),
+                        lock_ms = lock_started.elapsed().as_millis(),
+                        total_ms = started.elapsed().as_millis(),
+                        "coalesced behind an in-flight upstream tool projection rebuild"
+                    );
+                    return state.published.clone();
+                }
+                #[cfg(test)]
+                state.snapshot_clone_count.fetch_add(1, Ordering::Relaxed);
+                (state.tool_revision, state.entries.clone())
+            };
+            let rebuild_started = Instant::now();
+            let projection = CatalogState::projection(&entries);
+            let rebuild_elapsed = rebuild_started.elapsed();
+            let projected_routes = projection.as_ref().map_or(0, |(_, routes)| routes.len());
+            let mut state = self.catalog.write().await;
+            if state.tool_revision != revision {
+                tracing::debug!(
+                    action = "tool_catalog.rebuild",
+                    outcome = "retry",
+                    attempt,
+                    wait_ms = publication_wait.as_millis(),
+                    lock_ms = lock_started.elapsed().as_millis(),
+                    rebuild_ms = rebuild_elapsed.as_millis(),
+                    total_ms = started.elapsed().as_millis(),
+                    "upstream tool projection changed during rebuild"
+                );
+                continue;
+            }
+            #[cfg(test)]
+            {
+                state.rebuild_count = state.rebuild_count.saturating_add(1);
+            }
+            state.publish_if_changed(revision, projection);
+            let outcome = match &state.published {
+                Ok(_) => "ready",
+                Err(ToolCatalogPublicationError::TooManyRoutes) => "too_many_routes",
+                Err(ToolCatalogPublicationError::TooManySchemaBytes) => "too_many_schema_bytes",
+                Err(ToolCatalogPublicationError::InvalidTool) => "invalid_tool",
+                Err(ToolCatalogPublicationError::ConcurrentMutation) => "concurrent_mutation",
+            };
+            tracing::debug!(
+                action = "tool_catalog.rebuild",
+                outcome,
+                attempt,
+                projected_routes,
+                wait_ms = publication_wait.as_millis(),
+                lock_ms = lock_started.elapsed().as_millis(),
+                rebuild_ms = rebuild_elapsed.as_millis(),
+                total_ms = started.elapsed().as_millis(),
+                "rebuilt upstream tool projection"
+            );
+            return state.published.clone();
+        }
+        tracing::warn!(
+            action = "tool_catalog.rebuild",
+            outcome = "concurrent_mutation",
+            attempts = MAX_PUBLICATION_RETRIES,
+            total_ms = started.elapsed().as_millis(),
+            "upstream tool projection rebuild exhausted its retry budget"
+        );
+        Err(ToolCatalogPublicationError::ConcurrentMutation)
+    }
+
+    #[cfg(test)]
+    async fn publication_test_state(&self) -> (u64, u64, u64, u64) {
+        let state = self.catalog.read().await;
+        (
+            state.tool_revision,
+            state.published_revision,
+            state.rebuild_count,
+            state.snapshot_clone_count.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -250,6 +422,35 @@ mod tests {
             upstream_name,
             HashMap::from([(tool_name.to_string(), upstream_tool)]),
         )
+    }
+
+    fn large_entry(upstream: &str, tool_count: usize) -> UpstreamEntry {
+        let upstream_name: Arc<str> = Arc::from(upstream);
+        let schema = serde_json::json!({
+            "type": "object",
+            "description": "x".repeat(8 * 1024),
+        });
+        let tools = (0..tool_count)
+            .map(|index| {
+                let name = format!("tool-{index:04}");
+                let tool = Tool::new(
+                    name.clone(),
+                    "large catalog tool",
+                    Arc::new(serde_json::Map::new()),
+                );
+                (
+                    name,
+                    UpstreamTool {
+                        input_schema: Some(schema.clone()),
+                        output_schema: None,
+                        destructive: false,
+                        upstream_name: Arc::clone(&upstream_name),
+                        tool,
+                    },
+                )
+            })
+            .collect();
+        healthy_in_process_entry(upstream_name, tools)
     }
 
     fn route_names(snapshot: &PublishedToolCatalogSnapshot) -> Vec<(&str, &str)> {
@@ -518,5 +719,138 @@ mod tests {
             .retain(|name, _| name == "read");
         let recovered = snapshot(&pool).await;
         assert_ne!(recovered.generation(), before.generation());
+    }
+
+    #[tokio::test]
+    async fn unrelated_and_noop_writes_do_not_rebuild_but_tool_change_rebuilds_once() {
+        let pool = UpstreamPool::new();
+        pool.catalog_tools_write()
+            .await
+            .insert("alpha".into(), entry("alpha", "read"));
+        let original = snapshot(&pool).await;
+        let baseline = pool.publication_test_state().await;
+
+        {
+            let mut catalog = pool.catalog_metadata_write().await;
+            let entry = catalog.get_mut("alpha").expect("entry");
+            entry.prompt_count = 7;
+            entry.resource_count = 9;
+            entry.skill_names.push("unrelated".into());
+        }
+        drop(pool.catalog_metadata_write().await);
+        let unchanged = snapshot(&pool).await;
+        assert!(Arc::ptr_eq(&unchanged, &original));
+        assert_eq!(pool.publication_test_state().await, baseline);
+
+        {
+            let mut catalog = pool.catalog_tools_write().await;
+            catalog
+                .get_mut("alpha")
+                .expect("entry")
+                .tools
+                .get_mut("read")
+                .expect("tool")
+                .destructive = true;
+        }
+        let changed = snapshot(&pool).await;
+        let after = pool.publication_test_state().await;
+        assert_ne!(changed.generation(), original.generation());
+        assert_eq!(after.0, baseline.0 + 1, "one dirty tool revision");
+        assert_eq!(after.1, baseline.1 + 1, "one published tool revision");
+        assert_eq!(after.2, baseline.2 + 1, "one projection rebuild");
+        assert_eq!(after.3, baseline.3 + 1, "one entry snapshot clone");
+    }
+
+    #[tokio::test]
+    async fn aggregate_schema_byte_cap_rejects_the_projection_fail_closed() {
+        let pool = UpstreamPool::new();
+        let mut oversized = entry("alpha", "read");
+        oversized.tools.get_mut("read").expect("tool").input_schema = Some(serde_json::json!({
+            "type": "string",
+            "description": "x".repeat(MAX_AGGREGATE_SCHEMA_BYTES + 1),
+        }));
+        pool.catalog_tools_write()
+            .await
+            .insert("alpha".into(), oversized);
+
+        assert!(matches!(
+            pool.published_tool_catalog().await,
+            Err(ToolCatalogPublicationError::TooManySchemaBytes)
+        ));
+        assert_eq!(pool.publication_test_state().await.2, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_readers_clone_one_snapshot_for_one_dirty_revision() {
+        const READERS: usize = 32;
+
+        let pool = UpstreamPool::new();
+        pool.catalog_tools_write()
+            .await
+            .insert("alpha".into(), entry("alpha", "read"));
+        let baseline = pool.publication_test_state().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(READERS + 1));
+        let mut readers = Vec::with_capacity(READERS);
+        for _ in 0..READERS {
+            let pool = pool.clone();
+            let barrier = Arc::clone(&barrier);
+            readers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                pool.published_tool_catalog().await.expect("published")
+            }));
+        }
+        barrier.wait().await;
+
+        let mut snapshots = Vec::with_capacity(READERS);
+        for reader in readers {
+            snapshots.push(reader.await.expect("reader task"));
+        }
+        assert!(
+            snapshots[1..]
+                .iter()
+                .all(|snapshot| Arc::ptr_eq(snapshot, &snapshots[0]))
+        );
+        let after = pool.publication_test_state().await;
+        assert_eq!(after.2, baseline.2 + 1, "one projection rebuild");
+        assert_eq!(after.3, baseline.3 + 1, "one entry snapshot clone");
+    }
+
+    #[tokio::test]
+    async fn large_catalog_noop_reads_and_metadata_mutation_skip_projection_work() {
+        let pool = UpstreamPool::new();
+        pool.catalog_tools_write()
+            .await
+            .insert("large".into(), large_entry("large", MAX_UPSTREAM_TOOLS));
+        let published = snapshot(&pool).await;
+        assert_eq!(published.routes().len(), MAX_UPSTREAM_TOOLS);
+        let baseline = pool.publication_test_state().await;
+
+        for _ in 0..32 {
+            let observed = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                pool.published_tool_catalog(),
+            )
+            .await
+            .expect("clean readers do not wait for projection work")
+            .expect("published catalog");
+            assert!(Arc::ptr_eq(&observed, &published));
+        }
+        assert_eq!(pool.publication_test_state().await, baseline);
+
+        {
+            let mut catalog = pool.catalog_metadata_write().await;
+            let entry = catalog.get_mut("large").expect("large entry");
+            entry.prompt_count = entry.prompt_count.saturating_add(1);
+            entry.resource_count = entry.resource_count.saturating_add(1);
+        }
+        let after_metadata = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            pool.published_tool_catalog(),
+        )
+        .await
+        .expect("unrelated metadata does not trigger a full projection")
+        .expect("published catalog");
+        assert!(Arc::ptr_eq(&after_metadata, &published));
+        assert_eq!(pool.publication_test_state().await, baseline);
     }
 }

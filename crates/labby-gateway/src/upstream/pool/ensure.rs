@@ -61,7 +61,7 @@ fn validated_lazy_entry(config: &UpstreamConfig) -> Option<super::super::types::
 impl UpstreamPool {
     /// Seed the upstream catalog from config without starting any upstream runtime.
     pub async fn seed_lazy_upstreams(&self, configs: &[UpstreamConfig]) {
-        let mut catalog = self.catalog_write().await;
+        let mut catalog = self.catalog_tools_write().await;
         let mut resource_names = Vec::new();
         let mut processed_names = std::collections::HashSet::new();
 
@@ -427,7 +427,7 @@ impl UpstreamPool {
             .map(|tool| cached_upstream_tool(tool, &upstream_name))
             .collect::<HashMap<_, _>>();
 
-        let mut catalog = self.catalog_write().await;
+        let mut catalog = self.catalog_tools_write().await;
         if let Some(entry) = catalog.get_mut(&config.name) {
             entry.tools = tools;
             entry.exposure_policy = exposure_policies.tools;
