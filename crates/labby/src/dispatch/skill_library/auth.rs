@@ -232,6 +232,15 @@ impl SkillLibraryAuthorizationDecision {
             && (ownership.owner_id == self.actor_id || self.is_admin)
     }
 
+    /// Privacy-safe ownership relationship for response projection.
+    #[allow(
+        clippy::suspicious_operation_groupings,
+        reason = "the two differently named canonical id dimensions are intentionally compared"
+    )]
+    pub(crate) fn owns(&self, ownership: &LibraryOwnership) -> bool {
+        (ownership.tenant_id == self.tenant_id) && (ownership.owner_id == self.actor_id)
+    }
+
     /// Apply record visibility after one current membership snapshot without another access read.
     ///
     /// Private records are visible only to their owner or a current project administrator. Tenant

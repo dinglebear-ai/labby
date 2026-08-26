@@ -2482,6 +2482,69 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
         )
     }
 
+    #[cfg(feature = "skills")]
+    fn instrumented_skill_library_script() -> String {
+        let script = final_inline_script(SKILL_LIBRARY_APP_FALLBACK_HTML);
+        script.replacen(
+            "})();",
+            "globalThis.__skillTest={state,recovery,requestKey,deterministicIdempotencyKey,canonicalIntent,intentDigest,mutationAlreadySatisfied,authoredMutationAlreadySatisfied,matchesCommittedCreate,findCommittedCreate,loadList,selectSkill,loadHistory,loadFile,edit,mutate,mutationParams,openWorkspace,closeWorkspace,renderList,renderDetail,renderEditor,validate,save,command,resize,deriveViewModel,receiveContract,newDraft,validationFeedback};})();",
+            1,
+        )
+    }
+
+    #[cfg(feature = "skills")]
+    fn skill_library_node_harness(test_body: &str) -> String {
+        let instrumented = instrumented_skill_library_script();
+        format!(
+            r#"
+const elements = new Map();
+function element(id) {{
+  if (elements.has(id)) return elements.get(id);
+  const attributes = new Map();
+  const listeners = new Map();
+  const node = {{
+    id, hidden: false, disabled: false, value: "", textContent: "", innerHTML: "",
+    className: "", dataset: {{}},
+    classList: {{ add() {{}}, remove() {{}}, toggle() {{}} }},
+    setAttribute(name, value) {{ attributes.set(name, String(value)); }},
+    getAttribute(name) {{ return attributes.get(name) ?? null; }},
+    addEventListener(type, fn) {{ listeners.set(type, fn); }},
+    removeEventListener(type) {{ listeners.delete(type); }},
+    focus() {{ globalThis.__focused = id; }},
+    matches(selector) {{ return selector.split(",").some(x => x.trim().slice(1) === id); }},
+    closest() {{ return null; }},
+    getBoundingClientRect() {{ return {{ width: 760, height: 480 }}; }}
+  }};
+  elements.set(id, node);
+  return node;
+}}
+for (const id of ["app","workspace","main","skillList","status","expand","summary","quickCreate","browse","search","prevPage","nextPage","newSkill"]) element(id);
+element("workspace").hidden = true;
+const document = {{
+  getElementById: element,
+  querySelector() {{ return null; }}
+}};
+globalThis.__host ||= {{ hasBridge:()=>false, requestResize:()=>{{}}, requestTeardown:()=>{{}}, callAction:async()=>({{}}) }};
+const windowListeners = new Map();
+const parentWindow = {{ postMessage(message, origin) {{ globalThis.__parentMessages ||= []; globalThis.__parentMessages.push({{message,origin}}); }} }};
+const window = {{
+  parent: parentWindow,
+  LabbyAppHost: globalThis.__host,
+  addEventListener(type, fn) {{ windowListeners.set(type, fn); }},
+  removeEventListener(type) {{ windowListeners.delete(type); }}
+}};
+let raf = 0;
+function requestAnimationFrame(fn) {{ raf += 1; fn(); return raf; }}
+const confirm = () => true;
+Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }});
+{instrumented}
+(async () => {{
+{test_body}
+}})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+"#
+        )
+    }
+
     struct UpstreamUiResourceServer;
 
     impl ServerHandler for UpstreamUiResourceServer {
@@ -3346,10 +3409,482 @@ Object.assign(globalThis, {{ window, document, history, requestAnimationFrame, c
 
         let shell = SKILL_LIBRARY_APP_FALLBACK_HTML;
         assert!(shell.contains("/apps/assets/labby-app-host.js"));
-        assert!(shell.contains("LabbyAppHost.hasBridge()"));
+        assert!(shell.contains("const host=window.LabbyAppHost"));
+        assert!(shell.contains("host.hasBridge()"));
         for forbidden in ["fetch(", "Authorization", "localStorage", "document.cookie"] {
             assert!(!shell.contains(forbidden), "shell contains `{forbidden}`");
         }
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_app_projects_truthful_lifecycle_and_action_recovery() {
+        run_node(&skill_library_node_harness(
+            r#"
+const t=globalThis.__skillTest;
+const assert=(value,message)=>{if(!value)throw new Error(message)};
+const summary={active_revision_id:"r2",latest_revision_id:"r3",visibility:"shared"};
+assert(t.deriveViewModel(summary).lifecycle==="Active","active server truth");
+assert(t.deriveViewModel({...summary,archived:true}).lifecycle==="Archived","archive wins");
+assert(t.deriveViewModel({...summary,active_revision_id:null}).lifecycle==="Deactivated","deactivated truth");
+assert(t.recovery("stale_version").toLowerCase().includes("truth"),"stale recovery reloads truth");
+assert(t.recovery("validation_failed").includes("validate again"),"validation recovery");
+assert(t.recovery("forbidden").includes("owner"),"authorization recovery");
+assert(t.recovery("publish_failed").includes("publication"),"publication recovery");
+let resized=0;globalThis.__host.requestResize=()=>resized++;
+t.openWorkspace();assert(globalThis.__focused==="main","expanded view receives focus");
+t.closeWorkspace();assert(globalThis.__focused==="quickCreate","collapsed card restores focus");
+const retryKey=t.requestKey("skill_library.save","new");
+windowListeners.get("message")({source:parentWindow,data:{method:"ui/resource-teardown",id:41}});
+assert(t.state.disposed,"teardown aborts in-flight rendering");
+assert(t.state.pending.get("skill_library.save:new")===retryKey,"teardown retains ambiguous retry identity");
+assert(resized>0,"host resize was invoked");
+assert(globalThis.__parentMessages[0].message.id===41&&globalThis.__parentMessages[0].origin==="*","teardown was acknowledged");
+"#,
+        ));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_app_pages_bounded_catalog_and_history_to_cap_plus_one() {
+        let body = r##"
+const t=globalThis.__skillTest;
+for(let offset=0;offset<=10000;offset+=50)await t.loadList(String(offset));
+const listCalls=globalThis.__calls.filter(x=>x.action==="skill_library.list");
+if(listCalls.length!==201)throw new Error(`expected 200 pages plus cap probe, got ${listCalls.length}`);
+if(listCalls.some(x=>x.service!=="skills"||x.params.limit!==50))throw new Error("unbounded or wrong host wiring");
+if(t.state.items[0].artifact_id!=="item-10000"||t.state.next!==null)throw new Error("cap+1 page truth lost");
+t.state.detail={artifact_id:"skill-1"};
+await t.loadHistory("skill-1",null);await t.loadHistory("skill-1","50");
+const historyCalls=globalThis.__calls.filter(x=>x.action==="skill_library.history");
+if(historyCalls.length!==2||historyCalls.some(x=>x.params.limit!==50))throw new Error("history pagination not bounded");
+if(t.state.history.length!==2)throw new Error("history continuation replaced prior revisions");
+"##;
+        let harness = skill_library_node_harness(body);
+        let host = r##"
+globalThis.__calls=[];
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action,params)=>{
+  globalThis.__calls.push({service,action,params});
+  if(action==="skill_library.list")return {items:[{artifact_id:`item-${params.cursor}`,name:"skill"}],next_cursor:params.cursor==="10000"?null:String(Number(params.cursor)+50),library_version:91};
+  if(action==="skill_library.history")return {items:[{revision_id:`r-${params.cursor??0}`}],next_cursor:params.cursor==="10000"?null:String(Number(params.cursor??0)+50)};
+  throw new Error(action);
+}};
+"##;
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_app_reuses_idempotency_and_discards_stale_responses() {
+        let body = r#"
+const t=globalThis.__skillTest;t.state.selected={artifact_id:"skill-1"};t.state.detail={artifact_id:"skill-1",revision_id:"r2"};
+ t.state.libraryVersion=12;
+const first=t.requestKey("skill_library.activate","skill-1"),again=t.requestKey("skill_library.activate","skill-1");
+if(first!==again)throw new Error("retry changed idempotency key");
+globalThis.__failMutation=true;
+await t.mutate("skill_library.activate",t.mutationParams("skill_library.activate","r2"),"active");
+if(t.requestKey("skill_library.activate","skill-1")!==first)throw new Error("ambiguous failure discarded idempotency key");
+globalThis.__failMutation=false;
+await t.mutate("skill_library.activate",t.mutationParams("skill_library.activate","r2"),"active");
+if(t.requestKey("skill_library.activate","skill-1")!==first)throw new Error("deterministic fallback changed after host state cleared");
+globalThis.__deferLists=true;
+const old=t.loadList("old"),fresh=t.loadList("fresh");
+globalThis.__resolvers[1]({items:[{artifact_id:"fresh",name:"fresh"}],next_cursor:null,library_version:14});await fresh;
+globalThis.__resolvers[0]({items:[{artifact_id:"stale",name:"stale"}],next_cursor:null,library_version:13});await old;
+if(t.state.items[0].artifact_id!=="fresh"||t.state.libraryVersion!==14)throw new Error("stale response overwrote server truth");
+"#;
+        let harness = skill_library_node_harness(body);
+        let host = r#"
+globalThis.__calls=[];globalThis.__resolvers=[];
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:(service,action,params)=>{
+  globalThis.__calls.push({service,action,params});
+  if(action==="skill_library.activate"&&globalThis.__failMutation)return Promise.reject(Object.assign(new Error("ambiguous transport result"),{kind:"conflict"}));
+  if(action==="skill_library.list"&&globalThis.__deferLists)return new Promise(resolve=>globalThis.__resolvers.push(resolve));
+  return Promise.resolve({items:[],next_cursor:null,library_version:12,committed_library_version:12,published_library_version:12});
+}};
+"#;
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_app_accessibility_resize_teardown_and_secret_boundary_are_explicit() {
+        let html = SKILL_LIBRARY_APP_FALLBACK_HTML;
+        for marker in [
+            "aria-live=\"polite\"",
+            "role=\"listbox\"",
+            "role=\"option\"",
+            "aria-current=",
+            "aria-selected=",
+            "main.focus()",
+            "$(\"quickCreate\").focus()",
+            "min-height:44px",
+            "@media(max-width:620px)",
+            "@media(prefers-reduced-motion:no-preference)",
+            "host.requestResize",
+            "ui/resource-teardown",
+            "state.disposed=true",
+            "Object.keys(state.seq).forEach",
+            "postMessage({jsonrpc:\"2.0\",id:data.id,result:{}},\"*\")",
+            "host.callAction(\"skills\",action,params)",
+            "relist_required",
+            "published_library_version",
+        ] {
+            assert!(
+                html.contains(marker),
+                "Skill Library app missing `{marker}`"
+            );
+        }
+        for forbidden in [
+            "fetch(",
+            "XMLHttpRequest",
+            "WebSocket",
+            "localStorage",
+            "sessionStorage",
+            "indexedDB",
+            "document.cookie",
+            "Authorization",
+            "Bearer ",
+            "/home/",
+            "file://",
+            "process.env",
+            "SECRET_CANARY_DO_NOT_RENDER",
+        ] {
+            assert!(
+                !html.contains(forbidden),
+                "app crossed boundary with `{forbidden}`"
+            );
+        }
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_selection_races_are_bound_to_selection_and_revision() {
+        let body = r#"
+const t=globalThis.__skillTest;
+t.state.items=[
+  {artifact_id:"skill-a",name:"A",can_mutate:true},
+  {artifact_id:"skill-b",name:"B",can_mutate:true}
+];
+const a=t.selectSkill("skill-a");
+const b=t.selectSkill("skill-b");
+globalThis.__gets.get("skill-b")({item:{artifact_id:"skill-b",name:"B",latest_revision_id:"b2",can_mutate:true},library_version:8});
+await b;
+globalThis.__gets.get("skill-a")({item:{artifact_id:"skill-a",name:"A",latest_revision_id:"a9",can_mutate:true},library_version:7});
+await a;
+if(t.state.selected?.artifact_id!=="skill-b"||t.state.detail?.artifact_id!=="skill-b")throw new Error("selection A overwrote selection B");
+if(t.state.libraryVersion!==8)throw new Error("stale selection lowered authoritative version");
+await t.command({dataset:{command:"activate"}});
+const activation=globalThis.__calls.find(x=>x.action==="skill_library.activate");
+if(activation?.params.expected_revision_id!=="b2")throw new Error("activation did not target selected latest revision");
+if(activation?.params.artifact_id!=="skill-b")throw new Error("activation crossed the selected artifact guard");
+"#;
+        let harness = skill_library_node_harness(body);
+        let host = r#"
+globalThis.__calls=[];globalThis.__gets=new Map();
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:(service,action,params)=>{
+  globalThis.__calls.push({service,action,params});
+  if(action==="skill_library.get")return new Promise(resolve=>globalThis.__gets.set(params.artifact_id,resolve));
+  if(action==="skill_library.activate")return Promise.resolve({committed_library_version:9,published_library_version:9,new_generation:3});
+  if(action==="skill_library.list")return Promise.resolve({items:[{artifact_id:"skill-b",name:"B",latest_revision_id:"b2",can_mutate:true}],next_cursor:null,library_version:9});
+  if(action==="skill_library.history")return Promise.resolve({items:[],next_cursor:null,library_version:9});
+  throw new Error(action);
+}};
+"#;
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_editor_preserves_manifest_and_lazy_loads_each_file() {
+        let body = r#"
+const t=globalThis.__skillTest;
+t.state.selected={artifact_id:"multi",name:"Multi",can_mutate:true};
+t.state.detail={artifact_id:"multi",name:"Multi",latest_revision_id:"r7",can_mutate:true,files:[{path:"SKILL.md"},{path:"references/guide.md"},{path:"scripts/check.sh"}]};
+await t.edit();
+if(t.state.files.map(x=>x.path).join(",")!=="SKILL.md,references/guide.md,scripts/check.sh")throw new Error("revision manifest was not preserved");
+if(globalThis.__reads.length!==1||globalThis.__reads[0].path!=="SKILL.md")throw new Error("editor did not lazily read only the initial file");
+t.state.file=1;
+await t.loadFile(1,"multi","r7");
+if(globalThis.__reads.length!==2||globalThis.__reads[1].path!=="references/guide.md")throw new Error("supporting file was not lazily loaded");
+if(t.state.files[2].content!==undefined)throw new Error("unselected file was eagerly populated");
+"#;
+        let harness = skill_library_node_harness(body);
+        let host = r#"
+globalThis.__reads=[];
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action,params)=>{
+  if(action==="skill_library.read"){globalThis.__reads.push(params);return {path:params.path,text:`body:${params.path}`,library_version:21};}
+  throw new Error(action);
+}};
+"#;
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_server_capabilities_drive_personal_and_shared_controls() {
+        let body = r#"
+const t=globalThis.__skillTest;
+await t.loadList();
+if(!t.state.capabilities.can_create_personal||!t.state.capabilities.can_create_shared)throw new Error("server creation capabilities were not retained");
+if(!t.state.contract.canCreate)throw new Error("server creation capability was not projected");
+if(!t.state.contract.visibilities.has("private")||!t.state.contract.visibilities.has("shared"))throw new Error("server personal/shared visibility contract drifted");
+t.openWorkspace(true);
+if(!globalThis.__lastHtml.includes("Personal library")||!globalThis.__lastHtml.includes("Shared Labby namespace"))throw new Error("personal/shared authoring choice is not rendered");
+"#;
+        let harness = skill_library_node_harness(body);
+        let host = r#"
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action)=>{
+  if(action==="skill_library.list")return {items:[],next_cursor:null,library_version:4,capabilities:{can_create_personal:true,can_create_shared:true,can_import:true,default_visibility:"personal",create_visibilities:["personal","shared"],actions:["skill_library.create"]}};
+  throw new Error(action);
+}};
+"#;
+        // The DOM shim records the generated editor markup through the main node.
+        let harness = harness.replace(
+            "id, hidden: false, disabled: false, value: \"\", textContent: \"\", innerHTML: \"\",",
+            "id, hidden: false, disabled: false, value: \"\", textContent: \"\", _html: \"\", set innerHTML(value){this._html=value;if(id===\"main\")globalThis.__lastHtml=value}, get innerHTML(){return this._html},",
+        );
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_versions_never_regress_and_definitive_errors_release_retry_keys() {
+        let body = r#"
+const t=globalThis.__skillTest;
+t.state.libraryVersion=100;
+await t.loadList();
+if(t.state.libraryVersion!==100)throw new Error("older list response regressed the monotonic library version");
+t.state.selected={artifact_id:"one"};t.state.detail={artifact_id:"one",latest_revision_id:"r2",can_mutate:true};
+const params=t.mutationParams("skill_library.activate","r2");
+const key=params.idempotency_key;
+await t.mutate("skill_library.activate",params,"active");
+if(t.requestKey("skill_library.activate","one")===key)throw new Error("definitive validation failure retained a consumed retry key");
+"#;
+        let harness = skill_library_node_harness(body);
+        let host = r#"
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action)=>{
+  if(action==="skill_library.list")return {items:[],next_cursor:null,library_version:90};
+  if(action==="skill_library.activate")throw Object.assign(new Error("invalid revision"),{kind:"validation_failed",definitive:true});
+  throw new Error(action);
+}};
+"#;
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_teardown_is_idempotent_and_keeps_ambiguous_reconciliation() {
+        run_node(&skill_library_node_harness(
+            r#"
+const t=globalThis.__skillTest;
+t.state.selected={artifact_id:"one"};
+const key=t.requestKey("skill_library.save","one");
+const teardown=windowListeners.get("message");
+teardown({source:parentWindow,data:{method:"ui/resource-teardown",id:51}});
+teardown({source:parentWindow,data:{method:"ui/resource-teardown",id:51}});
+if(!t.state.disposed)throw new Error("teardown did not dispose the app");
+if(t.state.pending.get("skill_library.save:one")!==key)throw new Error("ambiguous retry identity was discarded during teardown");
+if(globalThis.__parentMessages.length!==2||globalThis.__parentMessages.some(x=>x.message.id!==51))throw new Error("repeated teardown was not safely acknowledged");
+"#,
+        ));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_keyboard_focus_touch_theme_and_motion_contract_is_explicit() {
+        let html = SKILL_LIBRARY_APP_FALLBACK_HTML;
+        for marker in [
+            "ArrowDown",
+            "ArrowUp",
+            "Home",
+            "End",
+            "tabindex=\"${state.selected?.artifact_id===x.artifact_id?0:-1}\"",
+            "focus()",
+            "min-height:44px",
+            "min-width:44px",
+            "@media(max-width:620px)",
+            "color-scheme:light dark",
+            "prefers-color-scheme:dark",
+            "prefers-reduced-motion:no-preference",
+        ] {
+            assert!(
+                html.contains(marker),
+                "Skill Library app missing `{marker}`"
+            );
+        }
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_history_walks_ten_thousand_and_one_in_order_with_bounded_ui_state() {
+        let body = r#"
+const t=globalThis.__skillTest;
+t.state.detail={artifact_id:"huge",latest_revision_id:"r10000",can_mutate:true};
+let cursor=null;
+do { await t.loadHistory("huge",cursor); cursor=t.state.historyNext; } while(cursor!==null);
+if(globalThis.__historyCalls.length!==201)throw new Error(`expected 200 bounded pages plus cap+1, got ${globalThis.__historyCalls.length}`);
+if(globalThis.__historyCalls.some((x,i)=>x.limit!==50||x.cursor!==(i===0?null:String(i*50))))throw new Error("history request order or bound drifted");
+if(globalThis.__seen.length!==10001||globalThis.__seen[0]!=="r0"||globalThis.__seen[10000]!=="r10000")throw new Error("10,001 revision traversal lost endpoint order");
+if(new Set(globalThis.__seen).size!==10001)throw new Error("revision traversal duplicated entries");
+if(t.state.history.length>250)throw new Error("retained history is unbounded: "+t.state.history.length);
+const rendered=(elements.get("history")?.innerHTML.match(/class="revision"/g)||[]).length;
+if(rendered>250)throw new Error("rendered revision DOM is unbounded: "+rendered);
+if(t.state.history.at(-1)?.revision_id!=="r10000"||t.state.historyNext!==null)throw new Error("cap+1 terminal page truth was lost");
+"#;
+        let harness = skill_library_node_harness(body);
+        let host = r#"
+globalThis.__historyCalls=[];globalThis.__seen=[];
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action,params)=>{
+  if(action!=="skill_library.history")throw new Error(action);
+  globalThis.__historyCalls.push(params);
+  const start=params.cursor===null?0:Number(params.cursor),count=start===10000?1:50;
+  const items=Array.from(new Array(count),(_,i)=>({revision_id:`r${start+i}`,created_at:`t${start+i}`}));
+  globalThis.__seen.push(...items.map(x=>x.revision_id));
+  return {items,next_cursor:start===10000?null:String(start+50),library_version:300};
+}};
+"#;
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_complete_host_flow_and_real_dto_controls_are_rendered() {
+        let body = r##"
+const t=globalThis.__skillTest;
+await t.loadList();t.openWorkspace(true);
+document.getElementById("skillName").value="host-flow";
+document.getElementById("filePath").value="SKILL.md";document.getElementById("fileBody").value="# Host flow";
+await t.command({dataset:{command:"add-file"}});
+document.getElementById("filePath").value="references/guide.md";document.getElementById("fileBody").value="support";
+await t.validate();await t.save({preventDefault(){}});
+const create=globalThis.__calls.find(x=>x.action==="skill_library.create");
+if(create.params.files.length!==2||create.params.files[1].path!=="references/guide.md")throw new Error("create lost supporting file");
+if(!globalThis.__calls.some(x=>x.action==="skill_library.validate"))throw new Error("validate was not called");
+t.state.selected=globalThis.__summary;t.state.detail=globalThis.__summary;t.state.version=3;
+await t.command({dataset:{command:"activate"}});
+if(!globalThis.__calls.some(x=>x.action==="skill_library.activate"&&x.params.expected_revision_id==="rev-1"))throw new Error("latest revision was not activated");
+for(const [kind,phrase] of [["stale_version","truth"],["collision","unique"],["forbidden","owner"],["source_unavailable","optional"],["refresh_failed","publication"]]){
+  globalThis.__failure=kind;
+  await t.mutate("skill_library.archive",{artifact_id:"artifact-1",expected_library_version:t.state.version,idempotency_key:t.requestKey("skill_library.archive","artifact-1")},"archived","artifact-1");
+  if(!elements.get("notice").innerHTML.toLowerCase().includes(phrase))throw new Error(`${kind} recovery was not rendered`);
+}
+for(const dto of [
+  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"owner"},can_mutate:true,allowed_actions:["skill_library.read","skill_library.activate","skill_library.deactivate","skill_library.archive","skill_library.history"]},
+  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"administrator"},can_mutate:true,allowed_actions:["skill_library.read","skill_library.activate","skill_library.deactivate","skill_library.archive","skill_library.history"]},
+  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"member"},can_mutate:false,allowed_actions:["skill_library.history"]}
+]){
+  t.state.detail=dto;t.state.selected=dto;t.renderDetail();const html=elements.get("main").innerHTML;
+  if(!html.includes(dto.owner.relationship))throw new Error("owner relationship DTO was not rendered");
+  const disabled=(html.match(/ disabled/g)||[]).length;
+  if(dto.owner.relationship==="member"&&disabled<4)throw new Error("member mutation controls were not disabled");
+  if(dto.owner.relationship!=="member"&&disabled!==0)throw new Error(`${dto.owner.relationship} controls were unexpectedly disabled`);
+}
+"##;
+        let harness = skill_library_node_harness(body);
+        let host = r##"
+globalThis.__calls=[];
+globalThis.__summary={artifact_id:"artifact-1",name:"Host Flow",visibility:"shared",latest_revision_id:"rev-1",active_revision_id:null,current_generation:3,published_library_version:3,latest_revision_files:[{path:"SKILL.md"},{path:"references/guide.md"}],can_mutate:true,allowed_actions:["skill_library.read","skill_library.activate","skill_library.deactivate","skill_library.archive","skill_library.history"]};
+globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},readState:()=>null,writeState:()=>{},callAction:async(service,action,params)=>{
+  globalThis.__calls.push({service,action,params});
+  if(globalThis.__failure&&action==="skill_library.archive"){const kind=globalThis.__failure;globalThis.__failure=null;const messages={stale_version:"stale version",collision:"collision choose unique",forbidden:"forbidden owner",source_unavailable:"source unavailable",refresh_failed:"refresh publication failed"};throw Object.assign(new Error(messages[kind]),{kind,definitive:true});}
+  if(action==="skill_library.list")return {items:[globalThis.__summary],next_cursor:null,library_version:3,capabilities:{can_create_personal:true,can_create_shared:true,default_visibility:"personal",allowed_actions:["skill_library.create","skill_library.validate"]}};
+  if(action==="skill_library.validate")return {valid:true,revision_id:"candidate"};
+  if(action==="skill_library.create")return {artifact_id:"artifact-1",committed_library_version:3,published_library_version:3,new_generation:2};
+  if(action==="skill_library.activate")return {artifact_id:"artifact-1",committed_library_version:4,published_library_version:4,new_generation:4};
+  if(action==="skill_library.get")return {item:globalThis.__summary,library_version:3};
+  if(action==="skill_library.history")return {items:[],next_cursor:null,library_version:3};
+  if(action==="skill_library.read")return {path:params.path,text:params.path==="SKILL.md"?"# Host flow":"support",library_version:3};
+  throw new Error(action);
+}};
+"##;
+        run_node(&format!("{host}\n{harness}"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_fresh_instance_restores_retry_and_reconciliation_from_host_state() {
+        let source = serde_json::to_string(&instrumented_skill_library_script()).expect("script");
+        let script = format!(
+            r#"
+const vm=require("node:vm"),saved=new Map();
+function boot(){{
+  const nodes=new Map(),element=id=>{{if(nodes.has(id))return nodes.get(id);const n={{id,hidden:false,disabled:false,value:"",textContent:"",innerHTML:"",dataset:{{}},className:"",classList:{{add(){{}},remove(){{}},toggle(){{}}}},setAttribute(){{}},getAttribute(){{return null}},addEventListener(){{}},removeEventListener(){{}},focus(){{}},matches(){{return false}},closest(){{return null}},getBoundingClientRect(){{return{{width:760,height:480}}}}}};nodes.set(id,n);return n;}};
+  for(const id of ["app","workspace","main","skillList","status","expand","summary","quickCreate","browse","search","prevPage","nextPage","newSkill"])element(id);
+  const parent={{postMessage(){{}}}},listeners=new Map(),host={{hasBridge:()=>false,requestResize(){{}},requestTeardown(){{}},readState:key=>saved.get(key),writeState:(key,value)=>saved.set(key,structuredClone(value)),callAction:async()=>{{throw Object.assign(new Error("network timeout"),{{kind:"network_timeout"}})}}}};
+  const window={{parent,LabbyAppHost:host,addEventListener:(k,v)=>listeners.set(k,v),removeEventListener:()=>{{}}}},document={{getElementById:element,querySelector:()=>null}},context={{window,document,confirm:()=>true,requestAnimationFrame:fn=>{{fn();return 1}},crypto,structuredClone,console,setTimeout,clearTimeout}};context.globalThis=context;vm.createContext(context);vm.runInContext({source},context);return{{context,listeners}};
+}}
+const first=boot(),t1=first.context.__skillTest;t1.state.selected={{artifact_id:"persist"}};t1.state.detail={{artifact_id:"persist",latest_revision_id:"r1"}};t1.state.version=1;
+const key=t1.requestKey("skill_library.save","persist");
+t1.mutate("skill_library.save",{{artifact_id:"persist",expected_library_version:1,idempotency_key:key}},"saved","persist").then(()=>{{
+  first.listeners.get("message")({{source:first.context.window.parent,data:{{method:"ui/resource-teardown",id:9}}}});
+  const second=boot(),t2=second.context.__skillTest;
+  if(t2.state.pending.get("skill_library.save:persist")!==key)throw new Error("fresh instance did not restore idempotency key");
+  if(t2.state.reconciliation?.idempotency_key!==key||t2.state.reconciliation?.artifact_id!=="persist")throw new Error("fresh instance did not restore reconciliation");
+}}).catch(e=>{{console.error(e);process.exitCode=1}});
+"#
+        );
+        run_node(&script);
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_fresh_instance_rederives_retry_key_without_persistent_host_state() {
+        run_node(&skill_library_node_harness(
+            r##"
+const t=globalThis.__skillTest;
+const intent={artifact_id:"persist",expected_revision_id:"r1",expected_library_version:7,files:[{path:"SKILL.md",content:"# Stable"},{path:"notes.md",content:"same intent"}]};
+const first=t.deterministicIdempotencyKey("skill_library.save","persist",intent);
+const reordered=t.deterministicIdempotencyKey("skill_library.save","persist",{files:intent.files,expected_library_version:7,expected_revision_id:"r1",artifact_id:"persist"});
+if(first!==reordered)throw new Error("canonical field order changed retry key");
+if(first!==t.requestKey("skill_library.save","persist",intent))throw new Error("request did not use deterministic key");
+t.state.pending.clear();
+const fresh=t.requestKey("skill_library.save","persist",structuredClone(intent));
+if(fresh!==first)throw new Error("fresh instance cannot rederive retry key");
+const changed=t.deterministicIdempotencyKey("skill_library.save","persist",{...intent,files:[{path:"SKILL.md",content:"# Changed"}]});
+if(changed===first)throw new Error("changed intent reused retry key");
+"##,
+        ));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_fresh_instance_reconciles_committed_create_and_save_before_retry() {
+        run_node(&skill_library_node_harness(
+            r#"
+const t=globalThis.__skillTest;
+t.state.version=8;
+t.state.detail={artifact_id:"saved",name:"stable",latest_revision_id:"r-new"};
+if(!t.authoredMutationAlreadySatisfied("skill_library.save","saved","r-new"))throw new Error("committed save was not reconciled");
+if(t.authoredMutationAlreadySatisfied("skill_library.save","saved","r-other"))throw new Error("different save was incorrectly reconciled");
+let calls=0;
+globalThis.__host.callAction=async(_service,action,params)=>{if(action!=="skill_library.get"||params.artifact_id!=="created")throw new Error(action);calls++;return {item:{artifact_id:"created",name:"stable",latest_revision_id:"r-new",visibility:"shared"},library_version:8};};
+const found=await t.findCommittedCreate("created","stable","r-new","shared");
+if(found?.artifact_id!=="created"||calls!==1)throw new Error("committed create was not reconciled by exact identity");
+calls=0;
+const absent=await t.findCommittedCreate("created","stable","r-new","private");
+if(absent!==null||calls!==1)throw new Error("visibility mismatch falsely reconciled create");
+"#,
+        ));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_derive_view_model_orthogonal_truth_table_is_exhaustive() {
+        run_node(&skill_library_node_harness(
+            r#"
+const derive=globalThis.__skillTest.deriveViewModel,booleans=[false,true];let rows=0;
+for(const draft of booleans)for(const archived of booleans)for(const active of booleans)for(const mismatch of booleans)for(const shared of booleans){
+  const input={archived,active_revision_id:active?"r1":null,latest_revision_id:"r2",visibility:shared?"shared":"private",current_generation:7,published_library_version:mismatch?6:7};
+  const vm=derive(input,{draft});rows++;
+  const expected=draft?"Draft":archived?"Archived":active?(mismatch?"Publishing":"Active"):"Deactivated";
+  if(vm.lifecycle!==expected)throw new Error(`row ${rows}: expected ${expected}, got ${vm.lifecycle}`);
+  if(vm.latestRevision!=="r2"||vm.activeRevision!==(active?"r1":null)||vm.visibility.value!==input.visibility)throw new Error(`row ${rows}: orthogonal projection drifted`);
+  if(vm.publication.synchronized!==!mismatch)throw new Error(`row ${rows}: publication truth drifted`);
+}
+if(rows!==32)throw new Error(`expected exhaustive 32 rows, got ${rows}`);
+"#,
+        ));
     }
 
     /// FR-2a (issue #210, lab-41e7m.5): the consolidated availability gate is

@@ -61,6 +61,12 @@ const FILES: ParamSpec = ParamSpec {
     required: true,
     description: "Bounded logical UTF-8 Skill files; bodies are never returned by list/history",
 };
+const VISIBILITY: ParamSpec = ParamSpec {
+    name: "visibility",
+    ty: "string",
+    required: false,
+    description: "Creation scope: private (default for backward compatibility) or shared",
+};
 const HISTORY_PARAMS: &[ParamSpec] = &[
     ARTIFACT,
     ParamSpec {
@@ -83,7 +89,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         "List caller-visible stored Skill summaries",
         false,
         false,
-        "SkillLibraryPage",
+        "VersionedSkillLibraryPage",
         PAGE,
     ),
     spec(
@@ -91,7 +97,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         "Get one stored Skill summary without file bodies",
         false,
         false,
-        "SkillLibrarySummary",
+        "VersionedSkillLibrarySummary",
         &[ARTIFACT],
     ),
     spec(
@@ -99,7 +105,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         "Read one bounded file from an immutable stored revision",
         false,
         false,
-        "RevisionFile",
+        "VersionedRevisionFile",
         &[
             ARTIFACT,
             ParamSpec {
@@ -121,7 +127,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         "List immutable revision summaries in stable order",
         false,
         false,
-        "RevisionPage",
+        "VersionedRevisionPage",
         HISTORY_PARAMS,
     ),
     spec(
@@ -154,6 +160,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
                 description: "Skill name",
             },
             FILES,
+            VISIBILITY,
             VERSION,
             IDEM,
         ],

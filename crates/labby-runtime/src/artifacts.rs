@@ -27,7 +27,7 @@ pub use library::{
     LibraryActorId, LibraryAuditIntent, LibraryAuthorization, LibraryDurableAudit, LibraryGrant,
     LibraryIdempotency, LibraryMutation, LibraryMutationOutcome, LibraryMutationReceiptFacts,
     LibraryOwnership, LibraryReceipt, LibrarySnapshot, LibraryTenantId, LibraryTimestamp,
-    SkillLibraryRecord, SkillTransactionBoundary, SkillVisibility,
+    SkillLibraryFile, SkillLibraryRecord, SkillTransactionBoundary, SkillVisibility,
 };
 pub use lifecycle::{
     ArtifactChangeKind, ArtifactComponentChange, ArtifactRevisionDiff, ArtifactUpdatePlan,

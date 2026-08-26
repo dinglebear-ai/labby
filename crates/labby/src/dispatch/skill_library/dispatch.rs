@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use labby_runtime::artifacts::{
-    ArtifactError, ArtifactStore, LibraryIdempotency, LibraryMutation, LibraryMutationOutcome,
-    LibrarySnapshot, LibraryTenantId, LibraryTimestamp, SkillLibraryRecord,
-    SkillTransactionBoundary, SkillVisibility,
+    ArtifactError, ArtifactRevision, ArtifactStore, LibraryIdempotency, LibraryMutation,
+    LibraryMutationOutcome, LibrarySnapshot, LibraryTimestamp, SkillLibraryFile,
+    SkillLibraryRecord, SkillTransactionBoundary, SkillVisibility,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -39,7 +39,10 @@ use super::params::{
     ArtifactParams, PageParams, ReadRevisionParams, ValidateParams, page_limit, validate_cursor,
 };
 use super::types::{
-    CursorPage, MutationReceipt, RELIST_GUIDANCE, RevisionSummary, SkillLibrarySummary,
+    CreateVisibility, CursorPage, MutationReceipt, OwnerSummary, ProvenanceSummary,
+    RELIST_GUIDANCE, RevisionFileSummary, RevisionSummary, SkillLibrarySummary,
+    ValidationRejection, ValidationResponse, VersionedRevisionFile, VersionedRevisionPage,
+    VersionedSkillLibraryPage, VersionedSkillLibrarySummary,
 };
 
 /// Builds the exact post-mutation immutable generation without publishing it.
@@ -167,6 +170,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         visibility: SkillVisibility::Private,
                         archived: false,
                         active_revision_id: None,
+                        latest_revision_id: revision_id.clone(),
+                        latest_revision_files: library_files(&materialized.interchange.revision),
+                        provenance_provider: materialized.interchange.provenance.provider.clone(),
+                        materialized: true,
                         created_at: now.clone(),
                         updated_at: now.clone(),
                     },
@@ -456,6 +463,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         files: Vec<super::types::LogicalFileInput>,
         expected_library_version: u64,
         idempotency_key: String,
+        create_visibility: CreateVisibility,
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, SkillLibraryDispatchError> {
         super::params::validate_idempotency_key(&idempotency_key).map_err(|reason| {
@@ -546,9 +554,22 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             artifact_id: artifact_id.clone(),
                             name: candidate_artifact.interchange.descriptor.name.clone(),
                             ownership: ownership.clone(),
-                            visibility: SkillVisibility::Private,
+                            visibility: match create_visibility {
+                                CreateVisibility::Private => SkillVisibility::Private,
+                                CreateVisibility::Shared => SkillVisibility::Tenant,
+                            },
                             archived: false,
                             active_revision_id: None,
+                            latest_revision_id: revision_id.clone(),
+                            latest_revision_files: library_files(
+                                &candidate_artifact.interchange.revision,
+                            ),
+                            provenance_provider: candidate_artifact
+                                .interchange
+                                .provenance
+                                .provider
+                                .clone(),
+                            materialized: true,
                             created_at: now.clone(),
                             updated_at: now.clone(),
                         },
@@ -635,15 +656,19 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await?;
                 let store = Arc::clone(&self.store);
+                let published_library_version = published_version(&self.publication);
                 let page = self
                     .blocking
                     .run("skill_library_list", move || {
                         let snapshot = store.library_snapshot()?;
-                        list_page_visible(&snapshot, &decision, params.cursor, params.limit)
-                            .map_err(|reason| ArtifactError::InvalidField {
-                                field: "pagination",
-                                reason,
-                            })
+                        list_page_visible(
+                            &store,
+                            &snapshot,
+                            &decision,
+                            params.cursor,
+                            params.limit,
+                            published_library_version,
+                        )
                     })
                     .await
                     .map_err(map_blocking)?;
@@ -661,7 +686,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             .library_snapshot()?
                             .records
                             .get(&artifact_id)
-                            .filter(|record| !record.archived)
                             .cloned()
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
@@ -679,6 +703,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await?;
                 let store = Arc::clone(&self.store);
+                let published_library_version = published_version(&self.publication);
                 let item = self
                     .blocking
                     .run("skill_library_get", move || {
@@ -686,7 +711,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         let visible = snapshot
                             .records
                             .get(&params.artifact_id)
-                            .filter(|record| !record.archived)
+                            .filter(|record| {
+                                !record.archived || decision.permits_personal(&record.ownership)
+                            })
                             .filter(|record| {
                                 decision.permits_record(
                                     &record.ownership,
@@ -695,7 +722,15 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                                 )
                             })
                             .ok_or(ArtifactError::NotFound("library_record"))?;
-                        Ok(summary(visible))
+                        Ok(VersionedSkillLibrarySummary {
+                            library_version: snapshot.version,
+                            item: summary(
+                                visible,
+                                &decision,
+                                snapshot.version,
+                                published_library_version,
+                            ),
+                        })
                     })
                     .await
                     .map_err(map_blocking)?;
@@ -713,7 +748,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             .library_snapshot()?
                             .records
                             .get(&target_artifact)
-                            .filter(|record| !record.archived)
                             .cloned()
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
@@ -734,14 +768,16 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 let artifact_id = params.artifact_id.clone();
                 let revision_id = params.revision_id.clone();
                 let path = params.path.clone();
-                let bytes = self
+                let (library_version, bytes) = self
                     .blocking
                     .run("skill_library_read", move || {
                         let snapshot = store.library_snapshot()?;
                         let current = snapshot
                             .records
                             .get(&artifact_id)
-                            .filter(|record| !record.archived)
+                            .filter(|record| {
+                                !record.archived || decision.permits_personal(&record.ownership)
+                            })
                             .filter(|record| {
                                 decision.permits_record(
                                     &record.ownership,
@@ -751,11 +787,14 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             })
                             .ok_or(ArtifactError::NotFound("library_record"))?;
                         if current.visibility == SkillVisibility::Tenant
+                            && !decision.permits_personal(&current.ownership)
                             && current.active_revision_id.as_deref() != Some(&revision_id)
                         {
                             return Err(ArtifactError::NotFound("library_record"));
                         }
-                        store.read_skill_revision_file(&artifact_id, &revision_id, &path)
+                        let bytes =
+                            store.read_skill_revision_file(&artifact_id, &revision_id, &path)?;
+                        Ok((snapshot.version, bytes))
                     })
                     .await
                     .map_err(map_blocking)?;
@@ -763,10 +802,14 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     field: "content",
                     reason: "non_utf8",
                 })?;
-                Ok(
-                    json!({"artifact_id": params.artifact_id, "revision_id": params.revision_id,
-                    "path": params.path, "text": text}),
-                )
+                serde_json::to_value(VersionedRevisionFile {
+                    library_version,
+                    artifact_id: params.artifact_id,
+                    revision_id: params.revision_id,
+                    path: params.path,
+                    text,
+                })
+                .map_err(|_| SkillLibraryDispatchError::Serialization)
             }
             "skill_library.history" => {
                 #[derive(serde::Deserialize)]
@@ -787,7 +830,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             .library_snapshot()?
                             .records
                             .get(&target_artifact)
-                            .filter(|record| !record.archived)
                             .cloned()
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
@@ -812,7 +854,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         let record = snapshot
                             .records
                             .get(&params.artifact_id)
-                            .filter(|record| !record.archived)
                             .filter(|record| {
                                 decision.permits_record(
                                     &record.ownership,
@@ -821,7 +862,12 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                                 )
                             })
                             .ok_or(ArtifactError::NotFound("library_record"))?;
-                        history_page(&store, record, params.cursor, params.limit)
+                        let page = history_page(&store, record, params.cursor, params.limit)?;
+                        Ok(VersionedRevisionPage {
+                            library_version: snapshot.version,
+                            items: page.items,
+                            next_cursor: page.next_cursor,
+                        })
                     })
                     .await
                     .map_err(map_blocking)?;
@@ -858,9 +904,23 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             Default::default(),
                         )
                     })
-                    .await
-                    .map_err(map_blocking)?;
-                Ok(json!({"valid": true, "revision_id": candidate.interchange.revision.id}))
+                    .await;
+                let response = match candidate {
+                    Ok(candidate) => ValidationResponse {
+                        valid: true,
+                        artifact_id: Some(candidate.interchange.descriptor.id),
+                        revision_id: Some(candidate.interchange.revision.id),
+                        rejections: Vec::new(),
+                    },
+                    Err(BlockingError::Operation(error)) => ValidationResponse {
+                        valid: false,
+                        artifact_id: None,
+                        revision_id: None,
+                        rejections: vec![validation_rejection(error)?],
+                    },
+                    Err(error) => return Err(map_blocking(error)),
+                };
+                serde_json::to_value(response).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
             "skill_library.refresh" => {
                 #[derive(serde::Deserialize)]
@@ -918,6 +978,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     params.files,
                     params.expected_library_version,
                     params.idempotency_key,
+                    params.visibility,
                     correlation_id,
                 )
                 .await
@@ -948,6 +1009,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     params.files,
                     params.expected_library_version,
                     params.idempotency_key,
+                    CreateVisibility::Private,
                     correlation_id,
                 )
                 .await
@@ -993,6 +1055,19 @@ pub(super) fn validate_owned_acquisition(
 
 fn parse<T: DeserializeOwned>(value: Value) -> Result<T, SkillLibraryDispatchError> {
     serde_json::from_value(value).map_err(|_| SkillLibraryDispatchError::InvalidParams)
+}
+
+fn library_files(revision: &ArtifactRevision) -> Vec<SkillLibraryFile> {
+    revision
+        .components
+        .iter()
+        .map(|component| SkillLibraryFile {
+            path: component.path.clone(),
+            digest: component.digest.clone(),
+            size: component.size,
+            media_type: component.media_type.clone(),
+        })
+        .collect()
 }
 
 fn map_blocking(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchError {
@@ -1044,12 +1119,89 @@ fn transaction_fault(
         .map_err(|_| ArtifactError::Conflict("injected_transaction_fault"))
 }
 
-fn summary(record: &SkillLibraryRecord) -> SkillLibrarySummary {
+fn summary(
+    record: &SkillLibraryRecord,
+    decision: &super::auth::SkillLibraryAuthorizationDecision,
+    current_generation: u64,
+    published_library_version: u64,
+) -> SkillLibrarySummary {
+    let personal = decision.permits_personal(&record.ownership);
+    let materialized = record.materialized;
+    let active = record.active_revision_id.is_some();
     SkillLibrarySummary {
         artifact_id: record.artifact_id.clone(),
         name: record.name.clone(),
         archived: record.archived,
         active_revision_id: record.active_revision_id.clone(),
+        latest_revision_id: record.latest_revision_id.clone(),
+        visibility: match record.visibility {
+            SkillVisibility::Private => "private",
+            SkillVisibility::Tenant => "shared",
+        },
+        access_label: if personal { "personal" } else { "shared" },
+        can_mutate: personal,
+        owner: OwnerSummary {
+            relationship: if decision.owns(&record.ownership) {
+                "self"
+            } else {
+                "other"
+            },
+        },
+        provenance: ProvenanceSummary {
+            source: provenance_source(record.provenance_provider.as_deref()),
+        },
+        materialized,
+        canonical_uri: active.then(|| format!("skill://labby/{}/SKILL.md", record.name)),
+        current_generation,
+        published_library_version,
+        allowed_actions: item_allowed_actions(personal, active),
+        latest_revision_files: record
+            .latest_revision_files
+            .iter()
+            .map(|component| RevisionFileSummary {
+                path: component.path.clone(),
+                digest: component.digest.clone(),
+                size: component.size,
+                media_type: component.media_type.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn provenance_source(provider: Option<&str>) -> &'static str {
+    match provider {
+        None => "local",
+        Some("depot") => "depot",
+        Some("repository" | "git" | "github") => "repository",
+        Some(_) => "imported",
+    }
+}
+
+fn item_allowed_actions(personal: bool, active: bool) -> Vec<&'static str> {
+    let mut actions = vec![
+        "skill_library.get",
+        "skill_library.read",
+        "skill_library.history",
+    ];
+    if personal {
+        actions.extend(["skill_library.save", "skill_library.archive"]);
+        actions.push(if active {
+            "skill_library.deactivate"
+        } else {
+            "skill_library.activate"
+        });
+        actions.push("skill_library.rollback");
+    }
+    actions
+}
+
+fn published_version<G>(publication: &ActivationCoordinator<G>) -> u64 {
+    match publication.health() {
+        PublicationHealth::Ready { library_version } => library_version,
+        PublicationHealth::Degraded {
+            published_library_version,
+            ..
+        } => published_library_version,
     }
 }
 
@@ -1059,22 +1211,30 @@ fn read_target(record: &SkillLibraryRecord) -> Result<SkillLibraryTarget<'_>, Ar
         SkillVisibility::Tenant if record.active_revision_id.is_some() => {
             Ok(SkillLibraryTarget::SharedActive)
         }
-        SkillVisibility::Tenant => Err(ArtifactError::NotFound("library_record")),
+        SkillVisibility::Tenant => Ok(SkillLibraryTarget::Personal(&record.ownership)),
     }
 }
 
 fn list_page_visible(
+    _store: &ArtifactStore,
     snapshot: &LibrarySnapshot,
     decision: &super::auth::SkillLibraryAuthorizationDecision,
     cursor: Option<String>,
     limit: Option<usize>,
-) -> Result<CursorPage<SkillLibrarySummary>, &'static str> {
-    let cursor = validate_cursor(cursor)?;
-    let limit = page_limit(limit)?;
+    published_library_version: u64,
+) -> Result<VersionedSkillLibraryPage, ArtifactError> {
+    let cursor = validate_cursor(cursor).map_err(|reason| ArtifactError::InvalidField {
+        field: "cursor",
+        reason,
+    })?;
+    let limit = page_limit(limit).map_err(|reason| ArtifactError::InvalidField {
+        field: "limit",
+        reason,
+    })?;
     let mut records = snapshot
         .records
         .values()
-        .filter(|record| !record.archived)
+        .filter(|record| !record.archived || decision.permits_personal(&record.ownership))
         .filter(|record| {
             decision.permits_record(
                 &record.ownership,
@@ -1089,50 +1249,75 @@ fn list_page_visible(
             .as_ref()
             .is_none_or(|cursor| record.artifact_id > *cursor)
     });
-    let items = matching
-        .by_ref()
-        .take(limit)
-        .map(summary)
+    let page_records = matching.by_ref().take(limit).collect::<Vec<_>>();
+    let items = page_records
+        .into_iter()
+        .map(|record| {
+            summary(
+                record,
+                decision,
+                snapshot.version,
+                published_library_version,
+            )
+        })
         .collect::<Vec<_>>();
     let next_cursor = matching
         .next()
         .and_then(|_| items.last().map(|item| item.artifact_id.clone()));
-    Ok(CursorPage { items, next_cursor })
+    Ok(VersionedSkillLibraryPage {
+        library_version: snapshot.version,
+        published_library_version,
+        can_create: true,
+        create_visibilities: vec!["private", "shared"],
+        allowed_actions: vec![
+            "skill_library.validate",
+            "skill_library.create",
+            "skill_library.import",
+        ],
+        items,
+        next_cursor,
+    })
 }
 
-/// Stable cursor pagination over one already-authorized tenant snapshot.
-pub(crate) fn list_page(
-    snapshot: &LibrarySnapshot,
-    tenant: &LibraryTenantId,
-    cursor: Option<String>,
-    limit: Option<usize>,
-) -> Result<CursorPage<SkillLibrarySummary>, &'static str> {
-    let cursor = validate_cursor(cursor)?;
-    let limit = page_limit(limit)?;
-    let mut records = snapshot.list_for_tenant(tenant);
-    records.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
-    let mut matching = records.into_iter().filter(|record| {
-        cursor
-            .as_ref()
-            .is_none_or(|cursor| record.artifact_id > *cursor)
-    });
-    let items = matching
-        .by_ref()
-        .take(limit)
-        .map(summary)
-        .collect::<Vec<_>>();
-    let next_cursor = matching
-        .next()
-        .and_then(|_| items.last().map(|item| item.artifact_id.clone()));
-    Ok(CursorPage { items, next_cursor })
-}
-
-pub(crate) fn get_summary(
-    snapshot: &LibrarySnapshot,
-    tenant: &LibraryTenantId,
-    artifact_id: &str,
-) -> Option<SkillLibrarySummary> {
-    snapshot.get_for_tenant(tenant, artifact_id).map(summary)
+fn validation_rejection(error: ArtifactError) -> Result<ValidationRejection, ArtifactError> {
+    Ok(match error {
+        ArtifactError::InvalidField { field, reason } => ValidationRejection {
+            field,
+            code: reason,
+            path: None,
+        },
+        ArtifactError::LogicalSkillFile { path, reason } => ValidationRejection {
+            field: "files",
+            code: reason,
+            path: Some(path),
+        },
+        ArtifactError::UnsafePath(code) => ValidationRejection {
+            field: "files",
+            code,
+            path: None,
+        },
+        ArtifactError::LimitExceeded { what, .. } => ValidationRejection {
+            field: what,
+            code: "limit_exceeded",
+            path: None,
+        },
+        ArtifactError::SkillVerification => ValidationRejection {
+            field: "files",
+            code: "skill_verification",
+            path: None,
+        },
+        ArtifactError::UnsupportedSchema => ValidationRejection {
+            field: "skill",
+            code: "unsupported_schema",
+            path: None,
+        },
+        ArtifactError::Conflict(code) => ValidationRejection {
+            field: "skill",
+            code,
+            path: None,
+        },
+        other => return Err(other),
+    })
 }
 
 /// Revision history is metadata-only; bodies remain exclusive to `skill_library.read`.
@@ -1731,6 +1916,152 @@ mod tests {
             .library_snapshot()
             .unwrap();
         assert_eq!(after_replay.version, 2);
+        let record = after_replay
+            .records
+            .values()
+            .find(|record| record.name == "lost-response")
+            .unwrap();
+        let artifact_id = record.artifact_id.clone();
+        let revision_id = store
+            .get(&artifact_id)
+            .unwrap()
+            .revision_ids
+            .last()
+            .unwrap()
+            .clone();
+        let list = service
+            .dispatch(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                "skill_library.list",
+                json!({}),
+                &SkillLibraryCorrelationId::parse("versioned-list").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list["library_version"], 2);
+        let summary = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["artifact_id"] == artifact_id)
+            .unwrap();
+        assert_eq!(summary["latest_revision_id"], revision_id);
+        assert_eq!(summary["visibility"], "private");
+        assert_eq!(summary["access_label"], "personal");
+        assert_eq!(summary["can_mutate"], true);
+        assert_eq!(summary["owner"]["relationship"], "self");
+        assert_eq!(summary["provenance"]["source"], "local");
+        assert_eq!(summary["materialized"], true);
+        assert_eq!(summary["canonical_uri"], Value::Null);
+        assert_eq!(summary["current_generation"], 2);
+        assert_eq!(summary["published_library_version"], 2);
+        assert_eq!(summary["latest_revision_files"][0]["path"], "SKILL.md");
+        assert!(summary["latest_revision_files"][0].get("content").is_none());
+        assert_eq!(list["can_create"], true);
+        assert_eq!(list["create_visibilities"], json!(["private", "shared"]));
+        assert_eq!(list["published_library_version"], 2);
+        assert!(
+            list["allowed_actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action == "skill_library.create")
+        );
+        assert!(
+            summary["allowed_actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action == "skill_library.activate")
+        );
+        assert!(summary.get("ownership").is_none());
+
+        let invalid = service
+            .dispatch(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                "skill_library.validate",
+                json!({
+                    "name": "bad",
+                    "files": [{"path":"../secret", "content":"nope"}]
+                }),
+                &SkillLibraryCorrelationId::parse("structured-validation").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid["valid"], false);
+        assert_eq!(invalid["revision_id"], Value::Null);
+        assert_eq!(invalid["rejections"][0]["field"], "files");
+        assert!(invalid["rejections"][0].get("code").is_some());
+
+        for (action, params) in [
+            ("skill_library.get", json!({"artifact_id": artifact_id})),
+            ("skill_library.history", json!({"artifact_id": artifact_id})),
+            (
+                "skill_library.read",
+                json!({
+                    "artifact_id": artifact_id,
+                    "revision_id": revision_id,
+                    "path": "SKILL.md"
+                }),
+            ),
+        ] {
+            let response = service
+                .dispatch(
+                    &runtime,
+                    caller(),
+                    "bootstrap-default",
+                    action,
+                    params,
+                    &SkillLibraryCorrelationId::parse(format!("versioned-{action}")).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response["library_version"], 2, "{action}");
+        }
+        service
+            .dispatch(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                "skill_library.archive",
+                json!({
+                    "artifact_id": artifact_id,
+                    "expected_library_version": 2,
+                    "idempotency_key": "archive-owner-read-regression"
+                }),
+                &SkillLibraryCorrelationId::parse("archive-owner-read").unwrap(),
+            )
+            .await
+            .unwrap();
+        for (action, params) in [
+            ("skill_library.get", json!({"artifact_id": artifact_id})),
+            ("skill_library.history", json!({"artifact_id": artifact_id})),
+            (
+                "skill_library.read",
+                json!({
+                    "artifact_id": artifact_id,
+                    "revision_id": revision_id,
+                    "path": "SKILL.md"
+                }),
+            ),
+        ] {
+            let response = service
+                .dispatch(
+                    &runtime,
+                    caller(),
+                    "bootstrap-default",
+                    action,
+                    params,
+                    &SkillLibraryCorrelationId::parse(format!("archived-{action}")).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response["library_version"], 3, "{action}");
+        }
         let durable = after_replay
             .receipts
             .get(&first_receipt.scope_digest)

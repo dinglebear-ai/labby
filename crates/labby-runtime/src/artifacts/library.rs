@@ -261,6 +261,15 @@ pub enum SkillVisibility {
     Tenant,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillLibraryFile {
+    pub path: String,
+    pub digest: String,
+    pub size: u64,
+    pub media_type: Option<String>,
+}
+
 /// One Labby-local Skill record. Revision bytes remain owned by [`ArtifactStore`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -271,8 +280,113 @@ pub struct SkillLibraryRecord {
     pub visibility: SkillVisibility,
     pub archived: bool,
     pub active_revision_id: Option<String>,
+    #[serde(default)]
+    pub latest_revision_id: String,
+    #[serde(default)]
+    pub latest_revision_files: Vec<SkillLibraryFile>,
+    #[serde(default)]
+    pub provenance_provider: Option<String>,
+    #[serde(default)]
+    pub materialized: bool,
     pub created_at: LibraryTimestamp,
     pub updated_at: LibraryTimestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacySkillLibraryRecord {
+    artifact_id: String,
+    name: String,
+    ownership: LibraryOwnership,
+    visibility: SkillVisibility,
+    archived: bool,
+    active_revision_id: Option<String>,
+    created_at: LibraryTimestamp,
+    updated_at: LibraryTimestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyLibrarySnapshot {
+    schema_version: u8,
+    version: u64,
+    active_generation_digest: String,
+    records: BTreeMap<String, LegacySkillLibraryRecord>,
+    active_names: BTreeMap<String, String>,
+    receipts: BTreeMap<String, LibraryReceipt>,
+    audit_intents: Vec<LibraryAuditIntent>,
+}
+
+impl LegacyLibrarySnapshot {
+    fn compute_digest(&self) -> Result<String, ArtifactError> {
+        #[derive(Serialize)]
+        struct LegacyGeneration<'a> {
+            schema_version: u8,
+            version: u64,
+            records: &'a BTreeMap<String, LegacySkillLibraryRecord>,
+            active_names: &'a BTreeMap<String, String>,
+            receipts: &'a BTreeMap<String, LibraryReceipt>,
+            audit_intents: &'a [LibraryAuditIntent],
+        }
+        let receipts = self
+            .receipts
+            .iter()
+            .map(|(key, receipt)| {
+                let mut receipt = receipt.clone();
+                receipt.response_facts = None;
+                (key.clone(), receipt)
+            })
+            .collect::<BTreeMap<_, _>>();
+        canonical_json::digest(&LegacyGeneration {
+            schema_version: self.schema_version,
+            version: self.version,
+            records: &self.records,
+            active_names: &self.active_names,
+            receipts: &receipts,
+            audit_intents: &self.audit_intents,
+        })
+    }
+
+    fn verify_digest(&self) -> Result<(), ArtifactError> {
+        if self.compute_digest()? != self.active_generation_digest {
+            return Err(ArtifactError::LibraryCorrupt("generation_digest_mismatch"));
+        }
+        Ok(())
+    }
+
+    fn into_current(self) -> LibrarySnapshot {
+        LibrarySnapshot {
+            schema_version: self.schema_version,
+            version: self.version,
+            active_generation_digest: self.active_generation_digest,
+            records: self
+                .records
+                .into_iter()
+                .map(|(id, record)| {
+                    (
+                        id,
+                        SkillLibraryRecord {
+                            artifact_id: record.artifact_id,
+                            name: record.name,
+                            ownership: record.ownership,
+                            visibility: record.visibility,
+                            archived: record.archived,
+                            active_revision_id: record.active_revision_id,
+                            latest_revision_id: String::new(),
+                            latest_revision_files: Vec::new(),
+                            provenance_provider: None,
+                            materialized: false,
+                            created_at: record.created_at,
+                            updated_at: record.updated_at,
+                        },
+                    )
+                })
+                .collect(),
+            active_names: self.active_names,
+            receipts: self.receipts,
+            audit_intents: self.audit_intents,
+        }
+    }
 }
 
 impl SkillLibraryRecord {
@@ -290,6 +404,9 @@ impl SkillLibraryRecord {
         }
         if let Some(revision) = &self.active_revision_id {
             validate_reference_id(revision, "active_revision_id")?;
+        }
+        if !self.latest_revision_id.is_empty() {
+            validate_reference_id(&self.latest_revision_id, "latest_revision_id")?;
         }
         Ok(())
     }
@@ -785,7 +902,44 @@ impl ArtifactStore {
     pub fn library_snapshot(&self) -> Result<LibrarySnapshot, ArtifactError> {
         let _lock = self.library_lock()?;
         self.recover_pending_skill_transaction_locked()?;
-        self.read_library_snapshot()
+        let mut snapshot = match self.read_library_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(ArtifactError::LibraryCorrupt("generation_digest_mismatch")) => {
+                let path = self.root.join("library").join("state.json");
+                let legacy: LegacyLibrarySnapshot = read_json(&path, MAX_LIBRARY_STATE_BYTES)
+                    .map_err(|_| ArtifactError::LibraryCorrupt("invalid_legacy_snapshot"))?;
+                legacy.verify_digest()?;
+                legacy.into_current()
+            }
+            Err(error) => return Err(error),
+        };
+        let mut changed = false;
+        for record in snapshot.records.values_mut() {
+            if record.latest_revision_id.is_empty() || !record.materialized {
+                let artifact = self.get(&record.artifact_id)?;
+                let revision = self.revision(&record.artifact_id, &artifact.current_revision_id)?;
+                record.latest_revision_id = artifact.current_revision_id;
+                record.latest_revision_files = revision
+                    .components
+                    .into_iter()
+                    .map(|component| SkillLibraryFile {
+                        path: component.path,
+                        digest: component.digest,
+                        size: component.size,
+                        media_type: component.media_type,
+                    })
+                    .collect();
+                record.provenance_provider = artifact.provenance.provider;
+                record.materialized = true;
+                changed = true;
+            }
+        }
+        if changed {
+            snapshot.active_generation_digest = snapshot.compute_digest()?;
+            snapshot.validate(self)?;
+            self.persist_library_snapshot(&snapshot)?;
+        }
+        Ok(snapshot)
     }
 
     /// Atomically bind newly authored/imported bytes to one Library mutation.
@@ -897,6 +1051,28 @@ impl ArtifactStore {
         self.persist_pending_skill_transaction(&pending, &mut fault)?;
 
         let mut state = current;
+        if matches!(mutation, LibraryMutation::Save { .. }) {
+            let library_record = state
+                .records
+                .get_mut(&artifact_id)
+                .ok_or(ArtifactError::NotFound("library_record"))?;
+            library_record.latest_revision_id = materialized.interchange.revision.id.clone();
+            library_record.latest_revision_files = materialized
+                .interchange
+                .revision
+                .components
+                .iter()
+                .map(|component| SkillLibraryFile {
+                    path: component.path.clone(),
+                    digest: component.digest.clone(),
+                    size: component.size,
+                    media_type: component.media_type.clone(),
+                })
+                .collect();
+            library_record.provenance_provider =
+                materialized.interchange.provenance.provider.clone();
+            library_record.materialized = true;
+        }
         apply_mutation(
             &mut state,
             authorization,
@@ -1749,6 +1925,10 @@ mod tests {
                         visibility: SkillVisibility::Private,
                         archived: false,
                         active_revision_id: None,
+                        latest_revision_id: candidate.interchange.revision.id.clone(),
+                        latest_revision_files: Vec::new(),
+                        provenance_provider: None,
+                        materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
                         updated_at: ts("2026-08-26T00:00:00Z"),
                     },
@@ -1813,6 +1993,10 @@ mod tests {
                     visibility: SkillVisibility::Private,
                     archived: false,
                     active_revision_id: None,
+                    latest_revision_id: revision_id.clone(),
+                    latest_revision_files: Vec::new(),
+                    provenance_provider: None,
+                    materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
                     updated_at: ts("2026-08-26T00:00:00Z"),
                 },
@@ -1877,6 +2061,10 @@ mod tests {
                         visibility: SkillVisibility::Private,
                         archived: false,
                         active_revision_id: None,
+                        latest_revision_id: revision_id.clone(),
+                        latest_revision_files: Vec::new(),
+                        provenance_provider: None,
+                        materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
                         updated_at: ts("2026-08-26T00:00:00Z"),
                     },
@@ -1932,6 +2120,10 @@ mod tests {
                         visibility: SkillVisibility::Private,
                         archived: false,
                         active_revision_id: None,
+                        latest_revision_id: candidate.interchange.revision.id.clone(),
+                        latest_revision_files: Vec::new(),
+                        provenance_provider: None,
+                        materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
                         updated_at: ts("2026-08-26T00:00:00Z"),
                     },
@@ -2006,6 +2198,10 @@ mod tests {
                 visibility: SkillVisibility::Private,
                 archived: false,
                 active_revision_id: None,
+                latest_revision_id: first.interchange.revision.id.clone(),
+                latest_revision_files: Vec::new(),
+                provenance_provider: None,
+                materialized: false,
                 created_at: ts("2026-08-26T00:00:00Z"),
                 updated_at: ts("2026-08-26T00:00:00Z"),
             },
@@ -2105,6 +2301,10 @@ mod tests {
                         visibility: SkillVisibility::Private,
                         archived: false,
                         active_revision_id: None,
+                        latest_revision_id: revision_id.clone(),
+                        latest_revision_files: Vec::new(),
+                        provenance_provider: None,
+                        materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
                         updated_at: ts("2026-08-26T00:00:00Z"),
                     },
@@ -2952,5 +3152,111 @@ mod tests {
             .unwrap();
         assert_eq!(replay.committed_version, MAX_RECEIPTS as u64 + 2);
         assert_eq!(replay.idempotency_key, first_key);
+    }
+
+    #[test]
+    fn legacy_index_digest_is_verified_before_one_time_hydration() {
+        let root = tempdir().unwrap();
+        let store = ArtifactStore::new(root.path()).unwrap();
+        let owner = ownership("org-a", "alice");
+        let candidate = materialized("legacy-index", "body");
+        let artifact_id = candidate.interchange.descriptor.id.clone();
+        store
+            .mutate_library_with_materialized_outcome(
+                &owner_auth(&owner),
+                &owner,
+                0,
+                idem("legacy-create"),
+                LibraryMutation::Create {
+                    record: SkillLibraryRecord {
+                        artifact_id: artifact_id.clone(),
+                        name: "legacy-index".into(),
+                        ownership: owner.clone(),
+                        visibility: SkillVisibility::Private,
+                        archived: false,
+                        active_revision_id: None,
+                        latest_revision_id: candidate.interchange.revision.id.clone(),
+                        latest_revision_files: Vec::new(),
+                        provenance_provider: None,
+                        materialized: false,
+                        created_at: ts("2026-08-26T00:00:00Z"),
+                        updated_at: ts("2026-08-26T00:00:00Z"),
+                    },
+                },
+                ts("2026-08-26T00:00:00Z"),
+                candidate,
+                None,
+                |_| Ok(()),
+            )
+            .unwrap();
+        let current = store.read_library_snapshot_unvalidated().unwrap();
+        let mut legacy = LegacyLibrarySnapshot {
+            schema_version: current.schema_version,
+            version: current.version,
+            active_generation_digest: String::new(),
+            records: current
+                .records
+                .into_iter()
+                .map(|(id, record)| {
+                    (
+                        id,
+                        LegacySkillLibraryRecord {
+                            artifact_id: record.artifact_id,
+                            name: record.name,
+                            ownership: record.ownership,
+                            visibility: record.visibility,
+                            archived: record.archived,
+                            active_revision_id: record.active_revision_id,
+                            created_at: record.created_at,
+                            updated_at: record.updated_at,
+                        },
+                    )
+                })
+                .collect(),
+            active_names: current.active_names,
+            receipts: current.receipts,
+            audit_intents: current.audit_intents,
+        };
+        legacy.active_generation_digest = legacy.compute_digest().unwrap();
+        let authentic = serde_json::to_value(&legacy).unwrap();
+        let path = root.path().join("library/state.json");
+        let mut tampered_snapshots = Vec::new();
+        for (field, value) in [
+            ("ownership", serde_json::json!(null)),
+            ("visibility", serde_json::json!("tenant")),
+            ("activeRevisionId", serde_json::json!("sha256:forged")),
+        ] {
+            let mut tampered = authentic.clone();
+            let record = tampered["records"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap();
+            record[field] = value;
+            tampered_snapshots.push(tampered);
+        }
+        for (field, value) in [
+            ("version", serde_json::json!(99)),
+            ("receipts", serde_json::json!({})),
+            ("activeNames", serde_json::json!({"forged": "artifact"})),
+        ] {
+            let mut tampered = authentic.clone();
+            tampered[field] = value;
+            tampered_snapshots.push(tampered);
+        }
+        for tampered in tampered_snapshots {
+            std::fs::write(&path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+            assert!(matches!(
+                store.library_snapshot(),
+                Err(ArtifactError::LibraryCorrupt(_))
+            ));
+        }
+        std::fs::write(&path, serde_json::to_vec(&authentic).unwrap()).unwrap();
+        let migrated = store.library_snapshot().unwrap();
+        let record = &migrated.records[&artifact_id];
+        assert!(record.materialized);
+        assert!(!record.latest_revision_id.is_empty());
+        assert_eq!(record.latest_revision_files[0].path, "SKILL.md");
     }
 }

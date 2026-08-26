@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use super::types::LogicalFileInput;
+use super::types::{CreateVisibility, LogicalFileInput};
 
 pub(crate) const DEFAULT_PAGE_LIMIT: usize = 50;
 pub(crate) const MAX_PAGE_LIMIT: usize = 100;
@@ -44,6 +44,9 @@ pub(crate) struct CreateParams {
     pub(crate) files: Vec<LogicalFileInput>,
     pub(crate) expected_library_version: u64,
     pub(crate) idempotency_key: String,
+    /// Defaults to private for compatibility with pre-library App clients.
+    #[serde(default)]
+    pub(crate) visibility: CreateVisibility,
 }
 
 #[derive(Debug, Deserialize)]
