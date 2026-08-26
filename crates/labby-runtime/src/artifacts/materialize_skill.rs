@@ -9,9 +9,12 @@ use crate::skills::{
     validate_skill_entry_detailed,
 };
 
+use super::local_io::SnapshotFile;
+use super::model::ArtifactRecord;
 use super::model::{ArtifactInterchange, ArtifactProvenance};
 use super::provider::ArtifactAcquisition;
 use super::skill::interchange_from_validated_skill;
+use super::store::ArtifactStore;
 use super::validation::{self, MAX_SKILL_PACKAGE_BYTES};
 use super::{ArtifactError, invalid};
 
@@ -38,6 +41,104 @@ pub struct MaterializedSkill {
     pub skill: ValidatedSkill,
     pub resources: BTreeMap<String, Vec<u8>>,
     pub interchange: ArtifactInterchange,
+}
+
+impl ArtifactStore {
+    /// Read one manifest-bound file from an exact immutable Skill revision.
+    pub fn read_skill_revision_file(
+        &self,
+        artifact_id: &str,
+        revision_id: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, ArtifactError> {
+        validation::validate_relative_path(path)?;
+        let revision = self.revision(artifact_id, revision_id)?;
+        let component = revision
+            .components
+            .iter()
+            .find(|component| component.path == path)
+            .ok_or(ArtifactError::NotFound("revision_file"))?;
+        let artifact_dir = self.artifact_dir(artifact_id)?;
+        let files = super::local_io::load_revision_files(
+            &super::local_io::revision_dir(&artifact_dir, revision_id).join("files"),
+            std::slice::from_ref(component),
+        )?;
+        Ok(files
+            .into_iter()
+            .next()
+            .expect("one requested component")
+            .bytes)
+    }
+
+    /// Persist the exact retained bytes as a new immutable Skill revision.
+    ///
+    /// `expected_revision_id=None` creates a new Artifact; `Some` is a head CAS for save.
+    pub fn persist_materialized_skill(
+        &self,
+        mut materialized: MaterializedSkill,
+        expected_revision_id: Option<&str>,
+    ) -> Result<ArtifactRecord, ArtifactError> {
+        let artifact_id = materialized.interchange.descriptor.id.clone();
+        let _lock = self.lock(&artifact_id)?;
+        let existing = self.read_record_optional(&artifact_id)?;
+        match (existing.as_ref(), expected_revision_id) {
+            (None, None) => {}
+            (Some(record), Some(expected)) if record.current_revision_id == expected => {}
+            (None, Some(_)) => return Err(ArtifactError::NotFound("record")),
+            (Some(_), None) => return Err(ArtifactError::Conflict("artifact_exists")),
+            (Some(_), Some(_)) => return Err(ArtifactError::Conflict("revision_changed")),
+        }
+        if let Some(record) = &existing {
+            materialized.interchange.revision.parent_revision_id =
+                Some(record.current_revision_id.clone());
+        }
+        let root = format!(
+            "skill://labby/{}/",
+            materialized.interchange.descriptor.name
+        );
+        let files = materialized
+            .resources
+            .into_iter()
+            .map(|(uri, bytes)| {
+                let path = uri
+                    .strip_prefix(&root)
+                    .ok_or_else(|| logical_error(&uri, "uri_root"))?;
+                Ok(SnapshotFile {
+                    path: path.to_owned(),
+                    bytes,
+                    unix_mode: None,
+                })
+            })
+            .collect::<Result<Vec<_>, ArtifactError>>()?;
+        let revision = materialized.interchange.revision;
+        self.persist_revision(&artifact_id, &revision, &files)?;
+        self.materialize_workspace(&artifact_id, &files)?;
+        let mut revision_ids = existing
+            .as_ref()
+            .map_or_else(Vec::new, |record| record.revision_ids.clone());
+        if !revision_ids.contains(&revision.id) {
+            revision_ids.push(revision.id.clone());
+        }
+        let record = ArtifactRecord {
+            schema_version: 1,
+            descriptor: materialized.interchange.descriptor,
+            current_revision_id: revision.id,
+            revision_ids,
+            provenance: materialized.interchange.provenance,
+            license: materialized.interchange.license,
+            lineage: existing.as_ref().map_or_else(
+                || materialized.interchange.lineage,
+                |record| record.lineage.clone(),
+            ),
+            publication: existing.as_ref().map_or_else(
+                || materialized.interchange.publication,
+                |record| record.publication.clone(),
+            ),
+        };
+        record.validate()?;
+        self.persist_record(&record)?;
+        Ok(record)
+    }
 }
 
 /// Convert logical authored/imported files through the existing Skills validator.
@@ -294,6 +395,36 @@ mod tests {
             result.resources["skill://labby/demo/references/REF.md"].as_ptr(),
             pointer
         );
+    }
+
+    #[test]
+    fn exact_materialized_bytes_persist_with_head_cas() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(root.path()).unwrap();
+        let first =
+            materialize_logical_skill("demo", files(), ArtifactProvenance::default()).unwrap();
+        let record = store.persist_materialized_skill(first, None).unwrap();
+        let first_revision = record.current_revision_id.clone();
+        assert!(
+            store
+                .revision(&record.descriptor.id, &first_revision)
+                .is_ok()
+        );
+
+        let mut changed = files();
+        changed[1].content = "changed reference\n".to_owned();
+        let second =
+            materialize_logical_skill("demo", changed, ArtifactProvenance::default()).unwrap();
+        let record = store
+            .persist_materialized_skill(second, Some(&first_revision))
+            .unwrap();
+        assert_ne!(record.current_revision_id, first_revision);
+        let stale =
+            materialize_logical_skill("demo", files(), ArtifactProvenance::default()).unwrap();
+        assert!(matches!(
+            store.persist_materialized_skill(stale, Some(&first_revision)),
+            Err(ArtifactError::Conflict("revision_changed"))
+        ));
     }
 
     #[cfg(target_os = "linux")]

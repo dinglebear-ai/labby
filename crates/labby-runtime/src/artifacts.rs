@@ -24,9 +24,10 @@ pub use materialize_skill::{
 };
 
 pub use library::{
-    LibraryActorId, LibraryAuditIntent, LibraryAuthorization, LibraryGrant, LibraryIdempotency,
-    LibraryMutation, LibraryOwnership, LibraryReceipt, LibrarySnapshot, LibraryTenantId,
-    LibraryTimestamp, SkillLibraryRecord, SkillVisibility,
+    LibraryActorId, LibraryAuditIntent, LibraryAuthorization, LibraryDurableAudit, LibraryGrant,
+    LibraryIdempotency, LibraryMutation, LibraryMutationOutcome, LibraryMutationReceiptFacts,
+    LibraryOwnership, LibraryReceipt, LibrarySnapshot, LibraryTenantId, LibraryTimestamp,
+    SkillLibraryRecord, SkillTransactionBoundary, SkillVisibility,
 };
 pub use lifecycle::{
     ArtifactChangeKind, ArtifactComponentChange, ArtifactRevisionDiff, ArtifactUpdatePlan,
@@ -86,6 +87,9 @@ pub enum ArtifactError {
     /// The durable Skill Library metadata is corrupt or internally inconsistent.
     #[error("artifact Skill Library is degraded: {0}")]
     LibraryCorrupt(&'static str),
+    /// Library metadata committed, but the paired Artifact promotion did not finish.
+    #[error("artifact Skill Library commit {committed_version} requires reconciliation")]
+    CommittedPending { committed_version: u64 },
     /// Safe-by-default export found content that resembles credential material.
     #[error("artifact export blocked because secret-like material was detected in `{path}`")]
     SecretMaterialDetected {

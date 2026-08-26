@@ -576,6 +576,16 @@ pub(crate) fn write_json_atomic<T: Serialize + ?Sized>(
     write_bytes_atomic(path, &bytes)
 }
 
+pub(crate) fn write_json_atomic_with_faults<T: Serialize + ?Sized>(
+    path: &Path,
+    value: &T,
+    boundaries: [super::library::SkillTransactionBoundary; 4],
+    fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+) -> Result<(), ArtifactError> {
+    let bytes = canonical_json::to_canonical_vec(value)?;
+    write_bytes_atomic_with_faults(path, &bytes, boundaries, fault)
+}
+
 pub(crate) fn read_json<T: DeserializeOwned>(
     path: &Path,
     max_bytes: u64,
@@ -592,6 +602,25 @@ pub(crate) fn read_json<T: DeserializeOwned>(
 }
 
 fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
+    write_bytes_atomic_with_faults(
+        path,
+        bytes,
+        [
+            super::library::SkillTransactionBoundary::IntentWrite,
+            super::library::SkillTransactionBoundary::IntentFileSync,
+            super::library::SkillTransactionBoundary::IntentRename,
+            super::library::SkillTransactionBoundary::IntentParentSync,
+        ],
+        &mut |_| Ok(()),
+    )
+}
+
+fn write_bytes_atomic_with_faults(
+    path: &Path,
+    bytes: &[u8],
+    boundaries: [super::library::SkillTransactionBoundary; 4],
+    fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+) -> Result<(), ArtifactError> {
     let parent = path
         .parent()
         .ok_or(ArtifactError::UnsafePath("store_parent"))?;
@@ -610,9 +639,14 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
             .as_file()
             .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+    fault(boundaries[0])?;
     output.write_all(bytes)?;
+    fault(boundaries[1])?;
     output.sync_all()?;
+    fault(boundaries[2])?;
     output.commit()?;
+    fault(boundaries[3])?;
+    File::open(parent)?.sync_all()?;
     Ok(())
 }
 

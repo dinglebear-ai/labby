@@ -209,6 +209,16 @@ impl ArtifactStore {
         revision: &ArtifactRevision,
         files: &[SnapshotFile],
     ) -> Result<(), ArtifactError> {
+        self.persist_revision_with_faults(revision, artifact_id, files, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn persist_revision_with_faults(
+        &self,
+        revision: &ArtifactRevision,
+        artifact_id: &str,
+        files: &[SnapshotFile],
+        fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
         revision.verify_content_digest()?;
         let artifact_dir = self.artifact_dir(artifact_id)?;
         let revisions = artifact_dir.join("revisions");
@@ -235,9 +245,15 @@ impl ArtifactStore {
         prepare_empty_internal_dir(&staging)?;
         let files_root = staging.join("files");
         ensure_private_dir(&files_root)?;
+        fault(super::library::SkillTransactionBoundary::PromotionWrite)?;
         materialize_tree(&files_root, files, false)?;
         write_json_atomic(&staging.join("revision.json"), revision)?;
+        fault(super::library::SkillTransactionBoundary::PromotionFileSync)?;
+        File::open(&staging)?.sync_all()?;
+        fault(super::library::SkillTransactionBoundary::PromotionRename)?;
         std::fs::rename(&staging, &final_dir)?;
+        fault(super::library::SkillTransactionBoundary::PromotionParentSync)?;
+        File::open(&revisions)?.sync_all()?;
         Ok(())
     }
 
@@ -270,6 +286,23 @@ impl ArtifactStore {
         let artifact_dir = self.artifact_dir(&record.descriptor.id)?;
         ensure_private_dir(&artifact_dir)?;
         write_json_atomic(&artifact_dir.join("artifact.json"), record)
+    }
+
+    pub(crate) fn persist_record_with_faults(
+        &self,
+        record: &ArtifactRecord,
+        boundaries: [super::library::SkillTransactionBoundary; 4],
+        fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
+        record.validate()?;
+        let artifact_dir = self.artifact_dir(&record.descriptor.id)?;
+        ensure_private_dir(&artifact_dir)?;
+        super::local_io::write_json_atomic_with_faults(
+            &artifact_dir.join("artifact.json"),
+            record,
+            boundaries,
+            fault,
+        )
     }
 
     pub(crate) fn persist_record_transition(
@@ -372,6 +405,14 @@ impl ArtifactStore {
         &self,
         state: &LibrarySnapshot,
     ) -> Result<(), ArtifactError> {
+        self.persist_library_snapshot_with_faults(state, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn persist_library_snapshot_with_faults(
+        &self,
+        state: &LibrarySnapshot,
+        fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
         state.validate_metadata()?;
         let library_root = self.root.join("library");
         reject_existing_symlinks_in_path(&library_root)
@@ -388,12 +429,16 @@ impl ArtifactStore {
         }
         self.fail_library_persist_if_injected(LibraryPersistFault::Enospc)?;
         self.fail_library_persist_if_injected(LibraryPersistFault::Write)?;
+        fault(super::library::SkillTransactionBoundary::LibraryWrite)?;
         output.write_all(&bytes)?;
         self.fail_library_persist_if_injected(LibraryPersistFault::FileSync)?;
+        fault(super::library::SkillTransactionBoundary::LibraryFileSync)?;
         output.sync_all()?;
         self.fail_library_persist_if_injected(LibraryPersistFault::Commit)?;
+        fault(super::library::SkillTransactionBoundary::LibraryRename)?;
         output.commit()?;
         self.fail_library_persist_if_injected(LibraryPersistFault::DirectorySync)?;
+        fault(super::library::SkillTransactionBoundary::LibraryParentSync)?;
         File::open(&library_root)?.sync_all()?;
         Ok(())
     }

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
+use labby_runtime::artifacts::{ArtifactError, ArtifactStore, LibraryMutation, LibrarySnapshot};
 use labby_runtime::skills::{ResourceDigest, limits};
 
 use super::local::{
@@ -188,7 +189,7 @@ struct AtomicGenerationCounters {
 }
 
 pub(crate) struct FirstPartyGenerationManager {
-    current: ArcSwap<FirstPartyGeneration>,
+    current: Arc<ArcSwap<FirstPartyGeneration>>,
     refresh: Mutex<RefreshState>,
     root: PathBuf,
     limits: GenerationLimits,
@@ -292,7 +293,7 @@ impl FirstPartyGenerationManager {
             .store(initial_load.index_nanos, Ordering::Relaxed);
         let live_generations = Mutex::new(vec![Arc::downgrade(&initial)]);
         Self {
-            current: ArcSwap::from(initial),
+            current: Arc::new(ArcSwap::from(initial)),
             refresh: Mutex::new(RefreshState::default()),
             root,
             limits,
@@ -306,6 +307,10 @@ impl FirstPartyGenerationManager {
 
     pub(crate) fn generation(&self) -> Arc<FirstPartyGeneration> {
         self.current.load_full()
+    }
+
+    pub(crate) fn generation_cell(&self) -> Arc<ArcSwap<FirstPartyGeneration>> {
+        Arc::clone(&self.current)
     }
 
     #[allow(
@@ -573,6 +578,123 @@ impl FirstPartyGenerationManager {
     }
 }
 
+/// Build one exact immutable first-party generation from committed Artifact revisions.
+pub(crate) fn project_artifact_generation(
+    store: &ArtifactStore,
+    snapshot: &LibrarySnapshot,
+    mutation: Option<&LibraryMutation>,
+) -> Result<Arc<FirstPartyGeneration>, ArtifactError> {
+    let mut active = snapshot
+        .records
+        .values()
+        .filter_map(|record| {
+            record.active_revision_id.as_ref().map(|revision| {
+                (
+                    record.artifact_id.clone(),
+                    (record.name.clone(), revision.clone()),
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Some(mutation) = mutation {
+        match mutation {
+            LibraryMutation::Activate {
+                artifact_id,
+                revision_id,
+                ..
+            }
+            | LibraryMutation::Rollback {
+                artifact_id,
+                revision_id,
+                ..
+            } => {
+                let record = snapshot
+                    .records
+                    .get(artifact_id)
+                    .ok_or(ArtifactError::NotFound("library_record"))?;
+                active.insert(
+                    artifact_id.clone(),
+                    (record.name.clone(), revision_id.clone()),
+                );
+            }
+            LibraryMutation::Deactivate { artifact_id, .. }
+            | LibraryMutation::Archive { artifact_id, .. } => {
+                active.remove(artifact_id);
+            }
+            LibraryMutation::Create { .. }
+            | LibraryMutation::Save { .. }
+            | LibraryMutation::SetVisibility { .. }
+            | LibraryMutation::Refresh { .. } => {}
+        }
+    }
+
+    let mut local = Vec::with_capacity(active.len());
+    for (artifact_id, (name, revision_id)) in &active {
+        let revision = store.revision(artifact_id, revision_id)?;
+        let mut files = Vec::with_capacity(revision.components.len());
+        for component in &revision.components {
+            files.push((
+                component.path.clone(),
+                store.read_skill_revision_file(artifact_id, revision_id, &component.path)?,
+            ));
+        }
+        let logical = files
+            .into_iter()
+            .map(|(path, bytes)| {
+                String::from_utf8(bytes)
+                    .map(|content| labby_runtime::artifacts::LogicalSkillFile::new(path, content))
+                    .map_err(|_| ArtifactError::SkillVerification)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let materialized =
+            labby_runtime::artifacts::materialize_logical_skill(name, logical, Default::default())?;
+        let text_files = materialized
+            .resources
+            .into_iter()
+            .map(|(uri, bytes)| {
+                String::from_utf8(bytes)
+                    .map(|text| (uri, text))
+                    .map_err(|_| ArtifactError::SkillVerification)
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        local.push(super::local::LocalSkill {
+            entry: materialized.skill.entry,
+            files: text_files,
+        });
+    }
+    let providers = FirstPartySkillProviders::from_local_skills(local);
+    if !providers.collision_rejections().is_empty() {
+        return Err(ArtifactError::Conflict("active_skill_collision"));
+    }
+    let (skills, bytes, max_skill_bytes, resources) = providers.admission_totals();
+    let limits = GenerationLimits::default();
+    for (what, actual, limit) in [
+        ("active_skills", skills, limits.active_skills),
+        ("aggregate_bytes", bytes, limits.aggregate_bytes),
+        ("per_skill_bytes", max_skill_bytes, limits.per_skill_bytes),
+        ("total_resources", resources, limits.total_resources),
+        ("live_candidate_bytes", bytes, limits.live_candidate_bytes),
+    ] {
+        if actual > limit {
+            return Err(ArtifactError::LimitExceeded {
+                what,
+                limit: limit as u64,
+            });
+        }
+    }
+    let digest = labby_runtime::artifacts::canonical_json::digest(&active)?;
+    Ok(Arc::new(FirstPartyGeneration {
+        id: (snapshot.version + u64::from(mutation.is_some())).max(1),
+        digest: digest.clone(),
+        active_digest: digest,
+        providers,
+        rejected: Vec::new(),
+        bytes,
+        resources,
+        degraded: None,
+    }))
+}
+
 fn check(kind: &'static str, actual: usize, limit: usize) -> Result<(), RefreshRejection> {
     if actual > limit {
         Err(RefreshRejection::Limit {
@@ -813,7 +935,7 @@ mod tests {
         write_skill(temp.path(), "late", "v1");
         caps.active_skills = initial.providers.discover().len();
         let constrained = FirstPartyGenerationManager {
-            current: ArcSwap::from(Arc::clone(&initial)),
+            current: Arc::new(ArcSwap::from(Arc::clone(&initial))),
             refresh: Mutex::new(RefreshState::default()),
             root: temp.path().to_path_buf(),
             limits: caps,
@@ -911,7 +1033,7 @@ mod tests {
         write_skill(temp.path(), "too-many", "v1");
         caps.active_skills = initial.providers.discover().len();
         let constrained = Arc::new(FirstPartyGenerationManager {
-            current: ArcSwap::from(Arc::clone(&initial)),
+            current: Arc::new(ArcSwap::from(Arc::clone(&initial))),
             refresh: Mutex::new(RefreshState::default()),
             root: temp.path().to_path_buf(),
             limits: caps,
