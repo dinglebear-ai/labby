@@ -9,12 +9,19 @@ pub mod canonical_json;
 pub mod library;
 pub mod lifecycle;
 mod local_io;
+pub mod materialize_skill;
 pub mod model;
 pub mod provider;
 pub mod skill;
 pub mod store;
 mod store_ops;
 pub mod validation;
+
+pub use materialize_skill::{
+    LogicalSkillFile, MaterializedSkill, materialize_acquired_skill,
+    materialize_acquired_skill_owned, materialize_logical_skill,
+    materialize_skill_from_trusted_staging,
+};
 
 pub use library::{
     LibraryActorId, LibraryAuditIntent, LibraryAuthorization, LibraryGrant, LibraryIdempotency,
@@ -88,6 +95,14 @@ pub enum ArtifactError {
     /// Existing Agent Skills verification rejected a projected resource.
     #[error("Agent Skill resource verification failed")]
     SkillVerification,
+    /// A caller-supplied logical file failed a stable package rule.
+    #[error("logical Skill file `{path}` is invalid: {reason}")]
+    LogicalSkillFile {
+        /// Bounded logical path only; file contents are never included.
+        path: String,
+        /// Stable, non-secret reason code.
+        reason: &'static str,
+    },
     /// Local filesystem operation failed.
     #[error("artifact I/O failed: {0}")]
     Io(#[from] std::io::Error),
