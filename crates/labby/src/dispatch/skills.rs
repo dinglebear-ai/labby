@@ -10,7 +10,6 @@ pub mod params;
 pub mod types;
 
 pub(crate) use catalog::{ACTIONS, API_ACTIONS};
-#[cfg(feature = "gateway")]
 pub(crate) use dispatch::{dispatch, dispatch_with_context};
 
 use labby_primitives::plugin::{Category, PluginMeta};

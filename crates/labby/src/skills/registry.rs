@@ -13,7 +13,7 @@ use labby_runtime::skills::{ResourceDigest, limits};
 use super::local::{
     LocalLoadCounters, LocalLoadLimits, LocalSkillRejection, load_local_skills_bounded,
 };
-use super::providers::{CollisionRejection, FirstPartySkillProviders};
+use super::providers::{ArtifactSkillAccess, CollisionRejection, FirstPartySkillProviders};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GenerationLimits {
@@ -583,6 +583,7 @@ pub(crate) fn project_artifact_generation(
     store: &ArtifactStore,
     snapshot: &LibrarySnapshot,
     mutation: Option<&LibraryMutation>,
+    base: &FirstPartyGeneration,
 ) -> Result<Arc<FirstPartyGeneration>, ArtifactError> {
     let mut active = snapshot
         .records
@@ -630,6 +631,18 @@ pub(crate) fn project_artifact_generation(
 
     let mut local = Vec::with_capacity(active.len());
     for (artifact_id, (name, revision_id)) in &active {
+        let record = snapshot
+            .records
+            .get(artifact_id)
+            .ok_or(ArtifactError::NotFound("library_record"))?;
+        let visibility = match mutation {
+            Some(LibraryMutation::SetVisibility {
+                artifact_id: changed,
+                visibility,
+                ..
+            }) if changed == artifact_id => *visibility,
+            _ => record.visibility,
+        };
         let revision = store.revision(artifact_id, revision_id)?;
         let mut files = Vec::with_capacity(revision.components.len());
         for component in &revision.components {
@@ -657,13 +670,20 @@ pub(crate) fn project_artifact_generation(
                     .map_err(|_| ArtifactError::SkillVerification)
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        local.push(super::local::LocalSkill {
-            entry: materialized.skill.entry,
-            files: text_files,
-        });
+        local.push((
+            super::local::LocalSkill {
+                entry: materialized.skill.entry,
+                files: text_files,
+            },
+            ArtifactSkillAccess {
+                ownership: record.ownership.clone(),
+                visibility,
+            },
+        ));
     }
-    let providers = FirstPartySkillProviders::from_local_skills(local);
-    if !providers.collision_rejections().is_empty() {
+    let baseline_collisions = base.providers.collision_rejections().len();
+    let providers = base.providers.with_artifact_skills(local);
+    if providers.collision_rejections().len() > baseline_collisions {
         return Err(ArtifactError::Conflict("active_skill_collision"));
     }
     let (skills, bytes, max_skill_bytes, resources) = providers.admission_totals();
@@ -682,13 +702,22 @@ pub(crate) fn project_artifact_generation(
             });
         }
     }
-    let digest = labby_runtime::artifacts::canonical_json::digest(&active)?;
+    let active_digest = labby_runtime::artifacts::canonical_json::digest(&active)?;
+    let encoded = serde_json::to_vec(
+        &providers
+            .discover()
+            .iter()
+            .map(|entry| &entry.validated().entry)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| ArtifactError::SkillVerification)?;
+    let digest = ResourceDigest::of_bytes(&encoded).to_wire();
     Ok(Arc::new(FirstPartyGeneration {
         id: (snapshot.version + u64::from(mutation.is_some())).max(1),
         digest: digest.clone(),
-        active_digest: digest,
+        active_digest,
         providers,
-        rejected: Vec::new(),
+        rejected: base.rejected.clone(),
         bytes,
         resources,
         degraded: None,
@@ -899,6 +928,43 @@ mod tests {
         let generation = manager.generation();
         assert_eq!(generation.id, seed.version);
         assert_eq!(generation.active_digest, seed.active_digest);
+    }
+
+    #[test]
+    fn artifact_startup_reconcile_preserves_the_loaded_operator_snapshot() {
+        let local_root = tempfile::tempdir().unwrap();
+        write_skill(local_root.path(), "legacy-survives", "operator");
+        let manager = FirstPartyGenerationManager::new(
+            local_root.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        let base = manager.generation();
+        let artifacts_root = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(artifacts_root.path().join("artifacts")).unwrap();
+        let snapshot = store.library_snapshot().unwrap();
+
+        let reconciled = project_artifact_generation(&store, &snapshot, None, &base).unwrap();
+        let repeated = project_artifact_generation(&store, &snapshot, None, &reconciled).unwrap();
+
+        assert!(
+            reconciled
+                .providers
+                .find("skill://labby/legacy-survives/SKILL.md")
+                .is_some()
+        );
+        assert!(
+            reconciled
+                .providers
+                .artifact_access("skill://labby/legacy-survives/SKILL.md")
+                .is_none()
+        );
+        assert_eq!(repeated.digest, reconciled.digest);
+        assert!(
+            repeated
+                .providers
+                .find("skill://labby/legacy-survives/SKILL.md")
+                .is_some()
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use labby_runtime::artifacts::{LibraryOwnership, SkillVisibility};
 use labby_runtime::skills::{
     SkillDiscoverRequest, SkillDiscoverResult, SkillDiscoverySource, SkillGetRequest,
     SkillGetResult, SkillProvider, SkillProviderEntry, SkillProviderError, SkillProviderFuture,
@@ -121,6 +122,13 @@ pub(crate) struct FirstPartySkillProviders {
     merged: Vec<SkillProviderEntry>,
     uri_index: BTreeMap<String, usize>,
     collision_rejections: Vec<CollisionRejection>,
+    artifact_access: BTreeMap<String, ArtifactSkillAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArtifactSkillAccess {
+    pub(crate) ownership: LibraryOwnership,
+    pub(crate) visibility: SkillVisibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +164,7 @@ impl FirstPartySkillProviders {
             merged,
             uri_index,
             collision_rejections,
+            artifact_access: BTreeMap::new(),
         }
     }
 
@@ -166,6 +175,102 @@ impl FirstPartySkillProviders {
             SnapshotSkillProvider::bundled(),
             SnapshotSkillProvider::operator_local_from(local_skills),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_artifact_skills(
+        local_skills: impl IntoIterator<Item = (local::LocalSkill, ArtifactSkillAccess)>,
+    ) -> Self {
+        Self::from_local_skills([]).with_artifact_skills(local_skills)
+    }
+
+    /// Add active Artifact Skills after the immutable bundled and legacy operator-local snapshot.
+    /// Existing Artifact entries are first removed, so repeated activation projections retain the
+    /// same legacy snapshot without treating the previously active set as operator-owned input.
+    pub(crate) fn with_artifact_skills(
+        &self,
+        local_skills: impl IntoIterator<Item = (local::LocalSkill, ArtifactSkillAccess)>,
+    ) -> Self {
+        let mut access_by_manifest = BTreeMap::new();
+        let locals = local_skills
+            .into_iter()
+            .map(|(skill, access)| {
+                access_by_manifest
+                    .entry(skill.entry.uri.clone())
+                    .or_insert(access);
+                skill
+            })
+            .collect::<Vec<_>>();
+        let artifact = SnapshotSkillProvider::operator_local_from(locals);
+        let legacy = SnapshotSkillProvider {
+            id: self.operator_local.id.clone(),
+            skills: self
+                .operator_local
+                .skills
+                .iter()
+                .filter(|(manifest, _)| !self.artifact_access.contains_key(*manifest))
+                .map(|(manifest, skill)| (manifest.clone(), skill.clone()))
+                .collect(),
+        };
+        let (legacy_merged, mut collision_rejections) =
+            merge_bundled_first(self.bundled.entries(), legacy.entries());
+        let (merged, artifact_rejections) = merge_bundled_first(legacy_merged, artifact.entries());
+        collision_rejections.extend(artifact_rejections);
+
+        let accepted_artifacts = merged
+            .iter()
+            .map(|entry| entry.descriptor().id.source_id())
+            .filter(|manifest| access_by_manifest.contains_key(*manifest))
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut operator_skills = legacy.skills;
+        operator_skills.extend(
+            artifact
+                .skills
+                .into_iter()
+                .filter(|(manifest, _)| accepted_artifacts.contains(manifest)),
+        );
+        let operator_local = SnapshotSkillProvider {
+            id: legacy.id,
+            skills: operator_skills,
+        };
+        let mut uri_index = BTreeMap::new();
+        for (index, entry) in merged.iter().enumerate() {
+            uri_index.insert(entry.descriptor().id.source_id().to_string(), index);
+            for resource in entry.resources() {
+                uri_index.insert(resource.source_id, index);
+            }
+        }
+        let mut providers = Self {
+            bundled: self.bundled.clone(),
+            operator_local,
+            merged,
+            uri_index,
+            collision_rejections,
+            artifact_access: BTreeMap::new(),
+        };
+        for entry in &providers.merged {
+            let manifest = entry.descriptor().id.source_id();
+            if let Some(access) = access_by_manifest.get(manifest) {
+                providers
+                    .artifact_access
+                    .insert(manifest.to_owned(), access.clone());
+                for resource in entry.resources() {
+                    providers
+                        .artifact_access
+                        .insert(resource.source_id.clone(), access.clone());
+                }
+            }
+        }
+        providers
+    }
+
+    pub(crate) fn artifact_access(&self, uri: &str) -> Option<&ArtifactSkillAccess> {
+        self.artifact_access.get(uri)
+    }
+
+    pub(crate) fn has_artifact_skills(&self) -> bool {
+        !self.artifact_access.is_empty()
     }
 
     pub(crate) fn discover(&self) -> &[SkillProviderEntry] {
@@ -372,6 +477,9 @@ impl SkillProvider for SnapshotSkillProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use labby_runtime::artifacts::{
+        LibraryActorId, LibraryOwnership, LibraryTenantId, SkillVisibility,
+    };
     use labby_runtime::skills::wire::{SkillEntry, SkillResource};
     use labby_runtime::skills::{
         SkillAvailabilitySummary, SkillCompatibilityClassification, SkillCompatibilityItem,
@@ -407,6 +515,92 @@ mod tests {
             id: SkillProviderId::new(SkillProviderKind::Bundled, "test"),
             skills: BTreeMap::from([(manifest, SnapshotSkill { validated, files })]),
         }
+    }
+
+    fn local_skill(name: &str, namespace: &str, marker: &str) -> local::LocalSkill {
+        let manifest = format!("skill://labby/{namespace}/{name}/SKILL.md");
+        let body = format!("---\nname: {name}\ndescription: {marker}\n---\n{marker}\n");
+        local::LocalSkill {
+            entry: SkillEntry {
+                uri: manifest.clone(),
+                frontmatter: labby_runtime::skills::parse_skill_md_frontmatter(&body).unwrap(),
+                resources: Some(vec![SkillResource {
+                    uri: manifest.clone(),
+                    digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes())
+                        .to_wire(),
+                }]),
+                meta: None,
+            },
+            files: BTreeMap::from([(manifest, body)]),
+        }
+    }
+
+    fn artifact_access() -> ArtifactSkillAccess {
+        ArtifactSkillAccess {
+            ownership: LibraryOwnership::canonical(
+                LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+                LibraryActorId::from_canonical_projection("owner-a").unwrap(),
+            ),
+            visibility: SkillVisibility::Tenant,
+        }
+    }
+
+    #[test]
+    fn bundled_then_legacy_then_artifact_precedence_preserves_every_winner() {
+        let legacy = local_skill("legacy-only", "operator", "legacy bytes");
+        let legacy_collision = local_skill("shared-name", "operator", "legacy winner");
+        let base =
+            FirstPartySkillProviders::from_local_skills([legacy.clone(), legacy_collision.clone()]);
+        let artifact_only = local_skill("artifact-only", "artifact", "artifact bytes");
+        let artifact_legacy_collision =
+            local_skill("shared-name", "aaa-artifact", "artifact loser");
+        let artifact_bundled_collision = local_skill("using-labby", "artifact", "bundled loser");
+
+        let projected = base.with_artifact_skills([
+            (artifact_only.clone(), artifact_access()),
+            (artifact_legacy_collision, artifact_access()),
+            (artifact_bundled_collision, artifact_access()),
+        ]);
+
+        assert!(projected.find(&legacy.entry.uri).is_some());
+        assert!(projected.find(&legacy_collision.entry.uri).is_some());
+        assert!(projected.find(&artifact_only.entry.uri).is_some());
+        assert!(projected.artifact_access(&legacy.entry.uri).is_none());
+        assert!(
+            projected
+                .artifact_access(&artifact_only.entry.uri)
+                .is_some()
+        );
+        assert_eq!(
+            projected
+                .collision_rejections()
+                .iter()
+                .filter(|rejection| rejection.kind == CollisionKind::Name)
+                .count(),
+            2
+        );
+        assert_eq!(
+            projected
+                .find(&legacy_collision.entry.uri)
+                .unwrap()
+                .descriptor()
+                .name,
+            "shared-name"
+        );
+
+        let replacement = local_skill("artifact-next", "artifact", "next activation");
+        let reprojected =
+            projected.with_artifact_skills([(replacement.clone(), artifact_access())]);
+        assert!(reprojected.find(&legacy.entry.uri).is_some());
+        assert!(reprojected.find(&legacy_collision.entry.uri).is_some());
+        assert!(reprojected.find(&artifact_only.entry.uri).is_none());
+        assert!(reprojected.find(&replacement.entry.uri).is_some());
+        assert!(reprojected.artifact_access(&legacy.entry.uri).is_none());
+        assert!(
+            reprojected
+                .artifact_access(&replacement.entry.uri)
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -562,6 +756,43 @@ mod tests {
         assert_eq!(merged, vec![bundled]);
         assert_eq!(rejections.len(), 2);
         assert_eq!(rejections[0].kind, CollisionKind::Name);
+    }
+
+    #[test]
+    fn bundled_collision_winner_never_inherits_artifact_visibility() {
+        let manifest = "skill://labby/operator/using-labby/SKILL.md";
+        let body = "---\nname: using-labby\ndescription: collision\n---\n";
+        let local = local::LocalSkill {
+            entry: SkillEntry {
+                uri: manifest.to_owned(),
+                frontmatter: labby_runtime::skills::parse_skill_md_frontmatter(body).unwrap(),
+                resources: Some(vec![SkillResource {
+                    uri: manifest.to_owned(),
+                    digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes())
+                        .to_wire(),
+                }]),
+                meta: None,
+            },
+            files: BTreeMap::from([(manifest.to_owned(), body.to_owned())]),
+        };
+        let access = ArtifactSkillAccess {
+            ownership: LibraryOwnership::canonical(
+                LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+                LibraryActorId::from_canonical_projection("owner").unwrap(),
+            ),
+            visibility: SkillVisibility::Private,
+        };
+        let providers = FirstPartySkillProviders::from_artifact_skills([(local, access)]);
+
+        assert!(providers.artifact_access(manifest).is_none());
+        assert!(
+            providers
+                .artifact_access("skill://labby/using-labby/SKILL.md")
+                .is_none()
+        );
+        assert!(providers.collision_rejections().iter().any(|rejection| {
+            rejection.skill == "using-labby" && rejection.kind == CollisionKind::Name
+        }));
     }
 
     #[test]

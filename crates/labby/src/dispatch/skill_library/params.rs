@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use super::types::{AcquisitionInput, LogicalFileInput};
+use super::types::LogicalFileInput;
 
 pub(crate) const DEFAULT_PAGE_LIMIT: usize = 50;
 pub(crate) const MAX_PAGE_LIMIT: usize = 100;
@@ -76,33 +76,25 @@ pub(crate) struct LibraryMutationParams {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportParams {
-    pub(crate) acquisition: AcquisitionInput,
+    pub(crate) source: SourceSelector,
     pub(crate) expected_library_version: u64,
     pub(crate) idempotency_key: String,
 }
 
-pub(crate) fn validate_acquisition_bounds(value: &AcquisitionInput) -> Result<(), &'static str> {
-    if value.files.is_empty()
-        || value.files.len() > labby_runtime::skills::limits::MAX_RESOURCES_PER_SKILL
-    {
-        return Err("acquisition.files");
-    }
-    let mut total = 0usize;
-    for file in &value.files {
-        if file.path.is_empty()
-            || file.path.len() > 1024
-            || file.content.len() > labby_runtime::skills::limits::MAX_SKILL_RESOURCE_BYTES
-        {
-            return Err("acquisition.files");
-        }
-        total = total
-            .checked_add(file.content.len())
-            .ok_or("acquisition.files")?;
-        if total > labby_runtime::artifacts::validation::MAX_SKILL_PACKAGE_BYTES {
-            return Err("acquisition.files");
-        }
-    }
-    Ok(())
+/// Public, non-secret selector for one exact object on a server-configured connection.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum SourceSelector {
+    Depot {
+        connection_id: String,
+        artifact_id: String,
+        revision_id: String,
+    },
+    Repository {
+        connection_id: String,
+        artifact_id: String,
+        revision_id: String,
+    },
 }
 
 pub(crate) fn page_limit(value: Option<usize>) -> Result<usize, &'static str> {
@@ -144,12 +136,18 @@ mod tests {
     }
 
     #[test]
-    fn import_wire_rejects_unknown_path_fields() {
+    fn import_wire_accepts_only_server_connection_and_exact_selector() {
         let unknown = serde_json::json!({
-            "acquisition": { "interchange": {}, "files": [], "server_path": "/etc" },
+            "source": { "kind": "depot", "connection_id": "primary", "artifact_id": "skill", "revision_id": "sha256:exact", "server_path": "/etc" },
             "expected_library_version": 0,
             "idempotency_key": "request-1"
         });
         assert!(serde_json::from_value::<ImportParams>(unknown).is_err());
+        let bytes = serde_json::json!({
+            "acquisition": { "interchange": {}, "files": [] },
+            "expected_library_version": 0,
+            "idempotency_key": "request-1"
+        });
+        assert!(serde_json::from_value::<ImportParams>(bytes).is_err());
     }
 }

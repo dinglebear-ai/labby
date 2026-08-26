@@ -5,7 +5,9 @@ pub(crate) mod auth;
 pub(crate) mod blocking;
 pub(crate) mod catalog;
 pub(crate) mod client;
+pub(crate) mod depot;
 pub(crate) mod dispatch;
+pub(crate) mod import;
 pub(crate) mod params;
 pub(crate) mod types;
 
@@ -19,6 +21,7 @@ use crate::skills::registry::FirstPartyGeneration;
 type ProcessSkillLibrary = dispatch::SkillLibraryService<FirstPartyGeneration>;
 
 static PROCESS_SKILL_LIBRARY: OnceLock<Arc<ProcessSkillLibrary>> = OnceLock::new();
+static PROCESS_SKILL_LIBRARY_IMPORTS: OnceLock<Arc<import::ImportCoordinator>> = OnceLock::new();
 
 pub(crate) fn install_process_service(
     service: Arc<ProcessSkillLibrary>,
@@ -28,6 +31,16 @@ pub(crate) fn install_process_service(
 
 pub(crate) fn process_service() -> Option<Arc<ProcessSkillLibrary>> {
     PROCESS_SKILL_LIBRARY.get().cloned()
+}
+
+pub(crate) fn install_process_imports(
+    imports: Arc<import::ImportCoordinator>,
+) -> Result<(), Arc<import::ImportCoordinator>> {
+    PROCESS_SKILL_LIBRARY_IMPORTS.set(imports)
+}
+
+pub(crate) fn process_imports() -> Option<Arc<import::ImportCoordinator>> {
+    PROCESS_SKILL_LIBRARY_IMPORTS.get().cloned()
 }
 
 /// Closed, redacted projection of internal management failures to the shared surface contract.
@@ -126,5 +139,18 @@ pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> 
                 .collect(),
             hint: Some("use skills schema to inspect supported actions".to_owned()),
         },
+    }
+}
+
+pub(crate) fn map_import_error(error: import::ImportAdapterError) -> ToolError {
+    match error {
+        import::ImportAdapterError::SourceUnavailable => ToolError::Sdk {
+            sdk_kind: "source_unavailable".to_owned(),
+            message: "Requested Skill import source is not configured".to_owned(),
+        },
+        import::ImportAdapterError::Artifact(error) => {
+            map_dispatch_error(dispatch::SkillLibraryDispatchError::Artifact(error))
+        }
+        import::ImportAdapterError::Dispatch(error) => map_dispatch_error(error),
     }
 }

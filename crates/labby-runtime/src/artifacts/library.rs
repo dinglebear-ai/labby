@@ -393,7 +393,11 @@ impl LibraryDurableAudit {
             || self.correlation_id.is_empty()
             || self.correlation_id.len() > 256
             || self.correlation_id.chars().any(char::is_control)
-            || self.action.strip_prefix("skill_library.") != Some(receipt.action.as_str())
+            || !matches!(
+                (self.action.strip_prefix("skill_library."), receipt.action.as_str()),
+                (Some(product), runtime) if product == runtime
+                    || (product == "import" && runtime == "create")
+            )
             || self.tenant_id != receipt.tenant_id
             || self.actor_id != receipt.actor_id
             || self.committed_version != Some(receipt.committed_version)

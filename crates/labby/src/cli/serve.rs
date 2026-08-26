@@ -494,7 +494,21 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         ));
         crate::dispatch::skill_library::install_process_service(Arc::clone(&skill_library))
             .map_err(|_| anyhow::anyhow!("Skill Library service was already initialized"))?;
-        state = state.with_skill_library(skill_library);
+        let imports = Arc::new(
+            crate::dispatch::skill_library::import::ImportCoordinator::from_config(
+                &config.skill_library,
+                &labby_runtime::lab_home()
+                    .join("artifacts")
+                    .join("acquisition"),
+            )
+            .context("configure Skill Library exact-source adapters")?,
+        );
+        crate::dispatch::skill_library::install_process_imports(Arc::clone(&imports)).map_err(
+            |_| anyhow::anyhow!("Skill Library import coordinator was already initialized"),
+        )?;
+        state = state
+            .with_skill_library(skill_library)
+            .with_skill_library_imports(imports);
     }
     let public_relay_store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
         crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),

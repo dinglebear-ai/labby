@@ -2047,6 +2047,7 @@ dependencies = [
  "atomic-write-file",
  "jiff",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",

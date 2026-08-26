@@ -118,6 +118,35 @@ fn map_skill_library_error(
     }
 }
 
+#[cfg(feature = "skills")]
+fn map_import_adapter_error(
+    error: crate::dispatch::skill_library::import::ImportAdapterError,
+) -> ToolError {
+    use crate::dispatch::skill_library::import::ImportAdapterError;
+    match error {
+        ImportAdapterError::SourceUnavailable => ToolError::Sdk {
+            sdk_kind: "source_unavailable".to_owned(),
+            message: "Requested Skill import source is not configured".to_owned(),
+        },
+        ImportAdapterError::Artifact(labby_runtime::artifacts::ArtifactError::Conflict(
+            "provider_timeout",
+        )) => ToolError::Sdk {
+            sdk_kind: "timeout".to_owned(),
+            message: "Skill import source timed out".to_owned(),
+        },
+        ImportAdapterError::Artifact(labby_runtime::artifacts::ArtifactError::Conflict(
+            "source_authorization_expired",
+        )) => ToolError::Forbidden {
+            message: "Skill import source authorization failed".to_owned(),
+            required_scopes: Vec::new(),
+        },
+        ImportAdapterError::Artifact(error) => map_skill_library_error(
+            crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError::Artifact(error),
+        ),
+        ImportAdapterError::Dispatch(error) => map_skill_library_error(error),
+    }
+}
+
 async fn dispatch_at_api_boundary(
     registry: &crate::skills::facade::SkillRegistryContext,
     action: &str,
@@ -236,6 +265,7 @@ async fn handle(
     #[cfg(feature = "gateway")]
     let auth_for_dispatch = auth.clone();
     let skill_library = state.skill_library.clone();
+    let skill_library_imports = state.skill_library_imports.clone();
     let access_runtime = Arc::clone(&state.access_runtime);
     let verified_identity = identity.map(|Extension(value)| value);
     let project_id = headers
@@ -257,6 +287,10 @@ async fn handle(
         req,
         crate::dispatch::skills::API_ACTIONS,
         move |action, params| async move {
+            let visibility_identity = verified_identity.clone();
+            let visibility_auth = auth_for_library.clone();
+            let visibility_project = project_id.clone();
+            let visibility_correlation = correlation.clone();
             if action.starts_with("skill_library.") {
                 let service = skill_library.ok_or_else(|| ToolError::Sdk {
                     sdk_kind: "skill_library_unavailable".to_owned(),
@@ -313,6 +347,37 @@ async fn handle(
                         message: "invalid request correlation".to_owned(),
                         param: "x-request-id".to_owned(),
                     })?;
+                if action == "skill_library.import" {
+                    let import_params: crate::dispatch::skill_library::params::ImportParams =
+                        serde_json::from_value(params).map_err(|_| ToolError::InvalidParam {
+                            message: "Skill Library import parameters are invalid".to_owned(),
+                            param: "params".to_owned(),
+                        })?;
+                    crate::dispatch::skill_library::params::validate_idempotency_key(
+                        &import_params.idempotency_key,
+                    )
+                    .map_err(|_| ToolError::InvalidParam {
+                        message: "Skill Library idempotency key is invalid".to_owned(),
+                        param: "idempotency_key".to_owned(),
+                    })?;
+                    let imports = skill_library_imports.ok_or_else(|| ToolError::Sdk {
+                        sdk_kind: "source_unavailable".to_owned(),
+                        message: "Skill import sources are not configured".to_owned(),
+                    })?;
+                    return imports
+                        .import_selected(
+                            &service,
+                            &access_runtime,
+                            caller,
+                            &project_id,
+                            import_params.source,
+                            import_params.expected_library_version,
+                            import_params.idempotency_key,
+                            &correlation,
+                        )
+                        .await
+                        .map_err(map_import_adapter_error);
+                }
                 return service
                     .dispatch(
                         &access_runtime,
@@ -341,17 +406,81 @@ async fn handle(
                 } else {
                     crate::skills::aggregate::ToolAccess::Direct
                 };
-                let registry = crate::skills::facade::SkillRegistryContext::with_manager(
+                let mut registry = crate::skills::facade::SkillRegistryContext::with_manager(
                     Arc::clone(manager),
                     crate::skills::facade::SkillCallerScope::root(oauth_subject, access),
                 );
+                registry = attach_artifact_access(
+                    registry,
+                    &access_runtime,
+                    visibility_identity,
+                    visibility_auth,
+                    visibility_project.as_deref(),
+                    visibility_correlation.as_deref(),
+                )
+                .await;
                 return dispatch_at_api_boundary(&registry, &action, params).await;
             }
 
-            crate::dispatch::skills::dispatch(&action, params).await
+            let registry = attach_artifact_access(
+                crate::skills::facade::SkillRegistryContext::first_party_only(),
+                &access_runtime,
+                visibility_identity,
+                visibility_auth,
+                visibility_project.as_deref(),
+                visibility_correlation.as_deref(),
+            )
+            .await;
+            dispatch_at_api_boundary(&registry, &action, params).await
         },
     )
     .await
+}
+
+async fn attach_artifact_access(
+    mut registry: crate::skills::facade::SkillRegistryContext,
+    access_runtime: &crate::access::AccessRuntime,
+    identity: Option<VerifiedIdentity>,
+    auth: Option<AuthContext>,
+    project_id: Option<&str>,
+    correlation: Option<&str>,
+) -> crate::skills::facade::SkillRegistryContext {
+    let (Some(identity), Some(auth), Some(project_id)) = (identity, auth, project_id) else {
+        return registry;
+    };
+    let transport = if auth.via_session {
+        crate::dispatch::skill_library::auth::SkillLibraryTransport::browser(true, true)
+    } else {
+        crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
+            crate::dispatch::skill_library::auth::SkillLibrarySurface::ApiBearer,
+            true,
+        )
+    };
+    let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
+        identity,
+        auth.scopes,
+        transport,
+    );
+    let Ok(correlation) = crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(
+        correlation.unwrap_or("api-skills-read"),
+    ) else {
+        return registry;
+    };
+    if let Ok(decision) = crate::dispatch::skill_library::auth::authorize_at_boundary(
+        access_runtime,
+        caller,
+        project_id,
+        crate::dispatch::skill_library::auth::SkillLibraryAction::List,
+        &crate::dispatch::skill_library::audit::CanonicalArtifactId::parse("library")
+            .expect("static id"),
+        crate::dispatch::skill_library::auth::SkillLibraryTarget::SharedActive,
+        &correlation,
+    )
+    .await
+    {
+        registry = registry.with_artifact_access(decision.artifact_access_snapshot());
+    }
+    registry
 }
 
 #[cfg(test)]

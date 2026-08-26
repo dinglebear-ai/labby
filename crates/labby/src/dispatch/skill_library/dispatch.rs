@@ -63,7 +63,8 @@ impl GenerationProjection<crate::skills::registry::FirstPartyGeneration>
         snapshot: &LibrarySnapshot,
         mutation: Option<&LibraryMutation>,
     ) -> Result<Arc<crate::skills::registry::FirstPartyGeneration>, ArtifactError> {
-        crate::skills::registry::project_artifact_generation(store, snapshot, mutation)
+        let base = crate::skills::registry::first_party_generation_manager().generation();
+        crate::skills::registry::project_artifact_generation(store, snapshot, mutation, &base)
     }
 }
 
@@ -96,6 +97,129 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
     pub(crate) fn with_fault_injector(mut self, faults: Arc<dyn FaultInjector>) -> Self {
         self.faults = faults;
         self
+    }
+
+    /// Commit bytes acquired by the sealed server-side source coordinator.
+    /// Public JSON dispatch never accepts an [`ArtifactAcquisition`].
+    pub(super) async fn import_acquired(
+        &self,
+        runtime: &AccessRuntime,
+        caller: SkillLibraryCaller,
+        project_id: &str,
+        acquisition: labby_runtime::artifacts::ArtifactAcquisition,
+        expected_library_version: u64,
+        idempotency_key: String,
+        correlation_id: &SkillLibraryCorrelationId,
+    ) -> Result<Value, SkillLibraryDispatchError> {
+        let acquisition = validate_owned_acquisition(acquisition)?;
+        super::params::validate_idempotency_key(&idempotency_key).map_err(|reason| {
+            ArtifactError::InvalidField {
+                field: "idempotency_key",
+                reason,
+            }
+        })?;
+        let target_id = acquisition.interchange.descriptor.id.clone();
+        let target = CanonicalArtifactId::parse(target_id.clone())?;
+        let materialized = self
+            .blocking
+            .run("skill_artifact_import_prepare", move || {
+                labby_runtime::artifacts::materialize_acquired_skill_owned(acquisition)
+            })
+            .await
+            .map_err(map_blocking)?;
+        let now = LibraryTimestamp::parse(jiff::Timestamp::now().to_string())?;
+        let revision_id = materialized.interchange.revision.id.clone();
+        let name = materialized.interchange.descriptor.name.clone();
+        let request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
+            "action":"skill_library.import", "artifact_id":target_id,
+            "revision_id": revision_id,
+            "expected_library_version":expected_library_version,
+            "idempotency_key":idempotency_key
+        }))?;
+        let store = Arc::clone(&self.store);
+        let projection = Arc::clone(&self.projection);
+        let publication = Arc::clone(&self.publication);
+        let faults = Arc::clone(&self.faults);
+        let response_target = target_id.clone();
+        let outcome = self
+            .blocking
+            .run_after_admission("skill_artifact_import_commit", || async move {
+                let decision = authorize_at_boundary(
+                    runtime,
+                    caller,
+                    project_id,
+                    SkillLibraryAction::Import,
+                    &target,
+                    SkillLibraryTarget::CreateForCaller,
+                    correlation_id,
+                )
+                .await
+                .map_err(SkillLibraryDispatchError::Authorization)?;
+                let authorization = decision.authorization;
+                let ownership = decision.ownership;
+                let audit = decision.audit;
+                let audited_revision_id = revision_id.clone();
+                let mutation = LibraryMutation::Create {
+                    record: SkillLibraryRecord {
+                        artifact_id: target_id.clone(),
+                        name,
+                        ownership: ownership.clone(),
+                        visibility: SkillVisibility::Private,
+                        archived: false,
+                        active_revision_id: None,
+                        created_at: now.clone(),
+                        updated_at: now.clone(),
+                    },
+                };
+                let committed_version = expected_library_version
+                    .checked_add(1)
+                    .ok_or(ArtifactError::Conflict("library_version_exhausted"))?;
+                let terminal = SkillLibraryTerminalAudit::new(
+                    SkillLibraryTerminalOutcome::Committed,
+                    SkillLibraryTerminalStage::Commit,
+                )
+                .with_revision_id(&audited_revision_id)
+                .with_versions(Some(committed_version), Some(committed_version));
+                let idempotency = LibraryIdempotency {
+                    key: idempotency_key,
+                    request_digest,
+                    terminal_audit: Some(runtime_durable_audit(durable_terminal_audit(
+                        &audit, terminal,
+                    )?)),
+                };
+                Ok(move || {
+                    let result = (|| {
+                        let snapshot = store.library_snapshot()?;
+                        let generation = projection.prepare(&store, &snapshot, Some(&mutation))?;
+                        publication.commit_library_outcome(
+                            generation,
+                            expected_library_version,
+                            faults.as_ref(),
+                            || {
+                                store
+                                    .mutate_library_with_materialized_outcome(
+                                        &authorization,
+                                        &ownership,
+                                        expected_library_version,
+                                        idempotency,
+                                        mutation,
+                                        now,
+                                        materialized,
+                                        None,
+                                        |boundary| transaction_fault(faults.as_ref(), boundary),
+                                    )
+                                    .map_err(SkillLibraryDispatchError::Artifact)
+                            },
+                        )
+                    })();
+                    record_terminal_result(&audit, Some(&audited_revision_id), &result);
+                    result
+                })
+            })
+            .await
+            .map_err(map_dispatch_blocking)?;
+        self.mutation_response(response_target, outcome, false)
+            .await
     }
 
     async fn mutation_response(
@@ -828,129 +952,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.import" => {
-                let params: super::params::ImportParams = parse(params)?;
-                super::params::validate_acquisition_bounds(&params.acquisition).map_err(
-                    |reason| ArtifactError::InvalidField {
-                        field: "acquisition",
-                        reason,
-                    },
-                )?;
-                super::params::validate_idempotency_key(&params.idempotency_key).map_err(
-                    |reason| ArtifactError::InvalidField {
-                        field: "idempotency_key",
-                        reason,
-                    },
-                )?;
-                let acquisition: labby_runtime::artifacts::ArtifactAcquisition =
-                    params.acquisition.into();
-                let target_id = acquisition.interchange.descriptor.id.clone();
-                let target = CanonicalArtifactId::parse(target_id.clone())?;
-                let materialized = self
-                    .blocking
-                    .run("skill_artifact_import_prepare", move || {
-                        labby_runtime::artifacts::materialize_acquired_skill_owned(acquisition)
-                    })
-                    .await
-                    .map_err(map_blocking)?;
-                let now = LibraryTimestamp::parse(jiff::Timestamp::now().to_string())?;
-                let revision_id = materialized.interchange.revision.id.clone();
-                let name = materialized.interchange.descriptor.name.clone();
-                let request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
-                    "action":"skill_library.import", "artifact_id":target_id,
-                    "revision_id": revision_id,
-                    "expected_library_version":params.expected_library_version,
-                    "idempotency_key":params.idempotency_key
-                }))?;
-                let store = Arc::clone(&self.store);
-                let projection = Arc::clone(&self.projection);
-                let publication = Arc::clone(&self.publication);
-                let faults = Arc::clone(&self.faults);
-                let response_target = target_id.clone();
-                let outcome = self
-                    .blocking
-                    .run_after_admission("skill_artifact_import_commit", || async move {
-                        let decision = authorize_at_boundary(
-                            runtime,
-                            caller,
-                            project_id,
-                            SkillLibraryAction::Import,
-                            &target,
-                            SkillLibraryTarget::CreateForCaller,
-                            correlation_id,
-                        )
-                        .await
-                        .map_err(SkillLibraryDispatchError::Authorization)?;
-                        let authorization = decision.authorization;
-                        let ownership = decision.ownership;
-                        let audit = decision.audit;
-                        let audited_revision_id = revision_id.clone();
-                        let mutation = LibraryMutation::Create {
-                            record: SkillLibraryRecord {
-                                artifact_id: target_id.clone(),
-                                name,
-                                ownership: ownership.clone(),
-                                visibility: SkillVisibility::Private,
-                                archived: false,
-                                active_revision_id: None,
-                                created_at: now.clone(),
-                                updated_at: now.clone(),
-                            },
-                        };
-                        let committed_version = params
-                            .expected_library_version
-                            .checked_add(1)
-                            .ok_or(ArtifactError::Conflict("library_version_exhausted"))?;
-                        let terminal = SkillLibraryTerminalAudit::new(
-                            SkillLibraryTerminalOutcome::Committed,
-                            SkillLibraryTerminalStage::Commit,
-                        )
-                        .with_revision_id(&audited_revision_id)
-                        .with_versions(Some(committed_version), Some(committed_version));
-                        let idempotency = LibraryIdempotency {
-                            key: params.idempotency_key,
-                            request_digest,
-                            terminal_audit: Some(runtime_durable_audit(durable_terminal_audit(
-                                &audit, terminal,
-                            )?)),
-                        };
-                        Ok(move || {
-                            let result = (|| {
-                                let snapshot = store.library_snapshot()?;
-                                let generation =
-                                    projection.prepare(&store, &snapshot, Some(&mutation))?;
-                                publication.commit_library_outcome(
-                                    generation,
-                                    params.expected_library_version,
-                                    faults.as_ref(),
-                                    || {
-                                        store
-                                            .mutate_library_with_materialized_outcome(
-                                                &authorization,
-                                                &ownership,
-                                                params.expected_library_version,
-                                                idempotency,
-                                                mutation,
-                                                now,
-                                                materialized,
-                                                None,
-                                                |boundary| {
-                                                    transaction_fault(faults.as_ref(), boundary)
-                                                },
-                                            )
-                                            .map_err(SkillLibraryDispatchError::Artifact)
-                                    },
-                                )
-                            })();
-                            record_terminal_result(&audit, Some(&audited_revision_id), &result);
-                            result
-                        })
-                    })
-                    .await
-                    .map_err(map_dispatch_blocking)?;
-                self.mutation_response(response_target, outcome, false)
-                    .await
-            }
+            // Import is intentionally unavailable through the generic JSON dispatcher. Public
+            // adapters parse a server-side source selector and the sealed coordinator passes the
+            // owned, verified acquisition to `import_acquired` without serializing its bytes.
+            "skill_library.import" => Err(SkillLibraryDispatchError::InvalidParams),
             "skill_library.deactivate" | "skill_library.archive" => {
                 let params: super::params::LibraryMutationParams = parse(params)?;
                 let action = if action.ends_with("deactivate") {
@@ -974,6 +979,16 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             _ => Err(SkillLibraryDispatchError::UnknownAction),
         }
     }
+}
+
+/// Validate a coordinator-owned payload without changing its allocation. Keeping this move-only
+/// seam separate makes it impossible to accidentally reintroduce a JSON/string conversion at the
+/// product boundary.
+pub(super) fn validate_owned_acquisition(
+    acquisition: labby_runtime::artifacts::ArtifactAcquisition,
+) -> Result<labby_runtime::artifacts::ArtifactAcquisition, ArtifactError> {
+    acquisition.validate()?;
+    Ok(acquisition)
 }
 
 fn parse<T: DeserializeOwned>(value: Value) -> Result<T, SkillLibraryDispatchError> {

@@ -97,6 +97,9 @@ pub struct AppState {
             >,
         >,
     >,
+    #[cfg(feature = "skills")]
+    pub(crate) skill_library_imports:
+        Option<Arc<crate::dispatch::skill_library::import::ImportCoordinator>>,
 }
 
 impl AppState {
@@ -157,6 +160,8 @@ impl AppState {
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             #[cfg(feature = "skills")]
             skill_library: None,
+            #[cfg(feature = "skills")]
+            skill_library_imports: None,
             server_start: std::time::Instant::now(),
         }
     }
@@ -193,6 +198,16 @@ impl AppState {
         >,
     ) -> Self {
         self.skill_library = Some(service);
+        self
+    }
+
+    #[cfg(feature = "skills")]
+    #[must_use]
+    pub(crate) fn with_skill_library_imports(
+        mut self,
+        imports: Arc<crate::dispatch::skill_library::import::ImportCoordinator>,
+    ) -> Self {
+        self.skill_library_imports = Some(imports);
         self
     }
 

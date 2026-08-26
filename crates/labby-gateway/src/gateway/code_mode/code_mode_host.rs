@@ -1014,6 +1014,24 @@ pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCalle
             }
             PropagatedCallerAuth::scoped(scopes, sub.clone())
         }
+        CodeModeCaller::ScopedPrivate {
+            capabilities,
+            sub,
+            context_token,
+        } => {
+            let mut scopes = Vec::new();
+            if capabilities.is_admin {
+                scopes.push("lab:admin".to_string());
+            }
+            if capabilities.can_execute {
+                scopes.push("lab".to_string());
+            }
+            if capabilities.can_read {
+                scopes.push("lab:read".to_string());
+            }
+            PropagatedCallerAuth::scoped(scopes, sub.clone())
+                .with_private_context_token(context_token.clone())
+        }
     }
 }
 

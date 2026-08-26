@@ -217,6 +217,14 @@ impl SkillLibraryAuthorizationDecision {
     pub(crate) fn tenant_id(&self) -> &LibraryTenantId {
         &self.tenant_id
     }
+
+    pub(crate) fn artifact_access_snapshot(&self) -> crate::skills::facade::ArtifactAccessSnapshot {
+        crate::skills::facade::ArtifactAccessSnapshot::new(
+            self.tenant_id.clone(),
+            self.actor_id.clone(),
+            self.is_admin,
+        )
+    }
     /// Filter a previously loaded personal-record collection locally after one request snapshot.
     /// This makes list/get collision handling O(1) access queries rather than one query per Skill.
     pub(crate) fn permits_personal(&self, ownership: &LibraryOwnership) -> bool {

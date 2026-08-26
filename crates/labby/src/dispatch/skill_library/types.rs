@@ -2,43 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use labby_runtime::artifacts::{ArtifactAcquisition, ArtifactInterchange, ArtifactPayloadFile};
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LogicalFileInput {
     pub(crate) path: String,
     pub(crate) content: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct AcquisitionInput {
-    pub(crate) interchange: ArtifactInterchange,
-    pub(crate) files: Vec<AcquisitionFileInput>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct AcquisitionFileInput {
-    pub(crate) path: String,
-    pub(crate) content: String,
-}
-
-impl From<AcquisitionInput> for ArtifactAcquisition {
-    fn from(value: AcquisitionInput) -> Self {
-        Self {
-            interchange: value.interchange,
-            files: value
-                .files
-                .into_iter()
-                .map(|file| ArtifactPayloadFile {
-                    path: file.path,
-                    bytes: file.content.into_bytes(),
-                })
-                .collect(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]

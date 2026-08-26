@@ -637,11 +637,25 @@ impl LabMcpServer {
             "gateway codemode start"
         );
 
+        let private_access = self.artifact_access_for_request(context).await;
         let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
-            CodeModeCaller::Scoped {
-                capabilities: code_mode_capabilities_for_scopes(&auth.scopes),
-                sub: self.request_subject(context).map(ToOwned::to_owned),
-            }
+            let capabilities = code_mode_capabilities_for_scopes(&auth.scopes);
+            let sub = self.request_subject(context).map(ToOwned::to_owned);
+            private_access
+                .and_then(|access| {
+                    crate::mcp::skills::mint_private_artifact_context(sub.clone(), access)
+                })
+                .map_or_else(
+                    || CodeModeCaller::Scoped {
+                        capabilities,
+                        sub: sub.clone(),
+                    },
+                    |context_token| CodeModeCaller::ScopedPrivate {
+                        capabilities,
+                        sub: sub.clone(),
+                        context_token,
+                    },
+                )
         });
 
         // Per-run caller identity stamped onto journal rows at the flush

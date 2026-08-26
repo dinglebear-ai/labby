@@ -200,16 +200,16 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
     ),
     spec(
         "skill_library.import",
-        "Import bounded acquired Skill bytes without implicit activation",
+        "Import an exact revision through a server-configured source without implicit activation",
         false,
         false,
         "SkillMutationReceipt",
         &[
             ParamSpec {
-                name: "acquisition",
+                name: "source",
                 ty: "object",
                 required: true,
-                description: "Path-free ArtifactInterchange plus bounded UTF-8 logical payload files",
+                description: "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials",
             },
             VERSION,
             IDEM,
