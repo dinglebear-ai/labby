@@ -6,6 +6,7 @@
 //! Product transports remain adapters over this layer.
 
 pub mod canonical_json;
+pub mod library;
 pub mod lifecycle;
 mod local_io;
 pub mod model;
@@ -15,6 +16,11 @@ pub mod store;
 mod store_ops;
 pub mod validation;
 
+pub use library::{
+    LibraryActorId, LibraryAuditIntent, LibraryAuthorization, LibraryGrant, LibraryIdempotency,
+    LibraryMutation, LibraryOwnership, LibraryReceipt, LibrarySnapshot, LibraryTenantId,
+    LibraryTimestamp, SkillLibraryRecord, SkillVisibility,
+};
 pub use lifecycle::{
     ArtifactChangeKind, ArtifactComponentChange, ArtifactRevisionDiff, ArtifactUpdatePlan,
     ArtifactWorkspaceSnapshot, ArtifactWorkspaceSnapshotRequest,
@@ -70,6 +76,9 @@ pub enum ArtifactError {
     /// Another process currently holds the artifact mutation lock.
     #[error("artifact is busy")]
     Busy,
+    /// The durable Skill Library metadata is corrupt or internally inconsistent.
+    #[error("artifact Skill Library is degraded: {0}")]
+    LibraryCorrupt(&'static str),
     /// Safe-by-default export found content that resembles credential material.
     #[error("artifact export blocked because secret-like material was detected in `{path}`")]
     SecretMaterialDetected {
