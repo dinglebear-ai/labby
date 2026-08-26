@@ -1173,7 +1173,10 @@ impl LabMcpServer {
                     &["lab:read", "lab", "lab:admin"],
                 ));
             }
-            let registry = self.skill_registry_context(&context).await;
+            let registry = self
+                .skill_registry_context(&context)
+                .await
+                .map_err(crate::mcp::skills::skill_read_error)?;
             tracing::debug!(
                 surface = "mcp",
                 service = "labby",

@@ -1075,8 +1075,12 @@ fn map_blocking(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchErro
     match error {
         BlockingError::Operation(error) => error.into(),
         BlockingError::Busy { .. } => ArtifactError::Busy.into(),
-        BlockingError::Timeout { .. } | BlockingError::WorkerFailed { .. } => {
-            ArtifactError::Conflict("blocking_work_failed").into()
+        BlockingError::Timeout { operation } => {
+            SkillLibraryDispatchError::BlockingTimeout { operation }
+        }
+        BlockingError::WorkerFailed { operation } => {
+            tracing::error!(operation, "Skill Library blocking worker failed");
+            SkillLibraryDispatchError::BlockingWorkerFailed { operation }
         }
     }
 }
@@ -1087,8 +1091,8 @@ fn map_dispatch_blocking(
     match error {
         BlockingError::Operation(error) => error,
         BlockingError::Busy { .. } => ArtifactError::Busy.into(),
-        BlockingError::Timeout { .. } | BlockingError::WorkerFailed { .. } => {
-            ArtifactError::Conflict("blocking_work_failed").into()
+        BlockingError::Timeout { operation } | BlockingError::WorkerFailed { operation } => {
+            SkillLibraryDispatchError::BlockingIndeterminate { operation }
         }
     }
 }
@@ -1579,6 +1583,14 @@ pub(crate) enum SkillLibraryDispatchError {
     Serialization,
     #[error(transparent)]
     InjectedFault(#[from] InjectedFault),
+    /// The caller stopped waiting for blocking work whose durable outcome is not yet known.
+    /// Retrying the identical mutation with the same idempotency key reconciles a late commit.
+    #[error("Skill Library blocking outcome is indeterminate for {operation}")]
+    BlockingIndeterminate { operation: &'static str },
+    #[error("Skill Library blocking work timed out for {operation}")]
+    BlockingTimeout { operation: &'static str },
+    #[error("Skill Library blocking worker failed for {operation}")]
+    BlockingWorkerFailed { operation: &'static str },
 }
 
 /// Final production mutation boundary shared by every transport adapter.
@@ -1757,6 +1769,12 @@ mod tests {
         armed: AtomicBool,
     }
 
+    struct OneShotStageDelay {
+        stage: FaultStage,
+        armed: AtomicBool,
+        delay: std::time::Duration,
+    }
+
     async fn acceptance_dispatch(
         service: &SkillLibraryService<crate::skills::registry::FirstPartyGeneration>,
         runtime: &AccessRuntime,
@@ -1790,6 +1808,118 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    impl FaultInjector for OneShotStageDelay {
+        fn check(&self, stage: FaultStage) -> Result<(), InjectedFault> {
+            if stage == self.stage && self.armed.swap(false, Ordering::SeqCst) {
+                std::thread::sleep(self.delay);
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_timeout_is_indeterminate_and_same_key_reconciles_late_commit() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let access_path = root.path().join("access.db");
+        let access_store = AccessStore::open(access_path.clone()).await.unwrap();
+        let identity = VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "timeout-owner",
+        )
+        .unwrap();
+        access_store
+            .bootstrap_owner(
+                BootstrapOwnerInput::new(identity.clone(), "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        drop(access_store);
+        let runtime = AccessRuntime::initialize(access_path).await;
+        let store = Arc::new(ArtifactStore::new(root.path().join("artifacts")).unwrap());
+        let projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection);
+        let initial = projection
+            .prepare(&store, &store.library_snapshot().unwrap(), None)
+            .unwrap();
+        let publication = Arc::new(ActivationCoordinator::new(initial, 0));
+        let blocking = BoundedBlockingExecutor::new(
+            1,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(40),
+        )
+        .unwrap();
+        let service = SkillLibraryService::new(
+            Arc::clone(&store),
+            blocking,
+            Arc::clone(&publication),
+            Arc::clone(&projection),
+        )
+        .with_fault_injector(Arc::new(OneShotStageDelay {
+            stage: FaultStage::AfterCommitBeforeSwap,
+            armed: AtomicBool::new(true),
+            delay: std::time::Duration::from_millis(150),
+        }));
+        let params = json!({
+            "name": "timeout-recovery",
+            "files": [{"path":"SKILL.md", "content":"---\nname: timeout-recovery\ndescription: timeout recovery\n---\nbody\n"}],
+            "expected_library_version": 0,
+            "idempotency_key": "create-timeout-recovery"
+        });
+
+        let first = acceptance_dispatch(
+            &service,
+            &runtime,
+            &identity,
+            "skill_library.create",
+            params.clone(),
+            "timeout-recovery-first",
+        )
+        .await;
+        assert!(matches!(
+            first,
+            Err(SkillLibraryDispatchError::BlockingIndeterminate {
+                operation: "skill_artifact_commit"
+            })
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store.library_snapshot().unwrap().version == 1
+                    && publication.health() == (PublicationHealth::Ready { library_version: 1 })
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            publication.health(),
+            PublicationHealth::Ready { library_version: 1 }
+        );
+
+        let replay = acceptance_dispatch(
+            &service,
+            &runtime,
+            &identity,
+            "skill_library.create",
+            params,
+            "timeout-recovery-replay",
+        )
+        .await
+        .unwrap();
+        assert_eq!(replay["outcome"], "replayed");
+        assert_eq!(replay["committed_library_version"], 1);
     }
 
     #[tokio::test]

@@ -17,134 +17,10 @@ use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 
 #[cfg(feature = "skills")]
-fn map_skill_library_error(
-    error: crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError,
-) -> ToolError {
-    use crate::dispatch::skill_library::auth::SkillLibraryAuthorizationError;
-    use crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError;
-    use labby_runtime::artifacts::ArtifactError;
-
-    match error {
-        SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied) => {
-            ToolError::Forbidden {
-                message: "Skill Library access denied".to_owned(),
-                required_scopes: Vec::new(),
-            }
-        }
-        SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Unavailable) => {
-            ToolError::Sdk {
-                sdk_kind: "service_unavailable".to_owned(),
-                message: "Skill Library authorization is unavailable".to_owned(),
-            }
-        }
-        SkillLibraryDispatchError::Artifact(ArtifactError::InvalidField { field, .. }) => {
-            ToolError::InvalidParam {
-                message: "Skill Library parameter is invalid".to_owned(),
-                param: field.to_owned(),
-            }
-        }
-        SkillLibraryDispatchError::Artifact(
-            ArtifactError::UnsupportedSchema
-            | ArtifactError::UnsafePath(_)
-            | ArtifactError::SecretMaterialDetected { .. }
-            | ArtifactError::SkillVerification
-            | ArtifactError::LogicalSkillFile { .. },
-        )
-        | SkillLibraryDispatchError::InvalidParams => ToolError::InvalidParam {
-            message: "Skill Library parameters are invalid".to_owned(),
-            param: "params".to_owned(),
-        },
-        SkillLibraryDispatchError::Artifact(ArtifactError::LimitExceeded { .. }) => {
-            ToolError::Sdk {
-                sdk_kind: "budget_exceeded".to_owned(),
-                message: "Skill Library request exceeds a safety budget".to_owned(),
-            }
-        }
-        SkillLibraryDispatchError::Artifact(ArtifactError::NotFound(_)) => ToolError::Sdk {
-            sdk_kind: "not_found".to_owned(),
-            message: "Skill Library item was not found".to_owned(),
-        },
-        SkillLibraryDispatchError::Artifact(ArtifactError::Conflict(reason)) => {
-            if reason == "blocking_work_failed" {
-                ToolError::Sdk {
-                    sdk_kind: "timeout".to_owned(),
-                    message: "Skill Library work did not complete in time".to_owned(),
-                }
-            } else {
-                ToolError::Conflict {
-                    message: if reason == "library_version_changed" {
-                        "Skill Library version is stale; re-list and retry"
-                    } else {
-                        "Skill Library state conflicts with this request"
-                    }
-                    .to_owned(),
-                    existing_id: "skill_library".to_owned(),
-                }
-            }
-        }
-        SkillLibraryDispatchError::Artifact(ArtifactError::Busy) => ToolError::Sdk {
-            sdk_kind: "queue_saturated".to_owned(),
-            message: "Skill Library is busy; retry later".to_owned(),
-        },
-        SkillLibraryDispatchError::Artifact(ArtifactError::CommittedPending {
-            committed_version,
-        }) => ToolError::contract(
-            "service_unavailable",
-            "Skill Library commit requires reconciliation",
-            serde_json::Map::from_iter([(
-                "committed_version".to_owned(),
-                committed_version.into(),
-            )]),
-            None,
-            None,
-            None,
-        ),
-        SkillLibraryDispatchError::Artifact(
-            ArtifactError::LibraryCorrupt(_) | ArtifactError::Io(_) | ArtifactError::Json(_),
-        )
-        | SkillLibraryDispatchError::Serialization
-        | SkillLibraryDispatchError::InjectedFault(_) => ToolError::Sdk {
-            sdk_kind: "internal_error".to_owned(),
-            message: "Skill Library operation failed".to_owned(),
-        },
-        SkillLibraryDispatchError::UnknownAction => ToolError::UnknownAction {
-            message: "unknown Skill Library action".to_owned(),
-            valid: crate::dispatch::skill_library::catalog::ACTIONS
-                .iter()
-                .map(|spec| spec.name.to_owned())
-                .collect(),
-            hint: Some("use skills schema to inspect supported actions".to_owned()),
-        },
-    }
-}
-
-#[cfg(feature = "skills")]
 fn map_import_adapter_error(
     error: crate::dispatch::skill_library::import::ImportAdapterError,
 ) -> ToolError {
-    use crate::dispatch::skill_library::import::ImportAdapterError;
-    match error {
-        ImportAdapterError::SourceUnavailable => ToolError::Sdk {
-            sdk_kind: "source_unavailable".to_owned(),
-            message: "Requested Skill import source is not configured".to_owned(),
-        },
-        ImportAdapterError::Artifact(labby_runtime::artifacts::ArtifactError::Conflict(
-            "provider_timeout",
-        )) => ToolError::Sdk {
-            sdk_kind: "timeout".to_owned(),
-            message: "Skill import source timed out".to_owned(),
-        },
-        ImportAdapterError::Artifact(labby_runtime::artifacts::ArtifactError::Conflict(
-            "source_authorization_expired",
-        )) => ToolError::Forbidden {
-            message: "Skill import source authorization failed".to_owned(),
-            required_scopes: Vec::new(),
-        },
-        ImportAdapterError::Artifact(error) => map_skill_library_error(
-            crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError::Artifact(error),
-        ),
-        ImportAdapterError::Dispatch(error) => map_skill_library_error(error),
-    }
+    crate::dispatch::skill_library::map_import_error(error)
 }
 
 async fn dispatch_at_api_boundary(
@@ -161,7 +37,6 @@ pub fn routes(_state: AppState) -> Router<AppState> {
 
 #[cfg(all(test, feature = "skills"))]
 mod skill_library_error_tests {
-    use super::*;
     use crate::dispatch::skill_library::auth::SkillLibraryAuthorizationError;
     use crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError;
     use labby_runtime::artifacts::ArtifactError;
@@ -189,20 +64,50 @@ mod skill_library_error_tests {
             ),
         ];
         for (error, expected) in cases {
-            assert_eq!(map_skill_library_error(error).kind(), expected);
+            assert_eq!(
+                crate::dispatch::skill_library::map_dispatch_error(error).kind(),
+                expected
+            );
         }
     }
 
     #[test]
     fn management_internal_error_redacts_os_message_and_path() {
         const CANARY: &str = "/private/canary/never-return-this";
-        let mapped = map_skill_library_error(SkillLibraryDispatchError::Artifact(
-            ArtifactError::Io(std::io::Error::other(CANARY)),
-        ));
+        let mapped = crate::dispatch::skill_library::map_dispatch_error(
+            SkillLibraryDispatchError::Artifact(ArtifactError::Io(std::io::Error::other(CANARY))),
+        );
         let wire = serde_json::to_string(&mapped).expect("serialize ToolError");
         assert_eq!(mapped.kind(), "internal_error");
         assert!(!wire.contains(CANARY));
         assert!(!wire.contains("private"));
+    }
+
+    #[test]
+    fn indeterminate_mutation_error_requires_same_key_reconciliation() {
+        let mapped = crate::dispatch::skill_library::map_dispatch_error(
+            SkillLibraryDispatchError::BlockingIndeterminate {
+                operation: "skill_artifact_commit",
+            },
+        );
+
+        assert_eq!(mapped.kind(), "service_unavailable");
+        let fields = mapped.extra_fields();
+        assert_eq!(fields["operation"], "skill_artifact_commit");
+        assert_eq!(fields["outcome"], "indeterminate");
+        assert_eq!(fields["recovery"], "retry_with_same_idempotency_key");
+    }
+
+    #[test]
+    fn worker_failure_is_not_misreported_as_a_timeout() {
+        let mapped = crate::dispatch::skill_library::map_dispatch_error(
+            SkillLibraryDispatchError::BlockingWorkerFailed {
+                operation: "skill_library_list",
+            },
+        );
+
+        assert_eq!(mapped.kind(), "internal_error");
+        assert_ne!(mapped.kind(), "timeout");
     }
 }
 
@@ -388,7 +293,7 @@ async fn handle(
                         &correlation,
                     )
                     .await
-                    .map_err(map_skill_library_error);
+                    .map_err(crate::dispatch::skill_library::map_dispatch_error);
             }
             #[cfg(feature = "gateway")]
             if let Some(manager) = manager.as_ref() {

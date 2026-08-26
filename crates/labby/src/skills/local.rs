@@ -345,19 +345,54 @@ fn load_local_skills_bounded_with_hook(
     limits: Option<LocalLoadLimits>,
     after_stat: &impl Fn(&Path),
 ) -> Result<LocalSkillLoad, LocalLoadLimit> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Ok(LocalSkillLoad::default());
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LocalSkillLoad::default());
+        }
+        Err(error) => {
+            let reason = format!("cannot scan operator skill root: {error}");
+            tracing::warn!(
+                root = %root.display(),
+                reason = %reason,
+                "operator skill root is unavailable"
+            );
+            return Ok(LocalSkillLoad {
+                rejections: vec![LocalSkillRejection {
+                    skill: "<root>".to_string(),
+                    reason,
+                }],
+                ..LocalSkillLoad::default()
+            });
+        }
     };
 
     let mut loaded = LocalSkillLoad::default();
-    let mut paths = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(error) => loaded.rejections.push(LocalSkillRejection {
+                skill: "<directory-entry>".to_string(),
+                reason: format!("cannot inspect operator skill entry: {error}"),
+            }),
+        }
+    }
     paths.sort();
     for path in paths {
-        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
-            continue;
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                loaded.rejections.push(LocalSkillRejection {
+                    skill: path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("<invalid-name>")
+                        .to_string(),
+                    reason: format!("cannot inspect operator skill path: {error}"),
+                });
+                continue;
+            }
         };
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             continue;
@@ -531,6 +566,22 @@ mod tests {
             .is_err()
         );
         assert!(out.is_empty());
+        let loaded = load_local_skills_bounded(missing, None).expect("missing root is normal");
+        assert!(loaded.skills.is_empty());
+        assert!(loaded.rejections.is_empty());
+    }
+
+    #[test]
+    fn an_unscannable_root_is_reported_instead_of_looking_empty() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("not-a-directory");
+        fs::write(&root, "not a directory").expect("write root file");
+        let loaded = load_local_skills_bounded(&root, None).expect("load result");
+
+        assert!(loaded.skills.is_empty());
+        assert_eq!(loaded.rejections.len(), 1);
+        assert_eq!(loaded.rejections[0].skill, "<root>");
+        assert!(loaded.rejections[0].reason.contains("cannot scan"));
     }
 
     #[test]

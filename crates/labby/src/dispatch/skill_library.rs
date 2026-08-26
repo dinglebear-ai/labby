@@ -89,21 +89,14 @@ pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> 
             message: "Skill Library item was not found".to_owned(),
         },
         SkillLibraryDispatchError::Artifact(ArtifactError::Conflict(reason)) => {
-            if reason == "blocking_work_failed" {
-                ToolError::Sdk {
-                    sdk_kind: "timeout".to_owned(),
-                    message: "Skill Library work did not complete in time".to_owned(),
+            ToolError::Conflict {
+                message: if reason == "library_version_changed" {
+                    "Skill Library version is stale; re-list and retry"
+                } else {
+                    "Skill Library state conflicts with this request"
                 }
-            } else {
-                ToolError::Conflict {
-                    message: if reason == "library_version_changed" {
-                        "Skill Library version is stale; re-list and retry"
-                    } else {
-                        "Skill Library state conflicts with this request"
-                    }
-                    .to_owned(),
-                    existing_id: "skill_library".to_owned(),
-                }
+                .to_owned(),
+                existing_id: "skill_library".to_owned(),
             }
         }
         SkillLibraryDispatchError::Artifact(ArtifactError::Busy) => ToolError::Sdk {
@@ -115,10 +108,13 @@ pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> 
         }) => ToolError::contract(
             "service_unavailable",
             "Skill Library commit requires reconciliation",
-            serde_json::Map::from_iter([(
-                "committed_version".to_owned(),
-                committed_version.into(),
-            )]),
+            serde_json::Map::from_iter([
+                ("committed_version".to_owned(), committed_version.into()),
+                (
+                    "recovery".to_owned(),
+                    "retry_with_same_idempotency_key".into(),
+                ),
+            ]),
             None,
             None,
             None,
@@ -130,6 +126,29 @@ pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> 
         | SkillLibraryDispatchError::InjectedFault(_) => ToolError::Sdk {
             sdk_kind: "internal_error".to_owned(),
             message: "Skill Library operation failed".to_owned(),
+        },
+        SkillLibraryDispatchError::BlockingIndeterminate { operation } => ToolError::contract(
+            "service_unavailable",
+            "Skill Library outcome is indeterminate; retry the identical request with the same idempotency key",
+            serde_json::Map::from_iter([
+                ("operation".to_owned(), operation.into()),
+                ("outcome".to_owned(), "indeterminate".into()),
+                (
+                    "recovery".to_owned(),
+                    "retry_with_same_idempotency_key".into(),
+                ),
+            ]),
+            None,
+            None,
+            None,
+        ),
+        SkillLibraryDispatchError::BlockingTimeout { .. } => ToolError::Sdk {
+            sdk_kind: "timeout".to_owned(),
+            message: "Skill Library work did not complete in time".to_owned(),
+        },
+        SkillLibraryDispatchError::BlockingWorkerFailed { .. } => ToolError::Sdk {
+            sdk_kind: "internal_error".to_owned(),
+            message: "Skill Library worker failed".to_owned(),
         },
         SkillLibraryDispatchError::UnknownAction => ToolError::UnknownAction {
             message: "unknown Skill Library action".to_owned(),
@@ -147,6 +166,18 @@ pub(crate) fn map_import_error(error: import::ImportAdapterError) -> ToolError {
         import::ImportAdapterError::SourceUnavailable => ToolError::Sdk {
             sdk_kind: "source_unavailable".to_owned(),
             message: "Requested Skill import source is not configured".to_owned(),
+        },
+        import::ImportAdapterError::Artifact(ArtifactError::Conflict("provider_timeout")) => {
+            ToolError::Sdk {
+                sdk_kind: "timeout".to_owned(),
+                message: "Skill import source timed out".to_owned(),
+            }
+        }
+        import::ImportAdapterError::Artifact(ArtifactError::Conflict(
+            "source_authorization_expired",
+        )) => ToolError::Forbidden {
+            message: "Skill import source authorization failed".to_owned(),
+            required_scopes: Vec::new(),
         },
         import::ImportAdapterError::Artifact(error) => {
             map_dispatch_error(dispatch::SkillLibraryDispatchError::Artifact(error))

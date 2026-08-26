@@ -28,6 +28,21 @@ use crate::skills::facade::{
     SkillCallerScope, SkillRegistryContext, get_visible_skill, list_visible_skills,
 };
 
+fn optional_header_str<'a>(
+    headers: &'a axum::http::HeaderMap,
+    name: &'static str,
+) -> Result<Option<&'a str>, ToolError> {
+    headers
+        .get(name)
+        .map(|value| {
+            value.to_str().map_err(|_| ToolError::InvalidParam {
+                message: "Skill Library request header is invalid".to_owned(),
+                param: name.to_owned(),
+            })
+        })
+        .transpose()
+}
+
 pub(crate) async fn dispatch_at_in_process_boundary(
     registry: &SkillRegistryContext,
     action: &str,
@@ -62,58 +77,95 @@ where
 fn private_artifact_access_for_in_process_meta(
     transport_label: &str,
     meta: Option<&rmcp::model::RequestMetaObject>,
-) -> Option<crate::skills::facade::ArtifactAccessSnapshot> {
+) -> Result<Option<crate::skills::facade::ArtifactAccessSnapshot>, ToolError> {
     if transport_label != crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL {
-        return None;
+        return Ok(None);
     }
-    let auth = propagated_caller_auth(meta)?;
-    let token = auth.private_context_token.as_deref()?;
-    private_artifact_context(token, auth.sub.as_deref())
+    let Some(auth) = propagated_caller_auth(meta) else {
+        return Ok(None);
+    };
+    let Some(token) = auth.private_context_token.as_deref() else {
+        return Ok(None);
+    };
+    private_artifact_context(token, auth.sub.as_deref()).map(Some)
+}
+
+#[cfg(feature = "gateway")]
+fn attach_private_artifact_context(
+    registry: SkillRegistryContext,
+    transport_label: &str,
+    meta: Option<&rmcp::model::RequestMetaObject>,
+) -> Result<SkillRegistryContext, ToolError> {
+    Ok(
+        match private_artifact_access_for_in_process_meta(transport_label, meta)? {
+            Some(access) => registry.with_artifact_access(access),
+            None => registry,
+        },
+    )
 }
 
 impl LabMcpServer {
     pub(crate) async fn artifact_access_for_request(
         &self,
         context: &RequestContext<RoleServer>,
-    ) -> Option<crate::skills::facade::ArtifactAccessSnapshot> {
-        let parts = context.extensions.get::<axum::http::request::Parts>()?;
-        let identity = parts
-            .extensions
-            .get::<labby_auth::VerifiedIdentity>()?
-            .clone();
-        let auth = parts
-            .extensions
-            .get::<labby_auth::auth_context::AuthContext>()?
-            .clone();
-        let project_id = parts.headers.get("x-labby-project-id")?.to_str().ok()?;
+    ) -> Result<Option<crate::skills::facade::ArtifactAccessSnapshot>, ToolError> {
+        let Some(parts) = context.extensions.get::<axum::http::request::Parts>() else {
+            return Ok(None);
+        };
+        let (Some(identity), Some(auth), Some(project_header)) = (
+            parts.extensions.get::<labby_auth::VerifiedIdentity>(),
+            parts
+                .extensions
+                .get::<labby_auth::auth_context::AuthContext>(),
+            parts.headers.get("x-labby-project-id"),
+        ) else {
+            return Ok(None);
+        };
+        let project_id = project_header
+            .to_str()
+            .map_err(|_| ToolError::InvalidParam {
+                message: "Skill Library project context is invalid".to_owned(),
+                param: "x-labby-project-id".to_owned(),
+            })?;
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
-            identity,
-            auth.scopes,
+            identity.clone(),
+            auth.scopes.clone(),
             crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
                 crate::dispatch::skill_library::auth::SkillLibrarySurface::Mcp,
                 true,
             ),
         );
-        let correlation = crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(
-            parts
-                .headers
-                .get("x-request-id")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("mcp-skills-read"),
-        )
-        .ok()?;
-        crate::dispatch::skill_library::auth::authorize_at_boundary(
+        let request_id =
+            optional_header_str(&parts.headers, "x-request-id")?.unwrap_or("mcp-skills-read");
+        let correlation =
+            crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(request_id)
+                .map_err(|_| ToolError::InvalidParam {
+                    message: "Skill Library request correlation is invalid".to_owned(),
+                    param: "x-request-id".to_owned(),
+                })?;
+        let decision = crate::dispatch::skill_library::auth::authorize_at_boundary(
             &self.access_runtime,
             caller,
             project_id,
             crate::dispatch::skill_library::auth::SkillLibraryAction::List,
-            &crate::dispatch::skill_library::audit::CanonicalArtifactId::parse("library").ok()?,
+            &crate::dispatch::skill_library::audit::CanonicalArtifactId::parse("library").map_err(
+                |_| ToolError::Sdk {
+                    sdk_kind: "internal_error".to_owned(),
+                    message: "Skill Library authorization request is invalid".to_owned(),
+                },
+            )?,
             crate::dispatch::skill_library::auth::SkillLibraryTarget::SharedActive,
             &correlation,
         )
         .await
-        .ok()
-        .map(|decision| decision.artifact_access_snapshot())
+        .map_err(|error| {
+            crate::dispatch::skill_library::map_dispatch_error(
+                crate::dispatch::skill_library::dispatch::SkillLibraryDispatchError::Authorization(
+                    error,
+                ),
+            )
+        })?;
+        Ok(Some(decision.artifact_access_snapshot()))
     }
 
     #[cfg(feature = "skills")]
@@ -136,20 +188,15 @@ impl LabMcpServer {
                 required_scopes: Vec::new(),
             })?;
         let boundary = super::call_tool::skill_library_callback_boundary(parts)?;
-        let project_id = parts
-            .headers
-            .get("x-labby-project-id")
-            .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| ToolError::Forbidden {
-                message: "Skill Library project context is required".to_owned(),
-                required_scopes: Vec::new(),
+        let project_id =
+            optional_header_str(&parts.headers, "x-labby-project-id")?.ok_or_else(|| {
+                ToolError::Forbidden {
+                    message: "Skill Library project context is required".to_owned(),
+                    required_scopes: Vec::new(),
+                }
             })?;
-        let correlation = super::call_tool::skill_library_callback_correlation(
-            parts
-                .headers
-                .get("x-request-id")
-                .and_then(|value| value.to_str().ok()),
-        )?;
+        let request_id = optional_header_str(&parts.headers, "x-request-id")?;
+        let correlation = super::call_tool::skill_library_callback_correlation(request_id)?;
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
             boundary.identity,
             boundary.scopes,
@@ -196,11 +243,11 @@ impl LabMcpServer {
     pub(crate) async fn skill_registry_context(
         &self,
         context: &RequestContext<RoleServer>,
-    ) -> SkillRegistryContext {
+    ) -> Result<SkillRegistryContext, ToolError> {
         #[cfg(feature = "gateway")]
         {
             let Some(manager) = self.gateway_manager.as_ref() else {
-                return SkillRegistryContext::first_party_only();
+                return Ok(SkillRegistryContext::first_party_only());
             };
             let access = if manager.code_mode_enabled().await {
                 ToolAccess::CodeModeOnly
@@ -216,20 +263,20 @@ impl LabMcpServer {
             };
             let registry =
                 SkillRegistryContext::with_manager(std::sync::Arc::clone(manager), scope);
-            return match self.artifact_access_for_request(context).await {
+            return Ok(match self.artifact_access_for_request(context).await? {
                 Some(access) => registry.with_artifact_access(access),
                 None => registry,
-            };
+            });
         }
 
         #[cfg(not(feature = "gateway"))]
         {
             let _ = context;
             let registry = SkillRegistryContext::first_party_only();
-            match self.artifact_access_for_request(context).await {
+            Ok(match self.artifact_access_for_request(context).await? {
                 Some(access) => registry.with_artifact_access(access),
                 None => registry,
-            }
+            })
         }
     }
 
@@ -240,25 +287,23 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
         meta: Option<&rmcp::model::RequestMetaObject>,
-    ) -> SkillRegistryContext {
+    ) -> Result<SkillRegistryContext, ToolError> {
         #[cfg(feature = "gateway")]
         {
             if self.gateway_manager.is_some() {
                 return self.skill_registry_context(context).await;
             }
             if self.transport_label != crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL {
-                return SkillRegistryContext::first_party_only();
+                return Ok(SkillRegistryContext::first_party_only());
             }
             let Some(auth) = propagated_caller_auth(meta) else {
-                return SkillRegistryContext::first_party_only();
+                return Ok(SkillRegistryContext::first_party_only());
             };
-            let artifact_access =
-                private_artifact_access_for_in_process_meta(&self.transport_label, meta);
             let Some(propagated_scope) = propagated_caller_upstream_scope(meta) else {
-                return SkillRegistryContext::first_party_only();
+                return Ok(SkillRegistryContext::first_party_only());
             };
             let Some(manager) = labby_gateway::gateway::current_gateway_manager() else {
-                return SkillRegistryContext::first_party_only();
+                return Ok(SkillRegistryContext::first_party_only());
             };
             let subject =
                 if auth.trusted_local || auth.scopes.iter().any(|scope| scope == "lab:admin") {
@@ -273,16 +318,13 @@ impl LabMcpServer {
                 }
             };
             let registry = SkillRegistryContext::with_manager(manager, scope);
-            return match artifact_access {
-                Some(access) => registry.with_artifact_access(access),
-                None => registry,
-            };
+            return attach_private_artifact_context(registry, &self.transport_label, meta);
         }
 
         #[cfg(not(feature = "gateway"))]
         {
             let _ = (context, meta);
-            SkillRegistryContext::first_party_only()
+            Ok(SkillRegistryContext::first_party_only())
         }
     }
 
@@ -306,7 +348,7 @@ impl LabMcpServer {
                     .dispatch_skill_library_management(context, action, params)
                     .await;
             }
-            let registry = self.skill_registry_context_for_tool(context, meta).await;
+            let registry = self.skill_registry_context_for_tool(context, meta).await?;
             dispatch_at_in_process_boundary(&registry, action, params).await
         })
     }
@@ -387,7 +429,10 @@ impl LabMcpServer {
             .map_err(|error| ErrorData::internal_error(error.to_string(), None));
         }
 
-        let registry = self.skill_registry_context(context).await;
+        let registry = self
+            .skill_registry_context(context)
+            .await
+            .map_err(skill_read_error)?;
         tracing::debug!(
             surface = "mcp",
             service = "labby",
@@ -458,34 +503,87 @@ fn private_artifact_contexts() -> &'static Mutex<BTreeMap<String, PrivateArtifac
 pub(crate) fn mint_private_artifact_context(
     subject: Option<String>,
     access: crate::skills::facade::ArtifactAccessSnapshot,
-) -> Option<String> {
+) -> Result<String, ToolError> {
+    mint_private_artifact_context_in(
+        private_artifact_contexts(),
+        subject,
+        access,
+        MAX_PRIVATE_ARTIFACT_CONTEXTS,
+        PRIVATE_ARTIFACT_CONTEXT_TTL,
+    )
+}
+
+fn private_context_unavailable(kind: &str, message: &str) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: kind.to_owned(),
+        message: message.to_owned(),
+    }
+}
+
+fn mint_private_artifact_context_in(
+    store: &Mutex<BTreeMap<String, PrivateArtifactContext>>,
+    subject: Option<String>,
+    access: crate::skills::facade::ArtifactAccessSnapshot,
+    capacity: usize,
+    ttl: Duration,
+) -> Result<String, ToolError> {
     let now = Instant::now();
-    let mut contexts = private_artifact_contexts().lock().ok()?;
+    let mut contexts = store.lock().map_err(|_| {
+        private_context_unavailable(
+            "service_unavailable",
+            "private Code Mode authorization context is unavailable",
+        )
+    })?;
     contexts.retain(|_, context| context.expires > now);
-    if contexts.len() >= MAX_PRIVATE_ARTIFACT_CONTEXTS {
-        return None;
+    if contexts.len() >= capacity {
+        return Err(private_context_unavailable(
+            "queue_saturated",
+            "private Code Mode authorization context capacity is exhausted",
+        ));
     }
     let token = ulid::Ulid::new().to_string();
     contexts.insert(
         token.clone(),
         PrivateArtifactContext {
-            expires: now + PRIVATE_ARTIFACT_CONTEXT_TTL,
+            expires: now + ttl,
             subject,
             access,
         },
     );
-    Some(token)
+    Ok(token)
 }
 
 fn private_artifact_context(
     token: &str,
     subject: Option<&str>,
-) -> Option<crate::skills::facade::ArtifactAccessSnapshot> {
+) -> Result<crate::skills::facade::ArtifactAccessSnapshot, ToolError> {
+    private_artifact_context_in(private_artifact_contexts(), token, subject)
+}
+
+fn private_artifact_context_in(
+    store: &Mutex<BTreeMap<String, PrivateArtifactContext>>,
+    token: &str,
+    subject: Option<&str>,
+) -> Result<crate::skills::facade::ArtifactAccessSnapshot, ToolError> {
     let now = Instant::now();
-    let mut contexts = private_artifact_contexts().lock().ok()?;
+    let mut contexts = store.lock().map_err(|_| {
+        private_context_unavailable(
+            "service_unavailable",
+            "private Code Mode authorization context is unavailable",
+        )
+    })?;
     contexts.retain(|_, context| context.expires > now);
-    let context = contexts.get(token)?;
-    (context.subject.as_deref() == subject).then(|| context.access.clone())
+    let context = contexts.get(token).ok_or_else(|| ToolError::Forbidden {
+        message: "private Code Mode authorization context is invalid".to_owned(),
+        required_scopes: Vec::new(),
+    })?;
+    if context.subject.as_deref() != subject {
+        return Err(ToolError::Forbidden {
+            message: "private Code Mode authorization context is invalid".to_owned(),
+            required_scopes: Vec::new(),
+        });
+    }
+    Ok(context.access.clone())
 }
 
 #[cfg(test)]
@@ -663,12 +761,14 @@ mod serve_tests {
         let token = mint_private_artifact_context(
             Some(subject.to_owned()),
             decision.artifact_access_snapshot(),
-        )?;
+        )
+        .ok()?;
         let meta = private_hop_meta(subject, token);
         let access = private_artifact_access_for_in_process_meta(
             crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL,
             Some(&meta),
-        )?;
+        )
+        .ok()??;
         Some(
             SkillRegistryContext::from_generation(artifact_generation())
                 .with_artifact_access(access),
@@ -866,9 +966,129 @@ mod serve_tests {
             false,
         );
         let token = mint_private_artifact_context(Some("subject-a".to_owned()), access).unwrap();
-        assert!(private_artifact_context("forged", Some("subject-a")).is_none());
-        assert!(private_artifact_context(&token, Some("subject-b")).is_none());
-        assert!(private_artifact_context(&token, Some("subject-a")).is_some());
+        assert!(private_artifact_context("forged", Some("subject-a")).is_err());
+        assert!(private_artifact_context(&token, Some("subject-b")).is_err());
+        assert!(private_artifact_context(&token, Some("subject-a")).is_ok());
+    }
+
+    #[test]
+    fn private_artifact_context_saturation_is_typed_and_does_not_downgrade() {
+        use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId};
+
+        let access = crate::skills::facade::ArtifactAccessSnapshot::new(
+            LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+            LibraryActorId::from_canonical_projection("owner").unwrap(),
+            false,
+        );
+        let store = Mutex::new(BTreeMap::new());
+        mint_private_artifact_context_in(
+            &store,
+            Some("subject-a".to_owned()),
+            access.clone(),
+            1,
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        let error = mint_private_artifact_context_in(
+            &store,
+            Some("subject-b".to_owned()),
+            access,
+            1,
+            Duration::from_secs(30),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "queue_saturated");
+    }
+
+    #[test]
+    fn private_artifact_context_expiry_is_a_redacted_denial() {
+        use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId};
+
+        let access = crate::skills::facade::ArtifactAccessSnapshot::new(
+            LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+            LibraryActorId::from_canonical_projection("owner").unwrap(),
+            false,
+        );
+        let store = Mutex::new(BTreeMap::new());
+        let token = mint_private_artifact_context_in(
+            &store,
+            Some("subject-a".to_owned()),
+            access,
+            1,
+            Duration::ZERO,
+        )
+        .unwrap();
+        let error = match private_artifact_context_in(&store, &token, Some("subject-a")) {
+            Ok(_) => panic!("expired private context must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), "forbidden");
+        assert!(!error.to_string().contains(&token));
+        assert!(!error.to_string().contains("subject-a"));
+    }
+
+    #[test]
+    fn private_artifact_context_poison_is_typed_and_redacted() {
+        use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId};
+
+        let access = crate::skills::facade::ArtifactAccessSnapshot::new(
+            LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+            LibraryActorId::from_canonical_projection("owner").unwrap(),
+            false,
+        );
+        let store = Mutex::new(BTreeMap::new());
+        let _poisoned = std::panic::catch_unwind(|| {
+            let _guard = store.lock().unwrap();
+            panic!("poison test store");
+        });
+        let error = mint_private_artifact_context_in(
+            &store,
+            Some("secret-subject".to_owned()),
+            access,
+            1,
+            Duration::from_secs(30),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "service_unavailable");
+        assert!(!error.to_string().contains("secret-subject"));
+    }
+
+    #[test]
+    fn malformed_skill_library_headers_are_not_treated_as_missing() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-labby-project-id",
+            axum::http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        headers.insert(
+            "x-request-id",
+            axum::http::HeaderValue::from_bytes(b"\xfe").unwrap(),
+        );
+
+        let project_error = optional_header_str(&headers, "x-labby-project-id").unwrap_err();
+        assert_eq!(project_error.kind(), "invalid_param");
+        assert_eq!(project_error.extra_fields()["param"], "x-labby-project-id");
+        let request_error = optional_header_str(&headers, "x-request-id").unwrap_err();
+        assert_eq!(request_error.kind(), "invalid_param");
+        assert_eq!(request_error.extra_fields()["param"], "x-request-id");
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn private_code_mode_registry_propagates_invalid_context_instead_of_downgrading() {
+        let meta = private_hop_meta("subject-a", "forged-private-context".to_owned());
+        let error = match attach_private_artifact_context(
+            SkillRegistryContext::from_generation(artifact_generation()),
+            crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL,
+            Some(&meta),
+        ) {
+            Ok(_) => panic!("forged private context must not yield a downgraded registry"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), "forbidden");
+        assert!(!error.to_string().contains("forged-private-context"));
+        assert!(!error.to_string().contains("subject-a"));
     }
 
     fn write_native_skill(root: &std::path::Path, version: &str) {

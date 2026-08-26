@@ -148,7 +148,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
     ),
     spec(
         "skill_library.create",
-        "Create a private stored Skill without activating it",
+        "Create a stored Skill without activating it; visibility defaults to private",
         false,
         false,
         "SkillMutationReceipt",

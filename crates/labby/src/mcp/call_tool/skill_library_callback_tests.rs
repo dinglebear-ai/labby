@@ -604,6 +604,11 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
         assert_eq!(item["latest_revision_id"], expected_revision, "{label}");
         assert_eq!(got["latest_revision_id"], expected_revision, "{label}");
+        assert_eq!(item["active_revision_id"], expected_revision, "{label}");
+        assert_eq!(got["active_revision_id"], expected_revision, "{label}");
+        assert_eq!(item["published_library_version"], 2, "{label}");
+        assert_eq!(got["published_library_version"], 2, "{label}");
+        assert_eq!(got["current_generation"], 2, "{label}");
         assert_eq!(
             item["canonical_uri"], "skill://labby/mcp-production-wire/SKILL.md",
             "{label}"
@@ -742,6 +747,33 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     .await
     .expect("member denial response");
     assert!(member_denied.is_error.unwrap_or(false));
+    let member_denied_envelope = member_denied.structured_content.clone().unwrap_or_else(|| {
+        serde_json::from_str(
+            member_denied.content[0]
+                .as_text()
+                .expect("member denial text")
+                .text
+                .as_str(),
+        )
+        .expect("member denial envelope")
+    });
+    assert_eq!(member_denied_envelope["error"]["kind"], "forbidden");
+
+    let unchanged = Box::pin(running.service().call_tool_impl(
+        call(
+            "skill_library.get",
+            serde_json::json!({"artifact_id": artifact_id}),
+        ),
+        context(&eli),
+    ))
+    .await
+    .expect("owner observes state after member denial");
+    assert!(!unchanged.is_error.unwrap_or(false), "{unchanged:?}");
+    let unchanged = value(&unchanged);
+    assert_eq!(unchanged["active_revision_id"], expected_revision);
+    assert_eq!(unchanged["latest_revision_id"], expected_revision);
+    assert_eq!(unchanged["published_library_version"], 2);
+    assert_eq!(unchanged["current_generation"], 2);
 
     let admin_deactivated = Box::pin(running.service().call_tool_impl(
         call(

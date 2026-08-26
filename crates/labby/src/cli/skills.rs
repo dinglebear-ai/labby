@@ -19,9 +19,6 @@ async fn dispatch_at_cli_boundary(
 
 #[derive(Debug, Args)]
 pub struct SkillsArgs {
-    /// Canonical Access project used to authorize Artifact-backed Skills.
-    #[arg(long)]
-    pub project_id: String,
     #[command(subcommand)]
     pub command: SkillsCommand,
 }
@@ -75,7 +72,6 @@ pub fn run<'a>(
 }
 
 async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -> Result<ExitCode> {
-    let project_id = args.project_id;
     let (action, params) = match args.command {
         SkillsCommand::List(args) => (
             "skills.list".to_string(),
@@ -108,13 +104,9 @@ async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -
         return run_action_command("skills", action, params, format, move |action, params| {
             let manager = std::sync::Arc::clone(&manager);
             let scope = scope.clone();
-            let project_id = project_id.clone();
             async move {
-                let mut registry =
+                let registry =
                     crate::skills::facade::SkillRegistryContext::with_manager(manager, scope);
-                if let Some(access) = cli_artifact_access_snapshot(&project_id).await {
-                    registry = registry.with_artifact_access(access);
-                }
                 dispatch_at_cli_boundary(&registry, &action, params).await
             }
         })
@@ -124,85 +116,24 @@ async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -
     #[cfg(not(feature = "gateway"))]
     {
         let _ = config;
-        let access = cli_artifact_access_snapshot(&project_id).await;
-        run_action_command("skills", action, params, format, move |action, params| {
-            let access = access.clone();
-            async move {
-                let mut registry = crate::skills::facade::SkillRegistryContext::first_party_only();
-                if let Some(access) = access {
-                    registry = registry.with_artifact_access(access);
-                }
+        run_action_command(
+            "skills",
+            action,
+            params,
+            format,
+            move |action, params| async move {
+                let registry = crate::skills::facade::SkillRegistryContext::first_party_only();
                 dispatch_at_cli_boundary(&registry, &action, params).await
-            }
-        })
+            },
+        )
         .await
     }
-}
-
-#[cfg(target_os = "linux")]
-async fn cli_artifact_access_snapshot(
-    project_id: &str,
-) -> Option<crate::skills::facade::ArtifactAccessSnapshot> {
-    let subject = format!(
-        "unix-peer:uid={}:gid={}",
-        nix::unistd::geteuid().as_raw(),
-        nix::unistd::getegid().as_raw()
-    );
-    let identity = labby_auth::VerifiedIdentity::local_credential(
-        labby_auth::Authenticator::UnixPeer,
-        subject,
-    )
-    .ok()?;
-    let runtime =
-        crate::access::AccessRuntime::initialize(crate::config::access_db_path().ok()?).await;
-    cli_artifact_access_snapshot_for(&runtime, identity, project_id).await
-}
-
-async fn cli_artifact_access_snapshot_for(
-    runtime: &crate::access::AccessRuntime,
-    identity: labby_auth::VerifiedIdentity,
-    project_id: &str,
-) -> Option<crate::skills::facade::ArtifactAccessSnapshot> {
-    let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
-        identity,
-        Vec::<String>::new(),
-        crate::dispatch::skill_library::auth::SkillLibraryTransport {
-            surface: crate::dispatch::skill_library::auth::SkillLibrarySurface::Cli,
-            same_origin: false,
-            csrf_verified: false,
-            audience_bound: false,
-            host_established_callback: false,
-        },
-    );
-    let correlation =
-        crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse("cli-skills-read")
-            .ok()?;
-    crate::dispatch::skill_library::auth::authorize_at_boundary(
-        runtime,
-        caller,
-        project_id,
-        crate::dispatch::skill_library::auth::SkillLibraryAction::List,
-        &crate::dispatch::skill_library::audit::CanonicalArtifactId::parse("library").ok()?,
-        crate::dispatch::skill_library::auth::SkillLibraryTarget::SharedActive,
-        &correlation,
-    )
-    .await
-    .ok()
-    .map(|decision| decision.artifact_access_snapshot())
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn cli_artifact_access_snapshot(
-    _project_id: &str,
-) -> Option<crate::skills::facade::ArtifactAccessSnapshot> {
-    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::{CommandFactory, Parser, Subcommand};
-    use labby_auth::{Authenticator, VerifiedIdentity};
 
     #[test]
     fn cli_help_exposes_only_implemented_read_commands() {
@@ -216,91 +147,24 @@ mod tests {
     }
 
     #[test]
-    fn project_id_is_required_only_below_the_skills_command() {
+    fn help_explicitly_excludes_artifact_backed_skills() {
         let unrelated = crate::cli::Cli::try_parse_from(["labby", "docs", "check"]);
         assert!(
             unrelated.is_ok(),
             "unrelated commands must not inherit --project-id: {unrelated:?}"
         );
 
-        let missing = crate::cli::Cli::try_parse_from(["labby", "skills", "list"])
-            .expect_err("Skills must require explicit project context");
-        assert_eq!(
-            missing.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
-        );
-        assert!(missing.to_string().contains("--project-id <PROJECT_ID>"));
+        crate::cli::Cli::try_parse_from(["labby", "skills", "list"])
+            .expect("local Skill reads do not require misleading project context");
 
         let help = crate::cli::Cli::command()
             .find_subcommand_mut("skills")
             .expect("skills command")
             .render_long_help()
             .to_string();
-        assert!(help.contains("--project-id <PROJECT_ID>"));
-    }
-
-    #[tokio::test]
-    async fn cli_live_access_snapshot_observes_role_changes_and_revocation_once_per_request() {
-        use crate::access::{AccessRuntime, AccessStore, BootstrapOwnerInput};
-        use labby_runtime::artifacts::{
-            LibraryActorId, LibraryOwnership, LibraryTenantId, SkillVisibility,
-        };
-
-        let directory = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
-        let path = directory.path().join("access.db");
-        let identity = VerifiedIdentity::local_credential(
-            Authenticator::UnixPeer,
-            "unix-peer:uid=1000:gid=1000",
-        )
-        .unwrap();
-        let store = AccessStore::open(path.clone()).await.unwrap();
-        store
-            .bootstrap_owner(
-                BootstrapOwnerInput::new(identity.clone(), "Local", "Default").unwrap(),
-            )
-            .await
-            .unwrap();
-        drop(store);
-        let runtime = AccessRuntime::initialize(path).await;
-        let other = LibraryOwnership::canonical(
-            LibraryTenantId::from_canonical_projection("bootstrap-local").unwrap(),
-            LibraryActorId::from_canonical_projection("other").unwrap(),
-        );
-
-        let owner =
-            cli_artifact_access_snapshot_for(&runtime, identity.clone(), "bootstrap-default")
-                .await
-                .unwrap();
-        let store = runtime.store().await.unwrap();
-        assert_eq!(store.skill_library_authorization_count_for_test(), 1);
-        assert!(owner.permits(&other, SkillVisibility::Private));
-
-        store.execute_test_statement(
-            "UPDATE project_memberships SET role='member' WHERE membership_id='bootstrap-owner-membership'",
-        ).await.unwrap();
-        let member =
-            cli_artifact_access_snapshot_for(&runtime, identity.clone(), "bootstrap-default")
-                .await
-                .unwrap();
-        assert_eq!(store.skill_library_authorization_count_for_test(), 2);
-        assert!(!member.permits(&other, SkillVisibility::Private));
-        assert!(member.permits(&other, SkillVisibility::Tenant));
-
-        store.execute_test_statement(
-            "UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
-        ).await.unwrap();
-        assert!(
-            cli_artifact_access_snapshot_for(&runtime, identity, "bootstrap-default")
-                .await
-                .is_none()
-        );
-        assert_eq!(store.skill_library_authorization_count_for_test(), 3);
+        assert!(!help.contains("--project-id"));
+        assert!(help.contains("Artifact-backed shared and private Skills are not available"));
+        assert!(help.contains("authenticated HTTP or MCP client"));
     }
 
     #[tokio::test]

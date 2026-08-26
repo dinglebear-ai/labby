@@ -22,7 +22,7 @@ Commands:
   completions  Generate shell completions
   gateway      Manage proxied upstream MCP gateways
   snippets     Manage executable Code Mode snippets
-  skills       Discover and read Agent Skills through the compatibility surface
+  skills       Read Agent Skills visible to the local CLI
   oauth        Run local OAuth callback relay helpers
   proxy        Proxy a stdio MCP server to Streamable HTTP
   help         Print this message or the help of the given subcommand(s)
@@ -4009,9 +4009,9 @@ Arguments:
 ## `labby skills`
 
 ```text
-Discover and read Agent Skills through the compatibility surface
+Read Agent Skills visible to the local CLI. Artifact-backed shared and private Skills are not available on this surface; use an authenticated HTTP or MCP client instead.
 
-Usage: skills [OPTIONS] --project-id <PROJECT_ID> <COMMAND>
+Usage: skills [OPTIONS] <COMMAND>
 
 Commands:
   list    List caller-visible Agent Skills without loading their bodies
@@ -4024,9 +4024,6 @@ Options:
       --json
           Emit JSON instead of human-readable tables
 
-      --project-id <PROJECT_ID>
-          Canonical Access project used to authorize Artifact-backed Skills
-
       --color <COLOR>
           Control human-readable CLI styling
 
@@ -4034,7 +4031,7 @@ Options:
           [possible values: auto, plain, color]
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `labby skills list`
