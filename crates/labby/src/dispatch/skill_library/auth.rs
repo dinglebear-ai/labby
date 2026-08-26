@@ -1,0 +1,1107 @@
+//! Final-boundary Skill Library authorization.
+
+#![allow(
+    dead_code,
+    reason = "commit-bound policy seam is consumed by the Wave 2 Skill Library dispatcher"
+)]
+
+use std::collections::BTreeSet;
+
+use labby_auth::{Authenticator, VerifiedIdentity};
+use labby_runtime::artifacts::{
+    LibraryActorId, LibraryAuthorization, LibraryGrant, LibraryOwnership, LibraryTenantId,
+};
+
+use crate::access::{AccessRuntime, AccessStoreError, Permission, ProjectRole};
+
+use super::audit::{
+    CanonicalArtifactId, SkillLibraryAuditEvent, SkillLibraryAuditOutcome, SkillLibraryAuditStage,
+    SkillLibraryCorrelationId, skill_library_audit_sink,
+};
+
+/// Every library operation classified by its policy needs.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum SkillLibraryAction {
+    List,
+    Get,
+    Read,
+    History,
+    Create,
+    Save,
+    Activate,
+    Deactivate,
+    Archive,
+    Rollback,
+    Import,
+}
+
+impl SkillLibraryAction {
+    const ALL: [Self; 11] = [
+        Self::List,
+        Self::Get,
+        Self::Read,
+        Self::History,
+        Self::Create,
+        Self::Save,
+        Self::Activate,
+        Self::Deactivate,
+        Self::Archive,
+        Self::Rollback,
+        Self::Import,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::List => "skill_library.list",
+            Self::Get => "skill_library.get",
+            Self::Read => "skill_library.read",
+            Self::History => "skill_library.history",
+            Self::Create => "skill_library.create",
+            Self::Save => "skill_library.save",
+            Self::Activate => "skill_library.activate",
+            Self::Deactivate => "skill_library.deactivate",
+            Self::Archive => "skill_library.archive",
+            Self::Rollback => "skill_library.rollback",
+            Self::Import => "skill_library.import",
+        }
+    }
+
+    const fn is_mutation(self) -> bool {
+        matches!(
+            self,
+            Self::Create
+                | Self::Save
+                | Self::Activate
+                | Self::Deactivate
+                | Self::Archive
+                | Self::Rollback
+                | Self::Import
+        )
+    }
+}
+
+/// Product surface where the already-authenticated request entered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SkillLibrarySurface {
+    ApiCookie,
+    ApiBearer,
+    Mcp,
+    Cli,
+    CodeMode,
+    AppCallback,
+    Resource,
+}
+
+impl SkillLibrarySurface {
+    const ALL: [Self; 7] = [
+        Self::ApiCookie,
+        Self::ApiBearer,
+        Self::Mcp,
+        Self::Cli,
+        Self::CodeMode,
+        Self::AppCallback,
+        Self::Resource,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ApiCookie => "api",
+            Self::ApiBearer => "api",
+            Self::Mcp => "mcp",
+            Self::Cli => "cli",
+            Self::CodeMode => "mcp",
+            Self::AppCallback => "mcp",
+            Self::Resource => "mcp",
+        }
+    }
+}
+
+/// Transport facts established by a trusted adapter.
+///
+/// No constructor accepts owner, role, tenant, provider subject, email, `_meta`, or client-supplied
+/// authorization decisions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SkillLibraryTransport {
+    pub(crate) surface: SkillLibrarySurface,
+    pub(crate) same_origin: bool,
+    pub(crate) csrf_verified: bool,
+    pub(crate) audience_bound: bool,
+    pub(crate) host_established_callback: bool,
+}
+
+impl SkillLibraryTransport {
+    pub(crate) const fn browser(same_origin: bool, csrf_verified: bool) -> Self {
+        Self {
+            surface: SkillLibrarySurface::ApiCookie,
+            same_origin,
+            csrf_verified,
+            audience_bound: false,
+            host_established_callback: false,
+        }
+    }
+
+    pub(crate) const fn bearer(surface: SkillLibrarySurface, audience_bound: bool) -> Self {
+        Self {
+            surface,
+            same_origin: false,
+            csrf_verified: false,
+            audience_bound,
+            host_established_callback: false,
+        }
+    }
+
+    pub(crate) const fn app_callback(audience_bound: bool, host_established: bool) -> Self {
+        Self {
+            surface: SkillLibrarySurface::AppCallback,
+            same_origin: false,
+            csrf_verified: false,
+            audience_bound,
+            host_established_callback: host_established,
+        }
+    }
+}
+
+/// Authenticated request facts supplied by a trusted surface adapter.
+///
+/// Deliberately does not implement `Debug`: the verified identity remains opaque in diagnostics.
+pub(crate) struct SkillLibraryCaller {
+    identity: VerifiedIdentity,
+    scopes: BTreeSet<String>,
+    transport: SkillLibraryTransport,
+}
+
+impl SkillLibraryCaller {
+    pub(crate) fn new(
+        identity: VerifiedIdentity,
+        scopes: impl IntoIterator<Item = String>,
+        transport: SkillLibraryTransport,
+    ) -> Self {
+        Self {
+            identity,
+            scopes: scopes.into_iter().collect(),
+            transport,
+        }
+    }
+}
+
+/// Target visibility relevant to non-enumerating read policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SkillLibraryTarget<'a> {
+    SharedActive,
+    Personal(&'a LibraryOwnership),
+    Mutation(&'a LibraryOwnership),
+    CreateForCaller,
+}
+
+/// One current access snapshot projected into the runtime authority vocabulary.
+pub(crate) struct SkillLibraryAuthorizationDecision {
+    pub(crate) authorization: LibraryAuthorization,
+    pub(crate) ownership: LibraryOwnership,
+    pub(crate) audit: SkillLibraryAuditEvent,
+    actor_id: LibraryActorId,
+    tenant_id: LibraryTenantId,
+    is_admin: bool,
+}
+
+impl SkillLibraryAuthorizationDecision {
+    /// Filter a previously loaded personal-record collection locally after one request snapshot.
+    /// This makes list/get collision handling O(1) access queries rather than one query per Skill.
+    pub(crate) fn permits_personal(&self, ownership: &LibraryOwnership) -> bool {
+        ownership.tenant_id == self.tenant_id
+            && (ownership.owner_id == self.actor_id || self.is_admin)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum SkillLibraryAuthorizationError {
+    /// Unknown targets, absent identities, insufficient scope/role, and cross-tenant access share
+    /// one public denial so private records cannot be enumerated.
+    #[error("skill library access denied")]
+    Denied,
+    #[error("skill library authorization is unavailable")]
+    Unavailable,
+}
+
+/// Resolve exactly one uncached membership snapshot and authorize this operation.
+///
+/// Mutation dispatchers must call this immediately before `mutate_library`; validation-time
+/// decisions are not reusable commit grants. Every invocation queries the current AccessRuntime,
+/// so membership or role revocation between validation and commit wins.
+pub(crate) async fn authorize_at_boundary(
+    runtime: &AccessRuntime,
+    caller: SkillLibraryCaller,
+    project_id: &str,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    target: SkillLibraryTarget<'_>,
+    correlation_id: &SkillLibraryCorrelationId,
+) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError> {
+    debug_assert!(SkillLibraryAction::ALL.contains(&action));
+    debug_assert!(SkillLibrarySurface::ALL.contains(&caller.transport.surface));
+    let target = if action == SkillLibraryAction::Create {
+        SkillLibraryTarget::CreateForCaller
+    } else {
+        target
+    };
+    let audit_sink = skill_library_audit_sink();
+    let surface = caller.transport.surface;
+    validate_transport(&caller, action).inspect_err(|_| {
+        let event = SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::Transport,
+        );
+        audit_sink.record(event);
+    })?;
+    validate_target_kind(action, target).inspect_err(|_| {
+        let event = SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::Ownership,
+        );
+        audit_sink.record(event);
+    })?;
+
+    let store = runtime.store().await.map_err(|_| {
+        let event = SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Unavailable,
+            SkillLibraryAuditStage::AccessSnapshot,
+        );
+        audit_sink.record(event);
+        SkillLibraryAuthorizationError::Unavailable
+    })?;
+    let permission = if action.is_mutation() {
+        Permission::AssetUse
+    } else {
+        Permission::AssetDiscover
+    };
+    let snapshot = store
+        .authorize_skill_library(caller.identity, project_id.to_owned(), permission)
+        .await
+        .map_err(|error| {
+            let (outcome, policy_error) = match error {
+                AccessStoreError::IdentityUnavailable
+                | AccessStoreError::ProjectAccessUnavailable
+                | AccessStoreError::NotAuthorized => (
+                    SkillLibraryAuditOutcome::Deny,
+                    SkillLibraryAuthorizationError::Denied,
+                ),
+                _ => (
+                    SkillLibraryAuditOutcome::Unavailable,
+                    SkillLibraryAuthorizationError::Unavailable,
+                ),
+            };
+            let event = SkillLibraryAuditEvent::new(
+                correlation_id.clone(),
+                target_id,
+                action,
+                surface,
+                outcome,
+                SkillLibraryAuditStage::AccessSnapshot,
+            );
+            audit_sink.record(event);
+            policy_error
+        })?;
+
+    let tenant_id = LibraryTenantId::from_canonical_projection(snapshot.organization_id)
+        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+    let actor_id = LibraryActorId::from_canonical_projection(snapshot.principal_id)
+        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+    let is_admin = matches!(snapshot.role, ProjectRole::Owner | ProjectRole::Admin);
+    let (grant, ownership) = resolve_grant(&snapshot.role, &tenant_id, &actor_id, target)
+        .ok_or_else(|| {
+            let event = SkillLibraryAuditEvent::new(
+                correlation_id.clone(),
+                target_id,
+                action,
+                surface,
+                SkillLibraryAuditOutcome::Deny,
+                SkillLibraryAuditStage::Ownership,
+            )
+            .with_canonical_actor(
+                tenant_id.clone(),
+                actor_id.clone(),
+                snapshot.global_revision,
+            );
+            audit_sink.record(event);
+            SkillLibraryAuthorizationError::Denied
+        })?;
+    let authorization = LibraryAuthorization::from_authorized_access_projection(
+        tenant_id.clone(),
+        actor_id.clone(),
+        grant,
+    );
+    let audit = SkillLibraryAuditEvent::new(
+        correlation_id.clone(),
+        target_id,
+        action,
+        surface,
+        SkillLibraryAuditOutcome::Allow,
+        SkillLibraryAuditStage::Ownership,
+    )
+    .with_canonical_actor(
+        tenant_id.clone(),
+        actor_id.clone(),
+        snapshot.global_revision,
+    );
+    audit_sink.record(audit.clone());
+    Ok(SkillLibraryAuthorizationDecision {
+        authorization,
+        ownership,
+        audit,
+        actor_id,
+        tenant_id,
+        is_admin,
+    })
+}
+
+/// Fail-closed adapter for surfaces where authentication may be absent.
+pub(crate) async fn authorize_optional_at_boundary(
+    runtime: &AccessRuntime,
+    caller: Option<SkillLibraryCaller>,
+    project_id: &str,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    target: SkillLibraryTarget<'_>,
+    correlation_id: &SkillLibraryCorrelationId,
+) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError> {
+    let caller = caller.ok_or_else(|| {
+        skill_library_audit_sink().record(SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            SkillLibrarySurface::ApiBearer,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::Transport,
+        ));
+        SkillLibraryAuthorizationError::Denied
+    })?;
+    authorize_at_boundary(
+        runtime,
+        caller,
+        project_id,
+        action,
+        target_id,
+        target,
+        correlation_id,
+    )
+    .await
+}
+
+/// Reauthorize against the current AccessRuntime and immediately execute one commit/replay.
+///
+/// The executor receives the sealed authorization only after the uncached membership read. A
+/// validation-time decision cannot be supplied here, so revocation before this call prevents the
+/// executor and therefore prevents any ArtifactStore mutation or idempotent replay.
+pub(crate) async fn authorize_and_commit<T, E>(
+    runtime: &AccessRuntime,
+    caller: SkillLibraryCaller,
+    project_id: &str,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    target: SkillLibraryTarget<'_>,
+    correlation_id: &SkillLibraryCorrelationId,
+    executor: impl FnOnce(&LibraryAuthorization, &LibraryOwnership) -> Result<T, E>,
+) -> Result<T, SkillLibraryCommitError<E>> {
+    let decision = authorize_at_boundary(
+        runtime,
+        caller,
+        project_id,
+        action,
+        target_id,
+        target,
+        correlation_id,
+    )
+    .await
+    .map_err(SkillLibraryCommitError::Authorization)?;
+    executor(&decision.authorization, &decision.ownership)
+        .map_err(SkillLibraryCommitError::Execution)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SkillLibraryCommitError<E> {
+    #[error(transparent)]
+    Authorization(SkillLibraryAuthorizationError),
+    #[error("skill library commit failed")]
+    Execution(E),
+}
+
+fn validate_transport(
+    caller: &SkillLibraryCaller,
+    action: SkillLibraryAction,
+) -> Result<(), SkillLibraryAuthorizationError> {
+    let identity_transport = caller.identity.authenticator();
+    let scope_allowed = if action.is_mutation() {
+        caller
+            .scopes
+            .iter()
+            .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin"))
+    } else {
+        caller
+            .scopes
+            .iter()
+            .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin"))
+    };
+    let valid = match caller.transport.surface {
+        SkillLibrarySurface::ApiCookie => {
+            identity_transport == Authenticator::BrowserSession
+                && caller.transport.same_origin
+                && (!action.is_mutation() || caller.transport.csrf_verified)
+        }
+        SkillLibrarySurface::ApiBearer
+        | SkillLibrarySurface::Mcp
+        | SkillLibrarySurface::CodeMode
+        | SkillLibrarySurface::Resource => {
+            matches!(
+                identity_transport,
+                Authenticator::OauthBearer | Authenticator::StaticBearer
+            ) && caller.transport.audience_bound
+                && scope_allowed
+        }
+        SkillLibrarySurface::AppCallback => {
+            matches!(
+                identity_transport,
+                Authenticator::OauthBearer | Authenticator::StaticBearer
+            ) && caller.transport.audience_bound
+                && caller.transport.host_established_callback
+                && scope_allowed
+        }
+        SkillLibrarySurface::Cli => identity_transport == Authenticator::UnixPeer,
+    };
+    valid
+        .then_some(())
+        .ok_or(SkillLibraryAuthorizationError::Denied)
+}
+
+fn validate_target_kind(
+    action: SkillLibraryAction,
+    target: SkillLibraryTarget<'_>,
+) -> Result<(), SkillLibraryAuthorizationError> {
+    let valid = if action.is_mutation() {
+        matches!(
+            target,
+            SkillLibraryTarget::Mutation(_) | SkillLibraryTarget::CreateForCaller
+        )
+    } else {
+        matches!(
+            target,
+            SkillLibraryTarget::SharedActive | SkillLibraryTarget::Personal(_)
+        )
+    };
+    valid
+        .then_some(())
+        .ok_or(SkillLibraryAuthorizationError::Denied)
+}
+
+fn resolve_grant(
+    role: &ProjectRole,
+    tenant_id: &LibraryTenantId,
+    actor_id: &LibraryActorId,
+    target: SkillLibraryTarget<'_>,
+) -> Option<(LibraryGrant, LibraryOwnership)> {
+    if target == SkillLibraryTarget::SharedActive {
+        return Some((
+            LibraryGrant::Owner,
+            LibraryOwnership::canonical(tenant_id.clone(), actor_id.clone()),
+        ));
+    }
+    let ownership = match target {
+        SkillLibraryTarget::CreateForCaller => {
+            LibraryOwnership::canonical(tenant_id.clone(), actor_id.clone())
+        }
+        SkillLibraryTarget::Personal(ownership) | SkillLibraryTarget::Mutation(ownership) => {
+            ownership.clone()
+        }
+        SkillLibraryTarget::SharedActive => unreachable!(),
+    };
+    if ownership.tenant_id != *tenant_id {
+        return None;
+    }
+    if ownership.owner_id == *actor_id {
+        return Some((LibraryGrant::Owner, ownership));
+    }
+    matches!(role, ProjectRole::Owner | ProjectRole::Admin)
+        .then_some((LibraryGrant::Admin, ownership))
+}
+
+#[cfg(test)]
+mod tests {
+    use labby_auth::PrincipalLink;
+
+    use super::*;
+    use crate::access::{AccessStore, BootstrapOwnerInput};
+
+    fn secure_tempdir() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        directory
+    }
+
+    fn browser(subject: &str) -> VerifiedIdentity {
+        VerifiedIdentity::external(
+            Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            subject,
+        )
+        .unwrap()
+    }
+
+    async fn fixture() -> (tempfile::TempDir, AccessRuntime, VerifiedIdentity) {
+        let directory = secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        let owner = browser("owner-subject");
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        drop(store);
+        (directory, AccessRuntime::initialize(path).await, owner)
+    }
+
+    fn local(credential: &str) -> VerifiedIdentity {
+        VerifiedIdentity::local_credential(Authenticator::StaticBearer, credential).unwrap()
+    }
+
+    fn browser_caller(identity: VerifiedIdentity, csrf: bool) -> SkillLibraryCaller {
+        SkillLibraryCaller::new(identity, [], SkillLibraryTransport::browser(true, csrf))
+    }
+
+    fn ownership(owner: &str) -> LibraryOwnership {
+        LibraryOwnership::canonical(
+            LibraryTenantId::from_canonical_projection("bootstrap-local").unwrap(),
+            LibraryActorId::from_canonical_projection(owner).unwrap(),
+        )
+    }
+
+    async fn decide(
+        runtime: &AccessRuntime,
+        caller: SkillLibraryCaller,
+        project_id: &str,
+        action: SkillLibraryAction,
+        target_id: &str,
+        target: SkillLibraryTarget<'_>,
+        correlation_id: &str,
+    ) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError> {
+        authorize_at_boundary(
+            runtime,
+            caller,
+            project_id,
+            action,
+            &CanonicalArtifactId::parse(target_id).unwrap(),
+            target,
+            &SkillLibraryCorrelationId::parse(correlation_id).unwrap(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn browser_owner_requires_csrf_and_uses_canonical_access_ids() {
+        let (_directory, runtime, owner) = fixture().await;
+        let denied = decide(
+            &runtime,
+            browser_caller(owner.clone(), false),
+            "bootstrap-default",
+            SkillLibraryAction::Activate,
+            "artifact-1",
+            SkillLibraryTarget::Mutation(&ownership("bootstrap-owner")),
+            "request-1",
+        )
+        .await;
+        assert!(matches!(
+            denied,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+
+        let snapshot = runtime
+            .store()
+            .await
+            .unwrap()
+            .authorize_skill_library(
+                owner.clone(),
+                "bootstrap-default".to_owned(),
+                Permission::AssetUse,
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.principal_id, "bootstrap-owner");
+
+        let allowed = decide(
+            &runtime,
+            browser_caller(owner, true),
+            "bootstrap-default",
+            SkillLibraryAction::Activate,
+            "artifact-1",
+            SkillLibraryTarget::Mutation(&ownership("bootstrap-owner")),
+            "request-1",
+        )
+        .await
+        .unwrap();
+        assert_eq!(allowed.ownership.owner_id.as_str(), "bootstrap-owner");
+        assert_eq!(allowed.ownership.tenant_id.as_str(), "bootstrap-local");
+    }
+
+    #[tokio::test]
+    async fn scope_or_static_bearer_without_current_mapping_never_grants_admin() {
+        let (_directory, runtime, _owner) = fixture().await;
+        let bearer = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "allowlisted-but-unmapped",
+        )
+        .unwrap();
+        let denied = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                bearer,
+                ["lab:admin".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::Mcp, true),
+            ),
+            "bootstrap-default",
+            SkillLibraryAction::Archive,
+            "private-artifact",
+            SkillLibraryTarget::Mutation(&ownership("bootstrap-owner")),
+            "request-2",
+        )
+        .await;
+        assert!(matches!(
+            denied,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+    }
+
+    #[tokio::test]
+    async fn current_admin_can_act_for_owner_but_member_cannot_and_audit_keeps_actor() {
+        let (_directory, runtime, _owner) = fixture().await;
+        let store = runtime.store().await.unwrap();
+        store.seed_loadout_roles_for_test().await.unwrap();
+        let target = ownership("bootstrap-owner");
+        let admin = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                local("static-bearer:admin"),
+                ["lab".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::ApiBearer, true),
+            ),
+            "admin-project",
+            SkillLibraryAction::Archive,
+            "artifact-1",
+            SkillLibraryTarget::Mutation(&target),
+            "request-admin",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            admin.audit.actor_id.as_ref().unwrap().as_str(),
+            "admin-principal"
+        );
+        assert_eq!(admin.ownership.owner_id.as_str(), "bootstrap-owner");
+
+        let member = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                local("static-bearer:member"),
+                ["lab:admin".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::ApiBearer, true),
+            ),
+            "member-project",
+            SkillLibraryAction::Archive,
+            "artifact-1",
+            SkillLibraryTarget::Mutation(&target),
+            "request-member",
+        )
+        .await;
+        assert!(matches!(
+            member,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+    }
+
+    #[tokio::test]
+    async fn one_snapshot_filters_256_personal_records_and_commit_reauth_observes_revocation() {
+        let (_directory, runtime, owner) = fixture().await;
+        let decision = decide(
+            &runtime,
+            browser_caller(owner.clone(), true),
+            "bootstrap-default",
+            SkillLibraryAction::List,
+            "library",
+            SkillLibraryTarget::SharedActive,
+            "request-list",
+        )
+        .await
+        .unwrap();
+        let store = runtime.store().await.unwrap();
+        let after_list_authorization = store.skill_library_authorization_count_for_test();
+        let own = ownership("bootstrap-owner");
+        let other = ownership("other-principal");
+        let visible = (0..256)
+            .filter(|index| decision.permits_personal(if index % 2 == 0 { &own } else { &other }))
+            .count();
+        assert_eq!(visible, 256, "project owner is a current administrator");
+        assert_eq!(
+            store.skill_library_authorization_count_for_test(),
+            after_list_authorization
+        );
+
+        // Resource lookup performs one authorization read, then filters any number of
+        // collision candidates from that immutable decision without further store access.
+        let resource_decision = decide(
+            &runtime,
+            browser_caller(owner.clone(), true),
+            "bootstrap-default",
+            SkillLibraryAction::Read,
+            "resource",
+            SkillLibraryTarget::SharedActive,
+            "request-resource",
+        )
+        .await
+        .unwrap();
+        let after_resource_authorization = store.skill_library_authorization_count_for_test();
+        for _ in 0..256 {
+            assert!(resource_decision.permits_personal(&own));
+        }
+        assert_eq!(
+            store.skill_library_authorization_count_for_test(),
+            after_resource_authorization
+        );
+
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement(
+                "UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
+            )
+            .await
+            .unwrap();
+        let executed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let marker = std::sync::Arc::clone(&executed);
+        let commit = authorize_and_commit(
+            &runtime,
+            browser_caller(owner, true),
+            "bootstrap-default",
+            SkillLibraryAction::Save,
+            &CanonicalArtifactId::parse("artifact-1").unwrap(),
+            SkillLibraryTarget::Mutation(&own),
+            &SkillLibraryCorrelationId::parse("request-commit").unwrap(),
+            move |_, _| {
+                marker.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, ()>(())
+            },
+        )
+        .await;
+        assert!(matches!(
+            commit,
+            Err(SkillLibraryCommitError::Authorization(
+                SkillLibraryAuthorizationError::Denied
+            ))
+        ));
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn transport_matrix_rejects_csrf_ambiguity_and_untrusted_app_metadata() {
+        let browser_identity = browser("owner-subject");
+        let browser_missing_origin = SkillLibraryCaller::new(
+            browser_identity,
+            [],
+            SkillLibraryTransport::browser(false, true),
+        );
+        assert_eq!(
+            validate_transport(&browser_missing_origin, SkillLibraryAction::Save),
+            Err(SkillLibraryAuthorizationError::Denied)
+        );
+
+        let bearer = VerifiedIdentity::local_credential(
+            Authenticator::StaticBearer,
+            "static-bearer:callback",
+        )
+        .unwrap();
+        let iframe_claim = SkillLibraryCaller::new(
+            bearer,
+            ["lab:admin".to_string()],
+            SkillLibraryTransport::app_callback(true, false),
+        );
+        assert_eq!(
+            validate_transport(&iframe_claim, SkillLibraryAction::Activate),
+            Err(SkillLibraryAuthorizationError::Denied)
+        );
+        assert_eq!(
+            validate_target_kind(
+                SkillLibraryAction::Activate,
+                SkillLibraryTarget::SharedActive,
+            ),
+            Err(SkillLibraryAuthorizationError::Denied)
+        );
+    }
+
+    #[test]
+    fn every_action_and_surface_has_an_explicit_transport_decision() {
+        for action in SkillLibraryAction::ALL {
+            let browser = SkillLibraryCaller::new(
+                browser("matrix-browser"),
+                [],
+                SkillLibraryTransport::browser(true, true),
+            );
+            assert!(validate_transport(&browser, action).is_ok());
+
+            for surface in [
+                SkillLibrarySurface::ApiBearer,
+                SkillLibrarySurface::Mcp,
+                SkillLibrarySurface::CodeMode,
+                SkillLibrarySurface::Resource,
+            ] {
+                let bearer = SkillLibraryCaller::new(
+                    local("matrix-bearer"),
+                    ["lab".to_string(), "lab:read".to_string()],
+                    SkillLibraryTransport::bearer(surface, true),
+                );
+                assert!(
+                    validate_transport(&bearer, action).is_ok(),
+                    "{surface:?} {action:?}"
+                );
+            }
+
+            let callback = SkillLibraryCaller::new(
+                local("matrix-callback"),
+                ["lab".to_string(), "lab:read".to_string()],
+                SkillLibraryTransport::app_callback(true, true),
+            );
+            assert!(validate_transport(&callback, action).is_ok());
+
+            let cli = SkillLibraryCaller::new(
+                VerifiedIdentity::local_credential(Authenticator::UnixPeer, "uid:1000").unwrap(),
+                [],
+                SkillLibraryTransport {
+                    surface: SkillLibrarySurface::Cli,
+                    same_origin: false,
+                    csrf_verified: false,
+                    audience_bound: false,
+                    host_established_callback: false,
+                },
+            );
+            assert!(validate_transport(&cli, action).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_is_denied_before_access_resolution() {
+        let (_directory, runtime, _owner) = fixture().await;
+        let result = authorize_optional_at_boundary(
+            &runtime,
+            None,
+            "bootstrap-default",
+            SkillLibraryAction::Read,
+            &CanonicalArtifactId::parse("artifact-anonymous").unwrap(),
+            SkillLibraryTarget::SharedActive,
+            &SkillLibraryCorrelationId::parse("request-anonymous").unwrap(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+    }
+
+    #[test]
+    fn role_action_target_matrix_is_complete_and_non_enumerating() {
+        let tenant = LibraryTenantId::from_canonical_projection("company-a").unwrap();
+        let actor = LibraryActorId::from_canonical_projection("actor-a").unwrap();
+        let own = LibraryOwnership::canonical(tenant.clone(), actor.clone());
+        let other = LibraryOwnership::canonical(
+            tenant.clone(),
+            LibraryActorId::from_canonical_projection("actor-b").unwrap(),
+        );
+        let cross_company = LibraryOwnership::canonical(
+            LibraryTenantId::from_canonical_projection("company-b").unwrap(),
+            actor.clone(),
+        );
+        for action in SkillLibraryAction::ALL {
+            for role in [
+                ProjectRole::Owner,
+                ProjectRole::Admin,
+                ProjectRole::Member,
+                ProjectRole::Viewer,
+            ] {
+                let own_target = if action.is_mutation() {
+                    SkillLibraryTarget::Mutation(&own)
+                } else {
+                    SkillLibraryTarget::Personal(&own)
+                };
+                assert!(resolve_grant(&role, &tenant, &actor, own_target).is_some());
+
+                let other_target = if action.is_mutation() {
+                    SkillLibraryTarget::Mutation(&other)
+                } else {
+                    SkillLibraryTarget::Personal(&other)
+                };
+                assert_eq!(
+                    resolve_grant(&role, &tenant, &actor, other_target).is_some(),
+                    matches!(role, ProjectRole::Owner | ProjectRole::Admin),
+                    "{role:?} {action:?}"
+                );
+
+                let cross_target = if action.is_mutation() {
+                    SkillLibraryTarget::Mutation(&cross_company)
+                } else {
+                    SkillLibraryTarget::Personal(&cross_company)
+                };
+                assert!(resolve_grant(&role, &tenant, &actor, cross_target).is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_loadout_and_revoked_membership_fail_closed_for_all_actions() {
+        let (_directory, runtime, owner) = fixture().await;
+        for (index, action) in SkillLibraryAction::ALL.into_iter().enumerate() {
+            let target = ownership("bootstrap-owner");
+            let kind = if action.is_mutation() {
+                SkillLibraryTarget::Mutation(&target)
+            } else {
+                SkillLibraryTarget::Personal(&target)
+            };
+            let missing = decide(
+                &runtime,
+                browser_caller(owner.clone(), true),
+                "protected-or-missing-loadout",
+                action,
+                &format!("protected-{index}"),
+                kind,
+                &format!("request-protected-{index}"),
+            )
+            .await;
+            assert!(matches!(
+                missing,
+                Err(SkillLibraryAuthorizationError::Denied)
+            ));
+        }
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement(
+                "UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
+            )
+            .await
+            .unwrap();
+        let denied = decide(
+            &runtime,
+            browser_caller(owner, true),
+            "bootstrap-default",
+            SkillLibraryAction::Read,
+            "revoked",
+            SkillLibraryTarget::SharedActive,
+            "request-revoked",
+        )
+        .await;
+        assert!(matches!(
+            denied,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+    }
+
+    #[test]
+    fn forged_params_and_meta_have_no_policy_vocabulary() {
+        let fields = std::any::type_name::<SkillLibraryCaller>();
+        assert!(!fields.contains("owner"));
+        let caller = SkillLibraryCaller::new(
+            local("forged-client-metadata"),
+            ["owner=true".to_string(), "_meta.role=admin".to_string()],
+            SkillLibraryTransport::bearer(SkillLibrarySurface::Mcp, true),
+        );
+        assert_eq!(
+            validate_transport(&caller, SkillLibraryAction::Archive),
+            Err(SkillLibraryAuthorizationError::Denied)
+        );
+    }
+
+    #[tokio::test]
+    async fn equivalent_verified_transport_identity_resolves_same_principal() {
+        let (_directory, runtime, _owner) = fixture().await;
+        let oauth = VerifiedIdentity::external(
+            Authenticator::OauthBearer,
+            "https://accounts.google.com",
+            "owner-subject",
+        )
+        .unwrap();
+        let decision = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                oauth,
+                ["lab:read".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::Resource, true),
+            ),
+            "bootstrap-default",
+            SkillLibraryAction::Read,
+            "artifact-identity",
+            SkillLibraryTarget::Personal(&ownership("bootstrap-owner")),
+            "request-identity",
+        )
+        .await
+        .unwrap();
+        assert_eq!(decision.audit.actor_id.unwrap().as_str(), "bootstrap-owner");
+    }
+
+    #[tokio::test]
+    async fn personal_unknown_cross_tenant_and_unauthorized_share_one_denial() {
+        let (_directory, runtime, owner) = fixture().await;
+        let unknown = decide(
+            &runtime,
+            browser_caller(owner.clone(), true),
+            "missing-project",
+            SkillLibraryAction::Read,
+            "unknown",
+            SkillLibraryTarget::Personal(&ownership("someone-else")),
+            "request-3",
+        )
+        .await;
+        let unauthorized = decide(
+            &runtime,
+            browser_caller(owner, true),
+            "bootstrap-default",
+            SkillLibraryAction::Read,
+            "known",
+            SkillLibraryTarget::Personal(&LibraryOwnership::canonical(
+                LibraryTenantId::from_canonical_projection("other-company").unwrap(),
+                LibraryActorId::from_canonical_projection("someone-else").unwrap(),
+            )),
+            "request-4",
+        )
+        .await;
+        assert!(matches!(
+            unknown,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+        assert!(matches!(
+            unauthorized,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+    }
+
+    #[test]
+    fn identity_provider_facts_are_not_policy_inputs() {
+        let identity = browser("same-subject");
+        assert!(matches!(
+            identity.principal_link(),
+            PrincipalLink::External { .. }
+        ));
+        let caller = browser_caller(identity, true);
+        assert!(validate_transport(&caller, SkillLibraryAction::Create).is_ok());
+    }
+}
