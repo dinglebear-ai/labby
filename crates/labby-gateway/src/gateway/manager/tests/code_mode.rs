@@ -330,6 +330,142 @@ async fn advertised_subject_scoped_oauth_tool_resolves_and_executes() {
 }
 
 #[tokio::test]
+async fn annotated_read_only_fixture_is_searchable_describable_and_callable() {
+    let upstream = fixture_oauth_upstream("fixture", "http://unused.invalid/mcp");
+    let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
+    let annotated = |name: &str, annotations: rmcp::model::ToolAnnotations| {
+        let mut tool = rmcp::model::Tool::new(
+            name.to_string(),
+            format!("{name} fixture"),
+            Arc::new(serde_json::Map::new()),
+        );
+        tool.annotations = Some(annotations);
+        tool
+    };
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "reader",
+        vec![
+            annotated(
+                "provider_status",
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false),
+            ),
+            rmcp::model::Tool::new(
+                "unannotated".to_string(),
+                "unannotated fixture",
+                Arc::new(serde_json::Map::new()),
+            ),
+            annotated(
+                "contradictory",
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(true),
+            ),
+        ],
+    )
+    .await;
+    let caller = CodeModeCaller::Scoped {
+        capabilities: labby_codemode::CodeModeCallerCapabilities {
+            can_read: true,
+            can_execute: false,
+            can_use_snippets: false,
+            is_admin: false,
+        },
+        sub: Some("reader".to_string()),
+    };
+    let scope = ToolScope::default().read_only();
+
+    let render = CodeModeHost::list_tools(
+        &manager,
+        &caller,
+        CodeModeSurface::Mcp,
+        &scope,
+        false,
+        false,
+    )
+    .await
+    .expect("read-only fixture catalog");
+    assert_eq!(
+        render
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fixture::provider_status"]
+    );
+
+    let searched = labby_codemode::search_visible_tools(&render.entries, &scope, "provider", 10)
+        .expect("search annotated fixture");
+    assert_eq!(searched.results[0].id, "fixture::provider_status");
+    let described =
+        labby_codemode::describe_visible_tool(&render.entries, &scope, "fixture::provider_status")
+            .expect("describe annotated fixture");
+    assert_eq!(described.id, "fixture::provider_status");
+
+    CodeModeHost::call_tool(
+        &manager,
+        "fixture::provider_status",
+        json!({}),
+        &caller,
+        CodeModeSurface::Mcp,
+        &scope,
+        labby_codemode::ExecCtx::none(),
+    )
+    .await
+    .expect("call annotated read-only fixture");
+    let resource = CodeModeHost::read_resource(
+        &manager,
+        "lab://upstream/fixture/fixture://skill".to_string(),
+        &caller,
+        CodeModeSurface::Mcp,
+        &scope,
+    )
+    .await
+    .expect("read proxied fixture resource");
+    assert_eq!(resource["contents"], json!([]));
+
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "reader",
+        vec![
+            annotated(
+                "provider_status",
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false),
+            ),
+            annotated(
+                "operation_status",
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false),
+            ),
+        ],
+    )
+    .await;
+    let refreshed = CodeModeHost::list_tools(
+        &manager,
+        &caller,
+        CodeModeSurface::Mcp,
+        &scope,
+        false,
+        false,
+    )
+    .await
+    .expect("refreshed read-only fixture catalog");
+    assert_eq!(
+        refreshed
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fixture::operation_status", "fixture::provider_status"]
+    );
+}
+
+#[tokio::test]
 async fn code_mode_enabled_reads_code_mode_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");

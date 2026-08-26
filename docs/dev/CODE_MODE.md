@@ -22,28 +22,16 @@ Code Mode has two text MCP entry points with the same input shape:
 - `codemode({ code })` is the full execution surface. It requires `lab` or
   `lab:admin` and may invoke write-capable or destructive upstream tools.
 - `codemode_read({ code })` is the enforced read-only surface. It accepts
-  `lab:read`, `lab`, or `lab:admin`, exposes only upstream tools present in the
-  operator-owned `trusted_read_only_tools` allowlist **and** whose live MCP
-  descriptor explicitly sets `readOnlyHint: true`, and rejects descriptors that
-  also set `destructiveHint: true`. An absent or merely
-  `destructiveHint: false` annotation is not proof that a tool is read-only.
+  `lab:read`, `lab`, or `lab:admin`. It exposes only upstream tools whose live
+  MCP descriptor explicitly sets `readOnlyHint: true` and
+  `destructiveHint: false`. An absent annotation or a descriptor with only
+  `destructiveHint: false` is not proof that a tool is read-only.
 
-The trust list is empty by default and accepts exact namespaced tool ids only:
-
-```toml
-[code_mode]
-enabled = true
-trusted_read_only_tools = [
-  "claude-dookie::Read",
-  "qdrant::collection_info",
-]
-```
-
-This is a dedicated safety attestation, separate from an upstream's
-`expose_tools` visibility policy. Tool annotations are upstream-controlled and
-cannot grant read-only authority by themselves. Both the trust entry and the
-live descriptor are checked again on invocation. A changed descriptor is
-rejected before dispatch and must be rediscovered.
+The catalog checks the standard MCP annotations during discovery. The call path
+checks the current live descriptor again immediately before dispatch. A changed
+descriptor is rejected and must be rediscovered. The old
+`trusted_read_only_tools` configuration field remains accepted for compatibility,
+but it no longer controls catalog admission.
 
 The optional `codemode_ui` MCP App entry point has the same full execution
 authority as `codemode`; it is not a read-only inspector shortcut. The full
@@ -649,10 +637,9 @@ additional per-call confirmation or pause step on top of that. Concretely:
 - **MCP:** an execute-capable caller (`lab` or `lab:admin`) may call any
   destructive upstream tool from Code Mode with no separate confirmation. A
   caller without execute permission is refused with `forbidden` before dispatch.
-- **Read-only MCP:** `codemode_read` never admits a tool unless the operator has
-  trusted its exact namespaced id and its descriptor is explicitly read-only.
-  Discovery filters the catalog, and invocation checks both the operator policy
-  and the live descriptor again immediately before dispatch. `writeArtifact`, local
+- **Read-only MCP:** `codemode_read` never admits a tool unless its descriptor is
+  explicitly read-only. Discovery filters the catalog, and invocation checks the
+  live descriptor again immediately before dispatch. `writeArtifact`, local
   `state`/`git` providers, and other write paths are unavailable.
 - **CLI:** Code Mode execution is operator-driven and always execute-capable,
   so destructive upstream calls are permitted unconditionally.
