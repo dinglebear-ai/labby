@@ -50,8 +50,6 @@ Setup and doctor inspect access-store health read-only. They do not call this en
 
 ## Related docs
 
-- [Access-control specification](../access-control/SPEC.md)
-- [Access-control data model](../access-control/DATA_MODEL.md)
 - [OAuth runtime](../runtime/OAUTH.md)
 - [Setup service](./SETUP.md)
 - [Doctor service](./DOCTOR.md)

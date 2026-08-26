@@ -103,7 +103,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
     }
 
     /// Commit bytes acquired by the sealed server-side source coordinator.
-    /// Public JSON dispatch never accepts an [`ArtifactAcquisition`].
+    /// Public JSON dispatch never accepts an
+    /// [`ArtifactAcquisition`](labby_runtime::artifacts::ArtifactAcquisition).
     pub(super) async fn import_acquired(
         &self,
         runtime: &AccessRuntime,
@@ -1756,6 +1757,31 @@ mod tests {
         armed: AtomicBool,
     }
 
+    async fn acceptance_dispatch(
+        service: &SkillLibraryService<crate::skills::registry::FirstPartyGeneration>,
+        runtime: &AccessRuntime,
+        identity: &VerifiedIdentity,
+        action: &'static str,
+        params: Value,
+        correlation: &'static str,
+    ) -> Result<Value, SkillLibraryDispatchError> {
+        let correlation = SkillLibraryCorrelationId::parse(correlation).unwrap();
+        service
+            .dispatch(
+                runtime,
+                SkillLibraryCaller::new(
+                    identity.clone(),
+                    [],
+                    SkillLibraryTransport::browser(true, true),
+                ),
+                "bootstrap-default",
+                action,
+                params,
+                &correlation,
+            )
+            .await
+    }
+
     impl FaultInjector for OneShotStageFault {
         fn check(&self, stage: FaultStage) -> Result<(), InjectedFault> {
             if stage == self.stage && self.armed.swap(false, Ordering::SeqCst) {
@@ -2080,6 +2106,346 @@ mod tests {
                 .filter(|audit| audit.sequence == first_receipt.sequence)
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn three_principals_share_activate_restart_replay_and_revoke_exact_skills() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let access_path = root.path().join("access.db");
+        let access_store = AccessStore::open(access_path.clone()).await.unwrap();
+        let identity = |subject| {
+            VerifiedIdentity::external(
+                Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                subject,
+            )
+            .unwrap()
+        };
+        let eli = identity("eli");
+        let pujit = identity("pujit");
+        let jake = identity("jake");
+        access_store
+            .bootstrap_owner(BootstrapOwnerInput::new(eli.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        access_store
+            .execute_test_statement(
+                "INSERT INTO principals VALUES
+                   ('pujit-principal','bootstrap-local','user','active','Pujit',2,2),
+                   ('jake-principal','bootstrap-local','user','active','Jake',2,2);
+                 INSERT INTO principal_links VALUES
+                   ('pujit-link','pujit-principal','external','https://accounts.google.com','pujit',NULL,'active',1,1,2,2),
+                   ('jake-link','jake-principal','external','https://accounts.google.com','jake',NULL,'active',1,1,2,2);
+                 INSERT INTO project_memberships VALUES
+                   ('pujit-membership','bootstrap-local','bootstrap-default','pujit-principal','member','active','bootstrap-owner',2,2),
+                   ('jake-membership','bootstrap-local','bootstrap-default','jake-principal','admin','active','bootstrap-owner',2,2);",
+            )
+            .await
+            .unwrap();
+        drop(access_store);
+        let runtime = AccessRuntime::initialize(access_path.clone()).await;
+        let artifacts_path = root.path().join("artifacts");
+        let store = Arc::new(ArtifactStore::new(artifacts_path.clone()).unwrap());
+        let projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection);
+        let initial = projection
+            .prepare(&store, &store.library_snapshot().unwrap(), None)
+            .unwrap();
+        let publication = Arc::new(ActivationCoordinator::new(initial, 0));
+        let service = SkillLibraryService::new(
+            Arc::clone(&store),
+            BoundedBlockingExecutor::new(
+                2,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(10),
+            )
+            .unwrap(),
+            Arc::clone(&publication),
+            Arc::clone(&projection),
+        );
+        let shared_content =
+            "---\nname: shared-brief\ndescription: Shared acceptance skill\n---\nExact bytes.\n";
+        let created = acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "skill_library.create",
+            json!({
+                "name": "shared-brief",
+                "visibility": "shared",
+                "files": [
+                    {"path": "SKILL.md", "content": shared_content},
+                    {"path": "references/check.md", "content": "support bytes\n"}
+                ],
+                "expected_library_version": 0,
+                "idempotency_key": "eli-create-shared"
+            }),
+            "eli-create-shared",
+        )
+        .await
+        .unwrap();
+        let artifact_id = created["artifact_id"].as_str().unwrap().to_owned();
+        let revision_id = store
+            .get(&artifact_id)
+            .unwrap()
+            .revision_ids
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(created["active_revision_id"], Value::Null);
+        assert_eq!(created["canonical_uri"], Value::Null);
+        assert!(
+            publication
+                .generation()
+                .providers
+                .find("skill://labby/shared-brief/SKILL.md")
+                .is_none(),
+            "saving must not activate"
+        );
+
+        let activated = acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "skill_library.activate",
+            json!({
+                "artifact_id": artifact_id,
+                "expected_revision_id": revision_id,
+                "expected_library_version": 1,
+                "idempotency_key": "eli-activate-shared"
+            }),
+            "eli-activate-shared",
+        )
+        .await
+        .unwrap();
+        assert_eq!(activated["new_generation"], 2);
+        assert_eq!(activated["committed_library_version"], 2);
+        assert_eq!(activated["published_library_version"], 2);
+        assert_eq!(
+            activated["canonical_uri"],
+            "skill://labby/shared-brief/SKILL.md"
+        );
+        let generation = publication.generation();
+        assert_eq!(generation.id, 2);
+        assert!(
+            activated["library_digest"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
+        assert!(generation.digest.starts_with("sha256:"));
+        let entry = generation
+            .providers
+            .find("skill://labby/shared-brief/SKILL.md")
+            .unwrap();
+        assert_eq!(
+            generation
+                .providers
+                .read(entry, "skill://labby/shared-brief/SKILL.md", 64 * 1024)
+                .await
+                .unwrap()
+                .bytes,
+            shared_content.as_bytes()
+        );
+        assert_eq!(
+            generation
+                .providers
+                .read(
+                    entry,
+                    "skill://labby/shared-brief/references/check.md",
+                    64 * 1024,
+                )
+                .await
+                .unwrap()
+                .bytes,
+            b"support bytes\n"
+        );
+
+        let member_list = acceptance_dispatch(
+            &service,
+            &runtime,
+            &pujit,
+            "skill_library.list",
+            json!({}),
+            "pujit-list-shared",
+        )
+        .await
+        .unwrap();
+        let shared = member_list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["artifact_id"] == artifact_id)
+            .unwrap();
+        assert_eq!(shared["active_revision_id"], revision_id);
+        assert_eq!(shared["canonical_uri"], activated["canonical_uri"]);
+        assert_eq!(shared["published_library_version"], 2);
+        let read = acceptance_dispatch(
+            &service,
+            &runtime,
+            &pujit,
+            "skill_library.read",
+            json!({"artifact_id": artifact_id, "revision_id": revision_id, "path": "SKILL.md"}),
+            "pujit-read-exact",
+        )
+        .await
+        .unwrap();
+        assert_eq!(read["text"], shared_content);
+        assert_eq!(read["library_version"], 2);
+
+        let personal = acceptance_dispatch(&service, &runtime,
+            &pujit,
+            "skill_library.create",
+            json!({
+                "name": "pujit-private",
+                "files": [{"path": "SKILL.md", "content": "---\nname: pujit-private\ndescription: private\n---\nprivate\n"}],
+                "expected_library_version": 2,
+                "idempotency_key": "pujit-create-private"
+            }),
+            "pujit-create-private",
+        )
+        .await
+        .unwrap();
+        let personal_id = personal["artifact_id"].as_str().unwrap().to_owned();
+        let owner_private = acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "skill_library.create",
+            json!({
+                "name": "eli-private",
+                "files": [{"path": "SKILL.md", "content": "---\nname: eli-private\ndescription: private\n---\nprivate\n"}],
+                "expected_library_version": 3,
+                "idempotency_key": "eli-create-private"
+            }),
+            "eli-create-private",
+        )
+        .await
+        .unwrap();
+        let owner_private_id = owner_private["artifact_id"].as_str().unwrap().to_owned();
+        assert!(
+            acceptance_dispatch(
+                &service,
+                &runtime,
+                &pujit,
+                "skill_library.get",
+                json!({"artifact_id": owner_private_id}),
+                "pujit-private-denied"
+            )
+            .await
+            .is_err()
+        );
+        let admin_view = acceptance_dispatch(
+            &service,
+            &runtime,
+            &jake,
+            "skill_library.get",
+            json!({"artifact_id": personal_id}),
+            "jake-private-admin",
+        )
+        .await
+        .unwrap();
+        assert_eq!(admin_view["owner"]["relationship"], "other");
+        assert_eq!(admin_view["can_mutate"], true);
+
+        let replay = acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "skill_library.create",
+            json!({
+                "name": "shared-brief",
+                "visibility": "shared",
+                "files": [
+                    {"path": "SKILL.md", "content": shared_content},
+                    {"path": "references/check.md", "content": "support bytes\n"}
+                ],
+                "expected_library_version": 0,
+                "idempotency_key": "eli-create-shared"
+            }),
+            "eli-create-shared-replay",
+        )
+        .await
+        .unwrap();
+        assert_eq!(replay["outcome"], "replayed");
+        assert_eq!(replay["committed_library_version"], 1);
+        assert!(
+            acceptance_dispatch(
+                &service,
+                &runtime,
+                &eli,
+                "skill_library.create",
+                json!({
+                    "name": "shared-brief",
+                    "visibility": "shared",
+                    "files": [{"path": "SKILL.md", "content": "changed"}],
+                    "expected_library_version": 0,
+                    "idempotency_key": "eli-create-shared"
+                }),
+                "eli-idempotency-collision"
+            )
+            .await
+            .is_err()
+        );
+
+        let restarted_store = Arc::new(ArtifactStore::new(artifacts_path).unwrap());
+        let restarted_snapshot = restarted_store.library_snapshot().unwrap();
+        let restarted_generation = projection
+            .prepare(&restarted_store, &restarted_snapshot, None)
+            .unwrap();
+        assert_eq!(restarted_snapshot.version, 4);
+        assert_eq!(restarted_generation.id, 4);
+        let restarted_entry = restarted_generation
+            .providers
+            .find("skill://labby/shared-brief/SKILL.md")
+            .unwrap();
+        assert_eq!(
+            restarted_generation
+                .providers
+                .read(
+                    restarted_entry,
+                    "skill://labby/shared-brief/SKILL.md",
+                    64 * 1024,
+                )
+                .await
+                .unwrap()
+                .bytes,
+            shared_content.as_bytes()
+        );
+
+        let access_store = runtime.store().await.unwrap();
+        access_store
+            .execute_test_statement(
+                "UPDATE project_memberships SET status='disabled', updated_at=3
+                 WHERE membership_id='pujit-membership';
+                 UPDATE projects SET project_policy_epoch=project_policy_epoch+1, updated_at=3
+                 WHERE project_id='bootstrap-default';",
+            )
+            .await
+            .unwrap();
+        assert!(
+            service
+                .dispatch(
+                    &runtime,
+                    SkillLibraryCaller::new(
+                        pujit.clone(),
+                        [],
+                        SkillLibraryTransport::browser(true, true),
+                    ),
+                    "bootstrap-default",
+                    "skill_library.list",
+                    json!({}),
+                    &SkillLibraryCorrelationId::parse("pujit-revoked").unwrap(),
+                )
+                .await
+                .is_err()
         );
     }
 

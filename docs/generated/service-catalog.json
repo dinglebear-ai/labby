@@ -135,7 +135,7 @@
   {
     "name": "skills",
     "display_name": "skills",
-    "description": "Discover and read Agent Skills through a universal compatibility surface",
+    "description": "Discover, read, and manage Agent Skills through one shared service",
     "category": "bootstrap",
     "status": "available",
     "feature": null,

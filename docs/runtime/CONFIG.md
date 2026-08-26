@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-08-01"
+updated: "2026-08-26"
 ---
 
 # Runtime Configuration
@@ -65,6 +65,27 @@ The code-owned proxy key inventory lives in
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
+
+## Skills And Artifact Storage
+
+The `skills` feature uses two separate locations beneath `$LABBY_HOME`:
+
+- `$LABBY_HOME/skills` is the operator-provided directory pack scanned as a
+  startup input.
+- `$LABBY_HOME/artifacts` is Labby's managed Artifact store for immutable Skill
+  revisions, durable library authority, mutation receipts, and publication
+  recovery.
+
+These are not interchangeable configuration sources. Creating, saving, or
+importing through the Skill Library writes the managed Artifact store; it does
+not rewrite the operator directory. Import sources use server-configured Depot
+or repository connections and exact immutable selectors. Callers cannot provide
+source endpoints, filesystem paths, content bytes, or credentials.
+
+Create, save, and import do not activate. The committed active set is rebuilt
+from durable authority on startup, and a configured but unavailable import
+source does not affect local serving after acquisition. See
+[Skills And Skill Library](../services/SKILLS.md).
 
 ## Gateway Upstreams
 

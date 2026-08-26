@@ -353,17 +353,33 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
             .expect("private root");
     }
-    let owner = identity("mcp-owner", Authenticator::OauthBearer);
+    let eli = identity("eli", Authenticator::OauthBearer);
+    let pujit = identity("pujit", Authenticator::OauthBearer);
+    let jake = identity("jake", Authenticator::OauthBearer);
     let access_path = root.path().join("access.db");
     let access_store = AccessStore::open(access_path.clone())
         .await
         .expect("access store");
     access_store
         .bootstrap_owner(
-            BootstrapOwnerInput::new(owner.clone(), "Local", "Default").expect("owner input"),
+            BootstrapOwnerInput::new(eli.clone(), "Local", "Default").expect("owner input"),
         )
         .await
         .expect("bootstrap owner");
+    access_store
+        .execute_test_statement(
+            "INSERT INTO principals VALUES
+               ('pujit-principal','bootstrap-local','user','active','Pujit',2,2),
+               ('jake-principal','bootstrap-local','user','active','Jake',2,2);
+             INSERT INTO principal_links VALUES
+               ('pujit-link','pujit-principal','external','https://accounts.google.com','pujit',NULL,'active',1,1,2,2),
+               ('jake-link','jake-principal','external','https://accounts.google.com','jake',NULL,'active',1,1,2,2);
+             INSERT INTO project_memberships VALUES
+               ('pujit-membership','bootstrap-local','bootstrap-default','pujit-principal','member','active','bootstrap-owner',2,2),
+               ('jake-membership','bootstrap-local','bootstrap-default','jake-principal','admin','active','bootstrap-owner',2,2);",
+        )
+        .await
+        .expect("three canonical principals");
     drop(access_store);
     let access_runtime = Arc::new(AccessRuntime::initialize(access_path).await);
 
@@ -375,11 +391,12 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     let initial = projection
         .prepare(&store, &snapshot, None)
         .expect("initial generation");
+    let publication = Arc::new(ActivationCoordinator::new(initial, snapshot.version));
     let service = Arc::new(SkillLibraryService::new(
         store,
         BoundedBlockingExecutor::new(2, Duration::from_secs(1), Duration::from_secs(10))
             .expect("blocking executor"),
-        Arc::new(ActivationCoordinator::new(initial, snapshot.version)),
+        Arc::clone(&publication),
         projection,
     ));
     assert!(
@@ -389,7 +406,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
     let server = LabMcpServer {
         registry: Arc::new(crate::registry::build_default_registry()),
-        access_runtime,
+        access_runtime: Arc::clone(&access_runtime),
         #[cfg(feature = "gateway")]
         gateway_manager: None,
         peers: Default::default(),
@@ -409,7 +426,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running =
         serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(server, transport, None);
-    let context = || {
+    let context = |verified: &VerifiedIdentity| {
         let mut context = RequestContext::new(NumberOrString::Number(1), running.peer().clone());
         let mut request = Request::builder()
             .uri("https://lab.example/mcp")
@@ -419,7 +436,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
             .expect("request")
             .into_parts()
             .0;
-        request.extensions.insert(owner.clone());
+        request.extensions.insert(verified.clone());
         request.extensions.insert(AuthContext {
             sub: "untrusted-raw-sub".to_owned(),
             actor_key: None,
@@ -441,34 +458,308 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
             ("params".to_owned(), params),
         ]))
     };
+    let value = |response: &rmcp::model::CallToolResult| {
+        let envelope = response.structured_content.clone().unwrap_or_else(|| {
+            let text = response.content[0]
+                .as_text()
+                .expect("text Skill Library response")
+                .text
+                .as_str();
+            serde_json::from_str::<serde_json::Value>(text).expect("JSON Skill Library response")
+        });
+        envelope.get("data").cloned().unwrap_or(envelope)
+    };
 
-    let listed = Box::pin(
-        running
-            .service()
-            .call_tool_impl(call("skill_library.list", serde_json::json!({})), context()),
-    )
+    let listed = Box::pin(running.service().call_tool_impl(
+        call("skill_library.list", serde_json::json!({})),
+        context(&eli),
+    ))
     .await
     .expect("management list response");
     assert!(!listed.is_error.unwrap_or(false), "{listed:?}");
+
+    let skill_text =
+        "---\nname: mcp-production-wire\ndescription: prove MCP production wiring\n---\nbody\n";
+    let support_text = "exact support bytes\n";
+    let validated = Box::pin(running.service().call_tool_impl(
+        call(
+            "skill_library.validate",
+            serde_json::json!({
+                "name": "mcp-production-wire",
+                "files": [
+                    {"path": "SKILL.md", "content": skill_text},
+                    {"path": "references/exact.md", "content": support_text}
+                ]
+            }),
+        ),
+        context(&eli),
+    ))
+    .await
+    .expect("management validation response");
+    assert!(!validated.is_error.unwrap_or(false), "{validated:?}");
+    let validated = value(&validated);
+    assert_eq!(validated["valid"], true);
+    let expected_revision = validated["revision_id"]
+        .as_str()
+        .expect("validated revision")
+        .to_owned();
 
     let created = Box::pin(running.service().call_tool_impl(
         call(
             "skill_library.create",
             serde_json::json!({
                 "name": "mcp-production-wire",
+                "visibility": "shared",
                 "files": [{
                     "path": "SKILL.md",
-                    "content": "---\nname: mcp-production-wire\ndescription: prove MCP production wiring\n---\nbody\n"
+                    "content": skill_text
+                }, {
+                    "path": "references/exact.md",
+                    "content": support_text
                 }],
                 "expected_library_version": 0,
                 "idempotency_key": "mcp-production-wire-create"
             }),
         ),
-        context(),
+        context(&eli),
     ))
     .await
     .expect("management mutation response");
     assert!(!created.is_error.unwrap_or(false), "{created:?}");
+    let created = value(&created);
+    let artifact_id = created["artifact_id"]
+        .as_str()
+        .expect("created artifact")
+        .to_owned();
+    assert_eq!(created["active_revision_id"], serde_json::Value::Null);
+    assert_eq!(created["canonical_uri"], serde_json::Value::Null);
+
+    let activated = Box::pin(running.service().call_tool_impl(
+        call(
+            "skill_library.activate",
+            serde_json::json!({
+                "artifact_id": artifact_id,
+                "expected_revision_id": expected_revision,
+                "expected_library_version": 1,
+                "idempotency_key": "mcp-production-wire-activate"
+            }),
+        ),
+        context(&eli),
+    ))
+    .await
+    .expect("owner activation response");
+    assert!(!activated.is_error.unwrap_or(false), "{activated:?}");
+    let activated = value(&activated);
+    assert_eq!(activated["active_revision_id"], expected_revision);
+    assert_eq!(
+        activated["canonical_uri"],
+        "skill://labby/mcp-production-wire/SKILL.md"
+    );
+    assert_eq!(activated["new_generation"], 2);
+
+    let mut observed = Vec::new();
+    for (label, principal) in [("eli", &eli), ("pujit", &pujit), ("jake", &jake)] {
+        let listed = Box::pin(running.service().call_tool_impl(
+            call("skill_library.list", serde_json::json!({})),
+            context(principal),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{label} list transport: {error}"));
+        assert!(!listed.is_error.unwrap_or(false), "{label}: {listed:?}");
+        let listed = value(&listed);
+        let item = listed["items"]
+            .as_array()
+            .expect("list items")
+            .iter()
+            .find(|item| item["artifact_id"] == artifact_id)
+            .unwrap_or_else(|| panic!("{label} shared item"));
+
+        let got = Box::pin(running.service().call_tool_impl(
+            call(
+                "skill_library.get",
+                serde_json::json!({"artifact_id": artifact_id}),
+            ),
+            context(principal),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{label} get transport: {error}"));
+        assert!(!got.is_error.unwrap_or(false), "{label}: {got:?}");
+        let got = value(&got);
+
+        let read = Box::pin(running.service().call_tool_impl(
+            call(
+                "skill_library.read",
+                serde_json::json!({
+                    "artifact_id": artifact_id,
+                    "revision_id": expected_revision,
+                    "path": "SKILL.md"
+                }),
+            ),
+            context(principal),
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{label} read transport: {error}"));
+        assert!(!read.is_error.unwrap_or(false), "{label}: {read:?}");
+        let read = value(&read);
+
+        assert_eq!(item["latest_revision_id"], expected_revision, "{label}");
+        assert_eq!(got["latest_revision_id"], expected_revision, "{label}");
+        assert_eq!(
+            item["canonical_uri"], "skill://labby/mcp-production-wire/SKILL.md",
+            "{label}"
+        );
+        assert_eq!(got["canonical_uri"], item["canonical_uri"], "{label}");
+        assert_eq!(read["text"], skill_text, "{label}");
+        assert_eq!(read["revision_id"], expected_revision, "{label}");
+        observed.push((
+            item["canonical_uri"].clone(),
+            item["latest_revision_id"].clone(),
+            item["published_library_version"].clone(),
+            read["text"].clone(),
+        ));
+    }
+    assert!(observed.windows(2).all(|pair| pair[0] == pair[1]));
+
+    let support_uri = "skill://labby/mcp-production-wire/references/exact.md";
+    let generation = publication.generation();
+    let mut resource_facts = Vec::new();
+    for (label, principal) in [("eli", &eli), ("pujit", &pujit), ("jake", &jake)] {
+        let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
+            principal.clone(),
+            ["lab:read".to_owned()],
+            crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
+                crate::dispatch::skill_library::auth::SkillLibrarySurface::Mcp,
+                true,
+            ),
+        );
+        let decision = crate::dispatch::skill_library::auth::authorize_at_boundary(
+            &access_runtime,
+            caller,
+            "bootstrap-default",
+            crate::dispatch::skill_library::auth::SkillLibraryAction::Read,
+            &crate::dispatch::skill_library::audit::CanonicalArtifactId::parse(&artifact_id)
+                .expect("canonical artifact id"),
+            crate::dispatch::skill_library::auth::SkillLibraryTarget::SharedActive,
+            &crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(format!(
+                "{label}-resource-read"
+            ))
+            .expect("resource correlation"),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{label} resource authorization: {error}"));
+        let registry =
+            crate::skills::facade::SkillRegistryContext::from_generation(Arc::clone(&generation))
+                .with_artifact_access(decision.artifact_access_snapshot());
+        let resource = crate::mcp::handlers_resources::read_skill_resource_with_registry(
+            &registry,
+            support_uri,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{label} resource adapter: {error}"));
+        assert_eq!(resource.uri, support_uri, "{label}");
+        assert_eq!(resource.text, support_text, "{label}");
+        assert!(resource.digest.starts_with("sha256:"), "{label}");
+
+        let compatibility_list = crate::dispatch::skills::dispatch_with_context(
+            &registry,
+            "skills.list",
+            serde_json::json!({"limit": 100}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{label} compatibility list: {error}"));
+        let compatibility_skill = compatibility_list["skills"]
+            .as_array()
+            .expect("compatibility skills")
+            .iter()
+            .find(|skill| skill["uri"] == "skill://labby/mcp-production-wire/SKILL.md")
+            .unwrap_or_else(|| panic!("{label} compatibility shared skill"));
+        let support_digest = compatibility_skill["resources"]
+            .as_array()
+            .expect("compatibility resources")
+            .iter()
+            .find(|entry| entry["uri"] == support_uri)
+            .unwrap_or_else(|| panic!("{label} compatibility support resource"))["digest"]
+            .clone();
+        assert_eq!(support_digest, resource.digest, "{label}");
+
+        let compatibility_get = crate::dispatch::skills::dispatch_with_context(
+            &registry,
+            "skills.get",
+            serde_json::json!({"uri": support_uri}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{label} compatibility get: {error}"));
+        assert_eq!(
+            compatibility_get["skill"]["uri"], "skill://labby/mcp-production-wire/SKILL.md",
+            "{label}"
+        );
+        assert_eq!(
+            compatibility_get["skill"]["resources"]
+                .as_array()
+                .expect("get resources")
+                .iter()
+                .find(|entry| entry["uri"] == support_uri)
+                .expect("get support resource")["digest"],
+            resource.digest,
+            "{label}"
+        );
+
+        for (uri, expected_text) in [
+            ("skill://labby/mcp-production-wire/SKILL.md", skill_text),
+            (support_uri, support_text),
+        ] {
+            let compatibility_read = crate::dispatch::skills::dispatch_with_context(
+                &registry,
+                "skills.read",
+                serde_json::json!({"uri": uri}),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} compatibility read: {error}"));
+            assert_eq!(compatibility_read["uri"], uri, "{label}");
+            assert_eq!(compatibility_read["text"], expected_text, "{label}");
+            assert!(
+                compatibility_read["digest"]
+                    .as_str()
+                    .is_some_and(|digest| digest.starts_with("sha256:")),
+                "{label}"
+            );
+        }
+        resource_facts.push((resource.uri, resource.digest, resource.text));
+    }
+    assert!(resource_facts.windows(2).all(|pair| pair[0] == pair[1]));
+
+    let member_denied = Box::pin(running.service().call_tool_impl(
+        call(
+            "skill_library.deactivate",
+            serde_json::json!({
+                "artifact_id": artifact_id,
+                "expected_library_version": 2,
+                "idempotency_key": "pujit-must-not-mutate"
+            }),
+        ),
+        context(&pujit),
+    ))
+    .await
+    .expect("member denial response");
+    assert!(member_denied.is_error.unwrap_or(false));
+
+    let admin_deactivated = Box::pin(running.service().call_tool_impl(
+        call(
+            "skill_library.deactivate",
+            serde_json::json!({
+                "artifact_id": artifact_id,
+                "expected_library_version": 2,
+                "idempotency_key": "jake-admin-deactivate"
+            }),
+        ),
+        context(&jake),
+    ))
+    .await
+    .expect("admin mutation response");
+    assert!(
+        !admin_deactivated.is_error.unwrap_or(false),
+        "{admin_deactivated:?}"
+    );
 }
 
 #[cfg(feature = "gateway")]

@@ -2402,7 +2402,7 @@
     },
     {
       "name": "skills",
-      "description": "Discover and read Agent Skills through a universal compatibility surface",
+      "description": "Discover, read, and manage Agent Skills through one shared service",
       "category": "bootstrap",
       "status": "available",
       "requires_http_subject": false,

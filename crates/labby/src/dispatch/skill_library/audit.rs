@@ -407,8 +407,6 @@ impl SkillLibraryAuditSink {
             outcome = ?event.outcome,
             stage = ?event.stage,
             policy_revision = event.policy_revision,
-            tenant_id = event.tenant_id.as_ref().map(LibraryTenantId::as_str),
-            actor_id = event.actor_id.as_ref().map(LibraryActorId::as_str),
             revision_digest = event.revision_digest,
             committed_version = event.committed_version,
             published_version = event.published_version,

@@ -1,7 +1,7 @@
 ---
 title: Skills extension contract
 created: 2026-08-12
-updated: 2026-08-18
+updated: 2026-08-26
 ---
 
 # Skills Extension Contract (SEP-2640)
@@ -352,6 +352,35 @@ declared `directoryRead: true`. Labby does not declare it.
 
 `skills/list` returns `skills[]` plus `nextCursor`, `ttlMs`, and `cacheScope`.
 Digests are `sha256:{hex}` with exactly 64 lowercase hex characters.
+
+## Labby-owned Skill Library extension
+
+SEP-2640 defines discovery and reading; it does not define authoring,
+revisioning, activation, visibility, or import. Labby keeps those product
+operations outside the SEP namespace as actions on its existing `skills` tool:
+
+- read metadata: `skill_library.list`, `.get`, `.history`, `.read`;
+- author without implicit activation: `.validate`, `.create`, `.save`;
+- publish exact revisions: `.activate`, `.deactivate`, `.rollback`, `.refresh`;
+- acquire without implicit activation: `.import`;
+- retain revisions while retiring catalog visibility: `.archive`.
+
+These actions are a Labby extension and must not be presented as SEP-2640
+methods. They share the same immutable published generation as native
+`skills/list`, `skills/get`, and `resources/read`, and as the compatibility
+`skills.list`, `skills.get`, and `skills.read` actions.
+
+The management surface is versioned and optimistic: mutations require an
+expected library version and idempotency key, and revision-sensitive mutations
+require an exact expected revision. A successful receipt distinguishes durable
+commit from process publication and tells clients to re-list. There is no
+Skills-specific list-changed notification.
+
+Authorization is caller-dependent. Personal entries are owner/admin-only;
+shared entries are company-readable only when active; owner and current admins
+may mutate. This is an access-control rule, not a `cacheScope` interpretation.
+The canonical lifecycle, storage, import, and MCP App behavior is documented in
+[Skills And Skill Library](../services/SKILLS.md).
 
 ## Error kinds
 

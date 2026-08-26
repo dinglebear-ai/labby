@@ -4011,7 +4011,7 @@ Arguments:
 ```text
 Discover and read Agent Skills through the compatibility surface
 
-Usage: skills [OPTIONS] <COMMAND>
+Usage: skills [OPTIONS] --project-id <PROJECT_ID> <COMMAND>
 
 Commands:
   list    List caller-visible Agent Skills without loading their bodies
@@ -4023,6 +4023,9 @@ Commands:
 Options:
       --json
           Emit JSON instead of human-readable tables
+
+      --project-id <PROJECT_ID>
+          Canonical Access project used to authorize Artifact-backed Skills
 
       --color <COLOR>
           Control human-readable CLI styling
