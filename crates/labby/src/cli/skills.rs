@@ -9,6 +9,14 @@ use crate::cli::helpers::run_action_command;
 use crate::config::LabConfig;
 use crate::output::OutputFormat;
 
+async fn dispatch_at_cli_boundary(
+    registry: &crate::skills::facade::SkillRegistryContext,
+    action: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, crate::dispatch::error::ToolError> {
+    crate::dispatch::skills::dispatch_with_context(registry, action, params).await
+}
+
 #[derive(Debug, Args)]
 pub struct SkillsArgs {
     #[command(subcommand)]
@@ -97,10 +105,9 @@ async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -
             let manager = std::sync::Arc::clone(&manager);
             let scope = scope.clone();
             async move {
-                crate::dispatch::skills::dispatch_with_manager_scope(
-                    manager, scope, &action, params,
-                )
-                .await
+                let registry =
+                    crate::skills::facade::SkillRegistryContext::with_manager(manager, scope);
+                dispatch_at_cli_boundary(&registry, &action, params).await
             }
         })
         .await;
@@ -117,5 +124,50 @@ async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -
             |action, params| async move { crate::dispatch::skills::dispatch(&action, params).await },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn cli_boundary_keeps_a_captured_generation_during_refresh() {
+        use crate::skills::facade::SkillRegistryContext;
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("cli-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: cli-race\ndescription: old\n---\nold\n",
+        )
+        .unwrap();
+        let manager =
+            FirstPartyGenerationManager::new(temp.path().into(), GenerationLimits::default());
+        let old = SkillRegistryContext::from_generation(manager.generation());
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: cli-race\ndescription: new\n---\nnew\n",
+        )
+        .unwrap();
+        manager.refresh(None).unwrap();
+        let old_value = dispatch_at_cli_boundary(
+            &old,
+            "skills.read",
+            serde_json::json!({"uri":"skill://labby/cli-race/SKILL.md"}),
+        )
+        .await
+        .unwrap();
+        let current = SkillRegistryContext::from_generation(manager.generation());
+        let new_value = dispatch_at_cli_boundary(
+            &current,
+            "skills.read",
+            serde_json::json!({"uri":"skill://labby/cli-race/SKILL.md"}),
+        )
+        .await
+        .unwrap();
+        assert!(old_value["text"].as_str().unwrap().contains("old"));
+        assert!(new_value["text"].as_str().unwrap().contains("new"));
+        assert_ne!(old_value["digest"], new_value["digest"]);
     }
 }

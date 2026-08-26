@@ -11,7 +11,6 @@ pub mod types;
 
 pub(crate) use catalog::ACTIONS;
 #[cfg(feature = "gateway")]
-pub(crate) use dispatch::dispatch_with_manager_scope;
 pub(crate) use dispatch::{dispatch, dispatch_with_context};
 
 use labby_primitives::plugin::{Category, PluginMeta};

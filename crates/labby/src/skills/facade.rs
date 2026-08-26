@@ -128,6 +128,41 @@ impl SkillRegistryContext {
             scope,
         }
     }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_generation(first_party: Arc<FirstPartyGeneration>) -> Self {
+        Self {
+            first_party,
+            #[cfg(feature = "gateway")]
+            manager: None,
+            scope: SkillCallerScope::first_party_only(),
+        }
+    }
+
+    #[cfg(all(test, feature = "gateway"))]
+    #[must_use]
+    pub(crate) fn from_generation_with_manager(
+        first_party: Arc<FirstPartyGeneration>,
+        manager: Arc<GatewayManager>,
+        scope: SkillCallerScope,
+    ) -> Self {
+        Self {
+            first_party,
+            manager: Some(manager),
+            scope,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn generation_id(&self) -> u64 {
+        self.first_party.id
+    }
+
+    #[must_use]
+    pub(crate) fn generation_digest(&self) -> &str {
+        &self.first_party.digest
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,7 +186,9 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
             .map(provider_entry_to_wire)
             .collect(),
         next_cursor: None,
-        ttl_ms: Some(3_600_000),
+        // SEP-2640 has no list-changed notification. A generation can refresh,
+        // so clients must re-list instead of treating this snapshot as fresh.
+        ttl_ms: Some(0),
         cache_scope: Some(CACHE_SCOPE_PUBLIC.to_string()),
         meta: None,
     };
@@ -280,7 +317,7 @@ pub(crate) async fn read_visible_skill_file(
     uri: &str,
 ) -> Result<VisibleSkillFile, ToolError> {
     if let Some(provider_entry) = context.first_party.providers.find(uri) {
-        let entry = provider_entry_to_wire(provider_entry.clone());
+        let entry = &provider_entry.validated().entry;
         let resource = entry
             .resources
             .as_ref()
@@ -298,7 +335,7 @@ pub(crate) async fn read_visible_skill_file(
         )?;
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
-            skill_uri: entry.uri,
+            skill_uri: entry.uri.clone(),
             origin: labby_runtime::skills::FIRST_PARTY_ORIGIN.to_string(),
             digest: resource.digest.clone(),
             mime_type: None,
@@ -593,6 +630,53 @@ mod tests {
             .and_then(|resources| resources.iter().find(|resource| resource.uri == entry.uri))
             .expect("SKILL.md digest");
         assert_eq!(file.digest, digest.digest);
+        assert_eq!(listing.ttl_ms, Some(0));
+    }
+
+    #[tokio::test]
+    async fn supporting_file_and_manifest_remain_on_the_captured_generation() {
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("pinned");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pinned\ndescription: old\n---\n\nold\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), "old notes").unwrap();
+        let manager = FirstPartyGenerationManager::new(
+            temp.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        let pinned = SkillRegistryContext::from_generation(manager.generation());
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pinned\ndescription: new\n---\n\nnew\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), "new notes").unwrap();
+        manager.refresh(None).unwrap();
+
+        let notes_uri = "skill://labby/pinned/notes.md";
+        let old_entry = get_visible_skill(&pinned, notes_uri).await.unwrap();
+        let old_file = read_visible_skill_file(&pinned, notes_uri).await.unwrap();
+        assert_eq!(old_entry.frontmatter["description"], "old");
+        assert_eq!(old_file.text, "old notes");
+        let resource = old_entry
+            .resources
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|resource| resource.uri == notes_uri)
+            .unwrap();
+        assert_eq!(resource.digest, old_file.digest);
+        assert!(
+            labby_runtime::skills::parse_digest(&resource.digest)
+                .unwrap()
+                .matches(old_file.text.as_bytes())
+        );
     }
 
     #[tokio::test]
@@ -659,22 +743,45 @@ mod tests {
         };
         let runtime = GatewayRuntimeHandle::default();
         runtime.swap(Some(pool)).await;
-        let manager = Arc::new(
+        let gateway_manager = Arc::new(
             crate::dispatch::gateway::config_store::test_gateway_manager(
                 std::path::PathBuf::from("config.toml"),
                 runtime,
             ),
         );
-        manager
+        gateway_manager
             .seed_config_unchecked_for_tests(GatewayConfig {
                 upstream: vec![upstream],
                 ..GatewayConfig::default()
             })
             .await;
-        let context = SkillRegistryContext::with_manager(
-            manager,
+        let generation_root = tempfile::tempdir().unwrap();
+        let generation_skill = generation_root.path().join("generation-marker");
+        std::fs::create_dir_all(&generation_skill).unwrap();
+        std::fs::write(
+            generation_skill.join("SKILL.md"),
+            "---\nname: generation-marker\ndescription: old\n---\n",
+        )
+        .unwrap();
+        let generation_manager = crate::skills::registry::FirstPartyGenerationManager::new(
+            generation_root.path().to_path_buf(),
+            crate::skills::registry::GenerationLimits::default(),
+        );
+        let pinned_generation = generation_manager.generation();
+        let pinned_id = pinned_generation.id;
+        let context = SkillRegistryContext::from_generation_with_manager(
+            pinned_generation,
+            gateway_manager,
             SkillCallerScope::root(Some("alice".to_string()), ToolAccess::Direct),
         );
+        std::fs::write(
+            generation_skill.join("SKILL.md"),
+            "---\nname: generation-marker\ndescription: new\n---\n",
+        )
+        .unwrap();
+        generation_manager.refresh(None).unwrap();
+        assert_ne!(pinned_id, generation_manager.generation().id);
+        assert_eq!(context.generation_id(), pinned_id);
 
         let fetched = get_visible_skill(&context, reminted_skill_uri)
             .await

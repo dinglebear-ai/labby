@@ -1084,7 +1084,15 @@ impl LabMcpServer {
                 ));
             }
             let registry = self.skill_registry_context(&context).await;
-            let file = crate::skills::facade::read_visible_skill_file(&registry, &uri)
+            tracing::debug!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                skill_generation = registry.generation_id(),
+                skill_generation_digest = registry.generation_digest(),
+                "captured Skill generation"
+            );
+            let file = read_skill_resource_with_registry(&registry, &uri)
                 .await
                 .map_err(crate::mcp::skills::skill_read_error)?;
             tracing::info!(
@@ -1922,6 +1930,14 @@ impl LabMcpServer {
                 .with_meta(app_resource_meta_for_descriptor(uri, descriptor)),
         ]))
     }
+}
+
+#[cfg(feature = "skills")]
+pub(crate) async fn read_skill_resource_with_registry(
+    registry: &crate::skills::facade::SkillRegistryContext,
+    uri: &str,
+) -> Result<crate::skills::facade::VisibleSkillFile, labby_runtime::error::ToolError> {
+    crate::skills::facade::read_visible_skill_file(registry, uri).await
 }
 
 #[cfg(test)]

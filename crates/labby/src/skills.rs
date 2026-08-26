@@ -377,4 +377,41 @@ mod tests {
         let second = serde_json::to_string(&list_first_party_skills()).expect("serializes");
         assert_eq!(first, second);
     }
+
+    #[test]
+    fn production_skill_routes_do_not_reference_the_legacy_static_registry() {
+        for (route, source) in [
+            ("native MCP", include_str!("mcp/skills.rs")),
+            ("resources/read", include_str!("mcp/handlers_resources.rs")),
+            (
+                "compatibility dispatch",
+                include_str!("dispatch/skills/dispatch.rs"),
+            ),
+            (
+                "compatibility client",
+                include_str!("dispatch/skills/client.rs"),
+            ),
+            ("API", include_str!("api/services/skills.rs")),
+            ("CLI", include_str!("cli/skills.rs")),
+            (
+                "in-process Code Mode",
+                include_str!("mcp/in_process_peer.rs"),
+            ),
+        ] {
+            for legacy in [
+                "first_party_skills()",
+                "list_first_party_skills()",
+                "first_party_skill_entry(",
+                "read_first_party_skill_file(",
+            ] {
+                assert!(
+                    !source.contains(legacy),
+                    "{route} bypasses SkillRegistryContext through {legacy}"
+                );
+            }
+        }
+        assert!(include_str!("cli/skills.rs").contains("dispatch_at_cli_boundary"));
+        assert!(include_str!("mcp/skills.rs").contains("dispatch_at_in_process_boundary"));
+        assert!(include_str!("api/services/skills.rs").contains("dispatch_at_api_boundary"));
+    }
 }

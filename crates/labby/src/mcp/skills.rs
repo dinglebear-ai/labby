@@ -5,10 +5,6 @@
 //! and native extension observability.
 
 pub(crate) use crate::skills::is_skill_uri;
-#[cfg(test)]
-use crate::skills::{
-    first_party_skill_entry, list_first_party_skills, read_first_party_skill_file,
-};
 use std::future::Future;
 
 use labby_runtime::error::ToolError;
@@ -28,6 +24,14 @@ use crate::skills::aggregate::ToolAccess;
 use crate::skills::facade::{
     SkillCallerScope, SkillRegistryContext, get_visible_skill, list_visible_skills,
 };
+
+pub(crate) async fn dispatch_at_in_process_boundary(
+    registry: &SkillRegistryContext,
+    action: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, ToolError> {
+    crate::dispatch::skills::dispatch_with_context(registry, action, params).await
+}
 
 impl LabMcpServer {
     /// Project MCP route/auth state into the transport-neutral Skills context.
@@ -125,7 +129,7 @@ impl LabMcpServer {
     {
         Box::pin(async move {
             let registry = self.skill_registry_context_for_tool(context, meta).await;
-            crate::dispatch::skills::dispatch_with_context(&registry, action, params).await
+            dispatch_at_in_process_boundary(&registry, action, params).await
         })
     }
 
@@ -206,29 +210,44 @@ impl LabMcpServer {
         }
 
         let registry = self.skill_registry_context(context).await;
-        if request.method == SKILLS_GET_METHOD {
-            let params = request
-                .params_as::<SkillsGetParams>()
-                .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
-                .ok_or_else(|| ErrorData::invalid_params("skills/get requires uri", None))?;
-            let entry = get_visible_skill(&registry, &params.uri)
-                .await
-                .ok_or_else(|| {
-                    ErrorData::invalid_params(
-                        format!("'{}' is not a skill this server serves", params.uri),
-                        None,
-                    )
-                })?;
-            let result = SkillsGetResult { skill: entry };
-            return serde_json::to_value(result)
-                .map(CustomResult::new)
-                .map_err(|error| ErrorData::internal_error(error.to_string(), None));
-        }
-
-        serde_json::to_value(list_visible_skills(&registry).await)
-            .map(CustomResult::new)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+        tracing::debug!(
+            surface = "mcp",
+            service = "labby",
+            method = %request.method,
+            skill_generation = registry.generation_id(),
+            skill_generation_digest = registry.generation_digest(),
+            "captured Skill generation"
+        );
+        dispatch_native_with_registry(request, &registry).await
     }
+}
+
+async fn dispatch_native_with_registry(
+    request: &CustomRequest,
+    registry: &SkillRegistryContext,
+) -> Result<CustomResult, ErrorData> {
+    if request.method == SKILLS_GET_METHOD {
+        let params = request
+            .params_as::<SkillsGetParams>()
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
+            .ok_or_else(|| ErrorData::invalid_params("skills/get requires uri", None))?;
+        let entry = get_visible_skill(registry, &params.uri)
+            .await
+            .ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("'{}' is not a skill this server serves", params.uri),
+                    None,
+                )
+            })?;
+        let result = SkillsGetResult { skill: entry };
+        return serde_json::to_value(result)
+            .map(CustomResult::new)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None));
+    }
+
+    serde_json::to_value(list_visible_skills(registry).await)
+        .map(CustomResult::new)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
 }
 
 /// Preserve native resources/read wire semantics while the canonical reader
@@ -248,6 +267,92 @@ pub(crate) fn skill_read_error(error: ToolError) -> ErrorData {
 mod serve_tests {
     use super::*;
 
+    fn write_native_skill(root: &std::path::Path, version: &str) {
+        let dir = root.join("native-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: native-race\ndescription: {version}\n---\n\n{version}\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), format!("support-{version}\n")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_list_and_get_are_pinned_during_refresh() {
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+        use labby_runtime::skills::wire::SKILLS_LIST_METHOD;
+
+        let temp = tempfile::tempdir().unwrap();
+        write_native_skill(temp.path(), "old");
+        let manager = FirstPartyGenerationManager::new(
+            temp.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        let pinned = SkillRegistryContext::from_generation(manager.generation());
+        write_native_skill(temp.path(), "new");
+        manager.refresh(None).unwrap();
+
+        let listed =
+            dispatch_native_with_registry(&CustomRequest::new(SKILLS_LIST_METHOD, None), &pinned)
+                .await
+                .unwrap();
+        let listing: SkillsListResult = serde_json::from_value(listed.0).unwrap();
+        let entry = listing
+            .skills
+            .iter()
+            .find(|entry| entry.uri == "skill://labby/native-race/SKILL.md")
+            .unwrap();
+        assert_eq!(entry.frontmatter["description"], "old");
+
+        let got = dispatch_native_with_registry(
+            &CustomRequest::new(
+                SKILLS_GET_METHOD,
+                Some(serde_json::json!({ "uri": entry.uri })),
+            ),
+            &pinned,
+        )
+        .await
+        .unwrap();
+        let result: SkillsGetResult = serde_json::from_value(got.0).unwrap();
+        let resource = result
+            .skill
+            .resources
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|resource| resource.uri.ends_with("/notes.md"))
+            .unwrap();
+        let file = crate::skills::facade::read_visible_skill_file(&pinned, &resource.uri)
+            .await
+            .unwrap();
+        assert_eq!(resource.digest, file.digest);
+        assert!(
+            labby_runtime::skills::parse_digest(&resource.digest)
+                .unwrap()
+                .matches(file.text.as_bytes())
+        );
+        let resource_file = crate::mcp::handlers_resources::read_skill_resource_with_registry(
+            &pinned,
+            &resource.uri,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resource_file.digest, resource.digest);
+        assert_eq!(resource_file.text, file.text);
+        assert_eq!(resource_file.text, "support-old\n");
+
+        let current = SkillRegistryContext::from_generation(manager.generation());
+        let current_file = crate::mcp::handlers_resources::read_skill_resource_with_registry(
+            &current,
+            &resource.uri,
+        )
+        .await
+        .unwrap();
+        assert_eq!(current_file.text, "support-new\n");
+        assert_ne!(current_file.digest, resource_file.digest);
+    }
+
     #[test]
     fn the_capability_is_advertised_with_no_optional_features() {
         let extensions = crate::mcp::server::mcp_extensions_for_test();
@@ -257,10 +362,11 @@ mod serve_tests {
         assert!(declared.is_empty(), "directoryRead must not be advertised");
     }
 
-    #[test]
-    fn first_party_get_accepts_a_supporting_file_uri() {
+    #[tokio::test]
+    async fn first_party_get_accepts_a_supporting_file_uri() {
         let uri = "skill://labby/creating-snippets/README.md";
-        let entry = first_party_skill_entry(uri).expect("resolves");
+        let registry = SkillRegistryContext::first_party_only();
+        let entry = get_visible_skill(&registry, uri).await.expect("resolves");
         assert_eq!(entry.uri, "skill://labby/creating-snippets/SKILL.md");
         assert!(
             entry
@@ -272,26 +378,41 @@ mod serve_tests {
         );
     }
 
-    #[test]
-    fn every_first_party_manifest_file_verifies_against_served_bytes() {
-        let listing = list_first_party_skills();
+    #[tokio::test]
+    async fn every_first_party_manifest_file_verifies_against_served_bytes() {
+        let registry = SkillRegistryContext::first_party_only();
+        let listing = list_visible_skills(&registry).await;
         assert!(!listing.skills.is_empty());
         for entry in &listing.skills {
             for resource in entry.resources.as_ref().expect("manifest") {
-                let body = read_first_party_skill_file(&resource.uri)
+                let file = crate::skills::facade::read_visible_skill_file(&registry, &resource.uri)
+                    .await
                     .expect("every listed file is served");
                 let digest =
                     labby_runtime::skills::parse_digest(&resource.digest).expect("valid digest");
-                assert!(digest.matches(body.as_bytes()), "{} failed", resource.uri);
+                assert!(
+                    digest.matches(file.text.as_bytes()),
+                    "{} failed",
+                    resource.uri
+                );
             }
         }
     }
 
-    #[test]
-    fn unknown_first_party_skill_uris_are_not_served() {
-        assert!(read_first_party_skill_file("skill://labby/using-labby/../escape.md").is_none());
-        assert!(read_first_party_skill_file("skill://labby/nonexistent/SKILL.md").is_none());
-        assert!(first_party_skill_entry("skill://labby/nonexistent/SKILL.md").is_none());
+    #[tokio::test]
+    async fn unknown_first_party_skill_uris_are_not_served() {
+        let registry = SkillRegistryContext::first_party_only();
+        for uri in [
+            "skill://labby/using-labby/../escape.md",
+            "skill://labby/nonexistent/SKILL.md",
+        ] {
+            assert!(get_visible_skill(&registry, uri).await.is_none());
+            assert!(
+                crate::skills::facade::read_visible_skill_file(&registry, uri)
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[test]

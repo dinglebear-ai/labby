@@ -14,6 +14,14 @@ use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_wi
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 
+async fn dispatch_at_api_boundary(
+    registry: &crate::skills::facade::SkillRegistryContext,
+    action: &str,
+    params: Value,
+) -> Result<Value, ToolError> {
+    crate::dispatch::skills::dispatch_with_context(registry, action, params).await
+}
+
 pub fn routes(_state: AppState) -> Router<AppState> {
     Router::new().route("/", post(handle))
 }
@@ -103,13 +111,11 @@ async fn handle(
                 } else {
                     crate::skills::aggregate::ToolAccess::Direct
                 };
-                return crate::dispatch::skills::dispatch_with_manager_scope(
+                let registry = crate::skills::facade::SkillRegistryContext::with_manager(
                     std::sync::Arc::clone(manager),
                     crate::skills::facade::SkillCallerScope::root(oauth_subject, access),
-                    &action,
-                    params,
-                )
-                .await;
+                );
+                return dispatch_at_api_boundary(&registry, &action, params).await;
             }
 
             crate::dispatch::skills::dispatch(&action, params).await
@@ -129,6 +135,47 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::api::{oauth::AuthContext, state::AppState};
+
+    #[tokio::test]
+    async fn api_boundary_keeps_a_captured_generation_during_refresh() {
+        use crate::skills::facade::SkillRegistryContext;
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("api-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: api-race\ndescription: old\n---\nold\n",
+        )
+        .unwrap();
+        let manager =
+            FirstPartyGenerationManager::new(temp.path().into(), GenerationLimits::default());
+        let old = SkillRegistryContext::from_generation(manager.generation());
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: api-race\ndescription: new\n---\nnew\n",
+        )
+        .unwrap();
+        manager.refresh(None).unwrap();
+        let old_value = super::dispatch_at_api_boundary(
+            &old,
+            "skills.read",
+            json!({"uri":"skill://labby/api-race/SKILL.md"}),
+        )
+        .await
+        .unwrap();
+        let new_context = SkillRegistryContext::from_generation(manager.generation());
+        let new_value = super::dispatch_at_api_boundary(
+            &new_context,
+            "skills.read",
+            json!({"uri":"skill://labby/api-race/SKILL.md"}),
+        )
+        .await
+        .unwrap();
+        assert!(old_value["text"].as_str().unwrap().contains("old"));
+        assert!(new_value["text"].as_str().unwrap().contains("new"));
+        assert_ne!(old_value["digest"], new_value["digest"]);
+    }
 
     fn auth(scopes: &[&str]) -> AuthContext {
         AuthContext {
@@ -188,7 +235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_scope_can_list_first_party_skills() {
+    async fn read_scope_can_list_native_skills() {
         let response = post(
             app(Some(auth(&["lab:read"]))),
             json!({ "action": "skills.list", "params": { "limit": 5 } }),
