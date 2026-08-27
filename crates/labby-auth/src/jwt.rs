@@ -28,6 +28,20 @@ pub struct AccessClaims {
     pub jti: String,
     pub scope: String,
     pub azp: String,
+    /// Canonical external identity-provider issuer verified before minting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_issuer: Option<String>,
+    /// Stable local credential ID verified before minting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_credential_id: Option<String>,
+}
+
+#[must_use]
+pub fn is_canonical_access_token_id(token_id: &str) -> bool {
+    !token_id.is_empty()
+        && token_id.trim() == token_id
+        && token_id.len() <= 256
+        && !token_id.chars().any(char::is_control)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -332,6 +346,8 @@ mod tests {
             jti: "test-jti".to_string(),
             scope: "lab".to_string(),
             azp: "client".to_string(),
+            identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+            identity_credential_id: None,
         }
     }
 }

@@ -38,6 +38,8 @@ use crate::mcp::handlers_tools::{
     mcp_app_tool_description, mcp_app_tool_meta, mcp_app_tool_schema, settings_tool_meta,
     settings_tool_schema,
 };
+#[cfg(feature = "skills")]
+use crate::mcp::handlers_tools::{skill_library_tool_description, skill_library_tool_meta};
 use crate::registry::RegisteredService;
 
 /// Shared `{action, params, instance}` input schema advertised by every
@@ -48,6 +50,46 @@ fn builtin_action_schema() -> Arc<serde_json::Map<String, Value>> {
     static BUILTIN_ACTION_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> =
         LazyLock::new(|| Arc::new(action_schema()));
     Arc::clone(&BUILTIN_ACTION_SCHEMA)
+}
+
+#[cfg(feature = "skills")]
+fn skill_action_schema(
+    management: bool,
+    allowed_actions: Option<&[String]>,
+) -> Arc<serde_json::Map<String, Value>> {
+    static COMPAT: LazyLock<Arc<serde_json::Map<String, Value>>> =
+        LazyLock::new(|| action_enum_schema(crate::dispatch::skills::ACTIONS));
+    static MANAGEMENT: LazyLock<Arc<serde_json::Map<String, Value>>> =
+        LazyLock::new(|| action_enum_schema(crate::dispatch::skills::MCP_ACTIONS));
+    if !management {
+        return Arc::clone(&COMPAT);
+    }
+    let Some(allowed) = allowed_actions else {
+        return Arc::clone(&MANAGEMENT);
+    };
+    let actions = crate::dispatch::skills::MCP_ACTIONS
+        .iter()
+        .filter(|action| {
+            matches!(action.name, "help" | "schema")
+                || allowed.iter().any(|allowed| allowed == action.name)
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    action_enum_schema(&actions)
+}
+
+#[cfg(feature = "skills")]
+fn action_enum_schema(
+    actions: &[labby_primitives::action::ActionSpec],
+) -> Arc<serde_json::Map<String, Value>> {
+    let mut schema = action_schema();
+    schema["properties"]["action"]["enum"] = Value::Array(
+        actions
+            .iter()
+            .map(|action| Value::String(action.name.to_owned()))
+            .collect(),
+    );
+    Arc::new(schema)
 }
 
 /// Success-envelope output schema shared by every builtin service tool.
@@ -94,6 +136,16 @@ pub(crate) enum PermanentToolId {
     CodeMode,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum SkillLibraryDescriptorMode<'a> {
+    #[default]
+    Compatibility,
+    Management {
+        app_visible: bool,
+        allowed_actions: Option<&'a [String]>,
+    },
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PermanentToolEntry {
     id: PermanentToolId,
@@ -115,6 +167,24 @@ const PERMANENT_TOOLS: [PermanentToolEntry; 2] = [
         name: CODE_MODE_TOOL_NAME,
     },
 ];
+
+/// Conservatively reserve every Labby-owned non-upstream Tool identity.
+///
+/// This is visibility-independent: a hidden product Tool still cannot be
+/// impersonated by a regular upstream route.
+#[cfg(feature = "gateway")]
+pub(crate) fn is_reserved_non_upstream_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        CODE_MODE_TOOL_NAME
+            | CODE_MODE_READ_TOOL_NAME
+            | CODE_MODE_UI_TOOL_NAME
+            | MCP_APP_TOOL_NAME
+            | ADD_SERVER_TOOL_NAME
+            | GATEWAY_STATUS_TOOL_NAME
+            | SETTINGS_TOOL_NAME
+    )
+}
 
 #[must_use]
 pub(crate) fn code_mode_read_annotations() -> ToolAnnotations {
@@ -228,7 +298,14 @@ impl PermanentToolRegistry {
         &self,
         service: &RegisteredService,
         admin_apps_visible: bool,
+        skill_library_mode: SkillLibraryDescriptorMode<'_>,
     ) -> Tool {
+        #[cfg(feature = "skills")]
+        if service.name == "skills" {
+            return self.skill_library_tool(service, skill_library_mode);
+        }
+        #[cfg(not(feature = "skills"))]
+        let _ = skill_library_mode;
         let tool = Tool::new(service.name, service.description, builtin_action_schema())
             .with_annotations(builtin_service_annotations(service))
             .with_raw_output_schema(dispatch_envelope_output_schema());
@@ -236,6 +313,51 @@ impl PermanentToolRegistry {
             tool.with_meta(server_logs_tool_meta(service.name))
         } else {
             tool
+        }
+    }
+
+    /// Canonical descriptor for the existing `skills` service with its Skill
+    /// Library presentation binding. The underlying service remains callable
+    /// as ordinary text on hosts that do not render MCP Apps.
+    #[cfg(feature = "skills")]
+    #[must_use]
+    pub(crate) fn skill_library_tool(
+        &self,
+        service: &RegisteredService,
+        mode: SkillLibraryDescriptorMode<'_>,
+    ) -> Tool {
+        debug_assert_eq!(service.name, "skills");
+        let management = matches!(mode, SkillLibraryDescriptorMode::Management { .. });
+        let allowed_actions = match mode {
+            SkillLibraryDescriptorMode::Management {
+                allowed_actions, ..
+            } => allowed_actions,
+            SkillLibraryDescriptorMode::Compatibility => None,
+        };
+        let annotations = if management {
+            ToolAnnotations::new()
+                .read_only(false)
+                .destructive(true)
+                .idempotent(false)
+                .open_world(true)
+        } else {
+            builtin_service_annotations(service)
+        };
+        let tool = Tool::new(
+            service.name,
+            skill_library_tool_description(service.description),
+            skill_action_schema(management, allowed_actions),
+        )
+        .with_annotations(annotations)
+        .with_raw_output_schema(dispatch_envelope_output_schema());
+        match mode {
+            SkillLibraryDescriptorMode::Management {
+                app_visible: true, ..
+            } => tool.with_meta(skill_library_tool_meta(service.name)),
+            SkillLibraryDescriptorMode::Compatibility
+            | SkillLibraryDescriptorMode::Management {
+                app_visible: false, ..
+            } => tool,
         }
     }
 
@@ -261,14 +383,18 @@ impl PermanentToolRegistry {
     /// client-side error in strict SDKs.
     #[cfg(feature = "gateway")]
     #[must_use]
-    pub(crate) fn mcp_app_tool(&self) -> Tool {
-        Tool::new(
+    pub(crate) fn mcp_app_tool(&self, app_visible: bool) -> Tool {
+        let tool = Tool::new(
             MCP_APP_TOOL_NAME,
             mcp_app_tool_description(),
             mcp_app_tool_schema(),
         )
-        .with_annotations(mcp_app_annotations())
-        .with_meta(mcp_app_tool_meta(MCP_APP_TOOL_NAME))
+        .with_annotations(mcp_app_annotations());
+        if app_visible {
+            tool.with_meta(mcp_app_tool_meta(MCP_APP_TOOL_NAME))
+        } else {
+            tool
+        }
     }
 
     /// Descriptor for the Add Server admin app tool.
@@ -361,9 +487,16 @@ impl PermanentToolRegistry {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gateway")]
+    use super::is_reserved_non_upstream_tool_name;
     use super::{PermanentToolId, PermanentToolRegistry, dispatch_envelope_output_schema};
     #[cfg(feature = "gateway")]
     use crate::mcp::call_tool_codemode::CODE_MODE_DESCRIPTION_MAX_BYTES;
+    #[cfg(feature = "gateway")]
+    use crate::mcp::catalog::{
+        ADD_SERVER_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+        SETTINGS_TOOL_NAME,
+    };
     use crate::mcp::catalog::{
         CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
     };
@@ -434,7 +567,11 @@ mod tests {
     #[test]
     fn builtin_service_tool_advertises_envelope_schema() {
         let registry = PermanentToolRegistry::new();
-        let tool = registry.builtin_service_tool(&service("gateway-alpha"), true);
+        let tool = registry.builtin_service_tool(
+            &service("gateway-alpha"),
+            true,
+            SkillLibraryDescriptorMode::Compatibility,
+        );
         let schema = tool.output_schema.as_ref().expect("outputSchema");
         assert_eq!(schema["properties"]["ok"]["const"], serde_json::json!(true));
         assert!(tool.meta.is_none(), "only server_logs carries app meta");
@@ -448,9 +585,17 @@ mod tests {
     #[test]
     fn server_logs_meta_is_gated_on_admin_visibility() {
         let registry = PermanentToolRegistry::new();
-        let visible = registry.builtin_service_tool(&service(SERVER_LOGS_TOOL_NAME), true);
+        let visible = registry.builtin_service_tool(
+            &service(SERVER_LOGS_TOOL_NAME),
+            true,
+            SkillLibraryDescriptorMode::Compatibility,
+        );
         assert!(visible.meta.is_some(), "admin-visible server_logs has meta");
-        let hidden = registry.builtin_service_tool(&service(SERVER_LOGS_TOOL_NAME), false);
+        let hidden = registry.builtin_service_tool(
+            &service(SERVER_LOGS_TOOL_NAME),
+            false,
+            SkillLibraryDescriptorMode::Compatibility,
+        );
         assert!(hidden.meta.is_none(), "non-admin server_logs has no meta");
         // The schema is not audience-dependent.
         assert_eq!(visible.output_schema, hidden.output_schema);
@@ -525,7 +670,7 @@ mod tests {
                 );
             };
             let annotations = permanent
-                .builtin_service_tool(service, true)
+                .builtin_service_tool(service, true, SkillLibraryDescriptorMode::Compatibility)
                 .annotations
                 .expect("every Labby-owned service tool must carry annotations");
             assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
@@ -592,14 +737,14 @@ mod tests {
         // mcp_app returns `{"kind": "mcp_app_control", …}`, not the dispatch
         // envelope — advertising the envelope schema would be a lie strict
         // clients enforce.
-        assert!(registry.mcp_app_tool().output_schema.is_none());
+        assert!(registry.mcp_app_tool(true).output_schema.is_none());
         // codemode_ui carries the trace schema, not the envelope schema.
         let ui_schema = registry.code_mode_ui_tool(&[]).output_schema;
         assert!(ui_schema.is_some());
         assert_ne!(ui_schema, registry.add_server_tool().output_schema);
 
         let cases = [
-            (registry.mcp_app_tool(), false, false, true, false),
+            (registry.mcp_app_tool(true), false, false, true, false),
             (registry.add_server_tool(), false, true, false, true),
             (registry.gateway_status_tool(), true, false, true, false),
             (registry.code_mode_ui_tool(&[]), false, true, false, true),
@@ -612,6 +757,95 @@ mod tests {
             assert_eq!(annotations.idempotent_hint, Some(idempotent), "{name}");
             assert_eq!(annotations.open_world_hint, Some(open_world), "{name}");
         }
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_library_descriptor_has_versioned_dual_host_binding_and_text_fallback() {
+        let permanent = PermanentToolRegistry::new();
+        let skills = service("skills");
+        let tool = permanent.skill_library_tool(
+            &skills,
+            SkillLibraryDescriptorMode::Management {
+                app_visible: true,
+                allowed_actions: None,
+            },
+        );
+        assert_eq!(
+            tool,
+            permanent.builtin_service_tool(
+                &skills,
+                false,
+                SkillLibraryDescriptorMode::Management {
+                    app_visible: true,
+                    allowed_actions: None,
+                },
+            ),
+            "every service-advertisement path must reuse the canonical Skill Library builder"
+        );
+        assert_eq!(tool.name.as_ref(), "skills");
+        assert!(
+            tool.description
+                .as_deref()
+                .is_some_and(|description| description.contains("non-App hosts")),
+            "the descriptor must document its text fallback"
+        );
+        assert_eq!(tool.input_schema["required"], serde_json::json!(["action"]));
+        assert_eq!(
+            tool.input_schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("bounded action enum")
+                .len(),
+            19
+        );
+        let annotations = tool.annotations.as_ref().expect("mixed-operation hints");
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.destructive_hint, Some(true));
+        assert_eq!(annotations.idempotent_hint, Some(false));
+
+        let meta = tool.meta.expect("Skill Library app metadata");
+        let resource_uri = meta.0["ui"]["resourceUri"]
+            .as_str()
+            .expect("MCP Apps resource URI");
+        let output_template = meta.0["openai/outputTemplate"]
+            .as_str()
+            .expect("Skybridge output template");
+        assert!(resource_uri.starts_with("ui://lab/skill-library/app?v="));
+        assert!(output_template.starts_with("ui://lab/skill-library/app.skybridge?v="));
+        assert_eq!(
+            meta.0["ui"]["visibility"],
+            serde_json::json!(["model", "app"])
+        );
+        assert_eq!(meta.0["openai/widgetAccessible"], serde_json::json!(true));
+        assert_eq!(
+            meta.0["securitySchemes"][0]["scopes"],
+            serde_json::json!(["lab:read", "lab", "lab:admin"])
+        );
+
+        let hidden_app = permanent.skill_library_tool(
+            &skills,
+            SkillLibraryDescriptorMode::Management {
+                app_visible: false,
+                allowed_actions: None,
+            },
+        );
+        assert!(hidden_app.meta.is_none());
+        assert_eq!(hidden_app.input_schema, tool.input_schema);
+
+        let compatibility =
+            permanent.skill_library_tool(&skills, SkillLibraryDescriptorMode::Compatibility);
+        assert!(compatibility.meta.is_none());
+        assert_eq!(
+            compatibility.input_schema["properties"]["action"]["enum"]
+                .as_array()
+                .expect("bounded compatibility action enum")
+                .len(),
+            6
+        );
+        let annotations = compatibility.annotations.expect("compatibility-only hints");
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.destructive_hint, Some(false));
+        assert_eq!(annotations.idempotent_hint, Some(true));
     }
 
     /// F9 regression guard — the compensating control for accepting the widened
@@ -651,10 +885,16 @@ mod tests {
         let mut descriptors: Vec<rmcp::model::Tool> = services
             .services()
             .iter()
-            .map(|service| permanent.builtin_service_tool(service, true))
+            .map(|service| {
+                permanent.builtin_service_tool(
+                    service,
+                    true,
+                    SkillLibraryDescriptorMode::Compatibility,
+                )
+            })
             .collect();
         descriptors.extend([
-            permanent.mcp_app_tool(),
+            permanent.mcp_app_tool(true),
             permanent.add_server_tool(),
             permanent.gateway_status_tool(),
             permanent.code_mode_descriptor(&[]),
@@ -702,6 +942,25 @@ mod tests {
             registry.resolve(CODE_MODE_READ_TOOL_NAME),
             Some(PermanentToolId::CodeModeRead)
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn every_synthetic_tool_name_is_conservatively_reserved() {
+        for name in [
+            CODE_MODE_TOOL_NAME,
+            CODE_MODE_READ_TOOL_NAME,
+            CODE_MODE_UI_TOOL_NAME,
+            MCP_APP_TOOL_NAME,
+            ADD_SERVER_TOOL_NAME,
+            GATEWAY_STATUS_TOOL_NAME,
+            SETTINGS_TOOL_NAME,
+        ] {
+            assert!(is_reserved_non_upstream_tool_name(name), "{name}");
+        }
+        assert!(!is_reserved_non_upstream_tool_name(
+            "ordinary-upstream-tool"
+        ));
     }
 
     #[cfg(feature = "gateway")]

@@ -99,6 +99,18 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "auth",
             "remove OAuth email allowlist entry",
         ),
+        RouteDoc {
+            runtime_condition: Some(
+                "OAuth mode only; handler requires a browser session, middleware-derived VerifiedIdentity, lab:admin, and the configured admin email; bearer, MCP, CLI, stdio, and loopback identity bypasses are rejected"
+                    .to_string(),
+            ),
+            ..auth(
+                "POST",
+                "/v1/access/bootstrap-owner",
+                "access",
+                "explicit one-time access owner bootstrap; returns only created or already_applied",
+            )
+        },
         host_validated_auth("POST", "/v1/doctor", "doctor", "doctor action dispatch"),
         relay_admin(
             "GET",
@@ -377,6 +389,27 @@ mod tests {
         assert!(mcp.bearer_only);
         assert!(!mcp.session_cookie_allowed);
         assert!(!mcp.csrf_required);
+    }
+
+    #[test]
+    fn access_bootstrap_documents_the_browser_only_gate() {
+        let routes = build_route_docs(&[]);
+        let route = routes
+            .iter()
+            .find(|route| route.method == "POST" && route.path == "/v1/access/bootstrap-owner")
+            .unwrap();
+        assert!(route.auth_required);
+        assert!(route.session_cookie_allowed);
+        assert!(route.csrf_required);
+        let condition = route.runtime_condition.as_deref().unwrap_or("");
+        for expected in [
+            "VerifiedIdentity",
+            "lab:admin",
+            "configured admin email",
+            "bearer",
+        ] {
+            assert!(condition.contains(expected), "missing gate {expected}");
+        }
     }
 
     #[test]

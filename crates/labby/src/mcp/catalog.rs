@@ -201,11 +201,18 @@ impl LabMcpServer {
                 code_mode_read_allowed: code_mode_read_scope_allowed(auth),
                 code_mode_execute_allowed: tool_execute_scope_allowed(auth),
                 admin_apps_visible: admin_app_resources_visible(auth),
+                skill_library_management_visible: self
+                    .skill_library_http_management_visible(context),
+                skill_library_app_visible: self.skill_library_http_management_visible(context)
+                    && code_mode_read_scope_allowed(auth),
                 oauth_subject: oauth_upstream_subject_for_request(
                     auth,
                     self.request_subject(context),
                 )
                 .map(std::borrow::Cow::into_owned),
+                project_listing: crate::mcp::peer_contract::ProjectPeerListing::from_extensions(
+                    &context.extensions,
+                ),
             }
         };
         #[cfg(not(feature = "gateway"))]
@@ -251,6 +258,19 @@ impl LabMcpServer {
         crate::mcp::peer_contract::mcp_apps_config(self.gateway_manager.as_deref()).await
     }
 
+    /// Authoritative Code Mode app visibility for runtime access checks.
+    ///
+    /// Manager-backed servers read the published configuration directly so a
+    /// config mutation cannot race the mirrored session atomic. In-process
+    /// servers without a manager retain the shared atomic as their authority.
+    pub(crate) async fn code_mode_app_enabled_on_mcp(&self) -> bool {
+        #[cfg(feature = "gateway")]
+        if let Some(manager) = self.gateway_manager.as_ref() {
+            return manager.code_mode_config().await.mcp_ui_enabled;
+        }
+        self.code_mode_app_state.is_enabled()
+    }
+
     pub(crate) async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
         #[cfg(feature = "gateway")]
         {
@@ -271,10 +291,20 @@ impl LabMcpServer {
     #[cfg(feature = "gateway")]
     /// Whether the current route can safely advertise and execute Add Server.
     pub(crate) async fn add_server_app_available_on_mcp(&self) -> bool {
+        let apps = self.mcp_apps_config().await;
+        self.add_server_app_available_on_mcp_with(apps).await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn add_server_app_available_on_mcp_with(
+        &self,
+        apps: labby_runtime::gateway_config::McpAppsConfig,
+    ) -> bool {
         crate::mcp::peer_contract::add_server_app_available(
             &self.route_scope,
             self.gateway_manager.as_deref(),
             &self.registry,
+            apps,
         )
         .await
     }
@@ -282,10 +312,20 @@ impl LabMcpServer {
     #[cfg(feature = "gateway")]
     /// Whether the current route can safely advertise live gateway status.
     pub(crate) async fn gateway_status_app_available_on_mcp(&self) -> bool {
+        let apps = self.mcp_apps_config().await;
+        self.gateway_status_app_available_on_mcp_with(apps).await
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn gateway_status_app_available_on_mcp_with(
+        &self,
+        apps: labby_runtime::gateway_config::McpAppsConfig,
+    ) -> bool {
         crate::mcp::peer_contract::gateway_status_app_available(
             &self.route_scope,
             self.gateway_manager.as_deref(),
             &self.registry,
+            apps,
         )
         .await
     }
@@ -406,7 +446,7 @@ impl LabMcpServer {
             tools.insert(CODE_MODE_READ_TOOL_NAME.to_string());
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
             tools.insert(MCP_APP_TOOL_NAME.to_string());
-            if self.code_mode_app_state.is_enabled() {
+            if self.code_mode_app_enabled_on_mcp().await {
                 tools.insert(CODE_MODE_UI_TOOL_NAME.to_string());
             }
         } else {

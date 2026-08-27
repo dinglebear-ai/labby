@@ -28,6 +28,7 @@ static PALETTE_CATALOG_CACHE: OnceLock<Mutex<VecDeque<CachedPaletteCatalog>>> = 
 
 #[derive(Clone)]
 struct CachedPaletteCatalog {
+    manager: Weak<crate::dispatch::gateway::manager::GatewayManager>,
     key: String,
     expires_at: Instant,
     catalog: LauncherCatalogView,
@@ -145,10 +146,10 @@ async fn descriptor(
 
 fn palette_catalog_cache_key(
     state: &AppState,
-    manager: &std::sync::Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    manager: &Arc<crate::dispatch::gateway::manager::GatewayManager>,
     auth: Option<&AuthContext>,
 ) -> String {
-    let mut key = format!("manager:{:p}", std::sync::Arc::as_ptr(manager));
+    let mut key = format!("manager:{:p}", Arc::as_ptr(manager));
     key.push_str("|services:");
     let mut services = state
         .enabled_services

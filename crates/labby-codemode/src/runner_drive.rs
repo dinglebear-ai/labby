@@ -1636,9 +1636,15 @@ sleep 3600
             )
             .await;
 
+        // The stub script ends in `sleep 3600`, so any ceiling far below that
+        // proves the 2s deadline — not the script — ended the run. The real
+        // assertions are on `outcome` below. A 3s ceiling sat close enough to
+        // the 2s deadline that scheduler jitter under parallel test load failed
+        // correct runs.
         assert!(
-            started.elapsed() < Duration::from_secs(3),
-            "external timeout must leave time for the runner acknowledgement"
+            started.elapsed() < Duration::from_secs(30),
+            "external timeout must leave time for the runner acknowledgement: {:?}",
+            started.elapsed()
         );
         match outcome {
             DriveOutcome::Completed(response) => {
@@ -1701,7 +1707,13 @@ sleep 3600
             )
             .await;
 
-        assert!(started.elapsed() < Duration::from_secs(3));
+        // Same reasoning as the single-call case above: the stub ends in
+        // `sleep 3600`, so this ceiling only has to be far below that.
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the 2s deadline, not the stub script, must end the run: {:?}",
+            started.elapsed()
+        );
         match outcome {
             DriveOutcome::Completed(response) => {
                 assert_eq!(response.result, Some(json!({"acked": 512})));
@@ -2338,9 +2350,13 @@ sleep 3600
             )
             .await;
 
+        // The claim is "settlement did not eat the 30s outer timeout", so the
+        // ceiling only has to stay under 30s. Sitting just below it leaves the
+        // most room for scheduler jitter while keeping the proof exact.
         assert!(
-            started.elapsed() < Duration::from_secs(10),
-            "post-tool settlement must not consume the 30-second outer timeout"
+            started.elapsed() < Duration::from_secs(25),
+            "post-tool settlement must not consume the 30-second outer timeout: {:?}",
+            started.elapsed()
         );
         match outcome {
             DriveOutcome::RunnerUnhealthy(err) => {

@@ -21,6 +21,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, RwLock};
@@ -39,7 +40,7 @@ use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
 use super::protected_routes::ProtectedRouteIndex;
 pub use super::runtime::GatewayRuntimeHandle;
-use super::service_registry::GatewayServiceRegistry;
+use super::service_registry::PublishedServiceRegistryState;
 use super::types::CatalogChangeNotifier;
 
 #[derive(Clone)]
@@ -64,6 +65,7 @@ mod oauth_resources;
 mod persist;
 mod pool_lifecycle;
 mod protected_routes;
+mod publication;
 #[cfg(test)]
 mod tests;
 mod usage;
@@ -78,10 +80,29 @@ pub use self::code_mode_resolve::CallbackToolLookup;
 #[allow(unused_imports)]
 pub use self::config_ops::BatchAddOutcome;
 pub use self::core::{GatewayManagerConfig, GatewayOauthConfig};
+pub use self::core::{
+    PublishedPromptCallError, PublishedResourceReadError, PublishedToolCallError,
+};
 pub use self::import_matchers::ImportTombstoneSelector;
 pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_discovered_for_import};
 #[allow(unused_imports)]
 pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
+pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
+pub use self::publication::{
+    LoadoutMcpCatalogPublicationError, LoadoutPromptCatalogPublicationError,
+    LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
+    LoadoutServiceCatalogPublicationError, LoadoutToolCatalogPublicationError,
+    ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot,
+    PublishedLoadoutPromptCatalogSnapshot, PublishedLoadoutResourceCatalogSnapshot,
+    PublishedLoadoutResourceTemplateCatalogSnapshot, PublishedLoadoutService,
+    PublishedLoadoutServiceCatalogSnapshot, PublishedLoadoutToolCatalogSnapshot,
+    PublishedProjectRouteSnapshot,
+};
+pub use super::service_registry::{
+    PublishedServiceRegistrySnapshot, ServiceRegistryPublicationError,
+    ServiceRegistryPublicationGeneration,
+};
+pub use crate::gateway::runtime::PoolPublicationGeneration;
 
 #[derive(Clone)]
 pub struct GatewayManager {
@@ -100,6 +121,10 @@ pub struct GatewayManager {
     /// that combine those components take a read lease and clone a coherent
     /// revision before doing slow I/O.
     pub(super) publication_barrier: Arc<RwLock<()>>,
+    /// Opaque process-local identity for the currently published runtime
+    /// configuration revision. Advanced under `publication_barrier` for every
+    /// live config publication, including rollback and ABA.
+    pub(super) runtime_config_generation: Arc<AtomicU64>,
     pub(super) config_mutation: Arc<Mutex<()>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
@@ -110,7 +135,10 @@ pub struct GatewayManager {
         Arc<Mutex<std::collections::HashMap<(String, String), OauthStatusDiscoverySnapshot>>>,
     pub(super) oauth_status_discovery_locks:
         Arc<dashmap::DashMap<(String, String), Arc<Mutex<()>>>>,
-    builtin_service_registry: Arc<ArcSwap<Arc<dyn GatewayServiceRegistry>>>,
+    builtin_service_registry: Arc<ArcSwap<PublishedServiceRegistryState>>,
+    /// Serializes synchronous registry projection and publication so concurrent
+    /// setters cannot install generations out of allocation order.
+    builtin_service_registry_publication: Arc<std::sync::Mutex<()>>,
     pub(super) oauth_sqlite: Option<labby_auth::sqlite::SqliteStore>,
     pub(super) oauth_key: Option<EncryptionKey>,
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
@@ -268,6 +296,7 @@ impl GatewayManager {
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
         *self.config.write().await = runtime_cfg;
+        self.advance_runtime_config_generation();
         Ok(())
     }
 }

@@ -9,6 +9,14 @@ use crate::cli::helpers::run_action_command;
 use crate::config::LabConfig;
 use crate::output::OutputFormat;
 
+async fn dispatch_at_cli_boundary(
+    registry: &crate::skills::facade::SkillRegistryContext,
+    action: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, crate::dispatch::error::ToolError> {
+    crate::dispatch::skills::dispatch_with_context(registry, action, params).await
+}
+
 #[derive(Debug, Args)]
 pub struct SkillsArgs {
     #[command(subcommand)]
@@ -97,10 +105,9 @@ async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -
             let manager = std::sync::Arc::clone(&manager);
             let scope = scope.clone();
             async move {
-                crate::dispatch::skills::dispatch_with_manager_scope(
-                    manager, scope, &action, params,
-                )
-                .await
+                let registry =
+                    crate::skills::facade::SkillRegistryContext::with_manager(manager, scope);
+                dispatch_at_cli_boundary(&registry, &action, params).await
             }
         })
         .await;
@@ -114,8 +121,90 @@ async fn run_inner(args: SkillsArgs, format: OutputFormat, config: &LabConfig) -
             action,
             params,
             format,
-            |action, params| async move { crate::dispatch::skills::dispatch(&action, params).await },
+            move |action, params| async move {
+                let registry = crate::skills::facade::SkillRegistryContext::first_party_only();
+                dispatch_at_cli_boundary(&registry, &action, params).await
+            },
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{CommandFactory, Parser, Subcommand};
+
+    #[test]
+    fn cli_help_exposes_only_implemented_read_commands() {
+        let command = SkillsCommand::augment_subcommands(clap::Command::new("skills"));
+        let names = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["list", "search", "get", "read"]);
+        assert!(names.iter().all(|name| !name.contains("callback")));
+    }
+
+    #[test]
+    fn help_explicitly_excludes_artifact_backed_skills() {
+        let unrelated = crate::cli::Cli::try_parse_from(["labby", "docs", "check"]);
+        assert!(
+            unrelated.is_ok(),
+            "unrelated commands must not inherit --project-id: {unrelated:?}"
+        );
+
+        crate::cli::Cli::try_parse_from(["labby", "skills", "list"])
+            .expect("local Skill reads do not require misleading project context");
+
+        let help = crate::cli::Cli::command()
+            .find_subcommand_mut("skills")
+            .expect("skills command")
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("--project-id"));
+        assert!(help.contains("Artifact-backed shared and private Skills are not available"));
+        assert!(help.contains("authenticated HTTP or MCP client"));
+    }
+
+    #[tokio::test]
+    async fn cli_boundary_keeps_a_captured_generation_during_refresh() {
+        use crate::skills::facade::SkillRegistryContext;
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("cli-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: cli-race\ndescription: old\n---\nold\n",
+        )
+        .unwrap();
+        let manager =
+            FirstPartyGenerationManager::new(temp.path().into(), GenerationLimits::default());
+        let old = SkillRegistryContext::from_generation(manager.generation());
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: cli-race\ndescription: new\n---\nnew\n",
+        )
+        .unwrap();
+        manager.refresh(None).unwrap();
+        let old_value = dispatch_at_cli_boundary(
+            &old,
+            "skills.read",
+            serde_json::json!({"uri":"skill://labby/cli-race/SKILL.md"}),
+        )
+        .await
+        .unwrap();
+        let current = SkillRegistryContext::from_generation(manager.generation());
+        let new_value = dispatch_at_cli_boundary(
+            &current,
+            "skills.read",
+            serde_json::json!({"uri":"skill://labby/cli-race/SKILL.md"}),
+        )
+        .await
+        .unwrap();
+        assert!(old_value["text"].as_str().unwrap().contains("old"));
+        assert!(new_value["text"].as_str().unwrap().contains("new"));
+        assert_ne!(old_value["digest"], new_value["digest"]);
     }
 }

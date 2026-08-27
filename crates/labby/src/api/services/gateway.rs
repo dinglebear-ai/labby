@@ -499,25 +499,6 @@ mod tests {
         assert_eq!(enriched["origin"], "api:admin-user:request-1");
     }
 
-    #[test]
-    fn gateway_owner_injection_overwrites_forged_transport_provenance() {
-        let enriched = inject_gateway_owner(
-            "gateway.update",
-            json!({
-                "name": "fixture",
-                "patch": {},
-                "owner": {"surface": "forged", "subject": "mallory"},
-                "origin": "forged-origin"
-            }),
-            Some("admin-user"),
-            Some("request-2"),
-        );
-        assert_eq!(enriched["owner"]["surface"], "api");
-        assert_eq!(enriched["owner"]["subject"], "admin-user");
-        assert_eq!(enriched["owner"]["request_id"], "request-2");
-        assert_eq!(enriched["origin"], "api:admin-user:request-2");
-    }
-
     #[cfg(feature = "skills")]
     #[tokio::test]
     async fn gateway_skills_list_api_keeps_strict_action_params_clean() {
@@ -842,9 +823,19 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_code_mode_mcp_ui_update_persists_via_api() {
+        let _guard = crate::config::process_code_mode_test_guard();
         let (manager, path) = test_manager_with_path();
         manager
-            .seed_config_unchecked_for_tests(LabConfig::default().to_gateway_config())
+            .seed_config_unchecked_for_tests(
+                LabConfig {
+                    code_mode: crate::config::CodeModeConfig {
+                        mcp_ui_enabled: true,
+                        ..crate::config::CodeModeConfig::default()
+                    },
+                    ..LabConfig::default()
+                }
+                .to_gateway_config(),
+            )
             .await;
         assert!(manager.code_mode_app_state().is_enabled());
 

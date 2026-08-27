@@ -64,7 +64,7 @@ lint: skill-drift rust-toolchain-sync
 
 # Verify Cargo, rust-toolchain, CI, container, and active docs agree on the MSRV.
 rust-toolchain-sync:
-    scripts/check-rust-toolchain-sync.sh
+    bash scripts/check-rust-toolchain-sync.sh
 
 # Check hand-authored skills for known stale or unsafe patterns
 skill-drift:

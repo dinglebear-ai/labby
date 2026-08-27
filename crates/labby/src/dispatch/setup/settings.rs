@@ -827,7 +827,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "auth",
             "Auth config",
-            "OAuth and bearer auth settings are redacted and read-only in this epic.",
+            "OAuth and bearer auth settings are redacted and read-only.",
             SettingsRisk::SecuritySensitive,
             SettingsWritePolicy::SecretWriteOnlyFuture,
         ),

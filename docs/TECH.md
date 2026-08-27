@@ -18,7 +18,7 @@ The workspace metadata in the root `Cargo.toml` is authoritative:
 - Cargo resolver 3
 - workspace version shared by the Rust crates
 - AGPL-3.0-only license
-- release targets: Linux x86_64 GNU and Windows x86_64 MSVC
+- release targets: Linux x86_64 GNU, macOS arm64, and Windows x86_64 MSVC
 
 `rust-toolchain.toml` pins the toolchain used locally and in CI. The matching
 `rust-version` in `Cargo.toml` is the minimum version Cargo will accept.

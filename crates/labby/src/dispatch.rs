@@ -15,6 +15,8 @@ pub mod security;
 pub mod server_logs;
 pub mod setup;
 #[cfg(feature = "skills")]
+pub(crate) mod skill_library;
+#[cfg(feature = "skills")]
 pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
