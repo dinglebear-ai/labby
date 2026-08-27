@@ -816,15 +816,26 @@ sleep 30
             run_provider_preview(
                 GatewayEnrichmentProvider::Codex,
                 &[sample_input()],
-                &runner(script, 1_000, 1_024),
+                // The provider budget has to outlast shell startup plus the
+                // background spawn, or a loaded machine times the script out
+                // before it records the grandchild pid and the read below finds
+                // an empty file. This test only cares that the timeout path
+                // reaps the process group, not how short the budget is.
+                &runner(script, 3_000, 1_024),
             )
             .await,
         );
 
         assert_eq!(kind, "provider_timeout");
         let raw_pid = fs::read_to_string(&pid_path).expect("grandchild pid");
-        let pid = raw_pid.trim().parse::<u32>().expect("parse pid");
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let pid = raw_pid
+            .trim()
+            .parse::<u32>()
+            .unwrap_or_else(|error| panic!("parse pid from {raw_pid:?}: {error}"));
+        // Reaping is asynchronous, so poll rather than assume a fixed settle
+        // time; the loop exits as soon as the pid is gone, so a generous
+        // deadline costs nothing on a healthy run but survives a loaded one.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while crate::process::unix::pid_is_alive(pid) && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }

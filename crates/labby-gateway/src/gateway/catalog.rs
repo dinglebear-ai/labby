@@ -43,6 +43,7 @@ pub const AUTHORITATIVE_RESULT_ACTIONS: &[&str] = &[
     "gateway.reload",
     "gateway.mcp.enable",
     "gateway.mcp.disable",
+    "gateway.mcp.restart",
 ];
 
 #[must_use]
@@ -55,6 +56,13 @@ const NAME_PARAM: ParamSpec = ParamSpec {
     ty: "string",
     required: true,
     description: "Gateway name",
+};
+
+const OPTIONAL_NAME_PARAM: ParamSpec = ParamSpec {
+    name: "name",
+    ty: "string",
+    required: false,
+    description: "Optional gateway name filter",
 };
 
 pub const ACTIONS: &[ActionSpec] = &[
@@ -81,7 +89,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.list",
-        description: "List configured gateways",
+        description: "List configured gateways using the current cached runtime snapshot without connecting upstreams",
         destructive: false,
         requires_admin: true,
         returns: "ServerView[]",
@@ -125,7 +133,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "trusted_read_only_tools",
                 ty: "array",
                 required: false,
-                description: "Exact upstream::tool ids operator-trusted for codemode_read (live readOnlyHint is also required)",
+                description: "Deprecated compatibility list; codemode_read uses live MCP safety annotations",
             },
             ParamSpec {
                 name: "mcp_ui_enabled",
@@ -1112,7 +1120,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.status",
-        description: "Get current runtime gateway status",
+        description: "Refresh and return runtime gateway status",
         destructive: false,
         requires_admin: true,
         returns: "GatewayRuntimeView[]",
@@ -1348,11 +1356,11 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.mcp.list",
-        description: "List upstream MCP runtime state, discovery counts, and likely stale process counts",
+        description: "List the current upstream MCP runtime snapshot, discovery counts, and likely stale process counts without connecting upstreams",
         destructive: false,
         requires_admin: true,
         returns: "GatewayMcpRuntimeView[]",
-        params: &[],
+        params: &[OPTIONAL_NAME_PARAM],
     },
     ActionSpec {
         name: "gateway.clients.list",
@@ -1376,6 +1384,22 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "When true, run runtime cleanup after disabling",
             },
+            ParamSpec {
+                name: "aggressive",
+                ty: "boolean",
+                required: false,
+                description: "When true, use broader host-wide process matching during cleanup",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "gateway.mcp.restart",
+        description: "Replace one enabled upstream MCP connection, clean up stale runtime processes, and reconnect it",
+        destructive: false,
+        requires_admin: true,
+        returns: "GatewayView + cleanup result",
+        params: &[
+            NAME_PARAM,
             ParamSpec {
                 name: "aggressive",
                 ty: "boolean",

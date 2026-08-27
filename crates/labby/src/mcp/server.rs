@@ -29,6 +29,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use crate::access::AccessRuntime;
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::manager::GatewayManager;
 use crate::mcp::context::{actor_key_from_extensions, subject_from_extensions};
@@ -337,6 +338,12 @@ pub(crate) type ToolContractBaselines = Arc<RwLock<ToolContractBaselineStore>>;
 /// MCP server handler — one tool per registered service.
 pub struct LabMcpServer {
     pub registry: Arc<ToolRegistry>,
+    /// Process-scoped access-control lifecycle owner shared by every MCP
+    /// handler on this route. Adapters must carry this exact allocation; they
+    /// must not independently reopen access persistence or make policy
+    /// decisions while constructing a request handler.
+    #[allow(dead_code)] // Consumed by the next project-binding/enforcement wave.
+    pub(crate) access_runtime: Arc<AccessRuntime>,
     /// Shared gateway manager used to resolve the current live upstream pool.
     #[cfg(feature = "gateway")]
     pub gateway_manager: Option<Arc<GatewayManager>>,
@@ -1021,6 +1028,7 @@ mod tests {
     fn stateless_test_server(peers: crate::mcp::peers::PeerRegistry) -> LabMcpServer {
         LabMcpServer {
             registry: std::sync::Arc::new(ToolRegistry::new()),
+            access_runtime: std::sync::Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             peers,

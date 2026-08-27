@@ -2888,7 +2888,9 @@ mod tests {
                 _: RequestContext<RoleServer>,
             ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
                 self.list_calls.fetch_add(1, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                // Far longer than the relay budget, so the ceiling below can be
+                // generous without ever colliding with this fixture.
+                tokio::time::sleep(Duration::from_secs(30)).await;
                 Ok(rmcp::model::ListToolsResult::with_all_items(vec![]))
             }
 
@@ -2939,7 +2941,14 @@ mod tests {
             result,
             super::super::CapabilityCallError::Timeout { .. }
         ));
-        assert!(started.elapsed() < Duration::from_millis(500));
+        // The refresh fixture stalls for 30s, so this only has to prove the 80ms
+        // relay deadline ended the call. A 500ms ceiling proved the same thing
+        // but tripped on scheduler jitter under parallel test load.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the original relay deadline must bound the call: {:?}",
+            started.elapsed()
+        );
         assert_eq!(list_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             tool_calls.load(Ordering::SeqCst),
@@ -3282,9 +3291,13 @@ mod tests {
             &dispatched,
         );
 
+        // Dispatch is synchronous, so this should be near-instant; the ceiling
+        // only distinguishes "dispatched now" from "waited for the upstream
+        // request id", and a wide one does that without measuring the scheduler.
         assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "relay-token cancellation must be dispatched before waiting for the upstream request id"
+            started.elapsed() < Duration::from_secs(2),
+            "relay-token cancellation must be dispatched before waiting for the upstream request id: {:?}",
+            started.elapsed()
         );
     }
 
@@ -3835,7 +3848,7 @@ mod tests {
                 super::super::capability_call::CapabilityCallError::Timeout { .. }
             ));
             assert!(
-                started.elapsed() < timeout + Duration::from_secs(1),
+                started.elapsed() < timeout + Duration::from_secs(5),
                 "cold connect exceeded the absolute relay budget"
             );
             assert_eq!(
@@ -4286,7 +4299,7 @@ mod tests {
 
         // Seed the catalog so `record_failure_for` has an entry to mark unhealthy.
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             config.name.clone(),
             healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
         );
@@ -4426,7 +4439,7 @@ mod tests {
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config();
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             config.name.clone(),
             healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
         );

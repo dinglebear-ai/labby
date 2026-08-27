@@ -732,6 +732,99 @@ test('exposurePolicyFromConfig preserves expose none sentinel as an empty allowl
   )
 })
 
+test('exposurePolicyFromConfig distinguishes absent (expose all) from empty (expose none)', () => {
+  // The backend's `ToolExposurePolicy::from_optional` maps `None` to `All` and
+  // `Some([])` to an allowlist matching nothing. `expose_tools: []` became
+  // persistable when lab-sc8ba stopped collapsing it, so these two must not
+  // read back as the same policy.
+  assert.deepEqual(
+    exposurePolicyFromConfig({ name: 'fixture-http' }),
+    { mode: 'expose_all', patterns: [] },
+    'absent expose_tools means no filter at all',
+  )
+  assert.deepEqual(
+    exposurePolicyFromConfig({ name: 'fixture-http', expose_tools: null }),
+    { mode: 'expose_all', patterns: [] },
+    'explicit null expose_tools means no filter at all',
+  )
+  assert.deepEqual(
+    exposurePolicyFromConfig({ name: 'fixture-http', expose_tools: [] }),
+    { mode: 'allowlist', patterns: [] },
+    'an empty allowlist hides everything, it does not expose everything',
+  )
+})
+
+test('normalizeGateway reports an empty allowlist as hiding every tool, resource, and prompt', () => {
+  // Regression for the inverse-of-truth display bug: with `expose_*: []` the
+  // gateway serves nothing, so the UI must not badge each row "Exposed".
+  const gateway = normalizeGateway(
+    {
+      config: {
+        name: 'fixture-stdio',
+        command: 'npx',
+        args: ['-y', 'server'],
+        proxy_resources: true,
+        proxy_prompts: true,
+        expose_tools: [],
+        expose_resources: [],
+        expose_prompts: [],
+      },
+      runtime: {
+        name: 'fixture-stdio',
+        tool_count: 1,
+        resource_count: 1,
+        prompt_count: 1,
+      },
+    },
+    { connected: true, healthy: true },
+    {
+      tools: ['alpha.read'],
+      resources: ['res://one'],
+      prompts: [{ name: 'prompt.one' }],
+    },
+  )
+
+  assert.deepEqual(
+    gateway.discovery.tools.map((tool) => [tool.name, tool.exposed]),
+    [['alpha.read', false]],
+  )
+  assert.equal(gateway.discovery.resources[0]?.exposed, false)
+  assert.equal(gateway.discovery.prompts[0]?.exposed, false)
+})
+
+test('normalizeGateway still exposes everything when no allowlist is configured', () => {
+  const gateway = normalizeGateway(
+    {
+      config: {
+        name: 'fixture-stdio',
+        command: 'npx',
+        args: ['-y', 'server'],
+        proxy_resources: true,
+        proxy_prompts: true,
+      },
+      runtime: {
+        name: 'fixture-stdio',
+        tool_count: 1,
+        resource_count: 1,
+        prompt_count: 1,
+      },
+    },
+    { connected: true, healthy: true },
+    {
+      tools: ['alpha.read'],
+      resources: ['res://one'],
+      prompts: [{ name: 'prompt.one' }],
+    },
+  )
+
+  assert.deepEqual(
+    gateway.discovery.tools.map((tool) => [tool.name, tool.exposed]),
+    [['alpha.read', true]],
+  )
+  assert.equal(gateway.discovery.resources[0]?.exposed, true)
+  assert.equal(gateway.discovery.prompts[0]?.exposed, true)
+})
+
 test('probeStatusFromRuntime marks zero-capability gateways unhealthy', () => {
   assert.deepEqual(
     probeStatusFromRuntime({
@@ -961,4 +1054,52 @@ test('normalizeServerView does not fabricate created_at or updated_at when backe
   // Backend-owned timestamps must be absent, not invented by the adapter.
   assert.equal(gateway.created_at, undefined)
   assert.equal(gateway.updated_at, undefined)
+})
+
+test('resource and prompt exposure use wildcard matching against the backend-matched subject', () => {
+  // The backend compiles all four exposure fields through
+  // `resolve_named_exposure_policy` and matches them with the wildcard-capable
+  // `ToolExposurePolicy::matches`. An exact `includes()` here disagreed with
+  // the gateway for every pattern containing `*` — badging resources "Hidden"
+  // that the gateway was serving. Resources additionally match on the bare
+  // upstream URI, not the display name.
+  const gateway = normalizeGateway(
+    {
+      config: {
+        name: 'fixture-http',
+        url: 'http://127.0.0.1:9001/mcp',
+        proxy_resources: true,
+        proxy_prompts: true,
+        expose_resources: ['res://docs/*'],
+        expose_prompts: ['review.*'],
+      },
+      runtime: { name: 'fixture-http', tool_count: 0, resource_count: 2, prompt_count: 2 },
+    },
+    { connected: true, healthy: true },
+    {
+      tools: [],
+      resources: [
+        { name: 'Handbook', uri: 'res://docs/handbook' },
+        { name: 'res://internal/secrets', uri: 'res://internal/secrets' },
+      ],
+      prompts: ['review.diff', 'deploy.run'],
+    }
+  )
+
+  assert.deepEqual(
+    gateway.discovery.resources.map((resource) => ({ uri: resource.uri, exposed: resource.exposed })),
+    [
+      // Matched by wildcard, and matched on the URI even though the display
+      // name ("Handbook") does not resemble it.
+      { uri: 'res://docs/handbook', exposed: true },
+      { uri: 'res://internal/secrets', exposed: false },
+    ]
+  )
+  assert.deepEqual(
+    gateway.discovery.prompts.map((prompt) => ({ name: prompt.name, exposed: prompt.exposed })),
+    [
+      { name: 'review.diff', exposed: true },
+      { name: 'deploy.run', exposed: false },
+    ]
+  )
 })

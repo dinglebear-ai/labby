@@ -11,7 +11,7 @@ use crate::gateway::types::{
 use crate::gateway::view_models::ServerView;
 use crate::upstream::pool::in_process_upstream_name;
 use labby_runtime::error::ToolError;
-use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::GatewayManager;
 use super::virtual_servers::find_virtual_server;
@@ -19,12 +19,40 @@ use super::virtual_servers::find_virtual_server;
 const WARNING_UNKNOWN_SERVICE: &str = "unknown_service";
 
 fn find_virtual_server_for_service<'a>(
-    cfg: &'a GatewayConfig,
+    virtual_servers: &'a [labby_runtime::gateway_config::VirtualServerConfig],
     service: &str,
 ) -> Option<&'a labby_runtime::gateway_config::VirtualServerConfig> {
-    cfg.virtual_servers
+    virtual_servers
         .iter()
         .find(|server| server.service == service || server.id == service)
+}
+
+/// Effective MCP exposure for a registered built-in service. Absence remains
+/// distinct from an explicitly hidden virtual server; non-empty allowlists
+/// retain the implicit `help` and `schema` compatibility actions.
+pub(super) enum McpServicePolicy<'a> {
+    Absent,
+    Hidden,
+    Unrestricted,
+    Allowlisted(&'a [String]),
+}
+
+pub(super) fn mcp_service_policy_for_config<'a>(
+    virtual_servers: &'a [labby_runtime::gateway_config::VirtualServerConfig],
+    service: &str,
+) -> McpServicePolicy<'a> {
+    let Some(server) = find_virtual_server_for_service(virtual_servers, service) else {
+        return McpServicePolicy::Absent;
+    };
+    if !server.enabled || !server.surfaces.mcp {
+        return McpServicePolicy::Hidden;
+    }
+    match server.mcp_policy.as_ref() {
+        Some(policy) if !policy.allowed_actions.is_empty() => {
+            McpServicePolicy::Allowlisted(&policy.allowed_actions)
+        }
+        _ => McpServicePolicy::Unrestricted,
+    }
 }
 
 impl GatewayManager {
@@ -49,12 +77,28 @@ impl GatewayManager {
             .collect())
     }
 
-    pub async fn refresh_gateway_status_catalog(&self, scope: &GatewayEnrichmentScope) {
+    pub async fn refresh_gateway_status_catalog(
+        &self,
+        scope: &GatewayEnrichmentScope,
+        name: Option<&str>,
+    ) {
         let (cfg, pool) = self.published_config_and_pool().await;
+        let allowed_upstreams = match (scope.route_visible_upstreams.as_ref(), name) {
+            (Some(allowed), Some(name)) => Some(
+                allowed
+                    .iter()
+                    .filter(|upstream| upstream.as_str() == name)
+                    .cloned()
+                    .collect(),
+            ),
+            (Some(allowed), None) => Some(allowed.clone()),
+            (None, Some(name)) => Some(std::iter::once(name.to_owned()).collect()),
+            (None, None) => None,
+        };
         self.refresh_mcp_runtime_catalog_bounded(
             &cfg,
             pool.as_deref(),
-            scope.route_visible_upstreams.as_ref(),
+            allowed_upstreams.as_ref(),
             scope.oauth_subject.as_deref(),
             "gateway.status.refresh",
         )
@@ -63,13 +107,9 @@ impl GatewayManager {
 
     pub async fn list(&self) -> Result<Vec<ServerView>, ToolError> {
         let (cfg, pool) = self.published_config_and_pool().await;
-        // `gateway.list` backs both the CLI and dashboard. Warm lazy, non-OAuth
-        // upstreams before projecting the snapshot so a freshly started daemon
-        // does not report zero capabilities for healthy servers until another
-        // command happens to trigger discovery. OAuth upstreams remain
-        // request-scoped and are intentionally skipped by the shared warmer.
-        self.warm_mcp_runtime_catalog_bounded(&cfg, pool.as_deref(), "gateway.list")
-            .await;
+        // Inspection must remain side-effect free. Project whatever the runtime
+        // has already observed; callers that need fresh discovery use the
+        // explicit status refresh or per-upstream test/reload actions.
         let mut views = Vec::with_capacity(cfg.upstream.len() + cfg.virtual_servers.len());
         for upstream in &cfg.upstream {
             views.push(server_view_from_upstream(pool.as_deref(), upstream).await);
@@ -149,7 +189,8 @@ impl GatewayManager {
         }
 
         let cfg = self.config.read().await;
-        let Some(virtual_server) = find_virtual_server_for_service(&cfg, service) else {
+        let Some(virtual_server) = find_virtual_server_for_service(&cfg.virtual_servers, service)
+        else {
             return surface != "mcp";
         };
 
@@ -168,49 +209,55 @@ impl GatewayManager {
 
     pub async fn allowed_mcp_actions_for_service(&self, service: &str) -> Option<Vec<String>> {
         let cfg = self.config.read().await;
-        let virtual_server = find_virtual_server_for_service(&cfg, service)?;
-        if !virtual_server.enabled || !virtual_server.surfaces.mcp {
-            return Some(Vec::new());
+        match mcp_service_policy_for_config(&cfg.virtual_servers, service) {
+            McpServicePolicy::Absent => None,
+            McpServicePolicy::Hidden => Some(Vec::new()),
+            McpServicePolicy::Unrestricted => None,
+            McpServicePolicy::Allowlisted(actions) => {
+                let mut allowed = vec!["help".to_string(), "schema".to_string()];
+                allowed.extend(actions.iter().cloned());
+                Some(allowed)
+            }
         }
-
-        if let Some(policy) = &virtual_server.mcp_policy
-            && !policy.allowed_actions.is_empty()
-        {
-            let mut allowed = vec!["help".to_string(), "schema".to_string()];
-            allowed.extend(policy.allowed_actions.clone());
-            return Some(allowed);
-        }
-
-        None
     }
 
     pub async fn mcp_action_allowed_for_service(&self, service: &str, action: &str) -> bool {
         let cfg = self.config.read().await;
-        let Some(virtual_server) = find_virtual_server_for_service(&cfg, service) else {
-            return true;
-        };
-        if !virtual_server.enabled || !virtual_server.surfaces.mcp {
-            return false;
-        }
-        if matches!(action, "help" | "schema") {
-            return true;
-        }
-
-        match &virtual_server.mcp_policy {
-            Some(policy) if !policy.allowed_actions.is_empty() => policy
-                .allowed_actions
-                .iter()
-                .any(|allowed| allowed == action),
-            _ => true,
+        match mcp_service_policy_for_config(&cfg.virtual_servers, service) {
+            McpServicePolicy::Absent => true,
+            McpServicePolicy::Hidden => false,
+            McpServicePolicy::Unrestricted => true,
+            McpServicePolicy::Allowlisted(actions) => {
+                matches!(action, "help" | "schema")
+                    || actions.iter().any(|allowed| allowed == action)
+            }
         }
     }
 
     pub async fn status(&self, name: Option<&str>) -> Result<Vec<GatewayRuntimeView>, ToolError> {
+        self.status_scoped(name, &GatewayEnrichmentScope::default())
+            .await
+    }
+
+    pub async fn status_scoped(
+        &self,
+        name: Option<&str>,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<GatewayRuntimeView>, ToolError> {
+        if let Some(name) = name {
+            scope.ensure_visible(name)?;
+        }
         let (cfg, pool) = self.published_config_and_pool().await;
         let upstreams: Vec<UpstreamConfig> = cfg
             .upstream
             .iter()
-            .filter(|u| name.is_none_or(|needle| needle == u.name))
+            .filter(|upstream| {
+                name.is_none_or(|needle| needle == upstream.name)
+                    && scope
+                        .route_visible_upstreams
+                        .as_ref()
+                        .is_none_or(|visible| visible.contains(&upstream.name))
+            })
             .cloned()
             .collect();
         // P-M8: use the cached prompt-ownership snapshot instead of a live

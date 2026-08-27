@@ -8,6 +8,7 @@ use crate::dispatch::clients::ServiceClients;
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, to_json};
 
+use super::access;
 use super::catalog::ACTIONS;
 use super::gateway;
 use super::params::{parse_proxy_check, parse_relay_check};
@@ -50,6 +51,9 @@ pub async fn dispatch_with_surface(
                     message: format!("auth.check task panicked: {e}"),
                 })?;
             return to_json(Report { findings });
+        }
+        "access.check" => {
+            return to_json(access::check_access_store().await);
         }
         "gateway.upstreams" => {
             return to_json(gateway::check_gateway_upstreams().await);
@@ -132,6 +136,7 @@ pub async fn dispatch_with_clients_and_relay(
                 message: format!("auth.check task panicked: {e}"),
             }),
         },
+        "access.check" => to_json(access::check_access_store().await),
         "gateway.upstreams" => to_json(gateway::check_gateway_upstreams().await),
         "proxy.check" => {
             let p = parse_proxy_check(&params)?;

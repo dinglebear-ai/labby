@@ -269,31 +269,22 @@ pub(crate) fn update_upstream(
     if let Some(proxy_skills) = patch.proxy_skills {
         cfg.upstream[index].proxy_skills = proxy_skills;
     }
+    // All four exposure fields share one tri-state: null = expose all,
+    // [] = expose none, values = allowlist. `deserialize_nullable` on the patch
+    // distinguishes an explicit null (clear the filter) from an absent field,
+    // so collapsing [] to None is never needed to express "remove filter" —
+    // and doing so silently inverted an operator's explicit hide-everything
+    // decision into expose-everything (bead lab-sc8ba).
     if let Some(expose_tools) = patch.expose_tools {
-        // Treat empty array as "clear filter" — an empty allowlist that blocks
-        // all tools is never useful and is the natural way to say "remove filter".
-        cfg.upstream[index].expose_tools = match expose_tools {
-            Some(ref v) if v.is_empty() => None,
-            other => other,
-        };
+        cfg.upstream[index].expose_tools = expose_tools;
     }
     if let Some(expose_resources) = patch.expose_resources {
-        cfg.upstream[index].expose_resources = match expose_resources {
-            Some(ref v) if v.is_empty() => None,
-            other => other,
-        };
+        cfg.upstream[index].expose_resources = expose_resources;
     }
     if let Some(expose_prompts) = patch.expose_prompts {
-        cfg.upstream[index].expose_prompts = match expose_prompts {
-            Some(ref v) if v.is_empty() => None,
-            other => other,
-        };
+        cfg.upstream[index].expose_prompts = expose_prompts;
     }
     if let Some(expose_skills) = patch.expose_skills {
-        // Skills keep a real tri-state: null = expose all, [] = expose none,
-        // values = allowlist. Unlike the legacy primitive fields, collapsing an
-        // empty list to None would invert an operator's explicit hide-all
-        // decision and is unsafe for agent instructions.
         cfg.upstream[index].expose_skills = expose_skills;
     }
     if let Some(oauth) = patch.oauth {
@@ -568,22 +559,6 @@ pub fn insert_protected_mcp_route(
             existing_id: route.name.clone(),
         });
     }
-    if route.enabled
-        && route.is_gateway_subset()
-        && cfg.protected_mcp_routes.iter().any(|existing| {
-            existing.enabled
-                && existing.is_gateway_subset()
-                && existing.public_path == route.public_path
-        })
-    {
-        return Err(ToolError::Conflict {
-            message: format!(
-                "gateway_subset protected MCP route for {} already exists",
-                route.public_path
-            ),
-            existing_id: route.name.clone(),
-        });
-    }
     cfg.protected_mcp_routes.push(route.clone());
     validate_protected_route_loadout_references(cfg)?;
     Ok(route)
@@ -637,27 +612,6 @@ pub fn update_protected_mcp_route(
             existing_id: route.name.clone(),
         });
     }
-    if route.enabled
-        && route.is_gateway_subset()
-        && cfg
-            .protected_mcp_routes
-            .iter()
-            .enumerate()
-            .any(|(existing_index, existing)| {
-                existing_index != index
-                    && existing.enabled
-                    && existing.is_gateway_subset()
-                    && existing.public_path == route.public_path
-            })
-    {
-        return Err(ToolError::Conflict {
-            message: format!(
-                "gateway_subset protected MCP route for {} already exists",
-                route.public_path
-            ),
-            existing_id: route.name.clone(),
-        });
-    }
     cfg.protected_mcp_routes[index] = route.clone();
     validate_protected_route_loadout_references(cfg)?;
     Ok(route)
@@ -681,7 +635,6 @@ pub fn remove_protected_mcp_route(
 pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Result<(), ToolError> {
     let mut names = std::collections::HashSet::new();
     let mut enabled_keys = std::collections::HashSet::new();
-    let mut enabled_gateway_subset_paths = std::collections::HashSet::new();
     for route in routes {
         validate_protected_mcp_route(route)?;
         if !names.insert(route.name.clone()) {
@@ -703,17 +656,6 @@ pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Resu
                     message: format!(
                         "duplicate enabled protected MCP route for {}{}",
                         route.public_host, route.public_path
-                    ),
-                    param: "public_path".to_string(),
-                });
-            }
-            if route.is_gateway_subset()
-                && !enabled_gateway_subset_paths.insert(route.public_path.clone())
-            {
-                return Err(ToolError::InvalidParam {
-                    message: format!(
-                        "duplicate enabled gateway_subset protected MCP route for {}",
-                        route.public_path
                     ),
                     param: "public_path".to_string(),
                 });

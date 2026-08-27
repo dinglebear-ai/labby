@@ -842,6 +842,7 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_code_mode_mcp_ui_update_persists_via_api() {
+        let _guard = crate::config::process_code_mode_test_guard();
         let (manager, path) = test_manager_with_path();
         manager
             .seed_config_unchecked_for_tests(

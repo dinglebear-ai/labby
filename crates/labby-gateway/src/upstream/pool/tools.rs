@@ -1696,7 +1696,7 @@ mod tests {
         // Upstream "a" exposes `probe`.
         let a: Arc<str> = Arc::from("a");
         let a_tools = test_upstream_tools(&a, &["probe"]);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             "a".to_string(),
             healthy_in_process_entry(Arc::clone(&a), a_tools),
         );
@@ -1707,7 +1707,7 @@ mod tests {
         let mut b_entry = healthy_in_process_entry(Arc::clone(&b), b_tools);
         b_entry.exposure_policy =
             ToolExposurePolicy::from_patterns(vec!["other".into()]).expect("policy");
-        pool.catalog.write().await.insert("b".to_string(), b_entry);
+        pool.catalog_write().await.insert("b".to_string(), b_entry);
 
         // No route scope: only "a" exposes `probe` ("b" hides it).
         let all = pool
@@ -1751,7 +1751,7 @@ mod tests {
             "youtube_probe".to_string(),
         ])
         .expect("policy");
-        pool.catalog.write().await.insert("apps".to_string(), entry);
+        pool.catalog_write().await.insert("apps".to_string(), entry);
 
         assert_eq!(
             pool.find_mcp_app_sibling_tool_candidates("youtube_probe", None)
@@ -1839,7 +1839,7 @@ mod tests {
             .insert("allowed".to_string(), allowed_entry);
 
         let denied_tools = test_upstream_tools(&denied_name, &["denied_tool"]);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             "denied".to_string(),
             healthy_in_process_entry(Arc::clone(&denied_name), denied_tools),
         );
@@ -1872,7 +1872,7 @@ mod tests {
             "ui".to_string(),
             serde_json::json!({ "resourceUri": "ui://apps/youtube-search.html" }),
         )])));
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             "apps".to_string(),
             healthy_in_process_entry(Arc::clone(&apps), apps_tools),
         );
@@ -1891,7 +1891,7 @@ mod tests {
         // exactly the "late upstream/app hydration" churn from the incident.
         let plain: Arc<str> = Arc::from("plain");
         let plain_tools = test_upstream_tools(&plain, &["search", "download"]);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             "plain".to_string(),
             healthy_in_process_entry(Arc::clone(&plain), plain_tools),
         );

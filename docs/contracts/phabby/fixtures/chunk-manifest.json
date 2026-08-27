@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "dinglebear.depot-delivery-manifest/v1",
+  "deliveryId": "del_01K35DWEEVDTNC2FW4Z6QB8MM8",
+  "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF",
+  "revisionId": "rev_01K35DV2SSZYJZ7NR7P3P8CSD8",
+  "contentDigest": "sha256:feda49490988a21b01ea9d6548f2c893a7cea6c4e9834322985c28d82280c13f",
+  "totalCompressedBytes": 13132,
+  "totalUncompressedBytes": 13132,
+  "components": [
+    {
+      "componentId": "cmp_manifest",
+      "path": "SKILL.md",
+      "dependencies": [],
+      "chunks": [0]
+    },
+    {
+      "componentId": "cmp_runtime",
+      "path": "scripts/run.sh",
+      "dependencies": ["cmp_manifest"],
+      "chunks": [1]
+    }
+  ],
+  "chunks": [
+    {
+      "ordinal": 0,
+      "bytes": 3214,
+      "digest": "sha256:7e5c53598e07e9619354517c40d52b9d109f21b25ec4c75a83921f0a50c7b65f",
+      "downloadPath": "/v1/deliveries/del_01K35DWEEVDTNC2FW4Z6QB8MM8/chunks/0"
+    },
+    {
+      "ordinal": 1,
+      "bytes": 9918,
+      "digest": "sha256:4623ba881ee99ea68f589348bc8951f7a2fe6af689b61045cc1b9c7361163f91",
+      "downloadPath": "/v1/deliveries/del_01K35DWEEVDTNC2FW4Z6QB8MM8/chunks/1"
+    }
+  ]
+}

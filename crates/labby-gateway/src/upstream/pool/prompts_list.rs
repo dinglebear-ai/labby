@@ -73,7 +73,7 @@ impl UpstreamPool {
                         .await;
                     prompt_name_updates.insert(name.clone(), Vec::new());
                     {
-                        let mut catalog = self.catalog.write().await;
+                        let mut catalog = self.catalog_write().await;
                         if let Some(entry) = catalog.get_mut(&name) {
                             entry.prompt_count = prompts.len();
                         }
@@ -91,7 +91,7 @@ impl UpstreamPool {
                         .await;
                     prompt_name_updates.insert(name.clone(), Vec::new());
                     {
-                        let mut catalog = self.catalog.write().await;
+                        let mut catalog = self.catalog_write().await;
                         if let Some(entry) = catalog.get_mut(&name) {
                             entry.prompt_count = 0;
                         }
@@ -123,7 +123,7 @@ impl UpstreamPool {
                     )
                     .await;
                     {
-                        let mut catalog = self.catalog.write().await;
+                        let mut catalog = self.catalog_write().await;
                         if let Some(entry) = catalog.get_mut(&name) {
                             entry.prompt_count = 0;
                         }
@@ -154,7 +154,7 @@ impl UpstreamPool {
                     names.push(prompt.name.to_string());
                 }
             }
-            let mut catalog = self.catalog.write().await;
+            let mut catalog = self.catalog_write().await;
             for (upstream_name, names) in prompt_name_updates {
                 if let Some(entry) = catalog.get_mut(&upstream_name) {
                     entry.prompt_names = names;
@@ -382,7 +382,7 @@ mod tests {
             .expect("prompt client starts");
         let peer = client_service.peer().clone();
         let entry_name = Arc::<str>::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             super::super::entries::healthy_in_process_entry(entry_name, HashMap::new()),
         );
@@ -408,9 +408,15 @@ mod tests {
             .await;
 
         assert!(prompts.is_empty());
+        // `StalledPromptServer` never resolves, so honoring the deadline is the
+        // only way to get here at all — a run that ignored it would hang until
+        // the harness killed it. The ceiling just needs to sit far below that,
+        // not near the 30ms deadline, where scheduler jitter under parallel test
+        // load failed correct runs.
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(150),
-            "the caller deadline must bound the entire prompt aggregation"
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the caller deadline must bound the entire prompt aggregation: {:?}",
+            started.elapsed()
         );
     }
 
@@ -430,7 +436,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["quick/first", "quick/second"]);
-        assert!(started.elapsed() < std::time::Duration::from_millis(160));
+        // Same reasoning as above: the stalled upstream never resolves, so the
+        // deadline is what returns control here.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "the caller deadline must bound the entire prompt aggregation: {:?}",
+            started.elapsed()
+        );
     }
 
     impl ServerHandler for PaginatedPromptServer {

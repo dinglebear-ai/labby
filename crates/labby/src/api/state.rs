@@ -1,6 +1,6 @@
 //! Shared application state for axum handlers.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,9 +33,12 @@ pub struct AppState {
     ///
     /// `None` means the public relay is not enabled for this process.
     pub public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
-    /// Router containing protected route scoped MCP services, mounted by
-    /// host/path after protected route auth.
-    pub protected_mcp_router: Option<Arc<axum::Router>>,
+    /// Protected-route scoped MCP services, keyed by the configured route name.
+    ///
+    /// Host/path matching happens before this lookup. Keeping one router per
+    /// route prevents equal paths on different public hosts from overwriting
+    /// each other in a shared Axum router.
+    pub protected_mcp_routers: Option<Arc<HashMap<String, axum::Router>>>,
     /// Runtime-enabled service names derived from the registry.
     ///
     /// The HTTP router checks this set to decide which per-service route groups
@@ -81,6 +84,22 @@ pub struct AppState {
     pub bearer_token: Option<Arc<str>>,
     /// HTTP bind host resolved by `labby serve`.
     pub http_bind_host: Option<Arc<String>>,
+    /// Process-scoped owner of the access-store lifecycle.
+    ///
+    /// The default is a conservative, non-I/O unavailable runtime. Server
+    /// startup replaces it after resolving and observing the configured store.
+    pub(crate) access_runtime: Arc<crate::access::AccessRuntime>,
+    #[cfg(feature = "skills")]
+    pub(crate) skill_library: Option<
+        Arc<
+            crate::dispatch::skill_library::dispatch::SkillLibraryService<
+                crate::skills::registry::FirstPartyGeneration,
+            >,
+        >,
+    >,
+    #[cfg(feature = "skills")]
+    pub(crate) skill_library_imports:
+        Option<Arc<crate::dispatch::skill_library::import::ImportCoordinator>>,
 }
 
 impl AppState {
@@ -124,7 +143,7 @@ impl AppState {
                     .expect("public relay forwarder configuration is valid"),
             ),
             public_relay: None,
-            protected_mcp_router: None,
+            protected_mcp_routers: None,
             enabled_services: Arc::new(enabled_services),
             auth_config: None,
             config: Arc::new(LabConfig::default()),
@@ -138,6 +157,11 @@ impl AppState {
             web_ui_auth_disabled: false,
             bearer_token: None,
             http_bind_host: None,
+            access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            #[cfg(feature = "skills")]
+            skill_library: None,
+            #[cfg(feature = "skills")]
+            skill_library_imports: None,
             server_start: std::time::Instant::now(),
         }
     }
@@ -149,6 +173,44 @@ impl AppState {
         self
     }
 
+    /// Attach the initialized process-scoped access runtime.
+    #[must_use]
+    pub(crate) fn with_access_runtime(
+        mut self,
+        runtime: Arc<crate::access::AccessRuntime>,
+    ) -> Self {
+        self.access_runtime = runtime;
+        self
+    }
+
+    #[cfg(feature = "skills")]
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "startup injection is completed by Artifact projection bead .7"
+    )]
+    pub(crate) fn with_skill_library(
+        mut self,
+        service: Arc<
+            crate::dispatch::skill_library::dispatch::SkillLibraryService<
+                crate::skills::registry::FirstPartyGeneration,
+            >,
+        >,
+    ) -> Self {
+        self.skill_library = Some(service);
+        self
+    }
+
+    #[cfg(feature = "skills")]
+    #[must_use]
+    pub(crate) fn with_skill_library_imports(
+        mut self,
+        imports: Arc<crate::dispatch::skill_library::import::ImportCoordinator>,
+    ) -> Self {
+        self.skill_library_imports = Some(imports);
+        self
+    }
+
     #[must_use]
     pub fn with_config(mut self, config: LabConfig) -> Self {
         self.config = Arc::new(config);
@@ -156,8 +218,8 @@ impl AppState {
     }
 
     #[must_use]
-    pub fn with_protected_mcp_router(mut self, router: axum::Router) -> Self {
-        self.protected_mcp_router = Some(Arc::new(router));
+    pub fn with_protected_mcp_routers(mut self, routers: HashMap<String, axum::Router>) -> Self {
+        self.protected_mcp_routers = Some(Arc::new(routers));
         self
     }
 
@@ -276,5 +338,33 @@ fn build_protected_mcp_http_client() -> reqwest::Client {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod access_runtime_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn default_state_uses_non_io_unavailable_access_runtime() {
+        let state = AppState::new();
+
+        assert_eq!(
+            state.access_runtime.status().await,
+            crate::access::AccessRuntimeStatus::Blocked(
+                crate::access::AccessBlockedReason::Unavailable
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn access_runtime_builder_keeps_the_injected_process_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+        );
+        let state = AppState::new().with_access_runtime(Arc::clone(&runtime));
+
+        assert!(Arc::ptr_eq(&state.access_runtime, &runtime));
     }
 }

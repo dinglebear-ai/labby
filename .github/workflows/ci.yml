@@ -386,11 +386,25 @@ jobs:
               libxkbcommon0 \
               libxrandr2
           fi
-      # The self-hosted runner image carries the matching Playwright browser.
+      # The self-hosted runner image carries the matching Playwright browser, and
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
-      # already cached, so verify the image contract with a real headless launch
-      # instead of invoking the unsupported installer.
-      - name: Verify cached Playwright browser launch
+      # already cached — so the cache is checked first and the installer is only
+      # reached on images that do not pre-bake one. `ci-pool-typescript` spans
+      # both the self-hosted image and the ephemeral JIT pool; assuming the
+      # pre-baked cache failed every job that landed on the latter.
+      - name: Ensure a Playwright browser is available
+        run: |
+          set -euo pipefail
+          if node -e "const fs=require('node:fs');const {chromium}=require('playwright');process.exit(fs.existsSync(chromium.executablePath())?0:1)"; then
+            echo "Using the Playwright browser cached in this runner image."
+          else
+            echo "No cached browser at ${PLAYWRIGHT_BROWSERS_PATH}; installing chromium for this image."
+            mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
+            pnpm exec playwright install chromium
+          fi
+      # Both paths converge here: a real headless launch is the contract, not the
+      # mere presence of a file.
+      - name: Verify Playwright browser launch
         run: |
           node - <<'NODE'
           const fs = require("node:fs");
@@ -1190,9 +1204,15 @@ jobs:
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
       - name: Install Tauri system dependencies
+        # Self-contained on purpose. `setup-rust-kache` used to supply
+        # libgtk-3-dev and libxdo-dev to every Rust job as a side effect; it no
+        # longer installs desktop packages, so the one job that actually needs
+        # them names them here. Tauri v2 requires webkit2gtk 4.1 specifically —
+        # if this step ever fails to find it, the runner image is too old for a
+        # Tauri build and failing here is the correct outcome.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
       - run: cargo test --manifest-path apps/palette-tauri/src-tauri/Cargo.toml --locked
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
         with:

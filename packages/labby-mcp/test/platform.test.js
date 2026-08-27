@@ -20,6 +20,11 @@ test("maps supported platforms to release assets", () => {
     binary: "labby.exe",
     archiveType: "zip",
   });
+  assert.deepEqual(targetFor("darwin", "arm64"), {
+    asset: "lab-aarch64-apple-darwin.tar.gz",
+    binary: "labby",
+    archiveType: "tar.gz",
+  });
 });
 
 test("rejects unsupported platforms", () => {

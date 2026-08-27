@@ -663,7 +663,7 @@ mod tests {
         let upstream_name = "header-mismatch";
         let pool = Arc::new(UpstreamPool::new());
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );
@@ -773,7 +773,7 @@ mod tests {
 
         let pool = Arc::new(UpstreamPool::new());
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );
@@ -859,7 +859,7 @@ mod tests {
 
         let pool = Arc::new(UpstreamPool::new());
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );
@@ -954,7 +954,7 @@ mod tests {
 
         let pool = Arc::new(UpstreamPool::new());
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );
@@ -1051,7 +1051,7 @@ mod tests {
         // Build pool with a short timeout; seed normal connection for call_tool.
         let pool = Arc::new(UpstreamPool::new().with_request_timeout(Duration::from_secs(5)));
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );
@@ -1159,7 +1159,7 @@ mod tests {
         let store = Arc::new(UsageStore::open(dir.path().join("usage.db")).await.unwrap());
         let pool = Arc::new(UpstreamPool::new().with_usage_store(Some(Arc::clone(&store))));
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );
@@ -1245,7 +1245,7 @@ mod tests {
         let store = Arc::new(UsageStore::open(dir.path().join("usage.db")).await.unwrap());
         let pool = Arc::new(UpstreamPool::new().with_usage_store(Some(Arc::clone(&store))));
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );
@@ -1325,7 +1325,7 @@ mod tests {
                 .with_usage_store(Some(Arc::clone(&store))),
         );
         let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             upstream_name.to_string(),
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
         );

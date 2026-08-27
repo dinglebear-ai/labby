@@ -71,6 +71,7 @@ const KNOWN_SERVICES: &[&str] = &[
     "lab_admin",
     "server_logs",
     "setup",
+    "skill_library",
     "skills",
     "snippets",
 ];
@@ -105,6 +106,10 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     //   setup.draft.commit gates the .env merge on doctor::dispatch("audit.full").
     //   Dependency direction is one-way (setup → doctor; never doctor → setup).
     ("setup", "doctor"),
+    // skills → skill_library: the existing Skills service projects the managed
+    // library action catalog and delegates mutations to the library's canonical
+    // authorization/transaction kernel; it does not duplicate library semantics.
+    ("skills", "skill_library"),
     // snippets → gateway: snippets reuses gateway::code_mode (the shared JS
     //   execution kernel) plus the GatewayManager handle. The Arch-M2
     //   relocation of code_mode to a top-level peer is DEFERRED, so this edge

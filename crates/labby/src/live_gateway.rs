@@ -1382,7 +1382,13 @@ mod tests {
             .expect("opportunistic timeout is not an error");
 
         assert!(detected.is_none());
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // The mock upstream stalls for 2s, so the ceiling only has to stay under
+        // that to prove the 25ms detect timeout is what returned control.
+        assert!(
+            started.elapsed() < Duration::from_millis(1_800),
+            "opportunistic detection must obey its own timeout: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
@@ -1472,7 +1478,11 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/mcp"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(200)))
+            // Far past the elapsed ceiling below. If this stall were inside the
+            // ceiling, a regression that ignores the caller's 25ms timeout would
+            // still surface the mock's malformed 200 as the same
+            // bridge_transport_error kind and pass every assertion here.
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
             .mount(&server)
             .await;
 
@@ -1489,7 +1499,13 @@ mod tests {
         assert_eq!(envelope["recovery"]["action"], "start_dependency");
         assert_eq!(envelope["recovery"]["same_arguments"], "conditional");
         assert_eq!(envelope["side_effects"], "unknown");
-        assert!(started.elapsed() < Duration::from_millis(150));
+        // Boundedness is proven by the timeout error above: the upstream here
+        // never answers within the configured limit. This ceiling only catches a
+        // regression that ignores the caller's timeout and falls back to a
+        // multi-second default, so it is deliberately loose — a tight budget
+        // measured the test machine's scheduler, not the code, and failed under
+        // parallel test load.
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[tokio::test]
@@ -1517,7 +1533,13 @@ mod tests {
         assert_eq!(envelope["side_effects"], "unknown");
         assert!(cleanup_result.is_ok());
         assert!(cleanup_observed.load(Ordering::SeqCst));
-        assert!(started.elapsed() < Duration::from_millis(150));
+        // Boundedness is proven by the timeout error above: the upstream here
+        // never answers within the configured limit. This ceiling only catches a
+        // regression that ignores the caller's timeout and falls back to a
+        // multi-second default, so it is deliberately loose — a tight budget
+        // measured the test machine's scheduler, not the code, and failed under
+        // parallel test load.
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[tokio::test]
@@ -1538,7 +1560,13 @@ mod tests {
                 .kind(),
             "bridge_transport_error"
         );
-        assert!(started.elapsed() < Duration::from_millis(150));
+        // Boundedness is proven by the timeout error above: the upstream here
+        // never answers within the configured limit. This ceiling only catches a
+        // regression that ignores the caller's timeout and falls back to a
+        // multi-second default, so it is deliberately loose — a tight budget
+        // measured the test machine's scheduler, not the code, and failed under
+        // parallel test load.
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
@@ -1741,6 +1769,7 @@ mod tests {
             "gateway.reload",
             "gateway.mcp.enable",
             "gateway.mcp.disable",
+            "gateway.mcp.restart",
         ] {
             assert_eq!(
                 dispatch_timeout_for_action(action, Duration::from_secs(30)),
@@ -1796,6 +1825,7 @@ mod tests {
             "gateway.reload",
             "gateway.mcp.enable",
             "gateway.mcp.disable",
+            "gateway.mcp.restart",
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();

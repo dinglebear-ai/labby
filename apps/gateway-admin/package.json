@@ -9,7 +9,7 @@
     "dev": "next dev -H 0.0.0.0",
     "prebuild": "node scripts/sync-install-script.mjs",
     "build": "next build",
-    "postbuild": "node scripts/check-route-bundle-budgets.mjs",
+    "postbuild": "node scripts/check-route-bundle-budgets.mjs && node scripts/check-static-build-id.mjs",
     "start": "python3 -m http.server 3000 -d out",
     "preview": "python3 -m http.server 3000 -d out",
     "lint": "eslint .",

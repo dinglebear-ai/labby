@@ -29,6 +29,12 @@ pub const MAX_SKILL_CANDIDATES_PER_UPSTREAM: usize = 1024;
 /// Maximum entries in a single skill's `resources` manifest.
 pub const MAX_RESOURCES_PER_SKILL: usize = 64;
 
+/// Maximum bytes returned for one Skill resource.
+///
+/// This matches the operator-local snapshot cap and applies to every provider,
+/// so switching source types cannot silently widen the memory budget.
+pub const MAX_SKILL_RESOURCE_BYTES: usize = 1024 * 1024;
+
 /// Maximum `skills/list` pages traversed for one upstream before the walk stops.
 ///
 /// Terminates both a self-referencing `nextCursor` and the subtler case of a

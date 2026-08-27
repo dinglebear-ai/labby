@@ -183,12 +183,8 @@ pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
     #[serde(default)]
     pub enabled: bool,
-    /// Operator-owned allowlist of upstream tools trusted for `codemode_read`.
-    ///
-    /// Entries are exact namespaced ids (`upstream::tool`). Upstream-provided
-    /// `readOnlyHint` metadata is untrusted and remains a second, independent
-    /// requirement. An empty list therefore fails closed: read-only Code Mode
-    /// may execute pure JavaScript, but cannot invoke any upstream tool.
+    /// Deprecated compatibility field. `codemode_read` now uses the live MCP
+    /// safety annotations on each tool descriptor.
     #[serde(default)]
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
@@ -286,8 +282,7 @@ impl Default for CodeModeConfig {
 }
 
 impl CodeModeConfig {
-    /// Whether the operator has explicitly trusted this exact upstream tool for
-    /// the read-only Code Mode execution surface.
+    /// Whether the deprecated compatibility list contains this exact tool id.
     #[must_use]
     pub fn trusts_read_only_tool(&self, upstream: &str, tool: &str) -> bool {
         self.trusted_read_only_tools.iter().any(|candidate| {
@@ -1073,9 +1068,19 @@ pub struct GatewayLoadoutConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Selected upstream MCP servers.
+    ///
+    /// Always serialized, including when empty. Agents and HTTP clients read
+    /// this as a required array on every `gateway.loadout.*` response, so
+    /// omitting it for a services-only Loadout breaks them. The cost is an
+    /// explicit `upstreams = []` in TOML, which is the honest representation.
+    #[serde(default)]
     pub upstreams: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Selected built-in Labby services.
+    ///
+    /// Always serialized, including when empty, for the same reason as
+    /// [`GatewayLoadoutConfig::upstreams`].
+    #[serde(default)]
     pub services: Vec<String>,
     #[serde(default)]
     pub expose_code_mode: bool,
@@ -1831,7 +1836,6 @@ impl GatewayConfig {
             }
             route.backend_mcp_path = default_mcp_path();
         }
-        validate_gateway_subset_paths_are_unique(&self.protected_mcp_routes)?;
         Ok(())
     }
 }
@@ -1854,30 +1858,38 @@ fn normalize_string_list(
     Ok(())
 }
 
-fn validate_gateway_subset_paths_are_unique(
-    routes: &[ProtectedMcpRouteConfig],
-) -> Result<(), ConfigError> {
-    let mut paths = std::collections::HashSet::new();
-    for route in routes
-        .iter()
-        .filter(|route| route.enabled && route.is_gateway_subset())
-    {
-        if !paths.insert(route.public_path.clone()) {
-            return Err(ConfigError::InvalidProtectedRoute {
-                name: route.name.clone(),
-                field: "public_path",
-                value: format!(
-                    "gateway_subset routes must use unique public_path values; `{}` is already mounted",
-                    route.public_path
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gateway_subset_routes_may_share_a_path_on_different_hosts() {
+        let mut config: GatewayConfig = toml::from_str(
+            r#"
+[[protected_mcp_routes]]
+name = "alpha"
+public_host = "alpha.example.com"
+public_path = "/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+expose_code_mode = true
+
+[[protected_mcp_routes]]
+name = "beta"
+public_host = "beta.example.com"
+public_path = "/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+expose_code_mode = true
+"#,
+        )
+        .expect("parse gateway config");
+
+        config
+            .normalize_protected_mcp_routes()
+            .expect("host-specific routes can share a path");
+    }
+
     #[test]
     fn code_mode_max_source_bytes_validation_is_bounded() {
         let mut config = CodeModeConfig {
@@ -2381,5 +2393,66 @@ client_secret_env = "SECRET"
     #[test]
     fn in_process_prefix_constant_is_stable() {
         assert_eq!(IN_PROCESS_UPSTREAM_PREFIX, "__in_process__");
+    }
+
+    /// `gateway.loadout.*` responses must always carry `upstreams` and
+    /// `services` as arrays. Omitting an empty selection made every JSON
+    /// consumer that treats them as required arrays fail on a Loadout that
+    /// picked only upstreams or only services.
+    #[test]
+    fn loadout_json_always_carries_both_selection_arrays() {
+        let upstreams_only = GatewayLoadoutConfig {
+            name: "sd".to_string(),
+            upstreams: vec!["chrome-devtools".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+        let services_only = GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            services: vec!["gateway".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+
+        for loadout in [&upstreams_only, &services_only] {
+            let value = serde_json::to_value(loadout).expect("loadout serializes to JSON");
+            let object = value.as_object().expect("loadout serializes as an object");
+            assert!(
+                object
+                    .get("upstreams")
+                    .is_some_and(serde_json::Value::is_array),
+                "upstreams must always be an array: {value}"
+            );
+            assert!(
+                object
+                    .get("services")
+                    .is_some_and(serde_json::Value::is_array),
+                "services must always be an array: {value}"
+            );
+        }
+
+        assert_eq!(
+            serde_json::to_value(&services_only)
+                .expect("loadout serializes to JSON")
+                .get("upstreams"),
+            Some(&serde_json::json!([])),
+            "a services-only Loadout still reports an empty upstream selection"
+        );
+    }
+
+    /// Always-serialized selections must survive a TOML round trip, including
+    /// the explicit empty arrays now written into `config.toml`.
+    #[test]
+    fn loadout_toml_round_trips_empty_selection_arrays() {
+        let services_only = GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            services: vec!["gateway".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+
+        let rendered = toml::to_string(&services_only).expect("loadout serializes to TOML");
+        assert!(rendered.contains("upstreams = []"), "{rendered}");
+
+        let parsed: GatewayLoadoutConfig =
+            toml::from_str(&rendered).expect("loadout parses back from TOML");
+        assert_eq!(parsed, services_only);
     }
 }

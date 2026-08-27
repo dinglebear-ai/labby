@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "dinglebear.depot-delivery/v1",
+  "challengeId": "link_01K35DMBZ4SGK13R0ME2JZ4XGD",
+  "connectionId": "con_01K35DT9YW8H1X4Q1MNG3BBR2Q",
+  "depotAccountId": "acct_01K35DRD17JYEQ7Y6G12CCJAXW",
+  "tenantId": "ten_01K35DRR08706RPZ8A1WQF77ZC",
+  "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF",
+  "depotOrigin": "https://depot.example.test",
+  "dnsPolicyId": "dns_14daa3df83a36b1d6375378fae3383d2db1f610b1de901de23b47becb2313359",
+  "depotKeyThumbprint": "sha256:c23650dd9117ea2a2dd66085a8b2a616924ee06236640d049470826797499e2d",
+  "labbyKeyThumbprint": "sha256:2b9349f290ee28da2d742231f4f04eecc8fd44f013c4d7728762987fb2dc0f28",
+  "protocolVersion": "dinglebear.depot-delivery/v1",
+  "linkedAt": "2026-08-22T14:02:11Z"
+}

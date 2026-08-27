@@ -13,6 +13,7 @@ use rmcp::model::Tool;
 use crate::mcp::catalog::{
     CodeModeAppState, CodeModeVisibility, SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot,
 };
+use crate::mcp::permanent_tools::SkillLibraryDescriptorMode;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
 
@@ -182,6 +183,8 @@ pub(crate) struct PeerCatalogAudience {
     pub(crate) code_mode_read_allowed: bool,
     pub(crate) code_mode_execute_allowed: bool,
     pub(crate) admin_apps_visible: bool,
+    pub(crate) skill_library_management_visible: bool,
+    pub(crate) skill_library_app_visible: bool,
     #[cfg(feature = "gateway")]
     pub(crate) oauth_subject: Option<String>,
 }
@@ -192,6 +195,8 @@ impl Default for PeerCatalogAudience {
             code_mode_read_allowed: true,
             code_mode_execute_allowed: true,
             admin_apps_visible: true,
+            skill_library_management_visible: false,
+            skill_library_app_visible: false,
             #[cfg(feature = "gateway")]
             oauth_subject: Some(SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
         }
@@ -414,6 +419,22 @@ impl PeerContract {
                 self.audience.admin_apps_visible
             }
         };
+        #[cfg(feature = "gateway")]
+        let skill_library_allowed_actions = match &self.gateway_manager {
+            Some(manager) => manager.allowed_mcp_actions_for_service("skills").await,
+            None => None,
+        };
+        #[cfg(not(feature = "gateway"))]
+        let skill_library_allowed_actions: Option<Vec<String>> = None;
+        let skill_library_mode = if self.audience.skill_library_management_visible {
+            SkillLibraryDescriptorMode::Management {
+                app_visible: self.audience.skill_library_app_visible
+                    && self.route_scope.exposes_resources(),
+                allowed_actions: skill_library_allowed_actions.as_deref(),
+            }
+        } else {
+            SkillLibraryDescriptorMode::Compatibility
+        };
 
         for service in self.registry.services() {
             if self.service_visible_on_mcp(service.name).await {
@@ -422,11 +443,11 @@ impl PeerContract {
                     continue;
                 }
                 advertised_names.insert(service.name.to_string());
-                descriptors.push(
-                    self.registry
-                        .permanent_tools()
-                        .builtin_service_tool(service, server_logs_app_visible),
-                );
+                descriptors.push(self.registry.permanent_tools().builtin_service_tool(
+                    service,
+                    server_logs_app_visible,
+                    skill_library_mode,
+                ));
             }
         }
 
@@ -692,6 +713,8 @@ mod tests {
                 code_mode_read_allowed: false,
                 code_mode_execute_allowed: false,
                 admin_apps_visible: false,
+                skill_library_management_visible: false,
+                skill_library_app_visible: false,
                 oauth_subject: Some("reader".to_string()),
             },
         };
