@@ -14,6 +14,10 @@ use labby_auth::upstream::manager::UpstreamOauthManager;
 use labby_runtime::CodeModeAppState;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::GatewayConfig;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ErrorData, GetPromptRequestParams, GetPromptResult,
+    ReadResourceRequestParams, ReadResourceResult,
+};
 
 use crate::gateway::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use crate::gateway::config::{normalize_config, validate_config};
@@ -26,9 +30,65 @@ use crate::gateway::service_registry::{
     PublishedServiceRegistryState, ServiceRegistryPublicationError,
 };
 use crate::gateway::types::CatalogChangeNotifier;
-use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector, UpstreamPool};
+use crate::upstream::pool::{
+    ExactPromptCallError, ExactResourceReadError, ExactToolCallError, HeaderRecoveryMetricsStore,
+    InProcessConnector, PromptCatalogGeneration, ResourceCatalogGeneration, ToolCatalogGeneration,
+    UpstreamPool,
+};
 
-use super::{GatewayManager, GatewayRuntimeHandle};
+use super::{GatewayManager, GatewayRuntimeHandle, PoolPublicationGeneration};
+
+/// Redacted outcome of exact Prompt publication freshness validation/execution.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PublishedPromptCallError {
+    #[error("published prompt target is unavailable")]
+    Unavailable,
+    #[error("published prompt call queue is unavailable")]
+    QueueUnavailable,
+    #[error("published prompt call failed")]
+    Upstream,
+    #[error("published prompt call timed out")]
+    Timeout,
+}
+
+/// Redacted outcome of exact Resource publication freshness validation/read.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PublishedResourceReadError {
+    #[error("published resource target is unavailable")]
+    Unavailable,
+    #[error("published resource read queue is unavailable")]
+    QueueUnavailable,
+    #[error("published resource read failed")]
+    Upstream,
+    #[error("published resource read timed out")]
+    Timeout,
+    #[error("published resource response is too large")]
+    TooLarge,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PublishedToolCallError {
+    #[error("published tool target is unavailable")]
+    Unavailable,
+    #[error("published tool call queue is unavailable")]
+    QueueUnavailable,
+    #[error("upstream tool returned an MCP error")]
+    Mcp(ErrorData),
+    #[error("upstream tool transport failed")]
+    Transport,
+    #[error("upstream tool protocol failed")]
+    Protocol,
+    #[error("published tool call timed out")]
+    Timeout,
+    #[error("published tool call was cancelled")]
+    Cancelled,
+    #[error("upstream tool input-required rounds were exceeded")]
+    InputRequiredRoundsExceeded,
+    #[error("published tool call failed")]
+    Other,
+    #[error("published tool response is too large")]
+    TooLarge,
+}
 
 // ── Gateway manager factory (A-H3) ────────────────────────────────────────────
 
@@ -401,6 +461,151 @@ impl GatewayManager {
 
     pub async fn current_pool(&self) -> Option<Arc<UpstreamPool>> {
         self.runtime.current_pool().await
+    }
+
+    /// Execute a caller-selected exact Prompt target only while the manager
+    /// still publishes the caller's expected pool revision.
+    ///
+    /// Pool and Prompt generations are observations, not capabilities. This
+    /// method validates publication/catalog/connection freshness but performs
+    /// no Project, route, Loadout, identity, or permission authorization.
+    /// Callers must separately derive the target from a trusted, current
+    /// `AssetUse` decision. The live MCP handler does not call this unmounted
+    /// prerequisite yet.
+    pub async fn execute_published_prompt_exact(
+        &self,
+        pool_generation: PoolPublicationGeneration,
+        prompt_generation: PromptCatalogGeneration,
+        upstream_name: &str,
+        native_name: &str,
+        params: GetPromptRequestParams,
+    ) -> Result<GetPromptResult, PublishedPromptCallError> {
+        let first = self.runtime.published_pool_snapshot();
+        if first.generation() != pool_generation {
+            return Err(PublishedPromptCallError::Unavailable);
+        }
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedPromptCallError::Unavailable);
+        };
+        let prepared = pool
+            .prepare_published_prompt_exact(upstream_name, native_name, prompt_generation, params)
+            .await;
+        let applying_pool = Arc::clone(&pool);
+        let result = self
+            .runtime
+            .apply_to_exact_pool_publication(pool_generation, &pool, || async move {
+                match prepared {
+                    Ok(prepared) => applying_pool.apply_prepared_prompt_exact(prepared).await,
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            .ok_or(PublishedPromptCallError::Unavailable)?;
+        result.map_err(|error| match error {
+            ExactPromptCallError::Unavailable => PublishedPromptCallError::Unavailable,
+            ExactPromptCallError::QueueUnavailable => PublishedPromptCallError::QueueUnavailable,
+            ExactPromptCallError::Upstream => PublishedPromptCallError::Upstream,
+            ExactPromptCallError::Timeout => PublishedPromptCallError::Timeout,
+        })
+    }
+
+    /// Execute a caller-selected exact Tool target while the expected pool
+    /// publication remains current. Generations are observations, not grants;
+    /// this method performs no identity, Project, destructive, or admin policy.
+    pub async fn execute_published_tool_exact(
+        &self,
+        pool_generation: PoolPublicationGeneration,
+        tool_generation: ToolCatalogGeneration,
+        upstream_name: &str,
+        native_name: &str,
+        params: CallToolRequestParams,
+    ) -> Result<CallToolResponse, PublishedToolCallError> {
+        let first = self.runtime.published_pool_snapshot();
+        if first.generation() != pool_generation {
+            return Err(PublishedToolCallError::Unavailable);
+        }
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedToolCallError::Unavailable);
+        };
+        let prepared = pool
+            .prepare_published_tool_exact(upstream_name, native_name, tool_generation, params)
+            .await;
+        let applying_pool = Arc::clone(&pool);
+        let result = self
+            .runtime
+            .apply_to_exact_pool_publication(pool_generation, &pool, || async move {
+                match prepared {
+                    Ok(prepared) => applying_pool.apply_prepared_tool_exact(prepared).await,
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            .ok_or(PublishedToolCallError::Unavailable)?;
+        result.map_err(|error| match error {
+            ExactToolCallError::Unavailable => PublishedToolCallError::Unavailable,
+            ExactToolCallError::QueueUnavailable => PublishedToolCallError::QueueUnavailable,
+            ExactToolCallError::Mcp(data) => PublishedToolCallError::Mcp(data),
+            ExactToolCallError::Transport => PublishedToolCallError::Transport,
+            ExactToolCallError::Protocol => PublishedToolCallError::Protocol,
+            ExactToolCallError::Timeout => PublishedToolCallError::Timeout,
+            ExactToolCallError::Cancelled => PublishedToolCallError::Cancelled,
+            ExactToolCallError::InputRequiredRoundsExceeded => {
+                PublishedToolCallError::InputRequiredRoundsExceeded
+            }
+            ExactToolCallError::Other => PublishedToolCallError::Other,
+            ExactToolCallError::TooLarge => PublishedToolCallError::TooLarge,
+        })
+    }
+
+    /// Read a caller-selected exact Resource target only while the manager
+    /// still publishes the caller's expected pool revision.
+    ///
+    /// Pool and Resource generations are observations, not capabilities. This
+    /// method validates publication/catalog/connection freshness but performs
+    /// no Project, route, Loadout, identity, or permission authorization.
+    pub async fn execute_published_resource_exact(
+        &self,
+        pool_generation: PoolPublicationGeneration,
+        resource_generation: ResourceCatalogGeneration,
+        upstream_name: &str,
+        native_uri: &str,
+        params: ReadResourceRequestParams,
+    ) -> Result<ReadResourceResult, PublishedResourceReadError> {
+        let first = self.runtime.published_pool_snapshot();
+        if first.generation() != pool_generation {
+            return Err(PublishedResourceReadError::Unavailable);
+        }
+        let Some(pool) = first.into_pool() else {
+            return Err(PublishedResourceReadError::Unavailable);
+        };
+        let prepared = pool
+            .prepare_published_resource_exact(
+                upstream_name,
+                native_uri,
+                resource_generation,
+                params,
+            )
+            .await;
+        let applying_pool = Arc::clone(&pool);
+        let result = self
+            .runtime
+            .apply_to_exact_pool_publication(pool_generation, &pool, || async move {
+                match prepared {
+                    Ok(prepared) => applying_pool.apply_prepared_resource_exact(prepared).await,
+                    Err(error) => Err(error),
+                }
+            })
+            .await
+            .ok_or(PublishedResourceReadError::Unavailable)?;
+        result.map_err(|error| match error {
+            ExactResourceReadError::Unavailable => PublishedResourceReadError::Unavailable,
+            ExactResourceReadError::QueueUnavailable => {
+                PublishedResourceReadError::QueueUnavailable
+            }
+            ExactResourceReadError::Upstream => PublishedResourceReadError::Upstream,
+            ExactResourceReadError::Timeout => PublishedResourceReadError::Timeout,
+            ExactResourceReadError::TooLarge => PublishedResourceReadError::TooLarge,
+        })
     }
 
     /// Clone the config and pool from one published gateway revision.

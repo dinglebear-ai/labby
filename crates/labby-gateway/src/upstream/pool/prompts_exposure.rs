@@ -16,20 +16,15 @@ impl UpstreamPool {
     /// Drop merged prompts their owning upstream's `expose_prompts` hides.
     ///
     /// Prompts arrive here in the gateway-namespaced `{upstream}/{name}` form
-    /// and `owners` maps each back to its upstream, so one catalog read
-    /// resolves every policy. An owner with no catalog entry fails closed.
-    pub(super) async fn retain_exposed_prompts(
+    /// and `owners` maps each back to its upstream. The policies are captured
+    /// by the same incarnation-checked apply that accepted each listing result,
+    /// so a replacement cannot reinterpret stale rows under its policy.
+    pub(super) fn retain_exposed_prompts(
         &self,
         prompts: Vec<Prompt>,
         owners: &HashMap<String, String>,
+        policies: &HashMap<String, ToolExposurePolicy>,
     ) -> Vec<Prompt> {
-        let policies: HashMap<String, ToolExposurePolicy> = {
-            let catalog = self.catalog.read().await;
-            catalog
-                .iter()
-                .map(|(name, entry)| (name.clone(), entry.prompt_exposure_policy.clone()))
-                .collect()
-        };
         let mut hidden: HashMap<String, usize> = HashMap::new();
         let mut exposed: HashMap<String, usize> = HashMap::new();
         let retained = prompts

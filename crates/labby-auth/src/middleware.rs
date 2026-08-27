@@ -388,33 +388,20 @@ async fn authenticate(
                         claims.identity_issuer.as_deref(),
                         claims.identity_credential_id.as_deref(),
                     ) {
-                        (Some(provider_issuer), None) => {
-                            let allowed_issuers = std::iter::once(crate::google::GOOGLE_ISSUER)
-                                .chain(
-                                    auth_state
-                                        .config
-                                        .enterprise_issuers
-                                        .iter()
-                                        .map(|issuer| issuer.issuer.as_str()),
-                                );
-                            VerifiedIdentity::external_from_allowed_issuers(
-                                Authenticator::OauthBearer,
-                                claims.iss.clone(),
-                                provider_issuer,
-                                claims.sub.clone(),
-                                allowed_issuers,
+                        // Access tokens minted before identity provenance was added remain
+                        // valid for ordinary authenticated routes. Deliberately omit the
+                        // VerifiedIdentity extension so identity-gated boundaries fail closed.
+                        (None, None) => None,
+                        _ => Some(
+                            crate::verified_identity_from_access_claims(
+                                &claims,
+                                &auth_state.config,
                             )
-                        }
-                        (None, Some(credential_id)) => {
-                            VerifiedIdentity::local_credential_with_issuer(
-                                Authenticator::OauthBearer,
-                                claims.iss.clone(),
-                                credential_id,
-                            )
-                        }
-                        _ => Err(crate::VerifiedIdentityError::InvalidIdentityProvenance),
-                    }
-                    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
+                            .map_err(|_| {
+                                auth_error_response("invalid authenticated identity", layer)
+                            })?,
+                        ),
+                    };
                     let actor_key =
                         derive_actor_key(layer.actor_key_deriver.as_deref(), &claims.sub);
                     let auth = AuthContext {
@@ -434,7 +421,9 @@ async fn authenticate(
                     if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
                         return Err(response);
                     }
-                    request.extensions_mut().insert(identity);
+                    if let Some(identity) = identity {
+                        request.extensions_mut().insert(identity);
+                    }
                     request.extensions_mut().insert(auth);
                     return Ok(request);
                 }
@@ -905,7 +894,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn jwt_without_canonical_identity_provenance_fails_closed() {
+    async fn legacy_jwt_without_identity_provenance_authenticates_without_verified_identity() {
         let state = Arc::new(test_auth_state().await);
         let issuer = state
             .config
@@ -929,7 +918,13 @@ mod tests {
                 identity_credential_id: None,
             })
             .unwrap();
-        let response = echo_app(AuthLayer::from_state(state))
+        let auth_context_app = Router::new()
+            .route(
+                "/probe",
+                get(|axum::Extension(ctx): axum::Extension<AuthContext>| async move { ctx.sub }),
+            )
+            .route_layer(AuthLayer::from_state(Arc::clone(&state)));
+        let response = auth_context_app
             .oneshot(
                 HttpRequest::builder()
                     .uri("/probe")
@@ -940,7 +935,27 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"ambiguous-subject");
+
+        let identity_response = principal_link_app(AuthLayer::from_state(state))
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            identity_response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

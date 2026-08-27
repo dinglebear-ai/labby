@@ -66,6 +66,14 @@ fn normalize_host(raw: &str) -> Option<String> {
     Some(host.split(':').next().unwrap_or(host).to_ascii_lowercase())
 }
 
+pub(crate) fn canonical_route_resource(route: &ProtectedMcpRouteConfig) -> Option<String> {
+    Some(format!(
+        "https://{}{}",
+        normalize_host(&route.public_host)?,
+        normalize_request_path(&route.public_path)
+    ))
+}
+
 fn normalize_request_path(path: &str) -> String {
     let path = path.split('?').next().unwrap_or(path).trim();
     if path.starts_with('/') {

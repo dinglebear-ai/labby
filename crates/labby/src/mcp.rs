@@ -4,6 +4,8 @@
 
 pub(crate) mod agent_error;
 #[cfg(feature = "gateway")]
+pub(crate) mod bound_access;
+#[cfg(feature = "gateway")]
 pub mod bridge;
 pub mod call_tool;
 #[cfg(feature = "gateway")]
@@ -30,10 +32,14 @@ pub(crate) mod pagination;
 pub(crate) mod peer_contract;
 pub mod peers;
 pub(crate) mod permanent_tools;
+#[cfg(feature = "gateway")]
+pub(crate) mod prompt_execution;
 pub mod prompts;
 pub(crate) mod provenance;
 pub mod registry;
 pub(crate) mod resource_errors;
+#[cfg(feature = "gateway")]
+pub(crate) mod resource_execution;
 #[cfg(feature = "gateway")]
 pub mod resource_proxy;
 pub mod resources;
@@ -44,6 +50,8 @@ pub mod server;
 pub mod services;
 #[cfg(feature = "skills")]
 pub mod skills;
+#[cfg(feature = "gateway")]
+pub(crate) mod tool_execution;
 #[cfg(feature = "gateway")]
 pub mod upstream;
 

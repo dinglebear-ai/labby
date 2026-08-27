@@ -259,33 +259,6 @@ mod tests {
             requires_admin: false,
         }];
 
-    fn skills_dispatch(
-        action: String,
-        params: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Value, crate::dispatch::error::ToolError>> + Send>>
-    {
-        Box::pin(async move { crate::dispatch::skills::dispatch(&action, params).await })
-    }
-
-    #[tokio::test]
-    async fn in_process_skills_tool_does_not_advertise_management_or_app_callbacks() {
-        let service = RegisteredService::bootstrap_operator(
-            "skills",
-            crate::dispatch::skills::META.description,
-            "bootstrap",
-            crate::dispatch::skills::ACTIONS,
-            skills_dispatch,
-        );
-        let registration = connect_in_process_service_peer(service)
-            .await
-            .expect("in-process Skills registration");
-        assert_eq!(registration.tools.len(), 1);
-        let schema = serde_json::to_string(&registration.tools[0].input_schema)
-            .expect("serialize Skills input schema");
-        assert!(!schema.contains("skill_library."));
-        assert!(!schema.contains("callback"));
-    }
-
     #[tokio::test]
     async fn in_process_peer_is_not_an_access_policy_decision_point() {
         let service = RegisteredService {

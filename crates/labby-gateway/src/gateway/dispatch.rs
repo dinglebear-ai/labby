@@ -539,7 +539,7 @@ async fn handle_protected_route_actions(
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             to_json(
                 manager
-                    .protected_route_update(&params.name, params.route)
+                    .protected_route_update(&params.name, params.route, params.preserve_project_id)
                     .await?,
             )
         }
@@ -554,7 +554,11 @@ async fn handle_protected_route_actions(
         "gateway.protected_route.stage_update" => {
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             manager
-                .protected_route_stage_update(&params.name, params.route)
+                .protected_route_stage_update(
+                    &params.name,
+                    params.route,
+                    params.preserve_project_id,
+                )
                 .await
         }
         "gateway.protected_route.stage_remove" => {

@@ -4,11 +4,16 @@ use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use labby_runtime::gateway_config::{GatewayLoadoutConfig, VirtualServerConfig};
+use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, ProtectedMcpRouteTarget};
 
 use crate::gateway::runtime::{PoolPublicationGeneration, PublishedPoolSnapshot};
 use crate::upstream::pool::{
-    PublishedToolCatalogSnapshot, PublishedToolRoute, ToolCatalogGeneration,
-    ToolCatalogPublicationError,
+    PromptCatalogGeneration, PromptCatalogPublicationError, PublishedPromptCatalogSnapshot,
+    PublishedPromptRoute, PublishedResourceCatalogSnapshot, PublishedResourceRoute,
+    PublishedResourceTemplateCatalogSnapshot, PublishedResourceTemplateRoute,
+    PublishedToolCatalogSnapshot, PublishedToolRoute, ResourceCatalogGeneration,
+    ResourceCatalogPublicationError, ResourceTemplateCatalogGeneration,
+    ResourceTemplateCatalogPublicationError, ToolCatalogGeneration, ToolCatalogPublicationError,
 };
 
 use super::GatewayManager;
@@ -38,6 +43,13 @@ pub(super) fn next_runtime_config_generation() -> u64 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GatewayRuntimeConfigGeneration(u64);
 
+impl GatewayRuntimeConfigGeneration {
+    #[must_use]
+    pub fn fingerprint_bytes(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+}
+
 /// A Loadout resolved only from the runtime configuration published by this
 /// process, paired with the exact publication generation that supplied it.
 ///
@@ -61,6 +73,66 @@ pub enum LoadoutToolCatalogPublicationError {
     CatalogUnavailable,
     Unstable,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutResourceCatalogPublicationError {
+    MissingLoadout,
+    MissingPool,
+    CatalogUnavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for LoadoutResourceCatalogPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingLoadout => "runtime Loadout is unavailable",
+            Self::MissingPool => "runtime upstream pool is unavailable",
+            Self::CatalogUnavailable => "runtime resource catalog is unavailable",
+            Self::Unstable => "runtime resource catalog changed during observation",
+        })
+    }
+}
+impl std::error::Error for LoadoutResourceCatalogPublicationError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutResourceTemplateCatalogPublicationError {
+    MissingLoadout,
+    MissingPool,
+    CatalogUnavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for LoadoutResourceTemplateCatalogPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingLoadout => "runtime Loadout is unavailable",
+            Self::MissingPool => "runtime upstream pool is unavailable",
+            Self::CatalogUnavailable => "runtime resource template catalog is unavailable",
+            Self::Unstable => "runtime resource template catalog changed during observation",
+        })
+    }
+}
+impl std::error::Error for LoadoutResourceTemplateCatalogPublicationError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutPromptCatalogPublicationError {
+    MissingLoadout,
+    MissingPool,
+    CatalogUnavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for LoadoutPromptCatalogPublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingLoadout => "runtime Loadout is unavailable",
+            Self::MissingPool => "runtime upstream pool is unavailable",
+            Self::CatalogUnavailable => "runtime prompt catalog is unavailable",
+            Self::Unstable => "runtime prompt catalog changed during observation",
+        })
+    }
+}
+impl std::error::Error for LoadoutPromptCatalogPublicationError {}
 
 /// A fail-closed reason that a coherent Loadout built-in service projection
 /// could not be observed.
@@ -89,6 +161,70 @@ pub enum LoadoutMcpCatalogPublicationError {
     MissingPool,
     CatalogUnavailable,
     Unstable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectRoutePublicationError {
+    Unavailable,
+    Unstable,
+}
+
+impl std::fmt::Display for ProjectRoutePublicationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Unavailable => "project route publication is unavailable",
+            Self::Unstable => "project route publication changed during observation",
+        })
+    }
+}
+impl std::error::Error for ProjectRoutePublicationError {}
+
+/// Immutable Project-bound protected-route narrowing policy from one runtime
+/// configuration publication. Observational and unmounted; not a grant.
+pub struct PublishedProjectRouteSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    route_name: std::sync::Arc<str>,
+    resource: std::sync::Arc<str>,
+    project_id: std::sync::Arc<str>,
+    assigned_loadout_name: std::sync::Arc<str>,
+    effective_loadout: GatewayLoadoutConfig,
+    effective_service_names: std::sync::Arc<[std::sync::Arc<str>]>,
+}
+
+impl PublishedProjectRouteSnapshot {
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+    pub fn route_name(&self) -> &str {
+        &self.route_name
+    }
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+    pub fn assigned_loadout_name(&self) -> &str {
+        &self.assigned_loadout_name
+    }
+    pub fn effective_loadout(&self) -> &GatewayLoadoutConfig {
+        &self.effective_loadout
+    }
+    pub fn effective_service_names(&self) -> &[std::sync::Arc<str>] {
+        &self.effective_service_names
+    }
+
+    /// Whether both snapshots bind the same complete route publication.
+    #[must_use]
+    pub fn same_publication_as(&self, other: &Self) -> bool {
+        self.runtime_config_generation == other.runtime_config_generation
+            && self.route_name == other.route_name
+            && self.resource == other.resource
+            && self.project_id == other.project_id
+            && self.assigned_loadout_name == other.assigned_loadout_name
+            && self.effective_loadout == other.effective_loadout
+            && self.effective_service_names == other.effective_service_names
+    }
 }
 
 impl std::fmt::Display for LoadoutMcpCatalogPublicationError {
@@ -124,6 +260,10 @@ impl PublishedLoadoutService {
     #[must_use]
     pub fn name(&self) -> &str {
         self.service.name()
+    }
+    #[must_use]
+    pub fn description(&self) -> &str {
+        self.service.description()
     }
     #[must_use]
     pub fn actions(&self) -> &[crate::gateway::service_registry::PublishedServiceAction] {
@@ -200,12 +340,163 @@ impl PublishedLoadoutToolCatalogSnapshot {
     pub fn routes(&self) -> &[PublishedToolRoute] {
         &self.routes
     }
+
+    /// Resolve a raw advertised Tool name only when exactly one published
+    /// regular upstream route matches it.
+    #[must_use]
+    pub fn unique_route_for_wire_name(&self, wire_name: &str) -> Option<&PublishedToolRoute> {
+        unique_tool_route_for_wire_name(&self.routes, wire_name)
+    }
 }
 
-/// One common-interval view of the Loadout's upstream and built-in MCP tools.
+fn unique_tool_route_for_wire_name<'a>(
+    routes: &'a [PublishedToolRoute],
+    wire_name: &str,
+) -> Option<&'a PublishedToolRoute> {
+    let mut matches = routes
+        .iter()
+        .filter(|route| route.tool_name.as_ref() == wire_name);
+    let route = matches.next()?;
+    matches.next().is_none().then_some(route)
+}
+
+/// Immutable observational Resource projection for one running Loadout.
+/// This is unmounted and is neither read authority nor an authorization grant.
+pub struct PublishedLoadoutResourceCatalogSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    resource_catalog_generation: ResourceCatalogGeneration,
+    routes: std::sync::Arc<[PublishedResourceRoute]>,
+}
+
+impl PublishedLoadoutResourceCatalogSnapshot {
+    #[must_use]
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+    #[must_use]
+    pub fn pool_publication_generation(&self) -> PoolPublicationGeneration {
+        self.pool_publication_generation
+    }
+    #[must_use]
+    pub fn resource_catalog_generation(&self) -> ResourceCatalogGeneration {
+        self.resource_catalog_generation
+    }
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedResourceRoute] {
+        &self.routes
+    }
+
+    /// Resolve a canonical gateway Resource URI only when exactly one route
+    /// constructs it. Ambiguous namespace shapes fail closed.
+    #[must_use]
+    pub fn unique_route_for_wire_uri(&self, wire_uri: &str) -> Option<&PublishedResourceRoute> {
+        unique_resource_route_for_wire_uri(&self.routes, wire_uri)
+    }
+}
+
+fn unique_resource_route_for_wire_uri<'a>(
+    routes: &'a [PublishedResourceRoute],
+    wire_uri: &str,
+) -> Option<&'a PublishedResourceRoute> {
+    let suffix = wire_uri.strip_prefix("lab://upstream/")?;
+    let mut matches = routes.iter().filter(|route| {
+        suffix
+            .strip_prefix(route.upstream_name.as_ref())
+            .and_then(|native| native.strip_prefix('/'))
+            .is_some_and(|native| native == route.native_uri.as_ref())
+    });
+    let route = matches.next()?;
+    matches.next().is_none().then_some(route)
+}
+
+/// Immutable observational ResourceTemplate projection for one running Loadout.
+/// This is unmounted and is neither read authority nor an authorization grant.
+pub struct PublishedLoadoutResourceTemplateCatalogSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    resource_template_catalog_generation: ResourceTemplateCatalogGeneration,
+    routes: std::sync::Arc<[PublishedResourceTemplateRoute]>,
+}
+
+impl PublishedLoadoutResourceTemplateCatalogSnapshot {
+    #[must_use]
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+    #[must_use]
+    pub fn pool_publication_generation(&self) -> PoolPublicationGeneration {
+        self.pool_publication_generation
+    }
+    #[must_use]
+    pub fn resource_template_catalog_generation(&self) -> ResourceTemplateCatalogGeneration {
+        self.resource_template_catalog_generation
+    }
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedResourceTemplateRoute] {
+        &self.routes
+    }
+}
+
+/// Immutable observational Prompt projection for one running Loadout.
+/// This is unmounted and is neither prompt execution authority nor a grant.
+pub struct PublishedLoadoutPromptCatalogSnapshot {
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    prompt_catalog_generation: PromptCatalogGeneration,
+    routes: std::sync::Arc<[PublishedPromptRoute]>,
+}
+
+impl PublishedLoadoutPromptCatalogSnapshot {
+    #[must_use]
+    pub fn runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        self.runtime_config_generation
+    }
+    #[must_use]
+    pub fn pool_publication_generation(&self) -> PoolPublicationGeneration {
+        self.pool_publication_generation
+    }
+    #[must_use]
+    pub fn prompt_catalog_generation(&self) -> PromptCatalogGeneration {
+        self.prompt_catalog_generation
+    }
+    #[must_use]
+    pub fn routes(&self) -> &[PublishedPromptRoute] {
+        &self.routes
+    }
+
+    /// Resolve one canonical gateway Prompt name (`upstream/native`) only when
+    /// exactly one published route produces it. Ambiguous namespace shapes
+    /// fail closed rather than parsing the owner at the first slash or relying
+    /// on route order.
+    #[must_use]
+    pub fn unique_route_for_wire_name(&self, wire_name: &str) -> Option<&PublishedPromptRoute> {
+        unique_prompt_route_for_wire_name(&self.routes, wire_name)
+    }
+}
+
+fn unique_prompt_route_for_wire_name<'a>(
+    routes: &'a [PublishedPromptRoute],
+    wire_name: &str,
+) -> Option<&'a PublishedPromptRoute> {
+    let mut matches = routes.iter().filter(|route| {
+        wire_name
+            .strip_prefix(route.upstream_name.as_ref())
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .is_some_and(|native| native == route.native_name.as_ref())
+    });
+    let route = matches.next()?;
+    matches.next().is_none().then_some(route)
+}
+
+/// One common-interval view of the Loadout's tools, regular Resources,
+/// ResourceTemplates, Prompts, and services.
 /// This remains observational and unmounted; it is not an execution grant.
 pub struct PublishedLoadoutMcpCatalogSnapshot {
     tools: PublishedLoadoutToolCatalogSnapshot,
+    resources: PublishedLoadoutResourceCatalogSnapshot,
+    resource_templates: PublishedLoadoutResourceTemplateCatalogSnapshot,
+    prompts: PublishedLoadoutPromptCatalogSnapshot,
     services: PublishedLoadoutServiceCatalogSnapshot,
 }
 
@@ -215,19 +506,40 @@ impl PublishedLoadoutMcpCatalogSnapshot {
         &self.tools
     }
     #[must_use]
+    pub fn resources(&self) -> &PublishedLoadoutResourceCatalogSnapshot {
+        &self.resources
+    }
+    #[must_use]
+    pub fn resource_templates(&self) -> &PublishedLoadoutResourceTemplateCatalogSnapshot {
+        &self.resource_templates
+    }
+    #[must_use]
+    pub fn prompts(&self) -> &PublishedLoadoutPromptCatalogSnapshot {
+        &self.prompts
+    }
+    #[must_use]
     pub fn services(&self) -> &PublishedLoadoutServiceCatalogSnapshot {
         &self.services
     }
 
     /// Equality of every source publication identity in this unified snapshot.
-    /// Construction guarantees both child snapshots carry the same runtime
-    /// generation, so one runtime identity plus the three remaining source
+    /// Construction guarantees all five child snapshots carry the same runtime
+    /// generation, so one runtime identity plus the six remaining source
     /// identities is the complete comparison tuple.
     #[must_use]
     pub fn same_publication_as(&self, other: &Self) -> bool {
         self.tools.runtime_config_generation() == other.tools.runtime_config_generation()
             && self.tools.pool_publication_generation() == other.tools.pool_publication_generation()
             && self.tools.tool_catalog_generation() == other.tools.tool_catalog_generation()
+            && self.resources.resource_catalog_generation()
+                == other.resources.resource_catalog_generation()
+            && self
+                .resource_templates
+                .resource_template_catalog_generation()
+                == other
+                    .resource_templates
+                    .resource_template_catalog_generation()
+            && self.prompts.prompt_catalog_generation() == other.prompts.prompt_catalog_generation()
             && self.services.service_registry_generation()
                 == other.services.service_registry_generation()
     }
@@ -291,6 +603,69 @@ impl PublishedRuntimeLoadoutSnapshot {
 }
 
 impl GatewayManager {
+    async fn route_publication_observation(
+        &self,
+        route_name: &str,
+        project_id: &str,
+        assigned_loadout_name: &str,
+    ) -> RoutePublicationObservation {
+        let _publication = self.publication_barrier.read().await;
+        let config = self.config.read().await;
+        let generation =
+            GatewayRuntimeConfigGeneration(self.runtime_config_generation.load(Ordering::Relaxed));
+        RoutePublicationObservation {
+            generation,
+            snapshot: project_route_snapshot(
+                generation,
+                &config.protected_mcp_routes,
+                &config.loadouts,
+                &config.virtual_servers,
+                route_name,
+                project_id,
+                assigned_loadout_name,
+            ),
+        }
+    }
+
+    pub async fn published_project_route_snapshot(
+        &self,
+        route_name: &str,
+        project_id: &str,
+        assigned_loadout_name: &str,
+    ) -> Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError> {
+        self.compose_project_route_snapshot(route_name, project_id, assigned_loadout_name, |_| {
+            ready(())
+        })
+        .await
+    }
+
+    pub(super) async fn compose_project_route_snapshot<F, Fut>(
+        &self,
+        route_name: &str,
+        project_id: &str,
+        assigned_loadout_name: &str,
+        mut after_first: F,
+    ) -> Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError>
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first = self
+                .route_publication_observation(route_name, project_id, assigned_loadout_name)
+                .await;
+            after_first(attempt).await;
+            let second = self
+                .route_publication_observation(route_name, project_id, assigned_loadout_name)
+                .await;
+            if first.generation != second.generation {
+                continue;
+            }
+            return first.snapshot;
+        }
+        Err(ProjectRoutePublicationError::Unstable)
+    }
+
     async fn mcp_publication_observation(&self, name: &str) -> McpManagerPublicationObservation {
         let _publication = self.publication_barrier.read().await;
         let config = self.config.read().await;
@@ -331,6 +706,18 @@ impl GatewayManager {
                 Some(pool) => Some(pool.published_tool_catalog().await),
                 None => None,
             };
+            let first_resources = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_catalog().await),
+                None => None,
+            };
+            let first_resource_templates = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_template_catalog().await),
+                None => None,
+            };
+            let first_prompts = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
+                None => None,
+            };
             let first_services = self.published_service_registry_snapshot();
             after_first_catalogs(attempt).await;
             let second_gateway = self.mcp_publication_observation(name).await;
@@ -339,6 +726,18 @@ impl GatewayManager {
             }
             let second_tools = match second_gateway.pool_snapshot.pool() {
                 Some(pool) => Some(pool.published_tool_catalog().await),
+                None => None,
+            };
+            let second_resources = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_catalog().await),
+                None => None,
+            };
+            let second_resource_templates = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_template_catalog().await),
+                None => None,
+            };
+            let second_prompts = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
                 None => None,
             };
             let second_services = self.published_service_registry_snapshot();
@@ -361,7 +760,35 @@ impl GatewayManager {
                 }
                 _ => continue,
             };
+            let (first_resources, second_resources) = match (first_resources, second_resources) {
+                (None, None) => return Err(LoadoutMcpCatalogPublicationError::MissingPool),
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(LoadoutMcpCatalogPublicationError::CatalogUnavailable);
+                }
+                _ => continue,
+            };
+            let (first_resource_templates, second_resource_templates) =
+                match (first_resource_templates, second_resource_templates) {
+                    (None, None) => return Err(LoadoutMcpCatalogPublicationError::MissingPool),
+                    (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                    (Some(Err(first)), Some(Err(second))) if first == second => {
+                        return Err(LoadoutMcpCatalogPublicationError::CatalogUnavailable);
+                    }
+                    _ => continue,
+                };
+            let (first_prompts, second_prompts) = match (first_prompts, second_prompts) {
+                (None, None) => return Err(LoadoutMcpCatalogPublicationError::MissingPool),
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(LoadoutMcpCatalogPublicationError::CatalogUnavailable);
+                }
+                _ => continue,
+            };
             if first_tools.generation() != second_tools.generation()
+                || first_resources.generation() != second_resources.generation()
+                || first_resource_templates.generation() != second_resource_templates.generation()
+                || first_prompts.generation() != second_prompts.generation()
                 || first_services.generation() != second_services.generation()
             {
                 continue;
@@ -379,11 +806,59 @@ impl GatewayManager {
                 &first_services,
             )
             .map_err(|_| LoadoutMcpCatalogPublicationError::CatalogUnavailable)?;
+            let resources = build_resource_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_resources,
+            );
+            let resource_templates = build_resource_template_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_resource_templates,
+            );
+            let prompts = build_prompt_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_prompts,
+            );
             debug_assert_eq!(
                 tools.runtime_config_generation(),
                 services.runtime_config_generation()
             );
-            return Ok(PublishedLoadoutMcpCatalogSnapshot { tools, services });
+            debug_assert_eq!(
+                tools.runtime_config_generation(),
+                resources.runtime_config_generation()
+            );
+            debug_assert_eq!(
+                tools.pool_publication_generation(),
+                resources.pool_publication_generation()
+            );
+            debug_assert_eq!(
+                tools.runtime_config_generation(),
+                resource_templates.runtime_config_generation()
+            );
+            debug_assert_eq!(
+                tools.pool_publication_generation(),
+                resource_templates.pool_publication_generation()
+            );
+            debug_assert_eq!(
+                tools.runtime_config_generation(),
+                prompts.runtime_config_generation()
+            );
+            debug_assert_eq!(
+                tools.pool_publication_generation(),
+                prompts.pool_publication_generation()
+            );
+            return Ok(PublishedLoadoutMcpCatalogSnapshot {
+                tools,
+                resources,
+                resource_templates,
+                prompts,
+                services,
+            });
         }
         Err(LoadoutMcpCatalogPublicationError::Unstable)
     }
@@ -541,6 +1016,183 @@ impl GatewayManager {
         Err(LoadoutToolCatalogPublicationError::Unstable)
     }
 
+    pub async fn published_loadout_resource_catalog_snapshot(
+        &self,
+        name: &str,
+    ) -> Result<PublishedLoadoutResourceCatalogSnapshot, LoadoutResourceCatalogPublicationError>
+    {
+        self.compose_loadout_resource_catalog(name, |_: usize| ready(()))
+            .await
+    }
+
+    pub(super) async fn compose_loadout_resource_catalog<F, Fut>(
+        &self,
+        name: &str,
+        mut after_first_catalog: F,
+    ) -> Result<PublishedLoadoutResourceCatalogSnapshot, LoadoutResourceCatalogPublicationError>
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first_gateway = self.manager_publication_observation(name).await;
+            let first_catalog = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_catalog().await),
+                None => None,
+            };
+            after_first_catalog(attempt).await;
+            let second_gateway = self.manager_publication_observation(name).await;
+            if !first_gateway.same_publication(&second_gateway) {
+                continue;
+            }
+            let second_catalog = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_catalog().await),
+                None => None,
+            };
+            let Some(loadout) = first_gateway.loadout.as_ref() else {
+                return Err(LoadoutResourceCatalogPublicationError::MissingLoadout);
+            };
+            let (first_catalog, second_catalog) = match (first_catalog, second_catalog) {
+                (None, None) => return Err(LoadoutResourceCatalogPublicationError::MissingPool),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(map_resource_catalog_error(first));
+                }
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                _ => continue,
+            };
+            if first_catalog.generation() != second_catalog.generation() {
+                continue;
+            }
+            return Ok(build_resource_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_catalog,
+            ));
+        }
+        Err(LoadoutResourceCatalogPublicationError::Unstable)
+    }
+
+    pub async fn published_loadout_resource_template_catalog_snapshot(
+        &self,
+        name: &str,
+    ) -> Result<
+        PublishedLoadoutResourceTemplateCatalogSnapshot,
+        LoadoutResourceTemplateCatalogPublicationError,
+    > {
+        self.compose_loadout_resource_template_catalog(name, |_: usize| ready(()))
+            .await
+    }
+
+    pub(super) async fn compose_loadout_resource_template_catalog<F, Fut>(
+        &self,
+        name: &str,
+        mut after_first_catalog: F,
+    ) -> Result<
+        PublishedLoadoutResourceTemplateCatalogSnapshot,
+        LoadoutResourceTemplateCatalogPublicationError,
+    >
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first_gateway = self.manager_publication_observation(name).await;
+            let first_catalog = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_template_catalog().await),
+                None => None,
+            };
+            after_first_catalog(attempt).await;
+            let second_gateway = self.manager_publication_observation(name).await;
+            if !first_gateway.same_publication(&second_gateway) {
+                continue;
+            }
+            let second_catalog = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_resource_template_catalog().await),
+                None => None,
+            };
+            let Some(loadout) = first_gateway.loadout.as_ref() else {
+                return Err(LoadoutResourceTemplateCatalogPublicationError::MissingLoadout);
+            };
+            let (first_catalog, second_catalog) = match (first_catalog, second_catalog) {
+                (None, None) => {
+                    return Err(LoadoutResourceTemplateCatalogPublicationError::MissingPool);
+                }
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(map_resource_template_catalog_error(first));
+                }
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                _ => continue,
+            };
+            if first_catalog.generation() != second_catalog.generation() {
+                continue;
+            }
+            return Ok(build_resource_template_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_catalog,
+            ));
+        }
+        Err(LoadoutResourceTemplateCatalogPublicationError::Unstable)
+    }
+
+    pub async fn published_loadout_prompt_catalog_snapshot(
+        &self,
+        name: &str,
+    ) -> Result<PublishedLoadoutPromptCatalogSnapshot, LoadoutPromptCatalogPublicationError> {
+        self.compose_loadout_prompt_catalog(name, |_: usize| ready(()))
+            .await
+    }
+
+    pub(super) async fn compose_loadout_prompt_catalog<F, Fut>(
+        &self,
+        name: &str,
+        mut after_first_catalog: F,
+    ) -> Result<PublishedLoadoutPromptCatalogSnapshot, LoadoutPromptCatalogPublicationError>
+    where
+        F: FnMut(usize) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        for attempt in 0..PUBLICATION_ATTEMPTS {
+            let first_gateway = self.manager_publication_observation(name).await;
+            let first_catalog = match first_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
+                None => None,
+            };
+            after_first_catalog(attempt).await;
+            let second_gateway = self.manager_publication_observation(name).await;
+            if !first_gateway.same_publication(&second_gateway) {
+                continue;
+            }
+            let second_catalog = match second_gateway.pool_snapshot.pool() {
+                Some(pool) => Some(pool.published_prompt_catalog().await),
+                None => None,
+            };
+            let Some(loadout) = first_gateway.loadout.as_ref() else {
+                return Err(LoadoutPromptCatalogPublicationError::MissingLoadout);
+            };
+            let (first_catalog, second_catalog) = match (first_catalog, second_catalog) {
+                (None, None) => return Err(LoadoutPromptCatalogPublicationError::MissingPool),
+                (Some(Err(first)), Some(Err(second))) if first == second => {
+                    return Err(map_prompt_catalog_error(first));
+                }
+                (Some(Ok(first)), Some(Ok(second))) => (first, second),
+                _ => continue,
+            };
+            if first_catalog.generation() != second_catalog.generation() {
+                continue;
+            }
+            return Ok(build_prompt_snapshot(
+                first_gateway.runtime_generation,
+                first_gateway.pool_snapshot.generation(),
+                loadout,
+                &first_catalog,
+            ));
+        }
+        Err(LoadoutPromptCatalogPublicationError::Unstable)
+    }
+
     /// Resolve a named Loadout from one coherent published runtime revision.
     pub async fn published_runtime_loadout_snapshot(
         &self,
@@ -591,6 +1243,24 @@ fn map_catalog_error(_error: ToolCatalogPublicationError) -> LoadoutToolCatalogP
     LoadoutToolCatalogPublicationError::CatalogUnavailable
 }
 
+fn map_resource_catalog_error(
+    _error: ResourceCatalogPublicationError,
+) -> LoadoutResourceCatalogPublicationError {
+    LoadoutResourceCatalogPublicationError::CatalogUnavailable
+}
+
+fn map_resource_template_catalog_error(
+    _error: ResourceTemplateCatalogPublicationError,
+) -> LoadoutResourceTemplateCatalogPublicationError {
+    LoadoutResourceTemplateCatalogPublicationError::CatalogUnavailable
+}
+
+fn map_prompt_catalog_error(
+    _error: PromptCatalogPublicationError,
+) -> LoadoutPromptCatalogPublicationError {
+    LoadoutPromptCatalogPublicationError::CatalogUnavailable
+}
+
 fn map_service_catalog_error(
     _error: ServiceRegistryPublicationError,
 ) -> LoadoutServiceCatalogPublicationError {
@@ -626,6 +1296,93 @@ fn build_tool_snapshot(
     }
 }
 
+fn build_resource_snapshot(
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    loadout: &GatewayLoadoutConfig,
+    catalog: &PublishedResourceCatalogSnapshot,
+) -> PublishedLoadoutResourceCatalogSnapshot {
+    let routes = if loadout.expose_resources {
+        let upstreams = loadout
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        catalog
+            .routes()
+            .iter()
+            .filter(|route| upstreams.contains(route.upstream_name.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    PublishedLoadoutResourceCatalogSnapshot {
+        runtime_config_generation,
+        pool_publication_generation,
+        resource_catalog_generation: catalog.generation(),
+        routes: std::sync::Arc::from(routes),
+    }
+}
+
+fn build_resource_template_snapshot(
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    loadout: &GatewayLoadoutConfig,
+    catalog: &PublishedResourceTemplateCatalogSnapshot,
+) -> PublishedLoadoutResourceTemplateCatalogSnapshot {
+    let routes = if loadout.expose_resources {
+        let upstreams = loadout
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        catalog
+            .routes()
+            .iter()
+            .filter(|route| upstreams.contains(route.upstream_name.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    PublishedLoadoutResourceTemplateCatalogSnapshot {
+        runtime_config_generation,
+        pool_publication_generation,
+        resource_template_catalog_generation: catalog.generation(),
+        routes: std::sync::Arc::from(routes),
+    }
+}
+
+fn build_prompt_snapshot(
+    runtime_config_generation: GatewayRuntimeConfigGeneration,
+    pool_publication_generation: PoolPublicationGeneration,
+    loadout: &GatewayLoadoutConfig,
+    catalog: &PublishedPromptCatalogSnapshot,
+) -> PublishedLoadoutPromptCatalogSnapshot {
+    let routes = if loadout.expose_prompts {
+        let upstreams = loadout
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        catalog
+            .routes()
+            .iter()
+            .filter(|route| upstreams.contains(route.upstream_name.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    PublishedLoadoutPromptCatalogSnapshot {
+        runtime_config_generation,
+        pool_publication_generation,
+        prompt_catalog_generation: catalog.generation(),
+        routes: std::sync::Arc::from(routes),
+    }
+}
+
 fn build_service_snapshot(
     runtime_config_generation: GatewayRuntimeConfigGeneration,
     loadout: &GatewayLoadoutConfig,
@@ -640,10 +1397,7 @@ fn build_service_snapshot(
             .map(|service| (service.name(), service))
             .collect::<std::collections::BTreeMap<_, _>>();
         for member in &loadout.services {
-            let Some(server) = virtual_servers
-                .iter()
-                .find(|server| server.service == *member || server.id == *member)
-            else {
+            let Some(server) = resolve_virtual_server_member(virtual_servers, member) else {
                 continue;
             };
             let Some(service) = by_name.get(server.service.as_str()) else {
@@ -680,4 +1434,190 @@ fn build_service_snapshot(
         service_registry_generation: catalog.generation(),
         services: std::sync::Arc::from(selected.into_values().collect::<Vec<_>>()),
     })
+}
+
+fn resolve_virtual_server_member<'a>(
+    virtual_servers: &'a [VirtualServerConfig],
+    member: &str,
+) -> Option<&'a VirtualServerConfig> {
+    virtual_servers
+        .iter()
+        .find(|server| server.service == member || server.id == member)
+}
+
+struct RoutePublicationObservation {
+    generation: GatewayRuntimeConfigGeneration,
+    snapshot: Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError>,
+}
+
+fn project_route_snapshot(
+    generation: GatewayRuntimeConfigGeneration,
+    routes: &[ProtectedMcpRouteConfig],
+    loadouts: &[GatewayLoadoutConfig],
+    virtual_servers: &[VirtualServerConfig],
+    route_name: &str,
+    project_id: &str,
+    assigned_loadout_name: &str,
+) -> Result<PublishedProjectRouteSnapshot, ProjectRoutePublicationError> {
+    let mut matching = routes.iter().filter(|route| route.name == route_name);
+    let route = matching
+        .next()
+        .ok_or(ProjectRoutePublicationError::Unavailable)?;
+    if matching.next().is_some() || !route.enabled {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let resource = crate::gateway::protected_routes::canonical_route_resource(route)
+        .ok_or(ProjectRoutePublicationError::Unavailable)?;
+    if routes
+        .iter()
+        .filter(|candidate| {
+            candidate.enabled
+                && crate::gateway::protected_routes::canonical_route_resource(candidate).as_deref()
+                    == Some(resource.as_str())
+        })
+        .count()
+        != 1
+    {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = route.target.as_ref() else {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    };
+    if !labby_runtime::gateway_config::is_canonical_project_id(project_id)
+        || target.canonical_project_id() != Some(project_id)
+    {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let mut assigned_matches = loadouts
+        .iter()
+        .filter(|loadout| loadout.name == assigned_loadout_name);
+    let assigned = assigned_matches
+        .next()
+        .ok_or(ProjectRoutePublicationError::Unavailable)?;
+    if assigned_matches.next().is_some() {
+        return Err(ProjectRoutePublicationError::Unavailable);
+    }
+    let effective = assigned
+        .intersect_gateway_subset(target)
+        .map_err(|_| ProjectRoutePublicationError::Unavailable)?;
+    let mut effective_service_names = std::collections::BTreeSet::new();
+    for member in &effective.services {
+        let Some(server) = resolve_virtual_server_member(virtual_servers, member) else {
+            continue;
+        };
+        if !effective_service_names.insert(server.service.as_str()) {
+            return Err(ProjectRoutePublicationError::Unavailable);
+        }
+    }
+    Ok(PublishedProjectRouteSnapshot {
+        runtime_config_generation: generation,
+        route_name: std::sync::Arc::from(route.name.as_str()),
+        resource: std::sync::Arc::from(resource),
+        project_id: std::sync::Arc::from(project_id),
+        assigned_loadout_name: std::sync::Arc::from(assigned_loadout_name),
+        effective_loadout: effective,
+        effective_service_names: std::sync::Arc::from(
+            effective_service_names
+                .into_iter()
+                .map(std::sync::Arc::from)
+                .collect::<Vec<_>>(),
+        ),
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::disallowed_methods)] // Test fixture constructs upstream-owned descriptors directly.
+mod canonical_route_match_tests {
+    use std::sync::Arc;
+
+    use rmcp::model::{Prompt, Resource, Tool};
+
+    use super::{
+        PublishedPromptRoute, PublishedResourceRoute, PublishedToolRoute,
+        unique_prompt_route_for_wire_name, unique_resource_route_for_wire_uri,
+        unique_tool_route_for_wire_name,
+    };
+    use crate::upstream::types::UpstreamTool;
+
+    #[test]
+    fn raw_tool_name_is_unique_and_order_independent() {
+        let make = |upstream: &str, native: &str| PublishedToolRoute {
+            upstream_name: Arc::from(upstream),
+            tool_name: Arc::from(native),
+            tool: UpstreamTool {
+                tool: Tool::new(native.to_string(), "test", serde_json::Map::new()),
+                input_schema: None,
+                output_schema: None,
+                upstream_name: Arc::from(upstream),
+                destructive: false,
+            },
+        };
+        let routes = vec![make("alpha", "nested/name"), make("bravo", "nested/name")];
+        let wire = "nested/name";
+        assert!(unique_tool_route_for_wire_name(&routes, wire).is_none());
+        let reversed = routes.iter().cloned().rev().collect::<Vec<_>>();
+        assert!(unique_tool_route_for_wire_name(&reversed, wire).is_none());
+        assert_eq!(
+            unique_tool_route_for_wire_name(&routes[..1], wire)
+                .unwrap()
+                .tool_name
+                .as_ref(),
+            "nested/name"
+        );
+        assert!(unique_tool_route_for_wire_name(&routes[..1], "alpha::nested/name").is_none());
+        assert!(unique_tool_route_for_wire_name(&routes[..1], "alpha/nested/name").is_none());
+    }
+
+    #[test]
+    fn canonical_prompt_wire_name_rejects_ambiguous_decompositions() {
+        let routes = vec![
+            PublishedPromptRoute {
+                upstream_name: Arc::from("alpha"),
+                native_name: Arc::from("bravo/name"),
+                prompt: Prompt::new("bravo/name", None::<String>, None),
+            },
+            PublishedPromptRoute {
+                upstream_name: Arc::from("alpha/bravo"),
+                native_name: Arc::from("name"),
+                prompt: Prompt::new("name", None::<String>, None),
+            },
+        ];
+
+        assert!(unique_prompt_route_for_wire_name(&routes, "alpha/bravo/name").is_none());
+        assert_eq!(
+            unique_prompt_route_for_wire_name(&routes[..1], "alpha/bravo/name")
+                .unwrap()
+                .native_name
+                .as_ref(),
+            "bravo/name"
+        );
+    }
+
+    #[test]
+    fn canonical_resource_wire_uri_rejects_ambiguous_decompositions() {
+        let routes = vec![
+            PublishedResourceRoute {
+                upstream_name: Arc::from("alpha"),
+                native_uri: Arc::from("bravo/file:///one"),
+                resource: Resource::new("bravo/file:///one", "one"),
+            },
+            PublishedResourceRoute {
+                upstream_name: Arc::from("alpha/bravo"),
+                native_uri: Arc::from("file:///one"),
+                resource: Resource::new("file:///one", "one"),
+            },
+        ];
+
+        let wire = "lab://upstream/alpha/bravo/file:///one";
+        assert!(unique_resource_route_for_wire_uri(&routes, wire).is_none());
+        let reversed = routes.iter().cloned().rev().collect::<Vec<_>>();
+        assert!(unique_resource_route_for_wire_uri(&reversed, wire).is_none());
+        assert_eq!(
+            unique_resource_route_for_wire_uri(&routes[..1], wire)
+                .unwrap()
+                .native_uri
+                .as_ref(),
+            "bravo/file:///one"
+        );
+    }
 }

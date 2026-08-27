@@ -298,6 +298,13 @@ const MAX_CATALOG_NOTIFICATION_TIMEOUT_MS: u64 = 60_000;
 /// lifetime. Only the relay path uses this; the pooled hot path keeps
 /// [`DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS`].
 const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
+/// Headroom added to the longest configured upstream deadline when deriving the
+/// hosted HTTP transport timeout (see [`LabConfig::http_request_timeout`]).
+///
+/// Covers the work bracketing the upstream call itself — auth, Code Mode
+/// compilation, connection-pool checkout, response serialization — so the inner
+/// deadline is always the one that fires on a slow upstream.
+const HTTP_REQUEST_TIMEOUT_MARGIN: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 static TEST_CONFIG_TOML_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -605,6 +612,25 @@ impl LabConfig {
         )
     }
 
+    /// Transport-level deadline for one hosted HTTP request.
+    ///
+    /// This is a backstop for requests that outlive every inner deadline, not a
+    /// product timeout. It is derived from the configured upstream deadlines so
+    /// it can never fire *before* the timeout it is supposed to wrap: a request
+    /// that exceeds `upstream_request_timeout` / `upstream_relay_timeout` must
+    /// fail with a structured MCP error from the dispatch layer, not a bare 504
+    /// from the HTTP stack.
+    ///
+    /// A fixed cap here previously overrode both settings — an operator raising
+    /// `upstream_request_timeout_ms` past 30s got no effect, because the
+    /// transport killed the response first and discarded a tool call that had
+    /// already succeeded.
+    pub fn http_request_timeout(&self) -> Duration {
+        self.upstream_request_timeout()
+            .max(self.upstream_relay_timeout())
+            .saturating_add(HTTP_REQUEST_TIMEOUT_MARGIN)
+    }
+
     pub fn normalize_protected_mcp_routes(&mut self) -> Result<(), ConfigError> {
         for route in &mut self.protected_mcp_routes {
             route.upstream = route
@@ -613,6 +639,17 @@ impl LabConfig {
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
             if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                if let Some(project_id) = target.project_id.take() {
+                    let project_id = project_id.trim().to_string();
+                    if !labby_runtime::gateway_config::is_canonical_project_id(&project_id) {
+                        return Err(ConfigError::InvalidProtectedRoute {
+                            name: route.name.clone(),
+                            field: "target.project_id",
+                            value: "project binding must not be empty".to_string(),
+                        });
+                    }
+                    target.project_id = Some(project_id);
+                }
                 target.loadout = target
                     .loadout
                     .take()
@@ -3231,6 +3268,51 @@ upstream_request_timeout_ms = 60000
         cfg.validate().expect("timeout validates");
     }
 
+    /// The HTTP transport backstop must never fire before the upstream deadline
+    /// it wraps. A fixed 30s cap in the router used to override both settings:
+    /// a 60s `upstream_request_timeout_ms` still returned a bare 504 at 30s,
+    /// discarding a tool call that went on to succeed.
+    #[test]
+    fn http_request_timeout_never_undercuts_configured_upstream_deadlines() {
+        for toml_src in [
+            "",
+            "upstream_request_timeout_ms = 60000",
+            // Both knobs at the top of their validated ranges.
+            "upstream_request_timeout_ms = 300000\nupstream_relay_timeout_ms = 1800000",
+            // Relay left at its 5 minute default while the pooled path is raised.
+            "upstream_request_timeout_ms = 120000",
+            // Relay raised while the pooled path stays at its default.
+            "upstream_relay_timeout_ms = 900000",
+        ] {
+            let cfg = toml::from_str::<LabConfig>(toml_src).expect("config parses");
+            cfg.validate().expect("config validates");
+
+            let http = cfg.http_request_timeout();
+            assert!(
+                http > cfg.upstream_request_timeout(),
+                "http timeout {http:?} must exceed the pooled upstream deadline {:?} for {toml_src:?}",
+                cfg.upstream_request_timeout(),
+            );
+            assert!(
+                http > cfg.upstream_relay_timeout(),
+                "http timeout {http:?} must exceed the relay deadline {:?} for {toml_src:?}",
+                cfg.upstream_relay_timeout(),
+            );
+        }
+    }
+
+    /// The 5 minute relay default is the binding constraint out of the box, so
+    /// a default deployment must not cap HTTP requests at the 30s pooled value.
+    #[test]
+    fn http_request_timeout_default_accommodates_the_relay_path() {
+        let cfg = LabConfig::default();
+        assert_eq!(
+            cfg.http_request_timeout(),
+            cfg.upstream_relay_timeout() + HTTP_REQUEST_TIMEOUT_MARGIN,
+        );
+        assert!(cfg.http_request_timeout() > Duration::from_secs(30));
+    }
+
     #[test]
     fn upstream_relay_timeout_defaults_to_five_minutes_and_is_configurable() {
         // Unset → 5 minute default (NOT the 30s request-timeout default), so a
@@ -3877,6 +3959,7 @@ services = ["removed-service"]
         route.backend_url = String::new();
         route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
                 expose_code_mode: false,
@@ -3893,5 +3976,56 @@ services = ["removed-service"]
             .expect_err("the serve-path copy must reject the reserved prefix");
         let rendered = error.to_string();
         assert!(rendered.contains("__in_process__setup"), "{rendered}");
+    }
+
+    #[test]
+    fn serve_path_project_id_normalization_is_bounded_and_compatible() {
+        fn config(project_id: Option<String>) -> LabConfig {
+            let mut route: ProtectedMcpRouteConfig = toml::from_str(
+                "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+            )
+            .unwrap();
+            route.backend_url = String::new();
+            route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    project_id,
+                    ..Default::default()
+                },
+            ));
+            LabConfig {
+                protected_mcp_routes: vec![route],
+                ..Default::default()
+            }
+        }
+
+        let mut omitted = config(None);
+        omitted
+            .normalize_protected_mcp_routes()
+            .expect("legacy None");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            omitted.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id, None);
+
+        let max = labby_runtime::gateway_config::MAX_PROJECT_ID_LEN;
+        let expected = "x".repeat(max);
+        let mut trimmed = config(Some(format!("  {expected}  ")));
+        trimmed.normalize_protected_mcp_routes().expect("128 bytes");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            trimmed.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id.as_deref(), Some(expected.as_str()));
+
+        for invalid in ["   ".to_string(), "x".repeat(max + 1)] {
+            assert!(
+                config(Some(invalid))
+                    .normalize_protected_mcp_routes()
+                    .is_err()
+            );
+        }
     }
 }

@@ -12,6 +12,21 @@ and auth setup. The complete per-service env inventory is generated from
 [generated/env-reference.md](../generated/env-reference.md) and
 [generated/env-reference.json](../generated/env-reference.json).
 
+## State Root
+
+`LABBY_HOME` selects Labby's durable state root and must be absolute. With an
+explicit value, configuration is read from `$LABBY_HOME/config.toml`, dotenv
+values from `$LABBY_HOME/.env`, and the access-control database from the fixed
+path `$LABBY_HOME/access.db`. Without it, the durable state root defaults to
+`~/.labby`. Do not use a relative working-directory path for daemon or stdio
+launches.
+
+The access store has no independent environment override.
+`LABBY_AUTH_SQLITE_PATH` selects the OAuth authorization store, not
+`access.db`. A standalone stdio fallback uses its own resolved state root, so
+configure an explicit remote daemon target when stdio must share the daemon's
+project and membership state.
+
 ## Direct Stdio Proxy
 
 The default bearer secret is separate from the hosted daemon administrator

@@ -168,6 +168,24 @@ const PERMANENT_TOOLS: [PermanentToolEntry; 2] = [
     },
 ];
 
+/// Conservatively reserve every Labby-owned non-upstream Tool identity.
+///
+/// This is visibility-independent: a hidden product Tool still cannot be
+/// impersonated by a regular upstream route.
+#[cfg(feature = "gateway")]
+pub(crate) fn is_reserved_non_upstream_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        CODE_MODE_TOOL_NAME
+            | CODE_MODE_READ_TOOL_NAME
+            | CODE_MODE_UI_TOOL_NAME
+            | MCP_APP_TOOL_NAME
+            | ADD_SERVER_TOOL_NAME
+            | GATEWAY_STATUS_TOOL_NAME
+            | SETTINGS_TOOL_NAME
+    )
+}
+
 #[must_use]
 pub(crate) fn code_mode_read_annotations() -> ToolAnnotations {
     ToolAnnotations::new()
@@ -469,12 +487,16 @@ impl PermanentToolRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PermanentToolId, PermanentToolRegistry, SkillLibraryDescriptorMode,
-        dispatch_envelope_output_schema,
-    };
+    #[cfg(feature = "gateway")]
+    use super::is_reserved_non_upstream_tool_name;
+    use super::{PermanentToolId, PermanentToolRegistry, dispatch_envelope_output_schema};
     #[cfg(feature = "gateway")]
     use crate::mcp::call_tool_codemode::CODE_MODE_DESCRIPTION_MAX_BYTES;
+    #[cfg(feature = "gateway")]
+    use crate::mcp::catalog::{
+        ADD_SERVER_TOOL_NAME, CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME,
+        SETTINGS_TOOL_NAME,
+    };
     use crate::mcp::catalog::{
         CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
     };
@@ -920,6 +942,25 @@ mod tests {
             registry.resolve(CODE_MODE_READ_TOOL_NAME),
             Some(PermanentToolId::CodeModeRead)
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn every_synthetic_tool_name_is_conservatively_reserved() {
+        for name in [
+            CODE_MODE_TOOL_NAME,
+            CODE_MODE_READ_TOOL_NAME,
+            CODE_MODE_UI_TOOL_NAME,
+            MCP_APP_TOOL_NAME,
+            ADD_SERVER_TOOL_NAME,
+            GATEWAY_STATUS_TOOL_NAME,
+            SETTINGS_TOOL_NAME,
+        ] {
+            assert!(is_reserved_non_upstream_tool_name(name), "{name}");
+        }
+        assert!(!is_reserved_non_upstream_tool_name(
+            "ordinary-upstream-tool"
+        ));
     }
 
     #[cfg(feature = "gateway")]

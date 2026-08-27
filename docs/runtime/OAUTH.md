@@ -393,6 +393,13 @@ On successful validation, an `AuthContext` is injected into the request extensio
 
 Downstream handlers can read `AuthContext` from request extensions for audit trails and scope-gated access.
 
+Signature-valid access tokens minted before canonical identity provenance was
+introduced still receive `AuthContext` for compatibility with ordinary
+authenticated routes. They do not receive a `VerifiedIdentity` extension, so
+project/access boundaries and other identity-gated handlers fail closed.
+Malformed, incomplete, or conflicting provenance remains an authentication
+failure rather than falling back to this legacy-token behavior.
+
 ## Token Exchange
 
 `POST /token` supports:
@@ -490,6 +497,14 @@ origin do not substitute for those requirements. Success returns only
 envelope, while authentication and CSRF failures retain the shared auth-middleware
 envelope. Without OAuth browser state, the route is absent and returns `404`
 before body validation. See [Access Owner Bootstrap](../services/ACCESS.md).
+
+The access-control database is separate from the OAuth authorization store. It
+is fixed at the absolute path `$LABBY_HOME/access.db` (default
+`~/.labby/access.db`); `LABBY_AUTH_SQLITE_PATH` does not relocate it. A
+gateway-subset protected route opts into Project authorization context with
+`target.project_id`. Route add/test accept `--project-id`; update preserves the
+current binding unless `--project-id` replaces it or `--clear-project-id`
+explicitly removes it.
 
 Allowlist removal is an immediate revocation boundary for renewable browser
 and upstream credentials. `DELETE /v1/auth/allowed-emails/{email}` resolves
@@ -809,6 +824,7 @@ scopes = ["mcp:read", "mcp:write"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
+project_id = "project-42"
 upstreams = ["github", "quick-shell", "filesystem"]
 services = ["gateway"]
 expose_code_mode = true

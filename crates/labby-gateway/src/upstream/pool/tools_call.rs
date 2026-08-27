@@ -14,7 +14,7 @@ use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::{
     CapabilityCallError, bounded_service_error_text, timed_capability_call,
-    timed_capability_call_str,
+    timed_capability_call_str, timed_capability_call_with_timeout,
 };
 use super::catalog_pagination;
 use super::entries::resolve_request_exposure_policy;
@@ -22,6 +22,7 @@ use super::helpers::{
     DISCOVERY_TIMEOUT, estimate_call_tool_response_size, estimate_response_size, upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
+use super::tool_call_cancel::{call_tool_cancel_aware, call_tool_once_cancel_aware};
 use super::tools::MAX_UPSTREAM_TOOLS;
 
 /// Fail-closed `expose_tools` check for the OAuth subject-scoped call paths.
@@ -157,7 +158,7 @@ pub(super) async fn refresh_tool_header_cache(
         schema_refresh_count,
         "refreshing upstream tool schemas after SEP-2243 header mismatch"
     );
-    match catalog_pagination::list_tools(peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await {
+    match refresh_tool_header_cache_raw(peer, DISCOVERY_TIMEOUT).await {
         Ok(tools) => {
             tracing::info!(
                 surface = "dispatch",
@@ -188,6 +189,15 @@ pub(super) async fn refresh_tool_header_cache(
     }
 }
 
+/// Refresh rmcp's peer-local SEP-2243 schema hint without logs or counters.
+/// The cache is transport compatibility state, never routing authority.
+pub(super) async fn refresh_tool_header_cache_raw(
+    peer: &Peer<RoleClient>,
+    timeout: std::time::Duration,
+) -> Result<Vec<rmcp::model::Tool>, catalog_pagination::CatalogPaginationError> {
+    catalog_pagination::list_tools(peer, timeout, MAX_UPSTREAM_TOOLS).await
+}
+
 pub(super) async fn call_tool_once_with_header_recovery(
     pool: &UpstreamPool,
     peer: &Peer<RoleClient>,
@@ -206,17 +216,41 @@ pub(super) async fn call_tool_once_with_header_recovery(
     }
 }
 
+/// [`call_tool_once_with_header_recovery`] whose RPC cancels upstream if the
+/// returned future is dropped before the response arrives.
+async fn call_tool_once_with_header_recovery_cancel_aware(
+    pool: &UpstreamPool,
+    peer: &Peer<RoleClient>,
+    upstream_name: &str,
+    params: CallToolRequestParams,
+) -> Result<CallToolResponse, ServiceError> {
+    match call_tool_once_cancel_aware(peer, upstream_name, params.clone()).await {
+        Err(error) if is_tool_header_mismatch(&error) => {
+            record_header_mismatch(pool, upstream_name);
+            refresh_tool_header_cache(pool, peer, upstream_name).await?;
+            let result = call_tool_once_cancel_aware(peer, upstream_name, params).await;
+            record_header_retry(pool, upstream_name, &result);
+            result
+        }
+        result => result,
+    }
+}
+
 pub(super) async fn call_tool_with_header_recovery(
     pool: &UpstreamPool,
     peer: &Peer<RoleClient>,
     upstream_name: &str,
     params: CallToolRequestParams,
 ) -> Result<CallToolResult, ServiceError> {
-    match peer.call_tool(params.clone()).await {
+    // Cancel-aware unconditionally: Code Mode reaches the pool through this
+    // helper and abandons the call future on cancellation
+    // (`labby-codemode/src/execute.rs`), so the guard is what stops the
+    // upstream — no token needs threading across the crate boundary.
+    match call_tool_cancel_aware(peer, upstream_name, params.clone()).await {
         Err(error) if is_tool_header_mismatch(&error) => {
             record_header_mismatch(pool, upstream_name);
             refresh_tool_header_cache(pool, peer, upstream_name).await?;
-            let result = peer.call_tool(params).await;
+            let result = call_tool_cancel_aware(peer, upstream_name, params).await;
             record_header_retry(pool, upstream_name, &result);
             result
         }
@@ -225,30 +259,25 @@ pub(super) async fn call_tool_with_header_recovery(
 }
 
 impl UpstreamPool {
-    /// Call an OAuth-subject-scoped tool once, preserving MRTR/task outcomes.
-    pub async fn subject_scoped_call_tool_once(
-        &self,
-        config: &UpstreamConfig,
-        subject: &str,
-        params: CallToolRequestParams,
-    ) -> Result<CallToolResponse, String> {
-        self.subject_scoped_call_tool_once_classified(config, subject, params)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    /// [`Self::subject_scoped_call_tool_once`] while preserving the upstream
-    /// failure class for the MCP proxy.
+    /// Call an OAuth-subject-scoped tool once, preserving MRTR/task outcomes
+    /// and the upstream failure class.
     ///
-    /// A connect failure surfaces as [`CapabilityCallError::Transport`]; like
-    /// the string variant it is NOT recorded against the circuit breaker here
-    /// (subject-scoped connects are per-caller credentials, and the pooled
-    /// upstream connection may be perfectly healthy).
+    /// A connect failure surfaces as [`CapabilityCallError::Transport`] and is
+    /// NOT recorded against the circuit breaker here (subject-scoped connects
+    /// are per-caller credentials, and the pooled upstream connection may be
+    /// perfectly healthy).
+    ///
+    /// `cancel` is the downstream request's token. When it fires the call is
+    /// abandoned and the upstream is sent `notifications/cancelled`, so a tool
+    /// with side effects stops instead of running on for a caller that has
+    /// gone away. `None` is correct only where no downstream request can be
+    /// withdrawn.
     pub async fn subject_scoped_call_tool_once_classified(
         &self,
         config: &UpstreamConfig,
         subject: &str,
         params: CallToolRequestParams,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<CallToolResponse, CapabilityCallError> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
@@ -265,17 +294,19 @@ impl UpstreamPool {
                 message: error.to_string(),
             })?;
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call(
+        timed_capability_call_with_timeout(
             self,
+            self.request_timeout,
             &config.name,
             UpstreamCapability::Tools,
             event,
             start,
-            call_tool_once_with_header_recovery(self, &peer, &config.name, params),
+            call_tool_once_with_header_recovery_cancel_aware(self, &peer, &config.name, params),
             estimate_call_tool_response_size,
             Some(subject),
             |error| format!("upstream call failed: {error}"),
             format!("upstream call timed out after {timeout_ms}ms"),
+            cancel,
         )
         .await
     }
@@ -441,29 +472,22 @@ impl UpstreamPool {
         )
     }
 
-    /// Call a tool once, preserving MRTR `input_required` and task outcomes.
-    pub async fn call_tool_once(
-        &self,
-        upstream_name: &str,
-        params: CallToolRequestParams,
-    ) -> Option<Result<CallToolResponse, String>> {
-        self.call_tool_once_classified(upstream_name, params)
-            .await
-            .map(|result| result.map_err(|error| error.to_string()))
-    }
-
-    /// [`Self::call_tool_once`] while preserving the upstream failure class
-    /// for the MCP proxy (mirrors the private `call_tool_classified` path).
+    /// Call a tool once, preserving MRTR `input_required`/task outcomes and the
+    /// upstream failure class for the MCP proxy.
     ///
     /// Health accounting is owned entirely by `timed_capability_call`: a
     /// [`CapabilityCallError::Mcp`] means the pool recorded SUCCESS (a valid
     /// JSON-RPC error proves the connection is alive); transport-class
     /// failures were already recorded as breaker failures. Callers must NOT
     /// call `record_failure`/`record_success` again for these outcomes.
+    ///
+    /// `cancel` is the downstream request's token — see
+    /// [`Self::subject_scoped_call_tool_once_classified`] for the contract.
     pub async fn call_tool_once_classified(
         &self,
         upstream_name: &str,
         params: CallToolRequestParams,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Option<Result<CallToolResponse, CapabilityCallError>> {
         let start = Instant::now();
         let tool_name = params.name.to_string();
@@ -474,17 +498,24 @@ impl UpstreamPool {
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
         Some(
-            timed_capability_call(
+            timed_capability_call_with_timeout(
                 self,
+                self.request_timeout,
                 upstream_name,
                 UpstreamCapability::Tools,
                 event,
                 start,
-                call_tool_once_with_header_recovery(self, &peer, upstream_name, params),
+                call_tool_once_with_header_recovery_cancel_aware(
+                    self,
+                    &peer,
+                    upstream_name,
+                    params,
+                ),
                 estimate_call_tool_response_size,
                 None,
                 |error| format!("upstream call failed: {error}"),
                 format!("upstream call timed out after {timeout_ms}ms"),
+                cancel,
             )
             .await,
         )
@@ -538,7 +569,7 @@ mod tests {
         let pool = slow_response_pool("slow").await;
 
         let error = pool
-            .call_tool_once_classified("slow", CallToolRequestParams::new("slow.tool"))
+            .call_tool_once_classified("slow", CallToolRequestParams::new("slow.tool"), None)
             .await
             .expect("upstream is connected")
             .expect_err("slow tool call should time out");
@@ -577,7 +608,7 @@ mod tests {
         .await;
 
         let error = pool
-            .call_tool_once_classified("rejecting", CallToolRequestParams::new("reject.tool"))
+            .call_tool_once_classified("rejecting", CallToolRequestParams::new("reject.tool"), None)
             .await
             .expect("upstream is connected")
             .expect_err("application error should reach the caller");
@@ -674,11 +705,16 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
         let response = pool
-            .call_tool_once_classified(upstream_name, CallToolRequestParams::new("header.tool"))
+            .call_tool_once_classified(
+                upstream_name,
+                CallToolRequestParams::new("header.tool"),
+                None,
+            )
             .await
             .expect("upstream is connected")
             .expect("HeaderMismatch should self-heal after one schema refresh");
@@ -784,6 +820,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -870,6 +907,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -965,6 +1003,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1062,6 +1101,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer: peer.clone(),
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1170,6 +1210,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1256,6 +1297,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1336,6 +1378,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 

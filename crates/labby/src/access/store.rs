@@ -1,6 +1,4 @@
 use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -8,9 +6,7 @@ use std::time::Duration;
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 
-use super::authorization::{
-    AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
-};
+use super::authorization::{AuthorizeProjectInput, ProjectPermissionSnapshot};
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
@@ -21,8 +17,6 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) struct AccessStore {
     connection: Arc<Mutex<Connection>>,
     path: Arc<PathBuf>,
-    #[cfg(test)]
-    skill_library_authorizations: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for AccessStore {
@@ -43,8 +37,6 @@ impl AccessStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
-            #[cfg(test)]
-            skill_library_authorizations: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -59,8 +51,6 @@ impl AccessStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             path: Arc::new(path),
-            #[cfg(test)]
-            skill_library_authorizations: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -125,26 +115,6 @@ impl AccessStore {
             .await
     }
 
-    pub(crate) async fn authorize_skill_library(
-        &self,
-        identity: labby_auth::VerifiedIdentity,
-        project_id: String,
-        permission: super::domain::Permission,
-    ) -> AccessStoreResult<LibraryAccessSnapshot> {
-        #[cfg(test)]
-        self.skill_library_authorizations
-            .fetch_add(1, Ordering::Relaxed);
-        self.with_connection(move |connection| {
-            super::authorization::authorize_library(connection, &identity, &project_id, permission)
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn skill_library_authorization_count_for_test(&self) -> usize {
-        self.skill_library_authorizations.load(Ordering::Relaxed)
-    }
-
     pub(crate) async fn authorize_project_management_without_loadout(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -161,7 +131,7 @@ impl AccessStore {
     }
 
     #[cfg(test)]
-    pub(crate) async fn seed_loadout_roles_for_test(&self) -> AccessStoreResult<()> {
+    pub(super) async fn seed_loadout_roles_for_test(&self) -> AccessStoreResult<()> {
         self.execute_test_statement(
             "INSERT INTO principals VALUES
                ('admin-principal','bootstrap-local','user','active',NULL,2,2),

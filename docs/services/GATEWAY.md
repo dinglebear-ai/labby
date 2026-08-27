@@ -596,6 +596,7 @@ Fields:
 | `backend_mcp_path` | Deprecated compatibility field for older configs. New routes should put the path in `backend_url`. |
 | `scopes` | OAuth scopes advertised and enforced for this route. Defaults to `mcp:read` and `mcp:write`. |
 | `health_path` | Optional backend health path used by route test actions. |
+| `target.project_id` | Optional access-control Project binding for a `gateway_subset` target. It supplies project authorization context and is not valid for raw-backend or named-upstream routes. |
 
 Management actions:
 
@@ -639,6 +640,21 @@ labby gateway protected-route add \
   --upstream axon \
   --scope mcp:read \
   --scope mcp:write
+labby gateway protected-route test \
+  --name project-ops \
+  --public-host mcp.example.com \
+  --public-path /project-ops \
+  --gateway-subset \
+  --project-id project-42 \
+  --loadout operations
+labby gateway protected-route add \
+  --name project-ops \
+  --public-host mcp.example.com \
+  --public-path /project-ops \
+  --gateway-subset \
+  --project-id project-42 \
+  --loadout operations \
+  --stage-for-restart
 labby gateway protected-route update syslog \
   --public-host mcp.example.com \
   --public-path /syslog \
@@ -646,6 +662,12 @@ labby gateway protected-route update syslog \
   --enabled false
 labby gateway protected-route remove syslog
 ```
+
+For a gateway-subset update, omitting `--project-id` preserves the existing
+Project binding. Use `--project-id <id>` to replace it or
+`--clear-project-id` to remove it explicitly; an ordinary update never silently
+unbinds the route. Project-bound gateway subsets are staged for restart under
+the same rules as other gateway-subset routes.
 
 Route testing has two layers:
 

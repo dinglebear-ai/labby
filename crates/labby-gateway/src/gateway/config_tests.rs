@@ -80,6 +80,7 @@ fn sample_gateway_subset_route(name: &str, path: &str, host: &str) -> ProtectedM
     route.backend_url = String::new();
     route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
         labby_runtime::gateway_config::ProtectedGatewaySubsetTarget {
+            project_id: None,
             loadout: None,
             upstreams: vec!["gateway-alpha".to_string()],
             services: Vec::new(),

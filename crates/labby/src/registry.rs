@@ -266,6 +266,10 @@ impl labby_gateway::gateway::service_registry::GatewayServiceRegistry for ToolRe
         self.service(name).is_some()
     }
 
+    fn service_description(&self, name: &str) -> Option<&'static str> {
+        self.service(name).map(|service| service.description)
+    }
+
     fn service_actions(
         &self,
         name: &str,

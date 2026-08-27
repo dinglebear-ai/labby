@@ -267,10 +267,7 @@ impl UpstreamPool {
             );
         }
 
-        let stale_connection = {
-            let mut connections = self.connections.write().await;
-            connections.remove(&config.name)
-        };
+        let stale_connection = self.remove_connection_binding(&config.name).await;
         if let Some(connection) = stale_connection {
             connection
                 .shutdown(&config.name, "upstream.reprobe.reconnect")
@@ -294,12 +291,8 @@ impl UpstreamPool {
         )
         .await?;
         let supports_skills = peer_declares_skills(&conn.peer);
-        {
-            let mut connections = self.connections.write().await;
-            connections.insert(config.name.clone(), conn);
-        }
-        self.replace_catalog_tools(config, tools, Some(supports_skills))
-            .await;
+        self.install_connected_tools(config, conn, tools, Some(supports_skills))
+            .await?;
         self.record_success_for(&config.name, UpstreamCapability::Tools)
             .await;
         tracing::info!(

@@ -13,6 +13,8 @@
 //! codemode and upstream branches live in
 //! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
 
+#[cfg(feature = "gateway")]
+use std::time::SystemTime;
 use std::{future::Future, pin::Pin, time::Instant};
 
 use rmcp::ErrorData;
@@ -26,6 +28,8 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::CallbackToolLookup;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::types::UpstreamTool;
+#[cfg(feature = "gateway")]
+use crate::mcp::bound_access::{ProjectExecutionBinding, project_execution_binding};
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
@@ -463,11 +467,176 @@ impl LabMcpServer {
         self.boxed_call_tool_response_impl(request, context).await
     }
 
+    #[cfg(feature = "gateway")]
+    async fn call_project_regular_tool_terminal(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+        binding: Option<(
+            &crate::mcp::bound_access::TransportBoundAccessContext,
+            &labby_auth::VerifiedIdentity,
+        )>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let start = Instant::now();
+        let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
+        let service = request.name.to_string();
+        let subject = self.request_subject_log_tag(context);
+        let actor_key = self.request_actor_key(context);
+        let param_key_count = request.arguments.as_ref().map_or(0, serde_json::Map::len);
+        tracing::info!(
+            surface = "mcp",
+            service,
+            action = "call_tool",
+            subject,
+            actor_key,
+            tool = %service,
+            param_key_count,
+            route = "project_exact_complete",
+            "dispatch start"
+        );
+        let access_context_unavailable = binding.is_none();
+        let result = match (binding, self.gateway_manager.as_deref()) {
+            (Some((transport, identity)), Some(manager)) => {
+                crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
+                    self.access_runtime.as_ref(),
+                    manager,
+                    transport,
+                    identity,
+                    request,
+                )
+                .await
+            }
+            _ => Err(crate::mcp::tool_execution::ToolExecutionResolutionError::Unavailable),
+        };
+        let elapsed_ms = start.elapsed().as_millis();
+        match result {
+            Ok(result) => {
+                self.emit_dispatch_notification(
+                    context,
+                    &service,
+                    "call_tool",
+                    elapsed_ms,
+                    DispatchLogOutcome::Success,
+                )
+                .await;
+                Ok(CallToolResponse::Complete(result))
+            }
+            Err(error) => {
+                use crate::mcp::tool_execution::ToolExecutionResolutionError as E;
+                let (kind, message, extra, level) = match error {
+                    E::Unavailable => (
+                        "not_found",
+                        "Tool is unavailable.",
+                        None,
+                        LoggingLevel::Warning,
+                    ),
+                    E::QueueUnavailable => (
+                        "service_unavailable",
+                        "Tool execution is temporarily unavailable.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Mcp { kind, code } => (
+                        kind,
+                        "Upstream tool rejected the call.",
+                        Some(serde_json::json!({ "upstream_code": code })),
+                        LoggingLevel::Warning,
+                    ),
+                    E::Transport => (
+                        "network_error",
+                        "Upstream tool transport failed.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Protocol
+                    | E::InputRequiredRoundsExceeded
+                    | E::UnsupportedTerminalResponse => (
+                        "upstream_error",
+                        "Upstream tool returned an unsupported response.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Timeout => (
+                        "timeout",
+                        "Upstream tool call timed out.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Cancelled => (
+                        "cancelled",
+                        "Tool execution was cancelled.",
+                        None,
+                        LoggingLevel::Warning,
+                    ),
+                    E::Other => (
+                        "internal_error",
+                        "Tool execution failed.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::TooLarge => (
+                        "response_too_large",
+                        "Upstream tool response was too large.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                };
+                self.emit_dispatch_notification(
+                    context,
+                    &service,
+                    "call_tool",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level,
+                        kind: if access_context_unavailable {
+                            "access_context_unavailable"
+                        } else {
+                            kind
+                        },
+                    },
+                )
+                .await;
+                let envelope = extra.as_ref().map_or_else(
+                    || build_error(&service, "call_tool", kind, message),
+                    |extra| build_error_extra(&service, "call_tool", kind, message, extra),
+                );
+                Ok(CallToolResponse::Complete(error_result_from_envelope(
+                    envelope,
+                )))
+            }
+        }
+    }
+
     async fn call_tool_response_impl_inner(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        #[cfg(feature = "gateway")]
+        match project_execution_binding(&context.extensions, SystemTime::now()) {
+            ProjectExecutionBinding::Legacy => {}
+            ProjectExecutionBinding::Unavailable => {
+                return self
+                    .call_project_regular_tool_terminal(request, &context, None)
+                    .await;
+            }
+            // Project discovery proves only AssetDiscover. Every Bound call enters the exact
+            // AssetUse seam; owned built-ins and synthetics fail closed there until they have
+            // their own exact execution authorization.
+            ProjectExecutionBinding::Bound {
+                transport,
+                identity,
+            } => {
+                return self
+                    .call_project_regular_tool_terminal(
+                        request,
+                        &context,
+                        Some((transport, identity)),
+                    )
+                    .await;
+            }
+        }
+        let project_owned = false;
         if let Some(response) =
             Box::pin(self.destructive_confirmation_response(&request, &context)).await
         {
@@ -478,13 +647,14 @@ impl LabMcpServer {
         {
             return Ok(response);
         }
-        Box::pin(self.call_tool_response_dispatch_impl(request, context)).await
+        Box::pin(self.call_tool_response_dispatch_impl(request, context, project_owned)).await
     }
 
     async fn call_tool_response_dispatch_impl(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
+        project_owned: bool,
     ) -> Result<CallToolResponse, ErrorData> {
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
@@ -1452,6 +1622,23 @@ impl LabMcpServer {
         // unresolved service name is simply not found.
         #[cfg(feature = "gateway")]
         {
+            if project_owned {
+                let elapsed_ms = start.elapsed().as_millis();
+                let envelope =
+                    build_error(&service, "call_tool", "not_found", "Tool is unavailable.");
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    "call_tool",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "not_found",
+                    },
+                )
+                .await;
+                return Ok(error_result_from_envelope(envelope).into());
+            }
             self.boxed_call_tool_upstream_impl(
                 &service,
                 &action,
