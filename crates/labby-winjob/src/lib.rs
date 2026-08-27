@@ -56,12 +56,9 @@
 //!
 //! ## Handle representation
 //!
-//! The job handle is stored and passed as `isize` (the raw `HANDLE` value), not
-//! `HANDLE` itself. In `windows-sys 0.59` `HANDLE` is `*mut c_void`
-//! (`!Send + !Sync`), which would poison the `Send`/`Sync` bounds of any struct
-//! that stores it (and break `lab`'s axum router). `isize` is
-//! `Copy + Send + Sync`; we cast back to `HANDLE` only at the `CloseHandle`
-//! boundary inside `close_job`.
+//! `JobObject` is an opaque, non-cloneable RAII owner. Internally it stores
+//! the raw `HANDLE` value as `NonZeroIsize`, which remains `Send + Sync` without
+//! exposing a copyable handle or requiring unsafe trait implementations.
 //!
 //! On non-Windows targets this crate compiles to an empty library (`lab` only
 //! depends on it under `cfg(windows)`).
@@ -121,139 +118,128 @@ pub enum ProcessLiveness {
     NotFound,
 }
 
+/// Exclusive owner of a Windows Job Object configured to kill its process
+/// tree when this value is dropped.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct JobObject {
+    handle: Option<std::num::NonZeroIsize>,
+    pid: u32,
+}
+
 /// Create a new Windows Job Object, assign the given PID to it, and set
 /// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so every descendant is terminated
 /// when the last handle to the job is closed.
 ///
-/// Returns the job handle as an `isize` (the raw `HANDLE` value), or `0` on
-/// any Win32 failure (logged as a warning but never fatal — the caller falls
-/// back to per-PID kill).
-///
-/// The handle is returned as `isize` rather than `HANDLE` (`*mut c_void`)
-/// deliberately: in `windows-sys 0.59` `HANDLE` is a raw pointer, which is
-/// `!Send + !Sync`. Storing it raw in a struct would poison that struct's
-/// `Send`/`Sync` bounds. `isize` is `Copy + Send + Sync`, so the stored/passed
-/// value crosses thread boundaries cleanly; we cast back to `HANDLE` only at
-/// the `CloseHandle` boundary.
-///
 /// This is a **safe** function: the `unsafe` FFI is fully encapsulated here, so
 /// callers (in `lab`, which forbids unsafe) never write `unsafe`.
 #[cfg(windows)]
-#[must_use]
-pub fn create_job_for_pid(pid: u32) -> isize {
-    // Open the child process with the rights needed to assign it to a job and
-    // to terminate it.
-    let proc_handle = unsafe {
-        OpenProcess(
-            PROCESS_SET_QUOTA | PROCESS_TERMINATE,
-            0, // bInheritHandle = FALSE
-            pid,
-        )
-    };
-    if proc_handle.is_null() || proc_handle == INVALID_HANDLE_VALUE {
-        let error = WinJobError::last("OpenProcess");
-        tracing::warn!(
-            target: "labby_winjob",
-            pid,
-            code = error.code,
-            "OpenProcess failed — job object not created; falling back to per-PID kill"
-        );
-        return 0;
-    }
-
-    let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-    if job.is_null() || job == INVALID_HANDLE_VALUE {
-        let error = WinJobError::last("CreateJobObjectW");
-        tracing::warn!(
-            target: "labby_winjob",
-            pid,
-            code = error.code,
-            "CreateJobObjectW failed — falling back to per-PID kill"
-        );
-        unsafe { CloseHandle(proc_handle) };
-        return 0;
-    }
-
-    // Fresh job: set KILL_ON_JOB_CLOSE directly. A non-zero returned handle
-    // must mean the kill-on-close contract is active.
-    let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    let set_ok = unsafe {
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            std::ptr::addr_of!(info).cast(),
-            u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()).unwrap_or(u32::MAX),
-        )
-    };
-    if set_ok == 0 {
-        let error = WinJobError::last("SetInformationJobObject");
-        tracing::warn!(
-            target: "labby_winjob",
-            code = error.code,
-            pid,
-            "SetInformationJobObject failed — KILL_ON_JOB_CLOSE not set; closing job"
-        );
-        unsafe {
-            CloseHandle(proc_handle);
-            CloseHandle(job);
+impl JobObject {
+    pub fn assign(pid: u32) -> Result<Self, WinJobError> {
+        // Open the child process with the rights needed to assign it to a job and
+        // to terminate it.
+        let proc_handle = unsafe {
+            OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+                0, // bInheritHandle = FALSE
+                pid,
+            )
+        };
+        if proc_handle.is_null() || proc_handle == INVALID_HANDLE_VALUE {
+            let error = WinJobError::last("OpenProcess");
+            return Err(error);
         }
-        return 0;
-    }
 
-    let assigned = unsafe { AssignProcessToJobObject(job, proc_handle) };
-    unsafe { CloseHandle(proc_handle) };
-    if assigned == 0 {
-        let error = WinJobError::last("AssignProcessToJobObject");
-        tracing::warn!(
-            target: "labby_winjob",
-            pid,
-            code = error.code,
-            "AssignProcessToJobObject failed — job created but child not assigned; closing job"
-        );
-        unsafe { CloseHandle(job) };
-        return 0;
-    }
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() || job == INVALID_HANDLE_VALUE {
+            let error = WinJobError::last("CreateJobObjectW");
+            unsafe { CloseHandle(proc_handle) };
+            return Err(error);
+        }
 
-    tracing::debug!(
-        target: "labby_winjob",
-        pid,
-        "process assigned to job object with KILL_ON_JOB_CLOSE"
-    );
-    // Return the raw HANDLE value as isize — Send/Sync-safe to store and pass.
-    job as isize
-}
+        // Fresh job: set KILL_ON_JOB_CLOSE directly. A non-zero returned handle
+        // must mean the kill-on-close contract is active.
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let set_ok = unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(info).cast(),
+                u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+                    .unwrap_or(u32::MAX),
+            )
+        };
+        if set_ok == 0 {
+            let error = WinJobError::last("SetInformationJobObject");
+            unsafe {
+                CloseHandle(proc_handle);
+                CloseHandle(job);
+            }
+            return Err(error);
+        }
 
-/// Close the job object handle, causing the OS to terminate all processes in
-/// the job (including grandchildren) if `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-/// was set.
-///
-/// Takes the handle as `isize` (the `Send`/`Sync`-safe representation stored by
-/// the caller); `0` is the "no job" sentinel and is a no-op. The value is cast
-/// back to `HANDLE` only here, immediately before `CloseHandle`.
-///
-/// Logs warnings on failure but never panics — safe to call from `Drop`.
-///
-/// This is a **safe** function: the `unsafe` FFI is fully encapsulated here.
-#[cfg(windows)]
-pub fn close_job(job: isize, pid: u32) {
-    if job == 0 {
-        return;
-    }
-    let job = job as HANDLE;
-    let ok = unsafe { CloseHandle(job) };
-    if ok == 0 {
-        tracing::warn!(
-            target: "labby_winjob",
-            pid,
-            "CloseHandle(job) failed — descendant processes may have orphaned"
-        );
-    } else {
+        let assigned = unsafe { AssignProcessToJobObject(job, proc_handle) };
+        unsafe { CloseHandle(proc_handle) };
+        if assigned == 0 {
+            let error = WinJobError::last("AssignProcessToJobObject");
+            unsafe { CloseHandle(job) };
+            return Err(error);
+        }
+
         tracing::debug!(
             target: "labby_winjob",
             pid,
+            "process assigned to job object with KILL_ON_JOB_CLOSE"
+        );
+        let handle = std::num::NonZeroIsize::new(job as isize)
+            .expect("successful CreateJobObjectW returned a non-null handle");
+        Ok(Self {
+            handle: Some(handle),
+            pid,
+        })
+    }
+
+    /// Close the job now, synchronously terminating every assigned process.
+    ///
+    /// Explicit shutdown paths use this method so they can report a failed
+    /// `CloseHandle` instead of relying on best-effort Drop diagnostics.
+    pub fn close(mut self) -> Result<(), WinJobError> {
+        self.close_inner()
+    }
+
+    fn close_inner(&mut self) -> Result<(), WinJobError> {
+        let Some(handle) = self.handle else {
+            return Ok(());
+        };
+        let ok = unsafe { CloseHandle(handle.get() as HANDLE) };
+        if ok == 0 {
+            return Err(WinJobError::last("CloseHandle(job)"));
+        }
+        self.handle = None;
+        tracing::debug!(
+            target: "labby_winjob",
+            pid = self.pid,
             "job object handle closed — OS reaping descendant tree"
         );
+        Ok(())
+    }
+}
+
+/// Close the owned handle on drop, causing the OS to terminate all processes
+/// in the job. Failures are logged and never panic.
+#[cfg(windows)]
+impl Drop for JobObject {
+    fn drop(&mut self) {
+        if let Err(error) = self.close_inner() {
+            tracing::warn!(
+                target: "labby_winjob",
+                pid = self.pid,
+                operation = error.operation,
+                code = error.code,
+                "CloseHandle(job) failed — descendant processes may have orphaned"
+            );
+        }
     }
 }
 
