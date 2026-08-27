@@ -66,6 +66,18 @@ pub(crate) fn render(uri: &str, message: impl Into<String>) -> ErrorData {
     )
 }
 
+#[must_use]
+#[cfg(feature = "gateway")]
+pub(crate) fn fetch(uri: &str) -> ErrorData {
+    let context = context(uri);
+    internal_agent_error(
+        "upstream_error",
+        format!("Resource `{uri}` could not be fetched."),
+        None,
+        &context,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

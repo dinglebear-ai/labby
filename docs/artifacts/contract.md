@@ -110,3 +110,14 @@ The adapter may add Artifact metadata and provenance, but it may not rewrite Ski
 ## Contract changes
 
 Any incompatible change requires a new schema identifier and coordinated fixture/version work across Depot, Labby, Axon, and consuming products. Do not mutate v1 in place.
+
+
+## Phase 2 local lifecycle contract
+
+1. `snapshot_workspace` MUST snapshot only the canonical editable workspace, honor the existing traversal/component/file/package limits, and run under the Artifact mutation lock.
+2. Content identity MUST be computed independently of parent linkage. If content already names an immutable revision, Labby MUST reuse that exact revision and MUST NOT rewrite its metadata.
+3. `ArtifactRevisionDiff` MUST be deterministic by normalized path and MUST not mutate either revision.
+4. `ArtifactProvider` is an acquisition seam only. A provider MUST NOT write local Artifact state. `ArtifactAcquisition` MUST validate ArtifactInterchange v1, one payload per file component, local byte budgets, exact sizes, and SHA-256 digests before it is trusted by lifecycle operations.
+5. `ArtifactUpdatePlan` is evidence and intent, not authority to apply. Creating a plan MUST leave the local head, workspace, lineage, and stored bytes unchanged.
+6. Mutable head publication MUST reject an unexpected base revision and MUST use atomic replacement on supported platforms. Existing symlink substitutions remain invalid.
+7. These local lifecycle/provider types do not change the frozen `dinglebear.artifact-interchange/v1` wire fields owned by the cross-product contract.

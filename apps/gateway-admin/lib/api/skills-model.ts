@@ -19,6 +19,7 @@ export interface UpstreamSkill {
 export interface UpstreamSkillRejection {
   uri: string
   reason: string
+  detail?: string
 }
 
 export interface UpstreamSkillsRow {
@@ -47,6 +48,22 @@ export type SkillsRowStatus =
   | 'excluded'
   | 'empty'
   | 'ok'
+
+export type SkillsInventoryFilter = 'all' | 'attention' | 'ready' | 'not-participating'
+
+export interface SkillsReadiness {
+  participating: number
+  ready: number
+  needs_attention: number
+  not_participating: number
+}
+
+export interface SkillsRejectionGroup {
+  reason: string
+  label: string
+  guidance: string
+  items: UpstreamSkillRejection[]
+}
 
 /**
  * The single most important thing to tell an operator about a row.
@@ -110,6 +127,96 @@ export function sortSkillsRows(rows: UpstreamSkillsRow[]): UpstreamSkillsRow[] {
     const bySeverity = severity[skillsRowStatus(a)] - severity[skillsRowStatus(b)]
     return bySeverity !== 0 ? bySeverity : a.upstream.localeCompare(b.upstream)
   })
+}
+
+export function isSkillsParticipant(row: UpstreamSkillsRow): boolean {
+  return row.enabled && row.supports_skills !== false
+}
+
+export function skillsReadiness(rows: UpstreamSkillsRow[]): SkillsReadiness {
+  return rows.reduce<SkillsReadiness>((result, row) => {
+    if (!isSkillsParticipant(row)) {
+      result.not_participating += 1
+    } else if (skillsRowStatus(row) === 'ok' || skillsRowStatus(row) === 'empty') {
+      result.participating += 1
+      result.ready += 1
+    } else {
+      result.participating += 1
+      result.needs_attention += 1
+    }
+    return result
+  }, { participating: 0, ready: 0, needs_attention: 0, not_participating: 0 })
+}
+
+export function filterSkillsRows(
+  rows: UpstreamSkillsRow[],
+  query: string,
+  filter: SkillsInventoryFilter,
+): UpstreamSkillsRow[] {
+  const needle = query.trim().toLocaleLowerCase()
+  return rows.filter((row) => {
+    const status = skillsRowStatus(row)
+    const matchesFilter = filter === 'all'
+      || (filter === 'attention' && isSkillsParticipant(row) && status !== 'ok' && status !== 'empty')
+      || (filter === 'ready' && isSkillsParticipant(row) && (status === 'ok' || status === 'empty'))
+      || (filter === 'not-participating' && !isSkillsParticipant(row))
+    if (!matchesFilter) return false
+    if (!needle) return true
+    return [
+      row.upstream,
+      skillsRowSummary(row),
+      ...row.skills.flatMap((skill) => [skill.name, skill.description ?? '', skill.uri]),
+      ...row.rejected.flatMap((item) => [item.reason, item.detail ?? '', item.uri]),
+    ].some((value) => value.toLocaleLowerCase().includes(needle))
+  })
+}
+
+const REJECTION_HELP: Record<string, { label: string; guidance: string }> = {
+  invalid_frontmatter: {
+    label: 'Invalid manifest frontmatter',
+    guidance: 'Update SKILL.md YAML to match SEP-2640: name and description are required strings; allowed-tools is a space-separated string; metadata values must be strings.',
+  },
+  invalid_skill_uri: {
+    label: 'Invalid skill URI',
+    guidance: 'Serve the manifest from a canonical skill resource URI ending in /SKILL.md.',
+  },
+  missing_manifest: {
+    label: 'Manifest missing',
+    guidance: 'Publish a readable SKILL.md resource for the advertised skill URI.',
+  },
+  invalid_digest: {
+    label: 'Invalid resource digest',
+    guidance: 'Publish a supported content digest for every manifest resource.',
+  },
+  manifest_uri_out_of_namespace: {
+    label: 'Resource outside skill namespace',
+    guidance: 'Keep every manifest URI within the advertised skill directory and origin.',
+  },
+  manifest_missing_skill_md: {
+    label: 'SKILL.md missing from manifest',
+    guidance: 'Include the skill URI itself in the manifest with the digest of SKILL.md.',
+  },
+  manifest_duplicate_uri: {
+    label: 'Duplicate manifest resource',
+    guidance: 'List every resource URI exactly once in the skill manifest.',
+  },
+  manifest_too_large: {
+    label: 'Manifest resource limit exceeded',
+    guidance: 'Reduce the skill package to at most 64 manifest resources.',
+  },
+}
+
+export function groupSkillRejections(rejected: UpstreamSkillRejection[]): SkillsRejectionGroup[] {
+  const groups = new Map<string, UpstreamSkillRejection[]>()
+  for (const item of rejected) groups.set(item.reason, [...(groups.get(item.reason) ?? []), item])
+  return [...groups.entries()]
+    .map(([reason, items]) => ({
+      reason,
+      label: REJECTION_HELP[reason]?.label ?? reason.replaceAll('_', ' '),
+      guidance: REJECTION_HELP[reason]?.guidance ?? 'Review the validation detail and correct the upstream manifest before refreshing.',
+      items,
+    }))
+    .sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label))
 }
 
 /** Compact cache age for display. */

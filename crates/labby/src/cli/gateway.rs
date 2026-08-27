@@ -175,6 +175,7 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
             command: GatewayMcpCommand::List
                 | GatewayMcpCommand::Enable(_)
                 | GatewayMcpCommand::Disable(_)
+                | GatewayMcpCommand::Restart(_)
                 | GatewayMcpCommand::Cleanup(_)
                 | GatewayMcpCommand::Auth(GatewayMcpAuthArgs {
                     command: GatewayMcpAuthCommand::Status(_) | GatewayMcpAuthCommand::Clear(_),
@@ -325,6 +326,17 @@ mod tests {
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "list",]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "clients", "list",]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "enable", "fixture-http",]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "mcp",
+                "restart",
+                "fixture-http",
+                "--aggressive",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "lab",
@@ -594,10 +606,31 @@ mod tests {
     }
 
     #[test]
-    fn gateway_usage_metrics_parses_with_upstream_filter() {
-        let cli =
-            Cli::try_parse_from(["lab", "gateway", "usage", "metrics", "--upstream", "github"])
-                .expect("gateway usage metrics parses");
+    fn gateway_usage_metrics_parses_complete_window_filters() {
+        let cli = Cli::try_parse_from([
+            "lab",
+            "gateway",
+            "usage",
+            "metrics",
+            "--upstream",
+            "github",
+            "--tool",
+            "github::search_repos",
+            "--actor",
+            "codex",
+            "--outcome",
+            "failed",
+            "--search",
+            "timeout",
+            "--bucket-count",
+            "24",
+            "--timezone",
+            "America/New_York",
+            "--timezone-offset-minutes",
+            "-240",
+            "--include-facets",
+        ])
+        .expect("gateway usage metrics parses");
 
         let Command::Gateway(args) = cli.command else {
             panic!("expected gateway command");
@@ -610,12 +643,38 @@ mod tests {
         };
 
         assert_eq!(metrics.upstream.as_deref(), Some("github"));
+        assert_eq!(metrics.tool.as_deref(), Some("github::search_repos"));
+        assert_eq!(metrics.actor.as_deref(), Some("codex"));
+        assert_eq!(metrics.outcome.as_deref(), Some("failed"));
+        assert_eq!(metrics.search.as_deref(), Some("timeout"));
+        assert_eq!(metrics.bucket_count, Some(24));
+        assert_eq!(metrics.timezone.as_deref(), Some("America/New_York"));
+        assert_eq!(metrics.timezone_offset_minutes, Some(-240));
+        assert!(metrics.include_facets);
     }
 
     #[test]
-    fn gateway_usage_calls_parses_limit_and_offset() {
+    fn gateway_usage_calls_parses_filters_and_cursor() {
         let cli = Cli::try_parse_from([
-            "lab", "gateway", "usage", "calls", "--limit", "50", "--offset", "10",
+            "lab",
+            "gateway",
+            "usage",
+            "calls",
+            "--upstream",
+            "github",
+            "--tool",
+            "github::search_repos",
+            "--actor",
+            "codex",
+            "--outcome",
+            "failed",
+            "--search",
+            "timeout",
+            "--limit",
+            "50",
+            "--cursor",
+            "1000:42",
+            "--include-total",
         ])
         .expect("gateway usage calls parses");
 
@@ -629,8 +688,15 @@ mod tests {
             panic!("expected gateway usage calls command");
         };
 
+        assert_eq!(calls.upstream.as_deref(), Some("github"));
+        assert_eq!(calls.tool.as_deref(), Some("github::search_repos"));
+        assert_eq!(calls.actor.as_deref(), Some("codex"));
+        assert_eq!(calls.outcome.as_deref(), Some("failed"));
+        assert_eq!(calls.search.as_deref(), Some("timeout"));
         assert_eq!(calls.limit, Some(50));
-        assert_eq!(calls.offset, Some(10));
+        assert_eq!(calls.cursor.as_deref(), Some("1000:42"));
+        assert!(calls.include_total);
+        assert_eq!(calls.offset, None);
     }
 
     #[test]
@@ -729,6 +795,12 @@ mod tests {
             "https://lab.example.com/auth/upstream/callback".to_string(),
         );
 
+        // Building a real manager runs `LabConfigStore::set_process_code_mode_enabled`,
+        // which writes the process-wide Code Mode atomic. Hold the same lock the
+        // Code Mode tests use so this does not clobber their setting mid-run —
+        // `cargo test` runs these in parallel. The guard also restores the
+        // previous value on drop.
+        let _code_mode_guard = crate::config::process_code_mode_test_guard();
         let manager = build_manager_with_upstream_oauth_runtime(&config, true, Some(oauth_runtime))
             .await
             .expect("build gateway manager");

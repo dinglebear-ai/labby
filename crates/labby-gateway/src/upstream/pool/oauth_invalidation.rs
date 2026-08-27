@@ -56,7 +56,7 @@ impl UpstreamPool {
                 .is_some_and(|cached| cached == subject);
             if matches {
                 self.generic_oauth_subjects.write().await.remove(upstream);
-                self.connections.write().await.remove(upstream)
+                self.remove_connection_binding(upstream).await
             } else {
                 None
             }
@@ -144,17 +144,14 @@ impl UpstreamPool {
                 .filter(|name| upstreams.contains(name.as_str()))
                 .cloned()
                 .collect::<Vec<_>>();
-            let mut provenance = self.generic_oauth_subjects.write().await;
-            let mut connections = self.connections.write().await;
-            names
-                .into_iter()
-                .filter_map(|name| {
-                    provenance.remove(&name);
-                    connections
-                        .remove(&name)
-                        .map(|connection| (name, connection))
-                })
-                .collect::<Vec<_>>()
+            let mut removed = Vec::new();
+            for name in names {
+                self.generic_oauth_subjects.write().await.remove(&name);
+                if let Some(connection) = self.remove_connection_binding(&name).await {
+                    removed.push((name, connection));
+                }
+            }
+            removed
         };
         let relay_connections = {
             let mut cache = self.relay_connections.write().await;

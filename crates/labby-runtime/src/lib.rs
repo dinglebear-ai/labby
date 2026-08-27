@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Surface-neutral contracts, DTOs, and helpers shared across the Lab gateway
+//! Surface-neutral contracts, DTOs, and helpers shared across the Labby gateway
 //! extraction crates (`labby-codemode`, `labby-gateway`, `labby`).
 //!
 //! It owns serialization-stable gateway configuration DTOs plus generic helper
@@ -27,6 +27,8 @@ pub mod error;
 pub mod gateway_config;
 pub mod helpers;
 pub mod path_safety;
+/// Versioned Phabby/Depot delivery wire contracts and fail-closed validation.
+pub mod phabby_delivery;
 pub mod redact;
 pub mod skills;
 

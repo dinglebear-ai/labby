@@ -225,6 +225,39 @@ pub struct GatewayUsageMetricsArgs {
     pub until_unix: Option<i64>,
     #[arg(long)]
     pub upstream: Option<String>,
+    /// Restrict to one qualified upstream::tool target.
+    #[arg(long)]
+    pub tool: Option<String>,
+    /// Restrict to one capability family.
+    #[arg(long)]
+    pub capability: Option<String>,
+    /// Restrict to one operation name.
+    #[arg(long)]
+    pub operation: Option<String>,
+    /// Restrict by OAuth subject scoping (`true` or `false`).
+    #[arg(long)]
+    pub subject_scoped: Option<bool>,
+    /// Restrict to one actor subject.
+    #[arg(long)]
+    pub actor: Option<String>,
+    /// Restrict to one outcome; failed matches every non-ok outcome.
+    #[arg(long)]
+    pub outcome: Option<String>,
+    /// Case-insensitive search across target, operation, actor, and outcome.
+    #[arg(long)]
+    pub search: Option<String>,
+    /// Return this many complete-window time buckets (max 168).
+    #[arg(long)]
+    pub bucket_count: Option<usize>,
+    /// IANA zone name for DST-correct local-hour aggregation.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Minutes east of UTC fallback when --timezone is omitted (-1440 to 1440).
+    #[arg(long, allow_hyphen_values = true)]
+    pub timezone_offset_minutes: Option<i32>,
+    /// Include stable facets; errors if any facet exceeds 1000 values.
+    #[arg(long)]
+    pub include_facets: bool,
 }
 
 #[derive(Debug, Args)]
@@ -235,6 +268,27 @@ pub struct GatewayUsageCallsArgs {
     pub until_unix: Option<i64>,
     #[arg(long)]
     pub upstream: Option<String>,
+    /// Restrict to one qualified upstream::tool target.
+    #[arg(long)]
+    pub tool: Option<String>,
+    /// Restrict to one capability family.
+    #[arg(long)]
+    pub capability: Option<String>,
+    /// Restrict to one operation name.
+    #[arg(long)]
+    pub operation: Option<String>,
+    /// Restrict by OAuth subject scoping (`true` or `false`).
+    #[arg(long)]
+    pub subject_scoped: Option<bool>,
+    /// Restrict to one actor subject.
+    #[arg(long)]
+    pub actor: Option<String>,
+    /// Restrict to one outcome; failed matches every non-ok outcome.
+    #[arg(long)]
+    pub outcome: Option<String>,
+    /// Case-insensitive search across target, operation, actor, and outcome.
+    #[arg(long)]
+    pub search: Option<String>,
     #[arg(long)]
     pub limit: Option<usize>,
     /// Continue from the opaque cursor returned by the previous page.
@@ -544,6 +598,12 @@ pub struct GatewayProtectedRouteUpdateArgs {
     /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
+    /// Bind this gateway subset to an access-control project.
+    #[arg(long, conflicts_with = "clear_project_id")]
+    pub project_id: Option<String>,
+    /// Explicitly remove the existing access-control project binding.
+    #[arg(long, conflicts_with = "project_id")]
+    pub clear_project_id: bool,
     /// Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields.
     #[arg(long, conflicts_with_all = ["target_upstream", "target_service", "expose_code_mode"])]
     pub loadout: Option<String>,
@@ -584,6 +644,9 @@ pub struct GatewayProtectedRouteUpsertArgs {
     /// Expose a scoped Lab gateway MCP surface instead of proxying one backend.
     #[arg(long)]
     pub gateway_subset: bool,
+    /// Bind this gateway subset to an access-control project.
+    #[arg(long)]
+    pub project_id: Option<String>,
     /// Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields.
     #[arg(long, conflicts_with_all = ["target_upstream", "target_service", "expose_code_mode"])]
     pub loadout: Option<String>,
@@ -631,6 +694,8 @@ pub enum GatewayMcpCommand {
     Enable(GatewayMcpLifecycleArgs),
     /// Disable an upstream MCP server and optionally clean up running processes.
     Disable(GatewayMcpLifecycleArgs),
+    /// Replace one enabled upstream MCP connection and clean up stale runtime processes.
+    Restart(GatewayMcpRestartArgs),
     /// Kill or preview running processes associated with one upstream MCP server.
     Cleanup(GatewayMcpCleanupArgs),
 }
@@ -690,4 +755,13 @@ pub struct GatewayMcpCleanupArgs {
     pub aggressive: bool,
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayMcpRestartArgs {
+    /// Name of the enabled upstream MCP server to reconnect.
+    pub name: String,
+    /// Use broader host-wide process matching when cleaning up the old runtime.
+    #[arg(long, default_value_t = false)]
+    pub aggressive: bool,
 }

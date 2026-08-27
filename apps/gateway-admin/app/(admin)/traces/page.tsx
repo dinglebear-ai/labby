@@ -87,6 +87,14 @@ export default function TracesPage() {
           stats={heroStats}
         />
 
+        <DashboardPanel title="What a trace contains" icon={<Activity className="size-4" />}>
+          <p className="text-sm text-aurora-text-muted">
+            Cached control-plane reads normally contain only <code>dispatch start</code> and <code>dispatch ok</code>.
+            Calls that cross an MCP boundary add correlated <code>upstream.request.start</code> and finish/error events;
+            Code Mode runs also add execution and per-call events. Parameters and identities stay redacted.
+          </p>
+        </DashboardPanel>
+
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
           <DashboardPanel
             title="Request flow"

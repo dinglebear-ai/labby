@@ -82,26 +82,16 @@ pub struct UpstreamRuntimeOwner {
 /// Runtime metadata for process-backed upstream connections.
 ///
 /// On Unix, `pgid` holds the process group id used for `killpg` reaping.
-/// On Windows, `job_handle` holds the raw value of a Windows Job Object
-/// `HANDLE` (stored as `isize`) with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+/// On Windows, `job` owns a Windows Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
 /// set; closing it terminates the entire descendant tree. Both fields serve
 /// the same role — each is only populated on its respective platform.
-///
-/// `job_handle` is `isize`, not `HANDLE`, deliberately: in `windows-sys 0.59`
-/// `HANDLE` is `*mut c_void` (`!Send + !Sync`). Storing it raw would poison
-/// `AppState`'s `Send`/`Sync` bounds and break the axum router (the cascade of
-/// `Router<AppState>` trait-bound errors). `isize` is `Copy + Send + Sync`, so
-/// the struct stays `Send + Sync` with no unsafe trait impls. The value is cast
-/// back to `HANDLE` only at the `CloseHandle` boundary inside `close_job`.
 ///
 /// Cloning runtime metadata deliberately does not clone the Windows Job Object
 /// handle ownership. Cloned metadata is used for logging and shutdown bookkeeping
 /// only; the original value remains the authoritative owner and is closed once.
 ///
-/// On Windows, `job_handle` zero-initialises to `0` via `#[derive(Default)]`.
-/// `close_job` treats `0` as the "no job" sentinel, so default-constructed
-/// instances (HTTP/WebSocket/in-process connections that never own a Job
-/// Object) are safe. Only stdio-spawned connections have a non-zero handle.
+/// Default-constructed instances own no job. Only stdio-spawned connections
+/// can contain one.
 #[derive(Debug, Default)]
 pub struct UpstreamRuntimeMetadata {
     pub pid: Option<u32>,
@@ -110,12 +100,9 @@ pub struct UpstreamRuntimeMetadata {
     /// to the exact child instance.
     pub generation: Option<u64>,
     pub pgid: Option<u32>,
-    /// Windows Job Object handle, stored as `isize` (Send/Sync-safe). `0`
-    /// (the `#[derive(Default)]` value) means "no job". Non-zero only for
-    /// stdio-spawned connections. Owned here; closed in
-    /// `UpstreamConnection::Drop` and `shutdown()` via `close_job`.
+    /// Opaque RAII owner for a Windows Job Object.
     #[cfg(windows)]
-    pub(crate) job_handle: isize,
+    pub(crate) job: Option<labby_winjob::JobObject>,
     pub started_at: Option<SystemTime>,
     pub origin: Option<String>,
     pub owner: Option<UpstreamRuntimeOwner>,
@@ -128,7 +115,7 @@ impl Clone for UpstreamRuntimeMetadata {
             generation: self.generation,
             pgid: self.pgid,
             #[cfg(windows)]
-            job_handle: 0,
+            job: None,
             started_at: self.started_at,
             origin: self.origin.clone(),
             owner: self.owner.clone(),
@@ -142,6 +129,15 @@ pub enum ToolExposurePolicy {
     All,
     AllowList(Vec<ToolPattern>),
 }
+
+/// Runtime exposure policy applied to one upstream's validated Agent Skills.
+///
+/// This is deliberately a distinct capability type even though the legacy
+/// `expose_skills` syntax currently compiles through the shared name matcher.
+/// Keeping the type distinct prevents tool-only assumptions from leaking into
+/// provider, provenance, requirement, and loadout rules as this policy grows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillExposurePolicy(ToolExposurePolicy);
 
 /// One user-provided tool pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +185,42 @@ impl ToolExposurePolicy {
                     .then(|| pattern.as_str().to_string())
             }),
         }
+    }
+}
+
+impl SkillExposurePolicy {
+    pub fn from_optional(patterns: Option<Vec<String>>) -> Result<Self, String> {
+        ToolExposurePolicy::from_optional(patterns).map(Self)
+    }
+
+    pub fn from_patterns(patterns: Vec<String>) -> Result<Self, String> {
+        ToolExposurePolicy::from_patterns(patterns).map(Self)
+    }
+
+    #[must_use]
+    pub fn all() -> Self {
+        Self(ToolExposurePolicy::All)
+    }
+
+    #[must_use]
+    pub fn matches(&self, skill_name: &str) -> bool {
+        self.0.matches(skill_name)
+    }
+
+    #[must_use]
+    pub fn matched_by(&self, skill_name: &str) -> Option<String> {
+        self.0.matched_by(skill_name)
+    }
+
+    #[must_use]
+    pub fn is_unrestricted(&self) -> bool {
+        matches!(self.0, ToolExposurePolicy::All)
+    }
+}
+
+impl From<ToolExposurePolicy> for SkillExposurePolicy {
+    fn from(policy: ToolExposurePolicy) -> Self {
+        Self(policy)
     }
 }
 
@@ -329,7 +361,7 @@ pub struct UpstreamEntry {
     /// `pool::entries::prompt_exposed`.
     pub prompt_exposure_policy: ToolExposurePolicy,
     /// Exposure policy for this upstream's Agent Skills (`expose_skills`).
-    pub skill_exposure_policy: ToolExposurePolicy,
+    pub skill_exposure_policy: SkillExposurePolicy,
     /// Whether this upstream's Agent Skills are trusted for downstream proxying.
     pub proxy_skills: bool,
     /// Whether the most recent MCP initialize handshake advertised the Skills extension.
@@ -344,7 +376,8 @@ pub struct UpstreamEntry {
     pub prompt_count: usize,
     /// Last successfully discovered upstream resource count.
     pub resource_count: usize,
-    /// Number of validated skills last enumerated from this upstream (SEP-2640).
+    /// Number of skill candidates observed during the last successful `skills/list` walk,
+    /// before Labby validation or exposure policy is applied.
     pub skill_count: usize,
     /// Cached validated skill names from the last successful skills/list walk.
     pub skill_names: Vec<String>,
@@ -381,7 +414,7 @@ pub struct UpstreamEntry {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::{ToolExposurePolicy, wildcard_matches};
+    use super::{SkillExposurePolicy, ToolExposurePolicy, wildcard_matches};
 
     #[test]
     fn exact_and_wildcard_patterns_match_tool_names() {
@@ -399,6 +432,29 @@ mod tests {
     #[test]
     fn missing_policy_defaults_to_all() {
         let policy = ToolExposurePolicy::from_optional(None).expect("policy");
+        assert!(policy.matches("anything_at_all"));
+    }
+
+    #[test]
+    fn skill_policy_preserves_legacy_pattern_semantics_behind_a_distinct_type() {
+        let policy = SkillExposurePolicy::from_optional(Some(vec![
+            "review-*".to_string(),
+            "deploy".to_string(),
+        ]))
+        .expect("skill policy");
+
+        assert!(!policy.is_unrestricted());
+        assert!(policy.matches("review-pr"));
+        assert!(policy.matches("deploy"));
+        assert!(!policy.matches("delete-repository"));
+        assert_eq!(policy.matched_by("review-pr").as_deref(), Some("review-*"));
+    }
+
+    #[test]
+    fn missing_skill_policy_preserves_the_existing_expose_all_default() {
+        let policy = SkillExposurePolicy::from_optional(None).expect("skill policy");
+
+        assert!(policy.is_unrestricted());
         assert!(policy.matches("anything_at_all"));
     }
 

@@ -23,7 +23,17 @@ function targetFor(platform = process.platform, arch = process.arch) {
     };
   }
 
-  throw new Error(`Unsupported platform ${platform}/${arch}. Supported targets: linux/x64, win32/x64.`);
+  if (platform === "darwin" && arch === "arm64") {
+    return {
+      asset: "lab-aarch64-apple-darwin.tar.gz",
+      binary: "labby",
+      archiveType: "tar.gz",
+    };
+  }
+
+  throw new Error(
+    `Unsupported platform ${platform}/${arch}. Supported targets: linux/x64, darwin/arm64, win32/x64.`,
+  );
 }
 
 function releaseVersion(env = process.env) {

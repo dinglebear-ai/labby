@@ -6,12 +6,13 @@
  *   - devices / nodes   → `fetchFleetDevices()`  (existing)
  *   - activity metrics  → `fetchDashboardMetrics()` (this module's shape)
  *
- * Activity metrics combine the server-aggregated `gateway.usage.metrics`
- * result with bounded persisted rows from `gateway.usage.calls`. Dimensions
- * the gateway does not record are identified by `DashboardMetrics.collected`.
+ * Dashboard analytics come from complete-window SQL aggregates returned by
+ * `gateway.usage.metrics`; bounded `gateway.usage.calls` pages are reserved for
+ * recent-call explorers and detail drawers. Dimensions the gateway does not
+ * record are identified by `DashboardMetrics.collected`.
  */
 
-/** Rolling activity window. `7d` is the log-store retention ceiling. */
+/** Rolling activity windows exposed by the web console. Durable retention is 30 days. */
 export const METRICS_WINDOWS = ['1h', '24h', '7d'] as const
 export type MetricsWindow = (typeof METRICS_WINDOWS)[number]
 
@@ -83,8 +84,8 @@ export interface DashboardMetrics {
     surfaces: boolean
     fan_out: boolean
     actor_kinds: boolean
-    /** False when row-derived panels are based on the bounded call-page sample. */
-    complete_call_rows: boolean
+    /** True when durable dashboard analytics cover the complete selected window. */
+    complete_window_analytics: boolean
   }
 
   tool_calls: {
@@ -221,6 +222,8 @@ export interface ToolCallRecord {
   ts: number
   tool: string
   action: string | null
+  /** Gateway capability family for the target, when durably collected. */
+  capability?: string
   agent_id: string
   agent_label: string
   agent_kind: 'agent' | 'device'
@@ -271,13 +274,23 @@ export interface AgentDetail {
 /** Tool-call explorer filters. */
 export interface ToolCallQuery {
   window: MetricsWindow
+  /** Optional precise time bounds for chart-bucket drill-downs. */
+  since_ms?: number
+  until_ms?: number
+  upstream?: string
   tool?: string
+  capability?: string
+  operation?: string
+  subject_scoped?: boolean
   agent?: string
   ip?: string
   outcome?: CallOutcome
+  error_kind?: string
   surface?: CallSurface
   search?: string
   limit?: number
+  cursor?: string
+  /** Mock-only compatibility for older tests; real usage uses cursor pagination. */
   offset?: number
 }
 
@@ -286,6 +299,18 @@ export interface ToolCallPage {
   calls: ToolCallRecord[]
   total: number
   filtered: number
+  next_cursor?: string | null
+  analytics: {
+    failed: number
+    avg_elapsed_ms: number
+    p50_elapsed_ms: number
+    p95_elapsed_ms: number
+    p99_elapsed_ms: number
+    peak_per_min: number
+    avg_per_min: number
+    busiest_hour: number
+    hourly: HourBucket[]
+  }
   facets: ToolCallFacets
   collected: {
     actors: boolean
@@ -296,8 +321,13 @@ export interface ToolCallPage {
 }
 
 export interface ToolCallFacets {
+  upstreams: string[]
   tools: string[]
+  capabilities: string[]
+  operations: string[]
+  subject_scopes: boolean[]
   agents: ToolCallAgentFacet[]
+  outcomes: string[]
   ips: string[]
   surfaces: string[]
 }

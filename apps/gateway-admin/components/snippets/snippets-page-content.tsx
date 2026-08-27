@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { toast } from 'sonner'
 import {
   ArrowDown,
   ArrowUp,
@@ -14,7 +15,9 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Trash2,
 } from 'lucide-react'
+import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { Button } from '@/components/ui/button'
@@ -235,6 +238,8 @@ export function SnippetsPageContent() {
   const [createBody, setCreateBody] = React.useState('async () => {\n  return { ok: true }\n}')
   const [createError, setCreateError] = React.useState<string | null>(null)
   const [creating, setCreating] = React.useState(false)
+  const [removeConfirmKey, setRemoveConfirmKey] = React.useState<string | null>(null)
+  const [removing, setRemoving] = React.useState(false)
 
   const reload = React.useCallback(async () => {
     setLoading(true)
@@ -380,6 +385,48 @@ export function SnippetsPageContent() {
       setCreateError(errorMessage(err))
     } finally {
       setCreating(false)
+    }
+  }
+
+  const removeConfirmSnippet = removeConfirmKey
+    ? (snippets.find((snippet) => snippetKey(snippet) === removeConfirmKey) ?? null)
+    : null
+
+  // Removal reports through a toast, not `actionState`. Every other action on
+  // this page reports inside the selected snippet's detail row, which is right
+  // for them because their subject still exists afterwards. Removal destroys
+  // its own subject: `reload` moves the selection to a different snippet, or to
+  // null when that was the last one — so a detail-row message lands under an
+  // unrelated snippet or renders nowhere at all. A toast also sidesteps the
+  // original bug directly, since it portals above the confirmation dialog's
+  // modal overlay instead of behind it. This matches how the gateways page
+  // reports the same action (`toast.success('Server removed successfully')`).
+  const confirmRemove = async () => {
+    const snippet = removeConfirmSnippet
+    if (!snippet) {
+      setRemoveConfirmKey(null)
+      return
+    }
+    setRemoving(true)
+    try {
+      const result = await snippetsApi.remove(snippet.name)
+      // The backend signals refusal by throwing, so `removed: false` is not
+      // reachable today — but reporting "Removed X" without looking would be
+      // the same unverified-success bug this page's Save flow already had.
+      // Read it before `reload`, which can fail on its own and must not be
+      // able to turn a completed removal into a "Remove failed".
+      const removed = result.removed
+      await reload()
+      if (removed) {
+        toast.success(`Removed ${snippet.name}`)
+      } else {
+        toast.error(`${snippet.name} was not removed.`)
+      }
+    } catch (err) {
+      toast.error(`Remove failed: ${errorMessage(err)}`)
+    } finally {
+      setRemoveConfirmKey(null)
+      setRemoving(false)
     }
   }
 
@@ -765,6 +812,15 @@ export function SnippetsPageContent() {
                               )
                             }
                           />
+                          {snippet.source !== 'builtin' ? (
+                            <DetailButton
+                              label="Remove"
+                              icon={<Trash2 size={11} />}
+                              disabled={running !== null}
+                              danger
+                              onClick={() => setRemoveConfirmKey(snippetKey(snippet))}
+                            />
+                          ) : null}
                         </div>
 
                         <div
@@ -1020,6 +1076,17 @@ export function SnippetsPageContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ActionConfirmationDialog
+        open={removeConfirmKey !== null}
+        title="Remove snippet?"
+        description={`This permanently deletes ${removeConfirmSnippet?.name ?? 'this snippet'} from your user snippets. This cannot be undone.`}
+        confirmLabel="Remove snippet"
+        busy={removing}
+        onOpenChange={(open) => {
+          if (!open) setRemoveConfirmKey(null)
+        }}
+        onConfirm={() => void confirmRemove()}
+      />
     </>
   )
 }
@@ -1031,6 +1098,7 @@ function DetailButton({
   busy,
   disabled,
   primary,
+  danger,
 }: {
   label: string
   icon: React.ReactNode
@@ -1038,6 +1106,7 @@ function DetailButton({
   busy?: boolean
   disabled?: boolean
   primary?: boolean
+  danger?: boolean
 }) {
   return (
     <button
@@ -1053,11 +1122,19 @@ function DetailButton({
         borderRadius: 8,
         border: primary
           ? '1px solid color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))'
-          : '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
+          : danger
+            ? '1px solid color-mix(in srgb, var(--aurora-error) 45%, var(--aurora-border-strong))'
+            : '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
         background: primary
           ? 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))'
-          : 'var(--aurora-control-surface)',
-        color: primary ? 'var(--aurora-accent-strong)' : 'var(--aurora-text-muted)',
+          : danger
+            ? 'color-mix(in srgb, var(--aurora-error) 9%, var(--aurora-panel-strong))'
+            : 'var(--aurora-control-surface)',
+        color: primary
+          ? 'var(--aurora-accent-strong)'
+          : danger
+            ? 'var(--aurora-error)'
+            : 'var(--aurora-text-muted)',
         fontFamily: 'inherit',
         fontSize: 11.5,
         fontWeight: 650,

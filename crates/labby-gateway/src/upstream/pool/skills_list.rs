@@ -40,6 +40,7 @@ use labby_runtime::skills::wire::{
 };
 use labby_runtime::skills::{
     SkillRejection, ValidatedSkill, limits, parse_skill_resource_uri, validate_skill_entry,
+    validate_skill_entry_detailed,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -57,12 +58,15 @@ use super::logging::{UpstreamRequestLog, log_upstream_request_start};
 /// One upstream's validated skills plus what was dropped getting there.
 #[derive(Debug, Clone, Default)]
 pub(super) struct UpstreamSkills {
+    /// Skill candidates observed across the upstream pages fetched for this snapshot,
+    /// before host validation or exposure policy is applied.
+    pub(super) discovered_count: usize,
     /// Skills that passed ingest validation.
     pub(super) skills: Vec<ValidatedSkill>,
     /// Skills dropped for integrity or budget reasons, by cause. Operators see
     /// the causes; agents see only the total, so a completeness signal never
     /// doubles as a way to enumerate an operator's configuration.
-    pub(super) excluded: Vec<(SkillRejection, String)>,
+    pub(super) excluded: Vec<ExcludedSkill>,
     /// Whether a budget stopped the walk early. Distinct from an error: this
     /// snapshot is complete as far as it goes and is safe to cache.
     pub(super) truncated: bool,
@@ -75,6 +79,13 @@ pub(super) struct UpstreamSkills {
     /// Canonical native URI to every manifest owner. Multiple bindings are
     /// retained so reads can fail closed without rescanning the catalog.
     pub(super) resource_index: BTreeMap<String, Vec<SkillResourceBinding>>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ExcludedSkill {
+    pub(super) reason: SkillRejection,
+    pub(super) uri: String,
+    pub(super) detail: String,
 }
 
 impl UpstreamSkills {
@@ -127,17 +138,31 @@ fn custom_result_value(result: ServerResult) -> Result<serde_json::Value, String
     }
 }
 
-/// Validate and accumulate one page of entries, honoring the per-upstream cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillIngestCap {
+    ValidatedSkills,
+    Candidates,
+}
+
+/// Validate and accumulate one page of entries, honoring the per-upstream caps.
 ///
-/// Returns `true` when the cap stopped accumulation, so the caller can stop
-/// walking rather than fetching pages whose contents would be discarded.
-fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> bool {
+/// Returns the cap that stopped accumulation, so the caller can stop walking
+/// rather than fetching pages whose contents would be discarded.
+fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> Option<SkillIngestCap> {
+    // Discovery is what the upstream advertised, not what the host later accepts.
+    // Count the fetched page before validation so operator status can distinguish
+    // discovered candidates from the validated/exposed subset.
+    out.discovered_count = out.discovered_count.saturating_add(entries.len());
     for entry in entries {
+        let processed_candidates = out.skills.len().saturating_add(out.excluded.len());
+        if processed_candidates >= limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM {
+            return Some(SkillIngestCap::Candidates);
+        }
         if out.skills.len() >= limits::MAX_SKILLS_PER_UPSTREAM {
-            return true;
+            return Some(SkillIngestCap::ValidatedSkills);
         }
         let uri = entry.uri.clone();
-        match validate_skill_entry(&entry) {
+        match validate_skill_entry_detailed(&entry) {
             Ok(validated) => {
                 let skill = out.skills.len();
                 if let Some(resources) = &validated.entry.resources {
@@ -154,10 +179,14 @@ fn ingest_page(entries: Vec<SkillEntry>, out: &mut UpstreamSkills) -> bool {
             }
             // One malformed skill must never sink the upstream: exclude it,
             // record the cause, and keep going.
-            Err(reason) => out.excluded.push((reason, uri)),
+            Err(rejection) => out.excluded.push(ExcludedSkill {
+                reason: rejection.reason,
+                uri,
+                detail: rejection.detail,
+            }),
         }
     }
-    false
+    None
 }
 
 impl UpstreamPool {
@@ -218,14 +247,20 @@ impl UpstreamPool {
                 (current, next) => current.or(next),
             };
 
-            let capped = ingest_page(result.skills, &mut out);
-            if capped {
+            if let Some(cap) = ingest_page(result.skills, &mut out) {
                 out.truncated = true;
-                tracing::warn!(
-                    upstream = %upstream_name,
-                    cap = limits::MAX_SKILLS_PER_UPSTREAM,
-                    "upstream published more skills than the per-upstream cap — snapshot truncated"
-                );
+                match cap {
+                    SkillIngestCap::ValidatedSkills => tracing::warn!(
+                        upstream = %upstream_name,
+                        cap = limits::MAX_SKILLS_PER_UPSTREAM,
+                        "upstream published more validated skills than the per-upstream cap — snapshot truncated"
+                    ),
+                    SkillIngestCap::Candidates => tracing::warn!(
+                        upstream = %upstream_name,
+                        cap = limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
+                        "upstream published more skill candidates than the validation cap — snapshot truncated"
+                    ),
+                }
                 break;
             }
 

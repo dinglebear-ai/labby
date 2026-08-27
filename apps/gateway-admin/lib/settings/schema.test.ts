@@ -23,7 +23,7 @@ const numberField: SettingsFieldSpec = {
   apply_mode: 'restart',
   secret: false,
   required: false,
-  env_override: 'LAB_MCP_HTTP_PORT',
+  env_override: 'LABBY_MCP_HTTP_PORT',
   min: 1,
   max: 65535,
   options: [],
@@ -70,15 +70,15 @@ test('settings schema helpers emit unset for blank optional config fields', () =
 })
 
 test('settings schema helpers partition dirty entries by backend', () => {
-  const envField: SettingsFieldSpec = { ...numberField, key: 'LAB_MCP_HTTP_PORT', backend: 'env' }
+  const envField: SettingsFieldSpec = { ...numberField, key: 'LABBY_MCP_HTTP_PORT', backend: 'env' }
   const partitioned = buildDirtyEntriesByBackend(
     [numberField, envField],
-    new Set(['mcp.port', 'LAB_MCP_HTTP_PORT']),
-    { 'mcp.port': 8766, LAB_MCP_HTTP_PORT: 8767 },
-    { 'mcp.port': 8765, LAB_MCP_HTTP_PORT: 8765 },
+    new Set(['mcp.port', 'LABBY_MCP_HTTP_PORT']),
+    { 'mcp.port': 8766, LABBY_MCP_HTTP_PORT: 8767 },
+    { 'mcp.port': 8765, LABBY_MCP_HTTP_PORT: 8765 },
   )
   assert.deepEqual(partitioned.configEntries, [{ key: 'mcp.port', value: 8766, previous: 8765 }])
-  assert.deepEqual(partitioned.envEntries, [{ key: 'LAB_MCP_HTTP_PORT', value: 8767, previous: 8765 }])
+  assert.deepEqual(partitioned.envEntries, [{ key: 'LABBY_MCP_HTTP_PORT', value: 8767, previous: 8765 }])
 })
 
 test('settings schema helpers exclude config fields shadowed by env overrides', () => {
@@ -87,7 +87,7 @@ test('settings schema helpers exclude config fields shadowed by env overrides', 
     new Set(['mcp.port']),
     { 'mcp.port': 8766 },
     { 'mcp.port': 8765 },
-    { 'mcp.port': { source: 'env', overridden_by_env: 'LAB_MCP_HTTP_PORT' } },
+    { 'mcp.port': { source: 'env', overridden_by_env: 'LABBY_MCP_HTTP_PORT' } },
   )
   assert.deepEqual(partitioned.configEntries, [])
   assert.deepEqual(partitioned.envEntries, [])

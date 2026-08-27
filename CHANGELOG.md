@@ -72,6 +72,49 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.14.1](https://github.com/dinglebear-ai/labby/compare/v1.14.0...v1.14.1) (2026-08-24)
+
+
+### Fixed
+
+* **codemode:** restore Windows warning-clean build ([#474](https://github.com/dinglebear-ai/labby/issues/474)) ([176495d](https://github.com/dinglebear-ai/labby/commit/176495de6837c1683c22e5b4f41bc092c4d6ec17))
+* **gateway:** stop Loadouts page renderer crash and harden parallel tests ([#489](https://github.com/dinglebear-ai/labby/issues/489)) ([172e078](https://github.com/dinglebear-ai/labby/commit/172e07896aef3fadc037f77e55be1499b62e02ad))
+
+## [1.14.0](https://github.com/dinglebear-ai/labby/compare/v1.13.3...v1.14.0) (2026-08-21)
+
+
+### Added
+
+* **artifacts:** add lifecycle planning and provider seam ([#464](https://github.com/dinglebear-ai/labby/issues/464)) ([636f35b](https://github.com/dinglebear-ai/labby/commit/636f35bb4286101a03e7beedd3a5d839c66ec3e4))
+* **artifacts:** add open personal Artifact core and v1 interchange ([#462](https://github.com/dinglebear-ai/labby/issues/462)) ([8723910](https://github.com/dinglebear-ai/labby/commit/87239104c84874694748ed7135919e11a8d76d4b))
+* **codemode:** add opt-in Microsandbox runner isolation ([#434](https://github.com/dinglebear-ai/labby/issues/434)) ([0e21d04](https://github.com/dinglebear-ai/labby/commit/0e21d0474211f88371773244f5bbb021e710630a))
+* **codemode:** add safety-aware tool discovery ([#435](https://github.com/dinglebear-ai/labby/issues/435)) ([a806085](https://github.com/dinglebear-ai/labby/commit/a806085f9be32ca8364f9515199896e7e111727e))
+* **codemode:** expose upstream resource reads ([#458](https://github.com/dinglebear-ai/labby/issues/458)) ([d18adf8](https://github.com/dinglebear-ai/labby/commit/d18adf85460d023643c64e1bcacbd6bcf67ba743))
+* **gateway:** add transport recovery guardrails ([#452](https://github.com/dinglebear-ai/labby/issues/452)) ([4715a2e](https://github.com/dinglebear-ai/labby/commit/4715a2e0578e8d8138b70d81add01445c51ad0a2))
+* **gateway:** first-class Skills over MCP and Loadouts ([#448](https://github.com/dinglebear-ai/labby/issues/448)) ([bdf914c](https://github.com/dinglebear-ai/labby/commit/bdf914c1519c1cdc40f7391376c2316f0f299a40))
+* **gateway:** make usage analytics first class ([#459](https://github.com/dinglebear-ai/labby/issues/459)) ([52061b6](https://github.com/dinglebear-ai/labby/commit/52061b650533a223c63fb8fea182b775ea807fe4))
+* **mcp:** add MCP app visibility switchboard ([#445](https://github.com/dinglebear-ai/labby/issues/445)) ([9977a56](https://github.com/dinglebear-ai/labby/commit/9977a561933302a2d81a8f3bb8c6db38c587c854))
+* **mcp:** polish MCP app integration ([#437](https://github.com/dinglebear-ai/labby/issues/437)) ([d938c25](https://github.com/dinglebear-ai/labby/commit/d938c255de4184c4e388f44e701ce57e7c806823))
+* **skills:** add shared MCP compatibility facade ([#456](https://github.com/dinglebear-ai/labby/issues/456)) ([ea07f36](https://github.com/dinglebear-ai/labby/commit/ea07f3609926879da146ea6e3e3afdd65784a73a))
+* **web:** align operator workflows with gateway mock ([#430](https://github.com/dinglebear-ai/labby/issues/430)) ([329c4fb](https://github.com/dinglebear-ai/labby/commit/329c4fb61d25e40f89a525ff3bb4b1eaa5058e94))
+
+
+### Fixed
+
+* address findings from recent merged PR review ([#469](https://github.com/dinglebear-ai/labby/issues/469)) ([3a61196](https://github.com/dinglebear-ai/labby/commit/3a6119682824987b60b674b4bedaaf403b64f4ae))
+* align protected subset cold-start discovery ([#436](https://github.com/dinglebear-ai/labby/issues/436)) ([76abf66](https://github.com/dinglebear-ai/labby/commit/76abf663a173026bcd5467f2b8f573217763d1ad))
+* **ci:** install the pinned Rust 1.97.1 toolchain ([#451](https://github.com/dinglebear-ai/labby/issues/451)) ([2532186](https://github.com/dinglebear-ai/labby/commit/2532186f1fb762038b310cf6b392299030e7b5a0))
+* **codemode:** make source size limit configurable ([#468](https://github.com/dinglebear-ai/labby/issues/468)) ([ea9873c](https://github.com/dinglebear-ai/labby/commit/ea9873c1b5f62d9c85c8d97445577d0ee821871b))
+* **codemode:** preserve outer timeout during settlement ([#443](https://github.com/dinglebear-ai/labby/issues/443)) ([8d0a39b](https://github.com/dinglebear-ai/labby/commit/8d0a39bd498c8fad5db1b41df0514d94497ff1eb))
+* **codemode:** recover microsandbox cleanup circuit ([#463](https://github.com/dinglebear-ai/labby/issues/463)) ([bb30616](https://github.com/dinglebear-ai/labby/commit/bb30616f43600df92485391ef0986baa21cacae1))
+* **codemode:** retry dead pooled runner once ([#441](https://github.com/dinglebear-ai/labby/issues/441)) ([69ab053](https://github.com/dinglebear-ai/labby/commit/69ab0533b96d18fccc45e0a01ab3dd564a430aa1))
+* **deps:** clear remaining npm security alerts ([#450](https://github.com/dinglebear-ai/labby/issues/450)) ([80e94c5](https://github.com/dinglebear-ai/labby/commit/80e94c5501a5a1c82377b5ea01f1b35a5d24c65b))
+* **gateway:** reprobe tools on status refresh ([#453](https://github.com/dinglebear-ai/labby/issues/453)) ([85cbedb](https://github.com/dinglebear-ai/labby/commit/85cbedb926edf80ff4588ea2d76f57914f78780e))
+* harden Code Mode settlement and SEP-2243 header recovery ([#446](https://github.com/dinglebear-ai/labby/issues/446)) ([f7613b9](https://github.com/dinglebear-ai/labby/commit/f7613b9f109c9130d5a16acedd58cb4c9427f1e4))
+* harden Microsandbox recovery and gateway warmup status ([#466](https://github.com/dinglebear-ai/labby/issues/466)) ([90d3f29](https://github.com/dinglebear-ai/labby/commit/90d3f29bdfd5a61b02e7c649977c345e5a94c05c))
+* **mcp:** stop paginated catalog retry storms ([#442](https://github.com/dinglebear-ai/labby/issues/442)) ([310296e](https://github.com/dinglebear-ai/labby/commit/310296e57a72956b7ccff40cb92d1f0bedf9176c))
+* **skills:** relay native Skills through gateway ([#467](https://github.com/dinglebear-ai/labby/issues/467)) ([90cab5b](https://github.com/dinglebear-ai/labby/commit/90cab5bff14f92ebdefadfefc7ffbd368b553b9e))
+
 ## [1.13.3](https://github.com/dinglebear-ai/labby/compare/v1.13.2...v1.13.3) (2026-08-18)
 
 

@@ -7,7 +7,7 @@ updated: 2026-08-19
 # W19 Artifact Gateway Implementation Plan
 
 Status: active
-Branch: `codex/w19-artifact-gateway-20260819`
+Branch: `codex/w19-artifact-lifecycle-20260819`
 Worktree: `/home/jmagar/workspace/labby-w19-artifact-gateway`
 Baseline: `origin/main` at `0e21d0474` when W19 implementation began
 
@@ -65,7 +65,7 @@ Exit gate:
 
 ## Phase 2: local lifecycle and provider seam
 
-Status: planned after Phase 1 checkpoint
+Status: complete and verified
 
 - Snapshot an edited workspace into a new revision.
 - Diff current/fork/upstream revisions.

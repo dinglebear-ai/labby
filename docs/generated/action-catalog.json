@@ -1,6 +1,26 @@
 [
   {
     "service": "doctor",
+    "action": "access.check",
+    "description": "Inspect access-control store readiness and safety without modifying it",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "DoctorReport",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "doctor",
     "action": "audit.full",
     "description": "Run system, auth, gateway-upstream, and OAuth-relay checks; streams results",
     "destructive": false,
@@ -435,7 +455,7 @@
         "name": "trusted_read_only_tools",
         "ty": "array",
         "required": false,
-        "description": "Exact upstream::tool ids operator-trusted for codemode_read (live readOnlyHint is also required)"
+        "description": "Deprecated compatibility list; codemode_read uses live MCP safety annotations"
       },
       {
         "name": "mcp_ui_enabled",
@@ -1001,7 +1021,7 @@
   {
     "service": "gateway",
     "action": "gateway.list",
-    "description": "List configured gateways",
+    "description": "List configured gateways using the current cached runtime snapshot without connecting upstreams",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
@@ -1434,14 +1454,56 @@
   {
     "service": "gateway",
     "action": "gateway.mcp.list",
-    "description": "List upstream MCP runtime state, discovery counts, and likely stale process counts",
+    "description": "List the current upstream MCP runtime snapshot, discovery counts, and likely stale process counts without connecting upstreams",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
       "lab:admin"
     ],
-    "params": [],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": false,
+        "description": "Optional gateway name filter"
+      }
+    ],
     "returns": "GatewayMcpRuntimeView[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.mcp.restart",
+    "description": "Replace one enabled upstream MCP connection, clean up stale runtime processes, and reconnect it",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "aggressive",
+        "ty": "boolean",
+        "required": false,
+        "description": "When true, use broader host-wide process matching during cleanup"
+      }
+    ],
+    "returns": "GatewayView + cleanup result",
     "surface_availability": {
       "cli": true,
       "mcp": true,
@@ -2314,7 +2376,7 @@
   {
     "service": "gateway",
     "action": "gateway.status",
-    "description": "Get current runtime gateway status",
+    "description": "Refresh and return runtime gateway status",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
@@ -2467,6 +2529,48 @@
         "description": "Restrict to one upstream name"
       },
       {
+        "name": "tool",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one qualified upstream::tool target"
+      },
+      {
+        "name": "capability",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one capability family"
+      },
+      {
+        "name": "operation",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one operation name"
+      },
+      {
+        "name": "subject_scoped",
+        "ty": "boolean",
+        "required": false,
+        "description": "Restrict by OAuth subject scoping"
+      },
+      {
+        "name": "actor",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one actor subject"
+      },
+      {
+        "name": "outcome",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one outcome; failed matches every non-ok outcome"
+      },
+      {
+        "name": "search",
+        "ty": "string",
+        "required": false,
+        "description": "Case-insensitive search across target, capability, operation, actor, and outcome"
+      },
+      {
         "name": "limit",
         "ty": "integer",
         "required": false,
@@ -2500,7 +2604,7 @@
   {
     "service": "gateway",
     "action": "gateway.usage.metrics",
-    "description": "Aggregate gateway upstream call telemetry: totals, error rate, top tools, top actors",
+    "description": "Aggregate exact gateway usage analytics; rejects queries above 250000 matching rows, and facet requests whose unfiltered time window exceeds 250000 rows",
     "destructive": false,
     "requires_admin": true,
     "required_scopes": [
@@ -2524,6 +2628,72 @@
         "ty": "string",
         "required": false,
         "description": "Restrict to one upstream name"
+      },
+      {
+        "name": "tool",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one qualified upstream::tool target"
+      },
+      {
+        "name": "capability",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one capability family"
+      },
+      {
+        "name": "operation",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one operation name"
+      },
+      {
+        "name": "subject_scoped",
+        "ty": "boolean",
+        "required": false,
+        "description": "Restrict by OAuth subject scoping"
+      },
+      {
+        "name": "actor",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one actor subject"
+      },
+      {
+        "name": "outcome",
+        "ty": "string",
+        "required": false,
+        "description": "Restrict to one outcome; failed matches every non-ok outcome"
+      },
+      {
+        "name": "search",
+        "ty": "string",
+        "required": false,
+        "description": "Case-insensitive search across target, capability, operation, actor, and outcome"
+      },
+      {
+        "name": "bucket_count",
+        "ty": "integer",
+        "required": false,
+        "description": "Return this many complete-window time buckets, capped at 168"
+      },
+      {
+        "name": "timezone",
+        "ty": "string",
+        "required": false,
+        "description": "IANA zone name for DST-correct local-hour aggregation"
+      },
+      {
+        "name": "timezone_offset_minutes",
+        "ty": "integer",
+        "required": false,
+        "description": "Minutes east of UTC fallback when timezone is omitted (-1440 to 1440)"
+      },
+      {
+        "name": "include_facets",
+        "ty": "boolean",
+        "required": false,
+        "description": "Include stable window-wide filter facets; returns invalid_param if any facet exceeds 1000 distinct values"
       }
     ],
     "returns": "GatewayUsageMetricsView",

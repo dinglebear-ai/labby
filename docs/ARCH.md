@@ -6,7 +6,7 @@ updated: "2026-07-30"
 
 # Architecture
 
-`lab` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, the direct stdio MCP proxy, setup, doctor, server logs, snippets, and the optional filesystem browser.
+`labby` is a Rust MCP gateway implemented as a workspace split between reusable gateway/auth/runtime crates and product-facing dispatch and surface adapters. The supported product boundary is gateway, Code Mode, authentication, protected routes, the direct stdio MCP proxy, setup, doctor, server logs, snippets, and the optional filesystem browser.
 
 ## Core Shape
 

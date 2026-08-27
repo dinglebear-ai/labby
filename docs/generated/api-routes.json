@@ -432,6 +432,22 @@
     "notes": "OAuth token endpoint"
   },
   {
+    "method": "POST",
+    "path": "/v1/access/bootstrap-owner",
+    "surface": "api",
+    "handler_group": "access",
+    "feature": null,
+    "runtime_condition": "OAuth mode only; handler requires a browser session, middleware-derived VerifiedIdentity, lab:admin, and the configured admin email; bearer, MCP, CLI, stdio, and loopback identity bypasses are rejected",
+    "auth_required": true,
+    "bearer_only": false,
+    "session_cookie_allowed": true,
+    "csrf_required": true,
+    "host_validation": false,
+    "master_only": true,
+    "cache_posture": "not cacheable",
+    "notes": "explicit one-time access owner bootstrap; returns only created or already_applied"
+  },
+  {
     "method": "GET",
     "path": "/v1/apps/manifest",
     "surface": "api",

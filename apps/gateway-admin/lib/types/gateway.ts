@@ -13,7 +13,12 @@ export interface GatewayConfig {
   proxy_prompts?: boolean
   proxy_skills?: boolean
   proxy_mcp_ui?: boolean
-  expose_tools?: string[]
+  // All four are the same tri-state: absent/null = no filter (expose all),
+  // [] = an allowlist matching nothing (expose none), values = allowlist.
+  // `expose_tools` lacked `| null`, so `buildGatewayPatch` could not express
+  // "clear the tool filter" through the typed path and `setExposurePolicy`
+  // had to hand-roll that patch.
+  expose_tools?: string[] | null
   expose_resources?: string[] | null
   expose_prompts?: string[] | null
   expose_skills?: string[] | null

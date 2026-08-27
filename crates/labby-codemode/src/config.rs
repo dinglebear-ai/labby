@@ -7,8 +7,11 @@
 /// Tracing `service` field for every Code Mode dispatch event.
 pub const SERVICE: &str = "code_mode";
 
-/// Maximum accepted Code Mode source size in bytes.
-pub const MAX_SOURCE_BYTES: usize = 20_000;
+/// Hard ceiling for accepted Code Mode source size in bytes.
+///
+/// Hosts may configure a lower per-process limit; this constant is the final
+/// safety ceiling shared by MCP and CLI surfaces.
+pub const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
 /// Maximum `codemode.run(...)` snippet resolutions allowed in a single run.
 pub(crate) const MAX_SNIPPET_RESOLVES_PER_RUN: usize = 32;
@@ -124,6 +127,6 @@ mod tests {
 
     #[test]
     fn max_source_bytes_is_stable() {
-        assert_eq!(MAX_SOURCE_BYTES, 20_000);
+        assert_eq!(MAX_SOURCE_BYTES, 1024 * 1024);
     }
 }

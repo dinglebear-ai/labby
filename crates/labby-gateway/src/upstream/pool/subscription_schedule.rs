@@ -4,8 +4,28 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use super::UpstreamPool;
+use super::incarnation::ObservedConnectionCatalogEntry;
 
 impl UpstreamPool {
+    pub(super) async fn schedule_observed_upstream_subscription_refreshes(
+        &self,
+        observations: Vec<ObservedConnectionCatalogEntry>,
+    ) {
+        let mut upstreams = Vec::new();
+        for observed in observations {
+            if self.observed_entry_is_current(&observed).await {
+                upstreams.push(observed.upstream().to_string());
+            }
+        }
+        if !upstreams.is_empty() {
+            // The observation gates the result-derived scheduling decision.
+            // The refresh itself intentionally reconciles the current named
+            // connection, so a later replacement receives current-state work.
+            self.schedule_upstream_subscription_refreshes(upstreams)
+                .await;
+        }
+    }
+
     pub(super) async fn subscription_refresh_required(
         &self,
         upstream: &str,

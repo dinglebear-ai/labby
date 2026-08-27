@@ -127,6 +127,8 @@ pub(crate) struct ProtectedRouteSpecParams {
 pub(crate) struct ProtectedRouteUpdateParams {
     pub name: String,
     pub route: ProtectedMcpRouteConfig,
+    #[serde(default)]
+    pub preserve_project_id: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +208,30 @@ pub struct GatewayUsageMetricsParams {
     pub until_unix: Option<i64>,
     #[serde(default)]
     pub upstream: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub capability: Option<String>,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub subject_scoped: Option<bool>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub bucket_count: Option<usize>,
+    /// IANA zone name used for DST-correct local-hour aggregation.
+    #[serde(default)]
+    pub timezone: Option<String>,
+    /// Minutes east of UTC used as a compatibility fallback when timezone is absent.
+    #[serde(default)]
+    pub timezone_offset_minutes: Option<i32>,
+    #[serde(default)]
+    pub include_facets: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -216,6 +242,20 @@ pub struct GatewayUsageCallsParams {
     pub until_unix: Option<i64>,
     #[serde(default)]
     pub upstream: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub capability: Option<String>,
+    #[serde(default)]
+    pub operation: Option<String>,
+    #[serde(default)]
+    pub subject_scoped: Option<bool>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
     #[serde(default)]
     pub limit: Option<usize>,
     /// Opaque keyset cursor returned by the previous page.
@@ -362,6 +402,17 @@ pub(crate) struct GatewayMcpToggleParams {
     pub name: String,
     #[serde(default)]
     pub cleanup: bool,
+    #[serde(default)]
+    pub aggressive: bool,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub owner: Option<GatewayRuntimeOwnerParams>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct GatewayMcpRestartParams {
+    pub name: String,
     #[serde(default)]
     pub aggressive: bool,
     #[serde(default)]

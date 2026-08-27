@@ -1,7 +1,12 @@
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+#[cfg(feature = "skills")]
+use futures::{StreamExt, stream};
+
 use crate::dispatch_helpers::{action_schema, handle_builtin, help_payload, require_str, to_json};
+#[cfg(feature = "skills")]
+use crate::upstream::pool::OperatorSkills;
 use labby_runtime::error::ToolError;
 
 use super::SHARED_GATEWAY_OAUTH_SUBJECT;
@@ -12,13 +17,14 @@ use super::params::{
     CodeModeSetParams, GatewayAddParams, GatewayClientConfigParams, GatewayDiscoverParams,
     GatewayEnrichApplyParams, GatewayEnrichPreviewParams, GatewayEnrichmentScope,
     GatewayImportParams, GatewayImportTombstoneParams, GatewayMcpCleanupParams,
-    GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams, GatewayReloadParams,
-    GatewayStatusParams, GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch,
-    GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams, LoadoutPatchParams,
-    LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams, ProtectedRouteSpecParams,
-    ProtectedRouteUpdateParams, ResourceLeaseCreateParams, ResourceLeaseReleaseParams,
-    ResourceLeaseRenewParams, ServiceConfigGetParams, ServiceConfigSetParams,
-    VirtualServerMcpPolicyParams, VirtualServerNameParams, VirtualServerSurfaceParams,
+    GatewayMcpRestartParams, GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams,
+    GatewayReloadParams, GatewayStatusParams, GatewayTestParams, GatewayUpdateParams,
+    GatewayUpdatePatch, GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams,
+    LoadoutPatchParams, LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams,
+    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ResourceLeaseCreateParams,
+    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServiceConfigGetParams,
+    ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
+    VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
@@ -170,7 +176,7 @@ pub async fn dispatch_with_manager_scoped(
             handle_oauth_actions(manager, action, params_value).await
         }
         action if action.starts_with("gateway.mcp.") => {
-            handle_mcp_actions(manager, action, params_value).await
+            handle_mcp_actions(manager, action, params_value, enrichment_scope).await
         }
         unknown => unknown_action(unknown),
     }
@@ -533,7 +539,7 @@ async fn handle_protected_route_actions(
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             to_json(
                 manager
-                    .protected_route_update(&params.name, params.route)
+                    .protected_route_update(&params.name, params.route, params.preserve_project_id)
                     .await?,
             )
         }
@@ -548,7 +554,11 @@ async fn handle_protected_route_actions(
         "gateway.protected_route.stage_update" => {
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             manager
-                .protected_route_stage_update(&params.name, params.route)
+                .protected_route_stage_update(
+                    &params.name,
+                    params.route,
+                    params.preserve_project_id,
+                )
                 .await
         }
         "gateway.protected_route.stage_remove" => {
@@ -760,6 +770,9 @@ async fn handle_gateway_actions(
         }
         "gateway.status" => {
             let params: GatewayStatusParams = parse_params(params_value)?;
+            manager
+                .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
+                .await;
             to_json(manager.status(params.name.as_deref()).await?)
         }
         "gateway.client_config.get" => {
@@ -938,6 +951,7 @@ async fn handle_mcp_actions(
     manager: &GatewayManager,
     action: &str,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
         "gateway.mcp.enable" => {
@@ -957,7 +971,14 @@ async fn handle_mcp_actions(
                     .await?,
             )
         }
-        "gateway.mcp.list" => to_json(manager.mcp_runtime_list().await?),
+        "gateway.mcp.list" => {
+            let params: GatewayStatusParams = parse_params(params_value)?;
+            to_json(
+                manager
+                    .mcp_runtime_list(params.name.as_deref(), &enrichment_scope)
+                    .await?,
+            )
+        }
         "gateway.clients.list" => to_json(manager.clients().await?),
         "gateway.mcp.disable" => {
             let params: GatewayMcpToggleParams = parse_params(params_value)?;
@@ -986,6 +1007,63 @@ async fn handle_mcp_actions(
                 "gateway": gateway,
                 "cleanup": cleanup,
             }))
+        }
+        "gateway.mcp.restart" => {
+            let params: GatewayMcpRestartParams = parse_params(params_value)?;
+            let upstream =
+                manager
+                    .upstream_config(&params.name)
+                    .await
+                    .ok_or_else(|| ToolError::Sdk {
+                        sdk_kind: "not_found".to_string(),
+                        message: format!("upstream MCP server '{}' was not found", params.name),
+                    })?;
+            if !upstream.enabled {
+                return Err(ToolError::InvalidParam {
+                    message: format!(
+                        "upstream MCP server '{}' is disabled; enable it before restarting its connection",
+                        params.name
+                    ),
+                    param: "name".to_string(),
+                });
+            }
+
+            manager
+                .update(
+                    &params.name,
+                    GatewayUpdatePatch {
+                        enabled: Some(false),
+                        ..GatewayUpdatePatch::default()
+                    },
+                    None,
+                    params.origin.as_deref(),
+                    params.owner.clone().map(Into::into),
+                )
+                .await?;
+
+            let cleanup = manager
+                .cleanup_upstream_processes(&params.name, params.aggressive, false)
+                .await;
+            let gateway = manager
+                .update(
+                    &params.name,
+                    GatewayUpdatePatch {
+                        enabled: Some(true),
+                        ..GatewayUpdatePatch::default()
+                    },
+                    None,
+                    params.origin.as_deref(),
+                    params.owner.map(Into::into),
+                )
+                .await;
+
+            match (cleanup, gateway) {
+                (Ok(cleanup), Ok(gateway)) => to_json(serde_json::json!({
+                    "gateway": gateway,
+                    "cleanup": cleanup,
+                })),
+                (Err(error), Ok(_)) | (_, Err(error)) => Err(error),
+            }
         }
         "gateway.mcp.cleanup" => {
             let params: GatewayMcpCleanupParams = parse_params(params_value)?;
@@ -1107,80 +1185,54 @@ async fn handle_skills_list(
             message: "gateway runtime is unavailable; start or reconnect `labby serve`, then retry `gateway.skills.list`".to_string(),
         });
     };
-    manager
-        .warm_mcp_runtime_catalog_bounded(&cfg, Some(pool.as_ref()), "gateway.skills.list")
-        .await;
-
-    let mut rows = Vec::new();
-    for config in cfg.upstream {
-        if let Some(filter) = params.upstream.as_deref()
-            && config.name != filter
-        {
-            continue;
-        }
-
-        let fallback_support = pool
-            .cached_upstream_summary(&config.name)
-            .await
-            .and_then(|summary| summary.supports_skills);
-        let (supports_skills, skills, rejected, truncated, age_secs, error) =
-            match pool.upstream_skills_operator(&config).await {
+    let configs = cfg
+        .upstream
+        .into_iter()
+        .filter(|config| {
+            params
+                .upstream
+                .as_ref()
+                .is_none_or(|filter| config.name == *filter)
+        })
+        .collect::<Vec<_>>();
+    let concurrency = crate::upstream::pool::upstream_discovery_concurrency(
+        cfg.gateway.upstream_discovery_concurrency,
+    );
+    let mut inspections = stream::iter(configs.into_iter().map(|config| {
+        let pool = pool.clone();
+        async move {
+            let fallback_support = pool
+                .cached_upstream_summary(&config.name)
+                .await
+                .and_then(|summary| summary.supports_skills);
+            let inspection = match pool.upstream_skills_operator(&config).await {
                 Ok(operator) => {
-                    let skills = operator
-                        .skills
-                        .iter()
-                        .map(|item| {
-                            let skill = &item.skill;
-                            serde_json::json!({
-                                "name": skill.name,
-                                "uri": skill.entry.uri,
-                                "description": skill
-                                    .entry
-                                    .frontmatter
-                                    .get("description")
-                                    .and_then(|value| value.as_str()),
-                                "resource_count": skill
-                                    .entry
-                                    .resources
-                                    .as_ref()
-                                    .map_or(0, Vec::len),
-                                "exposed": item.exposed,
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    let rejected = operator
-                        .rejected
-                        .iter()
-                        .map(|item| {
-                            serde_json::json!({
-                                "uri": item.uri,
-                                "reason": item.reason,
-                            })
-                        })
-                        .collect::<Vec<_>>();
+                    let refresh_error = pool.upstream_skills_last_error(&config.name).await;
                     (
                         operator.supports_skills.or(fallback_support),
-                        skills,
-                        rejected,
+                        project_operator_skills(&operator),
                         operator.truncated,
                         operator.age_secs,
-                        None,
+                        refresh_error,
                     )
                 }
                 Err(error) => (
                     fallback_support,
-                    Vec::new(),
-                    Vec::new(),
+                    OperatorSkillsProjection::default(),
                     false,
                     0,
                     Some(error),
                 ),
             };
-        let exposed_count = skills
-            .iter()
-            .filter(|skill| skill.get("exposed").and_then(Value::as_bool) == Some(true))
-            .count();
+            (config, inspection)
+        }
+    }))
+    .buffered(concurrency);
 
+    let mut rows = Vec::new();
+    while let Some((config, (supports_skills, projection, truncated, age_secs, error))) =
+        inspections.next().await
+    {
         if let Some(error) = error.as_deref() {
             tracing::warn!(
                 surface = "dispatch",
@@ -1200,30 +1252,23 @@ async fn handle_skills_list(
                 upstream = %config.name,
                 trusted = config.proxy_skills,
                 supports_skills = ?supports_skills,
-                discovered = skills.len(),
-                exposed = exposed_count,
-                rejected = rejected.len(),
+                discovered = projection.discovered_count,
+                exposed = projection.exposed_count,
+                rejected = projection.rejected.len(),
                 truncated,
                 cache_age_secs = age_secs,
                 "gateway skills upstream inspection complete"
             );
         }
 
-        rows.push(serde_json::json!({
-            "upstream": config.name,
-            "enabled": config.enabled,
-            "trusted": config.proxy_skills,
-            "supports_skills": supports_skills,
-            "exposure_patterns": config.expose_skills,
-            "skills": skills,
-            "discovered_count": skills.len(),
-            "exposed_count": exposed_count,
-            "rejected": rejected,
-            "excluded_count": rejected.len(),
-            "truncated": truncated,
-            "cache_age_secs": age_secs,
-            "error": error,
-        }));
+        rows.push(skills_operator_row(
+            &config,
+            supports_skills,
+            projection,
+            truncated,
+            age_secs,
+            error,
+        ));
     }
     tracing::info!(
         surface = "dispatch",
@@ -1235,6 +1280,77 @@ async fn handle_skills_list(
         "gateway skills operator listing finish"
     );
     to_json(rows)
+}
+
+#[cfg(feature = "skills")]
+#[derive(Default)]
+struct OperatorSkillsProjection {
+    skills: Vec<Value>,
+    rejected: Vec<Value>,
+    discovered_count: usize,
+    exposed_count: usize,
+}
+
+#[cfg(feature = "skills")]
+fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjection {
+    let skills = operator
+        .skills
+        .iter()
+        .map(|item| {
+            let skill = &item.skill;
+            serde_json::json!({
+                "name": skill.name,
+                "uri": skill.entry.uri,
+                "description": skill.entry.frontmatter.get("description").and_then(|value| value.as_str()),
+                "resource_count": skill.entry.resources.as_ref().map_or(0, Vec::len),
+                "exposed": item.exposed,
+            })
+        })
+        .collect();
+    let rejected = operator
+        .rejected
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "uri": item.uri,
+                "reason": item.reason,
+                "detail": item.detail,
+            })
+        })
+        .collect();
+    OperatorSkillsProjection {
+        skills,
+        rejected,
+        discovered_count: operator.discovered_count,
+        exposed_count: operator.skills.iter().filter(|item| item.exposed).count(),
+    }
+}
+
+#[cfg(feature = "skills")]
+fn skills_operator_row(
+    config: &labby_runtime::gateway_config::UpstreamConfig,
+    supports_skills: Option<bool>,
+    projection: OperatorSkillsProjection,
+    truncated: bool,
+    age_secs: u64,
+    error: Option<String>,
+) -> Value {
+    let excluded_count = projection.rejected.len();
+    serde_json::json!({
+        "upstream": config.name,
+        "enabled": config.enabled,
+        "trusted": config.proxy_skills,
+        "supports_skills": supports_skills,
+        "exposure_patterns": config.expose_skills,
+        "skills": projection.skills,
+        "discovered_count": projection.discovered_count,
+        "exposed_count": projection.exposed_count,
+        "rejected": projection.rejected,
+        "excluded_count": excluded_count,
+        "truncated": truncated,
+        "cache_age_secs": age_secs,
+        "error": error,
+    })
 }
 
 #[cfg(not(feature = "skills"))]

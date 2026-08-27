@@ -15,7 +15,7 @@ use crate::util::fingerprint;
 const GOOGLE_AUTHORIZE_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_JWKS_ENDPOINT: &str = "https://www.googleapis.com/oauth2/v3/certs";
-const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+pub(crate) const GOOGLE_ISSUER: &str = "https://accounts.google.com";
 const GOOGLE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request timeout on the JWKS GET. Bound aggressively (5s) so a slow
 /// google.com call cannot starve a tokio worker holding the JWKS write

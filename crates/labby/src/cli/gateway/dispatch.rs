@@ -48,14 +48,16 @@ pub(super) async fn dispatch_gateway_action(
 
 fn protected_route_target_from_args(
     gateway_subset: bool,
+    project_id: Option<String>,
     loadout: Option<String>,
     upstreams: Vec<String>,
     services: Vec<String>,
     expose_code_mode: bool,
 ) -> Option<crate::config::ProtectedMcpRouteTarget> {
-    (gateway_subset || loadout.is_some()).then_some(
+    (gateway_subset || project_id.is_some() || loadout.is_some()).then_some(
         crate::config::ProtectedMcpRouteTarget::GatewaySubset(
             crate::config::ProtectedGatewaySubsetTarget {
+                project_id,
                 loadout,
                 upstreams,
                 services,
@@ -68,6 +70,7 @@ fn protected_route_target_from_args(
 fn protected_route_from_args(args: GatewayProtectedRouteUpsertArgs) -> ProtectedMcpRouteConfig {
     let target = protected_route_target_from_args(
         args.gateway_subset,
+        args.project_id,
         args.loadout,
         args.target_upstream,
         args.target_service,
@@ -95,11 +98,12 @@ fn protected_route_from_args(args: GatewayProtectedRouteUpsertArgs) -> Protected
     }
 }
 
-fn protected_route_from_update_args(
-    args: GatewayProtectedRouteUpdateArgs,
-) -> (String, ProtectedMcpRouteConfig) {
+fn protected_route_from_update_args(args: GatewayProtectedRouteUpdateArgs) -> ProtectedRouteUpdate {
+    let preserve_project_id = args.project_id.is_none() && !args.clear_project_id;
+    let gateway_subset = args.gateway_subset || args.clear_project_id;
     let target = protected_route_target_from_args(
-        args.gateway_subset,
+        gateway_subset,
+        args.project_id,
         args.loadout,
         args.target_upstream,
         args.target_service,
@@ -126,7 +130,17 @@ fn protected_route_from_update_args(
         health_path: args.health_path,
         target,
     };
-    (name, route)
+    ProtectedRouteUpdate {
+        name,
+        route,
+        preserve_project_id,
+    }
+}
+
+struct ProtectedRouteUpdate {
+    name: String,
+    route: ProtectedMcpRouteConfig,
+    preserve_project_id: bool,
 }
 
 fn loadout_from_create_args(args: GatewayLoadoutCreateArgs) -> GatewayLoadoutConfig {
@@ -332,6 +346,23 @@ pub(super) async fn dispatch_command(
                 )
                 .await;
             }
+            GatewayMcpCommand::Restart(args) => {
+                return run_action_command(
+                    "gateway",
+                    "gateway.mcp.restart".to_string(),
+                    json!({
+                        "name": args.name,
+                        "aggressive": args.aggressive,
+                        "origin": cli_origin,
+                        "owner": cli_owner,
+                    }),
+                    format,
+                    |action, params| async move {
+                        dispatch_gateway_action(manager, config, action, params).await
+                    },
+                )
+                .await;
+            }
             GatewayMcpCommand::Cleanup(args) => {
                 return run_action_command(
                     "gateway",
@@ -429,13 +460,20 @@ pub(super) async fn dispatch_command(
                     }
                     GatewayProtectedRouteCommand::Update(args) => {
                         let stage_for_restart = args.stage_for_restart;
-                        let (name, route) = protected_route_from_update_args(args);
-                        let action = if stage_for_restart || route.is_gateway_subset() {
+                        let update = protected_route_from_update_args(args);
+                        let action = if stage_for_restart || update.route.is_gateway_subset() {
                             "gateway.protected_route.stage_update"
                         } else {
                             "gateway.protected_route.update"
                         };
-                        (action.to_string(), json!({ "name": name, "route": route }))
+                        (
+                            action.to_string(),
+                            json!({
+                                "name": update.name,
+                                "route": update.route,
+                                "preserve_project_id": update.preserve_project_id,
+                            }),
+                        )
                     }
                     GatewayProtectedRouteCommand::Remove(args) => (
                         if args.stage_for_restart {
@@ -611,6 +649,17 @@ pub(super) async fn dispatch_command(
                             "since_unix": m.since_unix,
                             "until_unix": m.until_unix,
                             "upstream": m.upstream,
+                            "tool": m.tool,
+                            "capability": m.capability,
+                            "operation": m.operation,
+                            "subject_scoped": m.subject_scoped,
+                            "actor": m.actor,
+                            "outcome": m.outcome,
+                            "search": m.search,
+                            "bucket_count": m.bucket_count,
+                            "timezone": m.timezone,
+                            "timezone_offset_minutes": m.timezone_offset_minutes,
+                            "include_facets": m.include_facets,
                         }),
                     ),
                     GatewayUsageCommand::Calls(c) => (
@@ -619,6 +668,13 @@ pub(super) async fn dispatch_command(
                             "since_unix": c.since_unix,
                             "until_unix": c.until_unix,
                             "upstream": c.upstream,
+                            "tool": c.tool,
+                            "capability": c.capability,
+                            "operation": c.operation,
+                            "subject_scoped": c.subject_scoped,
+                            "actor": c.actor,
+                            "outcome": c.outcome,
+                            "search": c.search,
                             "limit": c.limit,
                             "cursor": c.cursor,
                             "include_total": c.include_total,
@@ -660,7 +716,7 @@ mod tests {
 
     use crate::cli::gateway::LazyGatewayManager;
     use crate::cli::{Cli, Command};
-    use crate::config::LabConfig;
+    use crate::config::{LabConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteTarget};
 
     use super::*;
 
@@ -732,6 +788,94 @@ mod tests {
             panic!("expected gateway update command");
         };
         update
+    }
+
+    fn parsed_protected_route(args: &[&str]) -> GatewayProtectedRouteCommand {
+        let cli = Cli::try_parse_from(args).expect("parse protected-route args");
+        let Command::Gateway(gateway) = cli.command else {
+            panic!("expected gateway command");
+        };
+        let GatewayCommand::ProtectedRoute(route) = gateway.command else {
+            panic!("expected protected-route command");
+        };
+        route.command
+    }
+
+    fn gateway_subset_target(route: ProtectedMcpRouteConfig) -> ProtectedGatewaySubsetTarget {
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = route.target else {
+            panic!("expected gateway-subset target");
+        };
+        target
+    }
+
+    #[test]
+    fn protected_route_add_and_test_bind_project() {
+        for operation in ["add", "test"] {
+            let command = parsed_protected_route(&[
+                "labby",
+                "gateway",
+                "protected-route",
+                operation,
+                "--name",
+                "ops",
+                "--public-host",
+                "mcp.example.com",
+                "--public-path",
+                "/ops",
+                "--gateway-subset",
+                "--project-id",
+                "project-42",
+            ]);
+            let args = match command {
+                GatewayProtectedRouteCommand::Add(args)
+                | GatewayProtectedRouteCommand::Test(args) => args,
+                _ => panic!("expected add or test"),
+            };
+            let target = gateway_subset_target(protected_route_from_args(args));
+            assert_eq!(target.project_id.as_deref(), Some("project-42"));
+        }
+    }
+
+    #[test]
+    fn protected_route_update_preserves_or_explicitly_clears_project() {
+        let base = [
+            "labby",
+            "gateway",
+            "protected-route",
+            "update",
+            "ops",
+            "--public-host",
+            "mcp.example.com",
+            "--public-path",
+            "/ops",
+            "--gateway-subset",
+        ];
+        let GatewayProtectedRouteCommand::Update(args) = parsed_protected_route(&base) else {
+            panic!("expected update");
+        };
+        let update = protected_route_from_update_args(args);
+        let target = gateway_subset_target(update.route);
+        assert_eq!(target.project_id, None);
+        assert!(update.preserve_project_id);
+
+        let GatewayProtectedRouteCommand::Update(args) = parsed_protected_route(&[
+            "labby",
+            "gateway",
+            "protected-route",
+            "update",
+            "ops",
+            "--public-host",
+            "mcp.example.com",
+            "--public-path",
+            "/ops",
+            "--clear-project-id",
+        ]) else {
+            panic!("expected update");
+        };
+        let update = protected_route_from_update_args(args);
+        let target = gateway_subset_target(update.route);
+        assert_eq!(target.project_id, None);
+        assert!(!update.preserve_project_id);
     }
 
     #[test]
@@ -835,11 +979,29 @@ mod tests {
                 "since_unix": m.since_unix,
                 "until_unix": m.until_unix,
                 "upstream": m.upstream,
+                "tool": m.tool,
+                "capability": m.capability,
+                "operation": m.operation,
+                "subject_scoped": m.subject_scoped,
+                "actor": m.actor,
+                "outcome": m.outcome,
+                "search": m.search,
+                "bucket_count": m.bucket_count,
+                "timezone": m.timezone,
+                "timezone_offset_minutes": m.timezone_offset_minutes,
+                "include_facets": m.include_facets,
             }),
             GatewayUsageCommand::Calls(c) => json!({
                 "since_unix": c.since_unix,
                 "until_unix": c.until_unix,
                 "upstream": c.upstream,
+                "tool": c.tool,
+                "capability": c.capability,
+                "operation": c.operation,
+                "subject_scoped": c.subject_scoped,
+                "actor": c.actor,
+                "outcome": c.outcome,
+                "search": c.search,
                 "limit": c.limit,
                 "cursor": c.cursor,
                 "include_total": c.include_total,
@@ -861,6 +1023,27 @@ mod tests {
             "2000",
             "--upstream",
             "github",
+            "--tool",
+            "github::search_repos",
+            "--capability",
+            "resources",
+            "--operation",
+            "resource.read",
+            "--subject-scoped",
+            "true",
+            "--actor",
+            "codex",
+            "--outcome",
+            "failed",
+            "--search",
+            "timeout",
+            "--bucket-count",
+            "24",
+            "--timezone",
+            "America/New_York",
+            "--timezone-offset-minutes",
+            "-240",
+            "--include-facets",
         ]);
 
         assert_eq!(
@@ -869,6 +1052,17 @@ mod tests {
                 "since_unix": 1000,
                 "until_unix": 2000,
                 "upstream": "github",
+                "tool": "github::search_repos",
+                "capability": "resources",
+                "operation": "resource.read",
+                "subject_scoped": true,
+                "actor": "codex",
+                "outcome": "failed",
+                "search": "timeout",
+                "bucket_count": 24,
+                "timezone": "America/New_York",
+                "timezone_offset_minutes": -240,
+                "include_facets": true,
             })
         );
     }
@@ -883,6 +1077,17 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
+                "bucket_count": null,
+                "timezone": null,
+                "timezone_offset_minutes": null,
+                "include_facets": false,
             })
         );
     }
@@ -899,6 +1104,13 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
                 "limit": 50,
                 "cursor": null,
                 "include_total": false,
@@ -917,6 +1129,13 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
                 "limit": null,
                 "cursor": null,
                 "include_total": false,
@@ -943,6 +1162,13 @@ mod tests {
                 "since_unix": null,
                 "until_unix": null,
                 "upstream": null,
+                "tool": null,
+                "capability": null,
+                "operation": null,
+                "subject_scoped": null,
+                "actor": null,
+                "outcome": null,
+                "search": null,
                 "limit": null,
                 "cursor": "123:45",
                 "include_total": true,

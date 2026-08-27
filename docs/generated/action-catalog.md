@@ -6,6 +6,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 
 | Service | Action | Built-in | Destructive | Admin | Required scopes | Params | Returns | Surfaces |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `audit.full` | false | false | false |  |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
 | `doctor` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
@@ -51,7 +52,8 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.list` | false | false | true | lab:admin |  | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string` | `ok` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api, web |
 | `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | cli, mcp, api, web |
@@ -85,8 +87,8 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin |  | `SupportedServiceView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.update` | false | false | true | lab:admin | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string` | `GatewayUsageMetricsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `id*: string` | `VirtualServerMcpPolicyView` | cli, mcp, api, web |

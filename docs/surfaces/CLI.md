@@ -39,7 +39,7 @@ standalone CLI command group.
 `labby setup proxy` persists non-secret direct-proxy defaults and stores or
 generates the separate bearer secret. `labby doctor proxy` with no route flags
 runs the direct-proxy preflight; supplying the routed doctor URL/path flags
-preserves the public Lab/protected-route diagnostic. See the
+preserves the public Labby/protected-route diagnostic. See the
 [stdio MCP proxy guide](../guides/STDIO_MCP_PROXY.md) for launcher inference,
 auth/exposure modes, output, precedence, and cleanup.
 

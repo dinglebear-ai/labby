@@ -6,12 +6,13 @@ use axum::{
     routing::{get, post},
 };
 use labby_gateway::gateway::palette::{
-    LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView, PaletteCaller,
-    PaletteExecuteRequest, PaletteExecuteResponse,
+    CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
+    PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionReceipt,
 };
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -22,10 +23,12 @@ use crate::api::state::AppState;
 use crate::dispatch::error::ToolError;
 
 const PALETTE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(2);
-static PALETTE_CATALOG_CACHE: OnceLock<Mutex<Option<CachedPaletteCatalog>>> = OnceLock::new();
+const PALETTE_CATALOG_CACHE_CAPACITY: usize = 32;
+static PALETTE_CATALOG_CACHE: OnceLock<Mutex<VecDeque<CachedPaletteCatalog>>> = OnceLock::new();
 
 #[derive(Clone)]
 struct CachedPaletteCatalog {
+    manager: Weak<crate::dispatch::gateway::manager::GatewayManager>,
     key: String,
     expires_at: Instant,
     catalog: LauncherCatalogView,
@@ -36,6 +39,7 @@ pub fn routes(_state: AppState) -> Router<AppState> {
         .route("/catalog", get(catalog))
         .route("/search", get(search))
         .route("/schema", get(schema))
+        .route("/descriptor", get(descriptor))
         .route("/execute", post(execute))
 }
 
@@ -90,22 +94,31 @@ async fn compact_palette_catalog(
 ) -> Result<LauncherCatalogView, ApiError> {
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let cache_key = palette_catalog_cache_key(state, &manager, auth);
-    let cache = PALETTE_CATALOG_CACHE.get_or_init(|| Mutex::new(None));
+    let cache = PALETTE_CATALOG_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
     {
-        let cached = cache.lock().await;
-        if let Some(cached) = cached.as_ref()
-            && cached.key == cache_key
-            && cached.expires_at > Instant::now()
+        let mut cached = cache.lock().await;
+        let now = Instant::now();
+        cached.retain(|entry| entry.expires_at > now);
+        if let Some(position) = cached.iter().position(|entry| entry.key == cache_key)
+            && let Some(entry) = cached.remove(position)
         {
-            return Ok(cached.catalog.clone());
+            let catalog = entry.catalog.clone();
+            cached.push_back(entry);
+            return Ok(catalog);
         }
     }
 
     let caller = palette_caller(auth, request_id(headers))?;
-    let mut catalog = manager.palette_catalog(&caller).await?;
+    // HTTP search reads the gateway's continuously maintained snapshot. A
+    // fleet-wide refresh here would make one query wait on every upstream.
+    let mut catalog = manager.palette_catalog_snapshot(&caller).await?;
     append_labby_actions(&mut catalog, state, auth);
     compact_catalog_schemas(&mut catalog);
-    *cache.lock().await = Some(CachedPaletteCatalog {
+    let mut cached = cache.lock().await;
+    if cached.len() == PALETTE_CATALOG_CACHE_CAPACITY {
+        cached.pop_front();
+    }
+    cached.push_back(CachedPaletteCatalog {
         key: cache_key,
         expires_at: Instant::now() + PALETTE_CATALOG_CACHE_TTL,
         catalog: catalog.clone(),
@@ -113,12 +126,30 @@ async fn compact_palette_catalog(
     Ok(catalog)
 }
 
+async fn descriptor(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Query(query): Query<SchemaQuery>,
+) -> Result<Json<CapabilityDescriptor>, ApiError> {
+    if !query.id.starts_with("mcp:") {
+        return Err(ToolError::Sdk {
+            sdk_kind: "not_found".to_string(),
+            message: format!("launcher entry `{}` was not found", query.id),
+        }
+        .into());
+    }
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    Ok(Json(manager.palette_descriptor(&caller, &query.id).await?))
+}
+
 fn palette_catalog_cache_key(
     state: &AppState,
-    manager: &std::sync::Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    manager: &Arc<crate::dispatch::gateway::manager::GatewayManager>,
     auth: Option<&AuthContext>,
 ) -> String {
-    let mut key = format!("manager:{:p}", std::sync::Arc::as_ptr(manager));
+    let mut key = format!("manager:{:p}", Arc::as_ptr(manager));
     key.push_str("|services:");
     let mut services = state
         .enabled_services
@@ -166,7 +197,13 @@ async fn execute(
     Json(request): Json<PaletteExecuteRequest>,
 ) -> Result<Json<PaletteExecuteResponse>, ApiError> {
     if request.id.starts_with("labby:") {
-        return execute_labby_action(state, auth.as_ref().map(|auth| &auth.0), request).await;
+        return execute_labby_action(
+            state,
+            auth.as_ref().map(|auth| &auth.0),
+            request_id(&headers),
+            request,
+        )
+        .await;
     }
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
@@ -194,9 +231,10 @@ fn palette_caller(
         .filter(|name| !name.is_empty() && *name != "*")
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    Ok(PaletteCaller::scoped_read_only(
-        Some(&auth.sub),
+    Ok(PaletteCaller::scoped(
+        &auth.sub,
         request_id,
+        auth.scopes.clone(),
         allowed_upstreams,
     ))
 }
@@ -232,16 +270,20 @@ fn append_labby_actions(
             }
             let input_schema = labby_action_schema(action);
             let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
+            let id = format!("labby:{}::{}", service.name, action.name);
+            let contract_hash =
+                labby_action_contract_hash(&id, action, schema_fingerprint.as_deref());
             catalog
                 .entries
                 .push(LauncherEntryView::LabbyAction(LabbyActionLauncherEntry {
-                    id: format!("labby:{}::{}", service.name, action.name),
+                    id,
                     label: format!("{} {}", service.name, action.name),
                     description: action.description.to_string(),
                     source: service.name.to_string(),
                     destructive: action.destructive,
                     input_schema,
                     schema_fingerprint,
+                    contract_hash,
                     service: service.name.to_string(),
                     action: action.name.to_string(),
                 }));
@@ -452,6 +494,7 @@ fn labby_schema_response(
 async fn execute_labby_action(
     state: AppState,
     auth: Option<&AuthContext>,
+    request_id: Option<&str>,
     request: PaletteExecuteRequest,
 ) -> Result<Json<PaletteExecuteResponse>, ApiError> {
     let Some(auth) = auth else {
@@ -499,6 +542,19 @@ async fn execute_labby_action(
             message: format!("action `{service_name}.{action_name}` requires admin scope"),
         }));
     }
+    let input_schema = labby_action_schema(action);
+    let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
+    let contract_hash =
+        labby_action_contract_hash(&request.id, action, schema_fingerprint.as_deref());
+    if request.expected_contract_hash != contract_hash {
+        return Err(ApiError::new(ToolError::Sdk {
+            sdk_kind: "contract_changed".to_string(),
+            message: format!(
+                "launcher entry `{}` changed; refresh its contract and review it again",
+                request.id
+            ),
+        }));
+    }
     if action.destructive && !request.confirm_destructive {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "confirmation_required".to_string(),
@@ -508,6 +564,13 @@ async fn execute_labby_action(
     validate_labby_action_params(action, &request.params)?;
     let result = (service.dispatch)(action_name.to_string(), request.params).await?;
     Ok(Json(PaletteExecuteResponse {
+        receipt: PaletteExecutionReceipt {
+            request_id: request_id.unwrap_or("unavailable").to_string(),
+            tool_id: request.id.clone(),
+            contract_hash: contract_hash.clone(),
+            catalog_revision: contract_hash,
+            truncated: false,
+        },
         id: request.id,
         result,
         ui: None,
@@ -697,6 +760,20 @@ fn stable_json_fingerprint(value: &Value) -> String {
     hex_digest(hasher.finalize().as_slice())
 }
 
+fn labby_action_contract_hash(
+    id: &str,
+    action: &ActionSpec,
+    schema_fingerprint: Option<&str>,
+) -> String {
+    stable_json_fingerprint(&json!({
+        "contractVersion": 1,
+        "id": id,
+        "schemaFingerprint": schema_fingerprint,
+        "destructive": action.destructive,
+        "requiresAdmin": action_requires_admin(action),
+    }))
+}
+
 fn hex_digest(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -711,7 +788,9 @@ fn hex_digest(bytes: &[u8]) -> String {
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::{
-        LauncherEntryView, append_labby_actions, catalog_fingerprint, entry_id, search_entries,
+        LauncherEntryView, append_labby_actions, catalog_fingerprint, entry_id,
+        labby_action_contract_hash, labby_action_schema, palette_caller, search_entries,
+        stable_json_fingerprint,
     };
     use std::future::Future;
     use std::pin::Pin;
@@ -724,7 +803,7 @@ mod tests {
     use labby_gateway::gateway::palette::LauncherCatalogView;
     use labby_gateway::upstream::pool::UpstreamPool;
     use labby_gateway::upstream::types::{
-        ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
+        SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
     };
     use labby_primitives::action::{ActionSpec, ParamSpec};
     use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
@@ -784,6 +863,68 @@ mod tests {
         registry
     }
 
+    #[test]
+    fn palette_caller_carries_real_mcp_scopes_and_exact_upstream_grants() {
+        let auth = AuthContext {
+            sub: "alice".to_string(),
+            actor_key: None,
+            scopes: vec![
+                "mcp:read".to_string(),
+                "mcp:write".to_string(),
+                "gateway:alpha".to_string(),
+            ],
+            issuer: "test".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let caller = palette_caller(Some(&auth), Some("req-scopes")).expect("scoped caller");
+
+        assert!(caller.caller.can_read());
+        assert!(caller.caller.can_execute());
+        assert_eq!(caller.caller_auth.scopes, auth.scopes);
+        assert!(
+            !caller
+                .caller_auth
+                .scopes
+                .iter()
+                .any(|scope| scope == "lab" || scope == "lab:admin")
+        );
+        let allowed = caller.scope.allowed_namespaces().expect("exact scope");
+        assert!(allowed.contains("alpha"));
+        assert!(
+            !allowed.contains("beta"),
+            "cross-upstream access stays denied"
+        );
+    }
+
+    #[test]
+    fn palette_caller_requires_read_to_browse_and_write_plus_upstream_to_execute() {
+        let caller = |scopes: &[&str]| {
+            let auth = AuthContext {
+                sub: "alice".to_string(),
+                actor_key: None,
+                scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+                issuer: "test".to_string(),
+                via_session: false,
+                csrf_token: None,
+                email: None,
+            };
+            palette_caller(Some(&auth), None).expect("authenticated caller")
+        };
+
+        let browse = caller(&["mcp:read", "gateway:alpha"]);
+        assert!(browse.caller.can_read());
+        assert!(!browse.caller.can_execute());
+
+        let execute = caller(&["mcp:write", "gateway:alpha"]);
+        assert!(!execute.caller.can_read());
+        assert!(execute.caller.can_execute());
+
+        let unscoped_write = caller(&["mcp:write"]);
+        assert!(!unscoped_write.caller.can_execute());
+    }
+
     fn test_upstream_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
             enabled: true,
@@ -840,7 +981,7 @@ mod tests {
             exposure_policy: ToolExposurePolicy::All,
             resource_exposure_policy: ToolExposurePolicy::All,
             prompt_exposure_policy: ToolExposurePolicy::All,
-            skill_exposure_policy: ToolExposurePolicy::All,
+            skill_exposure_policy: SkillExposurePolicy::all(),
             proxy_skills: false,
             supports_skills: None,
             proxy_resources: false,
@@ -1122,6 +1263,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn palette_descriptor_returns_the_bounded_live_mcp_contract() {
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = test_gateway_manager(
+            std::env::temp_dir().join("palette-descriptor.toml"),
+            runtime,
+        );
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                code_mode: CodeModeConfig {
+                    enabled: true,
+                    ..CodeModeConfig::default()
+                },
+                upstream: vec![test_upstream_config("github")],
+                ..GatewayConfig::default()
+            })
+            .await;
+        pool.insert_entry_for_test(
+            "github",
+            healthy_upstream_entry_with_schema(
+                "github",
+                "search_repos",
+                Some(json!({
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"]
+                })),
+            ),
+        )
+        .await;
+
+        let state =
+            AppState::from_registry(test_registry()).with_gateway_manager(Arc::new(manager));
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/descriptor?id=mcp:github::search_repos")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["contractVersion"], 1);
+        assert_eq!(value["id"], "mcp:github::search_repos");
+        assert_eq!(value["upstream"], "github");
+        assert_eq!(value["tool"], "search_repos");
+        assert_eq!(value["inputSchema"]["required"][0], "q");
+        assert_eq!(value["destructive"], false);
+        assert_eq!(value["contractHash"].as_str().unwrap().len(), 64);
+        assert!(
+            value["catalogRevision"]
+                .as_str()
+                .unwrap()
+                .starts_with("pool:")
+        );
+    }
+
+    #[tokio::test]
     async fn palette_catalog_has_private_cache_headers_and_304() {
         let manager = Arc::new(test_gateway_manager(
             std::env::temp_dir().join("palette-cache.toml"),
@@ -1277,6 +1484,7 @@ mod tests {
                     destructive: false,
                     input_schema: None,
                     schema_fingerprint: None,
+                    contract_hash: "a".repeat(64),
                     upstream: "github".to_string(),
                     tool: "list_issues".to_string(),
                 }),
@@ -1288,6 +1496,7 @@ mod tests {
                     destructive: false,
                     input_schema: None,
                     schema_fingerprint: None,
+                    contract_hash: "b".repeat(64),
                     upstream: "github".to_string(),
                     tool: "search_repos".to_string(),
                 }),
@@ -1310,6 +1519,7 @@ mod tests {
             destructive: false,
             input_schema: None,
             schema_fingerprint: None,
+            contract_hash: "a".repeat(64),
             upstream: "github".to_string(),
             tool: "search_repos".to_string(),
         };
@@ -1328,6 +1538,30 @@ mod tests {
         ));
         let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
         let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let catalog_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/catalog")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(catalog_response.status(), StatusCode::OK);
+        let catalog_body = axum::body::to_bytes(catalog_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let catalog: Value = serde_json::from_slice(&catalog_body).unwrap();
+        let contract_hash = catalog["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "labby:demo::echo.run")
+            .and_then(|entry| entry["contractHash"].as_str())
+            .expect("Labby action catalog contract hash")
+            .to_string();
 
         let response = app
             .oneshot(
@@ -1337,7 +1571,12 @@ mod tests {
                     .header(header::AUTHORIZATION, "Bearer test-token")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        r#"{"id":"labby:demo::echo.run","params":{"name":"labby"}}"#,
+                        json!({
+                            "id": "labby:demo::echo.run",
+                            "params": {"name": "labby"},
+                            "expectedContractHash": contract_hash,
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -1351,12 +1590,57 @@ mod tests {
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["id"], "labby:demo::echo.run");
         assert_eq!(value["result"]["name"], "labby");
+        assert_eq!(value["receipt"]["contractHash"], contract_hash);
     }
 
     #[tokio::test]
     async fn palette_execute_validates_labby_action_params() {
         let manager = Arc::new(test_gateway_manager(
             std::env::temp_dir().join("palette-labby-validate.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let input_schema = labby_action_schema(&TEST_ACTIONS[0]);
+        let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
+        let contract_hash = labby_action_contract_hash(
+            "labby:demo::echo.run",
+            &TEST_ACTIONS[0],
+            schema_fingerprint.as_deref(),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/palette/execute")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "id": "labby:demo::echo.run",
+                            "params": {},
+                            "expectedContractHash": contract_hash,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["kind"], "missing_param");
+    }
+
+    #[tokio::test]
+    async fn palette_execute_rejects_a_stale_labby_action_contract() {
+        let manager = Arc::new(test_gateway_manager(
+            std::env::temp_dir().join("palette-labby-stale.toml"),
             GatewayRuntimeHandle::default(),
         ));
         let state = AppState::from_registry(test_registry()).with_gateway_manager(manager);
@@ -1369,18 +1653,25 @@ mod tests {
                     .uri("/v1/palette/execute")
                     .header(header::AUTHORIZATION, "Bearer test-token")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"id":"labby:demo::echo.run","params":{}}"#))
+                    .body(Body::from(
+                        json!({
+                            "id": "labby:demo::echo.run",
+                            "params": {"name": "must-not-dispatch"},
+                            "expectedContractHash": "a".repeat(64),
+                        })
+                        .to_string(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["kind"], "missing_param");
+        assert_eq!(value["kind"], "contract_changed");
     }
 
     #[tokio::test]

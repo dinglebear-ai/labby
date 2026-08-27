@@ -82,7 +82,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.error.kind() {
             "auth_failed" => StatusCode::UNAUTHORIZED,
-            "not_found" => StatusCode::NOT_FOUND,
+            "not_found" | "route_not_found" => StatusCode::NOT_FOUND,
             "rate_limited" | "queue_saturated" => StatusCode::TOO_MANY_REQUESTS,
             "sync_in_progress" | "service_unavailable" | "provider_unavailable" => {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -127,6 +127,7 @@ impl IntoResponse for ApiError {
             | "not_connected"
             | "invalid_provider_output" => StatusCode::BAD_GATEWAY,
             "conflict"
+            | "contract_changed"
             | "ambiguous_tool"
             | "restart_required"
             | "stale_suggestion"
@@ -198,6 +199,11 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn contract_changed_maps_to_conflict() {
+        assert_eq!(status_for("contract_changed"), StatusCode::CONFLICT);
     }
 
     #[test]

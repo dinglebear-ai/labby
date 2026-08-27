@@ -587,6 +587,7 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
             _server_task: None,
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         },
         tools,
     ))
@@ -787,6 +788,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
                 _server_task: None,
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
             tools,
         ));
@@ -838,6 +840,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             _server_task: None,
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         },
         tools,
     ))

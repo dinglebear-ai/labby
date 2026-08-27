@@ -26,19 +26,30 @@
 //! `skills/list` entry or a `skills/get` confirmation, never from the `skill://`
 //! scheme alone.
 
+pub mod availability;
+pub mod core;
 pub mod digest;
 pub mod frontmatter;
 pub mod limits;
 pub mod manifest;
+pub mod provider;
+pub mod requirements;
 pub mod uri;
 pub mod wire;
 
+pub use availability::{
+    SkillAvailabilitySummary, SkillCompatibilityClassification, SkillCompatibilityItem,
+};
+pub use core::{SkillDescriptor, SkillId, SkillProviderId, SkillProviderKind};
 pub use digest::{DIGEST_ALGORITHM, ResourceDigest, parse_digest};
 pub use frontmatter::{
     RESERVED_METADATA_PREFIX, compare_frontmatter, is_valid_skill_name, parse_skill_md_frontmatter,
     validate_frontmatter,
 };
-pub use manifest::{SkillRejection, ValidatedSkill, validate_skill_entry, verify_manifest_file};
+pub use manifest::{
+    SkillRejection, SkillRejectionDetail, ValidatedSkill, validate_skill_entry,
+    validate_skill_entry_detailed, verify_manifest_file,
+};
 pub use uri::{
     FIRST_PARTY_ORIGIN, SKILL_MD_FILE, SKILL_URI_SCHEME, SkillUri, is_valid_origin_label,
     parse_skill_resource_uri, parse_skill_uri,

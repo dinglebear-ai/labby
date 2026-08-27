@@ -93,10 +93,39 @@ pub fn config_toml_path() -> Option<PathBuf> {
 }
 
 fn labby_db(name: &str) -> PathBuf {
-    lab_home_dir()
+    labby_db_for(lab_home_override(), home_dir(), name)
+}
+
+fn labby_db_for(lab_home: Option<PathBuf>, home: Option<PathBuf>, name: &str) -> PathBuf {
+    lab_home
+        .or_else(|| home.map(|home| home.join(".labby")))
         .unwrap_or_else(|| PathBuf::from(".labby"))
         .join(name)
 }
+
+#[cfg(test)]
+fn access_db_path_for(lab_home: Option<PathBuf>, home: Option<PathBuf>) -> Result<PathBuf> {
+    access_db_path_from_roots(lab_home, home)
+}
+
+#[allow(dead_code)]
+pub(crate) fn access_db_path() -> Result<PathBuf> {
+    access_db_path_from_roots(lab_home_override(), home_dir())
+}
+
+fn access_db_path_from_roots(lab_home: Option<PathBuf>, home: Option<PathBuf>) -> Result<PathBuf> {
+    let state_root = lab_home
+        .or_else(|| home.map(|home| home.join(".labby")))
+        .ok_or_else(|| anyhow::anyhow!("neither LABBY_HOME nor HOME is set"))?;
+    if !state_root.is_absolute() {
+        anyhow::bail!(
+            "Labby state root must be absolute: {}",
+            state_root.display()
+        );
+    }
+    Ok(state_root.join("access.db"))
+}
+
 pub fn usage_db_path() -> PathBuf {
     labby_db("usage.db")
 }
@@ -145,5 +174,31 @@ mod tests {
                 PathBuf::from("/home/operator/.config/labby/config.toml"),
             ]
         );
+    }
+
+    #[test]
+    fn access_database_uses_explicit_labby_home_and_canonical_filename() {
+        assert_eq!(
+            access_db_path_for(Some("/srv/labby".into()), Some("/home/operator".into())).unwrap(),
+            PathBuf::from("/srv/labby/access.db")
+        );
+    }
+
+    #[test]
+    fn access_database_uses_the_default_labby_state_root() {
+        assert_eq!(
+            access_db_path_for(None, Some("/home/operator".into())).unwrap(),
+            PathBuf::from("/home/operator/.labby/access.db")
+        );
+    }
+
+    #[test]
+    fn access_database_rejects_missing_or_relative_state_roots() {
+        assert!(access_db_path_for(None, None).is_err());
+        assert!(
+            access_db_path_for(Some("relative/labby".into()), Some("/home/operator".into()))
+                .is_err()
+        );
+        assert!(access_db_path_for(None, Some("relative/home".into())).is_err());
     }
 }

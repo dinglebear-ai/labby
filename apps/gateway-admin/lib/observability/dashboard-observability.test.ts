@@ -6,12 +6,26 @@ import type { ServerLogEntry } from '../types/traces.ts'
 
 const now = Date.parse('2026-08-17T12:00:00.000Z')
 const base = aggregateGatewayUsage('24h', now, {
+  window_total_calls: 2,
   total_calls: 2,
   error_calls: 0,
   avg_elapsed_ms: 10,
+  p50_elapsed_ms: 10,
+  p95_elapsed_ms: 10,
+  p99_elapsed_ms: 10,
+  distinct_tools: 0,
+  distinct_actors: 0,
+  peak_per_min: 0,
   top_tools: [],
+  least_tools: [],
   top_actors: [],
-}, { calls: [] })
+  slowest_tools: [],
+  errors: [],
+  upstreams: [],
+  hourly: [],
+  timeseries: [],
+  facets: { tools: [], actors: [], upstreams: [], outcomes: [] },
+})
 
 function entry(message: string, fields: Record<string, unknown>, timestamp = now - 1000): ServerLogEntry {
   return {

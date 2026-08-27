@@ -11,9 +11,9 @@ Code Mode is the JavaScript execution surface behind the MCP `codemode` and
 compact docs, and run one async JavaScript function in a sandbox that can call
 the tools allowed by that entry point.
 
-Lab actions are intentionally not exposed through Code Mode. Call Lab built-in
+Labby actions are intentionally not exposed through Code Mode. Call Labby built-in
 service tools directly when raw tools are visible, or use the native gateway
-management/API surfaces for Lab actions.
+management/API surfaces for Labby actions.
 
 ## Surface
 
@@ -22,28 +22,16 @@ Code Mode has two text MCP entry points with the same input shape:
 - `codemode({ code })` is the full execution surface. It requires `lab` or
   `lab:admin` and may invoke write-capable or destructive upstream tools.
 - `codemode_read({ code })` is the enforced read-only surface. It accepts
-  `lab:read`, `lab`, or `lab:admin`, exposes only upstream tools present in the
-  operator-owned `trusted_read_only_tools` allowlist **and** whose live MCP
-  descriptor explicitly sets `readOnlyHint: true`, and rejects descriptors that
-  also set `destructiveHint: true`. An absent or merely
-  `destructiveHint: false` annotation is not proof that a tool is read-only.
+  `lab:read`, `lab`, or `lab:admin`. It exposes only upstream tools whose live
+  MCP descriptor explicitly sets `readOnlyHint: true` and
+  `destructiveHint: false`. An absent annotation or a descriptor with only
+  `destructiveHint: false` is not proof that a tool is read-only.
 
-The trust list is empty by default and accepts exact namespaced tool ids only:
-
-```toml
-[code_mode]
-enabled = true
-trusted_read_only_tools = [
-  "claude-dookie::Read",
-  "qdrant::collection_info",
-]
-```
-
-This is a dedicated safety attestation, separate from an upstream's
-`expose_tools` visibility policy. Tool annotations are upstream-controlled and
-cannot grant read-only authority by themselves. Both the trust entry and the
-live descriptor are checked again on invocation. A changed descriptor is
-rejected before dispatch and must be rediscovered.
+The catalog checks the standard MCP annotations during discovery. The call path
+checks the current live descriptor again immediately before dispatch. A changed
+descriptor is rejected and must be rediscovered. The old
+`trusted_read_only_tools` configuration field remains accepted for compatibility,
+but it no longer controls catalog admission.
 
 The optional `codemode_ui` MCP App entry point has the same full execution
 authority as `codemode`; it is not a read-only inspector shortcut. The full
@@ -235,7 +223,7 @@ async () => {
 calls. A failed `callTool` rejects only that promise; catch locally when partial
 success is useful.
 
-Synthetic Code Mode exposes the fixed Lab-owned entry points instead of raw
+Synthetic Code Mode exposes the fixed Labby-owned entry points instead of raw
 upstream tools. Discovery, schema inspection, tool calls, and intermediate
 values stay inside one sandbox execution.
 
@@ -489,6 +477,7 @@ their JSON MCP representation.
 
 Defaults:
 
+- `max_source_bytes = 131072`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
 
@@ -557,7 +546,7 @@ Semantics:
 - **Native URIs.** The widget's `ui://<upstream>/...` URI is preserved verbatim.
   The gateway routes a `resources/read` of that URI to the owning upstream peer
   via catalog reverse-lookup (it is **not** rewritten to `lab://upstream/...`).
-  `ui://lab/code-mode/*` remains reserved for Lab's own Code Mode app resources.
+  `ui://lab/code-mode/*` remains reserved for Labby's own Code Mode app resources.
 - **Identical mirroring.** The execute `CallToolResult` carries the upstream's
   `_meta.ui` object verbatim, so the host renders the widget identically to a
   direct connector. The widget itself is driven by the `ui://` resource read, not
@@ -570,18 +559,18 @@ Semantics:
 While synthetic Code Mode is active, raw upstream tools stay hidden from
 `tools/list`, including tools that carry `_meta.ui.resourceUri`. Upstream health
 therefore cannot add or remove approval-facing callback actions. The advertised
-MCP App actions are the fixed Lab-owned surface (`codemode_ui`, `mcp_app`, and
-the configured Lab-owned admin apps), not raw upstream callbacks.
+MCP App actions are the fixed Labby-owned surface (`codemode_ui`, `mcp_app`, and
+the configured Labby-owned admin apps), not raw upstream callbacks.
 
 An upstream widget returned by a Code Mode execution can still render through
 the native resource URI mirrored in the result. Rendering that resource does
 not advertise its server's callback tools.
 
 A rendered MCP App can call back to its server only through host
-`callServerTool` / `tools/call`. Lab allows those callback calls through Code
+`callServerTool` / `tools/call`. Labby allows those callback calls through Code
 Mode's raw-tool gate only when all of these are true:
 
-- the requested tool is an exposed upstream tool, not a Lab built-in service;
+- the requested tool is an exposed upstream tool, not a Labby built-in service;
 - the upstream is routable and allowed by the current protected route scope;
 - the same upstream exposes at least one MCP App UI tool;
 - the requested tool is not destructive.
@@ -648,10 +637,9 @@ additional per-call confirmation or pause step on top of that. Concretely:
 - **MCP:** an execute-capable caller (`lab` or `lab:admin`) may call any
   destructive upstream tool from Code Mode with no separate confirmation. A
   caller without execute permission is refused with `forbidden` before dispatch.
-- **Read-only MCP:** `codemode_read` never admits a tool unless the operator has
-  trusted its exact namespaced id and its descriptor is explicitly read-only.
-  Discovery filters the catalog, and invocation checks both the operator policy
-  and the live descriptor again immediately before dispatch. `writeArtifact`, local
+- **Read-only MCP:** `codemode_read` never admits a tool unless its descriptor is
+  explicitly read-only. Discovery filters the catalog, and invocation checks the
+  live descriptor again immediately before dispatch. `writeArtifact`, local
   `state`/`git` providers, and other write paths are unavailable.
 - **CLI:** Code Mode execution is operator-driven and always execute-capable,
   so destructive upstream calls are permitted unconditionally.

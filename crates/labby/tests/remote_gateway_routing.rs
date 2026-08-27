@@ -43,8 +43,8 @@ fn opportunistic_command(home: &std::path::Path, server: &MockServer) -> Command
         .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
         .env("LABBY_SERVER_URL", "")
         .env("LABBY_MCP_HTTP_TOKEN", "")
-        .env("LABBY_MCP_HOST", url.host_str().unwrap())
-        .env("LABBY_MCP_PORT", url.port().unwrap().to_string())
+        .env("LABBY_MCP_HTTP_HOST", url.host_str().unwrap())
+        .env("LABBY_MCP_HTTP_PORT", url.port().unwrap().to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command

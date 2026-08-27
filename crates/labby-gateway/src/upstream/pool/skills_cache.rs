@@ -22,13 +22,14 @@
 //! turn every read into a fetch while a very large one would pin a stale
 //! catalog indefinitely.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
 use super::skills_list::UpstreamSkills;
+use labby_runtime::skills::{ValidatedSkill, parse_skill_resource_uri};
 
 /// Shortest refresh interval honored from an upstream's `ttlMs`.
 pub(super) const SKILLS_TTL_FLOOR: Duration = Duration::from_secs(5);
@@ -46,6 +47,41 @@ pub(super) const SKILLS_CACHE_IDLE_TTL: Duration = Duration::from_mins(30);
 /// OAuth deployment with many principals would otherwise grow without bound.
 pub(super) const SKILLS_CACHE_MAX_ENTRIES: usize = 512;
 
+/// Direct `skills/get` manifests retained per catalog shard.
+///
+/// They are intentionally separate from `UpstreamSkills`: successfully getting
+/// an unlisted skill must not make it appear in a later discovery response.
+#[derive(Debug, Clone)]
+pub(super) struct CachedDirectSkill {
+    pub(super) skill: ValidatedSkill,
+    expires_at: Instant,
+    last_used: Instant,
+}
+
+impl CachedDirectSkill {
+    pub(super) fn new(skill: ValidatedSkill) -> Self {
+        let now = Instant::now();
+        Self {
+            skill,
+            expires_at: now + SKILLS_TTL_DEFAULT,
+            last_used: now,
+        }
+    }
+
+    pub(super) fn is_fresh(&self) -> bool {
+        Instant::now() < self.expires_at
+    }
+
+    pub(super) fn touch(&mut self) {
+        self.last_used = Instant::now();
+    }
+
+    #[cfg(test)]
+    pub(super) fn expire_now(&mut self) {
+        self.expires_at = Instant::now();
+    }
+}
+
 /// Cache key: one entry per upstream per authorization context.
 pub(super) type SkillsCacheKey = (String, Option<String>);
 
@@ -53,6 +89,7 @@ pub(super) type SkillsCacheKey = (String, Option<String>);
 #[derive(Debug, Clone)]
 pub(super) struct CachedSkills {
     pub(super) skills: Arc<UpstreamSkills>,
+    pub(super) direct: BTreeMap<String, CachedDirectSkill>,
     /// When this snapshot was fetched.
     fetched_at: Instant,
     /// When it stops being fresh, already clamped.
@@ -70,6 +107,7 @@ impl CachedSkills {
         let ttl = clamp_ttl(skills.ttl_ms);
         Self {
             skills: Arc::new(skills),
+            direct: BTreeMap::new(),
             fetched_at: now,
             expires_at: now + ttl,
             last_used: now,
@@ -95,7 +133,39 @@ impl CachedSkills {
 
     pub(super) fn touch(&mut self) {
         self.last_used = Instant::now();
+        self.direct.retain(|_, snapshot| {
+            snapshot.is_fresh() && snapshot.last_used.elapsed() < SKILLS_CACHE_IDLE_TTL
+        });
     }
+
+    pub(super) fn retain_direct_from(&mut self, previous: &Self) {
+        self.direct = previous
+            .direct
+            .iter()
+            .filter(|(_, snapshot)| {
+                snapshot.is_fresh()
+                    && !snapshot_owned_uris(snapshot)
+                        .iter()
+                        .any(|uri| self.skills.resource_index.contains_key(uri))
+            })
+            .map(|(uri, snapshot)| (uri.clone(), snapshot.clone()))
+            .collect();
+    }
+}
+
+fn snapshot_owned_uris(snapshot: &CachedDirectSkill) -> Vec<String> {
+    std::iter::once(&snapshot.skill.entry.uri)
+        .chain(
+            snapshot
+                .skill
+                .entry
+                .resources
+                .iter()
+                .flatten()
+                .map(|resource| &resource.uri),
+        )
+        .filter_map(|uri| parse_skill_resource_uri(uri).ok().map(|uri| uri.to_uri()))
+        .collect()
 }
 
 /// Clamp an upstream-supplied `ttlMs` into the range Labby will honor.

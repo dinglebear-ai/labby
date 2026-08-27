@@ -1,4 +1,5 @@
 #![cfg(all(feature = "gateway", feature = "proxy-testkit"))]
+#![allow(clippy::await_holding_lock)]
 
 use labby::proxy::config::ProxyPortPreference;
 use labby::proxy::tailscale::{
@@ -122,8 +123,22 @@ fn fixed_and_random_selection_respect_tcp_and_web_collisions() {
     );
 }
 
+/// Serializes every test that writes and then executes a fake `tailscale`.
+///
+/// `fs::write` holds a write fd on the script for a moment. `cargo test` runs
+/// these tests as threads of one process, and each spawn of another test's fake
+/// binary forks that whole process — the child inherits the still-open write fd
+/// until it execs, which keeps the inode "open for writing" and makes the exec
+/// fail with `ETXTBSY` ("Text file busy"). Staging plus rename does not help:
+/// rename keeps the inode. Holding this lock for the lifetime of a
+/// `FakeTailscale` keeps writes and forks from overlapping. These tests take
+/// about two seconds in total, so serializing them costs nothing.
+#[cfg(unix)]
+static FAKE_TAILSCALE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(unix)]
 struct FakeTailscale {
+    _exec_lock: std::sync::MutexGuard<'static, ()>,
     _temp: tempfile::TempDir,
     executable: PathBuf,
     root: PathBuf,
@@ -132,6 +147,9 @@ struct FakeTailscale {
 #[cfg(unix)]
 impl FakeTailscale {
     fn new() -> Self {
+        let exec_lock = FAKE_TAILSCALE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().to_path_buf();
         let executable = root.join("tailscale");
@@ -178,6 +196,7 @@ exit 2
         fs::set_permissions(&staged_executable, fs::Permissions::from_mode(0o755)).unwrap();
         fs::rename(&staged_executable, &executable).unwrap();
         Self {
+            _exec_lock: exec_lock,
             _temp: temp,
             executable,
             root,

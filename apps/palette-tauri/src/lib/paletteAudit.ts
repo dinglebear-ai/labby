@@ -1,6 +1,5 @@
 import type { LauncherEntry } from "@/lib/launcherCatalog";
 import type { PaletteResult } from "@/lib/labbyClient";
-import { redactLauncherParams } from "@/lib/launcherValidation";
 
 const STORAGE_KEY = "labby.palette.recentLaunches";
 const MAX_RECENT = 50;
@@ -12,10 +11,18 @@ export interface PaletteLaunchAudit {
   ok: boolean;
   status: number;
   at: string;
-  params?: unknown;
+  receipt?: PaletteReceiptAudit;
 }
 
-export function recordPaletteLaunch(action: LauncherEntry, params: unknown, result: PaletteResult): void {
+export interface PaletteReceiptAudit {
+  requestId: string;
+  toolId: string;
+  contractHash: string;
+  catalogRevision: string;
+  truncated: boolean;
+}
+
+export function recordPaletteLaunch(action: LauncherEntry, result: PaletteResult): void {
   try {
     if (typeof window === "undefined" || !window.localStorage) return;
     const current = readPaletteLaunches();
@@ -26,7 +33,7 @@ export function recordPaletteLaunch(action: LauncherEntry, params: unknown, resu
       ok: result.ok,
       status: result.status,
       at: new Date().toISOString(),
-      params: redactLauncherParams(params),
+      receipt: paletteReceipt(result.payload),
     };
     window.localStorage.setItem(
       STORAGE_KEY,
@@ -35,6 +42,27 @@ export function recordPaletteLaunch(action: LauncherEntry, params: unknown, resu
   } catch {
     // Audit history is useful operator context, but it must never affect execution.
   }
+}
+
+function paletteReceipt(payload: unknown): PaletteReceiptAudit | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const receipt = (payload as Record<string, unknown>).receipt;
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) return undefined;
+  const value = receipt as Record<string, unknown>;
+  if (
+    typeof value.requestId !== "string" ||
+    typeof value.toolId !== "string" ||
+    typeof value.contractHash !== "string" ||
+    typeof value.catalogRevision !== "string" ||
+    typeof value.truncated !== "boolean"
+  ) return undefined;
+  return {
+    requestId: value.requestId,
+    toolId: value.toolId,
+    contractHash: value.contractHash,
+    catalogRevision: value.catalogRevision,
+    truncated: value.truncated,
+  };
 }
 
 export function readPaletteLaunches(): PaletteLaunchAudit[] {

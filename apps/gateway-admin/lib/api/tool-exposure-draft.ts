@@ -48,7 +48,12 @@ export function buildExposurePolicyFromDraft(
   }
 
   if (selectedTools.length === 0) {
-    return { mode: 'allowlist', patterns: [EXPOSE_NONE_PATTERN] }
+    // A genuinely empty allowlist. Each write path encodes this for its own
+    // wire contract: custom gateways persist `expose_tools: []`, which the
+    // backend compiles to an allowlist matching nothing; virtual servers still
+    // need EXPOSE_NONE_PATTERN because their `allowed_actions: []` means
+    // expose-ALL. See `gatewayApi.setExposurePolicy`.
+    return { mode: 'allowlist', patterns: [] }
   }
 
   return {

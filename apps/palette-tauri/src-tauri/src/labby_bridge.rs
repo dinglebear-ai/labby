@@ -265,6 +265,7 @@ pub(crate) struct LauncherExecuteRequest {
     id: String,
     params: serde_json::Value,
     confirm_destructive: Option<bool>,
+    expected_contract_hash: String,
 }
 
 #[tauri::command]
@@ -288,6 +289,7 @@ pub(crate) async fn execute_launcher_entry(
         "id": request.id,
         "params": request.params,
         "confirmDestructive": request.confirm_destructive.unwrap_or(false),
+        "expectedContractHash": request.expected_contract_hash,
     });
 
     let make = |token: Option<&str>| {
@@ -460,6 +462,14 @@ fn validate_launcher_request(request: &LauncherExecuteRequest) -> Result<(), Str
     if !request.params.is_object() {
         return Err("launcher params must be a JSON object".to_string());
     }
+    if request.expected_contract_hash.len() != 64
+        || !request
+            .expected_contract_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("expected contract hash must be 64 lowercase hexadecimal characters".to_string());
+    }
     let serialized = serde_json::to_vec(&request.params).map_err(|err| err.to_string())?;
     if serialized.len() > 256 * 1024 {
         return Err("launcher params must be <= 256 KiB".to_string());
@@ -515,8 +525,24 @@ mod tests {
             id: "mcp:alpha::ping".to_string(),
             params: json!({ "q": "hello" }),
             confirm_destructive: Some(false),
+            expected_contract_hash: "a".repeat(64),
         })
         .expect("valid request");
+    }
+
+    #[test]
+    fn rejects_missing_or_malformed_launcher_contract_hash() {
+        for expected_contract_hash in [String::new(), "A".repeat(64), "a".repeat(63)] {
+            assert!(
+                validate_launcher_request(&LauncherExecuteRequest {
+                    id: "mcp:alpha::ping".to_string(),
+                    params: json!({}),
+                    confirm_destructive: None,
+                    expected_contract_hash,
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]
@@ -526,6 +552,7 @@ mod tests {
                 id: "../escape".to_string(),
                 params: json!({}),
                 confirm_destructive: None,
+                expected_contract_hash: "a".repeat(64),
             })
             .is_err()
         );
@@ -534,6 +561,7 @@ mod tests {
                 id: "mcp:alpha::ping".to_string(),
                 params: json!("not-object"),
                 confirm_destructive: None,
+                expected_contract_hash: "a".repeat(64),
             })
             .is_err()
         );

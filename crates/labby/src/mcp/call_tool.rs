@@ -13,6 +13,8 @@
 //! codemode and upstream branches live in
 //! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
 
+#[cfg(feature = "gateway")]
+use std::time::SystemTime;
 use std::{future::Future, pin::Pin, time::Instant};
 
 use rmcp::ErrorData;
@@ -26,6 +28,8 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::CallbackToolLookup;
 #[cfg(feature = "gateway")]
 use crate::dispatch::upstream::types::UpstreamTool;
+#[cfg(feature = "gateway")]
+use crate::mcp::bound_access::{ProjectExecutionBinding, project_execution_binding};
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_upstream::PreResolvedUpstreamTool;
 use crate::mcp::catalog::SERVER_LOGS_TOOL_NAME;
@@ -54,6 +58,92 @@ use crate::mcp::result_format::{
 };
 use crate::mcp::server::LabMcpServer;
 
+#[cfg(feature = "skills")]
+#[derive(Debug)]
+pub(super) struct SkillLibraryCallbackBoundary {
+    pub(super) identity: labby_auth::VerifiedIdentity,
+    pub(super) scopes: Vec<String>,
+}
+
+/// Project only host-established authentication facts into the Skill Library
+/// app callback. Browser bridge metadata and cookies are deliberately outside
+/// this boundary: an MCP App iframe can request an action, but it cannot mint
+/// identity, scopes, or callback provenance.
+#[cfg(feature = "skills")]
+pub(super) fn skill_library_callback_boundary(
+    parts: &axum::http::request::Parts,
+) -> Result<SkillLibraryCallbackBoundary, ToolError> {
+    use axum::http::header::COOKIE;
+
+    let auth = parts
+        .extensions
+        .get::<labby_auth::auth_context::AuthContext>()
+        .ok_or_else(|| ToolError::Forbidden {
+            message: "Skill Library requires host-established authentication".to_owned(),
+            required_scopes: Vec::new(),
+        })?;
+    if auth.via_session || parts.headers.contains_key(COOKIE) {
+        return Err(ToolError::Forbidden {
+            message: "Skill Library app callbacks require bearer authentication".to_owned(),
+            required_scopes: vec![
+                "lab:read".to_owned(),
+                "lab".to_owned(),
+                "lab:admin".to_owned(),
+            ],
+        });
+    }
+    let identity = parts
+        .extensions
+        .get::<labby_auth::VerifiedIdentity>()
+        .cloned()
+        .ok_or_else(|| ToolError::Forbidden {
+            message: "Skill Library requires a verified host identity".to_owned(),
+            required_scopes: Vec::new(),
+        })?;
+    Ok(SkillLibraryCallbackBoundary {
+        identity,
+        scopes: auth.scopes.clone(),
+    })
+}
+
+#[cfg(feature = "skills")]
+pub(super) fn skill_library_callback_correlation(
+    value: Option<&str>,
+) -> Result<crate::dispatch::skill_library::audit::SkillLibraryCorrelationId, ToolError> {
+    static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let value = value.map(str::to_owned).unwrap_or_else(|| {
+        format!(
+            "mcp-skill-library-{}",
+            REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        )
+    });
+    crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::parse(value).map_err(|()| {
+        ToolError::InvalidParam {
+            message: "invalid request correlation".to_owned(),
+            param: "x-request-id".to_owned(),
+        }
+    })
+}
+
+#[cfg(feature = "skills")]
+fn skill_library_safe_callback_correlation(context: &RequestContext<RoleServer>) -> String {
+    static REJECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let supplied = context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.headers.get("x-request-id"))
+        .and_then(|value| value.to_str().ok());
+    if let Some(value) = supplied
+        && skill_library_callback_correlation(Some(value)).is_ok()
+    {
+        return value.to_owned();
+    }
+    format!(
+        "mcp-skill-library-rejection-{}",
+        REJECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 #[cfg(feature = "gateway")]
 enum WidgetCallbackGate {
     Allowed {
@@ -68,7 +158,6 @@ enum WidgetCallbackGate {
     },
     Destructive {
         resolved: Box<PreResolvedUpstreamTool>,
-        requires_scope_check: bool,
     },
     Ambiguous {
         valid: Vec<String>,
@@ -102,27 +191,138 @@ fn retain_route_visible_gateway_status_rows(
 }
 
 /// Attach the authenticated MCP subject to gateway mutations without replacing caller values.
-fn inject_gateway_origin_param(params: Value, subject: Option<&str>) -> Value {
+#[cfg(feature = "gateway")]
+fn inject_gateway_origin_param(action: &str, params: Value, subject: Option<&str>) -> Value {
+    if !crate::dispatch::gateway::shared::action_accepts_runtime_owner(action) {
+        return params;
+    }
     let raw = subject
         .map(|value| format!("mcp:{value}"))
         .unwrap_or_else(|| "mcp:anonymous".to_string());
     let Some(mut object) = params.as_object().cloned() else {
         return params;
     };
-    object.entry("owner".to_string()).or_insert_with(|| {
+    object.insert(
+        "owner".to_string(),
         serde_json::json!({
             "surface": "mcp",
             "subject": subject,
             "raw": raw,
-        })
-    });
-    object
-        .entry("origin".to_string())
-        .or_insert_with(|| Value::String(raw));
+        }),
+    );
+    object.insert("origin".to_string(), Value::String(raw));
     Value::Object(object)
 }
 
+#[cfg(all(test, feature = "gateway"))]
+mod gateway_origin_tests {
+    use serde_json::json;
+
+    use super::inject_gateway_origin_param;
+
+    #[test]
+    fn strict_read_only_gateway_actions_do_not_receive_runtime_owner_params() {
+        let params = json!({"upstream": "fixture"});
+        assert_eq!(
+            inject_gateway_origin_param("gateway.skills.list", params.clone(), Some("alice")),
+            params
+        );
+    }
+
+    #[test]
+    fn gateway_mutations_keep_mcp_runtime_owner_provenance() {
+        let enriched =
+            inject_gateway_origin_param("gateway.add", json!({"spec": {}}), Some("alice"));
+        assert_eq!(enriched["owner"]["surface"], "mcp");
+        assert_eq!(enriched["owner"]["subject"], "alice");
+        assert_eq!(enriched["origin"], "mcp:alice");
+    }
+}
+
 impl LabMcpServer {
+    /// Whether this request may receive the HTTP-only Skill Library management
+    /// projection. This is an advertisement/admission gate, not authorization:
+    /// every action still resolves canonical Access policy in shared dispatch.
+    #[cfg(feature = "skills")]
+    pub(crate) fn skill_library_http_management_visible(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> bool {
+        if self.transport_label != "http" {
+            return false;
+        }
+        let Some(parts) = context.extensions.get::<axum::http::request::Parts>() else {
+            return false;
+        };
+        parts
+            .headers
+            .get("x-labby-project-id")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| !value.trim().is_empty())
+            && skill_library_callback_boundary(parts).is_ok()
+    }
+
+    #[cfg(feature = "skills")]
+    async fn skill_library_http_action_allowed(
+        &self,
+        context: &RequestContext<RoleServer>,
+        action: &str,
+    ) -> bool {
+        self.skill_library_http_management_visible(context)
+            && crate::dispatch::skills::MCP_ACTIONS
+                .iter()
+                .any(|spec| spec.name == action)
+            && self.action_allowed_on_mcp("skills", action).await
+    }
+
+    async fn mcp_action_policy_denial(
+        &self,
+        context: &RequestContext<RoleServer>,
+        service: &str,
+        action: &str,
+        registered: bool,
+    ) -> Option<CallToolResponse> {
+        let action_allowed = if service == "skills" && action.starts_with("skill_library.") {
+            #[cfg(feature = "skills")]
+            {
+                self.skill_library_http_action_allowed(context, action)
+                    .await
+            }
+            #[cfg(not(feature = "skills"))]
+            {
+                false
+            }
+        } else {
+            self.action_allowed_on_mcp(service, action).await
+        };
+        if !registered || action_allowed {
+            return None;
+        }
+
+        let mut extra = serde_json::Map::new();
+        if let Some(valid) = self.allowed_mcp_actions(service).await {
+            extra.insert(
+                "valid".to_string(),
+                serde_json::to_value(valid).unwrap_or(Value::Array(Vec::new())),
+            );
+        }
+        #[cfg(feature = "skills")]
+        if service == "skills" && action.starts_with("skill_library.") {
+            extra.insert(
+                "correlation_id".to_owned(),
+                Value::String(skill_library_safe_callback_correlation(context)),
+            );
+        }
+        let envelope = build_error_extra(
+            service,
+            action,
+            "unknown_action",
+            &format!("action `{action}` is not exposed for service `{service}`"),
+            &Value::Object(extra),
+        );
+        Some(error_result_from_envelope(envelope).into())
+    }
+
     #[cfg(feature = "gateway")]
     /// Record one structured failure event for a handled Add Server callback.
     async fn log_add_server_failure(
@@ -250,11 +450,176 @@ impl LabMcpServer {
         self.boxed_call_tool_response_impl(request, context).await
     }
 
+    #[cfg(feature = "gateway")]
+    async fn call_project_regular_tool_terminal(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+        binding: Option<(
+            &crate::mcp::bound_access::TransportBoundAccessContext,
+            &labby_auth::VerifiedIdentity,
+        )>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let start = Instant::now();
+        let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
+        let service = request.name.to_string();
+        let subject = self.request_subject_log_tag(context);
+        let actor_key = self.request_actor_key(context);
+        let param_key_count = request.arguments.as_ref().map_or(0, serde_json::Map::len);
+        tracing::info!(
+            surface = "mcp",
+            service,
+            action = "call_tool",
+            subject,
+            actor_key,
+            tool = %service,
+            param_key_count,
+            route = "project_exact_complete",
+            "dispatch start"
+        );
+        let access_context_unavailable = binding.is_none();
+        let result = match (binding, self.gateway_manager.as_deref()) {
+            (Some((transport, identity)), Some(manager)) => {
+                crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
+                    self.access_runtime.as_ref(),
+                    manager,
+                    transport,
+                    identity,
+                    request,
+                )
+                .await
+            }
+            _ => Err(crate::mcp::tool_execution::ToolExecutionResolutionError::Unavailable),
+        };
+        let elapsed_ms = start.elapsed().as_millis();
+        match result {
+            Ok(result) => {
+                self.emit_dispatch_notification(
+                    context,
+                    &service,
+                    "call_tool",
+                    elapsed_ms,
+                    DispatchLogOutcome::Success,
+                )
+                .await;
+                Ok(CallToolResponse::Complete(result))
+            }
+            Err(error) => {
+                use crate::mcp::tool_execution::ToolExecutionResolutionError as E;
+                let (kind, message, extra, level) = match error {
+                    E::Unavailable => (
+                        "not_found",
+                        "Tool is unavailable.",
+                        None,
+                        LoggingLevel::Warning,
+                    ),
+                    E::QueueUnavailable => (
+                        "service_unavailable",
+                        "Tool execution is temporarily unavailable.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Mcp { kind, code } => (
+                        kind,
+                        "Upstream tool rejected the call.",
+                        Some(serde_json::json!({ "upstream_code": code })),
+                        LoggingLevel::Warning,
+                    ),
+                    E::Transport => (
+                        "network_error",
+                        "Upstream tool transport failed.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Protocol
+                    | E::InputRequiredRoundsExceeded
+                    | E::UnsupportedTerminalResponse => (
+                        "upstream_error",
+                        "Upstream tool returned an unsupported response.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Timeout => (
+                        "timeout",
+                        "Upstream tool call timed out.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::Cancelled => (
+                        "cancelled",
+                        "Tool execution was cancelled.",
+                        None,
+                        LoggingLevel::Warning,
+                    ),
+                    E::Other => (
+                        "internal_error",
+                        "Tool execution failed.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                    E::TooLarge => (
+                        "response_too_large",
+                        "Upstream tool response was too large.",
+                        None,
+                        LoggingLevel::Error,
+                    ),
+                };
+                self.emit_dispatch_notification(
+                    context,
+                    &service,
+                    "call_tool",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level,
+                        kind: if access_context_unavailable {
+                            "access_context_unavailable"
+                        } else {
+                            kind
+                        },
+                    },
+                )
+                .await;
+                let envelope = extra.as_ref().map_or_else(
+                    || build_error(&service, "call_tool", kind, message),
+                    |extra| build_error_extra(&service, "call_tool", kind, message, extra),
+                );
+                Ok(CallToolResponse::Complete(error_result_from_envelope(
+                    envelope,
+                )))
+            }
+        }
+    }
+
     async fn call_tool_response_impl_inner(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        #[cfg(feature = "gateway")]
+        match project_execution_binding(&context.extensions, SystemTime::now()) {
+            ProjectExecutionBinding::Legacy => {}
+            ProjectExecutionBinding::Unavailable => {
+                return self
+                    .call_project_regular_tool_terminal(request, &context, None)
+                    .await;
+            }
+            // Project discovery proves only AssetDiscover. Every Bound call enters the exact
+            // AssetUse seam; owned built-ins and synthetics fail closed there until they have
+            // their own exact execution authorization.
+            ProjectExecutionBinding::Bound {
+                transport,
+                identity,
+            } => {
+                return self
+                    .call_project_regular_tool_terminal(
+                        request,
+                        &context,
+                        Some((transport, identity)),
+                    )
+                    .await;
+            }
+        }
+        let project_owned = false;
         if let Some(response) =
             Box::pin(self.destructive_confirmation_response(&request, &context)).await
         {
@@ -265,13 +630,14 @@ impl LabMcpServer {
         {
             return Ok(response);
         }
-        Box::pin(self.call_tool_response_dispatch_impl(request, context)).await
+        Box::pin(self.call_tool_response_dispatch_impl(request, context, project_owned)).await
     }
 
     async fn call_tool_response_dispatch_impl(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
+        project_owned: bool,
     ) -> Result<CallToolResponse, ErrorData> {
         let start = Instant::now();
         // Marks the caller's turn as open for the whole dispatch, including
@@ -281,7 +647,9 @@ impl LabMcpServer {
         // harmless catalog movement from the flapping clients actually feel.
         let _in_flight = crate::mcp::catalog_churn::InFlightToolCall::enter();
         let service = request.name.as_ref().to_string();
-        let upstream_request = request.clone();
+        // This request remains live until the upstream tail. Keep its large
+        // serde value off this already broad dispatch future's stack frame.
+        let upstream_request = Box::new(request.clone());
         let args = request.arguments.unwrap_or_default();
         let action = args
             .get("action")
@@ -299,7 +667,7 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // ── Always-on MCP App manager. It is root-gateway scoped so a
+            // ── Always-available MCP App control tool. It is root-gateway scoped so a
             // protected subset cannot mutate gateway-global UI visibility.
             if service == MCP_APP_TOOL_NAME {
                 if !self.route_scope.is_root() {
@@ -321,10 +689,34 @@ impl LabMcpServer {
                 }
 
                 let auth = auth_context_from_extensions(&context.extensions);
-                let synthetic_action = if action.is_empty() {
-                    "status"
-                } else {
-                    action.as_str()
+                let synthetic_action = match args.get("action") {
+                    None => "status",
+                    Some(Value::String(value)) if value.is_empty() => "status",
+                    Some(Value::String(value)) => value.as_str(),
+                    Some(_) => {
+                        let envelope = build_error_extra(
+                            &service,
+                            "call_tool",
+                            "invalid_param",
+                            "MCP App action must be a string",
+                            &serde_json::json!({ "param": "action", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                };
+                let params_object = match args.get("params") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Object(value)) => Some(value),
+                    Some(_) => {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App params must be an object",
+                            &serde_json::json!({ "param": "params", "expected": "object" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
                 };
                 if !tool_execute_scope_allowed(auth) {
                     let envelope = build_error_extra(
@@ -337,14 +729,73 @@ impl LabMcpServer {
                     return Ok(error_result_from_envelope(envelope).into());
                 }
 
-                let target = args
-                    .get("target")
-                    .or_else(|| params.get("target"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("codemode");
+                if let (Some(top), Some(nested)) = (
+                    args.get("target"),
+                    params_object.and_then(|params| params.get("target")),
+                ) {
+                    let Some(top) = top.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    let Some(nested) = nested.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "params.target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    if top != nested {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "conflicting MCP App targets were provided",
+                            &serde_json::json!({ "param": "target" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                }
+
+                let target = if let Some(value) = args.get("target") {
+                    let Some(target) = value.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    target
+                } else if let Some(value) = params_object.and_then(|params| params.get("target")) {
+                    let Some(target) = value.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "params.target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    target
+                } else {
+                    "codemode"
+                };
                 if !matches!(
                     target,
-                    "codemode"
+                    "manager"
+                        | "codemode"
                         | "gateway_status"
                         | "server_logs"
                         | "add_server"
@@ -357,7 +808,7 @@ impl LabMcpServer {
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
                         &serde_json::json!({
-                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
+                            "valid": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
                         }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
@@ -452,13 +903,15 @@ impl LabMcpServer {
                     .as_ref()
                     .map_or(previous_apps, |cfg| cfg.mcp_apps);
                 let enabled = match target {
+                    "manager" => enabled_apps.manager,
                     "codemode" => enabled_code_mode,
                     "gateway_status" => enabled_apps.gateway_status,
                     "server_logs" => enabled_apps.server_logs,
                     "add_server" => enabled_apps.add_server,
                     "settings" => enabled_apps.settings,
                     "all" => {
-                        enabled_code_mode
+                        enabled_apps.manager
+                            && enabled_code_mode
                             && enabled_apps.gateway_status
                             && enabled_apps.server_logs
                             && enabled_apps.add_server
@@ -468,6 +921,7 @@ impl LabMcpServer {
                 };
                 let changed = desired.is_some()
                     && match target {
+                        "manager" => previous_apps.manager != enabled_apps.manager,
                         "codemode" => previous_code_mode != enabled_code_mode,
                         "gateway_status" => {
                             previous_apps.gateway_status != enabled_apps.gateway_status
@@ -503,6 +957,10 @@ impl LabMcpServer {
                     "text_tool": CODE_MODE_TOOL_NAME,
                     "ui_tool": CODE_MODE_UI_TOOL_NAME,
                     "apps": {
+                        "manager": {
+                            "enabled": enabled_apps.manager,
+                            "tool": MCP_APP_TOOL_NAME,
+                        },
                         "codemode": {
                             "enabled": enabled_code_mode,
                             "tool": CODE_MODE_UI_TOOL_NAME,
@@ -558,7 +1016,7 @@ impl LabMcpServer {
                     )
                     .into());
                 }
-                if service == CODE_MODE_UI_TOOL_NAME && !self.code_mode_app_state.is_enabled() {
+                if service == CODE_MODE_UI_TOOL_NAME && !self.code_mode_app_enabled_on_mcp().await {
                     let envelope = build_error_extra(
                         &service,
                         "call_tool",
@@ -684,8 +1142,11 @@ impl LabMcpServer {
                             );
                             return Ok(error_result_from_envelope(envelope).into());
                         }
-                        let params =
-                            inject_gateway_origin_param(params, self.request_subject(&context));
+                        let params = inject_gateway_origin_param(
+                            gateway_action,
+                            params,
+                            self.request_subject(&context),
+                        );
                         let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                             oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
@@ -757,7 +1218,7 @@ impl LabMcpServer {
                         };
                         if synthetic_action == "refresh" {
                             manager
-                                .refresh_gateway_status_catalog(&enrichment_scope)
+                                .refresh_gateway_status_catalog(&enrichment_scope, None)
                                 .await;
                         }
                         crate::dispatch::gateway::dispatch_with_manager_scoped(
@@ -874,22 +1335,11 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope).into());
         }
 
-        if svc.is_some() && !self.action_allowed_on_mcp(&service, &action).await {
-            let mut extra = serde_json::Map::new();
-            if let Some(valid) = self.allowed_mcp_actions(&service).await {
-                extra.insert(
-                    "valid".to_string(),
-                    serde_json::to_value(valid).unwrap_or(Value::Array(Vec::new())),
-                );
-            }
-            let envelope = build_error_extra(
-                &service,
-                &action,
-                "unknown_action",
-                &format!("action `{action}` is not exposed for service `{service}`"),
-                &Value::Object(extra),
-            );
-            return Ok(error_result_from_envelope(envelope).into());
+        if let Some(response) =
+            Box::pin(self.mcp_action_policy_denial(&context, &service, &action, svc.is_some()))
+                .await
+        {
+            return Ok(response);
         }
 
         // Upstream widget-callback resolution is a gateway-only concern (it
@@ -912,20 +1362,15 @@ impl LabMcpServer {
                 None
             };
             match widget_callback {
-                Some(WidgetCallbackGate::Destructive {
-                    resolved,
-                    requires_scope_check,
-                }) => {
-                    if requires_scope_check
-                        && !tool_execute_scope_allowed(auth_context_from_extensions(
-                            &context.extensions,
-                        ))
-                    {
+                Some(WidgetCallbackGate::Destructive { resolved }) => {
+                    if !tool_execute_scope_allowed(auth_context_from_extensions(
+                        &context.extensions,
+                    )) {
                         let envelope = build_error_extra(
                             &service,
                             &action,
                             "forbidden",
-                            "hidden-tool widget callbacks require one of scopes: lab, lab:admin",
+                            "destructive MCP App callbacks require one of scopes: lab, lab:admin",
                             &serde_json::json!({
                                 "required_scopes": ["lab", "lab:admin"],
                             }),
@@ -1109,8 +1554,11 @@ impl LabMcpServer {
                         );
                         return Ok(error_result_from_envelope(envelope).into());
                     };
-                    let params =
-                        inject_gateway_origin_param(params, self.request_subject(&context));
+                    let params = inject_gateway_origin_param(
+                        &action,
+                        params,
+                        self.request_subject(&context),
+                    );
                     let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
                         route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
                         oauth_subject: crate::mcp::context::oauth_upstream_subject_for_request(
@@ -1157,10 +1605,27 @@ impl LabMcpServer {
         // unresolved service name is simply not found.
         #[cfg(feature = "gateway")]
         {
+            if project_owned {
+                let elapsed_ms = start.elapsed().as_millis();
+                let envelope =
+                    build_error(&service, "call_tool", "not_found", "Tool is unavailable.");
+                self.emit_dispatch_notification(
+                    &context,
+                    &service,
+                    "call_tool",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "not_found",
+                    },
+                )
+                .await;
+                return Ok(error_result_from_envelope(envelope).into());
+            }
             self.boxed_call_tool_upstream_impl(
                 &service,
                 &action,
-                upstream_request,
+                *upstream_request,
                 resolved_upstream_tool,
                 start,
                 &subject,
@@ -1187,6 +1652,25 @@ impl LabMcpServer {
         request: &CallToolRequestParams,
         context: &RequestContext<RoleServer>,
     ) -> Option<CallToolResponse> {
+        #[cfg(feature = "gateway")]
+        {
+            let auth = auth_context_from_extensions(&context.extensions);
+            if !tool_execute_scope_allowed(auth)
+                && self.code_mode_visibility().await.hides_raw_tools()
+                && request.name.as_ref() != SERVER_LOGS_TOOL_NAME
+                && matches!(
+                    self.resolve_widget_callback_gate(request.name.as_ref(), context)
+                        .await,
+                    Ok(Some(WidgetCallbackGate::Destructive { .. }))
+                )
+            {
+                // Authorization precedes elicitation: a read-only caller must not
+                // be prompted to confirm a destructive app operation they cannot
+                // execute. The normal call path will return `forbidden`.
+                return None;
+            }
+        }
+
         if !self.tool_request_is_destructive(request, context).await {
             return None;
         }
@@ -1484,10 +1968,7 @@ fn classify_widget_callback_candidates(
     }
     .into();
     if resolved.tool.destructive {
-        return Some(WidgetCallbackGate::Destructive {
-            resolved,
-            requires_scope_check,
-        });
+        return Some(WidgetCallbackGate::Destructive { resolved });
     }
 
     Some(WidgetCallbackGate::Allowed {
@@ -1495,3 +1976,7 @@ fn classify_widget_callback_candidates(
         requires_scope_check,
     })
 }
+
+#[cfg(all(test, feature = "skills"))]
+#[path = "call_tool/skill_library_callback_tests.rs"]
+mod skill_library_callback_tests;

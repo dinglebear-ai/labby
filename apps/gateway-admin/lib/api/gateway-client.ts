@@ -134,6 +134,18 @@ async function normalizeGatewayView(
   return normalizeGateway(view, probe, discovery, runtime)
 }
 
+async function normalizeGatewaySnapshotView(
+  view: BackendGatewayView,
+  includeDiscovery: boolean,
+  signal?: AbortSignal,
+  runtime?: BackendGatewayMcpRuntimeView,
+): Promise<Gateway> {
+  const discovery = includeDiscovery
+    ? await fetchDiscovery(view.config.name, signal)
+    : { tools: [], resources: [], prompts: [] }
+  return normalizeGateway(view, probeStatusFromRuntime(view.runtime), discovery, runtime)
+}
+
 async function findServerView(id: string, signal?: AbortSignal): Promise<BackendServerView> {
   return gatewayAction<BackendServerView>('gateway.server.get', { id }, signal)
 }
@@ -349,6 +361,36 @@ function importTombstoneParams(server: DiscoveredMcpServer) {
   }
 }
 
+// Older Labby servers serialized `upstreams`/`services` with
+// `skip_serializing_if = "Vec::is_empty"`, so a Loadout that selected only
+// upstreams (or only services) arrived with the other key absent even though
+// the published type declares both as required arrays — and every consumer
+// reads `.length` off them, which took down the whole Loadouts page. Current
+// servers always emit both keys, but a freshly deployed UI can face an older
+// backend, so normalize at the adapter boundary as deploy-skew defense.
+type WireGatewayLoadout = Omit<GatewayLoadout, 'upstreams' | 'services'> & {
+  upstreams?: string[]
+  services?: string[]
+}
+
+type WireGatewayLoadoutStageResult = Omit<GatewayLoadoutStageResult, 'loadout'> & {
+  loadout: WireGatewayLoadout
+}
+
+function normalizeLoadout(loadout: WireGatewayLoadout): GatewayLoadout {
+  return {
+    ...loadout,
+    upstreams: loadout.upstreams ?? [],
+    services: loadout.services ?? [],
+  }
+}
+
+function normalizeLoadoutStageResult(
+  result: WireGatewayLoadoutStageResult,
+): GatewayLoadoutStageResult {
+  return { ...result, loadout: normalizeLoadout(result.loadout) }
+}
+
 export const gatewayApi = {
   async discoverExternalConfigs(signal?: AbortSignal): Promise<DiscoveredMcpServer[]> {
     return gatewayAction<DiscoveredMcpServer[]>('gateway.discover', {}, signal)
@@ -443,13 +485,15 @@ export const gatewayApi = {
       return normalizeLabServiceServer(serverView, signal)
     }
 
-    const view = await gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal)
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
+    const [view, runtimeRows] = await Promise.all([
+      gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
+      gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
+    ])
+    return normalizeGatewaySnapshotView(
       view,
       true,
-      runtimeRows.find((row) => row.name === view.config.name),
       signal,
+      runtimeRows.find((runtime) => runtime.name === id),
     )
   },
 
@@ -459,13 +503,7 @@ export const gatewayApi = {
       confirmGatewayParams(buildGatewayCreatePayload(input)),
       signal,
     )
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
-      view,
-      true,
-      runtimeRows.find((row) => row.name === view.config.name),
-      signal,
-    )
+    return normalizeGatewaySnapshotView(view, true, signal)
   },
 
   async update(id: string, input: UpdateGatewayInput, signal?: AbortSignal): Promise<Gateway> {
@@ -474,13 +512,7 @@ export const gatewayApi = {
       confirmGatewayParams(buildGatewayUpdatePayload(id, input)),
       signal,
     )
-    const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
-    return normalizeGatewayView(
-      view,
-      true,
-      runtimeRows.find((row) => row.name === view.config.name),
-      signal,
-    )
+    return normalizeGatewaySnapshotView(view, true, signal)
   },
 
   async remove(id: string, signal?: AbortSignal): Promise<void> {
@@ -496,17 +528,27 @@ export const gatewayApi = {
   },
 
   async test(id: string, signal?: AbortSignal): Promise<TestGatewayResult> {
+    // The runtime view returned by `gateway.test` carries no timing field of
+    // its own, so this is the only latency figure available to show the
+    // operator — measure it around just the probe call, not the concurrent
+    // `gateway.get` fetch, so it reflects what "the connection test" actually
+    // took.
+    const startedAt = performance.now()
+    let elapsedMs: number | undefined
     const [runtime, view] = await Promise.all([
       gatewayAction<BackendGatewayRuntimeView>(
         'gateway.test',
         confirmGatewayParams({ name: id }),
         signal,
-      ),
+      ).then((result) => {
+        elapsedMs = Math.round(performance.now() - startedAt)
+        return result
+      }),
       gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
     ])
     const probe = probeStatusFromRuntime(runtime)
     const detail = humanizeProbeError(probe.last_error, view.config)
-    return testResultFromProbe(runtime, probe, detail)
+    return testResultFromProbe(runtime, probe, detail, elapsedMs)
   },
 
   async reload(id: string, signal?: AbortSignal): Promise<ReloadGatewayResult> {
@@ -544,6 +586,10 @@ export const gatewayApi = {
   async setExposurePolicy(id: string, policy: ExposurePolicy, signal?: AbortSignal): Promise<ExposurePolicy> {
     const serverView = await findServerView(id, signal)
     if (serverView.source === 'in_process') {
+      // Virtual servers genuinely still need the sentinel: on this surface
+      // `allowed_actions: []` means expose-ALL (see `matchVirtualServerAction`
+      // and `getExposurePolicy`), so an empty list cannot express expose-none
+      // and a pattern matching nothing is the only encoding available.
       const allowedActions = policy.mode === 'allowlist'
         ? policy.patterns.length === 0 ? [EXPOSE_NONE_PATTERN] : policy.patterns
         : []
@@ -561,9 +607,13 @@ export const gatewayApi = {
       }
     }
 
-    const exposeTools = policy.mode === 'allowlist'
-      ? policy.patterns.length === 0 ? [EXPOSE_NONE_PATTERN] : policy.patterns
-      : null
+    // Custom gateways express "expose nothing" as a real empty allowlist.
+    // They used to need EXPOSE_NONE_PATTERN here because `update_upstream`
+    // collapsed `[]` to null (expose-all); it no longer does, so writing the
+    // sentinel would only keep manufacturing configs that carry a magic
+    // string chosen to look like a tool name. Reads still strip it for
+    // configs already written that way — see `exposurePolicyFromConfig`.
+    const exposeTools = policy.mode === 'allowlist' ? policy.patterns : null
     await gatewayAction<BackendGatewayView>(
       'gateway.update',
       confirmGatewayParams({
@@ -628,19 +678,20 @@ export const gatewayApi = {
   },
 
   async listLoadouts(signal?: AbortSignal): Promise<GatewayLoadout[]> {
-    return gatewayAction<GatewayLoadout[]>('gateway.loadout.list_state', {}, signal)
+    const loadouts = await gatewayAction<WireGatewayLoadout[]>('gateway.loadout.list_state', {}, signal)
+    return loadouts.map(normalizeLoadout)
   },
 
   async getLoadout(name: string, signal?: AbortSignal): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>('gateway.loadout.get', { name }, signal)
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>('gateway.loadout.get', { name }, signal))
   },
 
   async addLoadout(loadout: GatewayLoadoutInput, signal?: AbortSignal): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.add',
       confirmGatewayParams({ loadout }),
       signal,
-    )
+    ))
   },
 
   async updateLoadout(
@@ -648,11 +699,11 @@ export const gatewayApi = {
     loadout: GatewayLoadoutInput,
     signal?: AbortSignal,
   ): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.update',
       confirmGatewayParams({ name, loadout }),
       signal,
-    )
+    ))
   },
 
   async patchLoadout(
@@ -660,11 +711,11 @@ export const gatewayApi = {
     patch: GatewayLoadoutPatch,
     signal?: AbortSignal,
   ): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.patch',
       confirmGatewayParams({ name, patch }),
       signal,
-    )
+    ))
   },
 
   async stageLoadoutUpdate(
@@ -672,11 +723,11 @@ export const gatewayApi = {
     loadout: GatewayLoadoutInput,
     signal?: AbortSignal,
   ): Promise<GatewayLoadoutStageResult> {
-    return gatewayAction<GatewayLoadoutStageResult>(
+    return normalizeLoadoutStageResult(await gatewayAction<WireGatewayLoadoutStageResult>(
       'gateway.loadout.stage_update',
       confirmGatewayParams({ name, loadout }),
       signal,
-    )
+    ))
   },
 
   async stageLoadoutPatch(
@@ -684,30 +735,30 @@ export const gatewayApi = {
     patch: GatewayLoadoutPatch,
     signal?: AbortSignal,
   ): Promise<GatewayLoadoutStageResult> {
-    return gatewayAction<GatewayLoadoutStageResult>(
+    return normalizeLoadoutStageResult(await gatewayAction<WireGatewayLoadoutStageResult>(
       'gateway.loadout.stage_patch',
       confirmGatewayParams({ name, patch }),
       signal,
-    )
+    ))
   },
 
   async stageLoadoutRemove(
     name: string,
     signal?: AbortSignal,
   ): Promise<GatewayLoadoutStageResult> {
-    return gatewayAction<GatewayLoadoutStageResult>(
+    return normalizeLoadoutStageResult(await gatewayAction<WireGatewayLoadoutStageResult>(
       'gateway.loadout.stage_remove',
       confirmGatewayParams({ name }),
       signal,
-    )
+    ))
   },
 
   async removeLoadout(name: string, signal?: AbortSignal): Promise<GatewayLoadout> {
-    return gatewayAction<GatewayLoadout>(
+    return normalizeLoadout(await gatewayAction<WireGatewayLoadout>(
       'gateway.loadout.remove',
       confirmGatewayParams({ name }),
       signal,
-    )
+    ))
   },
 
   async listProtectedRoutes(signal?: AbortSignal): Promise<ProtectedMcpRoute[]> {

@@ -54,18 +54,11 @@ impl UpstreamPool {
             }
             count
         };
+        let (drained, removed_catalog_count) = self
+            .remove_connection_catalog_entries(reconnect_names.iter())
+            .await;
         let drained_connection_count = {
-            let mut connections = self.connections.write().await;
-            let drained = reconnect_names
-                .iter()
-                .filter_map(|name| {
-                    connections
-                        .remove(name)
-                        .map(|connection| (name.clone(), connection))
-                })
-                .collect::<Vec<_>>();
             let count = drained.len();
-            drop(connections);
             let futs = drained
                 .into_iter()
                 .map(|(upstream_name, connection)| async move {
@@ -73,16 +66,6 @@ impl UpstreamPool {
                 })
                 .collect::<Vec<_>>();
             join_all(futs).await;
-            count
-        };
-        let removed_catalog_count = {
-            let mut catalog = self.catalog.write().await;
-            let mut count = 0usize;
-            for upstream_name in reconnect_names {
-                if catalog.remove(upstream_name).is_some() {
-                    count += 1;
-                }
-            }
             count
         };
         {
@@ -110,6 +93,7 @@ impl UpstreamPool {
     }
 
     pub async fn drain_for_swap(&self, reason: &'static str) {
+        let _invocations = self.invocation_barrier.write().await;
         let started = Instant::now();
         let catalog_count = self.catalog.read().await.len();
         let connection_count = self.connections.read().await.len();
@@ -158,11 +142,9 @@ impl UpstreamPool {
             tasks.clear();
             count
         };
+        let (drained, drained_catalog_count) = self.drain_connection_catalog_bindings().await;
         let drained_connection_count = {
-            let mut connections = self.connections.write().await;
-            let count = connections.len();
-            let drained = connections.drain().collect::<Vec<_>>();
-            drop(connections);
+            let count = drained.len();
             // Shut down all connections in parallel so an N-upstream pool
             // drains in ~1 shutdown timeout rather than N × shutdown timeout
             // (P-H2).
@@ -173,12 +155,6 @@ impl UpstreamPool {
                 })
                 .collect();
             join_all(futs).await;
-            count
-        };
-        let drained_catalog_count = {
-            let mut catalog = self.catalog.write().await;
-            let count = catalog.len();
-            catalog.clear();
             count
         };
         self.resource_upstreams.write().await.clear();

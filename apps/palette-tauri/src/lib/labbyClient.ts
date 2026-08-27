@@ -61,6 +61,7 @@ export interface BaseLauncherEntry {
   description: string;
   source: string;
   destructive: boolean;
+  contractHash?: string | null;
   inputSchema?: unknown;
   schemaFingerprint?: string | null;
 }
@@ -167,15 +168,19 @@ export async function fetchLauncherSchema(id: string): Promise<LauncherSchema> {
 }
 
 export async function executeLauncherEntry(
-  id: string,
+  entry: { id: string; contractHash: string },
   params: unknown,
   options?: { confirmDestructive?: boolean },
 ): Promise<PaletteResult> {
+  if (!/^[0-9a-f]{64}$/.test(entry.contractHash)) {
+    throw new Error("Launcher execution requires the selected entry's current contract hash.");
+  }
   const result = await invoke<BridgeResult>("execute_launcher_entry", {
     request: {
-      id,
+      id: entry.id,
       params,
       confirmDestructive: options?.confirmDestructive ?? false,
+      expectedContractHash: entry.contractHash,
     },
   });
   return {

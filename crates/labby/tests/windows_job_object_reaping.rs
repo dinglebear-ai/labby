@@ -155,12 +155,10 @@ mod windows_job_reaping {
         // Arm the same production guard used immediately after spawning stdio
         // upstream processes, before the long-lived grandchild has started.
         // `disarm` mirrors the successful connect path, where ownership moves
-        // into `UpstreamConnection::runtime.job_handle`.
-        let job: isize = JobObjectGuard::arm(parent_pid).disarm();
-        assert!(
-            job != 0,
-            "JobObjectGuard::arm should succeed; got sentinel handle {job}"
-        );
+        // into `UpstreamConnection::runtime.job`.
+        let job = JobObjectGuard::arm(parent_pid)
+            .disarm()
+            .expect("JobObjectGuard::arm should assign the spawned process");
 
         let Some(grandchild_pid) =
             wait_for_long_lived_child_pid(parent_pid, Duration::from_secs(5))
@@ -174,7 +172,7 @@ mod windows_job_reaping {
         assert_alive(grandchild_pid, "grandchild");
 
         // Close the job handle → OS terminates the whole tree.
-        labby_winjob::close_job(job, parent_pid);
+        drop(job);
 
         // Give the OS a moment to reap the tree.
         std::thread::sleep(Duration::from_millis(500));
