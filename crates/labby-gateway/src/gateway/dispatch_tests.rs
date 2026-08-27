@@ -832,6 +832,72 @@ async fn protected_route_rejects_unsaved_gateway_test_spec() {
 }
 
 #[tokio::test]
+async fn import_admin_lists_filter_to_route_visible_names_without_affecting_root() {
+    let manager = test_manager();
+    let source = |name: &str| {
+        labby_runtime::gateway_config::ImportSource::new(
+            "test-client",
+            format!("/tmp/{name}.json"),
+            "2026-08-27T00:00:00Z",
+        )
+        .with_server_name(name)
+    };
+    let mut visible_pending = upstream_fixture(
+        "visible",
+        Some("https://visible.invalid/mcp".to_string()),
+        None,
+    );
+    visible_pending.imported_from = Some(source("visible"));
+    let mut hidden_pending = upstream_fixture(
+        "hidden",
+        Some("https://hidden.invalid/mcp".to_string()),
+        None,
+    );
+    hidden_pending.imported_from = Some(source("hidden"));
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            upstream_pending: vec![visible_pending, hidden_pending],
+            upstream_import_tombstones: vec![
+                labby_runtime::gateway_config::UpstreamImportTombstone::now(
+                    "visible",
+                    source("visible"),
+                ),
+                labby_runtime::gateway_config::UpstreamImportTombstone::now(
+                    "hidden",
+                    source("hidden"),
+                ),
+            ],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+    let scoped = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::collections::BTreeSet::from(["visible".to_string()])),
+        oauth_subject: None,
+    };
+
+    for action in [
+        "gateway.import_pending.list",
+        "gateway.import_tombstones.list",
+    ] {
+        let filtered = dispatch_with_manager_scoped(&manager, action, json!({}), scoped.clone())
+            .await
+            .expect("scoped import administration list succeeds");
+        let rows = filtered.as_array().expect("filtered import rows");
+        assert_eq!(rows.len(), 1, "action: {action}");
+        assert_eq!(rows[0]["name"], json!("visible"), "action: {action}");
+
+        let unscoped = dispatch_with_manager(&manager, action, json!({}))
+            .await
+            .expect("root import administration list succeeds");
+        assert_eq!(
+            unscoped.as_array().expect("unscoped import rows").len(),
+            2,
+            "action: {action}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn gateway_status_aggregate_only_returns_route_visible_upstreams() {
     let manager = test_manager();
     manager
