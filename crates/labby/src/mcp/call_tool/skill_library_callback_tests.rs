@@ -399,8 +399,17 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         Arc::clone(&publication),
         projection,
     ));
+    let imports = Arc::new(
+        crate::dispatch::skill_library::import::ImportCoordinator::from_config(
+            &crate::config::SkillLibraryPreferences::default(),
+            &root.path().join("acquisition"),
+        )
+        .expect("import coordinator"),
+    );
+    let runtime =
+        Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime { service, imports });
     assert!(
-        crate::dispatch::skill_library::install_process_service(service).is_ok(),
+        crate::dispatch::skill_library::install_process_runtime(runtime).is_ok(),
         "the production process Skill Library installs once in this regression"
     );
 

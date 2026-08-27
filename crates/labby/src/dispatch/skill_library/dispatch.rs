@@ -419,7 +419,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 Ok::<_, ArtifactError>((ownership, candidate))
             })
             .await
-            .map_err(map_blocking)?;
+            .map_err(map_target_lookup)?;
         let request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
             "action": action.as_str(), "artifact_id": artifact_id,
             "revision_id": requested_revision_id,
@@ -508,7 +508,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 Ok::<_, ArtifactError>((candidate, ownership))
             })
             .await
-            .map_err(map_blocking)?;
+            .map_err(map_target_lookup)?;
         if let Some(expected_id) = artifact_id.as_ref()
             && candidate_artifact.interchange.descriptor.id != *expected_id
         {
@@ -691,7 +691,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
                     .await
-                    .map_err(map_blocking)?;
+                    .map_err(map_target_lookup)?;
                 let policy_target = read_target(&record)?;
                 let decision = authorize_at_boundary(
                     runtime,
@@ -753,7 +753,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
                     .await
-                    .map_err(map_blocking)?;
+                    .map_err(map_target_lookup)?;
                 let policy_target = read_target(&record)?;
                 let decision = authorize_at_boundary(
                     runtime,
@@ -835,7 +835,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
                     .await
-                    .map_err(map_blocking)?;
+                    .map_err(map_target_lookup)?;
                 let policy_target = read_target(&record)?;
                 let decision = authorize_at_boundary(
                     runtime,
@@ -999,7 +999,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
                     .await
-                    .map_err(map_blocking)?;
+                    .map_err(map_target_lookup)?;
                 self.create_or_save(
                     runtime,
                     caller,
@@ -1082,6 +1082,20 @@ fn map_blocking(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchErro
             tracing::error!(operation, "Skill Library blocking worker failed");
             SkillLibraryDispatchError::BlockingWorkerFailed { operation }
         }
+    }
+}
+
+/// Collapse target-resolution misses into the same denial returned for inaccessible records.
+///
+/// These lookups happen before authorization can inspect a record's ownership. Keeping this
+/// normalization at that seam prevents target IDs from becoming an existence oracle while
+/// preserving ordinary `not_found` errors for authorized revision and file lookups.
+fn map_target_lookup(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchError {
+    match error {
+        BlockingError::Operation(ArtifactError::NotFound("library_record")) => {
+            SkillLibraryAuthorizationError::Denied.into()
+        }
+        error => map_blocking(error),
     }
 }
 
@@ -1236,9 +1250,12 @@ fn list_page_visible(
         field: "limit",
         reason,
     })?;
-    let mut records = snapshot
+    let lower_bound = cursor.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+    let records = snapshot
         .records
-        .values()
+        .range((lower_bound, std::ops::Bound::Unbounded));
+    let page_records = records
+        .map(|(_, record)| record)
         .filter(|record| !record.archived || decision.permits_personal(&record.ownership))
         .filter(|record| {
             decision.permits_record(
@@ -1247,16 +1264,12 @@ fn list_page_visible(
                 record.active_revision_id.is_some(),
             )
         })
+        .take(limit + 1)
         .collect::<Vec<_>>();
-    records.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
-    let mut matching = records.into_iter().filter(|record| {
-        cursor
-            .as_ref()
-            .is_none_or(|cursor| record.artifact_id > *cursor)
-    });
-    let page_records = matching.by_ref().take(limit).collect::<Vec<_>>();
+    let has_more = page_records.len() > limit;
     let items = page_records
         .into_iter()
+        .take(limit)
         .map(|record| {
             summary(
                 record,
@@ -1266,9 +1279,13 @@ fn list_page_visible(
             )
         })
         .collect::<Vec<_>>();
-    let next_cursor = matching
-        .next()
-        .and_then(|_| items.last().map(|item| item.artifact_id.clone()));
+    let next_cursor = has_more.then(|| {
+        items
+            .last()
+            .expect("non-empty paginated page")
+            .artifact_id
+            .clone()
+    });
     Ok(VersionedSkillLibraryPage {
         library_version: snapshot.version,
         published_library_version,
@@ -1341,22 +1358,65 @@ pub(crate) fn history_page(
         reason,
     })?;
     let artifact = store.get(&record.artifact_id)?;
-    let mut revisions = artifact.revision_ids;
-    revisions.reverse();
-    let mut matching = revisions
+    let (page_start, end) = history_page_window(&artifact.revision_ids, cursor.as_deref(), limit)?;
+    let ids = artifact.revision_ids[page_start..end]
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let items = store
+        .revision_batch(&record.artifact_id, &ids)?
         .into_iter()
-        .filter(|revision| cursor.as_ref().is_none_or(|cursor| revision < cursor));
-    let ids = matching.by_ref().take(limit).collect::<Vec<_>>();
-    let mut items = Vec::with_capacity(ids.len());
-    for revision_id in &ids {
-        let revision = store.revision(&record.artifact_id, revision_id)?;
-        items.push(RevisionSummary {
+        .map(|revision| RevisionSummary {
             revision_id: revision.id,
             created_at: revision.authored_at,
-        });
-    }
-    let next_cursor = matching.next().and_then(|_| ids.last().cloned());
+        })
+        .collect();
+    let next_cursor = (page_start > 0)
+        .then(|| encode_history_cursor(page_start, ids.last().expect("non-empty paginated page")));
     Ok(CursorPage { items, next_cursor })
+}
+
+fn history_page_window(
+    revision_ids: &[String],
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<(usize, usize), ArtifactError> {
+    let end = cursor.map_or(Ok(revision_ids.len()), |cursor| {
+        let (position, revision_id) = decode_history_cursor(cursor)?;
+        if revision_ids.get(position).map(String::as_str) != Some(revision_id) {
+            return Err(invalid_history_cursor());
+        }
+        Ok(position)
+    })?;
+    Ok((end.saturating_sub(limit), end))
+}
+
+fn encode_history_cursor(position: usize, revision_id: &str) -> String {
+    format!("h1:{position}:{revision_id}")
+}
+
+fn decode_history_cursor(cursor: &str) -> Result<(usize, &str), ArtifactError> {
+    let mut parts = cursor.splitn(3, ':');
+    if parts.next() != Some("h1") {
+        return Err(invalid_history_cursor());
+    }
+    let position = parts
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or_else(invalid_history_cursor)?;
+    let revision_id = parts.next().ok_or_else(invalid_history_cursor)?;
+    if revision_id.is_empty() {
+        return Err(invalid_history_cursor());
+    }
+    Ok((position, revision_id))
+}
+
+fn invalid_history_cursor() -> ArtifactError {
+    ArtifactError::InvalidField {
+        field: "cursor",
+        reason: "cursor",
+    }
 }
 
 /// Publication health exposed to dispatch/read adapters.
@@ -1751,6 +1811,33 @@ mod tests {
     use super::*;
     use crate::access::{AccessStore, BootstrapOwnerInput};
     use crate::dispatch::skill_library::auth::SkillLibraryTransport;
+
+    #[test]
+    fn history_window_is_page_bounded_and_preserves_newest_first_cursor_order() {
+        let revisions = (0..10_000)
+            .map(|index| format!("rev-{index:05}"))
+            .collect::<Vec<_>>();
+
+        let (start, end) = history_page_window(&revisions, None, 100).unwrap();
+        assert_eq!((start, end), (9_900, 10_000));
+        assert_eq!(&revisions[end - 1], "rev-09999");
+        assert_eq!(&revisions[start], "rev-09900");
+
+        let cursor = encode_history_cursor(start, &revisions[start]);
+        let (next_start, next_end) = history_page_window(&revisions, Some(&cursor), 100).unwrap();
+        assert_eq!((next_start, next_end), (9_800, 9_900));
+        assert_eq!(&revisions[next_end - 1], "rev-09899");
+
+        assert!(matches!(
+            history_page_window(&revisions, Some("h1:9900:rev-09899"), 100),
+            Err(ArtifactError::InvalidField {
+                field: "cursor",
+                reason: "cursor"
+            })
+        ));
+        assert!(history_page_window(&revisions, Some("h1:999999:rev-09900"), 100).is_err());
+        assert!(history_page_window(&revisions, Some("rev-09900"), 100).is_err());
+    }
 
     struct OneStageFault(FaultStage);
 
@@ -2460,6 +2547,111 @@ mod tests {
         .await
         .unwrap();
         let owner_private_id = owner_private["artifact_id"].as_str().unwrap().to_owned();
+        let owner_private_revision = store
+            .get(&owner_private_id)
+            .unwrap()
+            .revision_ids
+            .last()
+            .unwrap()
+            .clone();
+        let random_id = "missing-artifact";
+        let before_denials = store.library_snapshot().unwrap();
+        let denial_cases = [
+            (
+                "skill_library.get",
+                json!({"artifact_id": owner_private_id}),
+                json!({"artifact_id": random_id}),
+            ),
+            (
+                "skill_library.read",
+                json!({"artifact_id": owner_private_id, "revision_id": owner_private_revision, "path": "SKILL.md"}),
+                json!({"artifact_id": random_id, "revision_id": owner_private_revision, "path": "SKILL.md"}),
+            ),
+            (
+                "skill_library.history",
+                json!({"artifact_id": owner_private_id}),
+                json!({"artifact_id": random_id}),
+            ),
+            (
+                "skill_library.save",
+                json!({
+                    "artifact_id": owner_private_id,
+                    "expected_revision_id": owner_private_revision,
+                    "files": [{"path": "SKILL.md", "content": "---\nname: eli-private\ndescription: private\n---\nprivate\n"}],
+                    "expected_library_version": before_denials.version,
+                    "idempotency_key": "inaccessible-save"
+                }),
+                json!({
+                    "artifact_id": random_id,
+                    "expected_revision_id": owner_private_revision,
+                    "files": [{"path": "SKILL.md", "content": "---\nname: eli-private\ndescription: private\n---\nprivate\n"}],
+                    "expected_library_version": before_denials.version,
+                    "idempotency_key": "random-save"
+                }),
+            ),
+            (
+                "skill_library.activate",
+                json!({"artifact_id": owner_private_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-activate"}),
+                json!({"artifact_id": random_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "random-activate"}),
+            ),
+            (
+                "skill_library.rollback",
+                json!({"artifact_id": owner_private_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-rollback"}),
+                json!({"artifact_id": random_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "random-rollback"}),
+            ),
+            (
+                "skill_library.deactivate",
+                json!({"artifact_id": owner_private_id, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-deactivate"}),
+                json!({"artifact_id": random_id, "expected_library_version": before_denials.version, "idempotency_key": "random-deactivate"}),
+            ),
+            (
+                "skill_library.archive",
+                json!({"artifact_id": owner_private_id, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-archive"}),
+                json!({"artifact_id": random_id, "expected_library_version": before_denials.version, "idempotency_key": "random-archive"}),
+            ),
+        ];
+        for (action, inaccessible_params, random_params) in denial_cases {
+            let inaccessible = acceptance_dispatch(
+                &service,
+                &runtime,
+                &pujit,
+                action,
+                inaccessible_params,
+                "existing-inaccessible-denial",
+            )
+            .await
+            .unwrap_err();
+            let random = acceptance_dispatch(
+                &service,
+                &runtime,
+                &pujit,
+                action,
+                random_params,
+                "random-target-denial",
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                inaccessible,
+                SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied)
+            ));
+            assert!(matches!(
+                random,
+                SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied)
+            ));
+            let inaccessible_public = serde_json::to_value(
+                crate::dispatch::skill_library::map_dispatch_error(inaccessible),
+            )
+            .unwrap();
+            let random_public =
+                serde_json::to_value(crate::dispatch::skill_library::map_dispatch_error(random))
+                    .unwrap();
+            assert_eq!(inaccessible_public, random_public, "{action}");
+        }
+        let after_denials = store.library_snapshot().unwrap();
+        assert_eq!(after_denials.version, before_denials.version);
+        assert_eq!(after_denials.records.len(), before_denials.records.len());
+        assert_eq!(after_denials.receipts.len(), before_denials.receipts.len());
         assert!(
             acceptance_dispatch(
                 &service,

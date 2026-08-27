@@ -615,7 +615,7 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
     )
 }
 
-fn write_bytes_atomic_with_faults(
+pub(crate) fn write_bytes_atomic_with_faults(
     path: &Path,
     bytes: &[u8],
     boundaries: [super::library::SkillTransactionBoundary; 4],

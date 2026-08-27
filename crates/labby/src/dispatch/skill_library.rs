@@ -20,27 +20,29 @@ use crate::skills::registry::FirstPartyGeneration;
 
 type ProcessSkillLibrary = dispatch::SkillLibraryService<FirstPartyGeneration>;
 
-static PROCESS_SKILL_LIBRARY: OnceLock<Arc<ProcessSkillLibrary>> = OnceLock::new();
-static PROCESS_SKILL_LIBRARY_IMPORTS: OnceLock<Arc<import::ImportCoordinator>> = OnceLock::new();
+pub(crate) struct ProcessSkillLibraryRuntime {
+    pub(crate) service: Arc<ProcessSkillLibrary>,
+    pub(crate) imports: Arc<import::ImportCoordinator>,
+}
 
-pub(crate) fn install_process_service(
-    service: Arc<ProcessSkillLibrary>,
-) -> Result<(), Arc<ProcessSkillLibrary>> {
-    PROCESS_SKILL_LIBRARY.set(service)
+static PROCESS_SKILL_LIBRARY_RUNTIME: OnceLock<Arc<ProcessSkillLibraryRuntime>> = OnceLock::new();
+
+pub(crate) fn install_process_runtime(
+    runtime: Arc<ProcessSkillLibraryRuntime>,
+) -> Result<(), Arc<ProcessSkillLibraryRuntime>> {
+    PROCESS_SKILL_LIBRARY_RUNTIME.set(runtime)
 }
 
 pub(crate) fn process_service() -> Option<Arc<ProcessSkillLibrary>> {
-    PROCESS_SKILL_LIBRARY.get().cloned()
-}
-
-pub(crate) fn install_process_imports(
-    imports: Arc<import::ImportCoordinator>,
-) -> Result<(), Arc<import::ImportCoordinator>> {
-    PROCESS_SKILL_LIBRARY_IMPORTS.set(imports)
+    PROCESS_SKILL_LIBRARY_RUNTIME
+        .get()
+        .map(|runtime| Arc::clone(&runtime.service))
 }
 
 pub(crate) fn process_imports() -> Option<Arc<import::ImportCoordinator>> {
-    PROCESS_SKILL_LIBRARY_IMPORTS.get().cloned()
+    PROCESS_SKILL_LIBRARY_RUNTIME
+        .get()
+        .map(|runtime| Arc::clone(&runtime.imports))
 }
 
 /// Closed, redacted projection of internal management failures to the shared surface contract.

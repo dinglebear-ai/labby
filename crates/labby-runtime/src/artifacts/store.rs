@@ -25,6 +25,9 @@ use super::validation::{
     self, MAX_RECORD_JSON_BYTES, MAX_REVISION_MANIFEST_BYTES, validate_id, validate_reference_id,
 };
 
+/// Maximum immutable revision manifests accepted by one bounded read batch.
+pub const MAX_REVISION_READ_BATCH: usize = 100;
+
 /// Inputs for importing a local file or multi-file package.
 #[derive(Debug, Clone)]
 pub struct ArtifactImportRequest {
@@ -162,6 +165,32 @@ impl ArtifactStore {
         validate_id(artifact_id, "artifact_id")?;
         validate_reference_id(revision_id, "revision_id")?;
         self.read_revision(artifact_id, revision_id)
+    }
+
+    /// Read and verify a bounded batch of immutable revisions in input order.
+    ///
+    /// Reads are deliberately sequential. Callers admit this blocking operation through their
+    /// shared bounded executor, so spawning another per-request worker set here would bypass that
+    /// process-wide capacity limit.
+    pub fn revision_batch(
+        &self,
+        artifact_id: &str,
+        revision_ids: &[&str],
+    ) -> Result<Vec<ArtifactRevision>, ArtifactError> {
+        validate_id(artifact_id, "artifact_id")?;
+        if revision_ids.len() > MAX_REVISION_READ_BATCH {
+            return Err(ArtifactError::LimitExceeded {
+                what: "revision_batch",
+                limit: MAX_REVISION_READ_BATCH as u64,
+            });
+        }
+        for revision_id in revision_ids {
+            validate_reference_id(revision_id, "revision_id")?;
+        }
+        revision_ids
+            .iter()
+            .map(|revision_id| self.read_revision(artifact_id, revision_id))
+            .collect()
     }
 
     /// Project one exact local revision into the frozen cross-product envelope.
@@ -527,6 +556,20 @@ impl MutationLock {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn revision_batch_rejects_more_than_the_page_cap() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let ids = vec!["rev_0000000000000000"; MAX_REVISION_READ_BATCH + 1];
+        assert!(matches!(
+            store.revision_batch("art_batch", &ids),
+            Err(ArtifactError::LimitExceeded {
+                what: "revision_batch",
+                limit: 100
+            })
+        ));
+    }
 
     #[test]
     fn store_requires_an_explicit_absolute_root() {

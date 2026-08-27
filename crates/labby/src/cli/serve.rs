@@ -1,9 +1,7 @@
 //! `labby serve` — start the MCP server.
 
 use std::net::SocketAddr;
-#[cfg(target_os = "linux")]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -140,6 +138,100 @@ pub async fn run_mcp(args: McpServeArgs, config: &LabConfig) -> Result<ExitCode>
     .await
 }
 
+#[cfg(feature = "skills")]
+fn bootstrap_skill_library(
+    config: &LabConfig,
+) -> Result<Arc<crate::dispatch::skill_library::ProcessSkillLibraryRuntime>> {
+    use crate::dispatch::skill_library::blocking::BoundedBlockingExecutor;
+    use crate::dispatch::skill_library::dispatch::{
+        ActivationCoordinator, ArtifactFirstPartyProjection, GenerationProjection,
+        SkillLibraryService,
+    };
+    use crate::skills::registry::{
+        GenerationSeed, first_party_generation_manager, initialize_first_party_generation_manager,
+    };
+
+    let artifacts_root = labby_runtime::lab_home().join("artifacts");
+    let store = Arc::new(
+        labby_runtime::artifacts::ArtifactStore::new(&artifacts_root)
+            .context("open Skill Library Artifact store")?,
+    );
+    let snapshot = store
+        .library_snapshot()
+        .context("load Skill Library metadata")?;
+    let imports = configure_skill_library_imports(config, &artifacts_root)?;
+    let blocking = BoundedBlockingExecutor::new(8, Duration::from_secs(2), Duration::from_secs(30))
+        .map_err(|_| anyhow::anyhow!("invalid Skill Library blocking executor configuration"))?;
+    initialize_first_party_generation_manager(GenerationSeed {
+        version: snapshot.version,
+        active_digest: snapshot.active_generation_digest.clone(),
+    })
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "first-party Skill generation was initialized before persisted Skill Library state"
+        )
+    })?;
+    let manager = first_party_generation_manager();
+    let projection: Arc<dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>> =
+        Arc::new(ArtifactFirstPartyProjection);
+    let candidate = projection
+        .prepare(&store, &snapshot, None)
+        .context("build persisted Skill Library generation")?;
+    let coordinator = Arc::new(ActivationCoordinator::from_cell(
+        manager.generation_cell(),
+        snapshot.version,
+    ));
+    coordinator.reconcile(candidate, snapshot.version);
+    tracing::info!(
+        subsystem = "startup",
+        phase = "skill_library.ready",
+        library_version = snapshot.version,
+        active_skill_count = snapshot
+            .records
+            .values()
+            .filter(|record| record.active_revision_id.is_some() && !record.archived)
+            .count(),
+        "persisted Skill Library generation ready"
+    );
+    let service = Arc::new(SkillLibraryService::new(
+        store,
+        blocking,
+        coordinator,
+        projection,
+    ));
+    let runtime =
+        Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime { service, imports });
+    crate::dispatch::skill_library::install_process_runtime(Arc::clone(&runtime))
+        .map_err(|_| anyhow::anyhow!("Skill Library runtime was already initialized"))?;
+
+    Ok(runtime)
+}
+
+#[cfg(feature = "skills")]
+fn configure_skill_library_imports(
+    config: &LabConfig,
+    artifacts_root: &Path,
+) -> Result<Arc<crate::dispatch::skill_library::import::ImportCoordinator>> {
+    crate::dispatch::skill_library::import::ImportCoordinator::from_config(
+        &config.skill_library,
+        &artifacts_root.join("acquisition"),
+    )
+    .map(Arc::new)
+    .context("configure Skill Library exact-source adapters")
+}
+
+#[cfg(feature = "skills")]
+fn bootstrap_selected_skill_library_with<T>(
+    registry: &ToolRegistry,
+    bootstrap: impl FnOnce() -> Result<T>,
+) -> Result<Option<T>> {
+    if registry.service("skills").is_some() {
+        bootstrap().map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
 /// Run the serve subcommand.
 pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let transport = resolve_transport(
@@ -262,6 +354,9 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         heal_env_file_permissions(&env_path);
     }
 
+    #[cfg(feature = "skills")]
+    let skill_library_runtime =
+        bootstrap_selected_skill_library_with(&registry, || bootstrap_skill_library(config))?;
     #[cfg(feature = "gateway")]
     let gateway_manager = build_gateway_runtime(
         config,
@@ -440,75 +535,10 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_http_bind_host(host.clone());
     #[cfg(feature = "skills")]
-    {
-        use crate::dispatch::skill_library::blocking::BoundedBlockingExecutor;
-        use crate::dispatch::skill_library::dispatch::{
-            ActivationCoordinator, ArtifactFirstPartyProjection, GenerationProjection,
-            SkillLibraryService,
-        };
-        use crate::skills::registry::{
-            GenerationSeed, first_party_generation_manager,
-            initialize_first_party_generation_manager,
-        };
-
-        let store = Arc::new(
-            labby_runtime::artifacts::ArtifactStore::new(
-                labby_runtime::lab_home().join("artifacts"),
-            )
-            .context("open Skill Library Artifact store")?,
-        );
-        let snapshot = store
-            .library_snapshot()
-            .context("load Skill Library metadata")?;
-        initialize_first_party_generation_manager(GenerationSeed {
-            version: snapshot.version,
-            active_digest: snapshot.active_generation_digest.clone(),
-        })
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "first-party Skill generation was initialized before persisted Skill Library state"
-            )
-        })?;
-        let projection: Arc<
-            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
-        > = Arc::new(ArtifactFirstPartyProjection);
-        let candidate = projection
-            .prepare(&store, &snapshot, None)
-            .context("build persisted Skill Library generation")?;
-        let manager = first_party_generation_manager();
-        let coordinator = Arc::new(ActivationCoordinator::from_cell(
-            manager.generation_cell(),
-            snapshot.version,
-        ));
-        coordinator.reconcile(candidate, snapshot.version);
-        let blocking =
-            BoundedBlockingExecutor::new(8, Duration::from_secs(2), Duration::from_secs(30))
-                .map_err(|_| {
-                    anyhow::anyhow!("invalid Skill Library blocking executor configuration")
-                })?;
-        let skill_library = Arc::new(SkillLibraryService::new(
-            store,
-            blocking,
-            coordinator,
-            projection,
-        ));
-        crate::dispatch::skill_library::install_process_service(Arc::clone(&skill_library))
-            .map_err(|_| anyhow::anyhow!("Skill Library service was already initialized"))?;
-        let imports = Arc::new(
-            crate::dispatch::skill_library::import::ImportCoordinator::from_config(
-                &config.skill_library,
-                &labby_runtime::lab_home()
-                    .join("artifacts")
-                    .join("acquisition"),
-            )
-            .context("configure Skill Library exact-source adapters")?,
-        );
-        crate::dispatch::skill_library::install_process_imports(Arc::clone(&imports)).map_err(
-            |_| anyhow::anyhow!("Skill Library import coordinator was already initialized"),
-        )?;
+    if let Some(skill_library_runtime) = skill_library_runtime {
         state = state
-            .with_skill_library(skill_library)
-            .with_skill_library_imports(imports);
+            .with_skill_library(Arc::clone(&skill_library_runtime.service))
+            .with_skill_library_imports(Arc::clone(&skill_library_runtime.imports));
     }
     let public_relay_store = crate::oauth::public_relay::PublicRelayRegistryStore::new(
         crate::oauth::public_relay::PublicRelayRegistryStore::default_path(),
@@ -2202,6 +2232,8 @@ mod tests {
         resolve_port, resolve_transport, resolve_web_ui_auth_disabled, should_run_stdio,
         stdio_recursion_guard_active,
     };
+    #[cfg(feature = "skills")]
+    use super::{bootstrap_selected_skill_library_with, configure_skill_library_imports};
     use crate::api::AppState;
     use crate::cli::Cli;
     use crate::config::{LabConfig, McpPreferences, WebPreferences};
@@ -2275,6 +2307,51 @@ mod tests {
         let error = filter_registry(reg, &["gateway-alpha".to_string()])
             .expect_err("disabled gateway_alpha should be unknown to --services");
         assert!(error.to_string().contains("unknown service"));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn excluded_skills_service_does_not_run_skill_library_bootstrap() {
+        let registry = filter_registry(build_default_registry(), &["doctor".to_owned()]).unwrap();
+        let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<()> {
+            panic!("excluded skills service must not touch Skill Library storage")
+        })
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn selected_skills_service_runs_skill_library_bootstrap() {
+        let registry = filter_registry(build_default_registry(), &["skills".to_owned()]).unwrap();
+        let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
+        assert_eq!(result, Some(41));
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn failed_import_construction_can_retry_before_runtime_publication() {
+        use crate::config::{
+            SkillLibraryPreferences, SkillLibrarySourceConfig, SkillLibrarySourceKind,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let mut config = LabConfig {
+            skill_library: SkillLibraryPreferences {
+                sources: vec![SkillLibrarySourceConfig {
+                    id: "depot".to_owned(),
+                    kind: SkillLibrarySourceKind::Depot,
+                    endpoint: "not a url".to_owned(),
+                    pinned_addresses: Vec::new(),
+                    bearer_token_env: None,
+                }],
+            },
+            ..LabConfig::default()
+        };
+        assert!(configure_skill_library_imports(&config, root.path()).is_err());
+
+        config.skill_library = SkillLibraryPreferences::default();
+        assert!(configure_skill_library_imports(&config, root.path()).is_ok());
     }
 
     #[test]

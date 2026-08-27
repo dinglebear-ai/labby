@@ -15,7 +15,9 @@ use std::fs::File;
 use serde::{Deserialize, Serialize};
 
 use super::canonical_json;
-use super::local_io::{SnapshotFile, read_json, write_json_atomic_with_faults};
+use super::local_io::{
+    SnapshotFile, read_json, write_bytes_atomic_with_faults, write_json_atomic_with_faults,
+};
 use super::model::{ArtifactRecord, ArtifactRevision};
 use super::validation::{validate_id, validate_reference_id};
 use super::{ArtifactError, ArtifactStore, MaterializedSkill, invalid};
@@ -27,7 +29,10 @@ const MAX_RECEIPTS: usize = 1024;
 const MAX_AUDIT_INTENTS: usize = 1024;
 const MAX_TIMESTAMP_BYTES: usize = 64;
 pub(crate) const MAX_LIBRARY_STATE_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_PENDING_SKILL_TRANSACTION_BYTES: u64 = 24 * 1024 * 1024;
+// A full 64 MiB Skill package expands to just under 86 MiB in padded base64. Keep enough
+// bounded headroom for the manifest and transaction metadata without returning to serde's
+// much larger JSON numeric-array representation for `Vec<u8>`.
+const MAX_PENDING_SKILL_TRANSACTION_BYTES: u64 = 96 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -52,18 +57,111 @@ struct PendingSkillTransaction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PendingSkillFile {
     path: String,
+    #[serde(with = "base64_bytes")]
     bytes: Vec<u8>,
+}
+
+mod base64_bytes {
+    use std::fmt;
+
+    use base64::Engine as _;
+    use serde::de::{SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    pub(super) fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Base64OrLegacyBytes;
+
+        impl<'de> Visitor<'de> for Base64OrLegacyBytes {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("base64 text or a legacy byte array")
+            }
+
+            fn visit_str<E>(self, encoded: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut bytes = Vec::with_capacity(
+                    sequence
+                        .size_hint()
+                        .unwrap_or(0)
+                        .min(super::super::validation::MAX_SKILL_PACKAGE_BYTES),
+                );
+                while let Some(byte) = sequence.next_element::<u8>()? {
+                    if bytes.len() == super::super::validation::MAX_SKILL_PACKAGE_BYTES {
+                        return Err(serde::de::Error::custom("legacy byte array exceeds cap"));
+                    }
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+
+        deserializer.deserialize_any(Base64OrLegacyBytes)
+    }
 }
 
 impl PendingSkillTransaction {
     fn compute_digest(&self) -> Result<String, ArtifactError> {
         let mut payload = self.clone();
         payload.transaction_digest.clear();
-        canonical_json::digest(&payload)
+        if payload.schema_version == 1 {
+            // Version 1 journals used serde's default `Vec<u8>` representation. Preserve that
+            // exact canonical payload when verifying an intent written by an older Labby.
+            let mut legacy = serde_json::to_value(&payload)?;
+            let files = legacy
+                .get_mut("files")
+                .and_then(serde_json::Value::as_array_mut)
+                .ok_or(ArtifactError::LibraryCorrupt(
+                    "invalid_pending_skill_transaction",
+                ))?;
+            for (file, source) in files.iter_mut().zip(&payload.files) {
+                file.as_object_mut()
+                    .and_then(|object| {
+                        object.insert(
+                            "bytes".to_owned(),
+                            serde_json::Value::Array(
+                                source
+                                    .bytes
+                                    .iter()
+                                    .copied()
+                                    .map(serde_json::Value::from)
+                                    .collect(),
+                            ),
+                        )
+                    })
+                    .ok_or(ArtifactError::LibraryCorrupt(
+                        "invalid_pending_skill_transaction",
+                    ))?;
+            }
+            canonical_json::digest(&legacy)
+        } else {
+            canonical_json::digest(&payload)
+        }
     }
 
     fn validate(&self) -> Result<(), ArtifactError> {
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || self.transaction_digest != self.compute_digest()?
             || self.revision.id != self.revision_id
             || self.next_record.descriptor.id != self.artifact_id
@@ -84,13 +182,36 @@ impl PendingSkillTransaction {
         if let Some(prior) = &self.prior_record {
             prior.validate()?;
         }
+        let total_bytes = self.files.iter().try_fold(0usize, |total, file| {
+            total
+                .checked_add(file.bytes.len())
+                .ok_or(ArtifactError::LibraryCorrupt(
+                    "pending_skill_payload_too_large",
+                ))
+        })?;
+        if total_bytes > super::validation::MAX_SKILL_PACKAGE_BYTES {
+            return Err(ArtifactError::LibraryCorrupt(
+                "pending_skill_payload_too_large",
+            ));
+        }
         let components = self
             .revision
             .components
             .iter()
             .map(|component| (&component.path, &component.digest))
             .collect::<BTreeMap<_, _>>();
-        if components.len() != self.files.len()
+        let file_paths = self
+            .files
+            .iter()
+            .map(|file| &file.path)
+            .collect::<std::collections::BTreeSet<_>>();
+        if components.len() != self.revision.components.len()
+            || file_paths.len() != self.files.len()
+            || components
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                != file_paths
             || self.files.iter().any(|file| {
                 components
                     .get(&file.path)
@@ -787,17 +908,24 @@ impl LibrarySnapshot {
                 return Err(ArtifactError::LibraryCorrupt("audit_tenant_mismatch"));
             }
         }
+        let audits_by_sequence = self
+            .audit_intents
+            .iter()
+            .map(|audit| (audit.sequence, audit))
+            .collect::<std::collections::HashMap<_, _>>();
         for receipt in self.receipts.values() {
-            if !self.audit_intents.iter().any(|audit| {
-                audit.sequence == receipt.sequence
-                    && audit.tenant_id == receipt.tenant_id
-                    && audit.actor_id == receipt.actor_id
-                    && audit.action == receipt.action
-                    && audit.artifact_id == receipt.artifact_id
-                    && audit.request_digest == receipt.request_digest
-                    && audit.transaction_digest == receipt.transaction_digest
-                    && audit.terminal_audit == receipt.terminal_audit
-            }) {
+            if !audits_by_sequence
+                .get(&receipt.sequence)
+                .is_some_and(|audit| {
+                    audit.tenant_id == receipt.tenant_id
+                        && audit.actor_id == receipt.actor_id
+                        && audit.action == receipt.action
+                        && audit.artifact_id == receipt.artifact_id
+                        && audit.request_digest == receipt.request_digest
+                        && audit.transaction_digest == receipt.transaction_digest
+                        && audit.terminal_audit == receipt.terminal_audit
+                })
+            {
                 return Err(ArtifactError::LibraryCorrupt("receipt_audit_mismatch"));
             }
         }
@@ -1026,7 +1154,7 @@ impl ArtifactStore {
         let files = materialized_skill_files(&materialized)?;
         let next_record = materialized_skill_record(&materialized, prior_record.as_ref())?;
         let mut pending = PendingSkillTransaction {
-            schema_version: 1,
+            schema_version: 2,
             scope_digest: scope_digest.clone(),
             request_digest: idempotency.request_digest.clone(),
             expected_library_version: expected_version,
@@ -1368,9 +1496,9 @@ impl ArtifactStore {
                 limit: MAX_PENDING_SKILL_TRANSACTION_BYTES,
             });
         }
-        write_json_atomic_with_faults(
+        write_bytes_atomic_with_faults(
             &path,
-            pending,
+            &bytes,
             [
                 SkillTransactionBoundary::IntentWrite,
                 SkillTransactionBoundary::IntentFileSync,
@@ -1491,6 +1619,20 @@ impl ArtifactStore {
 fn materialized_skill_files(
     materialized: &MaterializedSkill,
 ) -> Result<Vec<SnapshotFile>, ArtifactError> {
+    let total_bytes = materialized
+        .resources
+        .values()
+        .try_fold(0usize, |total, bytes| total.checked_add(bytes.len()))
+        .ok_or(ArtifactError::LimitExceeded {
+            what: "skill_package_size",
+            limit: super::validation::MAX_SKILL_PACKAGE_BYTES as u64,
+        })?;
+    if total_bytes > super::validation::MAX_SKILL_PACKAGE_BYTES {
+        return Err(ArtifactError::LimitExceeded {
+            what: "skill_package_size",
+            limit: super::validation::MAX_SKILL_PACKAGE_BYTES as u64,
+        });
+    }
     let root = format!(
         "skill://labby/{}/",
         materialized.interchange.descriptor.name
@@ -1879,6 +2021,22 @@ mod tests {
         .unwrap()
     }
 
+    fn maximal_materialized(name: &str) -> MaterializedSkill {
+        let mut logical = Vec::with_capacity(crate::skills::limits::MAX_RESOURCES_PER_SKILL);
+        let mut skill_md = format!("---\nname: {name}\ndescription: Maximal\n---\n");
+        skill_md.push_str(
+            &"x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES - skill_md.len()),
+        );
+        logical.push(LogicalSkillFile::new("SKILL.md", skill_md));
+        for index in 1..crate::skills::limits::MAX_RESOURCES_PER_SKILL {
+            logical.push(LogicalSkillFile::new(
+                format!("resource-{index:02}.txt"),
+                "x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES),
+            ));
+        }
+        materialize_logical_skill(name, logical, ArtifactProvenance::default()).unwrap()
+    }
+
     fn terminal_audit(
         owner: &LibraryOwnership,
         artifact_id: &str,
@@ -2019,6 +2177,216 @@ mod tests {
             Err(ArtifactError::NotFound("revision"))
         ));
         assert!(!store.pending_skill_transaction_path().exists());
+    }
+
+    #[test]
+    fn pending_journal_accepts_exact_skill_budget_and_rejects_cap_plus_one_before_commit() {
+        let root = tempdir().unwrap();
+        let store = ArtifactStore::new(root.path()).unwrap();
+        let owner = ownership("org-a", "alice");
+        let candidate = maximal_materialized("maximal");
+        assert_eq!(
+            candidate.resources.values().map(Vec::len).sum::<usize>(),
+            super::super::validation::MAX_SKILL_PACKAGE_BYTES
+        );
+        let artifact_id = candidate.interchange.descriptor.id.clone();
+        let revision_id = candidate.interchange.revision.id.clone();
+        let outcome = store.mutate_library_with_materialized_outcome(
+            &owner_auth(&owner),
+            &owner,
+            0,
+            idem("maximal-create"),
+            LibraryMutation::Create {
+                record: SkillLibraryRecord {
+                    artifact_id: artifact_id.clone(),
+                    name: "maximal".to_owned(),
+                    ownership: owner.clone(),
+                    visibility: SkillVisibility::Private,
+                    archived: false,
+                    active_revision_id: None,
+                    latest_revision_id: revision_id.clone(),
+                    latest_revision_files: Vec::new(),
+                    provenance_provider: None,
+                    materialized: false,
+                    created_at: ts("2026-08-26T00:00:00Z"),
+                    updated_at: ts("2026-08-26T00:00:00Z"),
+                },
+            },
+            ts("2026-08-26T00:00:00Z"),
+            candidate,
+            None,
+            |boundary| {
+                if boundary == SkillTransactionBoundary::PromotionWrite {
+                    Err(ArtifactError::Conflict("injected_transaction_fault"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(
+            outcome,
+            Err(ArtifactError::CommittedPending {
+                committed_version: 1
+            })
+        ));
+        let journal = store.pending_skill_transaction_path();
+        let journal_bytes = std::fs::read(&journal).unwrap();
+        assert!(journal_bytes.len() as u64 <= MAX_PENDING_SKILL_TRANSACTION_BYTES);
+        assert!(journal_bytes.len() < 90 * 1024 * 1024);
+        let pending: PendingSkillTransaction =
+            serde_json::from_slice(&journal_bytes).expect("compact journal remains recoverable");
+        pending.validate().unwrap();
+        let legacy: PendingSkillFile =
+            serde_json::from_str(r#"{"path":"legacy","bytes":[0,1,255]}"#).unwrap();
+        assert_eq!(legacy.bytes, [0, 1, 255]);
+
+        let reopened = ArtifactStore::new(root.path()).unwrap();
+        assert_eq!(
+            reopened
+                .library_snapshot()
+                .unwrap()
+                .records
+                .get(&artifact_id)
+                .unwrap()
+                .latest_revision_id,
+            revision_id
+        );
+        assert!(!journal.exists());
+
+        let overflow_root = tempdir().unwrap();
+        let overflow_store = ArtifactStore::new(overflow_root.path()).unwrap();
+        let mut overflow = materialized("overflow", "body");
+        let uri = overflow.resources.keys().next().unwrap().clone();
+        overflow.resources.insert(
+            uri,
+            vec![b'x'; super::super::validation::MAX_SKILL_PACKAGE_BYTES + 1],
+        );
+        let overflow_artifact_id = overflow.interchange.descriptor.id.clone();
+        let result = overflow_store.mutate_library_with_materialized_outcome(
+            &owner_auth(&owner),
+            &owner,
+            0,
+            idem("overflow-create"),
+            LibraryMutation::Create {
+                record: SkillLibraryRecord {
+                    artifact_id: overflow_artifact_id,
+                    name: "overflow".to_owned(),
+                    ownership: owner.clone(),
+                    visibility: SkillVisibility::Private,
+                    archived: false,
+                    active_revision_id: None,
+                    latest_revision_id: overflow.interchange.revision.id.clone(),
+                    latest_revision_files: Vec::new(),
+                    provenance_provider: None,
+                    materialized: false,
+                    created_at: ts("2026-08-26T00:00:00Z"),
+                    updated_at: ts("2026-08-26T00:00:00Z"),
+                },
+            },
+            ts("2026-08-26T00:00:00Z"),
+            overflow,
+            None,
+            |_| Ok(()),
+        );
+        assert!(matches!(
+            result,
+            Err(ArtifactError::LimitExceeded {
+                what: "skill_package_size",
+                limit
+            }) if limit == super::super::validation::MAX_SKILL_PACKAGE_BYTES as u64
+        ));
+        assert_eq!(overflow_store.library_snapshot().unwrap().version, 0);
+        assert!(!overflow_store.pending_skill_transaction_path().exists());
+    }
+
+    #[test]
+    fn committed_legacy_numeric_array_journal_recovers_with_its_v1_digest() {
+        let root = tempdir().unwrap();
+        let store = ArtifactStore::new(root.path()).unwrap();
+        let owner = ownership("org-a", "alice");
+        let candidate = materialized("legacy-recovery", "legacy body");
+        let artifact_id = candidate.interchange.descriptor.id.clone();
+        let outcome = store.mutate_library_with_materialized_outcome(
+            &owner_auth(&owner),
+            &owner,
+            0,
+            idem("legacy-recovery-create"),
+            LibraryMutation::Create {
+                record: SkillLibraryRecord {
+                    artifact_id: artifact_id.clone(),
+                    name: "legacy-recovery".to_owned(),
+                    ownership: owner.clone(),
+                    visibility: SkillVisibility::Private,
+                    archived: false,
+                    active_revision_id: None,
+                    latest_revision_id: candidate.interchange.revision.id.clone(),
+                    latest_revision_files: Vec::new(),
+                    provenance_provider: None,
+                    materialized: false,
+                    created_at: ts("2026-08-26T00:00:00Z"),
+                    updated_at: ts("2026-08-26T00:00:00Z"),
+                },
+            },
+            ts("2026-08-26T00:00:00Z"),
+            candidate,
+            None,
+            |boundary| {
+                if boundary == SkillTransactionBoundary::PromotionWrite {
+                    Err(ArtifactError::Conflict("injected_transaction_fault"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(
+            outcome,
+            Err(ArtifactError::CommittedPending { .. })
+        ));
+
+        let path = store.pending_skill_transaction_path();
+        let mut pending: PendingSkillTransaction =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        pending.schema_version = 1;
+        pending.transaction_digest = pending.compute_digest().unwrap();
+
+        // A committed v1 receipt and audit refer to the v1 transaction digest.
+        let mut state = store.read_library_snapshot_unvalidated().unwrap();
+        let receipt = state.receipts.get_mut(&pending.scope_digest).unwrap();
+        receipt.transaction_digest = Some(pending.transaction_digest.clone());
+        state
+            .audit_intents
+            .iter_mut()
+            .find(|audit| audit.sequence == receipt.sequence)
+            .unwrap()
+            .transaction_digest = Some(pending.transaction_digest.clone());
+        state.active_generation_digest = state.compute_digest().unwrap();
+        store.persist_library_snapshot(&state).unwrap();
+
+        // Recreate the exact legacy on-disk representation: JSON byte arrays, not base64.
+        let mut legacy = serde_json::to_value(&pending).unwrap();
+        for (file, source) in legacy["files"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .zip(&pending.files)
+        {
+            file["bytes"] = serde_json::Value::Array(
+                source
+                    .bytes
+                    .iter()
+                    .copied()
+                    .map(serde_json::Value::from)
+                    .collect(),
+            );
+        }
+        std::fs::write(&path, canonical_json::to_canonical_vec(&legacy).unwrap()).unwrap();
+
+        let reopened = ArtifactStore::new(root.path()).unwrap();
+        let snapshot = reopened.library_snapshot().unwrap();
+        assert_eq!(snapshot.version, 1);
+        assert!(snapshot.records.contains_key(&artifact_id));
+        assert!(reopened.get(&artifact_id).is_ok());
+        assert!(!path.exists());
     }
 
     #[test]
