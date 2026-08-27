@@ -20,9 +20,9 @@ mod paths;
 mod secret_files;
 
 pub use env_writer::{EnvCredential, write_env_pairs, write_service_creds};
-pub(crate) use paths::home_dir;
 #[cfg(test)]
 use paths::resolve_usage_telemetry_enabled;
+pub(crate) use paths::{access_db_path, home_dir};
 pub use paths::{
     codemode_journal_db_path, codemode_journal_enabled, config_toml_path, dotenv_path,
     toml_candidates, usage_db_path, usage_telemetry_enabled, workspace_root_for_home,
@@ -356,6 +356,9 @@ pub struct LabConfig {
     /// Visibility of Labby-owned MCP App surfaces other than Code Mode.
     #[serde(default)]
     pub mcp_apps: McpAppsConfig,
+    /// Optional server-held exact-revision Skill acquisition connections.
+    #[serde(default)]
+    pub skill_library: SkillLibraryPreferences,
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -413,6 +416,31 @@ pub struct LabConfig {
     /// credentials are read from `OPENAPI_<LABEL>_*` env vars, never TOML.
     #[serde(default)]
     pub openapi: OpenApiTomlSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillLibraryPreferences {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SkillLibrarySourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLibrarySourceConfig {
+    pub id: String,
+    pub kind: SkillLibrarySourceKind,
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_addresses: Vec<std::net::IpAddr>,
+    /// Name of an environment variable containing the server-held bearer secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillLibrarySourceKind {
+    Depot,
+    Repository,
 }
 
 /// `[openapi]` config section: a list of `[[openapi.specs]]` tables.

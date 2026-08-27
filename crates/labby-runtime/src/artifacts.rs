@@ -6,8 +6,10 @@
 //! Product transports remain adapters over this layer.
 
 pub mod canonical_json;
+pub mod library;
 pub mod lifecycle;
 mod local_io;
+pub mod materialize_skill;
 pub mod model;
 pub mod provider;
 pub mod skill;
@@ -15,6 +17,18 @@ pub mod store;
 mod store_ops;
 pub mod validation;
 
+pub use materialize_skill::{
+    LogicalSkillFile, MaterializedSkill, materialize_acquired_skill,
+    materialize_acquired_skill_owned, materialize_logical_skill,
+    materialize_skill_from_trusted_staging,
+};
+
+pub use library::{
+    LibraryActorId, LibraryAuditIntent, LibraryAuthorization, LibraryDurableAudit, LibraryGrant,
+    LibraryIdempotency, LibraryMutation, LibraryMutationOutcome, LibraryMutationReceiptFacts,
+    LibraryOwnership, LibraryReceipt, LibrarySnapshot, LibraryTenantId, LibraryTimestamp,
+    SkillLibraryFile, SkillLibraryRecord, SkillTransactionBoundary, SkillVisibility,
+};
 pub use lifecycle::{
     ArtifactChangeKind, ArtifactComponentChange, ArtifactRevisionDiff, ArtifactUpdatePlan,
     ArtifactWorkspaceSnapshot, ArtifactWorkspaceSnapshotRequest,
@@ -70,6 +84,12 @@ pub enum ArtifactError {
     /// Another process currently holds the artifact mutation lock.
     #[error("artifact is busy")]
     Busy,
+    /// The durable Skill Library metadata is corrupt or internally inconsistent.
+    #[error("artifact Skill Library is degraded: {0}")]
+    LibraryCorrupt(&'static str),
+    /// Library metadata committed, but the paired Artifact promotion did not finish.
+    #[error("artifact Skill Library commit {committed_version} requires reconciliation")]
+    CommittedPending { committed_version: u64 },
     /// Safe-by-default export found content that resembles credential material.
     #[error("artifact export blocked because secret-like material was detected in `{path}`")]
     SecretMaterialDetected {
@@ -79,6 +99,14 @@ pub enum ArtifactError {
     /// Existing Agent Skills verification rejected a projected resource.
     #[error("Agent Skill resource verification failed")]
     SkillVerification,
+    /// A caller-supplied logical file failed a stable package rule.
+    #[error("logical Skill file `{path}` is invalid: {reason}")]
+    LogicalSkillFile {
+        /// Bounded logical path only; file contents are never included.
+        path: String,
+        /// Stable, non-secret reason code.
+        reason: &'static str,
+    },
     /// Local filesystem operation failed.
     #[error("artifact I/O failed: {0}")]
     Io(#[from] std::io::Error),

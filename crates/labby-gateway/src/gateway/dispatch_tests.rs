@@ -986,11 +986,13 @@ impl crate::gateway::service_registry::GatewayServiceRegistry for DeployTestRegi
                     name: "deploy.plan",
                     description: "Plan a deployment",
                     destructive: false,
+                    requires_admin: false,
                 },
                 crate::gateway::service_registry::ServiceActionInfo {
                     name: "deploy.apply",
                     description: "Apply a deployment",
                     destructive: true,
+                    requires_admin: true,
                 },
             ]
         })

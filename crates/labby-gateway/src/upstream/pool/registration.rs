@@ -191,7 +191,7 @@ impl UpstreamPool {
                         );
                     }
 
-                    self.catalog.write().await.insert(
+                    self.catalog_tools_write().await.insert(
                         registration.upstream_name.clone(),
                         healthy_in_process_entry(Arc::clone(&registration.entry_name), tool_map),
                     );
@@ -232,7 +232,7 @@ impl UpstreamPool {
                         error = %error_message,
                         "in-process peer registration failed"
                     );
-                    let mut catalog = self.catalog.write().await;
+                    let mut catalog = self.catalog_tools_write().await;
                     let name: Arc<str> = Arc::from(upstream_name.as_str());
                     let entry = catalog
                         .remove(&upstream_name)
@@ -256,7 +256,7 @@ impl UpstreamPool {
                         error = %error_message,
                         "in-process peer registration timed out"
                     );
-                    let mut catalog = self.catalog.write().await;
+                    let mut catalog = self.catalog_tools_write().await;
                     let name: Arc<str> = Arc::from(upstream_name.as_str());
                     let entry = catalog
                         .remove(&upstream_name)

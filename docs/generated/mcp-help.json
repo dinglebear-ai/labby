@@ -1802,7 +1802,7 @@
     },
     {
       "name": "doctor",
-      "description": "Comprehensive health audit: env vars, system, gateway, and OAuth relay checks",
+      "description": "Comprehensive health audit: env vars, system, access store, gateway, and OAuth relay checks",
       "category": "bootstrap",
       "status": "available",
       "requires_http_subject": false,
@@ -1853,6 +1853,15 @@
         {
           "name": "auth.check",
           "description": "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "DoctorReport"
+        },
+        {
+          "name": "access.check",
+          "description": "Inspect access-control store readiness and safety without modifying it",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -2417,7 +2426,7 @@
     },
     {
       "name": "skills",
-      "description": "Discover and read Agent Skills through a universal compatibility surface",
+      "description": "Discover, read, and manage Agent Skills through one shared service",
       "category": "bootstrap",
       "status": "available",
       "requires_http_subject": false,

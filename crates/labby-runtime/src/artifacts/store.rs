@@ -1,7 +1,10 @@
 //! Canonical local Artifact store and persistence primitives.
 
 use std::fs::{File, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+
+use atomic_write_file::AtomicWriteFile;
 
 use crate::path_safety::{
     canonicalize_and_reject_write_path, reject_existing_symlink_ancestors,
@@ -9,6 +12,7 @@ use crate::path_safety::{
 };
 
 use super::ArtifactError;
+use super::library::{LibrarySnapshot, MAX_LIBRARY_STATE_BYTES};
 use super::local_io::{
     SnapshotFile, ensure_private_dir, materialize_tree, prepare_empty_internal_dir, read_json,
     revision_dir, storage_key, write_json_atomic,
@@ -20,6 +24,9 @@ use super::model::{
 use super::validation::{
     self, MAX_RECORD_JSON_BYTES, MAX_REVISION_MANIFEST_BYTES, validate_id, validate_reference_id,
 };
+
+/// Maximum immutable revision manifests accepted by one bounded read batch.
+pub const MAX_REVISION_READ_BATCH: usize = 100;
 
 /// Inputs for importing a local file or multi-file package.
 #[derive(Debug, Clone)]
@@ -87,6 +94,28 @@ pub struct ArtifactStore {
     pub(crate) root: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "fault stages are exercised by deterministic persistence tests"
+)]
+pub(crate) enum LibraryPersistFault {
+    Write,
+    FileSync,
+    Commit,
+    DirectorySync,
+    Enospc,
+}
+
+#[cfg(test)]
+fn library_faults()
+-> &'static std::sync::Mutex<std::collections::BTreeMap<PathBuf, LibraryPersistFault>> {
+    static FAULTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<PathBuf, LibraryPersistFault>>,
+    > = std::sync::OnceLock::new();
+    FAULTS.get_or_init(Default::default)
+}
+
 impl ArtifactStore {
     /// Open or initialize the canonical local store at an explicit root.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, ArtifactError> {
@@ -102,6 +131,7 @@ impl ArtifactStore {
             .map_err(|_| ArtifactError::UnsafePath("store_root"))?;
         ensure_private_dir(&root.join("artifacts"))?;
         ensure_private_dir(&root.join("locks"))?;
+        ensure_private_dir(&root.join("library"))?;
         Ok(Self { root })
     }
 
@@ -109,6 +139,14 @@ impl ArtifactStore {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_library_persist_fault(&self, fault: LibraryPersistFault) {
+        library_faults()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(self.root.clone(), fault);
     }
 
     /// Read one local Artifact head record.
@@ -127,6 +165,32 @@ impl ArtifactStore {
         validate_id(artifact_id, "artifact_id")?;
         validate_reference_id(revision_id, "revision_id")?;
         self.read_revision(artifact_id, revision_id)
+    }
+
+    /// Read and verify a bounded batch of immutable revisions in input order.
+    ///
+    /// Reads are deliberately sequential. Callers admit this blocking operation through their
+    /// shared bounded executor, so spawning another per-request worker set here would bypass that
+    /// process-wide capacity limit.
+    pub fn revision_batch(
+        &self,
+        artifact_id: &str,
+        revision_ids: &[&str],
+    ) -> Result<Vec<ArtifactRevision>, ArtifactError> {
+        validate_id(artifact_id, "artifact_id")?;
+        if revision_ids.len() > MAX_REVISION_READ_BATCH {
+            return Err(ArtifactError::LimitExceeded {
+                what: "revision_batch",
+                limit: MAX_REVISION_READ_BATCH as u64,
+            });
+        }
+        for revision_id in revision_ids {
+            validate_reference_id(revision_id, "revision_id")?;
+        }
+        revision_ids
+            .iter()
+            .map(|revision_id| self.read_revision(artifact_id, revision_id))
+            .collect()
     }
 
     /// Project one exact local revision into the frozen cross-product envelope.
@@ -174,6 +238,16 @@ impl ArtifactStore {
         revision: &ArtifactRevision,
         files: &[SnapshotFile],
     ) -> Result<(), ArtifactError> {
+        self.persist_revision_with_faults(revision, artifact_id, files, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn persist_revision_with_faults(
+        &self,
+        revision: &ArtifactRevision,
+        artifact_id: &str,
+        files: &[SnapshotFile],
+        fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
         revision.verify_content_digest()?;
         let artifact_dir = self.artifact_dir(artifact_id)?;
         let revisions = artifact_dir.join("revisions");
@@ -200,9 +274,15 @@ impl ArtifactStore {
         prepare_empty_internal_dir(&staging)?;
         let files_root = staging.join("files");
         ensure_private_dir(&files_root)?;
+        fault(super::library::SkillTransactionBoundary::PromotionWrite)?;
         materialize_tree(&files_root, files, false)?;
         write_json_atomic(&staging.join("revision.json"), revision)?;
+        fault(super::library::SkillTransactionBoundary::PromotionFileSync)?;
+        File::open(&staging)?.sync_all()?;
+        fault(super::library::SkillTransactionBoundary::PromotionRename)?;
         std::fs::rename(&staging, &final_dir)?;
+        fault(super::library::SkillTransactionBoundary::PromotionParentSync)?;
+        File::open(&revisions)?.sync_all()?;
         Ok(())
     }
 
@@ -235,6 +315,23 @@ impl ArtifactStore {
         let artifact_dir = self.artifact_dir(&record.descriptor.id)?;
         ensure_private_dir(&artifact_dir)?;
         write_json_atomic(&artifact_dir.join("artifact.json"), record)
+    }
+
+    pub(crate) fn persist_record_with_faults(
+        &self,
+        record: &ArtifactRecord,
+        boundaries: [super::library::SkillTransactionBoundary; 4],
+        fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
+        record.validate()?;
+        let artifact_dir = self.artifact_dir(&record.descriptor.id)?;
+        ensure_private_dir(&artifact_dir)?;
+        super::local_io::write_json_atomic_with_faults(
+            &artifact_dir.join("artifact.json"),
+            record,
+            boundaries,
+            fault,
+        )
     }
 
     pub(crate) fn persist_record_transition(
@@ -287,6 +384,113 @@ impl ArtifactStore {
             .map_err(|_| ArtifactError::UnsafePath("lock_symlink"))?;
         MutationLock::acquire(&path)
     }
+
+    #[allow(
+        dead_code,
+        reason = "used by the sealed Skill Library mutation primitive"
+    )]
+    pub(crate) fn library_lock(&self) -> Result<MutationLock, ArtifactError> {
+        let locks_root = self.root.join("locks");
+        let path = locks_root.join("skill-library.lock");
+        reject_existing_symlink_ancestors(&locks_root, &path)
+            .map_err(|_| ArtifactError::UnsafePath("lock_symlink"))?;
+        MutationLock::acquire_wait(&path)
+    }
+
+    pub(crate) fn read_library_snapshot(&self) -> Result<LibrarySnapshot, ArtifactError> {
+        let state = self.read_library_snapshot_unvalidated()?;
+        state.validate(self)?;
+        Ok(state)
+    }
+
+    pub(crate) fn read_library_snapshot_unvalidated(
+        &self,
+    ) -> Result<LibrarySnapshot, ArtifactError> {
+        let path = self.root.join("library").join("state.json");
+        if !path.exists() {
+            return Ok(LibrarySnapshot::default());
+        }
+        reject_symlink(&path).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+        let state: LibrarySnapshot =
+            read_json(&path, MAX_LIBRARY_STATE_BYTES).map_err(|error| match error {
+                ArtifactError::Json(_) => ArtifactError::LibraryCorrupt("invalid_json"),
+                other => other,
+            })?;
+        let bytes = super::canonical_json::to_canonical_vec(&state)?;
+        if bytes.len() as u64 > MAX_LIBRARY_STATE_BYTES {
+            return Err(ArtifactError::LimitExceeded {
+                what: "library_state_bytes",
+                limit: MAX_LIBRARY_STATE_BYTES,
+            });
+        }
+        Ok(state)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "used by the sealed Skill Library mutation primitive"
+    )]
+    pub(crate) fn persist_library_snapshot(
+        &self,
+        state: &LibrarySnapshot,
+    ) -> Result<(), ArtifactError> {
+        self.persist_library_snapshot_with_faults(state, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn persist_library_snapshot_with_faults(
+        &self,
+        state: &LibrarySnapshot,
+        fault: &mut impl FnMut(super::library::SkillTransactionBoundary) -> Result<(), ArtifactError>,
+    ) -> Result<(), ArtifactError> {
+        state.validate_metadata()?;
+        let library_root = self.root.join("library");
+        reject_existing_symlinks_in_path(&library_root)
+            .map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+        let path = library_root.join("state.json");
+        let bytes = super::canonical_json::to_canonical_vec(state)?;
+        let mut output = AtomicWriteFile::open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            output
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        self.fail_library_persist_if_injected(LibraryPersistFault::Enospc)?;
+        self.fail_library_persist_if_injected(LibraryPersistFault::Write)?;
+        fault(super::library::SkillTransactionBoundary::LibraryWrite)?;
+        output.write_all(&bytes)?;
+        self.fail_library_persist_if_injected(LibraryPersistFault::FileSync)?;
+        fault(super::library::SkillTransactionBoundary::LibraryFileSync)?;
+        output.sync_all()?;
+        self.fail_library_persist_if_injected(LibraryPersistFault::Commit)?;
+        fault(super::library::SkillTransactionBoundary::LibraryRename)?;
+        output.commit()?;
+        self.fail_library_persist_if_injected(LibraryPersistFault::DirectorySync)?;
+        fault(super::library::SkillTransactionBoundary::LibraryParentSync)?;
+        File::open(&library_root)?.sync_all()?;
+        Ok(())
+    }
+
+    fn fail_library_persist_if_injected(
+        &self,
+        stage: LibraryPersistFault,
+    ) -> Result<(), ArtifactError> {
+        #[cfg(test)]
+        {
+            let mut faults = library_faults()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if faults.get(&self.root) == Some(&stage) {
+                faults.remove(&self.root);
+                return Err(ArtifactError::Io(std::io::Error::other(format!(
+                    "injected library persistence failure at {stage:?}"
+                ))));
+            }
+        }
+        let _ = stage;
+        Ok(())
+    }
 }
 
 fn validate_store_creation_ancestor(root: &Path) -> Result<(), ArtifactError> {
@@ -328,12 +532,44 @@ impl MutationLock {
             Err(std::fs::TryLockError::Error(error)) => Err(ArtifactError::Io(error)),
         }
     }
+
+    fn acquire_wait(path: &Path) -> Result<Self, ArtifactError> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.lock()?;
+        Ok(Self { _file: file })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn revision_batch_rejects_more_than_the_page_cap() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let ids = vec!["rev_0000000000000000"; MAX_REVISION_READ_BATCH + 1];
+        assert!(matches!(
+            store.revision_batch("art_batch", &ids),
+            Err(ArtifactError::LimitExceeded {
+                what: "revision_batch",
+                limit: 100
+            })
+        ));
+    }
 
     #[test]
     fn store_requires_an_explicit_absolute_root() {

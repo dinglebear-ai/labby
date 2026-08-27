@@ -692,6 +692,12 @@ pub(super) async fn inject_peer_auth(mut request: Request, next: Next) -> Respon
     };
 
     let subject = format!("unix-peer:uid={}:gid={}", peer.uid, peer.gid);
+    let identity = labby_auth::VerifiedIdentity::local_credential(
+        labby_auth::Authenticator::UnixPeer,
+        subject.clone(),
+    )
+    .expect("kernel-derived Unix peer identity is non-empty");
+    request.extensions_mut().insert(identity);
     request.extensions_mut().insert(AuthContext {
         actor_key: None,
         sub: subject,
@@ -1071,6 +1077,7 @@ mod tests {
         use axum::Router;
         use axum::middleware;
         use axum::routing::get;
+        use labby_auth::{PrincipalLink, VerifiedIdentity};
 
         let tempdir = tempfile::tempdir().unwrap();
         let path = tempdir.path().join("peer-principal.sock");
@@ -1083,7 +1090,17 @@ mod tests {
         let router = Router::new()
             .route(
                 "/peer",
-                get(|Extension(context): Extension<AuthContext>| async move { context.sub }),
+                get(
+                    |Extension(context): Extension<AuthContext>,
+                     Extension(identity): Extension<VerifiedIdentity>| async move {
+                        let PrincipalLink::LocalCredential { credential_id } =
+                            identity.principal_link()
+                        else {
+                            panic!("Unix peer must use a local credential Principal link")
+                        };
+                        format!("{}|{credential_id}", context.sub)
+                    },
+                ),
             )
             .layer(Extension(loopback_connect_info()))
             .layer(middleware::from_fn(inject_peer_auth));
@@ -1108,7 +1125,7 @@ mod tests {
         assert_eq!(
             subject,
             format!(
-                "unix-peer:uid={}:gid={}",
+                "unix-peer:uid={0}:gid={1}|unix-peer:uid={0}:gid={1}",
                 Uid::effective().as_raw(),
                 Gid::effective().as_raw()
             )
