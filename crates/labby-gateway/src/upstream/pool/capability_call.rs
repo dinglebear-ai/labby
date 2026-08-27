@@ -22,7 +22,10 @@ use serde_json::Value;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::helpers::max_response_bytes;
-use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish};
+use super::logging::{
+    UpstreamRequestLog, log_upstream_request_cancelled, log_upstream_request_error,
+    log_upstream_request_finish,
+};
 use super::usage_record::{record_usage_call, record_usage_call_with_response};
 
 /// Structured failure from an upstream capability call.
@@ -216,6 +219,11 @@ pub(super) enum RawCallOutcome<R> {
     UpstreamError(rmcp::ServiceError),
     /// The tokio timeout elapsed.
     Timeout,
+    /// The caller's cancellation token fired before the upstream responded.
+    ///
+    /// Distinct from [`Self::Timeout`]: nothing is wrong with the upstream, so
+    /// this must not feed the circuit breaker or evict the connection.
+    Cancelled,
 }
 
 /// Helper to convert a `tokio::time::timeout` + `rmcp` result pair into
@@ -290,6 +298,7 @@ where
         subject,
         error_message_fn,
         timeout_message,
+        None,
     )
     .await
 }
@@ -309,6 +318,7 @@ pub(super) async fn timed_capability_call_with_timeout<R, Fut, SizeFn>(
     subject: Option<&str>,
     error_message_fn: impl Fn(&dyn std::fmt::Display) -> String,
     timeout_message: String,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<R, CapabilityCallError>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
@@ -340,12 +350,31 @@ where
             ),
         });
     }
-    let _permit = match tokio::time::timeout(
+    // Queueing behind the bulkhead is the one place a caller can wait without
+    // the upstream having been contacted yet, so honour cancellation here too
+    // — the relay path already does (`RelayPermitOutcome::Cancelled`). Nothing
+    // needs telling upstream: no request has been sent.
+    let permit_wait = tokio::time::timeout(
         gate_remaining,
         pool.acquire_upstream_call_permit(upstream_name),
-    )
-    .await
-    {
+    );
+    let permit_outcome = match cancel {
+        Some(token) => tokio::select! {
+            biased;
+            () = token.cancelled() => {
+                log_upstream_request_cancelled(event, start.elapsed().as_millis(), "cancelled");
+                record_usage_call(pool, event, subject, "cancelled", start.elapsed().as_millis());
+                return Err(CapabilityCallError::Cancelled {
+                    message: format!(
+                        "caller cancelled the `{upstream_name}` request while queued"
+                    ),
+                });
+            }
+            outcome = permit_wait => outcome,
+        },
+        None => permit_wait.await,
+    };
+    let _permit = match permit_outcome {
         Ok(Ok(permit)) => permit,
         Ok(Err(error)) => {
             // The per-upstream concurrency gate itself failed (semaphore
@@ -402,7 +431,28 @@ where
     let outcome = if rpc_remaining.is_zero() {
         RawCallOutcome::Timeout
     } else {
-        classify_timeout_result(tokio::time::timeout(rpc_remaining, rpc_future).await)
+        let rpc = tokio::time::timeout(rpc_remaining, rpc_future);
+        match cancel {
+            // Dropping `rpc` here is what stops the local work. Capability
+            // futures that carry side effects upstream arm their own
+            // cancel-on-drop guard so the upstream is told to stop too.
+            //
+            // `biased` is load-bearing, not style. `rpc` is lazy: nothing
+            // reaches the wire until it is polled. Polling the token first
+            // means an already-cancelled caller never dispatches the request
+            // at all. Without `biased` tokio picks at random and roughly half
+            // the time writes the request out before noticing — executing a
+            // side effect for a caller that is already gone. Pinned by
+            // `a_call_cancelled_before_dispatch_never_reaches_the_upstream`.
+            // Losing a tie to an already-arrived response is harmless: that
+            // result had no reader, and MCP receivers ignore unknown ids.
+            Some(token) => tokio::select! {
+                biased;
+                () = token.cancelled() => RawCallOutcome::Cancelled,
+                result = rpc => classify_timeout_result(result),
+            },
+            None => classify_timeout_result(rpc.await),
+        }
     };
 
     match outcome {
@@ -498,6 +548,32 @@ where
             record_usage_call(pool, event, subject, "timeout", start.elapsed().as_millis());
             Err(CapabilityCallError::Timeout {
                 message: timeout_message,
+            })
+        }
+        RawCallOutcome::Cancelled => {
+            // No circuit-breaker failure and no eviction: the caller withdrew,
+            // the upstream did nothing wrong, and the connection is still good.
+            // Recording this as a failure would let a client that disconnects
+            // repeatedly quarantine a perfectly healthy upstream.
+            //
+            // This is only safe because the HTTP transport backstop is derived
+            // to exceed the upstream deadline (`LabConfig::http_request_timeout`),
+            // so a genuinely wedged upstream still trips the breaker via
+            // `Timeout` before any caller's transport gives up. A fixed
+            // transport cap *below* the upstream deadline — the bug this change
+            // followed — would make every caller withdraw first and blind the
+            // breaker entirely. Pinned by
+            // `http_request_timeout_never_undercuts_configured_upstream_deadlines`.
+            log_upstream_request_cancelled(event, start.elapsed().as_millis(), "cancelled");
+            record_usage_call(
+                pool,
+                event,
+                subject,
+                "cancelled",
+                start.elapsed().as_millis(),
+            );
+            Err(CapabilityCallError::Cancelled {
+                message: format!("caller cancelled the `{upstream_name}` request"),
             })
         }
     }

@@ -177,6 +177,19 @@ pub(super) async fn catalog_pool_with_server<S>(upstream_name: &str, server: S) 
 where
     S: ServerHandler,
 {
+    catalog_pool_with_server_and_timeout(upstream_name, server, None).await
+}
+
+/// [`catalog_pool_with_server`] with an explicit per-request timeout, for tests
+/// that need the pool's own deadline to fire.
+pub(super) async fn catalog_pool_with_server_and_timeout<S>(
+    upstream_name: &str,
+    server: S,
+    request_timeout: Option<Duration>,
+) -> Arc<UpstreamPool>
+where
+    S: ServerHandler,
+{
     let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
     let server_task = tokio::spawn(async move {
         let running = server
@@ -191,7 +204,11 @@ where
         .expect("catalog client starts");
     let peer = client_service.peer().clone();
 
-    let pool = Arc::new(UpstreamPool::new());
+    let base = UpstreamPool::new();
+    let pool = Arc::new(match request_timeout {
+        Some(timeout) => base.with_request_timeout(timeout),
+        None => base,
+    });
     let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
     pool.catalog.write().await.insert(
         upstream_name.to_string(),

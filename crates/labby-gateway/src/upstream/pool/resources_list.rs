@@ -603,6 +603,8 @@ impl UpstreamPool {
                     format!(
                         "subject-scoped upstream resource listing timed out after {timeout_ms}ms"
                     ),
+                    // Discovery fan-out: no downstream request to withdraw from.
+                    None,
                 )
                 .await
                 .map_err(|error| error.to_string());

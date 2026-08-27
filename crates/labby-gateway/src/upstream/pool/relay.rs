@@ -91,8 +91,8 @@ use super::helpers::{
 };
 use super::http_cancellation::{HttpCancellationSender, build_http_cancellation_sender};
 use super::logging::{
-    UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
-    log_upstream_request_start,
+    UpstreamRequestLog, log_upstream_request_cancelled, log_upstream_request_error,
+    log_upstream_request_finish, log_upstream_request_start,
 };
 use super::notifications::UpstreamNotificationEvent;
 use super::relay_cache::{
@@ -1170,7 +1170,7 @@ impl UpstreamPool {
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
-                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, caller_subject, "connect_cancelled", started.elapsed().as_millis());
                 return Some(Err(super::CapabilityCallError::Cancelled {
                     message: downstream_cancelled("downstream request cancelled while connecting"),
@@ -1250,14 +1250,7 @@ impl UpstreamPool {
                 return Some(Err(super::CapabilityCallError::Other { message: error }));
             }
             RelayPermitOutcome::Cancelled => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    None,
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 super::usage_record::record_usage_call(
                     self,
                     event,
@@ -1427,14 +1420,7 @@ impl UpstreamPool {
                 }
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    Some(&error),
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 super::usage_record::record_usage_call(
                     self,
                     event,
@@ -1554,7 +1540,7 @@ impl UpstreamPool {
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
-                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while connecting",
@@ -1612,14 +1598,7 @@ impl UpstreamPool {
                 return Some(Err(error));
             }
             RelayPermitOutcome::Cancelled => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    None,
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while queued",
                 )));
@@ -1688,14 +1667,7 @@ impl UpstreamPool {
                 Some(Ok(result))
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    Some(&error),
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 Some(Err(error.to_string()))
             }
             Err(error) => {
@@ -1806,7 +1778,7 @@ impl UpstreamPool {
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
-                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while connecting",
@@ -1864,14 +1836,7 @@ impl UpstreamPool {
                 return Some(Err(error));
             }
             RelayPermitOutcome::Cancelled => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    None,
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while queued",
                 )));
@@ -1979,14 +1944,7 @@ impl UpstreamPool {
                 Some(Ok(result))
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    Some(&error),
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 Some(Err(error.to_string()))
             }
             Err(error) => {
