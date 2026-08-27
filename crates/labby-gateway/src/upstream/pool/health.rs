@@ -12,6 +12,70 @@ use super::super::types;
 use super::super::types::{UpstreamCapability, UpstreamEntry, UpstreamHealth};
 use super::UpstreamPool;
 
+pub(super) fn record_failure_on_entry(
+    upstream_name: &str,
+    entry: &mut UpstreamEntry,
+    capability: UpstreamCapability,
+    error: String,
+) {
+    let previous = entry.health_for(capability);
+    let was_open = previous.is_open();
+    let new_count = match previous {
+        UpstreamHealth::Healthy => 1,
+        UpstreamHealth::Unhealthy {
+            consecutive_failures,
+        } => consecutive_failures.saturating_add(1),
+    };
+    entry.set_health_for(
+        capability,
+        UpstreamHealth::Unhealthy {
+            consecutive_failures: new_count,
+        },
+    );
+    // Reset the quarantine clock on every failed reprobe so an open circuit
+    // cannot immediately become due again after a slow failing request.
+    entry.set_unhealthy_since_for(capability, Some(Instant::now()));
+    entry.set_last_error_for(capability, Some(error.clone()));
+    if !was_open && new_count >= types::CIRCUIT_BREAKER_THRESHOLD {
+        let retry_after = types::reprobe_interval_for_failures(new_count);
+        tracing::warn!(
+            upstream = %upstream_name,
+            capability = ?capability,
+            consecutive_failures = new_count,
+            retry_after_ms = retry_after.as_millis(),
+            error = %error,
+            "circuit breaker open — upstream quarantined"
+        );
+    } else if new_count >= types::CIRCUIT_BREAKER_THRESHOLD {
+        let retry_after = types::reprobe_interval_for_failures(new_count);
+        tracing::debug!(
+            upstream = %upstream_name,
+            capability = ?capability,
+            consecutive_failures = new_count,
+            retry_after_ms = retry_after.as_millis(),
+            error = %error,
+            "open circuit reprobe failed; quarantine extended"
+        );
+    }
+}
+
+pub(super) fn record_success_on_entry(
+    upstream_name: &str,
+    entry: &mut UpstreamEntry,
+    capability: UpstreamCapability,
+) {
+    if !entry.health_for(capability).is_routable() {
+        tracing::info!(
+            upstream = %upstream_name,
+            capability = ?capability,
+            "circuit breaker reset — upstream healthy"
+        );
+    }
+    entry.set_health_for(capability, UpstreamHealth::Healthy);
+    entry.set_unhealthy_since_for(capability, None);
+    entry.set_last_error_for(capability, None);
+}
+
 impl UpstreamPool {
     pub async fn record_failure(&self, upstream_name: &str, error: impl Into<String>) {
         self.record_failure_for(upstream_name, UpstreamCapability::Tools, error)
@@ -28,52 +92,9 @@ impl UpstreamPool {
         capability: UpstreamCapability,
         error: impl Into<String>,
     ) {
-        let mut catalog = self.catalog_metadata_write().await;
+        let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
-            let error = error.into();
-            let previous = entry.health_for(capability);
-            let was_open = previous.is_open();
-            let new_count = match previous {
-                UpstreamHealth::Healthy => 1,
-                UpstreamHealth::Unhealthy {
-                    consecutive_failures,
-                } => consecutive_failures.saturating_add(1),
-            };
-            entry.set_health_for(
-                capability,
-                UpstreamHealth::Unhealthy {
-                    consecutive_failures: new_count,
-                },
-            );
-            // Reset the quarantine clock after every failed reprobe. Keeping the
-            // original failure timestamp made an open circuit immediately due
-            // forever after its first 30 seconds.
-            entry.set_unhealthy_since_for(capability, Some(Instant::now()));
-            entry.set_last_error_for(capability, Some(error.clone()));
-            if capability == UpstreamCapability::Tools && was_open != entry.tool_health.is_open() {
-                catalog.mark_tool_projection_dirty();
-            }
-            if !was_open && new_count >= types::CIRCUIT_BREAKER_THRESHOLD {
-                let retry_after = types::reprobe_interval_for_failures(new_count);
-                tracing::warn!(
-                    upstream = %upstream_name,
-                    capability = ?capability,
-                    consecutive_failures = new_count,
-                    retry_after_ms = retry_after.as_millis(),
-                    error = %error,
-                    "circuit breaker open — upstream quarantined"
-                );
-            } else if new_count >= types::CIRCUIT_BREAKER_THRESHOLD {
-                let retry_after = types::reprobe_interval_for_failures(new_count);
-                tracing::debug!(
-                    upstream = %upstream_name,
-                    capability = ?capability,
-                    consecutive_failures = new_count,
-                    retry_after_ms = retry_after.as_millis(),
-                    error = %error,
-                    "open circuit reprobe failed; quarantine extended"
-                );
-            }
+            record_failure_on_entry(upstream_name, entry, capability, error.into());
         }
     }
 
@@ -85,23 +106,9 @@ impl UpstreamPool {
 
     /// Record a success for a specific upstream capability, resetting the circuit breaker.
     pub async fn record_success_for(&self, upstream_name: &str, capability: UpstreamCapability) {
-        let mut catalog = self.catalog_metadata_write().await;
+        let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
-            let tool_routes_changed =
-                capability == UpstreamCapability::Tools && !entry.tool_health.is_routable();
-            if !entry.health_for(capability).is_routable() {
-                tracing::info!(
-                    upstream = %upstream_name,
-                    capability = ?capability,
-                    "circuit breaker reset — upstream healthy"
-                );
-            }
-            entry.set_health_for(capability, UpstreamHealth::Healthy);
-            entry.set_unhealthy_since_for(capability, None);
-            entry.set_last_error_for(capability, None);
-            if tool_routes_changed {
-                catalog.mark_tool_projection_dirty();
-            }
+            record_success_on_entry(upstream_name, entry, capability);
         }
     }
 
@@ -208,16 +215,13 @@ impl UpstreamPool {
 
     #[cfg(any(test, feature = "testkit"))]
     pub async fn insert_entry_for_tests(&self, name: &str, entry: UpstreamEntry) {
-        self.catalog_tools_write()
-            .await
-            .insert(name.to_string(), entry);
+        self.catalog_write().await.insert(name.to_string(), entry);
     }
 
     /// Test-only: insert a fully-formed `UpstreamEntry` into the catalog.
+    #[cfg(any(test, feature = "testkit"))]
     pub async fn insert_entry_for_test(&self, name: &str, entry: UpstreamEntry) {
-        self.catalog_tools_write()
-            .await
-            .insert(name.to_string(), entry);
+        self.catalog_write().await.insert(name.to_string(), entry);
     }
 
     /// Check if an upstream capability is due for a re-probe.
@@ -252,7 +256,7 @@ impl UpstreamPool {
     /// Built-in lab services permanently take precedence. Upstream tools with
     /// colliding names are dropped with a warning.
     pub async fn filter_collisions(&self, builtin_names: &[&str]) {
-        let mut catalog = self.catalog_tools_write().await;
+        let mut catalog = self.catalog_write().await;
         for entry in catalog.values_mut() {
             let collisions: Vec<String> = entry
                 .tools

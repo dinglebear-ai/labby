@@ -1111,6 +1111,49 @@ impl Default for GatewayLoadoutConfig {
     }
 }
 
+impl GatewayLoadoutConfig {
+    #[allow(clippy::result_unit_err)] // The caller intentionally maps every mismatch to one redacted boundary.
+    pub fn intersect_gateway_subset(
+        &self,
+        target: &ProtectedGatewaySubsetTarget,
+    ) -> Result<Self, ()> {
+        if let Some(name) = target.loadout.as_deref() {
+            return (name == self.name).then(|| self.clone()).ok_or(());
+        }
+        let upstreams = target
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let services = target
+            .services
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(Self {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            upstreams: self
+                .upstreams
+                .iter()
+                .filter(|name| upstreams.contains(name.as_str()))
+                .cloned()
+                .collect(),
+            services: self
+                .services
+                .iter()
+                .filter(|name| services.contains(name.as_str()))
+                .cloned()
+                .collect(),
+            expose_code_mode: self.expose_code_mode && target.expose_code_mode,
+            expose_tools: self.expose_tools,
+            expose_resources: self.expose_resources,
+            expose_prompts: self.expose_prompts,
+            expose_skills: self.expose_skills,
+        })
+    }
+}
+
 /// Explicit target kind for an OAuth-protected public MCP route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1122,6 +1165,9 @@ pub enum ProtectedMcpRouteTarget {
 /// Gateway subset exposed by a protected MCP route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProtectedGatewaySubsetTarget {
+    /// Authoritative Project bound to this explicit gateway-subset route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     /// Optional named loadout. When set, inline subset fields must stay empty
     /// so the effective policy has one authoritative source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1135,6 +1181,22 @@ pub struct ProtectedGatewaySubsetTarget {
     /// Whether the route exposes the Code Mode surface over its filtered catalog.
     #[serde(default)]
     pub expose_code_mode: bool,
+}
+
+impl ProtectedGatewaySubsetTarget {
+    pub fn canonical_project_id(&self) -> Option<&str> {
+        let project_id = self.project_id.as_deref()?;
+        is_canonical_project_id(project_id).then_some(project_id)
+    }
+}
+
+pub const MAX_PROJECT_ID_LEN: usize = 128;
+
+pub fn is_canonical_project_id(project_id: &str) -> bool {
+    !project_id.is_empty()
+        && project_id.trim() == project_id
+        && project_id.len() <= MAX_PROJECT_ID_LEN
+        && !project_id.chars().any(char::is_control)
 }
 
 /// Resolved runtime target after legacy protected-route fields are normalized.
@@ -1774,6 +1836,17 @@ impl GatewayConfig {
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
             if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                if let Some(project_id) = target.project_id.take() {
+                    let project_id = project_id.trim().to_string();
+                    if !is_canonical_project_id(&project_id) {
+                        return Err(ConfigError::InvalidProtectedRoute {
+                            name: route.name.clone(),
+                            field: "target.project_id",
+                            value: "project binding must not be empty".to_string(),
+                        });
+                    }
+                    target.project_id = Some(project_id);
+                }
                 normalize_string_list(&mut target.upstreams, "target.upstreams").map_err(
                     |field| ConfigError::InvalidProtectedRoute {
                         name: route.name.clone(),
@@ -2368,6 +2441,7 @@ client_secret_env = "SECRET"
         route.backend_url = String::new();
         route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 loadout: None,
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
@@ -2393,7 +2467,6 @@ client_secret_env = "SECRET"
     fn in_process_prefix_constant_is_stable() {
         assert_eq!(IN_PROCESS_UPSTREAM_PREFIX, "__in_process__");
     }
-
     /// `gateway.loadout.*` responses must always carry `upstreams` and
     /// `services` as arrays. Omitting an empty selection made every JSON
     /// consumer that treats them as required arrays fail on a Loadout that
@@ -2453,5 +2526,54 @@ client_secret_env = "SECRET"
         let parsed: GatewayLoadoutConfig =
             toml::from_str(&rendered).expect("loadout parses back from TOML");
         assert_eq!(parsed, services_only);
+    }
+    #[test]
+    fn protected_route_project_id_normalization_is_bounded_and_compatible() {
+        fn config(project_id: Option<String>) -> GatewayConfig {
+            let mut route: ProtectedMcpRouteConfig = toml::from_str(
+                "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+            )
+            .unwrap();
+            route.backend_url = String::new();
+            route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    project_id,
+                    ..Default::default()
+                },
+            ));
+            GatewayConfig {
+                protected_mcp_routes: vec![route],
+                ..Default::default()
+            }
+        }
+
+        let mut omitted = config(None);
+        omitted
+            .normalize_protected_mcp_routes()
+            .expect("legacy None");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            omitted.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id, None);
+
+        let expected = "x".repeat(MAX_PROJECT_ID_LEN);
+        let mut trimmed = config(Some(format!("  {expected}  ")));
+        trimmed.normalize_protected_mcp_routes().expect("128 bytes");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            trimmed.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id.as_deref(), Some(expected.as_str()));
+
+        for invalid in ["   ".to_string(), "x".repeat(MAX_PROJECT_ID_LEN + 1)] {
+            assert!(
+                config(Some(invalid))
+                    .normalize_protected_mcp_routes()
+                    .is_err()
+            );
+        }
     }
 }

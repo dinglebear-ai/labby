@@ -158,7 +158,7 @@ pub(super) async fn refresh_tool_header_cache(
         schema_refresh_count,
         "refreshing upstream tool schemas after SEP-2243 header mismatch"
     );
-    match catalog_pagination::list_tools(peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS).await {
+    match refresh_tool_header_cache_raw(peer, DISCOVERY_TIMEOUT).await {
         Ok(tools) => {
             tracing::info!(
                 surface = "dispatch",
@@ -187,6 +187,15 @@ pub(super) async fn refresh_tool_header_cache(
             Err(error.into_service_error(upstream_name))
         }
     }
+}
+
+/// Refresh rmcp's peer-local SEP-2243 schema hint without logs or counters.
+/// The cache is transport compatibility state, never routing authority.
+pub(super) async fn refresh_tool_header_cache_raw(
+    peer: &Peer<RoleClient>,
+    timeout: std::time::Duration,
+) -> Result<Vec<rmcp::model::Tool>, catalog_pagination::CatalogPaginationError> {
+    catalog_pagination::list_tools(peer, timeout, MAX_UPSTREAM_TOOLS).await
 }
 
 pub(super) async fn call_tool_once_with_header_recovery(
@@ -696,6 +705,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -810,6 +820,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -896,6 +907,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -991,6 +1003,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1088,6 +1101,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer: peer.clone(),
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1196,6 +1210,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1282,6 +1297,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 
@@ -1362,6 +1378,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
 

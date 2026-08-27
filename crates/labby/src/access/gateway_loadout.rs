@@ -55,6 +55,10 @@ impl ProjectRuntimeMcpCatalogContext {
     pub(crate) fn catalog(&self) -> &PublishedLoadoutMcpCatalogSnapshot {
         &self.catalog
     }
+
+    pub(crate) fn same_publication_as(&self, other: &Self) -> bool {
+        self.access == other.access && self.catalog.same_publication_as(&other.catalog)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -101,7 +105,7 @@ pub(crate) async fn project_runtime_mcp_catalog_context(
 
 /// At most three outer attempts: six Access reads and six manager snapshot
 /// invocations. Each manager invocation independently caps its internal
-/// G-C-S protocol at three attempts (18 inner attempts worst case).
+/// G-T-R-Q-S protocol at three attempts (18 inner attempts worst case).
 async fn stable_project_mcp_context<PF, PFut, MF, MFut>(
     mut read_project: PF,
     mut read_catalog: MF,

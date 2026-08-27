@@ -610,16 +610,26 @@ jobs:
           cargo check -p labby --no-default-features
           --features ${{ matrix.slice }} --lib --bins --locked
       - name: Complete all-target slice compile
-        run: >-
-          cargo check -p labby --no-default-features
-          --features ${{ matrix.slice }} --all-targets --locked
+        run: |
+          if [[ "${{ matrix.slice }}" == "gateway" ]]; then
+            # Labby's gateway test targets use the dependency's explicitly
+            # feature-gated testkit. Keep the product-only warm compile above,
+            # then enable test support only while compiling test targets.
+            cargo check -p labby --no-default-features \
+              --features gateway,proxy-testkit --all-targets --locked
+          else
+            cargo check -p labby --no-default-features \
+              --features ${{ matrix.slice }} --all-targets --locked
+          fi
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         if: matrix.slice == 'gateway'
         with:
           install_args: cargo:cargo-nextest
       - name: Run gateway-slice test suite
         if: matrix.slice == 'gateway'
-        run: cargo nextest run -p labby --no-default-features --features gateway --locked
+        run: >-
+          cargo nextest run -p labby --no-default-features
+          --features gateway,proxy-testkit --locked
       - name: Run fs-slice proxy preflight regression
         if: matrix.slice == 'fs'
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
@@ -836,8 +846,9 @@ jobs:
       # a job-wide throttle serializes ~1300 uncached native sources. The
       # current memory failure is different: a cold normal library and its
       # lib-test harness can overlap with other Rust targets and cross the
-      # runner ceiling. Warm normal Labby/Gateway targets below, then let
-      # nextest compile the remaining harnesses at normal Cargo concurrency.
+      # runner ceiling. Warm normal Labby/Gateway targets below, then bound
+      # only nextest's remaining Rust compilation without throttling the
+      # native warm-up builds.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     if: >-
       needs.changes.outputs.rust_test == 'true' &&
@@ -864,7 +875,18 @@ jobs:
           install_args: cargo:cargo-nextest
       - name: Warm normal Linux test targets
         run: cargo build -p labby --all-features --lib --bins --locked
-      - run: cargo nextest run --workspace --all-features --locked --profile ci
+      - name: Warm gateway lib-test harness
+        # Keep this large harness from linking concurrently with Labby's test
+        # targets during nextest discovery; that overlap exceeds the runner's
+        # memory ceiling even though either harness fits on its own.
+        run: cargo test -p labby-gateway --all-features --lib --no-run --locked
+      - name: Run workspace tests
+        # Default concurrency can link the labby and labby-gateway harnesses
+        # together and exceed the runner's memory ceiling. One job is too
+        # slow for the JIT runner lifetime, so retain bounded parallelism.
+        env:
+          CARGO_BUILD_JOBS: 2
+        run: cargo nextest run --workspace --all-features --locked --profile ci
       - name: Upload nextest report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

@@ -49,7 +49,8 @@ pub(crate) fn inspect_health(path: &Path) -> AccessHealth {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return AccessHealth::new(AccessHealthStatus::Missing, "initialize_access_store");
         }
-        Err(_) => {
+        Err(error) => {
+            warn_health_io("parent_metadata", &error);
             return AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store_parent");
         }
     }
@@ -59,7 +60,8 @@ pub(crate) fn inspect_health(path: &Path) -> AccessHealth {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return AccessHealth::new(AccessHealthStatus::Missing, "initialize_access_store");
         }
-        Err(_) => {
+        Err(error) => {
+            warn_health_io("store_metadata", &error);
             return AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store_file");
         }
     };
@@ -98,10 +100,13 @@ pub(crate) fn inspect_health(path: &Path) -> AccessHealth {
         Ok(connection) => connection,
         Err(health) => return health,
     };
-    if connection
-        .busy_timeout(std::time::Duration::from_millis(50))
-        .is_err()
-    {
+    if let Err(error) = connection.busy_timeout(std::time::Duration::from_millis(50)) {
+        tracing::warn!(
+            surface = "access_health",
+            operation = "configure_busy_timeout",
+            sqlite_code = ?error.sqlite_error_code(),
+            "access store health inspection failed"
+        );
         return AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store");
     }
     if !same_snapshot(path, snapshot) {
@@ -158,7 +163,8 @@ fn capture_sidecars(path: &Path) -> Result<Vec<SidecarSnapshot>, AccessHealth> {
                 snapshot: file_snapshot(&metadata),
             }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {
+            Err(error) => {
+                warn_health_io("sidecar_metadata", &error);
                 return Err(AccessHealth::new(
                     AccessHealthStatus::Unavailable,
                     "check_access_store_sidecars",
@@ -167,6 +173,16 @@ fn capture_sidecars(path: &Path) -> Result<Vec<SidecarSnapshot>, AccessHealth> {
         }
     }
     Ok(snapshots)
+}
+
+fn warn_health_io(operation: &'static str, error: &std::io::Error) {
+    tracing::warn!(
+        surface = "access_health",
+        operation,
+        error_kind = ?error.kind(),
+        raw_os_error = error.raw_os_error(),
+        "access store health inspection failed"
+    );
 }
 
 fn same_sidecars(path: &Path, expected: &[SidecarSnapshot]) -> bool {

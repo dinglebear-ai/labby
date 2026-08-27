@@ -78,7 +78,7 @@ async fn bootstrap_owner(
         }
     };
     // Resolve mutable state only after every authorization gate has passed.
-    let response = match crate::access::bootstrap_owner(
+    let (response, operational_failure) = match crate::access::bootstrap_owner(
         &state.access_runtime,
         identity,
         request.organization_name,
@@ -87,38 +87,75 @@ async fn bootstrap_owner(
     .await
     {
         Ok(crate::access::BootstrapOutcome::Created) => (
-            StatusCode::CREATED,
-            Json(BootstrapOwnerResponse { status: "created" }),
-        )
-            .into_response(),
+            (
+                StatusCode::CREATED,
+                Json(BootstrapOwnerResponse { status: "created" }),
+            )
+                .into_response(),
+            None,
+        ),
         Ok(crate::access::BootstrapOutcome::AlreadyApplied) => (
-            StatusCode::OK,
-            Json(BootstrapOwnerResponse {
-                status: "already_applied",
-            }),
-        )
-            .into_response(),
-        Err(crate::access::OwnerBootstrapError::Conflict) => stable_error(
-            "conflict",
-            "access owner bootstrap conflicts with existing state",
+            (
+                StatusCode::OK,
+                Json(BootstrapOwnerResponse {
+                    status: "already_applied",
+                }),
+            )
+                .into_response(),
+            None,
         ),
-        Err(crate::access::OwnerBootstrapError::InvalidInput) => stable_error(
-            "validation_failed",
-            "access owner bootstrap input is invalid",
+        Err(crate::access::OwnerBootstrapError::Conflict) => (
+            stable_error(
+                "conflict",
+                "access owner bootstrap conflicts with existing state",
+            ),
+            None,
         ),
-        Err(crate::access::OwnerBootstrapError::IdentityNotEligible) => stable_error(
-            "forbidden",
-            "access owner bootstrap requires an authenticated browser admin",
+        Err(crate::access::OwnerBootstrapError::InvalidInput) => (
+            stable_error(
+                "validation_failed",
+                "access owner bootstrap input is invalid",
+            ),
+            None,
         ),
-        Err(
-            crate::access::OwnerBootstrapError::Busy
-            | crate::access::OwnerBootstrapError::Integrity
-            | crate::access::OwnerBootstrapError::Unavailable,
-        ) => stable_error(
-            "service_unavailable",
-            "access owner bootstrap is unavailable",
+        Err(crate::access::OwnerBootstrapError::IdentityNotEligible) => (
+            stable_error(
+                "forbidden",
+                "access owner bootstrap requires an authenticated browser admin",
+            ),
+            None,
+        ),
+        Err(crate::access::OwnerBootstrapError::Busy) => (
+            stable_error(
+                "service_unavailable",
+                "access owner bootstrap is unavailable",
+            ),
+            Some("busy"),
+        ),
+        Err(crate::access::OwnerBootstrapError::Integrity) => (
+            stable_error(
+                "service_unavailable",
+                "access owner bootstrap is unavailable",
+            ),
+            Some("integrity"),
+        ),
+        Err(crate::access::OwnerBootstrapError::Unavailable) => (
+            stable_error(
+                "service_unavailable",
+                "access owner bootstrap is unavailable",
+            ),
+            Some("runtime_unavailable"),
         ),
     };
+    if let Some(failure_reason) = operational_failure {
+        tracing::error!(
+            surface = "api",
+            action,
+            request_id = req_id.as_deref(),
+            failure_reason,
+            "access owner bootstrap operational failure"
+        );
+    }
     let error_kind =
         (!response.status().is_success()).then_some(if response.status() == StatusCode::CONFLICT {
             "access_bootstrap_conflict"

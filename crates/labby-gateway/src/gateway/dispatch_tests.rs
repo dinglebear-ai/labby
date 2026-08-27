@@ -1477,6 +1477,7 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
         health_path: None,
         target: Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 upstreams: vec!["gateway-alpha".to_string()],
                 services: Vec::new(),
                 expose_code_mode: false,
@@ -1484,6 +1485,72 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
             },
         )),
     }
+}
+
+#[tokio::test]
+async fn staged_route_update_preserves_project_binding_inside_mutation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut current = protected_gateway_subset_route_fixture("ops");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = current.target.as_mut() else {
+        panic!("fixture is gateway subset")
+    };
+    target.project_id = Some("project-current".to_string());
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![current],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({
+            "name": "ops",
+            "route": protected_gateway_subset_route_fixture("ops"),
+            "preserve_project_id": true,
+        }),
+    )
+    .await
+    .expect("preserve binding under manager mutation lock");
+
+    assert_eq!(result["route"]["target"]["project_id"], "project-current");
+}
+
+#[tokio::test]
+async fn direct_route_update_ignores_project_preservation_flag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![protected_route_fixture("syslog")],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+    let mut replacement = protected_route_fixture("syslog");
+    replacement.public_path = "/updated".to_string();
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.update",
+        json!({
+            "name": "syslog",
+            "route": replacement,
+            "preserve_project_id": true,
+        }),
+    )
+    .await
+    .expect("ordinary direct update remains compatible");
+
+    assert_eq!(result["public_path"], "/updated");
+    assert!(result["target"].is_null());
 }
 
 #[tokio::test]

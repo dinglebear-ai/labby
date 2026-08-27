@@ -36,6 +36,14 @@ pub struct AccessClaims {
     pub identity_credential_id: Option<String>,
 }
 
+#[must_use]
+pub fn is_canonical_access_token_id(token_id: &str) -> bool {
+    !token_id.is_empty()
+        && token_id.trim() == token_id
+        && token_id.len() <= 256
+        && !token_id.chars().any(char::is_control)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JwksDocument {
     pub keys: Vec<JwkKey>,

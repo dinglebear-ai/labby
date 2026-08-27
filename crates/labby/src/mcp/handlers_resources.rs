@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+#[cfg(feature = "gateway")]
+use std::time::SystemTime;
 
 use rmcp::ErrorData;
 use rmcp::RoleServer;
@@ -24,6 +26,8 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
+#[cfg(feature = "gateway")]
+use crate::mcp::resource_errors::fetch as resource_fetch_error;
 use crate::mcp::resource_errors::{
     forbidden as forbidden_resource_error, render as resource_render_error,
     route_scope as route_scope_resource_error, unknown as unknown_resource_error,
@@ -43,6 +47,11 @@ pub(crate) use crate::app_assets::{
     SKILL_LIBRARY_APP_SKYBRIDGE_URI, SKILL_LIBRARY_APP_URI, SKILL_LIBRARY_APP_URI_PREFIX,
 };
 #[cfg(feature = "gateway")]
+use crate::mcp::bound_access::{
+    ProjectDiscoveryShadow, ProjectExecutionBinding, project_discovery_shadow,
+    project_execution_binding,
+};
+#[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
@@ -57,7 +66,9 @@ use crate::mcp::pagination::{
     CatalogSnapshotCollector, PageCollector, error_kind as pagination_error_kind, invalid_cursor,
     next_catalog_snapshot_revision,
 };
-use crate::mcp::runtime::catalog_snapshot_audience;
+use crate::mcp::runtime::{
+    ResourceProvenance, ResourceTemplateProvenance, catalog_snapshot_audience,
+};
 use crate::mcp::server::LabMcpServer;
 
 #[cfg(feature = "skills")]
@@ -107,6 +118,104 @@ const AGENT_ERROR_CONTRACT_SCHEMA: &str =
 const CODE_MODE_CALL_ERROR_CONTRACT_SCHEMA: &str =
     include_str!("../../../../docs/contracts/schemas/code-mode-call-error.schema.json");
 const CONTRACT_SCHEMA_MIME: &str = "application/schema+json";
+
+/// Parse only the canonical built-in action-resource URI family.
+///
+/// Parsing identifies provenance, not authority; callers must still apply the
+/// bound Project route publication.
+#[cfg(any(feature = "gateway", test))]
+pub(crate) fn builtin_action_resource_service(uri: &str) -> Option<&str> {
+    let service = uri.strip_prefix("lab://")?.strip_suffix("/actions")?;
+    (!service.is_empty() && !service.contains('/')).then_some(service)
+}
+
+#[cfg(feature = "gateway")]
+fn classify_builtin_action_resources<'a>(
+    shadow: &ProjectDiscoveryShadow<'_>,
+    resources: impl IntoIterator<Item = &'a Resource>,
+) -> (usize, usize) {
+    classify_builtin_action_resources_with(resources, |service| {
+        shadow.allows_builtin_action_resource(service, SystemTime::now())
+    })
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn classify_builtin_action_resources_with<'a>(
+    resources: impl IntoIterator<Item = &'a Resource>,
+    mut allows: impl FnMut(&str) -> Option<bool>,
+) -> (usize, usize) {
+    let mut checked = 0usize;
+    let mut would_suppress = 0usize;
+    for resource in resources {
+        let Some(service) = builtin_action_resource_service(&resource.uri) else {
+            continue;
+        };
+        if let Some(allowed) = allows(service) {
+            checked += 1;
+            would_suppress += usize::from(!allowed);
+        }
+    }
+    (checked, would_suppress)
+}
+
+#[cfg(feature = "gateway")]
+fn classify_regular_upstream_resources(
+    shadow: &ProjectDiscoveryShadow<'_>,
+    provenance: &[ResourceProvenance],
+) -> (usize, usize) {
+    classify_regular_upstream_resources_with(provenance, |upstream, native_uri| {
+        shadow.allows_upstream_resource(upstream, native_uri, SystemTime::now())
+    })
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn classify_regular_upstream_resources_with(
+    provenance: &[ResourceProvenance],
+    mut allows: impl FnMut(&str, &str) -> Option<bool>,
+) -> (usize, usize) {
+    let mut checked = 0;
+    let mut would_suppress = 0;
+    for candidate in provenance {
+        if let Some(allowed) = allows(&candidate.upstream, &candidate.native_uri) {
+            checked += 1;
+            would_suppress += usize::from(!allowed);
+        }
+    }
+    (checked, would_suppress)
+}
+
+#[cfg(feature = "gateway")]
+fn classify_regular_upstream_resource_templates(
+    shadow: &ProjectDiscoveryShadow<'_>,
+    provenance: &[ResourceTemplateProvenance],
+) -> (usize, usize) {
+    let now = SystemTime::now();
+    classify_regular_upstream_resource_templates_with(provenance, |upstream, template| {
+        shadow.allows_upstream_resource_template(upstream, template, now)
+    })
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn classify_regular_upstream_resource_templates_with(
+    provenance: &[ResourceTemplateProvenance],
+    mut allows: impl FnMut(&str, &str) -> Option<bool>,
+) -> (usize, usize) {
+    provenance.iter().fold((0, 0), |(checked, denied), row| {
+        if is_ui_resource_uri(&row.native_uri_template) {
+            return (checked, denied);
+        }
+        match allows(&row.upstream, &row.native_uri_template) {
+            Some(allowed) => (checked + 1, denied + usize::from(!allowed)),
+            None => (checked, denied),
+        }
+    })
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn is_ui_resource_uri(uri: &str) -> bool {
+    uri.get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ui://"))
+}
 /// In-band discovery for the Skills extension (SEP-2640).
 ///
 /// Published so a client that does not speak the extension can still discover
@@ -534,6 +643,8 @@ impl LabMcpServer {
             "dispatch start"
         );
         let auth = auth_context_from_extensions(&context.extensions);
+        #[cfg(feature = "gateway")]
+        let project_shadow = project_discovery_shadow(&context.extensions, SystemTime::now());
         if !self.route_scope.exposes_resources() {
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
@@ -601,7 +712,7 @@ impl LabMcpServer {
                 .route_runtime
                 .resource_snapshot(&snapshot_audience, &revision)
                 .await;
-            let Some(snapshot) = snapshot else {
+            let Some((snapshot, provenance, stored_shadow_key)) = snapshot else {
                 let error = invalid_cursor(
                     "resource-list snapshot expired or is unavailable; restart from the first page",
                 );
@@ -637,6 +748,42 @@ impl LabMcpServer {
                 }
             }
             let (resources, next_cursor) = page_collector.finish()?;
+            #[cfg(feature = "gateway")]
+            let (
+                mut project_shadow_checked_resource_count,
+                mut project_shadow_would_suppress_resource_count,
+            ) = classify_builtin_action_resources(&project_shadow, snapshot.iter());
+            #[cfg(feature = "gateway")]
+            {
+                let regular = classify_regular_upstream_resources(&project_shadow, &provenance);
+                project_shadow_checked_resource_count += regular.0;
+                project_shadow_would_suppress_resource_count += regular.1;
+            }
+            #[cfg(feature = "gateway")]
+            let project_shadow_state = project_shadow.state_label_at(SystemTime::now());
+            #[cfg(feature = "gateway")]
+            let shadow_key_matches = stored_shadow_key
+                .as_ref()
+                .zip(project_shadow.snapshot_key(SystemTime::now()).as_ref())
+                .is_some_and(|(stored, current)| stored == current);
+            #[cfg(feature = "gateway")]
+            let project_shadow_state = if project_shadow_state == "bound" && !shadow_key_matches {
+                "unavailable"
+            } else {
+                project_shadow_state
+            };
+            #[cfg(feature = "gateway")]
+            if project_shadow_state != "bound" {
+                project_shadow_checked_resource_count = 0;
+                project_shadow_would_suppress_resource_count = 0;
+            }
+            #[cfg(not(feature = "gateway"))]
+            let project_shadow_state = "legacy";
+            #[cfg(not(feature = "gateway"))]
+            let (
+                project_shadow_checked_resource_count,
+                project_shadow_would_suppress_resource_count,
+            ) = (0usize, 0usize);
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 surface = "mcp",
@@ -648,6 +795,9 @@ impl LabMcpServer {
                 catalog_resource_count = snapshot.len(),
                 page_resource_count = resources.len(),
                 has_next_cursor = next_cursor.is_some(),
+                project_shadow_state,
+                project_shadow_checked_resource_count,
+                project_shadow_would_suppress_resource_count,
                 "resource list ok"
             );
             self.emit_dispatch_notification(
@@ -675,6 +825,7 @@ impl LabMcpServer {
         }
 
         let mut resources = CatalogSnapshotCollector::new(page_collector);
+        let mut regular_resource_provenance = Vec::new();
 
         resources.accept(
             Resource::new("lab://catalog", "catalog")
@@ -847,11 +998,19 @@ impl LabMcpServer {
                 }
             }
             if !resources.finished() {
-                for resource in pool
-                    .list_upstream_resources_allowed(self.route_scope.allowed_upstreams())
+                for listed in pool
+                    .list_upstream_resources_with_provenance_allowed(
+                        self.route_scope.allowed_upstreams(),
+                    )
                     .await
                 {
-                    resources.accept(resource);
+                    if !is_ui_resource_uri(&listed.native_uri) {
+                        regular_resource_provenance.push(ResourceProvenance {
+                            upstream: listed.upstream_name.clone(),
+                            native_uri: listed.native_uri.clone(),
+                        });
+                    }
+                    resources.accept(listed.resource);
                     if resources.finished() {
                         break;
                     }
@@ -936,9 +1095,43 @@ impl LabMcpServer {
             }
         };
         let catalog_resource_count = complete_catalog.len();
+        #[cfg(feature = "gateway")]
+        let (
+            mut project_shadow_checked_resource_count,
+            mut project_shadow_would_suppress_resource_count,
+        ) = classify_builtin_action_resources(&project_shadow, complete_catalog.iter());
+        #[cfg(feature = "gateway")]
+        {
+            let regular =
+                classify_regular_upstream_resources(&project_shadow, &regular_resource_provenance);
+            project_shadow_checked_resource_count += regular.0;
+            project_shadow_would_suppress_resource_count += regular.1;
+        }
+        #[cfg(feature = "gateway")]
+        let project_shadow_state = project_shadow.state_label_at(SystemTime::now());
+        #[cfg(feature = "gateway")]
+        if project_shadow_state != "bound" {
+            project_shadow_checked_resource_count = 0;
+            project_shadow_would_suppress_resource_count = 0;
+        }
+        #[cfg(not(feature = "gateway"))]
+        let project_shadow_state = "legacy";
+        #[cfg(not(feature = "gateway"))]
+        let (project_shadow_checked_resource_count, project_shadow_would_suppress_resource_count) =
+            (0usize, 0usize);
         if next_cursor.is_some() {
+            #[cfg(feature = "gateway")]
+            let stored_project_shadow_key = project_shadow.snapshot_key(SystemTime::now());
+            #[cfg(not(feature = "gateway"))]
+            let stored_project_shadow_key = None;
             self.route_runtime
-                .store_resource_snapshot(snapshot_audience, revision, Arc::from(complete_catalog))
+                .store_resource_snapshot(
+                    snapshot_audience,
+                    revision,
+                    Arc::from(complete_catalog),
+                    Arc::from(regular_resource_provenance),
+                    stored_project_shadow_key,
+                )
                 .await;
         }
 
@@ -953,6 +1146,9 @@ impl LabMcpServer {
             catalog_resource_count,
             page_resource_count = resources.len(),
             has_next_cursor = next_cursor.is_some(),
+            project_shadow_state,
+            project_shadow_checked_resource_count,
+            project_shadow_would_suppress_resource_count,
             "resource list ok"
         );
         self.emit_dispatch_notification(
@@ -995,6 +1191,8 @@ impl LabMcpServer {
         }
         let auth = auth_context_from_extensions(&context.extensions);
         let snapshot_audience = catalog_snapshot_audience(auth);
+        #[cfg(feature = "gateway")]
+        let project_shadow = project_discovery_shadow(&context.extensions, SystemTime::now());
         let mut page_collector = PageCollector::new(request)?;
 
         if let Some(revision) = page_collector.expected_revision().map(str::to_owned) {
@@ -1002,7 +1200,7 @@ impl LabMcpServer {
                 .route_runtime
                 .resource_template_snapshot(&snapshot_audience, &revision)
                 .await;
-            let Some(snapshot) = snapshot else {
+            let Some((snapshot, provenance, stored_shadow_key)) = snapshot else {
                 return Err(invalid_cursor(
                     "resource-template snapshot expired or is unavailable; restart from the first page",
                 ));
@@ -1015,6 +1213,29 @@ impl LabMcpServer {
                 }
             }
             let (templates, next_cursor) = page_collector.finish()?;
+            #[cfg(feature = "gateway")]
+            let (mut shadow_checked, mut shadow_would_suppress) =
+                classify_regular_upstream_resource_templates(&project_shadow, &provenance);
+            #[cfg(feature = "gateway")]
+            let shadow_key_matches = stored_shadow_key
+                .as_ref()
+                .zip(project_shadow.snapshot_key(SystemTime::now()).as_ref())
+                .is_some_and(|(stored, current)| stored == current);
+            #[cfg(feature = "gateway")]
+            let current_shadow_state = project_shadow.state_label_at(SystemTime::now());
+            #[cfg(feature = "gateway")]
+            let project_shadow_state = if current_shadow_state == "bound" && !shadow_key_matches {
+                "unavailable"
+            } else {
+                current_shadow_state
+            };
+            #[cfg(feature = "gateway")]
+            if project_shadow_state != "bound" {
+                shadow_checked = 0;
+                shadow_would_suppress = 0;
+            }
+            #[cfg(not(feature = "gateway"))]
+            let (project_shadow_state, shadow_checked, shadow_would_suppress) = ("legacy", 0, 0);
             let elapsed_ms = start.elapsed().as_millis();
             tracing::info!(
                 surface = "mcp",
@@ -1024,6 +1245,9 @@ impl LabMcpServer {
                 template_count = templates.len(),
                 catalog_template_count = snapshot.len(),
                 catalog_source = "snapshot",
+                project_shadow_state,
+                project_shadow_checked_template_count = shadow_checked,
+                project_shadow_would_suppress_template_count = shadow_would_suppress,
                 has_next_cursor = next_cursor.is_some(),
                 elapsed_ms,
                 "resource template list ok"
@@ -1051,12 +1275,20 @@ impl LabMcpServer {
 
         let mut templates = CatalogSnapshotCollector::new(page_collector);
         #[cfg(feature = "gateway")]
+        let mut regular_template_provenance = Vec::new();
+        #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
-            for template in pool
-                .list_upstream_resource_templates_allowed(self.route_scope.allowed_upstreams())
+            for listed in pool
+                .list_upstream_resource_templates_with_provenance_allowed(
+                    self.route_scope.allowed_upstreams(),
+                )
                 .await
             {
-                templates.accept(template);
+                regular_template_provenance.push(ResourceTemplateProvenance {
+                    upstream: listed.upstream_name,
+                    native_uri_template: listed.native_uri_template,
+                });
+                templates.accept(listed.template);
             }
         }
 
@@ -1064,12 +1296,35 @@ impl LabMcpServer {
         templates.bind_revision(&revision)?;
         let (templates, next_cursor, complete_catalog) = templates.finish()?;
         let catalog_template_count = complete_catalog.len();
+        #[cfg(feature = "gateway")]
+        let (mut shadow_checked, mut shadow_would_suppress) =
+            classify_regular_upstream_resource_templates(
+                &project_shadow,
+                &regular_template_provenance,
+            );
+        #[cfg(feature = "gateway")]
+        let project_shadow_state = project_shadow.state_label_at(SystemTime::now());
+        #[cfg(feature = "gateway")]
+        if project_shadow_state != "bound" {
+            shadow_checked = 0;
+            shadow_would_suppress = 0;
+        }
+        #[cfg(not(feature = "gateway"))]
+        let (project_shadow_state, shadow_checked, shadow_would_suppress) = ("legacy", 0, 0);
+        #[cfg(not(feature = "gateway"))]
+        let regular_template_provenance = Vec::new();
         if next_cursor.is_some() {
+            #[cfg(feature = "gateway")]
+            let stored_shadow_key = project_shadow.snapshot_key(SystemTime::now());
+            #[cfg(not(feature = "gateway"))]
+            let stored_shadow_key = None;
             self.route_runtime
                 .store_resource_template_snapshot(
                     snapshot_audience,
                     revision,
                     Arc::from(complete_catalog),
+                    Arc::from(regular_template_provenance),
+                    stored_shadow_key,
                 )
                 .await;
         }
@@ -1083,6 +1338,9 @@ impl LabMcpServer {
             template_count = templates.len(),
             catalog_template_count,
             catalog_source = "live_snapshot",
+            project_shadow_state,
+            project_shadow_checked_template_count = shadow_checked,
+            project_shadow_would_suppress_template_count = shadow_would_suppress,
             has_next_cursor = next_cursor.is_some(),
             elapsed_ms,
             "resource template list ok"
@@ -1124,6 +1382,82 @@ impl LabMcpServer {
             resource_uri = %resource_uri_log,
             "dispatch start"
         );
+        #[cfg(feature = "gateway")]
+        match project_execution_binding(&context.extensions, SystemTime::now()) {
+            ProjectExecutionBinding::Legacy => {}
+            ProjectExecutionBinding::Unavailable => {
+                let elapsed_ms = start.elapsed().as_millis();
+                self.emit_dispatch_notification(
+                    &context,
+                    "lab",
+                    "read_resource",
+                    elapsed_ms,
+                    DispatchLogOutcome::Failure {
+                        level: LoggingLevel::Warning,
+                        kind: "access_context_unavailable",
+                    },
+                )
+                .await;
+                return Err(unknown_resource_error(&uri, false));
+            }
+            ProjectExecutionBinding::Bound {
+                transport,
+                identity,
+            } => {
+                let result = match self.gateway_manager.as_deref() {
+                    Some(manager) => {
+                        crate::mcp::resource_execution::read_transport_bound_project_resource(
+                            self.access_runtime.as_ref(),
+                            manager,
+                            transport,
+                            identity,
+                            request,
+                        )
+                        .await
+                    }
+                    None => Err(
+                        crate::mcp::resource_execution::ResourceReadResolutionError::Unavailable,
+                    ),
+                };
+                let elapsed_ms = start.elapsed().as_millis();
+                return match result {
+                    Ok(response) => {
+                        self.emit_dispatch_notification(
+                            &context,
+                            "lab",
+                            "read_resource",
+                            elapsed_ms,
+                            DispatchLogOutcome::Success,
+                        )
+                        .await;
+                        Ok(response.into())
+                    }
+                    Err(error) => {
+                        use crate::mcp::resource_execution::ResourceReadResolutionError;
+                        let unavailable =
+                            matches!(&error, ResourceReadResolutionError::Unavailable);
+                        let (level, kind) = if unavailable {
+                            (LoggingLevel::Warning, "not_found")
+                        } else {
+                            (LoggingLevel::Error, "internal_error")
+                        };
+                        self.emit_dispatch_notification(
+                            &context,
+                            "lab",
+                            "read_resource",
+                            elapsed_ms,
+                            DispatchLogOutcome::Failure { level, kind },
+                        )
+                        .await;
+                        if unavailable {
+                            Err(unknown_resource_error(&uri, false))
+                        } else {
+                            Err(resource_fetch_error(&uri))
+                        }
+                    }
+                };
+            }
+        }
         if !self.route_scope.exposes_resources() {
             let elapsed_ms = start.elapsed().as_millis();
             let message = "MCP Resources are disabled by this loadout; ask the operator to enable Resources for this loadout (Agent Skills also require Resources)";
@@ -2381,6 +2715,90 @@ mod tests {
 
     const UPSTREAM_UI_URI: &str = "ui://quick-shell/app.html";
     const UPSTREAM_UI_TOOL_NAME: &str = "quick_shell_ui";
+
+    #[test]
+    fn builtin_action_resource_parser_accepts_only_exact_canonical_family() {
+        assert_eq!(
+            builtin_action_resource_service("lab://gateway/actions"),
+            Some("gateway")
+        );
+        for uri in [
+            "lab:///actions",
+            "lab://gateway/foo/actions",
+            "lab://gateway/actions/",
+            "lab://gateway/actions?cursor=1",
+            "ui://gateway/actions",
+        ] {
+            assert_eq!(builtin_action_resource_service(uri), None, "{uri}");
+        }
+
+        let resources = [
+            Resource::new("lab://fs/actions", "fs/actions"),
+            Resource::new("lab://setup/actions", "setup/actions"),
+            Resource::new("lab://setup/nested/actions", "nested"),
+            Resource::new("lab://catalog", "catalog"),
+        ];
+        assert_eq!(
+            classify_builtin_action_resources_with(resources.iter(), |service| {
+                Some(service == "fs")
+            }),
+            (2, 1),
+            "only exact built-in action resources are classified"
+        );
+    }
+
+    #[test]
+    fn regular_template_shadow_uses_exact_provenance_and_skips_ui() {
+        let candidates = [
+            ResourceTemplateProvenance {
+                upstream: "alpha".into(),
+                native_uri_template: "file:///{id}".into(),
+            },
+            ResourceTemplateProvenance {
+                upstream: "bravo".into(),
+                native_uri_template: "file:///{id}".into(),
+            },
+            ResourceTemplateProvenance {
+                upstream: "alpha".into(),
+                native_uri_template: "UI://widget/{id}".into(),
+            },
+        ];
+        assert_eq!(
+            classify_regular_upstream_resource_templates_with(&candidates, |upstream, template| {
+                Some(upstream == "alpha" && template == "file:///{id}")
+            }),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn regular_resource_shadow_uses_exact_upstream_and_native_uri_provenance() {
+        let candidates = vec![
+            ResourceProvenance {
+                upstream: "alpha".into(),
+                native_uri: "file:///same".into(),
+            },
+            ResourceProvenance {
+                upstream: "beta".into(),
+                native_uri: "file:///same".into(),
+            },
+            ResourceProvenance {
+                upstream: "alpha".into(),
+                native_uri: "file:///other".into(),
+            },
+        ];
+        let classified = classify_regular_upstream_resources_with(&candidates, |upstream, uri| {
+            match (upstream, uri) {
+                ("alpha", "file:///same") => Some(true),
+                ("beta", "file:///same") => Some(false),
+                _ => None,
+            }
+        });
+        assert_eq!(classified, (2, 1));
+        assert!(is_ui_resource_uri("ui://widget/app"));
+        assert!(is_ui_resource_uri("UI://widget/app"));
+        assert!(!is_ui_resource_uri("file:///widget"));
+    }
 
     fn complete_resource(response: ReadResourceResponse) -> ReadResourceResult {
         match response {
@@ -4518,6 +4936,85 @@ for (const value of [
         assert_eq!(
             second.resources[0].uri,
             expected_first_service_on_second_page
+        );
+
+        // An explicit Project-shadow failure on a continuation must neither
+        // refan out nor alter the retained wire page/cursor.
+        let mut unavailable_context = scoped_context(second_running.peer().clone(), &["lab:read"]);
+        unavailable_context
+            .extensions
+            .get_mut::<axum::http::request::Parts>()
+            .expect("scoped context HTTP parts")
+            .extensions
+            .insert(crate::mcp::bound_access::ProjectAccessObservation::Unavailable);
+        let unavailable = second_running
+            .service()
+            .list_resources_impl(
+                Some(PaginatedRequestParams::default().with_cursor(first.next_cursor.clone())),
+                unavailable_context,
+            )
+            .await
+            .expect("second page with unavailable Project shadow");
+        assert_eq!(
+            serde_json::to_vec(&second).unwrap(),
+            serde_json::to_vec(&unavailable).unwrap(),
+            "Project shadow state must not mutate a retained resources/list page"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_resource_templates_resumes_provenance_snapshot_without_refanout() {
+        let server = code_mode_server().await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+        let audience = catalog_snapshot_audience(auth_context_from_extensions(&context.extensions));
+        let templates = (0..101)
+            .map(|index| ResourceTemplate::new(format!("file:///{index}/{{id}}"), "row"))
+            .collect::<Vec<_>>();
+        let provenance = templates
+            .iter()
+            .map(|template| ResourceTemplateProvenance {
+                upstream: "alpha".into(),
+                native_uri_template: template.uri_template.clone(),
+            })
+            .collect::<Vec<_>>();
+        running
+            .service()
+            .route_runtime
+            .store_resource_template_snapshot(
+                audience,
+                "template-revision".into(),
+                Arc::from(templates),
+                Arc::from(provenance),
+                None,
+            )
+            .await;
+        let request =
+            PaginatedRequestParams::default().with_cursor(Some("v1:100:template-revision".into()));
+        let legacy = running
+            .service()
+            .list_resource_templates_impl(Some(request.clone()), context)
+            .await
+            .expect("retained template page");
+        let mut unavailable_context = scoped_context(running.peer().clone(), &["lab:read"]);
+        unavailable_context
+            .extensions
+            .get_mut::<axum::http::request::Parts>()
+            .expect("HTTP parts")
+            .extensions
+            .insert(crate::mcp::bound_access::ProjectAccessObservation::Unavailable);
+        let unavailable = running
+            .service()
+            .list_resource_templates_impl(Some(request), unavailable_context)
+            .await
+            .expect("unavailable shadow retains page");
+        assert_eq!(legacy.resource_templates.len(), 1);
+        assert_eq!(
+            serde_json::to_vec(&legacy).unwrap(),
+            serde_json::to_vec(&unavailable).unwrap()
         );
     }
 

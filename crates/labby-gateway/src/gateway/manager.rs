@@ -80,16 +80,23 @@ pub use self::code_mode_resolve::CallbackToolLookup;
 #[allow(unused_imports)]
 pub use self::config_ops::BatchAddOutcome;
 pub use self::core::{GatewayManagerConfig, GatewayOauthConfig};
+pub use self::core::{
+    PublishedPromptCallError, PublishedResourceReadError, PublishedToolCallError,
+};
 pub use self::import_matchers::ImportTombstoneSelector;
 pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_discovered_for_import};
 #[allow(unused_imports)]
 pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
 pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
 pub use self::publication::{
-    LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,
-    LoadoutToolCatalogPublicationError, PublishedLoadoutMcpCatalogSnapshot,
-    PublishedLoadoutService, PublishedLoadoutServiceCatalogSnapshot,
-    PublishedLoadoutToolCatalogSnapshot,
+    LoadoutMcpCatalogPublicationError, LoadoutPromptCatalogPublicationError,
+    LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
+    LoadoutServiceCatalogPublicationError, LoadoutToolCatalogPublicationError,
+    ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot,
+    PublishedLoadoutPromptCatalogSnapshot, PublishedLoadoutResourceCatalogSnapshot,
+    PublishedLoadoutResourceTemplateCatalogSnapshot, PublishedLoadoutService,
+    PublishedLoadoutServiceCatalogSnapshot, PublishedLoadoutToolCatalogSnapshot,
+    PublishedProjectRouteSnapshot,
 };
 pub use super::service_registry::{
     PublishedServiceRegistrySnapshot, ServiceRegistryPublicationError,

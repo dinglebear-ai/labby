@@ -2026,6 +2026,9 @@ Options:
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
 
+      --project-id <PROJECT_ID>
+          Bind this gateway subset to an access-control project
+
       --loadout <LOADOUT>
           Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
 
@@ -2092,6 +2095,12 @@ Options:
 
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
+
+      --project-id <PROJECT_ID>
+          Bind this gateway subset to an access-control project
+
+      --clear-project-id
+          Explicitly remove the existing access-control project binding
 
       --loadout <LOADOUT>
           Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
@@ -2183,6 +2192,9 @@ Options:
 
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
+
+      --project-id <PROJECT_ID>
+          Bind this gateway subset to an access-control project
 
       --loadout <LOADOUT>
           Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields

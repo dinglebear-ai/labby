@@ -23,7 +23,6 @@ use super::capability_call::{
     timed_capability_call_with_timeout,
 };
 use super::catalog_pagination;
-use super::discover::routable_upstream_peers;
 use super::entries::{
     health_str, log_exposure_filter, resolve_exposure_policy,
     resolve_request_resource_exposure_policy, resource_exposed,
@@ -46,8 +45,28 @@ use super::tools::MAX_UPSTREAM_RESOURCES;
 /// stalls every queued OAuth writer behind one slow upstream.
 const CATALOG_LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(super) fn catalog_listing_timeout(request_timeout: Duration) -> Duration {
-    request_timeout.min(CATALOG_LISTING_TIMEOUT)
+/// One regular upstream Resource with its exact pre-rewrite provenance.
+///
+/// This is observational listing metadata, not read authority or a grant.
+#[derive(Clone, Debug)]
+pub struct ListedUpstreamResource {
+    pub upstream_name: String,
+    pub native_uri: String,
+    pub resource: Resource,
+}
+
+/// One template returned by the regular non-OAuth listing path with exact
+/// pre-rewrite provenance. Native UI templates may be present. This is
+/// observational metadata, not read authority or a grant.
+#[derive(Clone, Debug)]
+pub struct ListedUpstreamResourceTemplate {
+    pub upstream_name: String,
+    pub native_uri_template: String,
+    pub template: ResourceTemplate,
+}
+
+fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
+    request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
 }
 
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
@@ -58,6 +77,86 @@ fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &st
 }
 
 impl UpstreamPool {
+    async fn apply_observed_resource_template_success(
+        &self,
+        observed: &super::incarnation::ObservedConnectionCatalogEntry,
+        templates: &[ResourceTemplate],
+    ) -> bool {
+        let name = observed.upstream();
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
+            super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
+            catalog.set_resource_template_source(name, observed.incarnation(), templates);
+        })
+        .await
+        .is_some()
+    }
+
+    async fn apply_observed_resource_template_failure(
+        &self,
+        observed: &super::incarnation::ObservedConnectionCatalogEntry,
+        error_text: &str,
+    ) -> bool {
+        let name = observed.upstream();
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
+            super::health::record_failure_on_entry(
+                name,
+                entry,
+                UpstreamCapability::Resources,
+                format!("failed to list resource templates from upstream: {error_text}"),
+            );
+            catalog.remove_resource_template_source(name);
+        })
+        .await
+        .is_some()
+    }
+
+    async fn apply_observed_resource_list_success(
+        &self,
+        observed: &super::incarnation::ObservedConnectionCatalogEntry,
+        resources: &[Resource],
+    ) -> Option<(ToolExposurePolicy, bool)> {
+        let name = observed.upstream();
+        let resource_uris = resources
+            .iter()
+            .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
+            .collect::<Vec<_>>();
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
+            super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
+            let changed = entry.resource_uris != resource_uris;
+            entry.resource_count = resources.len();
+            entry.resource_uris = resource_uris;
+            let policy = entry.resource_exposure_policy.clone();
+            catalog.set_resource_source(name, observed.incarnation(), resources);
+            (policy, changed)
+        })
+        .await
+    }
+
+    async fn apply_observed_resource_list_failure(
+        &self,
+        observed: &super::incarnation::ObservedConnectionCatalogEntry,
+        error_text: &str,
+    ) -> bool {
+        let name = observed.upstream();
+        self.apply_to_observed_catalog(observed, |catalog| {
+            let entry = catalog.get_mut(name).expect("observed entry validated");
+            super::health::record_failure_on_entry(
+                name,
+                entry,
+                UpstreamCapability::Resources,
+                format!("failed to list resources from upstream: {error_text}"),
+            );
+            entry.resource_count = 0;
+            entry.resource_uris.clear();
+            catalog.remove_resource_source(name);
+        })
+        .await
+        .is_some()
+    }
+
     /// Return cached resource URIs keyed by upstream name (used in catalog snapshots).
     pub async fn cached_upstream_resource_uris(&self) -> Vec<(String, Vec<String>)> {
         let catalog = self.catalog.read().await;
@@ -243,8 +342,19 @@ impl UpstreamPool {
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<Resource> {
-        let peers = routable_upstream_peers(self, UpstreamCapability::Resources, allowed).await;
-        if peers.is_empty() {
+        self.list_upstream_resources_with_provenance_allowed(allowed)
+            .await
+            .into_iter()
+            .map(|listed| listed.resource)
+            .collect()
+    }
+
+    pub async fn list_upstream_resources_with_provenance_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ListedUpstreamResource> {
+        let observed_peers = self.observe_routable_resource_connections(allowed).await;
+        if observed_peers.is_empty() {
             return Vec::new();
         }
 
@@ -260,8 +370,10 @@ impl UpstreamPool {
         //
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
         let mut futures = FuturesUnordered::new();
-        for (name, peer) in peers {
-            let request_timeout = catalog_listing_timeout(self.request_timeout);
+        for observed in observed_peers {
+            let name = observed.upstream().to_string();
+            let peer = observed.peer.clone();
+            let request_timeout = resource_catalog_timeout(self.request_timeout);
             futures.push(async move {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);
@@ -306,7 +418,7 @@ impl UpstreamPool {
                         Err(error_text)
                     }
                 };
-                (name, result)
+                (observed, result)
             });
         }
 
@@ -314,44 +426,31 @@ impl UpstreamPool {
         while let Some(item) = futures.next().await {
             results.push(item);
         }
-        results.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        results.sort_unstable_by(|a, b| a.0.upstream().cmp(b.0.upstream()));
 
         let mut resources = Vec::new();
         let mut subscription_refreshes = Vec::new();
-        for (name, result) in results {
+        for (observed, result) in results {
+            let name = observed.upstream().to_string();
             match result {
                 Ok(upstream_resources) => {
-                    self.record_success_for(&name, UpstreamCapability::Resources)
-                        .await;
-                    let resource_uris = upstream_resources
-                        .iter()
-                        .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
-                        .collect();
                     // The cached snapshot deliberately stays *unfiltered*: it is
                     // what `gateway.discovered_resources` shows the operator who
                     // is editing `expose_resources`, and hiding excluded URIs
                     // there would make the allowlist un-editable. Enforcement
                     // happens on what leaves this function, and on every read.
-                    let (policy, resource_uris_changed) = {
-                        let mut catalog = self.catalog_write().await;
-                        match catalog.get_mut(&name) {
-                            Some(entry) => {
-                                let changed = entry.resource_uris != resource_uris;
-                                entry.resource_count = upstream_resources.len();
-                                entry.resource_uris = resource_uris;
-                                (entry.resource_exposure_policy.clone(), changed)
-                            }
-                            // Unreachable in practice — the peer list came from
-                            // the catalog — but an upstream that vanished
-                            // mid-listing has no known policy, so hide it.
-                            None => (ToolExposurePolicy::AllowList(Vec::new()), false),
-                        }
+                    let Some((policy, resource_uris_changed)) = self
+                        .apply_observed_resource_list_success(&observed, &upstream_resources)
+                        .await
+                    else {
+                        tracing::debug!(upstream = %name, "discarding stale resources/list success");
+                        continue;
                     };
                     if self
                         .subscription_refresh_required(&name, resource_uris_changed)
                         .await
                     {
-                        subscription_refreshes.push(name.clone());
+                        subscription_refreshes.push(observed);
                     }
                     let mut hidden_count = 0usize;
                     let mut exposed_count = 0usize;
@@ -374,27 +473,26 @@ impl UpstreamPool {
                         // verbatim (routed via `read_upstream_ui_resource`).
                         // Rewriting to the `lab://upstream/{name}/…` gateway form
                         // would break that reference, so skip the rewrite here.
+                        let native_uri = resource.uri.clone();
                         if !resource.uri.starts_with("ui://") {
                             rewrite_resource_uri(&mut resource, &name);
                         }
-                        resources.push(resource);
+                        resources.push(ListedUpstreamResource {
+                            upstream_name: name.clone(),
+                            native_uri,
+                            resource,
+                        });
                         exposed_count += 1;
                     }
                     log_exposure_filter(&name, "resources", hidden_count, exposed_count, false);
                 }
                 Err(error_text) => {
-                    self.record_failure_for(
-                        &name,
-                        UpstreamCapability::Resources,
-                        format!("failed to list resources from upstream: {error_text}"),
-                    )
-                    .await;
+                    if !self
+                        .apply_observed_resource_list_failure(&observed, &error_text)
+                        .await
                     {
-                        let mut catalog = self.catalog_write().await;
-                        if let Some(entry) = catalog.get_mut(&name) {
-                            entry.resource_count = 0;
-                            entry.resource_uris.clear();
-                        }
+                        tracing::debug!(upstream = %name, "discarding stale resources/list failure");
+                        continue;
                     }
                     tracing::warn!(
                         upstream = %name,
@@ -406,7 +504,7 @@ impl UpstreamPool {
             }
         }
 
-        self.schedule_upstream_subscription_refreshes(subscription_refreshes)
+        self.schedule_observed_upstream_subscription_refreshes(subscription_refreshes)
             .await;
 
         resources
@@ -419,15 +517,27 @@ impl UpstreamPool {
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<ResourceTemplate> {
-        let peers = routable_upstream_peers(self, UpstreamCapability::Resources, allowed).await;
-        if peers.is_empty() {
+        self.list_upstream_resource_templates_with_provenance_allowed(allowed)
+            .await
+            .into_iter()
+            .map(|listed| listed.template)
+            .collect()
+    }
+
+    pub async fn list_upstream_resource_templates_with_provenance_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Vec<ListedUpstreamResourceTemplate> {
+        let observed_peers = self.observe_routable_resource_connections(allowed).await;
+        if observed_peers.is_empty() {
             return Vec::new();
         }
 
         // Deliberate bulkhead exception + partial-result semantics — same
         // contract as `list_upstream_resources_allowed` above.
         let mut futures = FuturesUnordered::new();
-        for (name, peer) in peers {
+        for observed in observed_peers {
+            let peer = observed.peer.clone();
             futures.push(async move {
                 let result = catalog_pagination::list_resource_templates(
                     &peer,
@@ -435,7 +545,7 @@ impl UpstreamPool {
                     MAX_UPSTREAM_RESOURCES,
                 )
                 .await;
-                (name, result)
+                (observed, result)
             });
         }
 
@@ -443,14 +553,20 @@ impl UpstreamPool {
         while let Some(item) = futures.next().await {
             results.push(item);
         }
-        results.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        results.sort_unstable_by(|left, right| left.0.upstream().cmp(right.0.upstream()));
 
         let mut templates = Vec::new();
-        for (name, result) in results {
+        for (observed, result) in results {
+            let name = observed.upstream().to_string();
             match result {
                 Ok(upstream_templates) => {
-                    self.record_success_for(&name, UpstreamCapability::Resources)
-                        .await;
+                    if !self
+                        .apply_observed_resource_template_success(&observed, &upstream_templates)
+                        .await
+                    {
+                        tracing::debug!(upstream = %name, "discarding stale resources/templates/list success");
+                        continue;
+                    }
                     for mut template in upstream_templates {
                         if templates.len() >= MAX_UPSTREAM_RESOURCES {
                             tracing::warn!(
@@ -460,15 +576,25 @@ impl UpstreamPool {
                             );
                             break;
                         }
+                        let native_uri_template = template.uri_template.clone();
                         rewrite_resource_template(&mut template, &name);
-                        templates.push(template);
+                        templates.push(ListedUpstreamResourceTemplate {
+                            upstream_name: name.clone(),
+                            native_uri_template,
+                            template,
+                        });
                     }
                 }
                 Err(catalog_pagination::CatalogPaginationError::Service(error))
                     if is_capability_unsupported(&error) =>
                 {
-                    self.record_success_for(&name, UpstreamCapability::Resources)
-                        .await;
+                    if !self
+                        .apply_observed_resource_template_success(&observed, &[])
+                        .await
+                    {
+                        tracing::debug!(upstream = %name, "discarding stale resources/templates/list unsupported result");
+                        continue;
+                    }
                     tracing::debug!(
                         upstream = %name,
                         error = %bounded_service_error_text(&error),
@@ -477,12 +603,13 @@ impl UpstreamPool {
                 }
                 Err(error) => {
                     let error_text = error.bounded_text();
-                    self.record_failure_for(
-                        &name,
-                        UpstreamCapability::Resources,
-                        format!("failed to list resource templates from upstream: {error_text}"),
-                    )
-                    .await;
+                    if !self
+                        .apply_observed_resource_template_failure(&observed, &error_text)
+                        .await
+                    {
+                        tracing::debug!(upstream = %name, "discarding stale resources/templates/list failure");
+                        continue;
+                    }
                     tracing::warn!(
                         upstream = %name,
                         kind = error.kind(),
@@ -1004,10 +1131,23 @@ mod tests {
         let calls = Arc::clone(&server.calls);
         let pool = catalog_pool_with_server("paged", server).await;
 
-        let templates = pool.list_upstream_resource_templates_allowed(None).await;
+        let templates = pool
+            .list_upstream_resource_templates_with_provenance_allowed(None)
+            .await;
+        assert_eq!(templates[0].upstream_name, "paged");
+        assert_eq!(templates[0].native_uri_template, "file:///{path}");
+        assert_eq!(
+            templates[0].template.uri_template,
+            "lab://upstream/paged/file:///{path}"
+        );
         let rows = templates
             .iter()
-            .map(|template| (template.name.as_str(), template.uri_template.as_str()))
+            .map(|listed| {
+                (
+                    listed.template.name.as_str(),
+                    listed.template.uri_template.as_str(),
+                )
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -1021,6 +1161,17 @@ mod tests {
             ]
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let published = pool
+            .published_resource_template_catalog()
+            .await
+            .expect("published templates");
+        assert_eq!(published.routes().len(), 2);
+        assert_eq!(published.routes()[0].upstream_name.as_ref(), "paged");
+        assert_eq!(
+            published.routes()[0].native_uri_template.as_ref(),
+            "file:///{path}"
+        );
+        assert_eq!(published.routes()[0].template.name, "first");
     }
 
     #[derive(Clone, Default)]
@@ -1069,7 +1220,16 @@ mod tests {
         let calls = Arc::clone(&server.calls);
         let pool = catalog_pool_with_server("paged", server).await;
 
-        let resources = pool.list_upstream_resources().await;
+        let listed = pool
+            .list_upstream_resources_with_provenance_allowed(None)
+            .await;
+        assert_eq!(listed[0].upstream_name, "paged");
+        assert_eq!(listed[0].native_uri, "file:///first");
+        assert_eq!(listed[0].resource.uri, "lab://upstream/paged/file:///first");
+        let resources = listed
+            .into_iter()
+            .map(|listed| listed.resource)
+            .collect::<Vec<_>>();
         let uris = resources
             .iter()
             .map(|resource| resource.uri.as_str())
@@ -1083,6 +1243,19 @@ mod tests {
             ]
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let published = pool
+            .published_resource_catalog()
+            .await
+            .expect("published resource catalog");
+        assert_eq!(
+            published
+                .routes()
+                .iter()
+                .map(|route| route.native_uri.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["file:///first", "file:///second"]
+        );
+        assert_eq!(published.routes()[0].resource.name, "first");
         assert_eq!(
             pool.catalog
                 .read()
@@ -1091,6 +1264,291 @@ mod tests {
                 .expect("paged catalog entry")
                 .resource_count,
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_attribution_rejects_success_and_failure_after_same_object_aba() {
+        let pool = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        let stale = pool
+            .observe_routable_resource_connections(None)
+            .await
+            .pop()
+            .expect("initial routable observation");
+        let (connection_a, entry_a) = pool.remove_connection_catalog_entry("alpha").await;
+
+        let replacement = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        let (connection_b, entry_b) = replacement.remove_connection_catalog_entry("alpha").await;
+        pool.install_connection_catalog_entry(
+            "alpha".to_string(),
+            connection_b.expect("B connection"),
+            entry_b.expect("B entry"),
+        )
+        .await
+        .expect("install B");
+        drop(pool.remove_connection_catalog_entry("alpha").await);
+        pool.install_connection_catalog_entry(
+            "alpha".to_string(),
+            connection_a.expect("A connection"),
+            entry_a.expect("A entry"),
+        )
+        .await
+        .expect("reinstall A");
+
+        let current = pool
+            .observe_connection_catalog_entry("alpha")
+            .await
+            .expect("current observation");
+        let current_rows = vec![Resource::new("file:///current", "current")];
+        assert!(
+            pool.apply_observed_resource_list_success(&current, &current_rows)
+                .await
+                .is_some()
+        );
+        let before = pool.catalog.read().await["alpha"].clone();
+
+        let stale_rows = vec![Resource::new("file:///stale", "stale")];
+        assert!(
+            pool.apply_observed_resource_list_success(&stale, &stale_rows)
+                .await
+                .is_none()
+        );
+        assert!(
+            !pool
+                .apply_observed_resource_list_failure(&stale, "old A failed")
+                .await
+        );
+        let after = &pool.catalog.read().await["alpha"];
+        assert_eq!(after.resource_count, before.resource_count);
+        assert_eq!(after.resource_uris, before.resource_uris);
+        assert_eq!(after.resource_health, before.resource_health);
+        assert_eq!(after.resource_last_error, before.resource_last_error);
+    }
+
+    #[derive(Clone)]
+    struct DelayedResourceServer {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl ServerHandler for DelayedResourceServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resources(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourcesResult, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(ListResourcesResult::with_all_items(vec![Resource::new(
+                "file:///old-a",
+                "old A",
+            )]))
+        }
+    }
+
+    #[tokio::test]
+    async fn live_resource_fanout_discards_delayed_result_after_replacement() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedResourceServer {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            },
+        )
+        .await;
+        let listing_pool = Arc::clone(&pool);
+        let listing = tokio::spawn(async move { listing_pool.list_upstream_resources().await });
+        started.notified().await;
+
+        let replacement = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        let (connection, mut entry) = replacement.remove_connection_catalog_entry("alpha").await;
+        let entry = entry.as_mut().expect("replacement entry");
+        entry.resource_count = 7;
+        entry.resource_uris = vec!["file:///replacement".to_string()];
+        entry.resource_last_error = Some("replacement sentinel".to_string());
+        let previous_a = pool
+            .install_connection_catalog_entry(
+                "alpha".to_string(),
+                connection.expect("replacement connection"),
+                entry.clone(),
+            )
+            .await
+            .expect("install replacement")
+            .expect("previous A connection remains alive");
+
+        release.notify_one();
+        assert!(listing.await.expect("listing task").is_empty());
+        previous_a
+            .shutdown("alpha", "test.resource-list.stale")
+            .await;
+        let current = &pool.catalog.read().await["alpha"];
+        assert_eq!(current.resource_count, 7);
+        assert_eq!(current.resource_uris, ["file:///replacement"]);
+        assert_eq!(
+            current.resource_last_error.as_deref(),
+            Some("replacement sentinel")
+        );
+    }
+
+    #[derive(Clone)]
+    struct DelayedResourceTemplateServer {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        fail: bool,
+    }
+
+    impl ServerHandler for DelayedResourceTemplateServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        }
+
+        async fn list_resource_templates(
+            &self,
+            _request: Option<PaginatedRequestParams>,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ListResourceTemplatesResult, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            if self.fail {
+                Err(ErrorData::internal_error("old A failed", None))
+            } else {
+                Ok(ListResourceTemplatesResult::with_all_items(vec![
+                    ResourceTemplate::new("file:///{path}", "old-a"),
+                ]))
+            }
+        }
+    }
+
+    async fn assert_delayed_resource_template_result_is_discarded(fail: bool) {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedResourceTemplateServer {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+                fail,
+            },
+        )
+        .await;
+        let listing_pool = Arc::clone(&pool);
+        let listing = tokio::spawn(async move {
+            listing_pool
+                .list_upstream_resource_templates_allowed(None)
+                .await
+        });
+        started.notified().await;
+        let mut original_entry = pool.catalog.read().await["alpha"].clone();
+
+        let replacement = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        let (connection, mut entry) = replacement.remove_connection_catalog_entry("alpha").await;
+        let entry = entry.as_mut().expect("replacement entry");
+        entry.resource_last_error = Some("replacement sentinel".to_string());
+        let previous_a = pool
+            .install_connection_catalog_entry(
+                "alpha".to_string(),
+                connection.expect("replacement connection"),
+                entry.clone(),
+            )
+            .await
+            .expect("install replacement")
+            .expect("previous A connection remains alive");
+
+        // Reinstall the exact same A connection object after B. Its fresh
+        // install incarnation must still invalidate the in-flight old-A result.
+        let (replacement_b, _) = pool.remove_connection_catalog_entry("alpha").await;
+        original_entry.resource_last_error = Some("reinstalled A sentinel".to_string());
+        let replacement_health = original_entry.resource_health;
+        let reinstalled_previous = pool
+            .install_connection_catalog_entry("alpha".to_string(), previous_a, original_entry)
+            .await
+            .expect("reinstall same A object");
+        assert!(reinstalled_previous.is_none());
+
+        release.notify_one();
+        assert!(listing.await.expect("listing task").is_empty());
+        if let Some(replacement_b) = replacement_b {
+            replacement_b
+                .shutdown("alpha", "test.resource-template-list.replaced")
+                .await;
+        }
+        let current = &pool.catalog.read().await["alpha"];
+        assert_eq!(current.resource_health, replacement_health);
+        assert_eq!(
+            current.resource_last_error.as_deref(),
+            Some("reinstalled A sentinel")
+        );
+    }
+
+    #[tokio::test]
+    async fn live_resource_template_fanout_discards_delayed_success_after_replacement() {
+        assert_delayed_resource_template_result_is_discarded(false).await;
+    }
+
+    #[tokio::test]
+    async fn live_resource_template_fanout_discards_delayed_failure_after_replacement() {
+        assert_delayed_resource_template_result_is_discarded(true).await;
+    }
+
+    #[tokio::test]
+    async fn current_resource_template_unsupported_result_records_success() {
+        let pool = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        pool.catalog_write()
+            .await
+            .get_mut("alpha")
+            .expect("alpha entry")
+            .resource_last_error = Some("sentinel".into());
+        assert!(
+            pool.list_upstream_resource_templates_allowed(None)
+                .await
+                .is_empty()
+        );
+        assert!(
+            pool.catalog.read().await["alpha"]
+                .resource_last_error
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn observed_resource_routing_honors_membership_health_and_allowlist() {
+        let pool = catalog_pool_with_server("alpha", StaticCatalogServer::default()).await;
+        let allowed = BTreeSet::from(["alpha".to_string()]);
+        assert_eq!(
+            pool.observe_routable_resource_connections(Some(&allowed))
+                .await
+                .len(),
+            1
+        );
+        assert!(
+            pool.observe_routable_resource_connections(Some(&BTreeSet::new()))
+                .await
+                .is_empty()
+        );
+        pool.record_failure_for("alpha", UpstreamCapability::Resources, "one")
+            .await;
+        pool.record_failure_for("alpha", UpstreamCapability::Resources, "two")
+            .await;
+        pool.record_failure_for("alpha", UpstreamCapability::Resources, "three")
+            .await;
+        assert!(
+            pool.observe_routable_resource_connections(None)
+                .await
+                .is_empty()
+        );
+        pool.record_success_for("alpha", UpstreamCapability::Resources)
+            .await;
+        pool.resource_upstreams.write().await.clear();
+        assert!(
+            pool.observe_routable_resource_connections(None)
+                .await
+                .is_empty()
         );
     }
 

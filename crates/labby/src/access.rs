@@ -15,14 +15,11 @@ mod store;
 mod workflow;
 
 #[allow(unused_imports)]
-pub(crate) use authorization::{
-    AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
-};
+pub(crate) use authorization::{AuthorizeProjectInput, ProjectPermissionSnapshot};
 #[allow(unused_imports)]
 pub(crate) use bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole};
-pub(crate) use error::AccessStoreError;
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]
 pub(crate) use gateway_loadout::{GatewayLoadoutAssignmentError, assign_admitted_project_loadout};

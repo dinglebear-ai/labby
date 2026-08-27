@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use rmcp::model::Tool;
 
@@ -16,6 +17,23 @@ use crate::mcp::catalog::{
 use crate::mcp::permanent_tools::SkillLibraryDescriptorMode;
 use crate::mcp::route_scope::McpRouteScope;
 use crate::registry::ToolRegistry;
+
+#[cfg(feature = "gateway")]
+pub(crate) fn project_code_mode_description_upstreams(
+    bound: bool,
+    mut upstreams: Vec<CodeModeUpstreamDescription>,
+) -> Vec<CodeModeUpstreamDescription> {
+    if bound {
+        upstreams.clear();
+    }
+    upstreams
+}
+
+#[cfg(feature = "gateway")]
+use crate::mcp::bound_access::{
+    ProjectAccessObservation, ProjectDiscoveryShadow, ProjectExecutionBinding,
+    project_execution_binding,
+};
 
 #[cfg(feature = "gateway")]
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
@@ -167,6 +185,94 @@ pub(crate) struct PeerCatalogAudience {
     pub(crate) skill_library_app_visible: bool,
     #[cfg(feature = "gateway")]
     pub(crate) oauth_subject: Option<String>,
+    #[cfg(feature = "gateway")]
+    pub(crate) project_listing: ProjectPeerListing,
+}
+
+/// Owned Project discovery state retained with a peer subscription.
+///
+/// A `Bound` value owns the same immutable transport/core evidence observed by
+/// the request. It may therefore be re-evaluated after a catalog notification
+/// without widening an opted-in failure into the legacy catalog.
+#[cfg(feature = "gateway")]
+#[derive(Clone)]
+pub(crate) enum ProjectPeerListing {
+    Legacy,
+    Unavailable,
+    Bound {
+        transport: Arc<crate::mcp::bound_access::TransportBoundAccessContext>,
+        snapshot_key: Arc<crate::mcp::runtime::ProjectShadowSnapshotKey>,
+    },
+}
+
+#[cfg(feature = "gateway")]
+impl std::fmt::Debug for ProjectPeerListing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Legacy => "Legacy",
+            Self::Unavailable => "Unavailable",
+            Self::Bound { .. } => "Bound",
+        })
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl PartialEq for ProjectPeerListing {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Legacy, Self::Legacy) | (Self::Unavailable, Self::Unavailable) => true,
+            (
+                Self::Bound {
+                    snapshot_key: left, ..
+                },
+                Self::Bound {
+                    snapshot_key: right,
+                    ..
+                },
+            ) => left == right,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl Eq for ProjectPeerListing {}
+
+#[cfg(feature = "gateway")]
+impl ProjectPeerListing {
+    pub(crate) fn from_extensions(extensions: &rmcp::model::Extensions) -> Self {
+        match project_execution_binding(extensions, SystemTime::now()) {
+            ProjectExecutionBinding::Legacy => Self::Legacy,
+            ProjectExecutionBinding::Unavailable => Self::Unavailable,
+            ProjectExecutionBinding::Bound { transport, .. } => {
+                let Some(parts) = extensions.get::<axum::http::request::Parts>() else {
+                    return Self::Unavailable;
+                };
+                match parts.extensions.get::<ProjectAccessObservation>() {
+                    Some(ProjectAccessObservation::Bound(owned))
+                        if std::ptr::eq(Arc::as_ptr(owned), transport) =>
+                    {
+                        match ProjectDiscoveryShadow::Bound(owned).snapshot_key(SystemTime::now()) {
+                            Some(key) => Self::Bound {
+                                transport: Arc::clone(owned),
+                                snapshot_key: Arc::new(key),
+                            },
+                            None => Self::Unavailable,
+                        }
+                    }
+                    _ => Self::Unavailable,
+                }
+            }
+        }
+    }
+
+    fn shadow(&self) -> ProjectDiscoveryShadow<'_> {
+        match self {
+            Self::Legacy => ProjectDiscoveryShadow::Legacy,
+            Self::Unavailable => ProjectDiscoveryShadow::Unavailable,
+            Self::Bound { transport, .. } => ProjectDiscoveryShadow::Bound(transport),
+        }
+    }
 }
 
 impl Default for PeerCatalogAudience {
@@ -179,6 +285,8 @@ impl Default for PeerCatalogAudience {
             skill_library_app_visible: false,
             #[cfg(feature = "gateway")]
             oauth_subject: Some(SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
+            #[cfg(feature = "gateway")]
+            project_listing: ProjectPeerListing::Legacy,
         }
     }
 }
@@ -368,6 +476,18 @@ impl PeerContract {
     /// tools/list, before cursor slicing. Collision and visibility rules mirror
     /// the handler; only request telemetry and pagination are omitted.
     pub(crate) async fn visible_tool_descriptors(&self) -> Vec<Tool> {
+        #[cfg(feature = "gateway")]
+        if matches!(
+            self.audience.project_listing,
+            ProjectPeerListing::Unavailable
+        ) {
+            return Vec::new();
+        }
+        #[cfg(feature = "gateway")]
+        let project_shadow = self.audience.project_listing.shadow();
+        #[cfg(feature = "gateway")]
+        let project_started_at = SystemTime::now();
+
         let visibility = self.code_mode_visibility().await;
         let hide_raw_tools = visibility.hides_raw_tools();
         #[cfg(feature = "gateway")]
@@ -406,6 +526,13 @@ impl PeerContract {
 
         for service in self.registry.services() {
             if self.service_visible_on_mcp(service.name).await {
+                #[cfg(feature = "gateway")]
+                if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                    && project_shadow.allows_builtin_service_descriptor(service, project_started_at)
+                        != Some(true)
+                {
+                    continue;
+                }
                 builtin_names.insert(service.name.to_string());
                 if hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME {
                     continue;
@@ -421,9 +548,14 @@ impl PeerContract {
 
         #[cfg(feature = "gateway")]
         if visibility.exposes_synthetic_tools()
+            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_code_mode_tools(SystemTime::now()) == Some(true))
             && (self.audience.code_mode_read_allowed || self.audience.code_mode_execute_allowed)
         {
-            let upstreams = self.code_mode_upstreams_for_description().await;
+            let upstreams = project_code_mode_description_upstreams(
+                matches!(project_shadow, ProjectDiscoveryShadow::Bound(_)),
+                self.code_mode_upstreams_for_description().await,
+            );
             if self.audience.code_mode_read_allowed {
                 let tool = self
                     .registry
@@ -456,21 +588,34 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if self.route_scope.is_root() && self.audience.code_mode_execute_allowed {
+        if matches!(project_shadow, ProjectDiscoveryShadow::Legacy)
+            && self.route_scope.is_root()
+            && self.audience.code_mode_execute_allowed
+        {
             let tool = self.registry.permanent_tools().mcp_app_tool();
             advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
 
         #[cfg(feature = "gateway")]
-        if self.audience.admin_apps_visible && self.add_server_app_available().await {
+        if self.audience.admin_apps_visible
+            && self.add_server_app_available().await
+            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("gateway", SystemTime::now())
+                    == Some(true))
+        {
             let tool = self.registry.permanent_tools().add_server_tool();
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
 
         #[cfg(feature = "gateway")]
-        if self.audience.admin_apps_visible && self.gateway_status_app_available().await {
+        if self.audience.admin_apps_visible
+            && self.gateway_status_app_available().await
+            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("gateway", SystemTime::now())
+                    == Some(true))
+        {
             let tool = self.registry.permanent_tools().gateway_status_tool();
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
             descriptors.push(tool);
@@ -481,6 +626,8 @@ impl PeerContract {
             && self.mcp_apps_config().await.settings
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await
+            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("setup", SystemTime::now()) == Some(true))
         {
             let tool = self.registry.permanent_tools().settings_tool();
             advertised_names.insert(SETTINGS_TOOL_NAME.to_string());
@@ -495,14 +642,28 @@ impl PeerContract {
                 .await;
             for upstream_tool in upstream_tools {
                 let name = upstream_tool.tool.name.as_ref();
-                if builtin_names.contains(name) || !advertised_names.insert(name.to_string()) {
+                if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                    && project_shadow.allows_upstream_tool(
+                        &upstream_tool.upstream_name,
+                        name,
+                        project_started_at,
+                    ) != Some(true)
+                {
+                    continue;
+                }
+                if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
+                    || builtin_names.contains(name)
+                    || !advertised_names.insert(name.to_string())
+                {
                     continue;
                 }
                 descriptors.push(upstream_tool.tool);
                 upstream_tool_count += 1;
             }
 
-            if let Some(subject) = self.audience.oauth_subject.as_deref() {
+            if matches!(project_shadow, ProjectDiscoveryShadow::Legacy)
+                && let Some(subject) = self.audience.oauth_subject.as_deref()
+            {
                 let configs = self.route_scoped_oauth_upstream_configs().await;
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, tools) in pool
@@ -511,7 +672,8 @@ impl PeerContract {
                 {
                     for tool in tools {
                         let name = tool.name.as_ref();
-                        if builtin_names.contains(name)
+                        if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
+                            || builtin_names.contains(name)
                             || !advertised_names.insert(name.to_string())
                         {
                             continue;
@@ -520,6 +682,13 @@ impl PeerContract {
                     }
                 }
             }
+        }
+
+        #[cfg(feature = "gateway")]
+        if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+            && project_shadow.snapshot_key(SystemTime::now()).is_none()
+        {
+            return Vec::new();
         }
 
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
@@ -534,10 +703,33 @@ impl PeerContract {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "gateway")]
+    use super::ProjectPeerListing;
     use super::{PeerCatalogAudience, PeerContract};
     use crate::mcp::route_scope::McpRouteScope;
     use crate::registry::ToolRegistry;
     use std::collections::BTreeMap;
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn bound_code_mode_descriptors_drop_all_live_config_hints() {
+        let upstreams = vec![
+            crate::mcp::call_tool_codemode::CodeModeUpstreamDescription {
+                name: "same-name-live-config".to_string(),
+                hint: Some("secret mutable hint".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            super::project_code_mode_description_upstreams(false, upstreams.clone()),
+            upstreams,
+            "Legacy descriptors retain their existing live-config description"
+        );
+        assert!(
+            super::project_code_mode_description_upstreams(true, upstreams).is_empty(),
+            "Bound handler and PeerContract descriptors share the no-hints policy"
+        );
+    }
     use std::sync::Arc;
 
     fn contract(route_scope: McpRouteScope) -> PeerContract {
@@ -577,6 +769,28 @@ mod tests {
         .visible_contract()
         .await;
         assert!(scoped.tools.is_subset(&root.tools));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn unavailable_project_contract_is_terminal_and_non_enumerating() {
+        let mut contract = contract(McpRouteScope::Root);
+        contract.audience.project_listing = ProjectPeerListing::Unavailable;
+
+        let snapshot = contract.visible_contract().await;
+
+        assert!(snapshot.tools.is_empty());
+        assert_ne!(snapshot.contract_hash, [0; 32]);
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn explicit_legacy_project_contract_preserves_the_default_contract() {
+        let default = contract(McpRouteScope::Root).visible_contract().await;
+        let mut explicit = contract(McpRouteScope::Root);
+        explicit.audience.project_listing = ProjectPeerListing::Legacy;
+
+        assert_eq!(explicit.visible_contract().await, default);
     }
 
     #[cfg(feature = "gateway")]
@@ -648,6 +862,7 @@ mod tests {
                 skill_library_management_visible: false,
                 skill_library_app_visible: false,
                 oauth_subject: Some("reader".to_string()),
+                project_listing: ProjectPeerListing::Legacy,
             },
         };
 

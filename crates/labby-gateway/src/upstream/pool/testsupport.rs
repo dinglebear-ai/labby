@@ -210,19 +210,21 @@ where
         None => base,
     });
     let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-    pool.catalog_write().await.insert(
-        upstream_name.to_string(),
-        healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
-    );
-    pool.connections.write().await.insert(
-        upstream_name.to_string(),
-        UpstreamConnection {
-            _client_service: client_service.into(),
-            _server_task: Some(server_task),
-            peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-        },
-    );
+    let previous = pool
+        .install_connection_catalog_entry(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
+            },
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        )
+        .await
+        .expect("connection identity");
+    assert!(previous.is_none());
     pool.resource_upstreams
         .write()
         .await
@@ -313,6 +315,7 @@ pub(super) async fn slow_response_pool(upstream_name: &str) -> Arc<UpstreamPool>
             _server_task: Some(server_task),
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         },
     );
     pool.resource_upstreams
@@ -424,7 +427,54 @@ impl UpstreamPool {
             .await
             .push(upstream_name.to_string());
     }
-
+    /// Install an incarnation-bound in-process server for cross-crate Tool
+    /// execution fixtures. Product code cannot call this outside `testkit`.
+    pub async fn install_tool_server_for_tests<S>(&self, upstream_name: &str, server: S)
+    where
+        S: ServerHandler,
+    {
+        self.install_prompt_server_for_tests(upstream_name, server)
+            .await;
+    }
+    /// Install an incarnation-bound in-process server for cross-crate Prompt
+    /// execution fixtures. Product code cannot call this outside `testkit`.
+    pub async fn install_prompt_server_for_tests<S>(&self, upstream_name: &str, server: S)
+    where
+        S: ServerHandler,
+    {
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = server
+                .serve(server_transport)
+                .await
+                .expect("prompt fixture server starts");
+            running.waiting().await.expect("prompt fixture server runs");
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("prompt fixture client starts");
+        let peer = client_service.peer().clone();
+        let previous = self
+            .install_connection_catalog_entry(
+                upstream_name.to_string(),
+                UpstreamConnection {
+                    _client_service: client_service.into(),
+                    _server_task: Some(server_task),
+                    peer,
+                    runtime: UpstreamRuntimeMetadata::default(),
+                    incarnation: None,
+                },
+                healthy_in_process_entry(Arc::from(upstream_name), HashMap::new()),
+            )
+            .await
+            .expect("prompt fixture identity");
+        if let Some(previous) = previous {
+            previous
+                .shutdown(upstream_name, "test.prompt-server.replace")
+                .await;
+        }
+    }
     /// Register an in-process upstream whose tool call returns a successful MCP
     /// response carrying `is_error=true`.
     pub async fn insert_tool_error_server_for_tests(
@@ -477,6 +527,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }
@@ -528,6 +579,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }
@@ -601,6 +653,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }

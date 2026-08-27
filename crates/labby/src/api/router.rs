@@ -371,12 +371,16 @@ fn route_resource_metadata_url(route: &crate::config::ProtectedMcpRouteConfig) -
     )
 }
 
+struct AuthenticatedProtectedRoute {
+    claims: labby_auth::jwt::AccessClaims,
+}
+
 async fn authenticate_protected_route_request(
     request: &mut Request<Body>,
     route: &crate::config::ProtectedMcpRouteConfig,
     auth_state: Option<&labby_auth::state::AuthState>,
     actor_key_deriver: Option<&crate::observability::activity::ActorKeyDeriver>,
-) -> Result<(), axum::response::Response> {
+) -> Result<AuthenticatedProtectedRoute, axum::response::Response> {
     let resource = route.public_resource();
     let auth_header = request
         .headers()
@@ -480,26 +484,26 @@ async fn authenticate_protected_route_request(
     let subject_id = labby_auth::util::fingerprint(&claims.sub);
     let issuer = claims.iss.clone();
     let granted_scopes = granted.iter().map(|scope| (*scope).to_string()).collect();
+    request
+        .extensions_mut()
+        .insert(crate::api::oauth::AuthContext {
+            actor_key: derive_actor_key(actor_key_deriver, &claims.sub),
+            sub: claims.sub.clone(),
+            scopes: granted_scopes,
+            issuer: claims.iss.clone(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        });
     tracing::info!(
         route = %route.name,
         resource = %resource,
         subject_id = %subject_id,
         issuer = %issuer,
         granted_scopes = ?granted,
-        "protected MCP route auth accepted"
+        "protected MCP route bearer and scope validation accepted"
     );
-    request
-        .extensions_mut()
-        .insert(crate::api::oauth::AuthContext {
-            actor_key: derive_actor_key(actor_key_deriver, &claims.sub),
-            sub: claims.sub,
-            scopes: granted_scopes,
-            issuer: claims.iss,
-            via_session: false,
-            csrf_token: None,
-            email: None,
-        });
-    Ok(())
+    Ok(AuthenticatedProtectedRoute { claims })
 }
 
 #[cfg(feature = "gateway")]
@@ -1492,7 +1496,7 @@ async fn protected_mcp_route_entry(
         );
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
-    if let Err(response) = authenticate_protected_route_request(
+    let authenticated = match authenticate_protected_route_request(
         &mut request,
         &route,
         state.oauth_state.as_deref(),
@@ -1500,12 +1504,78 @@ async fn protected_mcp_route_entry(
     )
     .await
     {
-        return response;
-    }
-    if matches!(
-        route.effective_target(),
-        ProtectedMcpRouteEffectiveTarget::GatewaySubset(_)
-    ) {
+        Ok(authenticated) => authenticated,
+        Err(response) => return response,
+    };
+    if let ProtectedMcpRouteEffectiveTarget::GatewaySubset(target) = route.effective_target() {
+        if let Some(project_id) = target.project_id.as_deref() {
+            let identity = match labby_auth::verified_identity_from_access_claims(
+                &authenticated.claims,
+                &state
+                    .oauth_state
+                    .as_ref()
+                    .expect("authenticated OAuth route has state")
+                    .config,
+            ) {
+                Ok(identity) => identity,
+                Err(_) => {
+                    return auth_error_response_with_challenge(
+                        "invalid authenticated identity",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
+            };
+            let credential = match crate::mcp::bound_access::validate_transport_credential_binding(
+                &authenticated.claims.iss,
+                &authenticated.claims.jti,
+                authenticated.claims.exp,
+                std::time::SystemTime::now(),
+            ) {
+                Ok(credential) => credential,
+                Err(_) => {
+                    return auth_error_response_with_challenge(
+                        "invalid bearer token",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
+            };
+            request.extensions_mut().insert(identity.clone());
+            let binding = match state.gateway_manager.as_ref() {
+                Some(manager) => match crate::mcp::bound_access::bind_access_context(
+                    state.access_runtime.as_ref(),
+                    manager,
+                    identity,
+                    &route.name,
+                    &route.public_resource(),
+                    project_id,
+                )
+                .await
+                {
+                    Ok(core) => match crate::mcp::bound_access::TransportBoundAccessContext::new(
+                        core,
+                        credential,
+                        std::time::SystemTime::now(),
+                    ) {
+                        Ok(binding) => Ok(binding),
+                        Err(_) => {
+                            return auth_error_response_with_challenge(
+                                "invalid bearer token",
+                                &route_resource_metadata_url(&route),
+                                &route.scopes,
+                            );
+                        }
+                    },
+                    Err(error) => Err(error),
+                },
+                None => Err(crate::mcp::bound_access::BoundAccessContextError::Unavailable),
+            };
+            crate::mcp::bound_access::attach_project_access_observation(
+                request.extensions_mut(),
+                binding,
+            );
+        }
         let Some(router) = state
             .protected_mcp_routers
             .as_ref()
@@ -4976,7 +5046,26 @@ mod tests {
                 scoped_router,
             )]));
         let auth_state = test_lab_auth_state().await;
-        let token = issue_test_token(&auth_state, "https://mcp.example.com/ops", "mcp:ops");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as usize;
+        let token = auth_state
+            .signing_keys
+            .issue_access_token(&labby_auth::jwt::AccessClaims {
+                iss: "https://lab.example.com".into(),
+                sub: "legacy-subject".into(),
+                aud: "https://mcp.example.com/ops".into(),
+                exp: now + 3600,
+                nbf: None,
+                iat: now,
+                jti: String::new(),
+                scope: "mcp:ops".into(),
+                azp: "legacy-client".into(),
+                identity_issuer: None,
+                identity_credential_id: None,
+            })
+            .unwrap();
         let app = build_router(
             state,
             Some("static-token".to_string()),
@@ -5520,6 +5609,7 @@ mod tests {
                 health_path: None,
                 target: Some(crate::config::ProtectedMcpRouteTarget::GatewaySubset(
                     crate::config::ProtectedGatewaySubsetTarget {
+                        project_id: None,
                         upstreams: vec!["gateway-alpha".to_string(), "hidden-upstream".to_string()],
                         services: vec!["gateway".to_string()],
                         expose_code_mode: true,

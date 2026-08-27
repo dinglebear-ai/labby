@@ -44,6 +44,13 @@ fn next_service_registry_generation() -> u64 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServiceRegistryPublicationGeneration(u64);
 
+impl ServiceRegistryPublicationGeneration {
+    #[must_use]
+    pub fn fingerprint_bytes(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+}
+
 /// One immutable action in a published built-in service catalog.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishedServiceAction {
@@ -76,6 +83,7 @@ impl PublishedServiceAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishedService {
     name: Arc<str>,
+    description: Arc<str>,
     actions: Arc<[PublishedServiceAction]>,
 }
 
@@ -83,6 +91,10 @@ impl PublishedService {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
     }
     #[must_use]
     pub fn actions(&self) -> &[PublishedServiceAction] {
@@ -95,6 +107,7 @@ impl PublishedService {
     ) -> Self {
         Self {
             name: Arc::clone(&service.name),
+            description: Arc::clone(&service.description),
             actions: Arc::from(
                 service
                     .actions
@@ -216,6 +229,7 @@ fn project_catalog(
             .collect::<Vec<_>>();
         services.push(PublishedService {
             name: Arc::from(name),
+            description: Arc::from(registry.service_description(name).unwrap_or(name)),
             actions: Arc::from(actions),
         });
     }
@@ -237,6 +251,11 @@ pub trait GatewayServiceRegistry: InProcessServiceRegistry {
 
     /// Whether a service with this name is registered.
     fn contains_service(&self, name: &str) -> bool;
+
+    /// Stable user-facing service description used by MCP discovery.
+    fn service_description(&self, _name: &str) -> Option<&'static str> {
+        None
+    }
 
     /// Actions exposed by a registered service, or `None` if not registered.
     fn service_actions(&self, name: &str) -> Option<Vec<ServiceActionInfo>>;

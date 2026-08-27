@@ -191,15 +191,54 @@ impl UpstreamPool {
                         );
                     }
 
-                    self.catalog_tools_write().await.insert(
-                        registration.upstream_name.clone(),
-                        healthy_in_process_entry(Arc::clone(&registration.entry_name), tool_map),
-                    );
                     if let Some(conn) = registration.connection {
-                        self.connections
-                            .write()
+                        match self
+                            .install_connection_catalog_entry(
+                                registration.upstream_name.clone(),
+                                conn,
+                                healthy_in_process_entry(
+                                    Arc::clone(&registration.entry_name),
+                                    tool_map,
+                                ),
+                            )
                             .await
-                            .insert(registration.upstream_name.clone(), conn);
+                        {
+                            Ok(Some(previous)) => {
+                                previous
+                                    .shutdown(
+                                        &registration.upstream_name,
+                                        "upstream.in_process.replace",
+                                    )
+                                    .await;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                failed_count += 1;
+                                tracing::error!(
+                                    upstream = %registration.upstream_name,
+                                    service = service_name,
+                                    error = %error,
+                                    "in-process peer identity publication failed"
+                                );
+                                continue;
+                            }
+                        }
+                    } else if let Some(previous) = self
+                        .install_catalog_entry_without_connection(
+                            registration.upstream_name.clone(),
+                            healthy_in_process_entry(
+                                Arc::clone(&registration.entry_name),
+                                tool_map,
+                            ),
+                        )
+                        .await
+                    {
+                        previous
+                            .shutdown(
+                                &registration.upstream_name,
+                                "upstream.in_process.catalog_only",
+                            )
+                            .await;
                     }
                     in_process_resource_names.push(registration.upstream_name.clone());
                     if tool_count == 0 {
@@ -232,15 +271,24 @@ impl UpstreamPool {
                         error = %error_message,
                         "in-process peer registration failed"
                     );
-                    let mut catalog = self.catalog_tools_write().await;
                     let name: Arc<str> = Arc::from(upstream_name.as_str());
-                    let entry = catalog
-                        .remove(&upstream_name)
-                        .map(|existing| {
-                            failed_in_process_entry_from_existing(existing, error_message.clone())
+                    let previous = self
+                        .replace_catalog_entry_without_connection(upstream_name.clone(), |entry| {
+                            entry
+                                .map(|existing| {
+                                    failed_in_process_entry_from_existing(
+                                        existing,
+                                        error_message.clone(),
+                                    )
+                                })
+                                .unwrap_or_else(|| failed_in_process_entry(name, error_message))
                         })
-                        .unwrap_or_else(|| failed_in_process_entry(name, error_message));
-                    catalog.insert(upstream_name, entry);
+                        .await;
+                    if let Some(previous) = previous {
+                        previous
+                            .shutdown(&upstream_name, "upstream.in_process.failure")
+                            .await;
+                    }
                 }
                 Err(_) => {
                     failed_count += 1;
@@ -256,15 +304,24 @@ impl UpstreamPool {
                         error = %error_message,
                         "in-process peer registration timed out"
                     );
-                    let mut catalog = self.catalog_tools_write().await;
                     let name: Arc<str> = Arc::from(upstream_name.as_str());
-                    let entry = catalog
-                        .remove(&upstream_name)
-                        .map(|existing| {
-                            failed_in_process_entry_from_existing(existing, error_message.clone())
+                    let previous = self
+                        .replace_catalog_entry_without_connection(upstream_name.clone(), |entry| {
+                            entry
+                                .map(|existing| {
+                                    failed_in_process_entry_from_existing(
+                                        existing,
+                                        error_message.clone(),
+                                    )
+                                })
+                                .unwrap_or_else(|| failed_in_process_entry(name, error_message))
                         })
-                        .unwrap_or_else(|| failed_in_process_entry(name, error_message));
-                    catalog.insert(upstream_name, entry);
+                        .await;
+                    if let Some(previous) = previous {
+                        previous
+                            .shutdown(&upstream_name, "upstream.in_process.timeout")
+                            .await;
+                    }
                 }
             }
         }
