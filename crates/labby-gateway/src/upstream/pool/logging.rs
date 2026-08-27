@@ -197,6 +197,36 @@ pub(super) fn log_upstream_request_finish(
     );
 }
 
+/// A caller withdrew before the upstream answered.
+///
+/// Deliberately INFO with `event = "cancelled"`, not the WARN
+/// `event = "error"` used by [`log_upstream_request_error`]. Client
+/// disconnects are routine, and upstream *error rate* is the primary
+/// is-my-gateway-sick signal — burying a healthy gateway's dashboard under
+/// routine disconnects would degrade the one metric operators watch.
+pub(super) fn log_upstream_request_cancelled(
+    event: UpstreamRequestLog<'_>,
+    elapsed_ms: u128,
+    kind: &'static str,
+) {
+    tracing::info!(
+        surface = "dispatch",
+        service = "upstream.pool",
+        action = "upstream.request",
+        event = "cancelled",
+        upstream = %event.upstream,
+        capability = event.capability,
+        operation = event.operation,
+        subject_scoped = event.subject_scoped,
+        transport = event.transport,
+        item_kind = event.item_kind,
+        item = event.item,
+        elapsed_ms,
+        kind,
+        "upstream.request.cancelled"
+    );
+}
+
 pub(super) fn log_upstream_request_error(
     event: UpstreamRequestLog<'_>,
     elapsed_ms: u128,

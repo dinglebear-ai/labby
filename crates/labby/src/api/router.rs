@@ -3,7 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(feature = "api-docs")]
 use axum::response::Html;
@@ -2074,6 +2074,17 @@ pub(crate) fn build_router_with_external_auth(
         router = router.fallback(crate::api::web::serve_web_request);
     }
 
+    // Read before `with_state` consumes it. Derived from config so the
+    // transport backstop can never fire before the upstream deadlines it wraps.
+    //
+    // Captured once at router-build time: a gateway reload that raises
+    // `upstream_request_timeout_ms` / `upstream_relay_timeout_ms` does not move
+    // this until the process restarts. Small increases stay under the margin,
+    // but a large one — raising the relay deadline toward its 30 minute
+    // ceiling, say — would once again put the transport cap below the upstream
+    // deadline and reintroduce the bare-504 bug this derivation exists to fix.
+    // Restart after widening a timeout, or make this re-read on reload.
+    let http_timeout = state.config.http_request_timeout();
     #[cfg(feature = "gateway")]
     let protected_proxy_state = state.clone();
     let router = router.with_state(state);
@@ -2085,7 +2096,10 @@ pub(crate) fn build_router_with_external_auth(
     router
         .layer(build_cors_layer(config_cors_origins))
         .layer(CompressionLayer::new())
-        .layer(axum::middleware::from_fn(request_timeout))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            http_timeout,
+        ))
         // PropagateRequestId echoes the id back in the response header.
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         // TraceLayer reads x-request-id set by SetRequestId (outermost).

@@ -298,6 +298,13 @@ const MAX_CATALOG_NOTIFICATION_TIMEOUT_MS: u64 = 60_000;
 /// lifetime. Only the relay path uses this; the pooled hot path keeps
 /// [`DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS`].
 const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
+/// Headroom added to the longest configured upstream deadline when deriving the
+/// hosted HTTP transport timeout (see [`LabConfig::http_request_timeout`]).
+///
+/// Covers the work bracketing the upstream call itself — auth, Code Mode
+/// compilation, connection-pool checkout, response serialization — so the inner
+/// deadline is always the one that fires on a slow upstream.
+const HTTP_REQUEST_TIMEOUT_MARGIN: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 static TEST_CONFIG_TOML_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -603,6 +610,25 @@ impl LabConfig {
             self.upstream_relay_timeout_ms
                 .unwrap_or(DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS),
         )
+    }
+
+    /// Transport-level deadline for one hosted HTTP request.
+    ///
+    /// This is a backstop for requests that outlive every inner deadline, not a
+    /// product timeout. It is derived from the configured upstream deadlines so
+    /// it can never fire *before* the timeout it is supposed to wrap: a request
+    /// that exceeds `upstream_request_timeout` / `upstream_relay_timeout` must
+    /// fail with a structured MCP error from the dispatch layer, not a bare 504
+    /// from the HTTP stack.
+    ///
+    /// A fixed cap here previously overrode both settings — an operator raising
+    /// `upstream_request_timeout_ms` past 30s got no effect, because the
+    /// transport killed the response first and discarded a tool call that had
+    /// already succeeded.
+    pub fn http_request_timeout(&self) -> Duration {
+        self.upstream_request_timeout()
+            .max(self.upstream_relay_timeout())
+            .saturating_add(HTTP_REQUEST_TIMEOUT_MARGIN)
     }
 
     pub fn normalize_protected_mcp_routes(&mut self) -> Result<(), ConfigError> {
@@ -3229,6 +3255,51 @@ upstream_request_timeout_ms = 60000
         assert_eq!(cfg.upstream_request_timeout_ms, Some(60_000));
         assert_eq!(cfg.upstream_request_timeout(), Duration::from_mins(1));
         cfg.validate().expect("timeout validates");
+    }
+
+    /// The HTTP transport backstop must never fire before the upstream deadline
+    /// it wraps. A fixed 30s cap in the router used to override both settings:
+    /// a 60s `upstream_request_timeout_ms` still returned a bare 504 at 30s,
+    /// discarding a tool call that went on to succeed.
+    #[test]
+    fn http_request_timeout_never_undercuts_configured_upstream_deadlines() {
+        for toml_src in [
+            "",
+            "upstream_request_timeout_ms = 60000",
+            // Both knobs at the top of their validated ranges.
+            "upstream_request_timeout_ms = 300000\nupstream_relay_timeout_ms = 1800000",
+            // Relay left at its 5 minute default while the pooled path is raised.
+            "upstream_request_timeout_ms = 120000",
+            // Relay raised while the pooled path stays at its default.
+            "upstream_relay_timeout_ms = 900000",
+        ] {
+            let cfg = toml::from_str::<LabConfig>(toml_src).expect("config parses");
+            cfg.validate().expect("config validates");
+
+            let http = cfg.http_request_timeout();
+            assert!(
+                http > cfg.upstream_request_timeout(),
+                "http timeout {http:?} must exceed the pooled upstream deadline {:?} for {toml_src:?}",
+                cfg.upstream_request_timeout(),
+            );
+            assert!(
+                http > cfg.upstream_relay_timeout(),
+                "http timeout {http:?} must exceed the relay deadline {:?} for {toml_src:?}",
+                cfg.upstream_relay_timeout(),
+            );
+        }
+    }
+
+    /// The 5 minute relay default is the binding constraint out of the box, so
+    /// a default deployment must not cap HTTP requests at the 30s pooled value.
+    #[test]
+    fn http_request_timeout_default_accommodates_the_relay_path() {
+        let cfg = LabConfig::default();
+        assert_eq!(
+            cfg.http_request_timeout(),
+            cfg.upstream_relay_timeout() + HTTP_REQUEST_TIMEOUT_MARGIN,
+        );
+        assert!(cfg.http_request_timeout() > Duration::from_secs(30));
     }
 
     #[test]

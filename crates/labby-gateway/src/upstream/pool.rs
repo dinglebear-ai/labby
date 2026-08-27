@@ -57,6 +57,8 @@ mod notifications;
 #[cfg(test)]
 mod notifications_tests;
 mod oauth_invalidation;
+#[cfg(test)]
+mod pooled_cancellation_tests;
 mod probe;
 mod prompts_exposure;
 #[cfg(test)]
@@ -94,6 +96,7 @@ mod task_route;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]
 mod testsupport;
+mod tool_call_cancel;
 mod tools;
 mod tools_call;
 #[cfg(test)]
