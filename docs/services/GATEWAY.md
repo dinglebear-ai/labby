@@ -52,8 +52,17 @@ loss.
 
 The gateway validates that the `command` basename of any stdio upstream is in a
 built-in allowlist (`npx`, `uvx`, `docker`, `node`, `bun`, `python`, `python3`,
-`deno`, `pipx`, `dnx`) before writing the config. Two `[gateway]` knobs in
-`config.toml` control this:
+`deno`, `pipx`, `dnx`, `ssh`) before writing the config. SSH can therefore be
+used directly as a stdio transport for MCP services that speak MCP over a
+remote command. Two `[gateway]` knobs in `config.toml` control this:
+
+```toml
+[[upstream]]
+name = "remote-mcp"
+transport = "stdio"
+command = "/usr/bin/ssh"
+args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "user@example.test", "/usr/local/bin/remote-mcp", "mcp"]
+```
 
 ```toml
 [gateway]

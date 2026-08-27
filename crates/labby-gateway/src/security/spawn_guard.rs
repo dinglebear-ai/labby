@@ -16,7 +16,7 @@ use labby_runtime::error::ToolError;
 
 /// Runtime hints / commands the gateway is allowed to execute as stdio upstreams.
 pub const ALLOWED_RUNTIME_HINTS: &[&str] = &[
-    "npx", "uvx", "docker", "dnx", "pipx", "node", "bun", "python", "python3", "deno",
+    "npx", "uvx", "docker", "dnx", "pipx", "node", "bun", "python", "python3", "deno", "ssh",
 ];
 
 /// Environment variables that upstream processes must not override.
@@ -350,6 +350,26 @@ mod tests {
     fn command_extracts_binary_name_from_absolute_path() {
         // /usr/bin/node → binary "node" → allowed
         assert!(validate_stdio_command("/usr/bin/node", &[], false).is_ok());
+    }
+
+    #[test]
+    fn command_accepts_ssh_transport_from_absolute_path() {
+        assert!(validate_stdio_command("/usr/bin/ssh", &[], false).is_ok());
+    }
+
+    #[test]
+    fn spec_accepts_ssh_mcp_transport() {
+        let args = vec![
+            "-o".to_string(),
+            "BatchMode=yes".to_string(),
+            "-o".to_string(),
+            "ConnectTimeout=10".to_string(),
+            "root@example.test".to_string(),
+            "/usr/local/sbin/qa-vm-service".to_string(),
+            "mcp".to_string(),
+        ];
+
+        assert!(validate_stdio_spec("/usr/bin/ssh", &args, &BTreeMap::new(), &[], false,).is_ok());
     }
 
     #[test]
