@@ -132,7 +132,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "trusted_read_only_tools",
                 ty: "array",
                 required: false,
-                description: "Exact upstream::tool ids operator-trusted for codemode_read (live readOnlyHint is also required)",
+                description: "Deprecated compatibility list; codemode_read uses live MCP safety annotations",
             },
             ParamSpec {
                 name: "mcp_ui_enabled",

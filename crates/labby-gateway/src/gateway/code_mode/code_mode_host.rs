@@ -92,8 +92,7 @@ impl CodeModeHost for GatewayManager {
         // Discovery is advisory; authorization is checked again against the
         // live descriptor immediately before invocation so an annotation
         // change or stale render cannot turn a read-only run into a write.
-        let code_mode_config = self.code_mode_config().await;
-        if scope.is_read_only() && !tool_is_trusted_read_only(&code_mode_config, &upstream_tool) {
+        if scope.is_read_only() && !tool_is_explicitly_read_only(&upstream_tool) {
             tracing::warn!(
                 surface = "dispatch",
                 service = "code_mode",
@@ -101,13 +100,11 @@ impl CodeModeHost for GatewayManager {
                 upstream,
                 tool,
                 kind = "forbidden",
-                "blocked tool without operator trust and an explicit read-only annotation"
+                "blocked tool without an explicit read-only annotation"
             );
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
-                message: format!(
-                    "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
-                ),
+                message: format!("Tool `{upstream}::{tool}` is not explicitly read-only."),
             }
             .into());
         }
@@ -450,13 +447,8 @@ pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
 
 fn rmcp_tool_is_explicitly_read_only(tool: &rmcp::model::Tool) -> bool {
     tool.annotations.as_ref().is_some_and(|annotations| {
-        annotations.read_only_hint == Some(true) && annotations.destructive_hint != Some(true)
+        annotations.read_only_hint == Some(true) && annotations.destructive_hint == Some(false)
     })
-}
-
-pub(super) fn tool_is_trusted_read_only(config: &CodeModeConfig, tool: &UpstreamTool) -> bool {
-    tool_is_explicitly_read_only(tool)
-        && config.trusts_read_only_tool(&tool.upstream_name, tool.tool.name.as_ref())
 }
 
 /// Fingerprint every descriptor field used for authorization, validation, and
@@ -697,15 +689,10 @@ impl GatewayManager {
                 .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
             }
             if require_read_only {
-                let config = self.code_mode_config().await;
-                if !config.trusts_read_only_tool(upstream, tool)
-                    || !rmcp_tool_is_explicitly_read_only(&current_tool)
-                {
+                if !rmcp_tool_is_explicitly_read_only(&current_tool) {
                     return Err(CodeModeCallError::new(
                         "forbidden",
-                        format!(
-                            "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
-                        ),
+                        format!("Tool `{upstream}::{tool}` is not explicitly read-only."),
                     )
                     .with_tool(id.clone())
                     .with_origin(CodeModeErrorOrigin::Policy)
@@ -1174,8 +1161,15 @@ mod tests {
         assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().destructive(false),)
         )));
-        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
+        assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().read_only(true),)
+        )));
+        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
+            Some(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false),
+            )
         )));
         assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(
@@ -1185,17 +1179,12 @@ mod tests {
             )
         )));
 
-        let hinted =
-            upstream_with_annotations(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
-        assert!(!tool_is_trusted_read_only(
-            &CodeModeConfig::default(),
-            &hinted
+        let hinted = upstream_with_annotations(Some(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false),
         ));
-        let trusted = CodeModeConfig {
-            trusted_read_only_tools: vec!["fixture::query".to_string()],
-            ..CodeModeConfig::default()
-        };
-        assert!(tool_is_trusted_read_only(&trusted, &hinted));
+        assert!(tool_is_explicitly_read_only(&hinted));
     }
 
     #[test]
