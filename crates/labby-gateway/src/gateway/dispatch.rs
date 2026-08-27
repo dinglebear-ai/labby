@@ -672,7 +672,7 @@ async fn handle_gateway_actions(
     enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
-        "gateway.list" => to_json(manager.list().await?),
+        "gateway.list" => to_json(manager.list_scoped(&enrichment_scope).await?),
         "gateway.server.get" => {
             let params: VirtualServerNameParams = parse_params(params_value)?;
             to_json(manager.get_server(&params.id).await?)
@@ -685,7 +685,7 @@ async fn handle_gateway_actions(
         }
         "gateway.get" => {
             let params: GatewayNameParams = parse_params(params_value)?;
-            to_json(manager.get(&params.name).await?)
+            to_json(manager.get_scoped(&params.name, &enrichment_scope).await?)
         }
         "gateway.test" => {
             // SECURITY NOTE: When called with a `spec` (unsaved config) for a
@@ -773,7 +773,11 @@ async fn handle_gateway_actions(
             manager
                 .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
                 .await;
-            to_json(manager.status(params.name.as_deref()).await?)
+            to_json(
+                manager
+                    .status_scoped(params.name.as_deref(), &enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.client_config.get" => {
             let params: GatewayClientConfigParams = parse_params(params_value)?;
@@ -1297,13 +1301,13 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         .skills
         .iter()
         .map(|item| {
-            let skill = &item.skill;
+            let skill = &item.descriptor;
             serde_json::json!({
                 "name": skill.name,
-                "uri": skill.entry.uri,
-                "description": skill.entry.frontmatter.get("description").and_then(|value| value.as_str()),
-                "resource_count": skill.entry.resources.as_ref().map_or(0, Vec::len),
-                "exposed": item.exposed,
+                "uri": skill.source_uri,
+                "description": skill.description,
+                "resource_count": skill.resource_count,
+                "exposed": item.exposure.exposed,
             })
         })
         .collect();
@@ -1322,7 +1326,11 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         skills,
         rejected,
         discovered_count: operator.discovered_count,
-        exposed_count: operator.skills.iter().filter(|item| item.exposed).count(),
+        exposed_count: operator
+            .skills
+            .iter()
+            .filter(|item| item.exposure.exposed)
+            .count(),
     }
 }
 

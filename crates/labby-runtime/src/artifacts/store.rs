@@ -3,6 +3,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atomic_write_file::AtomicWriteFile;
 
@@ -27,6 +28,7 @@ use super::validation::{
 
 /// Maximum immutable revision manifests accepted by one bounded read batch.
 pub const MAX_REVISION_READ_BATCH: usize = 100;
+static NEXT_WORKSPACE_STAGING_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Inputs for importing a local file or multi-file package.
 #[derive(Debug, Clone)]
@@ -228,8 +230,39 @@ impl ArtifactStore {
         files: &[SnapshotFile],
     ) -> Result<(), ArtifactError> {
         let workspace = self.workspace_path(artifact_id)?;
-        prepare_empty_internal_dir(&workspace)?;
-        materialize_tree(&workspace, files, false)
+        let artifact_dir = workspace
+            .parent()
+            .ok_or(ArtifactError::UnsafePath("workspace_parent"))?;
+        let staging_id = NEXT_WORKSPACE_STAGING_ID.fetch_add(1, Ordering::Relaxed);
+        let staging = artifact_dir.join(format!(
+            ".workspace.stage-{}-{staging_id}",
+            std::process::id()
+        ));
+        let previous = artifact_dir.join(format!(
+            ".workspace.previous-{}-{staging_id}",
+            std::process::id()
+        ));
+
+        prepare_empty_internal_dir(&staging)?;
+        if let Err(error) = materialize_tree(&staging, files, false).and_then(|()| {
+            File::open(&staging)
+                .map_err(ArtifactError::from)?
+                .sync_all()
+                .map_err(ArtifactError::from)
+        }) {
+            drop(std::fs::remove_dir_all(&staging));
+            return Err(error);
+        }
+
+        if workspace.exists() {
+            reject_symlink(&workspace).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+        }
+        let had_workspace = promote_workspace(&staging, &workspace, &previous)?;
+        File::open(artifact_dir)?.sync_all()?;
+        if had_workspace {
+            drop(std::fs::remove_dir_all(previous));
+        }
+        Ok(())
     }
 
     pub(crate) fn persist_revision(
@@ -493,6 +526,42 @@ impl ArtifactStore {
     }
 }
 
+fn promote_workspace(
+    staging: &Path,
+    workspace: &Path,
+    previous: &Path,
+) -> Result<bool, ArtifactError> {
+    promote_workspace_with(staging, workspace, previous, &mut |from, to| {
+        std::fs::rename(from, to)
+    })
+}
+
+fn promote_workspace_with(
+    staging: &Path,
+    workspace: &Path,
+    previous: &Path,
+    rename: &mut impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> Result<bool, ArtifactError> {
+    let had_workspace = workspace.exists();
+    if had_workspace {
+        rename(workspace, previous)?;
+    }
+    if let Err(promotion_error) = rename(staging, workspace) {
+        if had_workspace {
+            rename(previous, workspace).map_err(|rollback_error| {
+                ArtifactError::Io(std::io::Error::new(
+                    rollback_error.kind(),
+                    format!(
+                        "workspace promotion failed ({promotion_error}); rollback failed ({rollback_error})"
+                    ),
+                ))
+            })?;
+        }
+        return Err(ArtifactError::Io(promotion_error));
+    }
+    Ok(had_workspace)
+}
+
 fn validate_store_creation_ancestor(root: &Path) -> Result<(), ArtifactError> {
     let mut probe = root;
     while !probe.exists() {
@@ -633,6 +702,90 @@ mod tests {
             .persist_record_transition(&first.current_revision_id, &second)
             .unwrap_err();
         assert!(matches!(error, ArtifactError::Conflict("head_changed")));
+    }
+
+    #[test]
+    fn failed_workspace_materialization_preserves_the_previous_tree() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let artifact_id = "art_workspace";
+        let workspace = store.workspace_path(artifact_id).unwrap();
+        ensure_private_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("preserved.txt"), b"preserved").unwrap();
+
+        let duplicate = SnapshotFile {
+            path: "duplicate.txt".to_string(),
+            bytes: b"replacement".to_vec(),
+            unix_mode: None,
+        };
+        assert!(
+            store
+                .materialize_workspace(artifact_id, &[duplicate.clone(), duplicate])
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(workspace.join("preserved.txt")).unwrap(),
+            b"preserved"
+        );
+    }
+
+    #[test]
+    fn failed_workspace_promotion_restores_the_previous_tree() {
+        let data = tempdir().unwrap();
+        let workspace = data.path().join("workspace");
+        let staging = data.path().join("staging");
+        let previous = data.path().join("previous");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        std::fs::write(workspace.join("preserved.txt"), b"preserved").unwrap();
+        std::fs::write(staging.join("replacement.txt"), b"replacement").unwrap();
+        let mut rename_count = 0;
+        let error = promote_workspace_with(&staging, &workspace, &previous, &mut |from, to| {
+            rename_count += 1;
+            if rename_count == 2 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected promotion failure",
+                ))
+            } else {
+                std::fs::rename(from, to)
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(error, ArtifactError::Io(_)));
+        assert_eq!(
+            std::fs::read(workspace.join("preserved.txt")).unwrap(),
+            b"preserved"
+        );
+        assert!(staging.join("replacement.txt").exists());
+        assert!(!previous.exists());
+    }
+
+    #[test]
+    fn failed_workspace_rollback_reports_the_recovery_failure() {
+        let data = tempdir().unwrap();
+        let workspace = data.path().join("workspace");
+        let staging = data.path().join("staging");
+        let previous = data.path().join("previous");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&staging).unwrap();
+        let mut rename_count = 0;
+        let error = promote_workspace_with(&staging, &workspace, &previous, &mut |from, to| {
+            rename_count += 1;
+            match rename_count {
+                2 => Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected promotion failure",
+                )),
+                3 => Err(std::io::Error::other("injected rollback failure")),
+                _ => std::fs::rename(from, to),
+            }
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("rollback failed"));
+        assert!(previous.exists());
+        assert!(staging.exists());
+        assert!(!workspace.exists());
     }
 
     #[cfg(unix)]

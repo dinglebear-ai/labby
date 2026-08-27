@@ -52,6 +52,8 @@ pub(crate) enum PromptExecutionResolutionError {
     Upstream,
     #[error("prompt execution timed out")]
     Timeout,
+    #[error("prompt execution was cancelled")]
+    Cancelled,
 }
 
 struct ExactPromptTarget<'a> {
@@ -140,6 +142,7 @@ pub(crate) async fn execute_exact_project_prompt(
         }
         PublishedPromptCallError::Upstream => PromptExecutionResolutionError::Upstream,
         PublishedPromptCallError::Timeout => PromptExecutionResolutionError::Timeout,
+        PublishedPromptCallError::Cancelled => PromptExecutionResolutionError::Cancelled,
     })
 }
 

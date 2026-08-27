@@ -467,7 +467,8 @@ impl LabMcpServer {
                             }
                             PromptExecutionResolutionError::QueueUnavailable
                             | PromptExecutionResolutionError::Upstream
-                            | PromptExecutionResolutionError::Timeout => {
+                            | PromptExecutionResolutionError::Timeout
+                            | PromptExecutionResolutionError::Cancelled => {
                                 (LoggingLevel::Error, "internal_error")
                             }
                         };

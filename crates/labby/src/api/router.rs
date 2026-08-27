@@ -3,7 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "api-docs")]
 use axum::response::Html;
@@ -1504,12 +1504,78 @@ async fn protected_mcp_route_entry(
     )
     .await
     {
-        return response;
-    }
-    if matches!(
-        route.effective_target(),
-        ProtectedMcpRouteEffectiveTarget::GatewaySubset(_)
-    ) {
+        Ok(authenticated) => authenticated,
+        Err(response) => return response,
+    };
+    if let ProtectedMcpRouteEffectiveTarget::GatewaySubset(target) = route.effective_target() {
+        if let Some(project_id) = target.project_id.as_deref() {
+            let identity = match labby_auth::verified_identity_from_access_claims(
+                &authenticated.claims,
+                &state
+                    .oauth_state
+                    .as_ref()
+                    .expect("authenticated OAuth route has state")
+                    .config,
+            ) {
+                Ok(identity) => identity,
+                Err(_) => {
+                    return auth_error_response_with_challenge(
+                        "invalid authenticated identity",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
+            };
+            let credential = match crate::mcp::bound_access::validate_transport_credential_binding(
+                &authenticated.claims.iss,
+                &authenticated.claims.jti,
+                authenticated.claims.exp,
+                std::time::SystemTime::now(),
+            ) {
+                Ok(credential) => credential,
+                Err(_) => {
+                    return auth_error_response_with_challenge(
+                        "invalid bearer token",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
+            };
+            request.extensions_mut().insert(identity.clone());
+            let binding = match state.gateway_manager.as_ref() {
+                Some(manager) => match crate::mcp::bound_access::bind_access_context(
+                    state.access_runtime.as_ref(),
+                    manager,
+                    identity,
+                    &route.name,
+                    &route.public_resource(),
+                    project_id,
+                )
+                .await
+                {
+                    Ok(core) => match crate::mcp::bound_access::TransportBoundAccessContext::new(
+                        core,
+                        credential,
+                        std::time::SystemTime::now(),
+                    ) {
+                        Ok(binding) => Ok(binding),
+                        Err(_) => {
+                            return auth_error_response_with_challenge(
+                                "invalid bearer token",
+                                &route_resource_metadata_url(&route),
+                                &route.scopes,
+                            );
+                        }
+                    },
+                    Err(error) => Err(error),
+                },
+                None => Err(crate::mcp::bound_access::BoundAccessContextError::Unavailable),
+            };
+            crate::mcp::bound_access::attach_project_access_observation(
+                request.extensions_mut(),
+                binding,
+            );
+        }
         let Some(router) = state
             .protected_mcp_routers
             .as_ref()
@@ -2078,17 +2144,6 @@ pub(crate) fn build_router_with_external_auth(
         router = router.fallback(crate::api::web::serve_web_request);
     }
 
-    // Read before `with_state` consumes it. Derived from config so the
-    // transport backstop can never fire before the upstream deadlines it wraps.
-    //
-    // Captured once at router-build time: a gateway reload that raises
-    // `upstream_request_timeout_ms` / `upstream_relay_timeout_ms` does not move
-    // this until the process restarts. Small increases stay under the margin,
-    // but a large one — raising the relay deadline toward its 30 minute
-    // ceiling, say — would once again put the transport cap below the upstream
-    // deadline and reintroduce the bare-504 bug this derivation exists to fix.
-    // Restart after widening a timeout, or make this re-read on reload.
-    let http_timeout = state.config.http_request_timeout();
     #[cfg(feature = "gateway")]
     let protected_proxy_state = state.clone();
     let router = router.with_state(state);
@@ -2100,10 +2155,7 @@ pub(crate) fn build_router_with_external_auth(
     router
         .layer(build_cors_layer(config_cors_origins))
         .layer(CompressionLayer::new())
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::GATEWAY_TIMEOUT,
-            http_timeout,
-        ))
+        .layer(axum::middleware::from_fn(request_timeout))
         // PropagateRequestId echoes the id back in the response header.
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         // TraceLayer reads x-request-id set by SetRequestId (outermost).

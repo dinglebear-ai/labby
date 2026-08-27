@@ -734,24 +734,6 @@ fn helper_diagnostic(output: &HelperOutput) -> String {
     }
 }
 
-async fn sandbox_absent(identity: &CleanupIdentity) -> bool {
-    let mut list = Command::new(&identity.executable);
-    list.args(["list", "--quiet", "--label", "labby.owner=codemode"])
-        .env_clear()
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    matches!(
-        run_helper(list, Duration::from_secs(2)).await,
-        Ok(output)
-            if output.status.success()
-                && !String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .any(|name| name.trim() == identity.name)
-    )
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;

@@ -698,6 +698,69 @@ async fn gateway_status_rejects_route_hidden_explicit_upstream() {
 }
 
 #[tokio::test]
+async fn gateway_list_only_returns_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.list",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect("scoped list succeeds");
+
+    let rows = result.as_array().expect("gateway rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], json!("github"));
+}
+
+#[tokio::test]
+async fn gateway_get_rejects_route_hidden_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.get",
+        json!({"name": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
 async fn gateway_status_aggregate_only_returns_route_visible_upstreams() {
     let manager = test_manager();
     manager

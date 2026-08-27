@@ -147,16 +147,11 @@ impl UpstreamPool {
         upstream_name: &str,
         capability: UpstreamCapability,
     ) {
-        let mut catalog = self.catalog_metadata_write().await;
+        let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
-            let tool_routes_changed =
-                capability == UpstreamCapability::Tools && !entry.tool_health.is_routable();
             entry.set_health_for(capability, UpstreamHealth::Healthy);
             entry.set_unhealthy_since_for(capability, None);
             entry.set_last_error_for(capability, None);
-            if tool_routes_changed {
-                catalog.mark_tool_projection_dirty();
-            }
         }
     }
 

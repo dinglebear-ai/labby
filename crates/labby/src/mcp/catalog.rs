@@ -201,10 +201,16 @@ impl LabMcpServer {
                 code_mode_read_allowed: code_mode_read_scope_allowed(auth),
                 code_mode_execute_allowed: tool_execute_scope_allowed(auth),
                 admin_apps_visible: admin_app_resources_visible(auth),
+                #[cfg(feature = "skills")]
                 skill_library_management_visible: self
                     .skill_library_http_management_visible(context),
+                #[cfg(not(feature = "skills"))]
+                skill_library_management_visible: false,
+                #[cfg(feature = "skills")]
                 skill_library_app_visible: self.skill_library_http_management_visible(context)
                     && code_mode_read_scope_allowed(auth),
+                #[cfg(not(feature = "skills"))]
+                skill_library_app_visible: false,
                 oauth_subject: oauth_upstream_subject_for_request(
                     auth,
                     self.request_subject(context),

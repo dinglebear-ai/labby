@@ -54,6 +54,8 @@ pub(crate) enum ResourceReadResolutionError {
     Upstream,
     #[error("resource read timed out")]
     Timeout,
+    #[error("resource read was cancelled")]
+    Cancelled,
     #[error("resource response is too large")]
     TooLarge,
 }
@@ -151,6 +153,7 @@ pub(crate) async fn read_exact_project_resource(
         }
         PublishedResourceReadError::Upstream => ResourceReadResolutionError::Upstream,
         PublishedResourceReadError::Timeout => ResourceReadResolutionError::Timeout,
+        PublishedResourceReadError::Cancelled => ResourceReadResolutionError::Cancelled,
         PublishedResourceReadError::TooLarge => ResourceReadResolutionError::TooLarge,
     })
 }

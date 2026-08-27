@@ -390,10 +390,12 @@ impl FirstPartyGenerationManager {
         let swap_started = Instant::now();
         let published = if changed {
             self.current.store(Arc::clone(&candidate));
-            self.live_generations
+            let mut live_generations = self
+                .live_generations
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(Arc::downgrade(&candidate));
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            live_generations.retain(|generation| generation.strong_count() > 0);
+            live_generations.push(Arc::downgrade(&candidate));
             candidate
         } else {
             old

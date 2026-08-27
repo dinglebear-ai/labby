@@ -356,11 +356,6 @@ impl PeerContract {
         }
     }
 
-    #[cfg(feature = "gateway")]
-    pub(crate) async fn mcp_apps_config(&self) -> labby_runtime::gateway_config::McpAppsConfig {
-        mcp_apps_config(self.gateway_manager.as_deref()).await
-    }
-
     /// Resolve the finite non-OAuth upstream set named by a protected route
     /// before building that route's raw tool contract.
     ///

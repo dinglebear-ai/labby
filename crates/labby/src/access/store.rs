@@ -1,12 +1,17 @@
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rusqlite::TransactionBehavior;
 #[cfg(test)]
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 
-use super::authorization::{AuthorizeProjectInput, ProjectPermissionSnapshot};
+use super::authorization::{
+    AuthorizeProjectInput, LibraryAccessSnapshot, ProjectPermissionSnapshot,
+};
 use super::bootstrap::{BootstrapOutcome, BootstrapOwnerInput, bootstrap_owner};
 use super::error::{AccessStoreError, AccessStoreResult};
 use super::loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
@@ -16,7 +21,10 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 pub(crate) struct AccessStore {
     connection: Arc<Mutex<Connection>>,
+    connection_admission: Arc<tokio::sync::Semaphore>,
     path: Arc<PathBuf>,
+    #[cfg(test)]
+    skill_library_authorizations: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for AccessStore {
@@ -36,7 +44,10 @@ impl AccessStore {
             .map_err(|error| AccessStoreError::Unavailable(error.to_string()))??;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            connection_admission: Arc::new(tokio::sync::Semaphore::new(1)),
             path: Arc::new(path),
+            #[cfg(test)]
+            skill_library_authorizations: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -50,7 +61,10 @@ impl AccessStore {
                 .map_err(|error| AccessStoreError::Unavailable(error.to_string()))??;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            connection_admission: Arc::new(tokio::sync::Semaphore::new(1)),
             path: Arc::new(path),
+            #[cfg(test)]
+            skill_library_authorizations: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -59,8 +73,16 @@ impl AccessStore {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> AccessStoreResult<T> + Send + 'static,
     {
+        // Admit only work that can immediately own the single SQLite connection.
+        // Otherwise every concurrent caller occupies a blocking-pool worker while
+        // waiting on the std mutex, which can starve unrelated blocking work.
+        let permit = Arc::clone(&self.connection_admission)
+            .acquire_owned()
+            .await
+            .map_err(|_| AccessStoreError::Unavailable("connection admission closed".into()))?;
         let connection = Arc::clone(&self.connection);
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             let mut connection = connection
                 .lock()
                 .map_err(|_| AccessStoreError::Unavailable("connection mutex poisoned".into()))?;
@@ -115,6 +137,59 @@ impl AccessStore {
             .await
     }
 
+    pub(crate) async fn authorize_skill_library(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+        permission: super::domain::Permission,
+    ) -> AccessStoreResult<LibraryAccessSnapshot> {
+        #[cfg(test)]
+        self.skill_library_authorizations
+            .fetch_add(1, Ordering::Relaxed);
+        self.with_connection(move |connection| {
+            super::authorization::authorize_library(connection, &identity, &project_id, permission)
+        })
+        .await
+    }
+
+    /// Holds SQLite's writer reservation from the current membership read through one
+    /// synchronous library commit, linearizing that commit with membership revocation.
+    pub(crate) async fn authorize_skill_library_and_execute<T, E>(
+        &self,
+        identity: labby_auth::VerifiedIdentity,
+        project_id: String,
+        permission: super::domain::Permission,
+        executor: impl FnOnce(LibraryAccessSnapshot) -> Result<T, E> + Send + 'static,
+    ) -> AccessStoreResult<Result<T, E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        #[cfg(test)]
+        self.skill_library_authorizations
+            .fetch_add(1, Ordering::Relaxed);
+        self.with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let snapshot = super::authorization::authorize_library_in_transaction(
+                &transaction,
+                &identity,
+                &project_id,
+                permission,
+            )?;
+            let result = executor(snapshot);
+            drop(transaction);
+            Ok(result)
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skill_library_authorization_count_for_test(&self) -> usize {
+        self.skill_library_authorizations.load(Ordering::Relaxed)
+    }
+
     pub(crate) async fn authorize_project_management_without_loadout(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -131,7 +206,7 @@ impl AccessStore {
     }
 
     #[cfg(test)]
-    pub(super) async fn seed_loadout_roles_for_test(&self) -> AccessStoreResult<()> {
+    pub(crate) async fn seed_loadout_roles_for_test(&self) -> AccessStoreResult<()> {
         self.execute_test_statement(
             "INSERT INTO principals VALUES
                ('admin-principal','bootstrap-local','user','active',NULL,2,2),
@@ -293,7 +368,7 @@ fn open_connection(path: &Path) -> AccessStoreResult<Connection> {
     validate_store_file(path)?;
     validate_sidecars(path)?;
     let validation = connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+        .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(map_sqlite_error)?;
     super::integrity::validate(&validation)?;
     validation.commit().map_err(map_sqlite_error)?;
@@ -347,7 +422,7 @@ fn open_existing_current_connection(path: &Path) -> AccessStoreResult<Connection
         });
     }
     let transaction = connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)
+        .transaction_with_behavior(TransactionBehavior::Deferred)
         .map_err(map_sqlite_error)?;
     let version = transaction
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))

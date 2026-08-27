@@ -1,9 +1,9 @@
 use labby_auth::VerifiedIdentity;
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 use super::domain::{Permission, ProjectRole};
 use super::error::{AccessStoreError, AccessStoreResult};
-use super::read::select_project_in_transaction;
+use super::read::{select_project_in_transaction, select_project_membership_in_transaction};
 use super::store::map_sqlite_error;
 
 /// Exact request facts for one Project-scoped authorization decision.
@@ -45,6 +45,16 @@ pub(crate) struct ProjectPermissionSnapshot {
     pub(crate) global_revision: u64,
 }
 
+/// One exact current membership snapshot for Labby-owned library policy.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct LibraryAccessSnapshot {
+    pub(crate) principal_id: String,
+    pub(crate) organization_id: String,
+    pub(crate) project_id: String,
+    pub(crate) role: ProjectRole,
+    pub(crate) global_revision: u64,
+}
+
 pub(super) fn authorize(
     connection: &mut Connection,
     input: &AuthorizeProjectInput,
@@ -68,6 +78,42 @@ pub(super) fn authorize(
         global_revision: selected.global_revision,
     };
     transaction.commit().map_err(map_sqlite_error)?;
+    Ok(snapshot)
+}
+
+pub(super) fn authorize_library(
+    connection: &mut Connection,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+    permission: Permission,
+) -> AccessStoreResult<LibraryAccessSnapshot> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    let snapshot =
+        authorize_library_in_transaction(&transaction, identity, project_id, permission)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(snapshot)
+}
+
+pub(super) fn authorize_library_in_transaction(
+    transaction: &Transaction<'_>,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+    permission: Permission,
+) -> AccessStoreResult<LibraryAccessSnapshot> {
+    let selected = select_project_membership_in_transaction(&transaction, identity, project_id)
+        .map_err(collapse_denial)?;
+    if !selected.role.permissions().contains(&permission) {
+        return Err(AccessStoreError::NotAuthorized);
+    }
+    let snapshot = LibraryAccessSnapshot {
+        principal_id: selected.principal_id,
+        organization_id: selected.organization_id,
+        project_id: selected.project_id,
+        role: selected.role,
+        global_revision: selected.global_revision,
+    };
     Ok(snapshot)
 }
 

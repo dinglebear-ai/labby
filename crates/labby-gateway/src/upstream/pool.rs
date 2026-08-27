@@ -34,6 +34,7 @@ mod cache_repair;
 mod capability;
 mod capability_call;
 mod catalog_pagination;
+mod catalog_publication;
 mod checked_call;
 mod completion;
 mod connect;
@@ -77,6 +78,7 @@ mod resources_exposure_tests;
 mod resources_list;
 mod resources_read;
 mod skills;
+mod skills_exposure;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills::OperatorSkillRejection;
 #[cfg(feature = "skills")]
@@ -108,6 +110,17 @@ mod usage_record;
 mod validate;
 
 pub use capability_call::CapabilityCallError;
+pub use catalog_publication::{
+    PromptCatalogGeneration, ResourceCatalogGeneration, ResourceTemplateCatalogGeneration,
+    ToolCatalogGeneration,
+};
+pub(crate) use catalog_publication::{
+    PromptCatalogPublicationError, PublishedPromptCatalogSnapshot, PublishedPromptRoute,
+    PublishedResourceCatalogSnapshot, PublishedResourceRoute,
+    PublishedResourceTemplateCatalogSnapshot, PublishedResourceTemplateRoute,
+    PublishedToolCatalogSnapshot, PublishedToolRoute, ResourceCatalogPublicationError,
+    ResourceTemplateCatalogPublicationError, ToolCatalogPublicationError,
+};
 pub(crate) use checked_call::CheckedToolCallError;
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
@@ -130,6 +143,7 @@ pub use tools::{
     MAX_UPSTREAM_TOOLS, tool_is_mcp_app_host_visible_for_config,
     upstream_has_mcp_app_ui_owner_for_config,
 };
+pub(crate) use tools_call_exact::ExactToolCallError;
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
 
@@ -250,8 +264,9 @@ pub struct UpstreamPool {
     /// Live client connections, keyed by upstream name.
     /// Each is an `Arc<Peer<RoleClient>>` that can `call_tool` / `list_tools`.
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
-    /// Linearizes generic connection/catalog-entry identity publication.
-    connection_catalog_binding: Arc<Mutex<()>>,
+    /// Linearizes generic connection/catalog-entry identity publication while allowing
+    /// concurrent, consistent routing observations.
+    connection_catalog_binding: Arc<RwLock<()>>,
     /// OAuth subject provenance for entries in the generic connection map.
     /// Absence means the generic peer was connected without upstream OAuth.
     generic_oauth_subjects: Arc<RwLock<HashMap<String, String>>>,
@@ -536,9 +551,9 @@ impl UpstreamPool {
         Self {
             revision: NEXT_POOL_REVISION.fetch_add(1, Ordering::Relaxed),
             invocation_barrier: Arc::new(RwLock::new(())),
-            catalog: Arc::new(RwLock::new(HashMap::new())),
+            catalog: Arc::new(RwLock::new(catalog_publication::CatalogState::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
-            connection_catalog_binding: Arc::new(Mutex::new(())),
+            connection_catalog_binding: Arc::new(RwLock::new(())),
             generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,

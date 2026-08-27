@@ -810,7 +810,7 @@ async fn code_mode_mcp_ui_setting_persists_notifies_and_skips_pool_rebuild() {
     let updated = manager
         .set_code_mode_config(
             CodeModeConfig {
-                mcp_ui_enabled: false,
+                mcp_ui_enabled: true,
                 ..CodeModeConfig::default()
             },
             Some(labby_runtime::catalog_notify::SOURCE_MCP_CALL_MCP_APP),
@@ -819,8 +819,8 @@ async fn code_mode_mcp_ui_setting_persists_notifies_and_skips_pool_rebuild() {
         .await
         .expect("persist Code Mode MCP UI setting");
 
-    assert!(!updated.mcp_ui_enabled);
-    assert!(!manager.code_mode_app_state().is_enabled());
+    assert!(updated.mcp_ui_enabled);
+    assert!(manager.code_mode_app_state().is_enabled());
     assert!(
         runtime.current_pool().await.is_none(),
         "a UI-only setting must not create or rebuild the upstream pool"
@@ -842,11 +842,11 @@ async fn code_mode_mcp_ui_setting_persists_notifies_and_skips_pool_rebuild() {
     );
 
     let persisted = load_gateway_config(&path).expect("load persisted config");
-    assert!(!persisted.code_mode.mcp_ui_enabled);
+    assert!(persisted.code_mode.mcp_ui_enabled);
 
     let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
     restarted.seed_config_unchecked_for_tests(persisted).await;
-    assert!(!restarted.code_mode_app_state().is_enabled());
+    assert!(restarted.code_mode_app_state().is_enabled());
 }
 
 #[tokio::test]

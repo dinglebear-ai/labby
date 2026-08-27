@@ -2713,6 +2713,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gateway")]
     #[tokio::test]
     async fn stateless_http_fresh_tools_list_observes_code_mode_app_state_changes() {
         async fn listed_tool_names(app: axum::Router) -> Vec<String> {

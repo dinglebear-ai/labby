@@ -1166,6 +1166,7 @@ async fn palette_execute_rejects_cross_upstream_scope_and_destructive_reclassifi
                 "gateway:alpha".to_string(),
             ],
             trusted_local: false,
+            private_context_token: None,
         },
         scope: ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new()),
         owner: crate::gateway::shared::make_api_runtime_owner(Some("alice"), Some("req-scope")),

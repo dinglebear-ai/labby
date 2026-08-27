@@ -124,22 +124,22 @@ impl LabMcpServer {
             "dispatch start"
         );
         #[cfg(feature = "gateway")]
-        let project_listing =
-            match project_execution_binding(&context.extensions, SystemTime::now()) {
-                ProjectExecutionBinding::Legacy => ProjectDiscoveryShadow::Legacy,
-                ProjectExecutionBinding::Unavailable => {
-                    return Ok(self.unavailable_project_tool_list(&context, start).await);
-                }
-                ProjectExecutionBinding::Bound { transport, .. } => {
-                    ProjectDiscoveryShadow::Bound(transport)
-                }
-            };
+        let project_shadow = match project_execution_binding(&context.extensions, SystemTime::now())
+        {
+            ProjectExecutionBinding::Legacy => ProjectDiscoveryShadow::Legacy,
+            ProjectExecutionBinding::Unavailable => {
+                return Ok(self.unavailable_project_tool_list(&context, start).await);
+            }
+            ProjectExecutionBinding::Bound { transport, .. } => {
+                ProjectDiscoveryShadow::Bound(transport)
+            }
+        };
         #[cfg(feature = "gateway")]
-        let project_cursor_binding = match &project_listing {
+        let project_cursor_binding = match &project_shadow {
             ProjectDiscoveryShadow::Legacy => None,
             ProjectDiscoveryShadow::Unavailable => unreachable!("unavailable returned above"),
             ProjectDiscoveryShadow::Bound(_) => {
-                let Some(binding) = project_listing.cursor_binding_fingerprint(SystemTime::now())
+                let Some(binding) = project_shadow.cursor_binding_fingerprint(SystemTime::now())
                 else {
                     return Ok(self.unavailable_project_tool_list(&context, start).await);
                 };

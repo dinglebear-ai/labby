@@ -188,7 +188,7 @@ async fn connect_in_process_service_peer(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "skills"))]
 mod skill_generation_tests {
     use crate::skills::facade::SkillRegistryContext;
     use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};

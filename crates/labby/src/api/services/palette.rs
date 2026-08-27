@@ -13,7 +13,7 @@ use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -98,7 +98,7 @@ async fn compact_palette_catalog(
     {
         let mut cached = cache.lock().await;
         let now = Instant::now();
-        cached.retain(|entry| entry.expires_at > now);
+        cached.retain(|entry| entry.expires_at > now && entry.manager.upgrade().is_some());
         if let Some(position) = cached.iter().position(|entry| entry.key == cache_key)
             && let Some(entry) = cached.remove(position)
         {
@@ -119,6 +119,7 @@ async fn compact_palette_catalog(
         cached.pop_front();
     }
     cached.push_back(CachedPaletteCatalog {
+        manager: Arc::downgrade(&manager),
         key: cache_key,
         expires_at: Instant::now() + PALETTE_CATALOG_CACHE_TTL,
         catalog: catalog.clone(),

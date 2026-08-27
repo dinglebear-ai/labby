@@ -8,9 +8,10 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use super::requirements::SkillRequirementsSummary;
 use super::{
     SkillAvailabilitySummary, SkillCompatibilityClassification, SkillCompatibilityItem,
-    SkillRequirementsSummary, ValidatedSkill,
+    ValidatedSkill,
 };
 
 /// The provider family responsible for discovering and reading a Skill.

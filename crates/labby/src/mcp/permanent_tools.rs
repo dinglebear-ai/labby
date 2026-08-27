@@ -489,7 +489,10 @@ impl PermanentToolRegistry {
 mod tests {
     #[cfg(feature = "gateway")]
     use super::is_reserved_non_upstream_tool_name;
-    use super::{PermanentToolId, PermanentToolRegistry, dispatch_envelope_output_schema};
+    use super::{
+        PermanentToolId, PermanentToolRegistry, SkillLibraryDescriptorMode,
+        dispatch_envelope_output_schema,
+    };
     #[cfg(feature = "gateway")]
     use crate::mcp::call_tool_codemode::CODE_MODE_DESCRIPTION_MAX_BYTES;
     #[cfg(feature = "gateway")]
