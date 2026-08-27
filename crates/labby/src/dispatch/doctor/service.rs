@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::types::Finding;
 use crate::dispatch::clients::ServiceClients;
 
-/// Run the local portion of `audit.full`: system and auth checks.
+/// Run the local portion of `audit.full`: system, auth, and access-store checks.
 pub async fn stream_audit_full(
     _clients: Arc<ServiceClients>,
     tx: tokio::sync::mpsc::Sender<Finding>,
@@ -21,6 +21,11 @@ pub async fn stream_audit_full(
         }
     }
     for finding in super::system::run_auth_checks() {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+    for finding in super::access::check_access_store().await.findings {
         if tx.send(finding).await.is_err() {
             return;
         }

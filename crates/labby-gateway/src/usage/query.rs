@@ -11,6 +11,11 @@ pub const DEFAULT_CALLS_LIMIT: usize = 100;
 pub const MAX_CALLS_LIMIT: usize = 1000;
 /// Max buckets returned by one aggregate metrics query.
 pub const MAX_METRICS_BUCKETS: usize = 168;
+/// Maximum rows an exact aggregate request may inspect. Callers can narrow the
+/// time window or add filters when a deployment retains more telemetry.
+pub const MAX_METRICS_MATCHING_ROWS: i64 = 250_000;
+/// Maximum values returned for each optional filter facet.
+pub const MAX_METRICS_FACETS: i64 = 1_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct UsageMetricsQuery {
@@ -18,6 +23,9 @@ pub struct UsageMetricsQuery {
     pub until_unix: Option<i64>,
     pub upstream: Option<String>,
     pub tool: Option<String>,
+    pub capability: Option<String>,
+    pub operation: Option<String>,
+    pub subject_scoped: Option<bool>,
     pub actor: Option<String>,
     pub outcome: Option<String>,
     pub search: Option<String>,
@@ -39,6 +47,9 @@ pub struct UsageCallsQuery {
     pub until_unix: Option<i64>,
     pub upstream: Option<String>,
     pub tool: Option<String>,
+    pub capability: Option<String>,
+    pub operation: Option<String>,
+    pub subject_scoped: Option<bool>,
     pub actor: Option<String>,
     pub outcome: Option<String>,
     pub search: Option<String>,
@@ -90,6 +101,9 @@ pub struct UsageUpstreamCount {
 pub struct UsageLatencyStat {
     pub upstream: String,
     pub tool: String,
+    pub capability: String,
+    pub operation: String,
+    pub subject_scoped: bool,
     pub avg_elapsed_ms: f64,
 }
 
@@ -115,6 +129,9 @@ pub struct UsageToolFacet {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UsageFacets {
     pub tools: Vec<UsageToolFacet>,
+    pub capabilities: Vec<String>,
+    pub operations: Vec<String>,
+    pub subject_scopes: Vec<bool>,
     pub actors: Vec<String>,
     pub upstreams: Vec<String>,
     pub outcomes: Vec<String>,

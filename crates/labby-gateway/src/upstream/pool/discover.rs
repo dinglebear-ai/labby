@@ -19,7 +19,8 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use crate::registry::InProcessServiceRegistry;
 
 use super::super::types::{
-    ToolExposurePolicy, UpstreamCapability, UpstreamEntry, UpstreamHealth, UpstreamTool,
+    SkillExposurePolicy, ToolExposurePolicy, UpstreamCapability, UpstreamEntry, UpstreamHealth,
+    UpstreamTool,
 };
 use super::UpstreamPool;
 use super::capability::discover_capability_counts;
@@ -402,9 +403,20 @@ impl UpstreamPool {
                         skill_last_error: None,
                     };
 
-                    self.catalog.write().await.insert(name.clone(), entry);
-                    self.connections.write().await.insert(name.clone(), conn);
-                    subscription_refreshes.push(name);
+                    match self
+                        .install_connection_catalog_entry(name.clone(), conn, entry)
+                        .await
+                    {
+                        Ok(previous) => {
+                            if let Some(previous) = previous {
+                                previous.shutdown(&name, "upstream.discovery.replace").await;
+                            }
+                            subscription_refreshes.push(name);
+                        }
+                        Err(error) => {
+                            tracing::error!(upstream = %name, error = %error, "upstream identity publication failed");
+                        }
+                    }
                 }
                 Err((name, error_message)) => {
                     let entry = UpstreamEntry {
@@ -413,7 +425,7 @@ impl UpstreamPool {
                         exposure_policy: ToolExposurePolicy::All,
                         resource_exposure_policy: ToolExposurePolicy::All,
                         prompt_exposure_policy: ToolExposurePolicy::All,
-                        skill_exposure_policy: ToolExposurePolicy::All,
+                        skill_exposure_policy: SkillExposurePolicy::all(),
                         proxy_skills: false,
                         supports_skills: None,
                         proxy_resources: true,
@@ -444,7 +456,14 @@ impl UpstreamPool {
                         resource_last_error: Some(error_message),
                         skill_last_error: None,
                     };
-                    self.catalog.write().await.insert(name, entry);
+                    if let Some(connection) = self
+                        .install_catalog_entry_without_connection(name.clone(), entry)
+                        .await
+                    {
+                        connection
+                            .shutdown(&name, "upstream.discovery.failure")
+                            .await;
+                    }
                 }
             }
         }

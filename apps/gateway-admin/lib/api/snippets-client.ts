@@ -6,6 +6,7 @@ import type {
   ResolvedSnippet,
   SnippetInfo,
   SnippetListResponse,
+  SnippetRemoveResult,
   SnippetTestResult,
   SnippetValidation,
 } from '@/lib/types/snippets'
@@ -71,5 +72,9 @@ export const snippetsApi = {
     signal?: AbortSignal,
   ): Promise<CodeModeExecutionResponse> {
     return snippetsAction<CodeModeExecutionResponse>('snippets.exec', { name, params }, signal)
+  },
+
+  remove(name: string, signal?: AbortSignal): Promise<SnippetRemoveResult> {
+    return snippetsAction<SnippetRemoveResult>('snippets.remove', { name }, signal)
   },
 }

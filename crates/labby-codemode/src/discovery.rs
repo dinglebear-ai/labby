@@ -82,14 +82,6 @@ pub fn search_visible_tools(
 ) -> Result<CodeModeSearchResponse, ToolError> {
     validate_bytes("query", query, QUERY_MAX_BYTES)?;
     let tokens = tokens(query);
-    if tokens.is_empty() {
-        return Ok(CodeModeSearchResponse {
-            results: Vec::new(),
-            total: 0,
-            truncated: false,
-            hint: Some("No matches. Broaden the query or try synonyms."),
-        });
-    }
     let limit = limit.clamp(1, 50);
     let mut candidates = Vec::with_capacity(limit);
     let mut total = 0_usize;

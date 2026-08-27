@@ -33,6 +33,7 @@ enabled = true
 trace_params = true
 result_shape_policy = "off"      # off | truncate
 timeout_ms = 30000
+max_source_bytes = 131072
 max_response_bytes = 24576
 max_response_tokens = 6000
 token_estimate_divisor = 4

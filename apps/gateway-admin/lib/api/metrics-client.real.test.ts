@@ -47,7 +47,10 @@ test('fetchDashboardMetrics uses complete-window aggregate analytics without raw
       ? metrics({ window_total_calls: 48_649, total_calls: 48_649, error_calls: 12, timeseries: Array.from({ length: 24 }, (_, index) => ({ ts_unix: 1_800_000_000 + index * 3600, calls: index === 0 ? 4_000 : index === 23 ? 1_000 : 0, failed: 0 })) })
       : {
           kind: 'server_logs',
-          entries: [{ timestamp: new Date(Date.now() - 1000).toISOString(), level: 'INFO', target: 'labby', message: 'dispatch ok', service: 'gateway', action: 'gateway.list', kind: null, file: 'labby.jsonl', fields: { surface: 'api', input_tokens: 10, output_tokens: 20 } }],
+          // Keep the fixture comfortably inside the 24-hour window. A one-second
+          // offset can cross the fetcher's captured `now` under a heavily loaded
+          // CI runner, causing a valid entry to be discarded as future-dated.
+          entries: [{ timestamp: new Date(Date.now() - 60_000).toISOString(), level: 'INFO', target: 'labby', message: 'dispatch ok', service: 'gateway', action: 'gateway.list', kind: null, file: 'labby.jsonl', fields: { surface: 'api', input_tokens: 10, output_tokens: 20 } }],
           matched: 1, scanned_lines: 1, malformed_lines: 0, scanned_bytes: 100, max_scan_bytes: 1000, truncated: false,
         }
     return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -107,27 +110,36 @@ test('fetchToolCalls sends exact filters and cursor to the backend', async () =>
     requests.push(body)
     const payload = body.action === 'gateway.usage.metrics'
       ? metrics({ window_total_calls: 5_000, total_calls: 73, error_calls: 73 })
-      : { calls: [{ ts_unix: 1_800_000_001, upstream: 'github', tool: 'create', actor: 'codex', outcome: 'timeout', elapsed_ms: 5 }], total_matching: 73, next_cursor: 'next-cursor' }
+      : { calls: [{ ts_unix: 1_800_000_001, upstream: 'github', tool: 'create', capability: 'resources', operation: 'resource.read', subject_scoped: true, actor: 'codex', outcome: 'timeout', elapsed_ms: 5 }], total_matching: 73, next_cursor: 'next-cursor' }
     return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })
   }
 
   try {
     const { fetchToolCalls } = await import('./metrics-client.ts')
-    const page = await fetchToolCalls({ window: '24h', upstream: 'github', tool: 'github::create', agent: 'codex', outcome: 'failed', error_kind: 'timeout', search: 'create', cursor: 'prev-cursor', limit: 50 })
+    const page = await fetchToolCalls({ window: '24h', upstream: 'github', tool: 'github::create', capability: 'resources', operation: 'resource.read', subject_scoped: true, agent: 'codex', outcome: 'failed', error_kind: 'timeout', search: 'create', cursor: 'prev-cursor', limit: 50 })
     const aggregate = requests.find((request) => request.action === 'gateway.usage.metrics')?.params
     const calls = requests.find((request) => request.action === 'gateway.usage.calls')?.params
     assert.equal(aggregate?.upstream, 'github')
     assert.equal(aggregate?.tool, 'github::create')
+    assert.equal(aggregate?.capability, 'resources')
+    assert.equal(aggregate?.operation, 'resource.read')
+    assert.equal(aggregate?.subject_scoped, true)
     assert.equal(aggregate?.actor, 'codex')
     assert.equal(aggregate?.outcome, 'timeout')
     assert.equal(aggregate?.search, 'create')
     assert.equal(aggregate?.include_facets, true)
     assert.equal(calls?.cursor, 'prev-cursor')
+    assert.equal(calls?.capability, 'resources')
+    assert.equal(calls?.operation, 'resource.read')
+    assert.equal(calls?.subject_scoped, true)
     assert.equal(calls?.limit, 50)
     assert.equal(page.total, 5_000)
     assert.equal(page.filtered, 73)
     assert.equal(page.next_cursor, 'next-cursor')
     assert.equal(page.calls[0].error_kind, 'timeout')
+    assert.equal(page.calls[0].capability, 'resources')
+    assert.equal(page.calls[0].action, 'resource.read')
+    assert.equal(page.calls[0].subject_scoped, true)
     assert.equal(page.analytics.failed, 73)
   } finally {
     globalThis.fetch = originalFetch

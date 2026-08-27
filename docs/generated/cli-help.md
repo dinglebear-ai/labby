@@ -22,7 +22,7 @@ Commands:
   completions  Generate shell completions
   gateway      Manage proxied upstream MCP gateways
   snippets     Manage executable Code Mode snippets
-  skills       Discover and read Agent Skills through the compatibility surface
+  skills       Read Agent Skills visible to the local CLI
   oauth        Run local OAuth callback relay helpers
   proxy        Proxy a stdio MCP server to Streamable HTTP
   help         Print this message or the help of the given subcommand(s)
@@ -2026,6 +2026,9 @@ Options:
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
 
+      --project-id <PROJECT_ID>
+          Bind this gateway subset to an access-control project
+
       --loadout <LOADOUT>
           Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
 
@@ -2092,6 +2095,12 @@ Options:
 
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
+
+      --project-id <PROJECT_ID>
+          Bind this gateway subset to an access-control project
+
+      --clear-project-id
+          Explicitly remove the existing access-control project binding
 
       --loadout <LOADOUT>
           Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
@@ -2183,6 +2192,9 @@ Options:
 
       --gateway-subset
           Expose a scoped Lab gateway MCP surface instead of proxying one backend
+
+      --project-id <PROJECT_ID>
+          Bind this gateway subset to an access-control project
 
       --loadout <LOADOUT>
           Reuse a named Loadout for this gateway subset. Cannot be combined with inline target fields
@@ -2476,6 +2488,7 @@ Commands:
   list     List upstream MCP runtime state, discovery counts, and likely stale process counts
   enable   Enable an upstream MCP server so new sessions discover and proxy it again
   disable  Disable an upstream MCP server and optionally clean up running processes
+  restart  Replace one enabled upstream MCP connection and clean up stale runtime processes
   cleanup  Kill or preview running processes associated with one upstream MCP server
   help     Print this message or the help of the given subcommand(s)
 
@@ -2770,6 +2783,34 @@ Options:
 
       --aggressive
 
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby gateway mcp restart`
+
+```text
+Replace one enabled upstream MCP connection and clean up stale runtime processes
+
+Usage: restart [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+          Name of the enabled upstream MCP server to reconnect
+
+Options:
+      --aggressive
+          Use broader host-wide process matching when cleaning up the old runtime
+
+      --json
+          Emit JSON instead of human-readable tables
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -3631,6 +3672,17 @@ Options:
       --tool <TOOL>
           Restrict to one qualified upstream::tool target
 
+      --capability <CAPABILITY>
+          Restrict to one capability family
+
+      --operation <OPERATION>
+          Restrict to one operation name
+
+      --subject-scoped <SUBJECT_SCOPED>
+          Restrict by OAuth subject scoping (`true` or `false`)
+
+          [possible values: true, false]
+
       --actor <ACTOR>
           Restrict to one actor subject
 
@@ -3647,10 +3699,10 @@ Options:
           IANA zone name for DST-correct local-hour aggregation
 
       --timezone-offset-minutes <TIMEZONE_OFFSET_MINUTES>
-          Minutes east of UTC fallback when --timezone is omitted
+          Minutes east of UTC fallback when --timezone is omitted (-1440 to 1440)
 
       --include-facets
-          Include stable window-wide filter facets
+          Include stable facets; errors if any facet exceeds 1000 values
 
   -h, --help
           Print help
@@ -3684,6 +3736,17 @@ Options:
 
       --tool <TOOL>
           Restrict to one qualified upstream::tool target
+
+      --capability <CAPABILITY>
+          Restrict to one capability family
+
+      --operation <OPERATION>
+          Restrict to one operation name
+
+      --subject-scoped <SUBJECT_SCOPED>
+          Restrict by OAuth subject scoping (`true` or `false`)
+
+          [possible values: true, false]
 
       --actor <ACTOR>
           Restrict to one actor subject
@@ -3987,7 +4050,7 @@ Arguments:
 ## `labby skills`
 
 ```text
-Discover and read Agent Skills through the compatibility surface
+Read Agent Skills visible to the local CLI. Artifact-backed shared and private Skills are not available on this surface; use an authenticated HTTP or MCP client instead.
 
 Usage: skills [OPTIONS] <COMMAND>
 
@@ -4009,7 +4072,7 @@ Options:
           [possible values: auto, plain, color]
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `labby skills list`

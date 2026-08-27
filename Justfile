@@ -21,6 +21,7 @@ docs-generate:
 docs-check:
     cargo run --package labby --bin labby --all-features -- docs check
     python3 scripts/check-doc-links.py
+    python3 scripts/check-product-docs.py
 
 # Build strict Rustdoc for the complete workspace target surface.
 rustdoc:
@@ -63,7 +64,7 @@ lint: skill-drift rust-toolchain-sync
 
 # Verify Cargo, rust-toolchain, CI, container, and active docs agree on the MSRV.
 rust-toolchain-sync:
-    scripts/check-rust-toolchain-sync.sh
+    bash scripts/check-rust-toolchain-sync.sh
 
 # Check hand-authored skills for known stale or unsafe patterns
 skill-drift:

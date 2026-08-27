@@ -100,6 +100,10 @@ jobs:
             runner: '"windows-latest"'
             binary: labby.exe
             archive: lab-x86_64-pc-windows-msvc.zip
+          - target: aarch64-apple-darwin
+            runner: '"macos-15"'
+            binary: labby
+            archive: lab-aarch64-apple-darwin.tar.gz
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -111,6 +115,8 @@ jobs:
       - name: Install Rust and kache
         if: runner.os != 'Windows'
         uses: ./.github/actions/setup-rust-kache
+        with:
+          targets: ${{ matrix.target }}
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         if: runner.os == 'Windows'
         with:
@@ -133,7 +139,11 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.binary }}"
           tar -C dist -czf "${{ matrix.archive }}" "${{ matrix.binary }}"
-          sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
+          fi
 
       - name: Smoke packaged Code Mode runner (Unix)
         if: runner.os != 'Windows'

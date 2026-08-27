@@ -1,7 +1,7 @@
 ---
 title: "Operations"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-18"
 ---
 
 # Operations
@@ -10,51 +10,18 @@ This document covers operator-facing workflows, verification surfaces, CI, and r
 
 ## Repo-Level Helpers
 
-The repo includes helper tooling outside the shipped binary.
+The Justfile is the source of truth for repo-local operator/developer helpers. High-value current helpers include:
 
-### `bin/health-check`
+- `just mcp-token` — generate or rotate `LABBY_MCP_HTTP_TOKEN` and update the env file safely
+- `just docs-check` — verify code-generated documentation remains fresh
+- `just validate-plugin` — validate the checked-in Labby plugin setup lifecycle against a temporary `LABBY_HOME`
+- `just host-sync` — rebuild/reinstall/restart the source checkout on the supported system-container host path
 
-Purpose:
-
-- smoke-test configured services from the repo env file
-- validate reachability quickly
-- provide operator-friendly shell output
-
-It is distinct from the product-level `labby health` surface.
-
-It is intended as a repo-local smoke test, not as the canonical SDK-level health API.
-
-### `scripts/check-oauth.sh`
-
-Purpose:
-
-- verify OAuth/auth configuration against a **running server** from outside the process
-- confirm all protected endpoints return 401 without auth and accept valid tokens
-- validate OAuth discovery metadata, issuer, JWKS, and RFC 9728 WWW-Authenticate header
-- confirm public endpoints (health, node self-registration, OAuth callbacks) are not auth-blocked
-
-Usage:
-
-```bash
-./scripts/check-oauth.sh                          # auto-loads ~/.labby/.env, defaults to localhost:8080
-./scripts/check-oauth.sh https://lab.example.com  # explicit URL
-LABBY_BASE_URL=https://lab.example.com ./scripts/check-oauth.sh
-```
-
-Exit codes: `0` = pass, `1` = one or more failures. Suitable for post-deploy CI gates.
-
-Complements `labby doctor`, which checks internal state (config, file permissions, SQLite) before a server is running. `scripts/check-oauth.sh` is the external black-box probe; `labby doctor` is the internal pre-flight check.
-
-### `just mcp-token`
-
-Purpose:
-
-- generate or rotate `LABBY_MCP_HTTP_TOKEN`
-- update the env file safely
+For health/auth verification, use the shipped `labby health` and `labby doctor ...` commands plus focused integration tests. The repository does not currently ship `bin/health-check` or `scripts/check-oauth.sh`; do not document them as supported operator interfaces.
 
 ## OAuth Auth State
 
-When `LABBY_AUTH_MODE=oauth`, `lab` persists local auth state on disk:
+When `LABBY_AUTH_MODE=oauth`, Labby persists local auth state on disk:
 
 - SQLite database: `~/.labby/auth.db` by default
 - JWT signing key: `~/.labby/auth-jwt.pem` by default
@@ -66,15 +33,15 @@ When `LABBY_AUTH_MODE=oauth`, `lab` persists local auth state on disk:
 Rules:
 
 - `LABBY_AUTH_ADMIN_EMAIL` must be set to the bootstrap admin's Google email; startup fails closed if it is missing so no Google account can authenticate without explicit permission
-- both files must use restrictive permissions; on Unix, `lab` requires they are not group- or world-readable
+- both files must use restrictive permissions; on Unix, Labby requires they are not group- or world-readable
 - new files are created with `0600` permissions on Unix
 - the SQLite store is opened in WAL mode with a non-zero busy timeout
 - the current auth store opens a small local SQLite pool, so login/code/token traffic is no longer funneled through one in-process mutex lane
-- Google tokens stay server-side only; clients always receive `lab` access tokens and receive `lab` refresh tokens only when Google granted an upstream refresh token
+- Google tokens stay server-side only; clients always receive Labby access tokens and receive Labby refresh tokens only when Google granted an upstream refresh token
 
 Recovery guidance:
 
-- deleting `auth-jwt.pem` invalidates every previously issued `lab` access token and refresh token exchange path tied to those access tokens
+- deleting `auth-jwt.pem` invalidates every previously issued `labby` access token and refresh token exchange path tied to those access tokens
 - deleting `auth.db` removes registered clients, pending authorization requests, authorization codes, and refresh tokens
 - if you back up either file, back up both together to preserve a coherent auth state snapshot
 
@@ -320,7 +287,7 @@ Symptoms:
 Actions:
 
 1. Run `labby gateway reload` or a targeted catalog refresh path.
-2. Delete only the Code Mode catalog cache under the Lab home if the on-disk
+2. Delete only the Code Mode catalog cache under the Labby home if the on-disk
    cache is suspected corrupt; do not delete auth or gateway config state.
 3. Re-run a small `labby --json gateway code exec --code 'async () => 1'`
    smoke to repopulate the cache.

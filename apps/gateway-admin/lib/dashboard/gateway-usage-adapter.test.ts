@@ -88,6 +88,14 @@ test('keeps dimensional top-target rows distinct with exact failure counts', () 
   ])
 })
 
+test('preserves full dimensional identity for slowest targets', () => {
+  const metrics = aggregateGatewayUsage('24h', 1_800_000_000_000, summary({
+    slowest_tools: [{ upstream: 'github', tool: 'search', capability: 'resources', operation: 'resource.read', subject_scoped: true, avg_elapsed_ms: 42 }],
+  }))
+
+  assert.deepEqual(metrics.latency.slowest, [{ name: 'github::search · resource.read · OAuth', avg_ms: 42 }])
+})
+
 test('uses backend-provided full-window buckets rather than raw call-page sampling', () => {
   const buckets = Array.from({ length: 24 }, (_, index) => ({
     ts_unix: 1_800_000_000 - (23 - index) * 3600,

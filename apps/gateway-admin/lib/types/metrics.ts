@@ -222,6 +222,8 @@ export interface ToolCallRecord {
   ts: number
   tool: string
   action: string | null
+  /** Gateway capability family for the target, when durably collected. */
+  capability?: string
   agent_id: string
   agent_label: string
   agent_kind: 'agent' | 'device'
@@ -277,6 +279,9 @@ export interface ToolCallQuery {
   until_ms?: number
   upstream?: string
   tool?: string
+  capability?: string
+  operation?: string
+  subject_scoped?: boolean
   agent?: string
   ip?: string
   outcome?: CallOutcome
@@ -318,6 +323,9 @@ export interface ToolCallPage {
 export interface ToolCallFacets {
   upstreams: string[]
   tools: string[]
+  capabilities: string[]
+  operations: string[]
+  subject_scopes: boolean[]
   agents: ToolCallAgentFacet[]
   outcomes: string[]
   ips: string[]

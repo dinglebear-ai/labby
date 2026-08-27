@@ -473,7 +473,10 @@ pub(crate) fn string_array_arg(
         .collect()
 }
 
-pub(crate) fn code_arg(args: &JsonObject) -> Result<&str, DispatchToolError> {
+pub(crate) fn code_arg(
+    args: &JsonObject,
+    max_source_bytes: usize,
+) -> Result<&str, DispatchToolError> {
     let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
     if code.trim().is_empty() {
         return Err(DispatchToolError::Sdk {
@@ -481,10 +484,11 @@ pub(crate) fn code_arg(args: &JsonObject) -> Result<&str, DispatchToolError> {
             message: "code must not be empty".to_string(),
         });
     }
-    if code.len() > MAX_SOURCE_BYTES {
+    let max_source_bytes = max_source_bytes.min(MAX_SOURCE_BYTES);
+    if code.len() > max_source_bytes {
         return Err(DispatchToolError::Sdk {
             sdk_kind: "invalid_param".to_string(),
-            message: format!("code exceeds max length {MAX_SOURCE_BYTES} bytes"),
+            message: format!("code exceeds max length {max_source_bytes} bytes"),
         });
     }
     Ok(code)
@@ -581,7 +585,8 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope));
         };
         let config = manager.code_mode_config().await;
-        let code = match code_arg(args) {
+        let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
+        let code = match code_arg(args, max_source_bytes) {
             Ok(code) => code,
             Err(err) => {
                 let env = build_error_extra(
@@ -632,12 +637,46 @@ impl LabMcpServer {
             "gateway codemode start"
         );
 
-        let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
-            CodeModeCaller::Scoped {
-                capabilities: code_mode_capabilities_for_scopes(&auth.scopes),
-                sub: self.request_subject(context).map(ToOwned::to_owned),
+        let private_access = match self.artifact_access_for_request(context).await {
+            Ok(access) => access,
+            Err(error) => {
+                return Ok(error_result_from_envelope(tool_error_envelope(
+                    service,
+                    "call_tool",
+                    &error,
+                )));
             }
-        });
+        };
+        let caller = match auth {
+            None => CodeModeCaller::TrustedLocal,
+            Some(auth) => {
+                let capabilities = code_mode_capabilities_for_scopes(&auth.scopes);
+                let sub = self.request_subject(context).map(ToOwned::to_owned);
+                match private_access {
+                    Some(access) => {
+                        match crate::mcp::skills::mint_private_artifact_context(sub.clone(), access)
+                        {
+                            Ok(context_token) => CodeModeCaller::ScopedPrivate {
+                                capabilities,
+                                sub: sub.clone(),
+                                context_token,
+                            },
+                            Err(error) => {
+                                return Ok(error_result_from_envelope(tool_error_envelope(
+                                    service,
+                                    "call_tool",
+                                    &error,
+                                )));
+                            }
+                        }
+                    }
+                    None => CodeModeCaller::Scoped {
+                        capabilities,
+                        sub: sub.clone(),
+                    },
+                }
+            }
+        };
 
         // Per-run caller identity stamped onto journal rows at the flush
         // boundary (captured once, not per step). Fingerprint is cloned here
@@ -799,7 +838,7 @@ impl LabMcpServer {
         let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
         let output_tokens = estimate_tokens(&output);
         let is_admin = auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
-        let source = if is_admin && code.len() <= MAX_SOURCE_BYTES {
+        let source = if is_admin && code.len() <= max_source_bytes {
             Some(CodeModeExecutionSource {
                 execution_id: execution_id.clone(),
                 created_at_ms: std::time::SystemTime::now()

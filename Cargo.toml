@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/labby-apis", "crates/labby", "crates/labby-auth", "crates/labby-codemode", "crates/labby-gateway", "crates/labby-openapi", "crates/labby-web", "crates/labby-runtime", "crates/labby-winjob", "crates/labby-primitives", "crates/xtask"]
 
 [workspace.package]
-version = "1.13.3"
+version = "1.14.1"
 edition = "2024"
 rust-version = "1.97.1"
 keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
@@ -105,6 +105,7 @@ rusqlite = { version = "0.39", features = ["bundled"] }
 sha2 = "0.11"
 hmac = "0.13"
 percent-encoding = "2.3"
+unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # http server (lab binary only)
@@ -270,6 +271,12 @@ bare_urls = "warn"
 private_intra_doc_links = "warn"
 redundant_explicit_links = "warn"
 unescaped_backticks = "warn"
+
+# Temporary rmcp decoder fix for custom extension results carrying protocol-generic
+# `resultType` / `_meta`. Pinned to one immutable fork commit; remove once the
+# equivalent fix ships in an upstream rmcp release.
+[patch.crates-io]
+rmcp = { git = "https://github.com/dinglebear-ai/rust-sdk", rev = "c9c3e518ce94b8d715519657c88195515978bda4" }
 
 [profile.release]
 lto = "thin"

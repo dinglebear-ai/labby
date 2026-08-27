@@ -48,6 +48,10 @@ fn default_code_mode_timeout_ms() -> u64 {
     30_000
 }
 
+fn default_code_mode_max_source_bytes() -> usize {
+    128 * 1024
+}
+
 fn default_code_mode_max_response_bytes() -> usize {
     24 * 1024
 }
@@ -91,34 +95,32 @@ fn default_mcp_scopes() -> Vec<String> {
 
 // ─── Lab-owned MCP Apps ──────────────────────────────────────────────────────
 
-/// Visibility switches for Labby-owned MCP App surfaces other than the
-/// always-on `mcp_app` manager. Code Mode keeps its existing
-/// `CodeModeConfig::mcp_ui_enabled` field for backward-compatible config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Visibility switches for Labby-owned MCP App UI surfaces. The `mcp_app`
+/// control tool stays available when its manager UI is disabled. Code Mode keeps
+/// its existing `CodeModeConfig::mcp_ui_enabled` field for backward-compatible
+/// config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct McpAppsConfig {
+    /// Attach MCP App metadata to the always-available `mcp_app` control tool and advertise its UI resources.
+    /// The control tool itself remains available when this is false.
+    #[serde(default)]
+    pub manager: bool,
     /// Advertise the synthetic Add Server app tool and its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub add_server: bool,
     /// Attach the Server Logs app metadata and advertise its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub server_logs: bool,
     /// Advertise the synthetic Gateway Status app tool and its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub gateway_status: bool,
     /// Advertise the schema-backed Settings app tool and its UI resources.
-    #[serde(default = "default_true")]
+    /// Labby-owned app surfaces are opt-in by default.
+    #[serde(default)]
     pub settings: bool,
-}
-
-impl Default for McpAppsConfig {
-    fn default() -> Self {
-        Self {
-            add_server: true,
-            server_logs: true,
-            gateway_status: true,
-            settings: true,
-        }
-    }
 }
 
 // ─── Code Mode ───────────────────────────────────────────────────────────────
@@ -181,17 +183,14 @@ pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
     #[serde(default)]
     pub enabled: bool,
-    /// Operator-owned allowlist of upstream tools trusted for `codemode_read`.
-    ///
-    /// Entries are exact namespaced ids (`upstream::tool`). Upstream-provided
-    /// `readOnlyHint` metadata is untrusted and remains a second, independent
-    /// requirement. An empty list therefore fails closed: read-only Code Mode
-    /// may execute pure JavaScript, but cannot invoke any upstream tool.
+    /// Deprecated compatibility field. `codemode_read` now uses the live MCP
+    /// safety annotations on each tool descriptor.
     #[serde(default)]
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
     /// The text-only `codemode` executor remains available when this is false.
-    #[serde(default = "default_true")]
+    /// Labby-owned MCP Apps are opt-in, so this defaults to false.
+    #[serde(default)]
     pub mcp_ui_enabled: bool,
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
@@ -203,6 +202,9 @@ pub struct CodeModeConfig {
     /// Maximum wall-clock time for one Code Mode execution.
     #[serde(default = "default_code_mode_timeout_ms")]
     pub timeout_ms: u64,
+    /// Maximum accepted Code Mode source size in bytes.
+    #[serde(default = "default_code_mode_max_source_bytes")]
+    pub max_source_bytes: usize,
     /// Maximum serialized response envelope size returned by codemode.
     #[serde(default = "default_code_mode_max_response_bytes")]
     pub max_response_bytes: usize,
@@ -258,10 +260,11 @@ impl Default for CodeModeConfig {
         Self {
             enabled: false,
             trusted_read_only_tools: Vec::new(),
-            mcp_ui_enabled: true,
+            mcp_ui_enabled: false,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
+            max_source_bytes: default_code_mode_max_source_bytes(),
             max_response_bytes: default_code_mode_max_response_bytes(),
             max_response_tokens: default_code_mode_max_response_tokens(),
             token_estimate_divisor: default_token_estimate_divisor(),
@@ -279,8 +282,7 @@ impl Default for CodeModeConfig {
 }
 
 impl CodeModeConfig {
-    /// Whether the operator has explicitly trusted this exact upstream tool for
-    /// the read-only Code Mode execution surface.
+    /// Whether the deprecated compatibility list contains this exact tool id.
     #[must_use]
     pub fn trusts_read_only_tool(&self, upstream: &str, tool: &str) -> bool {
         self.trusted_read_only_tools.iter().any(|candidate| {
@@ -297,6 +299,11 @@ impl CodeModeConfig {
         if !(1..=60_000).contains(&self.timeout_ms) {
             return Err(ConfigError::InvalidCodeModeTimeout {
                 value: self.timeout_ms,
+            });
+        }
+        if !(1024..=1024 * 1024).contains(&self.max_source_bytes) {
+            return Err(ConfigError::InvalidCodeModeMaxSourceBytes {
+                value: self.max_source_bytes,
             });
         }
         if !(1024..=1024 * 1024).contains(&self.max_response_bytes) {
@@ -1061,9 +1068,19 @@ pub struct GatewayLoadoutConfig {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Selected upstream MCP servers.
+    ///
+    /// Always serialized, including when empty. Agents and HTTP clients read
+    /// this as a required array on every `gateway.loadout.*` response, so
+    /// omitting it for a services-only Loadout breaks them. The cost is an
+    /// explicit `upstreams = []` in TOML, which is the honest representation.
+    #[serde(default)]
     pub upstreams: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Selected built-in Labby services.
+    ///
+    /// Always serialized, including when empty, for the same reason as
+    /// [`GatewayLoadoutConfig::upstreams`].
+    #[serde(default)]
     pub services: Vec<String>,
     #[serde(default)]
     pub expose_code_mode: bool,
@@ -1093,6 +1110,49 @@ impl Default for GatewayLoadoutConfig {
     }
 }
 
+impl GatewayLoadoutConfig {
+    #[allow(clippy::result_unit_err)] // The caller intentionally maps every mismatch to one redacted boundary.
+    pub fn intersect_gateway_subset(
+        &self,
+        target: &ProtectedGatewaySubsetTarget,
+    ) -> Result<Self, ()> {
+        if let Some(name) = target.loadout.as_deref() {
+            return (name == self.name).then(|| self.clone()).ok_or(());
+        }
+        let upstreams = target
+            .upstreams
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let services = target
+            .services
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(Self {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            upstreams: self
+                .upstreams
+                .iter()
+                .filter(|name| upstreams.contains(name.as_str()))
+                .cloned()
+                .collect(),
+            services: self
+                .services
+                .iter()
+                .filter(|name| services.contains(name.as_str()))
+                .cloned()
+                .collect(),
+            expose_code_mode: self.expose_code_mode && target.expose_code_mode,
+            expose_tools: self.expose_tools,
+            expose_resources: self.expose_resources,
+            expose_prompts: self.expose_prompts,
+            expose_skills: self.expose_skills,
+        })
+    }
+}
+
 /// Explicit target kind for an OAuth-protected public MCP route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1104,6 +1164,9 @@ pub enum ProtectedMcpRouteTarget {
 /// Gateway subset exposed by a protected MCP route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProtectedGatewaySubsetTarget {
+    /// Authoritative Project bound to this explicit gateway-subset route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     /// Optional named loadout. When set, inline subset fields must stay empty
     /// so the effective policy has one authoritative source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1117,6 +1180,22 @@ pub struct ProtectedGatewaySubsetTarget {
     /// Whether the route exposes the Code Mode surface over its filtered catalog.
     #[serde(default)]
     pub expose_code_mode: bool,
+}
+
+impl ProtectedGatewaySubsetTarget {
+    pub fn canonical_project_id(&self) -> Option<&str> {
+        let project_id = self.project_id.as_deref()?;
+        is_canonical_project_id(project_id).then_some(project_id)
+    }
+}
+
+pub const MAX_PROJECT_ID_LEN: usize = 128;
+
+pub fn is_canonical_project_id(project_id: &str) -> bool {
+    !project_id.is_empty()
+        && project_id.trim() == project_id
+        && project_id.len() <= MAX_PROJECT_ID_LEN
+        && !project_id.chars().any(char::is_control)
 }
 
 /// Resolved runtime target after legacy protected-route fields are normalized.
@@ -1304,6 +1383,12 @@ pub enum ConfigError {
     InvalidCodeModeTimeout {
         /// Rejected timeout in milliseconds.
         value: u64,
+    },
+    #[error("gateway code_mode.max_source_bytes={value} is invalid — expected 1024..=1048576")]
+    /// Code Mode source byte cap falls outside the supported range.
+    InvalidCodeModeMaxSourceBytes {
+        /// Rejected byte limit.
+        value: usize,
     },
     #[error("gateway code_mode.max_response_bytes={value} is invalid — expected 1024..=1048576")]
     /// Code Mode response byte cap falls outside the supported range.
@@ -1750,6 +1835,17 @@ impl GatewayConfig {
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
             if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                if let Some(project_id) = target.project_id.take() {
+                    let project_id = project_id.trim().to_string();
+                    if !is_canonical_project_id(&project_id) {
+                        return Err(ConfigError::InvalidProtectedRoute {
+                            name: route.name.clone(),
+                            field: "target.project_id",
+                            value: "project binding must not be empty".to_string(),
+                        });
+                    }
+                    target.project_id = Some(project_id);
+                }
                 normalize_string_list(&mut target.upstreams, "target.upstreams").map_err(
                     |field| ConfigError::InvalidProtectedRoute {
                         name: route.name.clone(),
@@ -1813,7 +1909,6 @@ impl GatewayConfig {
             }
             route.backend_mcp_path = default_mcp_path();
         }
-        validate_gateway_subset_paths_are_unique(&self.protected_mcp_routes)?;
         Ok(())
     }
 }
@@ -1836,30 +1931,62 @@ fn normalize_string_list(
     Ok(())
 }
 
-fn validate_gateway_subset_paths_are_unique(
-    routes: &[ProtectedMcpRouteConfig],
-) -> Result<(), ConfigError> {
-    let mut paths = std::collections::HashSet::new();
-    for route in routes
-        .iter()
-        .filter(|route| route.enabled && route.is_gateway_subset())
-    {
-        if !paths.insert(route.public_path.clone()) {
-            return Err(ConfigError::InvalidProtectedRoute {
-                name: route.name.clone(),
-                field: "public_path",
-                value: format!(
-                    "gateway_subset routes must use unique public_path values; `{}` is already mounted",
-                    route.public_path
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gateway_subset_routes_may_share_a_path_on_different_hosts() {
+        let mut config: GatewayConfig = toml::from_str(
+            r#"
+[[protected_mcp_routes]]
+name = "alpha"
+public_host = "alpha.example.com"
+public_path = "/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+expose_code_mode = true
+
+[[protected_mcp_routes]]
+name = "beta"
+public_host = "beta.example.com"
+public_path = "/mcp"
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+expose_code_mode = true
+"#,
+        )
+        .expect("parse gateway config");
+
+        config
+            .normalize_protected_mcp_routes()
+            .expect("host-specific routes can share a path");
+    }
+
+    #[test]
+    fn code_mode_max_source_bytes_validation_is_bounded() {
+        let mut config = CodeModeConfig {
+            max_source_bytes: 1023,
+            ..CodeModeConfig::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidCodeModeMaxSourceBytes { value: 1023 })
+        ));
+
+        config.max_source_bytes = 1024;
+        config.validate().expect("minimum source budget validates");
+
+        config.max_source_bytes = 1024 * 1024;
+        config.validate().expect("hard source ceiling validates");
+
+        config.max_source_bytes = 1024 * 1024 + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidCodeModeMaxSourceBytes { value }) if value == 1024 * 1024 + 1
+        ));
+    }
+
     use super::*;
 
     #[test]
@@ -2147,7 +2274,7 @@ client_secret_env = "SECRET"
         assert_eq!(cfg, expected);
         assert!(!cfg.enabled);
         assert!(cfg.trusted_read_only_tools.is_empty());
-        assert!(cfg.mcp_ui_enabled);
+        assert!(!cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
@@ -2166,32 +2293,34 @@ client_secret_env = "SECRET"
     }
 
     #[test]
-    fn code_mode_mcp_ui_can_be_disabled_in_toml() {
+    fn code_mode_mcp_ui_can_be_enabled_in_toml() {
         let cfg: CodeModeConfig = toml::from_str(
-            "mcp_ui_enabled = false
+            "mcp_ui_enabled = true
 ",
         )
         .unwrap();
-        assert!(!cfg.mcp_ui_enabled);
+        assert!(cfg.mcp_ui_enabled);
         assert!(!cfg.enabled);
     }
 
     #[test]
-    fn mcp_apps_config_defaults_all_managed_apps_enabled() {
+    fn mcp_apps_config_defaults_all_managed_apps_disabled() {
         let cfg: McpAppsConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, McpAppsConfig::default());
-        assert!(cfg.add_server);
-        assert!(cfg.server_logs);
-        assert!(cfg.gateway_status);
-        assert!(cfg.settings);
+        assert!(!cfg.manager);
+        assert!(!cfg.add_server);
+        assert!(!cfg.server_logs);
+        assert!(!cfg.gateway_status);
+        assert!(!cfg.settings);
     }
 
     #[test]
     fn mcp_apps_config_supports_independent_visibility_switches() {
         let cfg: McpAppsConfig = toml::from_str(
-            "add_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
+            "manager = true\nadd_server = false\nserver_logs = true\ngateway_status = false\nsettings = false\n",
         )
         .unwrap();
+        assert!(cfg.manager);
         assert!(!cfg.add_server);
         assert!(cfg.server_logs);
         assert!(!cfg.gateway_status);
@@ -2313,6 +2442,7 @@ client_secret_env = "SECRET"
         route.backend_url = String::new();
         route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 loadout: None,
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
@@ -2337,5 +2467,114 @@ client_secret_env = "SECRET"
     #[test]
     fn in_process_prefix_constant_is_stable() {
         assert_eq!(IN_PROCESS_UPSTREAM_PREFIX, "__in_process__");
+    }
+    /// `gateway.loadout.*` responses must always carry `upstreams` and
+    /// `services` as arrays. Omitting an empty selection made every JSON
+    /// consumer that treats them as required arrays fail on a Loadout that
+    /// picked only upstreams or only services.
+    #[test]
+    fn loadout_json_always_carries_both_selection_arrays() {
+        let upstreams_only = GatewayLoadoutConfig {
+            name: "sd".to_string(),
+            upstreams: vec!["chrome-devtools".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+        let services_only = GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            services: vec!["gateway".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+
+        for loadout in [&upstreams_only, &services_only] {
+            let value = serde_json::to_value(loadout).expect("loadout serializes to JSON");
+            let object = value.as_object().expect("loadout serializes as an object");
+            assert!(
+                object
+                    .get("upstreams")
+                    .is_some_and(serde_json::Value::is_array),
+                "upstreams must always be an array: {value}"
+            );
+            assert!(
+                object
+                    .get("services")
+                    .is_some_and(serde_json::Value::is_array),
+                "services must always be an array: {value}"
+            );
+        }
+
+        assert_eq!(
+            serde_json::to_value(&services_only)
+                .expect("loadout serializes to JSON")
+                .get("upstreams"),
+            Some(&serde_json::json!([])),
+            "a services-only Loadout still reports an empty upstream selection"
+        );
+    }
+
+    /// Always-serialized selections must survive a TOML round trip, including
+    /// the explicit empty arrays now written into `config.toml`.
+    #[test]
+    fn loadout_toml_round_trips_empty_selection_arrays() {
+        let services_only = GatewayLoadoutConfig {
+            name: "ops".to_string(),
+            services: vec!["gateway".to_string()],
+            ..GatewayLoadoutConfig::default()
+        };
+
+        let rendered = toml::to_string(&services_only).expect("loadout serializes to TOML");
+        assert!(rendered.contains("upstreams = []"), "{rendered}");
+
+        let parsed: GatewayLoadoutConfig =
+            toml::from_str(&rendered).expect("loadout parses back from TOML");
+        assert_eq!(parsed, services_only);
+    }
+    #[test]
+    fn protected_route_project_id_normalization_is_bounded_and_compatible() {
+        fn config(project_id: Option<String>) -> GatewayConfig {
+            let mut route: ProtectedMcpRouteConfig = toml::from_str(
+                "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+            )
+            .unwrap();
+            route.backend_url = String::new();
+            route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    project_id,
+                    ..Default::default()
+                },
+            ));
+            GatewayConfig {
+                protected_mcp_routes: vec![route],
+                ..Default::default()
+            }
+        }
+
+        let mut omitted = config(None);
+        omitted
+            .normalize_protected_mcp_routes()
+            .expect("legacy None");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            omitted.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id, None);
+
+        let expected = "x".repeat(MAX_PROJECT_ID_LEN);
+        let mut trimmed = config(Some(format!("  {expected}  ")));
+        trimmed.normalize_protected_mcp_routes().expect("128 bytes");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            trimmed.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id.as_deref(), Some(expected.as_str()));
+
+        for invalid in ["   ".to_string(), "x".repeat(MAX_PROJECT_ID_LEN + 1)] {
+            assert!(
+                config(Some(invalid))
+                    .normalize_protected_mcp_routes()
+                    .is_err()
+            );
+        }
     }
 }

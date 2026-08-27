@@ -6,11 +6,26 @@ updated: "2026-08-01"
 
 # Environment Variables
 
-This document lists the `lab` environment variables that matter for transport
+This document lists the `labby` environment variables that matter for transport
 and auth setup. The complete per-service env inventory is generated from
 `PluginMeta` and lives in
 [generated/env-reference.md](../generated/env-reference.md) and
 [generated/env-reference.json](../generated/env-reference.json).
+
+## State Root
+
+`LABBY_HOME` selects Labby's durable state root and must be absolute. With an
+explicit value, configuration is read from `$LABBY_HOME/config.toml`, dotenv
+values from `$LABBY_HOME/.env`, and the access-control database from the fixed
+path `$LABBY_HOME/access.db`. Without it, the durable state root defaults to
+`~/.labby`. Do not use a relative working-directory path for daemon or stdio
+launches.
+
+The access store has no independent environment override.
+`LABBY_AUTH_SQLITE_PATH` selects the OAuth authorization store, not
+`access.db`. A standalone stdio fallback uses its own resolved state root, so
+configure an explicit remote daemon target when stdio must share the daemon's
+project and membership state.
 
 ## Direct Stdio Proxy
 
@@ -178,7 +193,14 @@ LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS=4
 - `LABBY_CODE_MODE_MICROSANDBOX_IMAGE` is required for `microsandbox`, must be
   an immutable OCI digest reference (`name@sha256:<64 hex>`), and must already
   be cached. URLs, userinfo, queries, and tag-only references are rejected.
-  Runtime pulls are disabled with `--pull never`.
+  Runtime pulls are disabled with `--pull never`. Before `labby setup
+  host-service install` or `restart` stops the healthy service, Labby preflights
+  this setting. A legacy mutable alias or short pinned reference is migrated only
+  when its exact digest can be proven from the `labby` service user's existing
+  Microsandbox cache: Labby registers the canonical registry+digest reference,
+  atomically rewrites the persistent `.env` or systemd drop-in, reloads systemd
+  when needed, and verifies the effective value. Missing cache state, an unsafe
+  alias, or an untraceable persistent source fails the preflight before restart.
 - `LABBY_CODE_MODE_MICROSANDBOX_MAX_RUNNERS` optionally bounds concurrent
   microVMs process-wide (default `4`, hard maximum `16`) independently of the
   generic runner-pool size and overflow settings.

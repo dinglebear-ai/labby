@@ -10,6 +10,7 @@ use crate::gateway::view_models::{
 };
 use crate::gateway::virtual_servers::{VirtualServerRecord, VirtualServerSource};
 use crate::upstream::pool::{UpstreamCachedSummary, UpstreamPool};
+use crate::upstream::types::{UpstreamCapability, UpstreamHealth};
 use labby_runtime::gateway_config::{CodeModeConfig, UpstreamConfig, normalize_code_mode_hint};
 use labby_runtime::redact::{
     redact_secret_like_segments, redact_stdio_args, redact_stdio_value, redact_url,
@@ -291,6 +292,94 @@ pub(super) fn operator_visible_upstream_error(message: Option<String>) -> Option
     message.filter(|message| !is_nonessential_capability_error(message))
 }
 
+/// True when an optional-capability discovery message means the upstream simply
+/// *does not implement* that capability, rather than having failed at it.
+///
+/// This is the discrimination `is_nonessential_capability_error` cannot make:
+/// that function matches the `failed to list ... from upstream:` wrapper, which
+/// the pool attaches to **every** prompt/resource listing failure — timeouts,
+/// 5xx, auth rejections, dropped connections — so it cannot tell "this server
+/// has no prompts" from "this server's prompts are broken". Suppressing the
+/// whole prefix is correct for connection state (neither case means the
+/// upstream is down) but wrong for operator reporting, where the second case is
+/// a real problem the operator needs to see.
+///
+/// Mirrors the message fallbacks in `upstream::pool::logging::is_capability_unsupported`,
+/// which is where the same condition is classified at the point of failure.
+fn indicates_capability_absent(message: &str) -> bool {
+    message.contains("Method not found")
+        || message.contains("method_not_found")
+        || message.contains("-32601")
+        || message.contains("Not implemented")
+        || message.starts_with("does not implement MCP prompts discovery")
+        || message.starts_with("does not implement MCP resources discovery")
+}
+
+/// Build warnings for optional capabilities that failed discovery for a real
+/// reason.
+///
+/// Prompts and resources are optional in MCP, so their failures are kept out of
+/// `last_error` — otherwise `connected` (which is `last_error.is_none() && ...`)
+/// would report a server with healthy tools as disconnected. But keeping them
+/// out of `last_error` had been the same thing as discarding them: nothing else
+/// on `ServerView` carried prompt or resource health, so a timed-out or
+/// erroring `prompts/list` was indistinguishable from an upstream that simply
+/// has no prompts — the exact confusion that hid bead lab-zfyxk. These warnings
+/// are the missing signal.
+async fn optional_capability_warnings(
+    pool: Option<&UpstreamPool>,
+    upstream: &UpstreamConfig,
+) -> Vec<super::view_models::ServerWarningView> {
+    let Some(pool) = pool else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    // Only report a capability the upstream is actually asked to proxy. A
+    // stale error from before proxying was turned off is not actionable.
+    for (enabled, capability, code, label) in [
+        (
+            upstream.proxy_prompts,
+            UpstreamCapability::Prompts,
+            "prompts_unavailable",
+            "prompts",
+        ),
+        (
+            upstream.proxy_resources,
+            UpstreamCapability::Resources,
+            "resources_unavailable",
+            "resources",
+        ),
+    ] {
+        if !enabled {
+            continue;
+        }
+        let Some(message) = pool
+            .upstream_capability_error(&upstream.name, capability)
+            .await
+        else {
+            continue;
+        };
+        // Report only what `last_error` dropped. An optional-capability error
+        // that survives `is_nonessential_capability_error` already reaches the
+        // operator as the `last_error` warning built above, so warning again
+        // here would render the same failure twice on the same row.
+        if !is_nonessential_capability_error(&message) {
+            continue;
+        }
+        if indicates_capability_absent(&message) {
+            continue;
+        }
+        warnings.push(super::view_models::ServerWarningView {
+            code: code.to_string(),
+            message: format!(
+                "{label} could not be discovered, so this server's {label} are missing from the \
+                 catalog; its tools are unaffected: {message}"
+            ),
+        });
+    }
+    warnings
+}
+
 pub(super) fn upstream_warning_code(message: &str) -> &'static str {
     if dependency_hint_from_error(message).is_some() {
         return "dependency_missing";
@@ -422,20 +511,70 @@ pub(super) async fn upstream_summary(
         .unwrap_or_else(empty_upstream_summary)
 }
 
+fn summary_has_capabilities(summary: &UpstreamCachedSummary) -> bool {
+    summary.discovered_tool_count > 0
+        || summary.discovered_resource_count > 0
+        || summary.discovered_prompt_count > 0
+        || summary.discovered_skill_count > 0
+}
+
+fn settle_summary_after_health(
+    first: UpstreamCachedSummary,
+    health: Option<UpstreamHealth>,
+    refreshed: Option<UpstreamCachedSummary>,
+) -> UpstreamCachedSummary {
+    if summary_has_capabilities(&first) || !health.is_some_and(UpstreamHealth::is_routable) {
+        return first;
+    }
+    refreshed.unwrap_or(first)
+}
+
+fn catalog_is_warming(
+    summary: &UpstreamCachedSummary,
+    health: Option<UpstreamHealth>,
+    runtime_present: bool,
+    last_error_present: bool,
+) -> bool {
+    !summary_has_capabilities(summary)
+        && health.is_some_and(UpstreamHealth::is_routable)
+        && !runtime_present
+        && !last_error_present
+}
+
+pub(super) async fn upstream_summary_with_health(
+    pool: Option<&UpstreamPool>,
+    upstream_name: &str,
+) -> (UpstreamCachedSummary, Option<UpstreamHealth>) {
+    let first = upstream_summary(pool, upstream_name).await;
+    let health = match pool {
+        Some(pool) => pool.upstream_tool_health(upstream_name).await,
+        None => None,
+    };
+    let refreshed =
+        if !summary_has_capabilities(&first) && health.is_some_and(UpstreamHealth::is_routable) {
+            match pool {
+                Some(pool) => pool.cached_upstream_summary(upstream_name).await,
+                None => None,
+            }
+        } else {
+            None
+        };
+    (
+        settle_summary_after_health(first, health, refreshed),
+        health,
+    )
+}
+
 pub(super) async fn server_view_from_upstream(
     pool: Option<&UpstreamPool>,
     upstream: &UpstreamConfig,
 ) -> ServerView {
-    let summary = upstream_summary(pool, &upstream.name).await;
+    let (summary, health) = upstream_summary_with_health(pool, &upstream.name).await;
     let last_error = operator_visible_upstream_error(match pool {
         Some(pool) => pool.upstream_last_error(&upstream.name).await,
         None => None,
     });
     let dependency_hint = last_error.as_deref().and_then(dependency_hint_from_error);
-    let health = match pool {
-        Some(pool) => pool.upstream_tool_health(&upstream.name).await,
-        None => None,
-    };
     // Health-aware connectivity (mirrors `server_view_from_virtual_server`): an
     // upstream counts as connected when it has no recorded error and is either
     // actively exposing capabilities or healthy. The health term keeps lazily
@@ -449,13 +588,39 @@ pub(super) async fn server_view_from_upstream(
     let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
     let connected = last_error.is_none() && (exposing_capabilities || health_ok);
     let enabled = upstream.enabled;
-    let pid = match pool {
-        Some(pool) => pool
-            .upstream_runtime_metadata(&upstream.name)
-            .await
-            .and_then(|meta| meta.pid),
+    let runtime = match pool {
+        Some(pool) => pool.upstream_runtime_metadata(&upstream.name).await,
         None => None,
     };
+    let pid = runtime.as_ref().and_then(|meta| meta.pid);
+    let catalog_warming =
+        catalog_is_warming(&summary, health, runtime.is_some(), last_error.is_some());
+    let mut warnings = match (&last_error, &dependency_hint) {
+        (Some(message), Some(hint)) => {
+            vec![super::view_models::ServerWarningView {
+                code: hint.code.clone(),
+                message: hint
+                    .install_command
+                    .as_ref()
+                    .map(|cmd| format!("missing dependency; suggested fix: {cmd}"))
+                    .unwrap_or_else(|| message.clone()),
+            }]
+        }
+        (Some(message), None) => {
+            vec![super::view_models::ServerWarningView {
+                code: upstream_warning_code(message).to_string(),
+                message: message.clone(),
+            }]
+        }
+        _ => Vec::new(),
+    };
+    if catalog_warming {
+        warnings.push(super::view_models::ServerWarningView {
+            code: "catalog_warming".to_string(),
+            message: "upstream is healthy but its capability catalog has not been materialized yet; counts are provisional until discovery or refresh completes".to_string(),
+        });
+    }
+    warnings.extend(optional_capability_warnings(pool, upstream).await);
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
@@ -481,25 +646,7 @@ pub(super) async fn server_view_from_upstream(
             },
             ..SurfaceStatesView::default()
         },
-        warnings: match (&last_error, &dependency_hint) {
-            (Some(message), Some(hint)) => {
-                vec![super::view_models::ServerWarningView {
-                    code: hint.code.clone(),
-                    message: hint
-                        .install_command
-                        .as_ref()
-                        .map(|cmd| format!("missing dependency; suggested fix: {cmd}"))
-                        .unwrap_or_else(|| message.clone()),
-                }]
-            }
-            (Some(message), None) => {
-                vec![super::view_models::ServerWarningView {
-                    code: upstream_warning_code(message).to_string(),
-                    message: message.clone(),
-                }]
-            }
-            _ => Vec::new(),
-        },
+        warnings,
         config_summary: ServerConfigSummaryView {
             transport: Some(if upstream.command.is_some() {
                 "stdio".to_string()
@@ -777,6 +924,85 @@ mod tests {
 
     fn stdio_upstream(command: &str, args: &[&str]) -> UpstreamConfig {
         upstream_fixture(Some(command), args, None)
+    }
+
+    #[test]
+    fn healthy_catalog_race_prefers_materialized_second_summary() {
+        let first = UpstreamCachedSummary::default();
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            exposed_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
+
+        let settled =
+            settle_summary_after_health(first, Some(UpstreamHealth::Healthy), Some(refreshed));
+
+        assert_eq!(settled.discovered_tool_count, 30);
+        assert_eq!(settled.exposed_tool_count, 30);
+    }
+
+    #[test]
+    fn genuinely_empty_healthy_catalog_remains_empty() {
+        let settled = settle_summary_after_health(
+            UpstreamCachedSummary::default(),
+            Some(UpstreamHealth::Healthy),
+            Some(UpstreamCachedSummary::default()),
+        );
+
+        assert_eq!(settled, UpstreamCachedSummary::default());
+    }
+
+    #[test]
+    fn unhealthy_catalog_does_not_adopt_concurrent_summary() {
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
+        let settled = settle_summary_after_health(
+            UpstreamCachedSummary::default(),
+            Some(UpstreamHealth::Unhealthy {
+                consecutive_failures: u32::MAX,
+            }),
+            Some(refreshed),
+        );
+
+        assert_eq!(settled, UpstreamCachedSummary::default());
+    }
+
+    #[test]
+    fn lazy_healthy_empty_catalog_is_explicitly_warming() {
+        let summary = UpstreamCachedSummary::default();
+
+        assert!(catalog_is_warming(
+            &summary,
+            Some(UpstreamHealth::Healthy),
+            false,
+            false,
+        ));
+        assert!(
+            !catalog_is_warming(&summary, Some(UpstreamHealth::Healthy), true, false),
+            "a live runtime makes an empty catalog authoritative"
+        );
+        assert!(
+            !catalog_is_warming(&summary, Some(UpstreamHealth::Healthy), false, true),
+            "an error must be surfaced as an error rather than warmup"
+        );
+    }
+
+    #[test]
+    fn materialized_catalog_is_never_reported_as_warming() {
+        let summary = UpstreamCachedSummary {
+            discovered_tool_count: 1,
+            ..UpstreamCachedSummary::default()
+        };
+
+        assert!(!catalog_is_warming(
+            &summary,
+            Some(UpstreamHealth::Healthy),
+            false,
+            false,
+        ));
     }
 
     #[test]

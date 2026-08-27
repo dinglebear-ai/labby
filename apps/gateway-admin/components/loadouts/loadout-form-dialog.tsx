@@ -33,6 +33,15 @@ export function emptyLoadout(): GatewayLoadout {
 
 function uniq(values: string[]) { return [...new Set(values)].sort((a, b) => a.localeCompare(b)) }
 
+export function loadoutSaveEnabled(
+  saving: boolean,
+  name: string,
+  enabledCount: number,
+  skillsNeedResources: boolean,
+) {
+  return !saving && name.trim().length > 0 && enabledCount > 0 && !skillsNeedResources
+}
+
 function SelectionGroup({ title, description, options, selected, onChange }: {
   title: string; description: string; options: LoadoutOption[]; selected: string[]; onChange: (v: string[]) => void
 }) {
@@ -60,8 +69,8 @@ function SelectionGroup({ title, description, options, selected, onChange }: {
   </div>
 }
 
-export function LoadoutFormDialog({ open, loadout, gatewayOptions, serviceOptions, onOpenChange, onSave }: {
-  open: boolean; loadout: GatewayLoadout | null; gatewayOptions: LoadoutOption[]; serviceOptions: LoadoutOption[];
+export function LoadoutFormDialog({ open, loadout, gatewayOptions, gatewayOptionsLoading = false, gatewayOptionsError = null, serviceOptions, onOpenChange, onSave }: {
+  open: boolean; loadout: GatewayLoadout | null; gatewayOptions: LoadoutOption[]; gatewayOptionsLoading?: boolean; gatewayOptionsError?: string | null; serviceOptions: LoadoutOption[];
   onOpenChange: (v: boolean) => void; onSave: (original: string | null, draft: GatewayLoadoutInput) => Promise<void>
 }) {
   const [draft, setDraft] = useState<GatewayLoadout>(emptyLoadout())
@@ -70,7 +79,7 @@ export function LoadoutFormDialog({ open, loadout, gatewayOptions, serviceOption
   useEffect(() => { if (open) { setDraft(loadout ? { ...loadout, upstreams: [...loadout.upstreams], services: [...loadout.services] } : emptyLoadout()); setError(null) } }, [loadout, open])
   const skillsNeedResources = draft.expose_skills && !draft.expose_resources
   const enabledCount = LOADOUT_CAPABILITIES.filter(([key]) => draft[key]).length
-  const canSave = !saving && draft.name.trim().length > 0 && enabledCount > 0 && !skillsNeedResources
+  const canSave = loadoutSaveEnabled(saving, draft.name, enabledCount, skillsNeedResources)
   const cap = (key: CapabilityKey, value: boolean) => setDraft(current => ({ ...current, [key]: value }))
 
   return <Dialog open={open} onOpenChange={next => !saving && onOpenChange(next)}>
@@ -82,7 +91,11 @@ export function LoadoutFormDialog({ open, loadout, gatewayOptions, serviceOption
           <Field><FieldLabel htmlFor="loadout-description">Description</FieldLabel><Textarea id="loadout-description" rows={3} value={draft.description ?? ''} onChange={e => setDraft(c => ({ ...c, description: e.target.value || null }))} placeholder="Operations-focused projection" /></Field>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
-          <SelectionGroup title="Upstream MCP servers" description="Only selected upstreams are visible." options={gatewayOptions} selected={draft.upstreams} onChange={upstreams => setDraft(c => ({ ...c, upstreams }))} />
+          <div className="space-y-2">
+            <SelectionGroup title="Upstream MCP servers" description="Only selected upstreams are visible." options={gatewayOptions} selected={draft.upstreams} onChange={upstreams => setDraft(c => ({ ...c, upstreams }))} />
+            {gatewayOptionsLoading && <p className="text-sm text-aurora-text-muted">Loading gateway options…</p>}
+            {gatewayOptionsError && <p className="text-sm text-destructive">{gatewayOptionsError}</p>}
+          </div>
           <SelectionGroup title="Lab services" description="Built-in services exposed to this projection." options={serviceOptions} selected={draft.services} onChange={services => setDraft(c => ({ ...c, services }))} />
         </div>
         <div className="grid gap-3 lg:grid-cols-2">{LOADOUT_CAPABILITIES.map(([key, label, description, Icon]) => <Field key={key} orientation="horizontal" className="rounded-lg border bg-aurora-control-surface/10 p-3"><Icon className="size-4 shrink-0 text-aurora-text-muted" /><FieldContent><FieldTitle>{label}</FieldTitle><FieldDescription>{description}</FieldDescription></FieldContent><Switch aria-label={label} checked={draft[key]} onCheckedChange={value => cap(key, value)} /></Field>)}</div>

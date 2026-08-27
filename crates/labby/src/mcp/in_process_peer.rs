@@ -9,6 +9,7 @@ use rmcp::{RoleClient, ServiceExt};
 
 use labby_gateway::registry::InProcessService;
 
+use crate::access::AccessRuntime;
 use crate::dispatch::upstream::pool::{
     InProcessConnector, InProcessRegistration, UpstreamConnection, in_process_upstream_name,
 };
@@ -56,6 +57,11 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
     registry.register(service.clone());
     LabMcpServer {
         registry: Arc::new(registry),
+        // Delegated built-in peers are protocol adapters, not access-policy
+        // decision points or process lifecycle owners. Give them an explicit,
+        // non-I/O blocked runtime so future enforcement cannot accidentally
+        // treat this internal hop as an independently authoritative store.
+        access_runtime: Arc::new(AccessRuntime::blocked_unavailable()),
         // Each of these INDEPENDENTLY closes the re-entrancy path:
         // `expose_code_mode: false` (below) short-circuits
         // `code_mode_visibility` to `Raw` before the manager is consulted, and
@@ -183,6 +189,52 @@ async fn connect_in_process_service_peer(
 }
 
 #[cfg(test)]
+mod skill_generation_tests {
+    use crate::skills::facade::SkillRegistryContext;
+    use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+
+    #[tokio::test]
+    async fn code_mode_in_process_boundary_keeps_a_captured_generation_during_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("code-mode-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: code-mode-race\ndescription: old\n---\nold\n",
+        )
+        .unwrap();
+        let manager =
+            FirstPartyGenerationManager::new(temp.path().into(), GenerationLimits::default());
+        let old = SkillRegistryContext::from_generation(manager.generation());
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: code-mode-race\ndescription: new\n---\nnew\n",
+        )
+        .unwrap();
+        manager.refresh(None).unwrap();
+        let uri = "skill://labby/code-mode-race/SKILL.md";
+        let old_value = crate::mcp::skills::dispatch_at_in_process_boundary(
+            &old,
+            "skills.read",
+            serde_json::json!({"uri": uri}),
+        )
+        .await
+        .unwrap();
+        let current = SkillRegistryContext::from_generation(manager.generation());
+        let new_value = crate::mcp::skills::dispatch_at_in_process_boundary(
+            &current,
+            "skills.read",
+            serde_json::json!({"uri": uri}),
+        )
+        .await
+        .unwrap();
+        assert!(old_value["text"].as_str().unwrap().contains("old"));
+        assert!(new_value["text"].as_str().unwrap().contains("new"));
+        assert_ne!(old_value["digest"], new_value["digest"]);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
@@ -207,6 +259,34 @@ mod tests {
             requires_admin: false,
         }];
 
+    #[tokio::test]
+    async fn in_process_peer_is_not_an_access_policy_decision_point() {
+        let service = RegisteredService {
+            name: "gateway-alpha",
+            description: "Gateway alpha",
+            category: "network",
+            kind: crate::registry::RegisteredServiceKind::BuiltInUpstreamApi,
+            status: "available",
+            actions: TEST_ACTIONS,
+            dispatch: noop_dispatch,
+        };
+
+        let server = build_peer_server(&service);
+
+        assert_eq!(
+            server.access_runtime.status().await,
+            crate::access::AccessRuntimeStatus::Blocked(
+                crate::access::AccessBlockedReason::Unavailable
+            )
+        );
+        assert_eq!(
+            server.access_runtime.store().await.unwrap_err(),
+            crate::access::AccessRuntimeError::Blocked(
+                crate::access::AccessBlockedReason::Unavailable
+            )
+        );
+    }
+
     /// FU-1 (issue #210, lab-48z4k): the mini in-process server must list its
     /// service in Raw mode even when the PROCESS code-mode flag is enabled —
     /// which is exactly the state of a serve process whose Code Mode catalog
@@ -214,11 +294,12 @@ mod tests {
     /// `InProcessPeer` visibility from the global flag, suppressed its own
     /// service, and registered zero tools.
     ///
-    /// Safe to toggle the process-global flag here: nextest runs each test in
-    /// its own process (see the same reasoning at pool helpers tests).
+    /// Process-global Code Mode state is serialized by the test guard so this
+    /// remains hermetic under both nextest and plain parallel `cargo test`.
     #[tokio::test]
     async fn in_process_peer_lists_its_service_under_process_code_mode() {
-        crate::config::set_process_code_mode_enabled(true);
+        let _guard = crate::config::process_code_mode_test_guard();
+        crate::config::set_process_code_mode_enabled_for_test(true);
 
         let service = RegisteredService {
             name: "gateway-alpha",

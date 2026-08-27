@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "dinglebear.depot-dns-policy-v1/vectors",
+  "vectors": [
+    {
+      "name": "ipv4",
+      "origin": "https://depot.example.com",
+      "addresses": ["8.8.8.8"],
+      "preimage": "dinglebear.depot-dns-policy/v1\nhttps://depot.example.com\n8.8.8.8\n",
+      "dnsPolicyId": "dns_0d66eb6ee72fe18e1f86ec07ace1f3ff0e06e3b74bcf5b022dedda846cf0587a"
+    },
+    {
+      "name": "ipv6",
+      "origin": "https://depot.example.com",
+      "addresses": ["2001:4860:4860::8888"],
+      "preimage": "dinglebear.depot-dns-policy/v1\nhttps://depot.example.com\n2001:4860:4860::8888\n",
+      "dnsPolicyId": "dns_639a766574a41783ad7a6de696101d0aa6c843fae9e819af662c3fe7dac1c49a"
+    },
+    {
+      "name": "mixed",
+      "origin": "https://depot.example.com:8443",
+      "addresses": ["1.1.1.1", "2606:4700:4700::1111"],
+      "preimage": "dinglebear.depot-dns-policy/v1\nhttps://depot.example.com:8443\n1.1.1.1\n2606:4700:4700::1111\n",
+      "dnsPolicyId": "dns_92006eb07b568f18ed667a3658dc8449cd2dcb9dcf172ab4b1bc886fc0a1783d"
+    }
+  ]
+}

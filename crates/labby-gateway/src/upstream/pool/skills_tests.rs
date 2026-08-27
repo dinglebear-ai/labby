@@ -15,6 +15,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "skills")]
+use std::time::Duration;
 
 use rmcp::model::{
     CustomRequest, CustomResult, ErrorCode, ErrorData, ServerCapabilities, ServerInfo,
@@ -24,6 +26,11 @@ use rmcp::{RoleServer, ServerHandler};
 use serde_json::{Value, json};
 
 use labby_runtime::skills::digest::ResourceDigest;
+#[cfg(feature = "skills")]
+use labby_runtime::skills::{
+    SkillDiscoverRequest, SkillGetRequest, SkillId, SkillProvider, SkillProviderDeadline,
+    SkillProviderError, SkillProviderId, SkillResourceReadRequest,
+};
 use labby_runtime::skills::{SkillRejection, limits};
 
 use super::testsupport::*;
@@ -49,6 +56,19 @@ fn entry(origin: &str, name: &str) -> Value {
     })
 }
 
+fn entry_with_supporting(origin: &str, name: &str) -> Value {
+    let uri = format!("skill://{origin}/{name}/SKILL.md");
+    let notes = format!("skill://{origin}/{name}/notes.md");
+    json!({
+        "uri": uri,
+        "frontmatter": { "name": name, "description": "a test skill" },
+        "resources": [
+            { "uri": uri, "digest": ResourceDigest::of_bytes(skill_md_body(name).as_bytes()).to_wire() },
+            { "uri": notes, "digest": ResourceDigest::of_bytes(b"supporting notes").to_wire() }
+        ]
+    })
+}
+
 /// A skills-capable upstream whose `skills/list` behavior is scripted per test.
 #[derive(Clone)]
 struct SkillsServer {
@@ -67,6 +87,9 @@ struct SkillsServer {
     /// whose frontmatter disagrees with the published entry while its digest
     /// still matches.
     forged_frontmatter: Option<String>,
+    stall_list: bool,
+    stall_get: bool,
+    stall_read: bool,
 }
 
 impl SkillsServer {
@@ -79,6 +102,9 @@ impl SkillsServer {
             declares_extension: true,
             tamper: false,
             forged_frontmatter: None,
+            stall_list: false,
+            stall_get: false,
+            stall_read: false,
         }
     }
 
@@ -102,6 +128,24 @@ impl SkillsServer {
         self.declares_extension = false;
         self
     }
+
+    #[cfg(feature = "skills")]
+    fn stalling_list(mut self) -> Self {
+        self.stall_list = true;
+        self
+    }
+
+    #[cfg(feature = "skills")]
+    fn stalling_get(mut self) -> Self {
+        self.stall_get = true;
+        self
+    }
+
+    #[cfg(feature = "skills")]
+    fn stalling_read(mut self) -> Self {
+        self.stall_read = true;
+        self
+    }
 }
 
 impl ServerHandler for SkillsServer {
@@ -123,6 +167,9 @@ impl ServerHandler for SkillsServer {
         request: rmcp::model::ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        if self.stall_read {
+            std::future::pending::<()>().await;
+        }
         // The honest body's digest is what `entry()` publishes, so serving
         // anything else is a genuine mismatch a gateway must catch.
         let name = request
@@ -131,7 +178,9 @@ impl ServerHandler for SkillsServer {
             .nth(1)
             .unwrap_or("alpha")
             .to_string();
-        let text = if self.tamper {
+        let text = if request.uri.ends_with("/notes.md") {
+            "supporting notes".to_string()
+        } else if self.tamper {
             "TAMPERED".to_string()
         } else if let Some(forged) = self.forged_frontmatter.as_deref() {
             // Digest is recomputed over this body by the test, so the digest
@@ -156,6 +205,9 @@ impl ServerHandler for SkillsServer {
     ) -> Result<CustomResult, ErrorData> {
         match request.method.as_str() {
             "skills/list" => {
+                if self.stall_list {
+                    std::future::pending::<()>().await;
+                }
                 let index = self.list_calls.fetch_add(1, Ordering::SeqCst);
                 let page = self
                     .pages
@@ -166,9 +218,21 @@ impl ServerHandler for SkillsServer {
                 Ok(CustomResult::new(page))
             }
             "skills/get" => {
+                if self.stall_get {
+                    std::future::pending::<()>().await;
+                }
                 self.get_calls.fetch_add(1, Ordering::SeqCst);
                 match self.get_entry.as_ref() {
-                    Some(entry) => Ok(CustomResult::new(json!({ "skill": entry }))),
+                    Some(entry) => Ok(CustomResult::new(json!({
+                        "resultType": "complete",
+                        "skill": entry,
+                        "_meta": {
+                            "io.modelcontextprotocol/serverInfo": {
+                                "name": "depot-shaped-skills-server",
+                                "version": "1.0.0"
+                            }
+                        }
+                    }))),
                     None => Err(ErrorData::new(
                         ErrorCode::INVALID_PARAMS,
                         "unknown skill".to_string(),
@@ -208,6 +272,38 @@ async fn capability_detection_reads_the_declared_extension() {
     assert!(!super::skills_list::peer_declares_skills(
         &peer_for(&pool, "silent").await
     ));
+}
+
+#[tokio::test]
+async fn skills_list_with_result_type_and_meta_stays_a_custom_result() {
+    let server = SkillsServer::new(vec![json!({
+        "resultType": "complete",
+        "skills": [entry("up", "alpha")],
+        "ttlMs": 60000,
+        "cacheScope": "private",
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+                "name": "depot-shaped-skills-server",
+                "version": "1.0.0"
+            }
+        }
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let skills = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect("skills/list custom result remains intact");
+
+    assert_eq!(skills.skills.len(), 1);
+    assert_eq!(
+        skills.skills[0]
+            .entry
+            .frontmatter
+            .get("name")
+            .and_then(Value::as_str),
+        Some("alpha")
+    );
 }
 
 #[tokio::test]
@@ -302,11 +398,55 @@ async fn the_skill_cap_stops_the_walk_before_the_next_request() {
         .expect("walk terminates");
 
     assert!(skills.truncated);
+    assert_eq!(
+        skills.discovered_count,
+        limits::MAX_SKILLS_PER_UPSTREAM + 5,
+        "every candidate on the fetched page was discovered before the host cap engaged"
+    );
     assert_eq!(skills.skills.len(), limits::MAX_SKILLS_PER_UPSTREAM);
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
         "no page fetched past the cap"
+    );
+}
+
+#[tokio::test]
+async fn the_candidate_cap_bounds_invalid_skill_floods() {
+    let big: Vec<Value> = (0..limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM + 5)
+        .map(|i| {
+            let name = format!("invalid-{i}");
+            json!({
+                "uri": format!("skill://up/{name}/SKILL.md"),
+                "frontmatter": { "name": name, "description": "d" }
+            })
+        })
+        .collect();
+    let server = SkillsServer::new(vec![json!({ "skills": big, "nextCursor": "more" })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let skills = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect("walk terminates");
+
+    assert!(skills.truncated);
+    assert_eq!(
+        skills.discovered_count,
+        limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM + 5,
+        "the fetched page remains visible to operator discovery accounting"
+    );
+    assert!(skills.skills.is_empty());
+    assert_eq!(
+        skills.excluded_count(),
+        limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
+        "invalid entries stop consuming rejection memory at the candidate cap"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the next page is never fetched"
     );
 }
 
@@ -334,12 +474,21 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
         .await
         .expect("the upstream survives its own bad skills");
 
+    assert_eq!(skills.discovered_count, 3);
     assert_eq!(skills.skills.len(), 1);
     assert_eq!(skills.skills[0].name, "alpha");
     assert_eq!(skills.excluded_count(), 2);
-    let reasons: Vec<SkillRejection> = skills.excluded.iter().map(|(r, _)| *r).collect();
+    let reasons: Vec<SkillRejection> = skills
+        .excluded
+        .iter()
+        .map(|excluded| excluded.reason)
+        .collect();
     assert!(reasons.contains(&SkillRejection::ManifestMissingSkillMd));
     assert!(reasons.contains(&SkillRejection::MissingManifest));
+    assert!(skills.excluded.iter().any(|excluded| {
+        excluded.reason == SkillRejection::ManifestMissingSkillMd
+            && excluded.detail == "manifest does not include the skill's own SKILL.md"
+    }));
 }
 
 #[tokio::test]
@@ -415,6 +564,450 @@ async fn skills_get_treats_invalid_params_as_not_a_skill() {
         .await
         .expect("a -32602 is a successful negative answer");
     assert!(answer.is_none());
+}
+
+#[cfg(feature = "skills")]
+fn provider_id(name: &str) -> SkillProviderId {
+    SkillProviderId::new(labby_runtime::skills::SkillProviderKind::McpUpstream, name)
+}
+
+#[cfg(feature = "skills")]
+fn provider_skill_id(name: &str, skill: &str) -> SkillId {
+    SkillId::new(
+        provider_id(name),
+        format!("skill://{name}/{skill}/SKILL.md"),
+    )
+}
+
+#[cfg(feature = "skills")]
+fn short_deadline() -> SkillProviderDeadline {
+    SkillProviderDeadline::new(Duration::from_millis(25)).expect("valid deadline")
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn sep_provider_gets_listed_unlisted_and_reports_authoritative_absence() {
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "listed")] })])
+        .with_get(entry("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(
+        Arc::clone(&pool),
+        skills_config("up", None),
+        Some("alice".to_string()),
+    );
+
+    let listed = provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "listed"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("listed skill");
+    assert_eq!(listed.skill.descriptor().name, "listed");
+
+    let unlisted = provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("unlisted skill");
+    assert_eq!(unlisted.skill.descriptor().name, "unlisted");
+
+    let missing_server = SkillsServer::new(vec![json!({ "skills": [] })]);
+    let missing_pool = catalog_pool_with_server("missing", missing_server).await;
+    let missing_provider =
+        super::SepSkillProvider::new(missing_pool, skills_config("missing", None), None);
+    let error = missing_provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("missing", "nope"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("-32602 is authoritative absence");
+    assert_eq!(error, SkillProviderError::SkillNotFound);
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_get_snapshot_reads_skill_md_and_supporting_file() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(
+        Arc::clone(&pool),
+        skills_config("up", None),
+        Some("alice".to_string()),
+    );
+    provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct get seeds the exact manifest");
+
+    for (resource_id, expected) in [
+        ("skill://up/unlisted/SKILL.md", skill_md_body("unlisted")),
+        (
+            "skill://up/unlisted/notes.md",
+            "supporting notes".to_string(),
+        ),
+    ] {
+        let read = provider
+            .read_resource(&SkillResourceReadRequest {
+                skill_id: provider_skill_id("up", "unlisted"),
+                resource_id: resource_id.to_string(),
+                max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+                deadline: SkillProviderDeadline::default(),
+            })
+            .await
+            .expect("manifest-bound direct resource read");
+        assert_eq!(read.bytes, expected.into_bytes());
+    }
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_get_snapshot_is_subject_scoped_and_exposure_is_rechecked() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let alice = super::SepSkillProvider::new(
+        Arc::clone(&pool),
+        skills_config("up", None),
+        Some("alice".to_string()),
+    );
+    alice
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("alice direct get");
+
+    let bob = super::SepSkillProvider::new(
+        Arc::clone(&pool),
+        skills_config("up", None),
+        Some("bob".to_string()),
+    );
+    assert!(
+        bob.cached_owner_for_resource("skill://up/unlisted/notes.md")
+            .await
+            .is_none(),
+        "alice's manifest must not enter bob's shard"
+    );
+    let bob_error = bob
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "unlisted"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("bob cannot read alice's cached manifest");
+    assert_eq!(bob_error, SkillProviderError::ManifestStale);
+
+    let narrowed = super::SepSkillProvider::new(
+        pool,
+        skills_config("up", Some(vec!["allowed"])),
+        Some("alice".to_string()),
+    );
+    assert!(
+        narrowed
+            .cached_owner_for_resource("skill://up/unlisted/notes.md")
+            .await
+            .is_none(),
+        "live exposure narrowing applies before snapshot expiry"
+    );
+    let narrowed_error = narrowed
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "unlisted"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("hidden direct snapshot is not readable");
+    assert_eq!(narrowed_error, SkillProviderError::ManifestStale);
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_snapshot_keeps_owner_binding_and_is_invalidated_with_catalog() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct get");
+    let error = provider
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "other"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("another skill identity cannot claim the cached resource");
+    assert_eq!(error, SkillProviderError::ManifestStale);
+
+    pool.invalidate_upstream_skills("up").await;
+    assert!(
+        provider
+            .cached_owner_for_resource("skill://up/unlisted/notes.md")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn direct_get_cannot_reuse_a_listed_supporting_resource_uri() {
+    let shared = "skill://up/parent/child/shared.md";
+    let parent_body = skill_md_body("parent");
+    let parent = json!({
+        "uri": "skill://up/parent/SKILL.md",
+        "frontmatter": { "name": "parent", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire() }
+        ]
+    });
+    let child_body = skill_md_body("child");
+    let child = json!({
+        "uri": "skill://up/parent/child/SKILL.md",
+        "frontmatter": { "name": "child", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire() }
+        ]
+    });
+    let server = SkillsServer::new(vec![json!({ "skills": [parent] })]).with_get(child);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(pool, skills_config("up", None), None);
+    let error = provider
+        .get(&SkillGetRequest {
+            id: SkillId::new(provider_id("up"), "skill://up/parent/child/SKILL.md"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("ambiguous ownership must not be cached");
+    assert!(matches!(error, SkillProviderError::Provider { .. }));
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn non_conflicting_catalog_refresh_preserves_direct_snapshot() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [] }),
+        json!({ "skills": [entry("up", "listed")] }),
+    ])
+    .with_get(entry_with_supporting("up", "unlisted"));
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), config.clone(), None);
+    provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct get");
+
+    pool.fetch_and_cache_skills(&config, None)
+        .await
+        .expect("refresh listed catalog");
+    let read = provider
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("up", "unlisted"),
+            resource_id: "skill://up/unlisted/notes.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("non-conflicting refresh retains direct manifest");
+    assert_eq!(read.bytes, b"supporting notes");
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn refresh_drops_direct_snapshot_when_hidden_listed_owner_claims_its_resource() {
+    let shared = "skill://up/parent/child/shared.md";
+    let child_body = skill_md_body("child");
+    let child = json!({
+        "uri": "skill://up/parent/child/SKILL.md",
+        "frontmatter": { "name": "child", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire() }
+        ]
+    });
+    let parent_body = skill_md_body("parent");
+    let parent = json!({
+        "uri": "skill://up/parent/SKILL.md",
+        "frontmatter": { "name": "parent", "description": "a test skill" },
+        "resources": [
+            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire() }
+        ]
+    });
+    let server = SkillsServer::new(vec![json!({ "skills": [] }), json!({ "skills": [parent] })])
+        .with_get(child);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", Some(vec!["child"]));
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), config.clone(), None);
+    provider
+        .get(&SkillGetRequest {
+            id: SkillId::new(provider_id("up"), "skill://up/parent/child/SKILL.md"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("direct child is initially unambiguous");
+
+    pool.fetch_and_cache_skills(&config, None)
+        .await
+        .expect("refresh sees hidden parent owner");
+    assert!(
+        provider.cached_owner_for_resource(shared).await.is_none(),
+        "unfiltered refreshed ownership evicts the colliding direct snapshot"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn expired_direct_snapshot_is_evicted_and_refetched() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })])
+        .with_get(entry_with_supporting("up", "unlisted"));
+    let get_calls = Arc::clone(&server.get_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    let request = SkillGetRequest {
+        id: provider_skill_id("up", "unlisted"),
+        deadline: SkillProviderDeadline::default(),
+    };
+    provider.get(&request).await.expect("initial direct get");
+    {
+        let mut cache = pool.skills_cache.write().await;
+        cache
+            .get_mut(&("up".to_string(), None))
+            .expect("catalog shard")
+            .direct
+            .get_mut("skill://up/unlisted/SKILL.md")
+            .expect("direct snapshot")
+            .expire_now();
+    }
+    provider
+        .get(&request)
+        .await
+        .expect("expired snapshot refetched");
+    assert_eq!(get_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn sep_provider_rejects_wrong_provider_and_preserves_acquisition_failure() {
+    let server = SkillsServer::new(vec![json!({ "skills": [] })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    let wrong = provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("other", "alpha"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("wrong provider");
+    assert_eq!(wrong, SkillProviderError::WrongProvider);
+
+    provider
+        .discover(&SkillDiscoverRequest::default())
+        .await
+        .expect("seed empty cache");
+    pool.connections.write().await.remove("up");
+    let unavailable = provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("up", "unlisted"),
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect_err("missing connection is not absence");
+    assert!(matches!(unavailable, SkillProviderError::Provider { .. }));
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn sep_provider_enforces_discover_get_and_read_deadlines() {
+    let discover_pool = catalog_pool_with_server(
+        "discover",
+        SkillsServer::new(vec![json!({ "skills": [] })]).stalling_list(),
+    )
+    .await;
+    let discover_provider =
+        super::SepSkillProvider::new(discover_pool, skills_config("discover", None), None);
+    let discover_error = discover_provider
+        .discover(&SkillDiscoverRequest {
+            max_items: 1,
+            deadline: short_deadline(),
+        })
+        .await
+        .expect_err("discover deadline");
+    assert_eq!(discover_error, SkillProviderError::DeadlineExceeded);
+
+    let get_pool = catalog_pool_with_server(
+        "get",
+        SkillsServer::new(vec![json!({ "skills": [] })]).stalling_get(),
+    )
+    .await;
+    let get_provider = super::SepSkillProvider::new(get_pool, skills_config("get", None), None);
+    let get_error = get_provider
+        .get(&SkillGetRequest {
+            id: provider_skill_id("get", "unlisted"),
+            deadline: short_deadline(),
+        })
+        .await
+        .expect_err("get deadline");
+    assert_eq!(get_error, SkillProviderError::DeadlineExceeded);
+
+    let read_pool = catalog_pool_with_server(
+        "read",
+        SkillsServer::new(vec![json!({ "skills": [entry("read", "alpha")] })]).stalling_read(),
+    )
+    .await;
+    let read_provider = super::SepSkillProvider::new(read_pool, skills_config("read", None), None);
+    let read_error = read_provider
+        .read_resource(&SkillResourceReadRequest {
+            skill_id: provider_skill_id("read", "alpha"),
+            resource_id: "skill://read/alpha/SKILL.md".to_string(),
+            max_bytes: limits::MAX_SKILL_RESOURCE_BYTES,
+            deadline: short_deadline(),
+        })
+        .await
+        .expect_err("read deadline");
+    assert_eq!(read_error, SkillProviderError::DeadlineExceeded);
+}
+
+#[tokio::test]
+#[cfg(feature = "skills")]
+async fn sep_provider_discovery_honors_max_items_and_marks_truncation() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha"), entry("up", "beta")]
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::SepSkillProvider::new(pool, skills_config("up", None), None);
+    let result = provider
+        .discover(&SkillDiscoverRequest {
+            max_items: 1,
+            deadline: SkillProviderDeadline::default(),
+        })
+        .await
+        .expect("bounded discovery");
+    assert_eq!(result.skills.len(), 1);
+    assert!(result.truncated);
 }
 
 // ── The cached, exposure-filtered entry point ────────────────────────────────
@@ -495,6 +1088,47 @@ async fn a_second_read_is_served_from_cache() {
         1,
         "the second read hits the cache"
     );
+}
+
+#[tokio::test]
+async fn operator_skills_explain_exposed_and_hidden_policy_decisions() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "review-pr"), entry("up", "deploy")],
+        "ttlMs": 600_000
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", Some(vec!["review-*"]));
+
+    let operator = pool
+        .upstream_skills_operator(&config)
+        .await
+        .expect("operator skills");
+
+    assert_eq!(operator.skills.len(), 2);
+    assert_eq!(operator.skills[0].descriptor.id.provider().instance(), "up");
+    assert_eq!(
+        operator.skills[0].descriptor.id.provider().kind(),
+        &labby_runtime::skills::SkillProviderKind::McpUpstream
+    );
+    assert_eq!(
+        operator.skills[0].descriptor.id.source_id(),
+        "skill://up/review-pr/SKILL.md"
+    );
+    assert!(operator.skills[0].exposure.exposed);
+    assert_eq!(
+        operator.skills[0].exposure.reason,
+        super::skills_exposure::SkillExposureReason::MatchedPattern
+    );
+    assert_eq!(
+        operator.skills[0].exposure.matched_pattern.as_deref(),
+        Some("review-*")
+    );
+    assert!(!operator.skills[1].exposure.exposed);
+    assert_eq!(
+        operator.skills[1].exposure.reason,
+        super::skills_exposure::SkillExposureReason::NotMatched
+    );
+    assert_eq!(operator.skills[1].exposure.matched_pattern, None);
 }
 
 #[tokio::test]
@@ -843,6 +1477,29 @@ async fn a_hidden_skills_files_are_not_readable_by_uri() {
         )
         .await
         .expect_err("a skill hidden from the listing must also be unreadable");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
+    );
+}
+
+#[tokio::test]
+async fn provider_read_binds_the_resource_to_the_requested_skill_identity() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "alpha"), entry("up", "beta")]
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .read_proxied_skill_file_for_skill(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+            "skill://up/beta/SKILL.md",
+            limits::MAX_SKILL_RESOURCE_BYTES,
+        )
+        .await
+        .expect_err("a resource owned by another skill must not be relabeled");
     assert_eq!(
         error.kind(),
         labby_runtime::skills::KIND_SKILL_MANIFEST_STALE

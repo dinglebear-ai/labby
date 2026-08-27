@@ -227,7 +227,7 @@ ENV HOME=/home/labby
 USER 1000:1000
 WORKDIR /home/labby
 
-# Default HTTP port.  Override with LAB_MCP_HTTP_PORT env var or config.toml.
+# Default HTTP port. Override with LABBY_MCP_HTTP_PORT or config.toml.
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

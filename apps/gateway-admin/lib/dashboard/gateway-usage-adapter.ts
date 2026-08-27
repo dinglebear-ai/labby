@@ -33,13 +33,23 @@ export interface GatewayUsageMetrics {
   top_tools: GatewayUsageToolCount[]
   least_tools: GatewayUsageToolCount[]
   top_actors: Array<{ actor: string; calls: number }>
-  slowest_tools: Array<{ upstream: string; tool: string; avg_elapsed_ms: number }>
+  slowest_tools: Array<{
+    upstream: string
+    tool: string
+    capability?: string
+    operation?: string
+    subject_scoped?: boolean
+    avg_elapsed_ms: number
+  }>
   errors: Array<{ kind: string; calls: number }>
   upstreams: Array<{ upstream: string; calls: number; failed: number }>
   hourly: Array<{ hour: number; calls: number }>
   timeseries: Array<{ ts_unix: number; calls: number; failed: number }>
   facets: {
     tools: Array<{ upstream: string; tool: string }>
+    capabilities?: string[]
+    operations?: string[]
+    subject_scopes?: boolean[]
     actors: string[]
     upstreams: string[]
     outcomes: string[]
@@ -133,7 +143,7 @@ export function aggregateGatewayUsage(
   const slowest: LatencyStat[] = summary.slowest_tools.map((tool) => ({
     // Drill-down identity stays the stable upstream::tool target even when the
     // aggregate row itself is dimensioned by OAuth/capability/operation.
-    name: toolName(tool),
+    name: usageDimensionName(tool),
     avg_ms: Math.round(tool.avg_elapsed_ms),
   }))
   const hourlyByHour = new Map(summary.hourly.map((entry) => [entry.hour, entry.calls]))

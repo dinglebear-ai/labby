@@ -53,34 +53,37 @@ export type ConsoleNavSection = {
   items: ConsoleNavItem[]
 }
 
-export const consoleNavSections: ConsoleNavSection[] = [
+/** Raw item data, before the ⌘N accelerator is attached. */
+type ConsoleNavItemSource = Omit<ConsoleNavItem, 'kbd' | 'tooltip'> & {
+  /** Text appended after the label in the tooltip, e.g. "upstream MCP servers". */
+  tooltipDetail?: string
+}
+
+type ConsoleNavSectionSource = {
+  id: string
+  label: string
+  items: ConsoleNavItemSource[]
+}
+
+const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
   {
     id: 'Control Plane',
     label: 'Control Plane',
     items: [
-      {
-        id: 'Overview',
-        label: 'Overview',
-        href: '/',
-        icon: LayoutDashboard,
-        kbd: '⌘1',
-        tooltip: 'Overview — ⌘1',
-      },
+      { id: 'Overview', label: 'Overview', href: '/', icon: LayoutDashboard },
       {
         id: 'Gateway',
         label: 'Gateway',
         href: '/gateways',
         icon: Cable,
-        kbd: '⌘2',
-        tooltip: 'Gateway — ⌘2 · upstream MCP servers',
+        tooltipDetail: 'upstream MCP servers',
       },
       {
         id: 'Loadouts',
         label: 'Loadouts',
         href: '/loadouts',
         icon: Boxes,
-        kbd: '⌘3',
-        tooltip: 'Loadouts — ⌘3 · reusable gateway capability projections',
+        tooltipDetail: 'reusable gateway capability projections',
       },
     ],
   },
@@ -93,24 +96,21 @@ export const consoleNavSections: ConsoleNavSection[] = [
         label: 'Tools',
         href: '/tools',
         icon: SearchCode,
-        kbd: '⌘3',
-        tooltip: 'Tools — ⌘3 · live Code Mode catalog',
+        tooltipDetail: 'live Code Mode catalog',
       },
       {
         id: 'Snippets',
         label: 'Snippets',
         href: '/snippets',
         icon: FileCode2,
-        kbd: '⌘4',
-        tooltip: 'Snippets — ⌘4 · Code Mode snippets',
+        tooltipDetail: 'Code Mode snippets',
       },
       {
         id: 'Skills',
         label: 'Skills',
         href: '/skills',
         icon: BookOpen,
-        kbd: '⌘5',
-        tooltip: 'Skills — ⌘5 · generated SKILL.md catalog',
+        tooltipDetail: 'generated SKILL.md catalog',
       },
     ],
   },
@@ -123,20 +123,47 @@ export const consoleNavSections: ConsoleNavSection[] = [
         label: 'Usage',
         href: '/usage',
         icon: Activity,
-        kbd: '⌘6',
-        tooltip: 'Usage — ⌘6 · tool call volume and latency',
+        tooltipDetail: 'tool call volume and latency',
       },
       {
         id: 'Traces',
         label: 'Traces',
         href: '/traces',
         icon: GitBranch,
-        kbd: '⌘6',
-        tooltip: 'Traces — ⌘6 · correlated request flows',
+        tooltipDetail: 'correlated request flows',
       },
     ],
   },
 ]
+
+// The ⌘/Ctrl+N handler in console-sidebar.tsx binds N to the Nth item of
+// `consoleNavSections.flatMap(section => section.items)`, in section order.
+// The accelerator shown here is derived from that same flattened position
+// instead of being typed per item, so the two can never drift apart again —
+// they previously did: Loadouts was inserted into Control Plane without
+// renumbering anything after it, leaving Tools and Loadouts both labelled
+// ⌘3, and Usage/Traces both labelled ⌘6, none of which matched what the
+// handler actually bound.
+let flatIndex = 0
+export const consoleNavSections: ConsoleNavSection[] = CONSOLE_NAV_SOURCE.map((section) => ({
+  id: section.id,
+  label: section.label,
+  items: section.items.map((item) => {
+    flatIndex += 1
+    const kbd = `⌘${flatIndex}`
+    return {
+      id: item.id,
+      label: item.label,
+      href: item.href,
+      icon: item.icon,
+      contextLine: item.contextLine,
+      kbd,
+      tooltip: item.tooltipDetail
+        ? `${item.label} — ${kbd} · ${item.tooltipDetail}`
+        : `${item.label} — ${kbd}`,
+    }
+  }),
+}))
 
 export const consoleNavItems: ConsoleNavItem[] = consoleNavSections.flatMap(
   (section) => section.items,

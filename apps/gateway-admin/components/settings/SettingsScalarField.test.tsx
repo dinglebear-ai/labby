@@ -6,7 +6,7 @@ import { SettingsScalarField } from './SettingsScalarField'
 import type { SettingsFieldSpec, SettingsState } from '@/lib/api/setup-client'
 
 const field: SettingsFieldSpec = {
-  key: 'LAB_LOG',
+  key: 'LABBY_LOG',
   label: 'Log filter',
   description: 'Tracing filter directive.',
   section: 'core',
@@ -29,8 +29,8 @@ const state: SettingsState = {
   config_path: '/tmp/config.toml',
   env_path: '/tmp/.env',
   section: 'core',
-  values: { LAB_LOG: 'labby=info' },
-  sources: { LAB_LOG: { source: 'env', overridden_by_env: null } },
+  values: { LABBY_LOG: 'labby=info' },
+  sources: { LABBY_LOG: { source: 'env', overridden_by_env: null } },
 }
 
 test('SettingsScalarField renders scalar metadata and value', () => {
@@ -38,7 +38,7 @@ test('SettingsScalarField renders scalar metadata and value', () => {
     <SettingsScalarField field={field} value="labby=info" state={state} onChange={() => undefined} />,
   )
   assert.match(html, /Log filter/)
-  assert.match(html, /LAB_LOG/)
+  assert.match(html, /LABBY_LOG/)
   assert.match(html, /labby=info/)
 })
 
@@ -48,14 +48,14 @@ test('SettingsScalarField disables config values shadowed by env overrides', () 
     key: 'mcp.port',
     backend: 'config_toml',
     control: 'number',
-    env_override: 'LAB_MCP_HTTP_PORT',
+    env_override: 'LABBY_MCP_HTTP_PORT',
     min: 1,
     max: 65535,
   }
   const configState: SettingsState = {
     ...state,
     values: { 'mcp.port': 9000 },
-    sources: { 'mcp.port': { source: 'env', overridden_by_env: 'LAB_MCP_HTTP_PORT' } },
+    sources: { 'mcp.port': { source: 'env', overridden_by_env: 'LABBY_MCP_HTTP_PORT' } },
   }
   const html = renderToStaticMarkup(
     <SettingsScalarField field={configField} value={9000} state={configState} onChange={() => undefined} />,

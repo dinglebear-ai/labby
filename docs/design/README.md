@@ -2,6 +2,11 @@
 
 These documents describe design contracts that are implemented by, or intentionally constrain, the current Labby product.
 
+## Accepted Target Architecture
+
+- [phabby-control-plane.md](./phabby-control-plane.md) — Phoenix/OTP control plane shared by Labby and Depot.
+- [phabby-migration-ledger.md](./phabby-migration-ledger.md) — current-to-target cutover and verification gates.
+
 ## Canonical Design Contracts
 
 - [design-system-contract.md](./design-system-contract.md) — Aurora web UI tokens, component patterns, accessibility, and layout rules.

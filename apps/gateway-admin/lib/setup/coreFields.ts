@@ -11,25 +11,25 @@ export interface CoreField {
 
 export const CORE_FIELDS: readonly CoreField[] = [
   {
-    key: 'LAB_MCP_HTTP_HOST',
+    key: 'LABBY_MCP_HTTP_HOST',
     label: 'Bind host',
-    description: 'Host the lab HTTP server binds to. Default 127.0.0.1 (loopback only).',
+    description: 'Host the Labby HTTP server binds to. Default 127.0.0.1 (loopback only).',
     example: '127.0.0.1',
   },
   {
-    key: 'LAB_MCP_HTTP_PORT',
+    key: 'LABBY_MCP_HTTP_PORT',
     label: 'Bind port',
-    description: 'TCP port for the lab HTTP server.',
+    description: 'TCP port for the Labby HTTP server.',
     example: '8765',
   },
   {
-    key: 'LAB_LOG',
+    key: 'LABBY_LOG',
     label: 'Log filter',
     description: 'tracing-subscriber filter directive.',
-    example: 'lab=info,lab_apis=warn',
+    example: 'labby=info,labby_apis=warn',
   },
   {
-    key: 'LAB_LOG_FORMAT',
+    key: 'LABBY_LOG_FORMAT',
     label: 'Log format',
     description: 'Set to "json" for structured logs in production.',
     example: 'text',

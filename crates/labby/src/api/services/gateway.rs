@@ -334,18 +334,17 @@ fn inject_gateway_owner(
     let origin = owner.raw.clone();
     // Serialize the owner struct into its JSON shape for the params object.
     // The fields match the GatewayRuntimeOwnerParams shape consumed by dispatch.
-    object.entry("owner".to_string()).or_insert_with(|| {
+    object.insert(
+        "owner".to_string(),
         serde_json::json!({
             "surface": owner.surface,
             "subject": owner.subject,
             "request_id": owner.request_id,
             "raw": owner.raw,
-        })
-    });
+        }),
+    );
     if let Some(origin) = origin {
-        object
-            .entry("origin".to_string())
-            .or_insert_with(|| Value::String(origin));
+        object.insert("origin".to_string(), Value::String(origin));
     }
     Value::Object(object)
 }
@@ -824,9 +823,19 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_code_mode_mcp_ui_update_persists_via_api() {
+        let _guard = crate::config::process_code_mode_test_guard();
         let (manager, path) = test_manager_with_path();
         manager
-            .seed_config_unchecked_for_tests(LabConfig::default().to_gateway_config())
+            .seed_config_unchecked_for_tests(
+                LabConfig {
+                    code_mode: crate::config::CodeModeConfig {
+                        mcp_ui_enabled: true,
+                        ..crate::config::CodeModeConfig::default()
+                    },
+                    ..LabConfig::default()
+                }
+                .to_gateway_config(),
+            )
             .await;
         assert!(manager.code_mode_app_state().is_enabled());
 

@@ -76,10 +76,12 @@ For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catal
   `codemode` has no static app descriptor but may return dynamic `_meta.ui`
   when an upstream call launches a nested MCP App. `codemode_ui` shares the
   same execution backend and owns the Code Mode inspector metadata. `mcp_app`
-  is the always-on root-gateway MCP App manager for the inspector, Gateway
-  Status, Server Logs, and Add Server surfaces; it supports per-app and `all`
-  `status|enable|disable` operations and cannot disable itself. App mutations
-  require `lab:admin`, are gateway-scoped, and schedule coalesced
+  is the always-available root-gateway control tool for the manager UI,
+  inspector, Gateway Status, Server Logs, Add Server, and Settings surfaces; it
+  supports per-app and `all` `status|enable|disable` operations. Its own manager
+  UI is opt-in and may be disabled, but the text-only control tool remains
+  available. App mutations require `lab:admin`, are gateway-scoped, and schedule
+  coalesced
   `tools/list_changed` plus `resources/list_changed` notifications after the
   open tool turn drains. `server_logs` keeps its text/service capability when
   its UI is hidden; `codemode` likewise remains text-only and executable when
@@ -214,8 +216,11 @@ Resources are read-only. Do not use them for mutations.
 - `ui://lab/code-mode/*` — Lab's own Code Mode app resources, served locally
   from bundled HTML (`read_code_mode_app_resource_impl`). The app descriptors
   bind only to `codemode_ui`; disabling the app hides that tool and these
-  resources from discovery, while direct resource reads remain valid so cards
-  already rendered by a host do not break.
+  resources, and direct reads fail as unknown. All Labby-owned app UIs are
+  opt-in; a disabled surface must not remain reachable through a cached URI.
+- `ui://lab/mcp-apps/manager` — the opt-in UI for the always-available `mcp_app`
+  control tool. Disabling this manager UI strips its tool metadata and resource
+  but does not remove the text-only control tool needed to restore app surfaces.
 - `ui://lab/gateway/add-server` — the admin-only Add Server app bound to the
   synthetic `add_server` tool. Its `test` and `create` callbacks delegate to
   `gateway.test` and `gateway.add`; do not duplicate gateway persistence logic.
@@ -224,10 +229,18 @@ Resources are read-only. Do not use them for mutations.
 - `ui://lab/settings/editor` — the admin-only schema-backed settings app bound
   to the synthetic `settings` tool. Its callbacks delegate to the canonical
   `setup settings.*` dispatch actions; do not add a second configuration model.
-- any other `ui://<upstream>/…` — an upstream mcp-ui widget resource (referenced
-  by a tool result's `_meta.ui.resourceUri`). Routed to the owning upstream peer
-  via `pool.read_upstream_ui_resource` (catalog reverse-lookup, native URI
-  preserved). See `resource_proxy.rs::read_upstream_ui_resource_impl`.
+- any other `ui://<upstream>/…` — an upstream MCP App widget resource. Owners may
+  bind through standard `ui.resourceUri` or OpenAI `openai/outputTemplate`; the
+  native URI is preserved. Under synthetic Code Mode, an owner passes through
+  only when the route allows its upstream, `proxy_resources` is enabled, and the
+  exact binding passes `expose_resources`. Callback-only metadata is accepted
+  only when the same upstream has an exposed owner, ambiguous tool names are
+  omitted, and destructive app tools require execute scope. OAuth app discovery
+  and native `ui://` reads stay on the same subject-scoped cached connection; a
+  subject resource denial must never fall through to a global peer. Keep
+  `handlers_tools.rs` and `peer_contract.rs` on the single combined app-catalog
+  helper so the advertised descriptor set and `tools/list_changed` hash cannot
+  drift. See `resource_proxy.rs::read_upstream_ui_resource_impl`.
 
 ## Transport auth for fs
 

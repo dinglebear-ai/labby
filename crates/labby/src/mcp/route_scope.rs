@@ -118,11 +118,17 @@ impl McpRouteScope {
                         route.name
                     )
                 })?;
+            let effective = loadout.intersect_gateway_subset(target).map_err(|_| {
+                format!(
+                    "protected MCP route `{}` loadout binding is inconsistent",
+                    route.name
+                )
+            })?;
             return Ok(Some(Self::protected_subset_with_capabilities(
                 route.name.clone(),
-                loadout.upstreams.iter().map(String::as_str),
-                loadout.services.iter().map(String::as_str),
-                McpRouteCapabilityGates::from_loadout(loadout),
+                effective.upstreams.iter().map(String::as_str),
+                effective.services.iter().map(String::as_str),
+                McpRouteCapabilityGates::from_loadout(&effective),
             )));
         }
         Ok(Some(Self::protected_subset(

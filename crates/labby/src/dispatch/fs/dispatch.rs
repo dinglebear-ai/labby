@@ -626,6 +626,17 @@ fn open_no_follow_unix(root: &Path, rel: &Path) -> Result<std::fs::File, ToolErr
         Mode::empty(),
     );
 
+    let missing_or_directory = || match std::fs::symlink_metadata(root.join(rel)) {
+        Ok(metadata) if metadata.is_dir() => ToolError::InvalidParam {
+            message: "path does not name a regular file".into(),
+            param: "path".into(),
+        },
+        _ => ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: format!("path not found: `{}`", rel.display()),
+        },
+    };
+
     match file_result {
         Ok(fd) => {
             let file = std::fs::File::from(fd);
@@ -635,9 +646,9 @@ fn open_no_follow_unix(root: &Path, rel: &Path) -> Result<std::fs::File, ToolErr
                 message: e.to_string(),
             })?;
             if !meta.is_file() {
-                return Err(ToolError::Sdk {
-                    sdk_kind: "not_found".into(),
-                    message: format!("path not found: `{}`", rel.display()),
+                return Err(ToolError::InvalidParam {
+                    message: "path does not name a regular file".into(),
+                    param: "path".into(),
                 });
             }
             // Re-validate the canonical relative path against the deny-list.
@@ -660,18 +671,12 @@ fn open_no_follow_unix(root: &Path, rel: &Path) -> Result<std::fs::File, ToolErr
             sdk_kind: "permission_denied".into(),
             message: "symlinks are not followed for previews".into(),
         }),
-        Err(rustix::io::Errno::NOENT) => Err(ToolError::Sdk {
-            sdk_kind: "not_found".into(),
-            message: format!("path not found: `{}`", rel.display()),
-        }),
+        Err(rustix::io::Errno::NOENT) => Err(missing_or_directory()),
         Err(rustix::io::Errno::ACCESS | rustix::io::Errno::PERM) => Err(ToolError::Sdk {
             sdk_kind: "permission_denied".into(),
             message: "permission denied".into(),
         }),
-        Err(rustix::io::Errno::ISDIR) => Err(ToolError::Sdk {
-            sdk_kind: "not_found".into(),
-            message: format!("path not found: `{}`", rel.display()),
-        }),
+        Err(rustix::io::Errno::ISDIR) => Err(missing_or_directory()),
         Err(other) => Err(ToolError::Sdk {
             sdk_kind: "internal_error".into(),
             message: format!("openat file failed: {other}"),

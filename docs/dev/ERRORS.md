@@ -78,7 +78,10 @@ Supported code may emit additional stable kinds, including:
   `oauth_issuer_mismatch`, `oauth_unsupported_method`,
   `oauth_scope_upgrade_required`, `oauth_account_ambiguous`,
   `oauth_client_mismatch`, `oauth_shared_credential_protected`;
-- routing/upstreams: `not_found`, `unknown_upstream`, `unknown_tool`,
+- routing/upstreams: `not_found`, `route_not_found` (no HTTP route is
+  registered for the path/method — unlike `not_found`, rediscovery cannot help,
+  because the owning feature slice may simply not be mounted; the startup logs
+  name any skipped service), `unknown_upstream`, `unknown_tool`,
   `upstream_error`, `bad_gateway`, `network_error`,
   `service_unavailable`, `not_connected`, `connection_error`, `dns_error`,
   `connection_refused` (the latter three come from `classify_upstream_error`'s

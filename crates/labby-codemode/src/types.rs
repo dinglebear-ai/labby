@@ -897,6 +897,13 @@ pub enum CodeModeCaller {
         /// and calling tools; the kernel itself never interprets it.
         sub: Option<String>,
     },
+    /// Scoped caller carrying an opaque context minted by the host for a private
+    /// in-process hop. The kernel never interprets the token.
+    ScopedPrivate {
+        capabilities: CodeModeCallerCapabilities,
+        sub: Option<String>,
+        context_token: String,
+    },
 }
 
 /// Host-computed authorization facts for a scoped Code Mode caller.
@@ -957,7 +964,9 @@ impl CodeModeCaller {
     pub fn can_use_snippets(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } => capabilities.can_use_snippets,
+            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
+                capabilities.can_use_snippets
+            }
         }
     }
 
@@ -966,7 +975,9 @@ impl CodeModeCaller {
     pub fn can_execute(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } => capabilities.can_execute,
+            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
+                capabilities.can_execute
+            }
         }
     }
 
@@ -975,7 +986,9 @@ impl CodeModeCaller {
     pub fn can_read(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } => capabilities.can_read,
+            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
+                capabilities.can_read
+            }
         }
     }
 
@@ -986,7 +999,9 @@ impl CodeModeCaller {
     pub fn is_admin(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } => capabilities.is_admin,
+            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
+                capabilities.is_admin
+            }
         }
     }
 
@@ -995,7 +1010,7 @@ impl CodeModeCaller {
     pub fn subject(&self) -> Option<&str> {
         match self {
             Self::TrustedLocal => None,
-            Self::Scoped { sub, .. } => sub.as_deref(),
+            Self::Scoped { sub, .. } | Self::ScopedPrivate { sub, .. } => sub.as_deref(),
         }
     }
 }

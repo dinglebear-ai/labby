@@ -153,6 +153,31 @@ test('disconnected primary lens excludes disabled gateways', () => {
   assert.deepEqual(result.map((gateway) => gateway.id), ['gw_http'])
 })
 
+test('enabled primary lens (the default view) hides disabled gateways when no status facet is set', () => {
+  const result = filterGateways([configuredHealthyGateway, disconnectedGateway, disabledGateway], {
+    primaryLens: 'enabled',
+    search: '',
+    status: [],
+    source: [],
+    transport: [],
+  })
+
+  assert.deepEqual(result.map((gateway) => gateway.id), ['gw_lab', 'gw_http'])
+})
+
+// bead lab-gz4gk
+test('the Disabled status facet surfaces disabled gateways even while the Enabled lens tab is active', () => {
+  const result = filterGateways([configuredHealthyGateway, disconnectedGateway, disabledGateway], {
+    primaryLens: 'enabled',
+    search: '',
+    status: ['disabled'],
+    source: [],
+    transport: [],
+  })
+
+  assert.deepEqual(result.map((gateway) => gateway.id), ['gw_disabled'])
+})
+
 test('tool rows sort alphabetically by tool name', () => {
   const rows = sortToolRows(aggregateToolsFromGateways(fixtures))
   assert.deepEqual(rows.map((row) => row.toolName), ['gateway', 'search', 'unifi'])

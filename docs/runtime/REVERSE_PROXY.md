@@ -6,16 +6,16 @@ updated: "2026-07-30"
 
 # Reverse Proxy Deployment
 
-Lab can serve the web UI, OAuth server, native `/mcp`, and Gateway-managed
+Labby can serve the web UI, OAuth server, native `/mcp`, and Gateway-managed
 protected MCP routes from the same HTTP listener. Put your reverse proxy in
-front of that listener and configure public MCP routes in Lab.
+front of that listener and configure public MCP routes in Labby.
 
 ## Model
 
-- `LABBY_PUBLIC_URL` is the Lab app and OAuth issuer, for example `https://lab.example.com`.
+- `LABBY_PUBLIC_URL` is the Labby app and OAuth issuer, for example `https://lab.example.com`.
 - Each protected MCP route has its own public resource identity, for example `https://mcp.example.com/tools`.
-- The reverse proxy forwards public hosts to Lab without rewriting the path.
-- Lab matches `Host + path`, serves route-specific OAuth metadata, validates route-audience JWTs, and proxies accepted MCP traffic to the private backend.
+- The reverse proxy forwards public hosts to Labby without rewriting the path.
+- Labby matches `Host + path`, serves route-specific OAuth metadata, validates route-audience JWTs, and proxies accepted MCP traffic to the private backend.
 
 ## Required Proxy Behavior
 
@@ -27,16 +27,16 @@ front of that listener and configure public MCP routes in Lab.
 - Disable request and response buffering on MCP paths.
 - Disable compression on MCP paths.
 - Use read/write/idle timeouts suitable for long-lived Streamable HTTP and SSE.
-- Forward `/.well-known/oauth-protected-resource/<route>` to Lab.
+- Forward `/.well-known/oauth-protected-resource/<route>` to Labby.
 
-Lab intentionally uses `Host` for protected-route lookup by default. Do not rely
+Labby intentionally uses `Host` for protected-route lookup by default. Do not rely
 on spoofable `X-Forwarded-Host` unless a future trusted-proxy mode explicitly
 enables it.
 
 ## nginx or SWAG
 
 Host-level forwarding is the portable baseline. Both `lab.example.com` and
-`mcp.example.com` can point at the same Lab container/listener.
+`mcp.example.com` can point at the same Labby container/listener.
 
 ```nginx
 server {
@@ -115,7 +115,7 @@ Avoid compression and buffering middleware on the MCP router.
 
 ## Cloudflare Tunnel
 
-Create public hostnames for the app and MCP gateway that both target Lab:
+Create public hostnames for the app and MCP gateway that both target Labby:
 
 ```yaml
 ingress:
@@ -127,14 +127,14 @@ ingress:
 ```
 
 Do not place an Access policy in front of the MCP route unless it is compatible
-with MCP OAuth clients. Lab needs to return its own OAuth metadata and bearer
+with MCP OAuth clients. Labby needs to return its own OAuth metadata and bearer
 challenge.
 
 ## Tailscale Funnel
 
-Expose Lab's HTTP listener through Funnel for each public hostname you use, or
+Expose Labby's HTTP listener through Funnel for each public hostname you use, or
 put Funnel in front of a local reverse proxy that preserves `Host` and forwards
-to Lab. Keep the public route path intact.
+to Labby. Keep the public route path intact.
 
 ## Verification
 

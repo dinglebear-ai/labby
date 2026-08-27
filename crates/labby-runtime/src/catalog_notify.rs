@@ -40,7 +40,7 @@ pub const SOURCE_GATEWAY_ENRICH_HINT: &str = "gateway.enrich.hint_apply";
 /// invalidate a client binding mid-turn.
 pub const SOURCE_MCP_CALL_CODEMODE: &str = "mcp.call.codemode";
 
-/// Catalog delta produced by the always-on `mcp_app` manager tool.
+/// Catalog delta produced by the always-available `mcp_app` control tool.
 pub const SOURCE_MCP_CALL_MCP_APP: &str = "mcp.call.mcp_app";
 
 /// Post-call catalog delta observed by a raw upstream proxy call. Same

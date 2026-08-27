@@ -73,8 +73,6 @@ test('gatewayApi.create sends confirm=true with destructive gateway adds', async
   await withGatewayFetch(
     {
       'gateway.add': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -92,6 +90,12 @@ test('gatewayApi.create sends confirm=true with destructive gateway adds', async
         requests.find((request) => request.action === 'gateway.add')?.params.confirm,
         true,
       )
+      assert.deepEqual(requests.map((request) => request.action), [
+        'gateway.add',
+        'gateway.discovered_tools',
+        'gateway.discovered_resources',
+        'gateway.discovered_prompts',
+      ])
     },
   )
 })
@@ -143,8 +147,6 @@ test('gatewayApi.create adds a stdio gateway without any ack flag', async () => 
           proxy_resources: false,
         },
       }),
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -172,8 +174,6 @@ test('gatewayApi.create sends pasted bearer tokens as a separate payload field',
   await withGatewayFetch(
     {
       'gateway.add': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -216,8 +216,6 @@ test('gatewayApi.update sends confirm=true with destructive gateway updates', as
   await withGatewayFetch(
     {
       'gateway.update': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -238,6 +236,12 @@ test('gatewayApi.update sends confirm=true with destructive gateway updates', as
         requests.find((request) => request.action === 'gateway.update')?.params.confirm,
         true,
       )
+      assert.deepEqual(requests.map((request) => request.action), [
+        'gateway.update',
+        'gateway.discovered_tools',
+        'gateway.discovered_resources',
+        'gateway.discovered_prompts',
+      ])
     },
   )
 })
@@ -254,8 +258,6 @@ test('gatewayApi.update updates a stdio gateway without any ack flag', async () 
           proxy_resources: false,
         },
       }),
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -286,8 +288,6 @@ test('gatewayApi.update sends pasted bearer tokens as a separate payload field',
   await withGatewayFetch(
     {
       'gateway.update': () => standardGatewayView,
-      'gateway.mcp.list': () => [],
-      'gateway.test': () => standardGatewayView.runtime,
       'gateway.discovered_tools': () => ['tool.alpha'],
       'gateway.discovered_resources': () => ['lab://resource.alpha'],
       'gateway.discovered_prompts': () => ['prompt.alpha'],
@@ -467,6 +467,69 @@ test('gatewayApi protected route actions use gateway service action payloads', a
       assert.equal(requests[6]?.params.confirm, true)
       assert.equal(requests[7]?.params.confirm, true)
       assert.equal(requests[8]?.params.confirm, true)
+    },
+  )
+})
+
+test('gatewayApi restores Loadout selection arrays the gateway omits when empty', async () => {
+  // `GatewayLoadoutConfig` uses `skip_serializing_if = "Vec::is_empty"`, so a
+  // Loadout that selects only upstreams omits `services` on the wire (and vice
+  // versa). The Loadouts page reads `.length` off both, so an un-normalized
+  // payload threw `Cannot read properties of undefined (reading 'length')` and
+  // took down the whole renderer.
+  const upstreamsOnly = {
+    name: 'sd',
+    upstreams: ['chrome-devtools'],
+    expose_tools: true,
+    expose_resources: true,
+    expose_prompts: true,
+    expose_skills: true,
+    expose_code_mode: true,
+  }
+  const servicesOnly = {
+    name: 'services-only',
+    services: ['gateway'],
+    expose_tools: true,
+    expose_resources: true,
+    expose_prompts: true,
+    expose_skills: true,
+    expose_code_mode: true,
+  }
+
+  await withGatewayFetch(
+    {
+      'gateway.loadout.list_state': () => [upstreamsOnly, servicesOnly],
+      'gateway.loadout.get': () => upstreamsOnly,
+      'gateway.loadout.add': () => servicesOnly,
+    },
+    async () => {
+      const listed = await gatewayApi.listLoadouts()
+      assert.deepEqual(listed[0]?.services, [])
+      assert.deepEqual(listed[0]?.upstreams, ['chrome-devtools'])
+      assert.deepEqual(listed[1]?.upstreams, [])
+      assert.deepEqual(listed[1]?.services, ['gateway'])
+
+      assert.deepEqual((await gatewayApi.getLoadout('sd')).services, [])
+      assert.deepEqual((await gatewayApi.addLoadout({ ...servicesOnly, upstreams: [] })).upstreams, [])
+    },
+  )
+
+  await withGatewayFetch(
+    {
+      'gateway.loadout.stage_update': () => ({
+        loadout: upstreamsOnly,
+        restart_required: true,
+        pending_operation: 'update',
+        restart_note: 'restart',
+      }),
+    },
+    async () => {
+      const staged = await gatewayApi.stageLoadoutUpdate('sd', {
+        ...upstreamsOnly,
+        services: [],
+      })
+      assert.deepEqual(staged.loadout.services, [])
+      assert.deepEqual(staged.loadout.upstreams, ['chrome-devtools'])
     },
   )
 })
@@ -753,7 +816,7 @@ test('gatewayApi.hydrateRuntime treats gateway.mcp.list as authoritative runtime
         },
       ],
     },
-    async () => {
+    async (requests) => {
       const [gateway] = await gatewayApi.hydrateRuntime([
         {
           id: 'google-drive',
@@ -790,6 +853,7 @@ test('gatewayApi.hydrateRuntime treats gateway.mcp.list as authoritative runtime
       assert.equal(gateway?.status.discovered_tool_count, 0)
       assert.equal(gateway?.status.exposed_tool_count, 0)
       assert.equal(gateway?.status.runtime_state_path, '/home/labby/.labby/config.runtime.json')
+      assert.deepEqual(requests.map((request) => request.action), ['gateway.mcp.list'])
     },
   )
 })
@@ -979,6 +1043,73 @@ test('gatewayApi.get applies virtual-server MCP policy to in-process tool exposu
           'gateway.service_config.get',
           'gateway.service_actions',
           'gateway.virtual_server.get_mcp_policy',
+        ],
+      )
+    },
+  )
+})
+
+test('gatewayApi.get preserves side-effect-free runtime diagnostics without testing the gateway', async () => {
+  await withGatewayFetch(
+    {
+      'gateway.server.get': () => ({
+        id: 'Asana',
+        name: 'Asana',
+        source: 'custom_gateway',
+      }),
+      'gateway.get': () => ({
+        config: {
+          name: 'Asana',
+          url: 'https://mcp.asana.com/v2/mcp',
+          enabled: true,
+        },
+        runtime: {
+          tool_count: 0,
+          resource_count: 0,
+          prompt_count: 0,
+          exposed_tool_count: 0,
+          exposed_resource_count: 0,
+          exposed_prompt_count: 0,
+        },
+      }),
+      'gateway.discovered_tools': () => [],
+      'gateway.discovered_resources': () => [],
+      'gateway.discovered_prompts': () => [],
+      'gateway.mcp.list': () => [{
+        name: 'Asana',
+        connected: false,
+        pid: 4242,
+        pgid: 4240,
+        age_seconds: 90,
+        origin: 'gateway_pool',
+        runtime_state_path: '/tmp/gateway.runtime.json',
+        reconciled_at: '2026-08-22T05:00:00Z',
+        likely_stale_count: 1,
+      }],
+    },
+    async (requests) => {
+      const gateway = await gatewayApi.get('Asana')
+
+      assert.equal(gateway.name, 'Asana')
+      assert.equal(gateway.status.connected, false)
+      assert.equal(gateway.status.pid, 4242)
+      assert.equal(gateway.status.pgid, 4240)
+      assert.equal(gateway.status.runtime_state_path, '/tmp/gateway.runtime.json')
+      assert.equal(gateway.status.reconciled_at, '2026-08-22T05:00:00Z')
+      assert.equal(gateway.status.likely_stale_count, 1)
+      assert.deepEqual(
+        requests.find((request) => request.action === 'gateway.mcp.list')?.params,
+        { name: 'Asana' },
+      )
+      assert.deepEqual(
+        requests.map((request) => request.action),
+        [
+          'gateway.server.get',
+          'gateway.get',
+          'gateway.mcp.list',
+          'gateway.discovered_tools',
+          'gateway.discovered_resources',
+          'gateway.discovered_prompts',
         ],
       )
     },

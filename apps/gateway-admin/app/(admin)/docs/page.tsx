@@ -106,16 +106,16 @@ export default function DocsPage() {
               </div>
               <div className="flex flex-wrap gap-2 pt-1">
                 <Badge variant="outline">
-                  {snapshot.totalGateways} servers tracked
+                  {snapshot.totalGateways} server{snapshot.totalGateways === 1 ? '' : 's'} tracked
                 </Badge>
                 <Badge variant="outline" status="success">
                   {snapshot.connectedGateways} connected
                 </Badge>
                 <Badge variant="outline">
-                  {snapshot.exposedTools} tools exposed
+                  {snapshot.exposedTools} tool{snapshot.exposedTools === 1 ? '' : 's'} exposed
                 </Badge>
                 <Badge variant="outline">
-                  {snapshot.supportedServices} Lab services available
+                  {snapshot.supportedServices} Lab service{snapshot.supportedServices === 1 ? '' : 's'} available
                 </Badge>
               </div>
             </div>

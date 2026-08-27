@@ -374,20 +374,20 @@ export const MOCK_SETTINGS_SCHEMA: SettingsSchemaResponse = {
     { id: 'advanced', label: 'Advanced', description: 'Advanced settings.', advanced: true },
   ],
   fields: [
-    { key: 'LAB_LOG', label: 'Log filter', description: 'Tracing filter directive.', section: 'core', backend: 'env', control: 'text', risk: 'restart', write_policy: 'editable', apply_mode: 'restart', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: 'labby=info' },
+    { key: 'LABBY_LOG', label: 'Log filter', description: 'Tracing filter directive.', section: 'core', backend: 'env', control: 'text', risk: 'restart', write_policy: 'editable', apply_mode: 'restart', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: 'labby=info' },
     { key: 'services.built_in_upstream_apis_enabled', label: 'Built-in upstream API services', description: 'Enable bundled external API integrations.', section: 'features', backend: 'config_toml', control: 'bool', risk: 'low', write_policy: 'editable', apply_mode: 'immediate', secret: false, required: false, env_override: null, min: null, max: null, options: [], example: 'true' },
     { key: 'auth', label: 'Auth config', description: 'Redacted auth settings.', section: 'advanced', backend: 'config_toml', control: 'read_only', risk: 'security_sensitive', write_policy: 'secret_write_only_future', apply_mode: 'read_only', secret: true, required: false, env_override: null, min: null, max: null, options: [], example: null },
   ],
 }
 
 export const MOCK_ENV_SCHEMA: EnvSettingSpec[] = [
-  { service: 'lab', key: 'LAB_LOG', required: false, secret: false, description: 'Tracing filter directive.', example: 'labby=info', editable: true },
-  { service: 'setup', key: 'LAB_MCP_HTTP_TOKEN', required: true, secret: true, description: 'Bearer token.', example: '<token>', editable: false },
+  { service: 'labby', key: 'LABBY_LOG', required: false, secret: false, description: 'Tracing filter directive.', example: 'labby=info', editable: true },
+  { service: 'setup', key: 'LABBY_MCP_HTTP_TOKEN', required: true, secret: true, description: 'Bearer token.', example: '<token>', editable: false },
 ]
 
 function mockSettingsState(section: string, updates: SettingsUpdateEntry[] = []): SettingsState {
   const values: Record<string, unknown> = {
-    LAB_LOG: 'labby=info,lab_apis=warn',
+    LABBY_LOG: 'labby=info,labby_apis=warn',
     'services.built_in_upstream_apis_enabled': true,
     auth: { google_client_secret: { has_value: true } },
   }
@@ -399,7 +399,7 @@ function mockSettingsState(section: string, updates: SettingsUpdateEntry[] = [])
     section,
     values,
     sources: {
-      LAB_LOG: { source: 'env', overridden_by_env: null },
+      LABBY_LOG: { source: 'env', overridden_by_env: null },
       'services.built_in_upstream_apis_enabled': { source: 'config_toml', overridden_by_env: null },
       auth: { source: 'config_toml', overridden_by_env: null },
     },
