@@ -175,6 +175,7 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
             command: GatewayMcpCommand::List
                 | GatewayMcpCommand::Enable(_)
                 | GatewayMcpCommand::Disable(_)
+                | GatewayMcpCommand::Restart(_)
                 | GatewayMcpCommand::Cleanup(_)
                 | GatewayMcpCommand::Auth(GatewayMcpAuthArgs {
                     command: GatewayMcpAuthCommand::Status(_) | GatewayMcpAuthCommand::Clear(_),
@@ -325,6 +326,17 @@ mod tests {
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "list",]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "clients", "list",]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "enable", "fixture-http",]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "mcp",
+                "restart",
+                "fixture-http",
+                "--aggressive",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "lab",

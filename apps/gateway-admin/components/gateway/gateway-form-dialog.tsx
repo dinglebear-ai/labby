@@ -837,7 +837,11 @@ export function GatewayFormDialog({
       if (result.severity === 'warning') {
         toast.warning(result.detail || result.message)
       } else if (result.success) {
-        toast.success(`Connection successful: ${result.latency_ms}ms latency`)
+        toast.success(
+          result.latency_ms !== undefined
+            ? `Connection successful: ${result.latency_ms}ms latency`
+            : 'Connection successful',
+        )
       } else {
         toast.error(`Connection failed: ${result.error || result.message}`)
       }

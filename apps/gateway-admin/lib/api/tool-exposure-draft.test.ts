@@ -11,6 +11,7 @@ import {
   getDraftExposureSummary,
   getExposureFilterCounts,
   filterToolsForExposureView,
+  stripExposeNonePattern,
 } from './tool-exposure-draft.ts'
 
 const tools: DiscoveredTool[] = [
@@ -38,11 +39,21 @@ test('buildExposurePolicyFromDraft maps all selected tools to expose_all', () =>
   )
 })
 
-test('buildExposurePolicyFromDraft maps no selected tools to expose none sentinel', () => {
+test('buildExposurePolicyFromDraft maps no selected tools to a real empty allowlist', () => {
+  // Not the EXPOSE_NONE_PATTERN sentinel any more: an empty `expose_tools`
+  // array now persists as expose-none, so the magic string is only an
+  // encoding detail of the virtual-server wire format. bead lab-sc8ba.
   assert.deepEqual(
     buildExposurePolicyFromDraft(['alpha', 'beta'], []),
-    { mode: 'allowlist', patterns: [EXPOSE_NONE_PATTERN] },
+    { mode: 'allowlist', patterns: [] },
   )
+})
+
+test('stripExposeNonePattern still reads configs written with the legacy sentinel', () => {
+  // Read compatibility must outlive the write change: configs already on disk
+  // contain the literal sentinel in their expose_tools array.
+  assert.deepEqual(stripExposeNonePattern([EXPOSE_NONE_PATTERN]), [])
+  assert.deepEqual(stripExposeNonePattern([EXPOSE_NONE_PATTERN, 'alpha']), ['alpha'])
 })
 
 test('buildExposurePolicyFromDraft preserves partial allowlists and ignores stale names', () => {

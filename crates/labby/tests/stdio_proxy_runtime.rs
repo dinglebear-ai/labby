@@ -236,7 +236,11 @@ async fn local_proxy_forwards_tools_list_after_child_discovery_and_bind() {
             .text,
     )
     .unwrap();
-    assert_eq!(context["cwd"], temp.path().to_string_lossy().as_ref());
+    let child_cwd = PathBuf::from(context["cwd"].as_str().expect("fixture cwd"))
+        .canonicalize()
+        .expect("fixture cwd exists");
+    let expected_cwd = temp.path().canonicalize().expect("temp cwd exists");
+    assert_eq!(child_cwd, expected_cwd);
     assert_eq!(context["explicit_env"], "present");
     assert!(
         context["inherited_path"]

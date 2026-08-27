@@ -408,9 +408,10 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "snippet_budget_exceeded"
         | "snippet_resolve_limit" => AgentErrorOrigin::Budget,
         "unknown_action" | "unknown_subaction" | "unknown_tool" | "unknown_upstream"
-        | "unknown_instance" | "ambiguous_tool" | "not_found" | "snippet_not_found" => {
-            AgentErrorOrigin::Discovery
-        }
+        | "unknown_instance" | "ambiguous_tool" | "not_found" | "snippet_not_found"
+        // A path that resolves to no registered route is a lookup failure, not
+        // the `Runtime` catch-all it would otherwise land in.
+        | "route_not_found" => AgentErrorOrigin::Discovery,
         "invalid_cursor" => AgentErrorOrigin::Discovery,
         "tool_error" => AgentErrorOrigin::ToolExecution,
         // `timeout` means no completed result arrived from the dependency or
@@ -468,6 +469,19 @@ pub fn recovery_for_kind(
             action: AgentRecoveryAction::ReviseAndRetry,
             same_arguments: revised_retry,
             guidance: "Inspect the error details, correct the command or parameters, and retry only after changing the call.".to_string(),
+            retry_after_ms: None,
+        },
+        // An HTTP route that is not registered at all. Distinct from
+        // `not_found` because `Rediscover` is inert here to the point of being
+        // misleading: no amount of listing or searching surfaces a route the
+        // server never mounted. The usual cause is a feature slice or auth
+        // prerequisite that was not met at startup, which is reported there.
+        // The guidance must not name which service is missing — this kind is
+        // reachable unauthenticated.
+        "route_not_found" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::ReviseAndRetry,
+            same_arguments: AgentSameArgumentsRetry::Never,
+            guidance: "Verify the request path and method. If the path is correct, the owning feature may not be mounted on this server; check the server startup logs for a skipped-service warning.".to_string(),
             retry_after_ms: None,
         },
         "unknown_action" | "unknown_subaction" | "unknown_tool" | "unknown_upstream"
@@ -617,6 +631,34 @@ mod tests {
             metadata.recovery.same_arguments,
             AgentSameArgumentsRetry::Never
         );
+    }
+
+    #[test]
+    fn unmounted_route_does_not_advise_useless_rediscovery() {
+        // `not_found` advises Rediscover, which is actively misleading for an
+        // HTTP path that is not registered: no listing or search will ever
+        // surface a route the server did not mount. This kind exists so the
+        // advice points somewhere true instead.
+        let metadata = metadata_for_kind("route_not_found", None);
+        assert_eq!(metadata.origin, AgentErrorOrigin::Discovery);
+        assert_eq!(metadata.side_effects, AgentSideEffectRisk::NoneExpected);
+        assert_eq!(
+            metadata.recovery.action,
+            AgentRecoveryAction::ReviseAndRetry
+        );
+        assert_eq!(
+            metadata.recovery.same_arguments,
+            AgentSameArgumentsRetry::Never
+        );
+        // Reachable unauthenticated, so the guidance must not name which
+        // service is missing — only that the startup logs record it.
+        assert!(metadata.recovery.guidance.contains("startup logs"));
+        for leaked in ["gateway", "snippets", "skills", "palette", "fs"] {
+            assert!(
+                !metadata.recovery.guidance.contains(leaked),
+                "guidance must not name a service; leaked {leaked}"
+            );
+        }
     }
 
     #[test]

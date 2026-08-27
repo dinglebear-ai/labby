@@ -189,6 +189,52 @@ async fn connect_in_process_service_peer(
 }
 
 #[cfg(test)]
+mod skill_generation_tests {
+    use crate::skills::facade::SkillRegistryContext;
+    use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+
+    #[tokio::test]
+    async fn code_mode_in_process_boundary_keeps_a_captured_generation_during_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("code-mode-race");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: code-mode-race\ndescription: old\n---\nold\n",
+        )
+        .unwrap();
+        let manager =
+            FirstPartyGenerationManager::new(temp.path().into(), GenerationLimits::default());
+        let old = SkillRegistryContext::from_generation(manager.generation());
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: code-mode-race\ndescription: new\n---\nnew\n",
+        )
+        .unwrap();
+        manager.refresh(None).unwrap();
+        let uri = "skill://labby/code-mode-race/SKILL.md";
+        let old_value = crate::mcp::skills::dispatch_at_in_process_boundary(
+            &old,
+            "skills.read",
+            serde_json::json!({"uri": uri}),
+        )
+        .await
+        .unwrap();
+        let current = SkillRegistryContext::from_generation(manager.generation());
+        let new_value = crate::mcp::skills::dispatch_at_in_process_boundary(
+            &current,
+            "skills.read",
+            serde_json::json!({"uri": uri}),
+        )
+        .await
+        .unwrap();
+        assert!(old_value["text"].as_str().unwrap().contains("old"));
+        assert!(new_value["text"].as_str().unwrap().contains("new"));
+        assert_ne!(old_value["digest"], new_value["digest"]);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
@@ -253,7 +299,7 @@ mod tests {
     #[tokio::test]
     async fn in_process_peer_lists_its_service_under_process_code_mode() {
         let _guard = crate::config::process_code_mode_test_guard();
-        crate::config::set_process_code_mode_enabled(true);
+        crate::config::set_process_code_mode_enabled_for_test(true);
 
         let service = RegisteredService {
             name: "gateway-alpha",

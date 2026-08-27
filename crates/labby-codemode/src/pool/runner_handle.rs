@@ -8,7 +8,9 @@
 //! Security invariants preserved at spawn (set once, persist for the process):
 //! - `env_clear()` — the child inherits no `LABBY_*`/ambient env.
 //! - `process_group(0)` (Unix) / Job Object (Windows) — `killpg`/job close
-//!   reaps grandchildren on shutdown/eviction/drop.
+//!   reaps assigned descendants on shutdown/eviction/drop. Windows assignment
+//!   fails runner startup rather than silently degrading; the unavoidable
+//!   spawn-to-assignment race is documented by `labby-winjob`.
 //! - `kill_on_drop(true)` — dropping the handle kills the process.
 //!
 //! Per-execution invariants (heap/timeout/stack, fresh jail) are enforced
@@ -25,6 +27,25 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use super::microsandbox::{MicrosandboxGuard, runner_command};
 use crate::error::ToolError;
 
+#[derive(Debug)]
+pub(crate) struct RunnerShutdownError {
+    pid: Option<u32>,
+    failures: Vec<String>,
+}
+
+impl std::fmt::Display for RunnerShutdownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Code Mode runner shutdown failed for pid {:?}: {}",
+            self.pid,
+            self.failures.join("; ")
+        )
+    }
+}
+
+impl std::error::Error for RunnerShutdownError {}
+
 /// Per-line safety cap mirrored from the original driver: 64 MiB heap + framing
 /// headroom. A longer line is a protocol violation.
 ///
@@ -38,6 +59,70 @@ pub(crate) const MAX_LINE_BYTES: usize = 64 * 1024 * 1024 + 4 * 1024;
 
 /// Stdout line stream type for a pooled runner.
 pub(crate) type RunnerLines = FramedRead<tokio::process::ChildStdout, LinesCodec>;
+
+#[cfg(all(windows, test))]
+fn missing_child_pid_error() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: "spawned Code Mode runner did not expose a process id".to_string(),
+    }
+}
+
+#[cfg(windows)]
+fn job_assignment_error(pid: u32, error: &labby_winjob::WinJobError) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: format!(
+            "failed to contain Code Mode runner pid {pid} in a Windows Job Object: {error}"
+        ),
+    }
+}
+
+#[cfg(windows)]
+async fn arm_job_object_with<F>(
+    child: &mut tokio::process::Child,
+    pid: Option<u32>,
+    assign: F,
+) -> Result<labby_winjob::JobObject, ToolError>
+where
+    F: FnOnce(u32) -> Result<labby_winjob::JobObject, labby_winjob::WinJobError>,
+{
+    let pid = pid.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "internal_error".to_string(),
+        message: "spawned Code Mode runner did not expose a process id".to_string(),
+    })?;
+    match assign(pid) {
+        Ok(job) => Ok(job),
+        Err(error) => {
+            let mut cleanup = Vec::new();
+            if let Err(kill_error) = child.start_kill() {
+                cleanup.push(format!("direct-child termination failed: {kill_error}"));
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(1), child.wait()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(wait_error)) => {
+                    cleanup.push(format!("direct-child wait failed: {wait_error}"))
+                }
+                Err(_) => cleanup.push("direct-child reap timed out after 1 second".to_string()),
+            }
+            let mut mapped = job_assignment_error(pid, &error);
+            if !cleanup.is_empty()
+                && let ToolError::Sdk { message, .. } = &mut mapped
+            {
+                message.push_str(&format!("; cleanup also failed: {}", cleanup.join("; ")));
+            }
+            Err(mapped)
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn arm_job_object(
+    child: &mut tokio::process::Child,
+    pid: Option<u32>,
+) -> Result<labby_winjob::JobObject, ToolError> {
+    arm_job_object_with(child, pid, labby_winjob::JobObject::assign).await
+}
 
 /// Shared, continuously-drained stderr buffer for one runner.
 ///
@@ -132,7 +217,7 @@ pub(crate) struct PooledRunner {
     /// Windows Job Object guard; reaps the descendant tree when dropped. On Unix
     /// the process-group + `killpg` covers the same role.
     #[cfg(windows)]
-    _job_guard: Option<crate::pool::job_guard::JobObjectGuard>,
+    _job_guard: Option<labby_winjob::JobObject>,
     /// Background stderr drain task; aborted on drop.
     drain_task: tokio::task::JoinHandle<()>,
     /// Direct-process spawn cwd and stable jail base. A Microsandbox runner
@@ -148,20 +233,52 @@ impl PooledRunner {
             && self.spawned_at.elapsed() >= std::time::Duration::from_hours(23)
     }
 
-    pub(crate) async fn shutdown(mut self) {
+    pub(crate) async fn shutdown(mut self) -> Result<(), RunnerShutdownError> {
+        let mut failures = Vec::new();
         #[cfg(unix)]
         if let Some(pid) = self.child_pid {
             use nix::sys::signal::Signal;
             use nix::unistd::Pid;
-            let _ = nix::sys::signal::killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+            if let Err(error) = nix::sys::signal::killpg(Pid::from_raw(pid as i32), Signal::SIGKILL)
+                && error != nix::errno::Errno::ESRCH
+            {
+                failures.push(format!("killpg failed: {error}"));
+            }
         }
         #[cfg(windows)]
-        if self.child_pid.is_some() {
-            drop(self.child.start_kill());
+        if let Some(job) = self._job_guard.take()
+            && let Err(error) = job.close()
+        {
+            failures.push(format!(
+                "{} failed with Win32 error {}",
+                error.operation, error.code
+            ));
         }
-        drop(tokio::time::timeout(std::time::Duration::from_secs(1), self.child.wait()).await);
+        #[cfg(windows)]
+        match self.child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(error) = self.child.start_kill() {
+                    failures.push(format!("TerminateProcess failed: {error}"));
+                }
+            }
+            Err(error) => failures.push(format!("process status check failed: {error}")),
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(1), self.child.wait()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => failures.push(format!("process wait failed: {error}")),
+            Err(_) => failures.push("process reap timed out after 1 second".to_string()),
+        }
         if let Some(mut sandbox) = self.microsandbox.take() {
             sandbox.remove().await;
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(RunnerShutdownError {
+                pid: self.child_pid,
+                failures,
+            })
         }
     }
 
@@ -203,7 +320,7 @@ impl PooledRunner {
         let child_pid = child.id();
 
         #[cfg(windows)]
-        let job_guard = child_pid.map(crate::pool::job_guard::JobObjectGuard::arm);
+        let job_guard = Some(arm_job_object(&mut child, child_pid).await?);
 
         let stdin = child.stdin.take().ok_or_else(|| ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
@@ -325,7 +442,12 @@ impl PooledRunner {
         })?;
         let child_pid = child.id();
         #[cfg(windows)]
-        let job_guard = child_pid.map(crate::pool::job_guard::JobObjectGuard::arm);
+        let pid = child_pid.ok_or_else(missing_child_pid_error)?;
+        #[cfg(windows)]
+        let job_guard = Some(
+            labby_winjob::JobObject::assign(pid)
+                .map_err(|error| job_assignment_error(pid, &error))?,
+        );
         let stdin = child.stdin.take().expect("stub stdin");
         let stdout = child.stdout.take().expect("stub stdout");
         let stderr_pipe = child.stderr.take().expect("stub stderr");
@@ -443,9 +565,17 @@ fn spawn_stderr_drain(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "linux")]
+    #[cfg(windows)]
+    use std::process::Stdio;
+
+    #[cfg(windows)]
+    use crate::error::ToolError;
+
+    #[cfg(any(target_os = "linux", windows))]
     use super::PooledRunner;
     use super::StderrBuffer;
+    #[cfg(windows)]
+    use super::arm_job_object_with;
 
     #[tokio::test]
     async fn stderr_buffer_take_since_and_clear_releases_retained_lines() {
@@ -495,6 +625,89 @@ mod tests {
         assert!(state.lines.is_empty());
         assert_eq!(state.total_bytes, 0);
         assert!(!state.capped);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn shutdown_reaps_the_runner_and_its_descendant() {
+        use futures::StreamExt as _;
+
+        let script = concat!(
+            "$child = Start-Process -FilePath 'C:\\Windows\\System32\\ping.exe' ",
+            "-ArgumentList '-t','127.0.0.1' -PassThru; ",
+            "[Console]::Out.WriteLine($child.Id); [Console]::Out.Flush(); ",
+            "Wait-Process -Id $child.Id"
+        );
+        let mut runner = PooledRunner::spawn_stub_command(
+            "powershell.exe",
+            &["-NoProfile", "-NonInteractive", "-Command", script],
+        )
+        .expect("spawn Windows runner stand-in");
+        let runner_pid = runner.child_pid.expect("runner pid");
+        let descendant_pid: u32 =
+            tokio::time::timeout(std::time::Duration::from_secs(10), runner.lines.next())
+                .await
+                .expect("descendant pid timeout")
+                .expect("runner stdout closed")
+                .expect("descendant pid line")
+                .parse()
+                .expect("numeric descendant pid");
+
+        runner.shutdown().await.expect("clean runner shutdown");
+
+        for pid in [runner_pid, descendant_pid] {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match labby_winjob::pid_liveness(pid).expect("inspect process liveness") {
+                    labby_winjob::ProcessLiveness::Alive
+                        if tokio::time::Instant::now() < deadline =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                    labby_winjob::ProcessLiveness::Alive => {
+                        panic!("pid {pid} survived shutdown");
+                    }
+                    labby_winjob::ProcessLiveness::Exited
+                    | labby_winjob::ProcessLiveness::NotFound => break,
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn failed_job_assignment_terminates_and_reaps_the_direct_child() {
+        let mut command = tokio::process::Command::new(r"C:\Windows\System32\findstr.exe");
+        command
+            .arg("^")
+            .env_clear()
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().expect("spawn Windows child");
+        let pid = child.id().expect("child pid");
+
+        let error = arm_job_object_with(&mut child, Some(pid), |_| {
+            Err(labby_winjob::WinJobError {
+                operation: "injected Job Object assignment",
+                code: 5,
+            })
+        })
+        .await
+        .expect_err("injected assignment failure must fail closed");
+
+        assert!(matches!(
+            error,
+            ToolError::Sdk {
+                sdk_kind,
+                message: _
+            } if sdk_kind == "internal_error"
+        ));
+        assert!(matches!(
+            labby_winjob::pid_liveness(pid).expect("inspect child liveness"),
+            labby_winjob::ProcessLiveness::Exited | labby_winjob::ProcessLiveness::NotFound
+        ));
     }
 
     /// Real KVM smoke. Example:

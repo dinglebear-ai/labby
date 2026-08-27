@@ -637,12 +637,46 @@ impl LabMcpServer {
             "gateway codemode start"
         );
 
-        let caller = auth.map_or(CodeModeCaller::TrustedLocal, |auth| {
-            CodeModeCaller::Scoped {
-                capabilities: code_mode_capabilities_for_scopes(&auth.scopes),
-                sub: self.request_subject(context).map(ToOwned::to_owned),
+        let private_access = match self.artifact_access_for_request(context).await {
+            Ok(access) => access,
+            Err(error) => {
+                return Ok(error_result_from_envelope(tool_error_envelope(
+                    service,
+                    "call_tool",
+                    &error,
+                )));
             }
-        });
+        };
+        let caller = match auth {
+            None => CodeModeCaller::TrustedLocal,
+            Some(auth) => {
+                let capabilities = code_mode_capabilities_for_scopes(&auth.scopes);
+                let sub = self.request_subject(context).map(ToOwned::to_owned);
+                match private_access {
+                    Some(access) => {
+                        match crate::mcp::skills::mint_private_artifact_context(sub.clone(), access)
+                        {
+                            Ok(context_token) => CodeModeCaller::ScopedPrivate {
+                                capabilities,
+                                sub: sub.clone(),
+                                context_token,
+                            },
+                            Err(error) => {
+                                return Ok(error_result_from_envelope(tool_error_envelope(
+                                    service,
+                                    "call_tool",
+                                    &error,
+                                )));
+                            }
+                        }
+                    }
+                    None => CodeModeCaller::Scoped {
+                        capabilities,
+                        sub: sub.clone(),
+                    },
+                }
+            }
+        };
 
         // Per-run caller identity stamped onto journal rows at the flush
         // boundary (captured once, not per step). Fingerprint is cloned here

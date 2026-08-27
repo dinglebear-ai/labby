@@ -12,6 +12,7 @@ function installDom() {
   Object.defineProperty(globalThis, 'self', { configurable: true, value: window })
   Object.defineProperty(globalThis, 'document', { configurable: true, value: window.document })
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: window.navigator })
+  Object.defineProperty(globalThis, 'Element', { configurable: true, value: window.Element })
   Object.defineProperty(globalThis, 'HTMLElement', { configurable: true, value: window.HTMLElement })
   Object.defineProperty(globalThis, 'HTMLButtonElement', { configurable: true, value: window.HTMLButtonElement })
   Object.defineProperty(globalThis, 'Node', { configurable: true, value: window.Node })
@@ -68,6 +69,17 @@ function click(element: Element | null) {
   assert.ok(element)
   act(() => {
     element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+// Radix's DropdownMenuTrigger opens on `pointerdown`, not `click` — a plain
+// click() (as `click` above sends) never opens the menu in this environment.
+async function openDropdown(trigger: Element | null) {
+  assert.ok(trigger)
+  await act(async () => {
+    trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0 }))
+    trigger.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0 }))
+    trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
 }
 
@@ -162,5 +174,97 @@ test('gateway table does not re-enable a server that changes state while disable
   click(confirmButton ?? null)
 
   assert.equal(toggleCalls, 0)
+  await view.unmount()
+})
+
+// bead lab-muo4w
+test('gateway table asks before removing a persisted server', async () => {
+  // gateway.remove is destructive:true in the shared action catalog, but the
+  // row action used to call onDelete directly with no dialog at all — unlike
+  // Disable (a non-destructive update) above, which always confirmed.
+  installDom()
+  const { GatewayTable } = await import('./gateway-table')
+  let deleteCalls = 0
+  const view = await renderClient(
+    <GatewayTable
+      gateways={[gateway]}
+      density="comfortable"
+      onEdit={() => {}}
+      onTest={() => {}}
+      onReload={() => {}}
+      onCleanup={() => {}}
+      onClearCleanupHistory={() => {}}
+      onToggleEnabled={() => {}}
+      onDelete={() => { deleteCalls += 1 }}
+    />,
+  )
+
+  const menuTrigger = [...view.container.querySelectorAll('button')]
+    .find((button) => button.textContent?.includes('More actions'))
+  await openDropdown(menuTrigger ?? null)
+
+  const removeMenuItem = [...document.body.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.textContent?.includes('Remove server'))
+  click(removeMenuItem ?? null)
+
+  assert.equal(deleteCalls, 0, 'onDelete must not fire before confirmation')
+  assert.match(document.body.textContent ?? '', /Remove server\?/)
+  assert.match(document.body.textContent ?? '', new RegExp(gateway.name))
+  assert.match(document.body.textContent ?? '', /cannot be recovered/)
+
+  const dialog = document.body.querySelector('[data-slot="alert-dialog-content"]')
+  assert.ok(dialog)
+  const confirmButton = [...dialog.querySelectorAll('button')]
+    .find((button) => button.textContent?.trim() === 'Remove server')
+  click(confirmButton ?? null)
+
+  assert.equal(deleteCalls, 1)
+  await view.unmount()
+})
+
+test('gateway table removes an in_process stale service without confirmation (non-destructive)', async () => {
+  // gateway.virtual_server.remove is destructive:false — it clears derived
+  // runtime bookkeeping, not persisted config — so it should keep firing
+  // immediately, matching its catalog classification.
+  installDom()
+  const { GatewayTable } = await import('./gateway-table')
+  let deleteCalls = 0
+  const staleGateway: Gateway = {
+    ...gateway,
+    id: 'gw-stale',
+    name: 'stale-service',
+    source: 'in_process',
+    warnings: [
+      {
+        code: 'unknown_service',
+        message: 'service `stale-service` is not registered in this lab binary',
+        timestamp: '2026-04-25T12:00:00Z',
+      },
+    ],
+  }
+  const view = await renderClient(
+    <GatewayTable
+      gateways={[staleGateway]}
+      density="comfortable"
+      onEdit={() => {}}
+      onTest={() => {}}
+      onReload={() => {}}
+      onCleanup={() => {}}
+      onClearCleanupHistory={() => {}}
+      onToggleEnabled={() => {}}
+      onDelete={() => { deleteCalls += 1 }}
+    />,
+  )
+
+  const menuTrigger = [...view.container.querySelectorAll('button')]
+    .find((button) => button.textContent?.includes('More actions'))
+  await openDropdown(menuTrigger ?? null)
+
+  const removeMenuItem = [...document.body.querySelectorAll('[role="menuitem"]')]
+    .find((item) => item.textContent?.includes('Remove stale service'))
+  click(removeMenuItem ?? null)
+
+  assert.equal(deleteCalls, 1, 'in_process removal should not require confirmation')
+  assert.doesNotMatch(document.body.textContent ?? '', /Remove server\?/)
   await view.unmount()
 })

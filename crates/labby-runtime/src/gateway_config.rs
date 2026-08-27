@@ -185,12 +185,8 @@ pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
     #[serde(default)]
     pub enabled: bool,
-    /// Operator-owned allowlist of upstream tools trusted for `codemode_read`.
-    ///
-    /// Entries are exact namespaced ids (`upstream::tool`). Upstream-provided
-    /// `readOnlyHint` metadata is untrusted and remains a second, independent
-    /// requirement. An empty list therefore fails closed: read-only Code Mode
-    /// may execute pure JavaScript, but cannot invoke any upstream tool.
+    /// Deprecated compatibility field. `codemode_read` now uses the live MCP
+    /// safety annotations on each tool descriptor.
     #[serde(default)]
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
@@ -287,8 +283,7 @@ impl Default for CodeModeConfig {
 }
 
 impl CodeModeConfig {
-    /// Whether the operator has explicitly trusted this exact upstream tool for
-    /// the read-only Code Mode execution surface.
+    /// Whether the deprecated compatibility list contains this exact tool id.
     #[must_use]
     pub fn trusts_read_only_tool(&self, upstream: &str, tool: &str) -> bool {
         self.trusted_read_only_tools.iter().any(|candidate| {

@@ -351,6 +351,46 @@ async fn restricted_gateway_manager(
     manager
 }
 
+#[cfg(feature = "skills")]
+async fn restricted_skills_gateway_manager(
+    allowed_actions: &[&str],
+) -> Arc<crate::dispatch::gateway::manager::GatewayManager> {
+    let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        )
+        .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry())),
+    );
+    manager
+        .seed_config_unchecked_for_tests(
+            crate::config::LabConfig {
+                virtual_servers: vec![crate::config::VirtualServerConfig {
+                    id: "skills-list-only".to_string(),
+                    service: "skills".to_string(),
+                    enabled: true,
+                    surfaces: crate::config::VirtualServerSurfacesConfig {
+                        cli: false,
+                        api: false,
+                        mcp: true,
+                        webui: false,
+                    },
+                    mcp_policy: Some(crate::config::VirtualServerMcpPolicyConfig {
+                        allowed_actions: allowed_actions
+                            .iter()
+                            .map(|action| (*action).to_string())
+                            .collect(),
+                    }),
+                }],
+                ..crate::config::LabConfig::default()
+            }
+            .to_gateway_config(),
+        )
+        .await;
+    manager
+}
+
 async fn code_mode_manager_with_pool(
     enabled: bool,
     upstream: crate::config::UpstreamConfig,
@@ -5557,6 +5597,107 @@ async fn raw_mode_builtin_descriptors_match_across_builders() {
         );
         assert_eq!(schema["additionalProperties"], serde_json::json!(true));
     }
+}
+
+#[cfg(feature = "skills")]
+#[tokio::test]
+async fn authenticated_http_gets_management_descriptor_while_local_peers_keep_compatibility() {
+    let mut server = test_server(
+        crate::registry::build_docs_registry(),
+        Some(restricted_skills_gateway_manager(&["skill_library.list"]).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.transport_label = "http";
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let mut context = request_context_with_peer(running.peer().clone());
+    let request = axum::http::Request::builder()
+        .header("x-labby-project-id", "project-one")
+        .body(())
+        .expect("HTTP request");
+    let (mut parts, ()) = request.into_parts();
+    parts
+        .extensions
+        .insert(labby_auth::auth_context::AuthContext {
+            sub: "owner".to_string(),
+            actor_key: None,
+            scopes: vec!["lab:admin".to_string()],
+            issuer: "static".to_string(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        });
+    parts.extensions.insert(
+        labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "owner",
+        )
+        .expect("verified fixture identity"),
+    );
+    context.extensions.insert(parts);
+
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("authenticated HTTP tools/list")
+        .tools;
+    assert_eq!(
+        listed, contract,
+        "HTTP descriptor paths must stay identical"
+    );
+    let managed = listed
+        .iter()
+        .find(|tool| tool.name.as_ref() == "skills")
+        .expect("skills descriptor");
+    assert_eq!(
+        managed.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum")
+            .len(),
+        3
+    );
+    let actions = managed.input_schema["properties"]["action"]["enum"]
+        .as_array()
+        .expect("action enum");
+    assert!(actions.contains(&serde_json::json!("help")));
+    assert!(actions.contains(&serde_json::json!("schema")));
+    assert!(actions.contains(&serde_json::json!("skill_library.list")));
+    assert!(!actions.contains(&serde_json::json!("skill_library.create")));
+    assert!(managed.meta.is_some());
+    assert_eq!(
+        managed
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.destructive_hint),
+        Some(true)
+    );
+
+    let local = running
+        .service()
+        .peer_contract()
+        .visible_tool_descriptors()
+        .await;
+    let compat = local
+        .iter()
+        .find(|tool| tool.name.as_ref() == "skills")
+        .expect("local compatibility descriptor");
+    assert_eq!(
+        compat.input_schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("compatibility action enum")
+            .len(),
+        6
+    );
+    assert!(compat.meta.is_none());
 }
 
 #[tokio::test]

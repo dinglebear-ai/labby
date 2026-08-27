@@ -37,7 +37,13 @@ use super::logging::{
 };
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
-const RESOURCE_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
+/// Wall-clock cap for one upstream's catalog listing on the connect path.
+///
+/// Shared by the resource and prompt refreshes so the two budgets cannot drift
+/// apart: both run while the lazy-connect mutex and the write-preferring
+/// `oauth_invalidation_barrier` read guard are held, so an unbounded listing
+/// stalls every queued OAuth writer behind one slow upstream.
+const CATALOG_LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One regular upstream Resource with its exact pre-rewrite provenance.
 ///
@@ -632,7 +638,7 @@ impl UpstreamPool {
             let pool = self.clone();
             futures.push(async move {
                 let started = Instant::now();
-                let request_timeout = resource_catalog_timeout(pool.request_timeout);
+                let request_timeout = catalog_listing_timeout(pool.request_timeout);
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -1017,11 +1023,11 @@ mod tests {
     #[test]
     fn resource_catalog_timeout_caps_the_general_upstream_budget() {
         assert_eq!(
-            resource_catalog_timeout(Duration::from_mins(1)),
+            catalog_listing_timeout(Duration::from_mins(1)),
             Duration::from_secs(10)
         );
         assert_eq!(
-            resource_catalog_timeout(Duration::from_millis(25)),
+            catalog_listing_timeout(Duration::from_millis(25)),
             Duration::from_millis(25)
         );
     }

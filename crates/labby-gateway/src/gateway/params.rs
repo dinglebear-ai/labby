@@ -411,6 +411,17 @@ pub(crate) struct GatewayMcpToggleParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct GatewayMcpRestartParams {
+    pub name: String,
+    #[serde(default)]
+    pub aggressive: bool,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub owner: Option<GatewayRuntimeOwnerParams>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct GatewayMcpCleanupParams {
     pub name: String,
     #[serde(default)]

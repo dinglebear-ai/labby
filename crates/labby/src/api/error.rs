@@ -82,7 +82,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self.error.kind() {
             "auth_failed" => StatusCode::UNAUTHORIZED,
-            "not_found" => StatusCode::NOT_FOUND,
+            "not_found" | "route_not_found" => StatusCode::NOT_FOUND,
             "rate_limited" | "queue_saturated" => StatusCode::TOO_MANY_REQUESTS,
             "sync_in_progress" | "service_unavailable" | "provider_unavailable" => {
                 StatusCode::SERVICE_UNAVAILABLE

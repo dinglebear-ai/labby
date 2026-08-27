@@ -453,7 +453,16 @@ fn validate_trusted_directory(
         {
             if metadata.uid() == 0
                 && macos_system_alias_target(path).is_some_and(|expected_target| {
-                    fs::read_link(path).is_ok_and(|target| target == expected_target)
+                    fs::read_link(path).is_ok_and(|target| {
+                        let resolved = if target.is_absolute() {
+                            target
+                        } else {
+                            path.parent()
+                                .map(|parent| parent.join(&target))
+                                .unwrap_or(target)
+                        };
+                        resolved == expected_target
+                    })
                 })
             {
                 let target_metadata = fs::metadata(path)
@@ -548,7 +557,9 @@ fn publish_socket_no_replace(staging_path: &Path, path: &Path) -> Result<()> {
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     {
         if fs::symlink_metadata(path).is_ok() {
-            anyhow::bail!("refusing to replace an existing Unix socket path during publication");
+            anyhow::bail!(
+                "refusing to publish configured Unix socket without replacing an existing entry"
+            );
         }
         fs::rename(staging_path, path).context("publish configured Unix socket")
     }
@@ -962,7 +973,10 @@ mod tests {
 
     #[tokio::test]
     async fn missing_parent_is_created_without_group_or_world_write_access() {
-        let tempdir = tempfile::tempdir().unwrap();
+        // macOS has a shorter `sun_path` limit than Linux. Keep the test root
+        // short enough that the private staging directory plus nested parent
+        // still fits in a filesystem socket address.
+        let tempdir = tempfile::tempdir_in("/tmp").unwrap();
         let parent = tempdir.path().join("nested").join("runtime");
         let path = parent.join("labby.sock");
 

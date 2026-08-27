@@ -18,6 +18,7 @@
 //! authorize, issuer binding, S256 enforcement, and CIMD registration.
 
 use std::io;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
@@ -557,8 +558,30 @@ async fn subject_lookup_survives_restart_for_saved_state() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[allow(clippy::await_holding_lock)]
 async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() {
+    if std::env::var_os("LABBY_UPSTREAM_OAUTH_LOG_CHILD").is_none() {
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .env("LABBY_UPSTREAM_OAUTH_LOG_CHILD", "1")
+            .args([
+                "--exact",
+                "build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets",
+                "--nocapture",
+            ])
+            .output()
+            .expect("spawn isolated OAuth log-capture test");
+        assert!(
+            output.status.success(),
+            "isolated OAuth log-capture test failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets_inner().await;
+}
+
+#[allow(clippy::await_holding_lock)]
+async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets_inner() {
     let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let capture = capture_logs_for_this_thread();
 
@@ -600,8 +623,30 @@ async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() 
     assert!(!logs.contains(&state), "csrf state leaked: {logs}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle() {
+    if std::env::var_os("LABBY_UPSTREAM_OAUTH_LOG_CHILD").is_none() {
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .env("LABBY_UPSTREAM_OAUTH_LOG_CHILD", "1")
+            .args([
+                "--exact",
+                "build_auth_client_with_logs_near_expiry_refresh_lifecycle",
+                "--nocapture",
+            ])
+            .output()
+            .expect("spawn isolated OAuth log-capture test");
+        assert!(
+            output.status.success(),
+            "isolated OAuth log-capture test failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    build_auth_client_with_logs_near_expiry_refresh_lifecycle_inner().await;
+}
+
+async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle_inner() {
     // Regression test for the live P-H4 pool path (`build_auth_client_with`,
     // reached via `AuthClientCache::get_or_build_capped`): it used to swallow
     // the get_access_token() outcome with no success/failure log at all,

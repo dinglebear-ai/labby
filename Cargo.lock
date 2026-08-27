@@ -2045,8 +2045,10 @@ name = "labby-runtime"
 version = "1.14.0"
 dependencies = [
  "atomic-write-file",
+ "base64 0.22.1",
  "jiff",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",

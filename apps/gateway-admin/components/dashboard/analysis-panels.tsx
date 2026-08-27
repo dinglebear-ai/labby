@@ -141,7 +141,7 @@ export function UpstreamsPanel({ upstreams, onSelect }: { upstreams: UpstreamUsa
     <DashboardPanel
       title="Most active servers"
       icon={<Server className="size-4" />}
-      meta={`${upstreams.length} servers`}
+      meta={`${upstreams.length} server${upstreams.length === 1 ? '' : 's'}`}
     >
       <MetricBarList items={items} mono />
     </DashboardPanel>

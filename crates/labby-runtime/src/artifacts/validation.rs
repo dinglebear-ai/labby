@@ -19,6 +19,8 @@ pub const MAX_COMPONENTS: usize = 2_000;
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// Maximum aggregate bytes accepted from one local package import.
 pub const MAX_PACKAGE_BYTES: u64 = 200 * 1024 * 1024;
+/// Maximum aggregate UTF-8 bytes in one Skill package (64 one-MiB resources).
+pub const MAX_SKILL_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum logical component path length.
 pub const MAX_PATH_BYTES: usize = 4_096;
 /// Maximum local directory nesting depth during package import.

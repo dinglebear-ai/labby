@@ -123,6 +123,78 @@ impl UpstreamPool {
             .map(ToOwned::to_owned)
     }
 
+    /// Clear one capability's circuit breaker after a fresh connect.
+    ///
+    /// Circuit state counts consecutive failures against a *session*. Once an
+    /// upstream reconnects, that count describes a peer that no longer exists,
+    /// so carrying it forward is already wrong — and for the optional
+    /// capabilities it is unrecoverable rather than merely stale.
+    ///
+    /// The latch: `routable_upstream_peers` filters open circuits out of the
+    /// prompt/resource listing fan-out, and that fan-out is the only place a
+    /// success for those capabilities is ever recorded. So three failed
+    /// listings open the circuit, and the listing that could close it is
+    /// precisely the one that is now skipped — a permanent silent no-op. There
+    /// is no time-based escape: `UpstreamHealth::is_open` is a bare threshold
+    /// comparison with no quarantine expiry, `REPROBE_INTERVAL` reprobing
+    /// drives tool health only, and `replace_catalog_tools` leaves the health
+    /// fields untouched. Only a full `discover_all` rebuild clears it today.
+    ///
+    /// Resetting here is what makes the optional-capability circuits
+    /// recoverable at all (bead lab-zfyxk).
+    pub async fn reset_capability_circuit(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+    ) {
+        let mut catalog = self.catalog_metadata_write().await;
+        if let Some(entry) = catalog.get_mut(upstream_name) {
+            let tool_routes_changed =
+                capability == UpstreamCapability::Tools && !entry.tool_health.is_routable();
+            entry.set_health_for(capability, UpstreamHealth::Healthy);
+            entry.set_unhealthy_since_for(capability, None);
+            entry.set_last_error_for(capability, None);
+            if tool_routes_changed {
+                catalog.mark_tool_projection_dirty();
+            }
+        }
+    }
+
+    /// Return the health of one specific capability, if the upstream is known.
+    pub async fn upstream_capability_health(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+    ) -> Option<UpstreamHealth> {
+        let catalog = self.catalog.read().await;
+        Some(catalog.get(upstream_name)?.health_for(capability))
+    }
+
+    /// Return the last error recorded for one specific capability, if any.
+    ///
+    /// `upstream_last_error` deliberately collapses every capability into a
+    /// single "worst" error because callers use it to decide whether the
+    /// upstream is connected at all. That collapse is why an optional
+    /// capability failing has to be filtered back out downstream — a failed
+    /// `prompts/list` must not render a server with perfectly good tools as
+    /// disconnected.
+    ///
+    /// This accessor keeps the capabilities separable so operator surfaces can
+    /// report an optional-capability failure as a *warning* instead, rather
+    /// than choosing between "mark the whole upstream down" and "say nothing"
+    /// (bead lab-zfyxk).
+    pub async fn upstream_capability_error(
+        &self,
+        upstream_name: &str,
+        capability: UpstreamCapability,
+    ) -> Option<String> {
+        let catalog = self.catalog.read().await;
+        catalog
+            .get(upstream_name)?
+            .last_error_for(capability)
+            .map(ToOwned::to_owned)
+    }
+
     /// Return the last tools-capability error for an upstream, if any.
     pub async fn upstream_tool_last_error(&self, upstream_name: &str) -> Option<String> {
         let catalog = self.catalog.read().await;

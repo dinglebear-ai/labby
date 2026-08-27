@@ -3,8 +3,7 @@ use serde_json::{Value, json};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, require_str, to_json};
 use crate::skills::facade::{
-    SkillCallerScope, SkillRegistryContext, get_visible_skill, list_visible_skills,
-    read_visible_skill_file,
+    SkillRegistryContext, get_visible_skill, list_visible_skills, read_visible_skill_file,
 };
 use crate::skills::search::search_skill_entries;
 
@@ -24,22 +23,19 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     dispatch_with_context(&context, action, params).await
 }
 
-#[cfg(feature = "gateway")]
-pub(crate) async fn dispatch_with_manager_scope(
-    manager: std::sync::Arc<labby_gateway::gateway::manager::GatewayManager>,
-    scope: SkillCallerScope,
-    action: &str,
-    params: Value,
-) -> Result<Value, ToolError> {
-    let context = SkillRegistryContext::with_manager(manager, scope);
-    dispatch_with_context(&context, action, params).await
-}
-
 pub(crate) async fn dispatch_with_context(
     context: &SkillRegistryContext,
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
+    tracing::debug!(
+        surface = "dispatch",
+        service = "skills",
+        action,
+        skill_generation = context.generation_id(),
+        skill_generation_digest = context.generation_digest(),
+        "dispatching against captured Skill generation"
+    );
     match action {
         "help" => Ok(help_payload("skills", ACTIONS)),
         "schema" => {
@@ -164,6 +160,30 @@ fn not_found(uri: &str, kind: &str) -> ToolError {
 mod tests {
     use super::*;
 
+    fn write_versioned_skill(root: &std::path::Path, version: &str) {
+        let dir = root.join("changing");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: changing\ndescription: {version}\n---\n\n{version}\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), version).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resident_set_bytes() -> Option<u64> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+        Some(
+            line.split_whitespace()
+                .nth(1)?
+                .parse::<u64>()
+                .ok()?
+                .saturating_mul(1024),
+        )
+    }
+
     #[tokio::test]
     async fn list_is_metadata_only_and_deterministic() {
         let value = dispatch("skills.list", json!({ "limit": 10 }))
@@ -196,17 +216,28 @@ mod tests {
     #[tokio::test]
     async fn get_and_read_share_one_first_party_identity() {
         let uri = "skill://labby/using-labby/SKILL.md";
-        let get = dispatch("skills.get", json!({ "uri": uri }))
+        let context = first_party_context();
+        let get = dispatch_with_context(&context, "skills.get", json!({ "uri": uri }))
             .await
             .expect("get");
-        let read = dispatch("skills.read", json!({ "uri": uri }))
+        let read = dispatch_with_context(&context, "skills.read", json!({ "uri": uri }))
             .await
             .expect("read");
         assert_eq!(get["skill"]["uri"], uri);
         assert_eq!(read["skill_uri"], uri);
-        assert_eq!(
-            read["text"].as_str(),
-            crate::skills::read_first_party_skill_file(uri)
+        let digest = get["skill"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["uri"] == uri)
+            .unwrap()["digest"]
+            .as_str()
+            .unwrap();
+        assert_eq!(read["digest"], digest);
+        assert!(
+            labby_runtime::skills::parse_digest(digest)
+                .unwrap()
+                .matches(read["text"].as_str().unwrap().as_bytes())
         );
     }
 
@@ -219,5 +250,123 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), "not_found");
+    }
+
+    #[tokio::test]
+    async fn compatibility_routes_remain_pinned_across_a_refresh() {
+        use crate::skills::facade::SkillRegistryContext;
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+
+        let temp = tempfile::tempdir().unwrap();
+        write_versioned_skill(temp.path(), "version-one");
+        let manager = FirstPartyGenerationManager::new(
+            temp.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        let old = SkillRegistryContext::from_generation(manager.generation());
+        write_versioned_skill(temp.path(), "version-two");
+        manager.refresh(None).unwrap();
+        let new = SkillRegistryContext::from_generation(manager.generation());
+
+        let manifest = "skill://labby/changing/SKILL.md";
+        let notes = "skill://labby/changing/notes.md";
+        let old_list = dispatch_with_context(&old, "skills.list", json!({ "limit": 10 }))
+            .await
+            .unwrap();
+        let old_search = dispatch_with_context(
+            &old,
+            "skills.search",
+            json!({ "query": "version-one", "limit": 10 }),
+        )
+        .await
+        .unwrap();
+        let old_get = dispatch_with_context(&old, "skills.get", json!({ "uri": notes }))
+            .await
+            .unwrap();
+        let old_read = dispatch_with_context(&old, "skills.read", json!({ "uri": notes }))
+            .await
+            .unwrap();
+        assert!(
+            old_list["skills"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|skill| { skill["uri"] == manifest && skill["description"] == "version-one" })
+        );
+        assert_eq!(old_search["matches"][0]["skill"]["uri"], manifest);
+        assert_eq!(old_get["skill"]["uri"], manifest);
+        assert_eq!(old_read["text"], "version-one");
+
+        let new_read = dispatch_with_context(&new, "skills.read", json!({ "uri": notes }))
+            .await
+            .unwrap();
+        assert_eq!(new_read["text"], "version-two");
+        assert_ne!(old_read["digest"], new_read["digest"]);
+        assert_ne!(old.generation_id(), new.generation_id());
+    }
+
+    #[tokio::test]
+    #[ignore = "allocation/scale regression harness; run explicitly on a quiet host"]
+    async fn list_256_by_64_and_max_read_stay_bounded() {
+        use crate::skills::facade::SkillRegistryContext;
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+        use labby_runtime::skills::limits;
+
+        let temp = tempfile::tempdir().unwrap();
+        for skill in 0..256 {
+            let name = format!("bench-{skill:03}");
+            let dir = temp.path().join(&name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: benchmark\n---\n"),
+            )
+            .unwrap();
+            for resource in 1..limits::MAX_RESOURCES_PER_SKILL {
+                let bytes = if skill == 0 && resource == 1 {
+                    vec![b'x'; limits::MAX_SKILL_RESOURCE_BYTES]
+                } else {
+                    b"x".to_vec()
+                };
+                std::fs::write(dir.join(format!("resource-{resource:02}.txt")), bytes).unwrap();
+            }
+        }
+        let caps = GenerationLimits {
+            active_skills: 300,
+            aggregate_bytes: 128 * 1024 * 1024,
+            total_resources: 300 * limits::MAX_RESOURCES_PER_SKILL,
+            live_candidate_bytes: 128 * 1024 * 1024,
+            ..GenerationLimits::default()
+        };
+        let manager = FirstPartyGenerationManager::new(temp.path().to_path_buf(), caps);
+        let context = SkillRegistryContext::from_generation(manager.generation());
+        let started = std::time::Instant::now();
+        let listing = dispatch_with_context(&context, "skills.list", json!({ "limit": 256 }))
+            .await
+            .unwrap();
+        assert_eq!(listing["skills"].as_array().unwrap().len(), 256);
+
+        #[cfg(target_os = "linux")]
+        let rss_before = resident_set_bytes();
+        let uri = "skill://labby/bench-000/resource-01.txt";
+        let get = dispatch_with_context(&context, "skills.get", json!({ "uri": uri }))
+            .await
+            .unwrap();
+        let read = dispatch_with_context(&context, "skills.read", json!({ "uri": uri }))
+            .await
+            .unwrap();
+        assert_eq!(get["skill"]["uri"], "skill://labby/bench-000/SKILL.md");
+        assert_eq!(
+            read["text"].as_str().unwrap().len(),
+            limits::MAX_SKILL_RESOURCE_BYTES
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        #[cfg(target_os = "linux")]
+        if let (Some(before), Some(after)) = (rss_before, resident_set_bytes()) {
+            // get clones one 64-resource descriptor and read owns one final
+            // response body; neither operation may copy the complete corpus.
+            let ceiling = (limits::MAX_SKILL_RESOURCE_BYTES as u64 * 4) + (8 * 1024 * 1024);
+            assert!(after.saturating_sub(before) <= ceiling);
+        }
     }
 }

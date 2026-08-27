@@ -44,6 +44,15 @@ interface FilterPillProps {
   label: string
   onClick: () => void
   compact?: boolean
+  /**
+   * Overrides the button's accessible name. The Status group's labels
+   * ("Healthy", "Enabled", "Disconnected") are the same words the Gateway
+   * hero's stat chips use for their own toggle buttons elsewhere on the
+   * page — screen-reader and voice-control users navigating by name can't
+   * tell the two apart without this (bead lab-gxbhf). Leave unset for groups
+   * whose labels are already unambiguous (Source, Transport, Exposure, ...).
+   */
+  ariaLabel?: string
 }
 
 const GATEWAY_STATUS_OPTIONS: Array<{ value: GatewayStatusFacet; label: string }> = [
@@ -101,7 +110,7 @@ function filterPillTone(active: boolean): string {
     : 'border-aurora-border-strong bg-aurora-control-surface/75 text-aurora-text-muted shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] hover:border-aurora-border-strong hover:bg-aurora-hover-bg hover:text-aurora-text-primary'
 }
 
-function FilterPill({ active, compact = false, label, onClick }: FilterPillProps) {
+function FilterPill({ active, compact = false, label, onClick, ariaLabel }: FilterPillProps) {
   return (
     <button
       type="button"
@@ -112,7 +121,7 @@ function FilterPill({ active, compact = false, label, onClick }: FilterPillProps
         filterPillTone(active),
       )}
       aria-pressed={active}
-      aria-label={label}
+      aria-label={ariaLabel ?? label}
     >
       {active ? <Check className="size-3 text-aurora-accent-strong" /> : null}
       {label}
@@ -179,6 +188,7 @@ export function GatewayFilters({
                 key={option.value}
                 active={gatewayFilters.status.includes(option.value)}
                 label={option.label}
+                ariaLabel={`${option.label} status filter`}
                 onClick={() => onGatewayFilterToggle('status', option.value)}
               />
             ))}
@@ -264,6 +274,7 @@ export function GatewayFilters({
             key={option.value}
             active={gatewayFilters.status.includes(option.value)}
             label={option.label}
+            ariaLabel={`${option.label} status filter`}
             onClick={() => onGatewayFilterToggle('status', option.value)}
             compact
           />
