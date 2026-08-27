@@ -6,6 +6,9 @@ use std::process::{Command, Output};
 #[cfg(unix)]
 use serde_json::Value;
 use serde_json::json;
+#[cfg(unix)]
+#[path = "support/lib.rs"]
+mod support;
 #[cfg(all(unix, feature = "gateway"))]
 use wiremock::matchers::{method, path};
 #[cfg(all(unix, feature = "gateway"))]
@@ -13,12 +16,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[cfg(unix)]
 fn command(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
-    command
-        .env("HOME", home)
-        .env("LABBY_HOME", home.join(".labby"))
-        .env("LABBY_LOG_DIR", home.join("logs"));
-    command
+    support::isolated_command(home)
 }
 
 #[cfg(unix)]

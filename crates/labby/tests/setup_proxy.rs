@@ -1,12 +1,10 @@
 use std::process::Command;
 
+#[path = "support/lib.rs"]
+mod support;
+
 fn command(home: &std::path::Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
-    command
-        .env("HOME", home)
-        .env("LABBY_HOME", home.join(".labby"))
-        .env("LABBY_LOG_DIR", home.join("logs"));
-    command
+    support::isolated_command(home)
 }
 
 #[test]
