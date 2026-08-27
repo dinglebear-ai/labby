@@ -210,7 +210,7 @@ where
         None => base,
     });
     let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-    pool.catalog.write().await.insert(
+    pool.catalog_write().await.insert(
         upstream_name.to_string(),
         healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
     );

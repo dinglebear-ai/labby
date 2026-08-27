@@ -41,6 +41,11 @@ export interface CreateSnippetInput {
   force?: boolean
 }
 
+export interface SnippetRemoveResult {
+  name: string
+  removed: boolean
+}
+
 export interface SnippetValidation {
   valid: boolean
   name: string

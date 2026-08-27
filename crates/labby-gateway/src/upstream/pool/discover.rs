@@ -403,7 +403,7 @@ impl UpstreamPool {
                         skill_last_error: None,
                     };
 
-                    self.catalog.write().await.insert(name.clone(), entry);
+                    self.catalog_tools_write().await.insert(name.clone(), entry);
                     self.connections.write().await.insert(name.clone(), conn);
                     subscription_refreshes.push(name);
                 }
@@ -445,7 +445,7 @@ impl UpstreamPool {
                         resource_last_error: Some(error_message),
                         skill_last_error: None,
                     };
-                    self.catalog.write().await.insert(name, entry);
+                    self.catalog_tools_write().await.insert(name, entry);
                 }
             }
         }

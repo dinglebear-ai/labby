@@ -92,7 +92,10 @@ pub enum Command {
     /// Manage executable Code Mode snippets.
     #[cfg(feature = "gateway")]
     Snippets(snippets::SnippetsArgs),
-    /// Discover and read Agent Skills through the compatibility surface.
+    /// Read Agent Skills visible to the local CLI.
+    #[command(
+        long_about = "Read Agent Skills visible to the local CLI. Artifact-backed shared and private Skills are not available on this surface; use an authenticated HTTP or MCP client instead."
+    )]
     #[cfg(feature = "skills")]
     Skills(skills::SkillsArgs),
     /// Run local OAuth callback relay helpers.

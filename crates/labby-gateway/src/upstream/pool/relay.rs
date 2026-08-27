@@ -4255,7 +4255,7 @@ mod tests {
 
         // Seed the catalog so `record_failure_for` has an entry to mark unhealthy.
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             config.name.clone(),
             healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
         );
@@ -4395,7 +4395,7 @@ mod tests {
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config();
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             config.name.clone(),
             healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
         );

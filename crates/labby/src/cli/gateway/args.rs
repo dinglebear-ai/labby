@@ -685,6 +685,8 @@ pub enum GatewayMcpCommand {
     Enable(GatewayMcpLifecycleArgs),
     /// Disable an upstream MCP server and optionally clean up running processes.
     Disable(GatewayMcpLifecycleArgs),
+    /// Replace one enabled upstream MCP connection and clean up stale runtime processes.
+    Restart(GatewayMcpRestartArgs),
     /// Kill or preview running processes associated with one upstream MCP server.
     Cleanup(GatewayMcpCleanupArgs),
 }
@@ -744,4 +746,13 @@ pub struct GatewayMcpCleanupArgs {
     pub aggressive: bool,
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct GatewayMcpRestartArgs {
+    /// Name of the enabled upstream MCP server to reconnect.
+    pub name: String,
+    /// Use broader host-wide process matching when cleaning up the old runtime.
+    #[arg(long, default_value_t = false)]
+    pub aggressive: bool,
 }

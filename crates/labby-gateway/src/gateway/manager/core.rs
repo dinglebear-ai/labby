@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, RwLock};
@@ -20,7 +21,10 @@ use crate::gateway::config::{normalize_config, validate_config};
 use crate::gateway::config_store::FsGatewayConfigStore;
 use crate::gateway::config_store::GatewayConfigStore;
 use crate::gateway::protected_routes::ProtectedRouteIndex;
-use crate::gateway::service_registry::{EmptyServiceRegistry, GatewayServiceRegistry};
+use crate::gateway::service_registry::{
+    EmptyServiceRegistry, GatewayServiceRegistry, PublishedServiceRegistrySnapshot,
+    PublishedServiceRegistryState, ServiceRegistryPublicationError,
+};
 use crate::gateway::types::CatalogChangeNotifier;
 use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector, UpstreamPool};
 
@@ -130,6 +134,9 @@ impl GatewayManager {
             runtime,
             config: Arc::new(RwLock::new(GatewayConfig::default())),
             publication_barrier: Arc::new(RwLock::new(())),
+            runtime_config_generation: Arc::new(AtomicU64::new(
+                super::publication::next_runtime_config_generation(),
+            )),
             config_mutation: Arc::new(Mutex::new(())),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
@@ -138,7 +145,10 @@ impl GatewayManager {
             upstream_oauth_managers: None,
             oauth_status_discovery_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
             oauth_status_discovery_locks: Arc::new(dashmap::DashMap::new()),
-            builtin_service_registry: Arc::new(ArcSwap::from_pointee(registry)),
+            builtin_service_registry: Arc::new(ArcSwap::from_pointee(
+                PublishedServiceRegistryState::new(registry),
+            )),
+            builtin_service_registry_publication: Arc::new(std::sync::Mutex::new(())),
             oauth_sqlite: None,
             oauth_key: None,
             oauth_redirect_uri: None,
@@ -254,16 +264,36 @@ impl GatewayManager {
         mut self,
         registry: Arc<dyn GatewayServiceRegistry>,
     ) -> Self {
-        self.builtin_service_registry = Arc::new(ArcSwap::from_pointee(registry));
+        self.builtin_service_registry = Arc::new(ArcSwap::from_pointee(
+            PublishedServiceRegistryState::new(registry),
+        ));
+        self.builtin_service_registry_publication = Arc::new(std::sync::Mutex::new(()));
         self
     }
 
+    /// Atomically replace the registry and its materialized service catalog.
+    ///
+    /// This does not notify catalog watchers or rebuild the published upstream
+    /// pool, so it makes no immediate in-process peer routability guarantee.
     pub fn set_builtin_service_registry(&self, registry: Arc<dyn GatewayServiceRegistry>) {
-        self.builtin_service_registry.store(Arc::new(registry));
+        let _publication = self
+            .builtin_service_registry_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.builtin_service_registry
+            .store(Arc::new(PublishedServiceRegistryState::new(registry)));
     }
 
     pub(crate) fn builtin_service_registry(&self) -> Arc<dyn GatewayServiceRegistry> {
-        Arc::clone(&*self.builtin_service_registry.load())
+        self.builtin_service_registry.load().registry()
+    }
+
+    /// Observe the exact immutable built-in service/action catalog materialized
+    /// when the current registry was published.
+    pub fn published_service_registry_snapshot(
+        &self,
+    ) -> Result<PublishedServiceRegistrySnapshot, ServiceRegistryPublicationError> {
+        self.builtin_service_registry.load().snapshot()
     }
 
     pub(super) fn registered_service_meta(
@@ -358,6 +388,7 @@ impl GatewayManager {
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
         *self.config.write().await = config;
+        self.advance_runtime_config_generation();
         // Cold-connect for the codemode surface is handled lazily by the
         // code_mode path (`ensure_search_runtime_ready`) on first call, so
         // seed_config does not eagerly connect upstreams here. This keeps startup

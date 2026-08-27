@@ -35,6 +35,7 @@ mod imports;
 mod inspection;
 mod lifecycle;
 mod oauth;
+mod publication;
 mod views;
 mod virtual_servers;
 
@@ -259,11 +260,13 @@ impl crate::gateway::service_registry::GatewayServiceRegistry for DeployKnownReg
                     name: "deploy.plan",
                     description: "Plan a deployment",
                     destructive: false,
+                    requires_admin: false,
                 },
                 crate::gateway::service_registry::ServiceActionInfo {
                     name: "deploy.apply",
                     description: "Apply a deployment",
                     destructive: true,
+                    requires_admin: true,
                 },
             ]
         })
@@ -295,9 +298,17 @@ async fn persist_config_offloads_blocking_store_write() {
         GatewayRuntimeHandle::default(),
         store,
     );
+    let before = manager
+        .published_runtime_loadout_snapshot("project")
+        .await
+        .generation();
 
-    let persist_task =
-        tokio::spawn(async move { manager.persist_config(GatewayConfig::default()).await });
+    let persisting_manager = manager.clone();
+    let persist_task = tokio::spawn(async move {
+        persisting_manager
+            .persist_config(GatewayConfig::default())
+            .await
+    });
 
     let timer_result = tokio::time::timeout(Duration::from_millis(50), async {
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -310,6 +321,14 @@ async fn persist_config_offloads_blocking_store_write() {
     );
     persist_task.await.expect("persist task joins").unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_ne!(
+        manager
+            .published_runtime_loadout_snapshot("project")
+            .await
+            .generation(),
+        before,
+        "persisting runtime configuration must advance its publication generation"
+    );
 }
 
 #[tokio::test]

@@ -38,10 +38,16 @@ use super::logging::{
 };
 use super::tools::MAX_UPSTREAM_RESOURCES;
 
-const RESOURCE_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
+/// Wall-clock cap for one upstream's catalog listing on the connect path.
+///
+/// Shared by the resource and prompt refreshes so the two budgets cannot drift
+/// apart: both run while the lazy-connect mutex and the write-preferring
+/// `oauth_invalidation_barrier` read guard are held, so an unbounded listing
+/// stalls every queued OAuth writer behind one slow upstream.
+const CATALOG_LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
-    request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
+pub(super) fn catalog_listing_timeout(request_timeout: Duration) -> Duration {
+    request_timeout.min(CATALOG_LISTING_TIMEOUT)
 }
 
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
@@ -255,7 +261,7 @@ impl UpstreamPool {
         // Issue RPCs in parallel, then sort by upstream name for deterministic order.
         let mut futures = FuturesUnordered::new();
         for (name, peer) in peers {
-            let request_timeout = resource_catalog_timeout(self.request_timeout);
+            let request_timeout = catalog_listing_timeout(self.request_timeout);
             futures.push(async move {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);
@@ -327,7 +333,7 @@ impl UpstreamPool {
                     // there would make the allowlist un-editable. Enforcement
                     // happens on what leaves this function, and on every read.
                     let (policy, resource_uris_changed) = {
-                        let mut catalog = self.catalog.write().await;
+                        let mut catalog = self.catalog_write().await;
                         match catalog.get_mut(&name) {
                             Some(entry) => {
                                 let changed = entry.resource_uris != resource_uris;
@@ -384,7 +390,7 @@ impl UpstreamPool {
                     )
                     .await;
                     {
-                        let mut catalog = self.catalog.write().await;
+                        let mut catalog = self.catalog_write().await;
                         if let Some(entry) = catalog.get_mut(&name) {
                             entry.resource_count = 0;
                             entry.resource_uris.clear();
@@ -505,7 +511,7 @@ impl UpstreamPool {
             let pool = self.clone();
             futures.push(async move {
                 let started = Instant::now();
-                let request_timeout = resource_catalog_timeout(pool.request_timeout);
+                let request_timeout = catalog_listing_timeout(pool.request_timeout);
                 // Subject-scoped resources are discovered over a per-(upstream,
                 // subject) connection and never land in `self.catalog`, so
                 // there is no `UpstreamEntry::resource_exposure_policy` to
@@ -892,11 +898,11 @@ mod tests {
     #[test]
     fn resource_catalog_timeout_caps_the_general_upstream_budget() {
         assert_eq!(
-            resource_catalog_timeout(Duration::from_mins(1)),
+            catalog_listing_timeout(Duration::from_mins(1)),
             Duration::from_secs(10)
         );
         assert_eq!(
-            resource_catalog_timeout(Duration::from_millis(25)),
+            catalog_listing_timeout(Duration::from_millis(25)),
             Duration::from_millis(25)
         );
     }
@@ -1090,7 +1096,7 @@ mod tests {
 
     async fn pool_with_empty_upstreams(names: &[&str]) -> UpstreamPool {
         let pool = UpstreamPool::new();
-        let mut catalog = pool.catalog.write().await;
+        let mut catalog = pool.catalog_write().await;
         for name in names {
             let entry = healthy_in_process_entry(Arc::from(*name), HashMap::new());
             catalog.insert((*name).to_string(), entry);

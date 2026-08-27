@@ -279,6 +279,7 @@ impl labby_gateway::gateway::service_registry::GatewayServiceRegistry for ToolRe
                         name: action.name,
                         description: action.description,
                         destructive: action.destructive,
+                        requires_admin: action.requires_admin,
                     },
                 )
                 .collect()

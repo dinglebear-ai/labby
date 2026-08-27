@@ -145,7 +145,7 @@ impl UpstreamPool {
             .collect::<HashMap<_, _>>();
 
         let replaced = {
-            let mut catalog = self.catalog.write().await;
+            let mut catalog = self.catalog_tools_write().await;
             if let Some(entry) = catalog.get_mut(upstream) {
                 entry.tools = tools;
                 true

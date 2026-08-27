@@ -31,9 +31,9 @@ use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 #[cfg(feature = "gateway")]
-use crate::mcp::context::{
-    auth_context_from_extensions, code_mode_read_scope_allowed, tool_execute_scope_allowed,
-};
+use crate::mcp::context::tool_execute_scope_allowed;
+#[cfg(any(feature = "gateway", feature = "skills"))]
+use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
@@ -46,8 +46,13 @@ use crate::mcp::handlers_resources::{
     admin_app_resources_visible, server_logs_app_resource_uri_for_tool,
     server_logs_app_skybridge_uri_for_tool,
 };
+#[cfg(feature = "skills")]
+use crate::mcp::handlers_resources::{
+    skill_library_app_resource_uri_for_tool, skill_library_app_skybridge_uri_for_tool,
+};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::pagination::{PageCollector, error_kind as pagination_error_kind};
+use crate::mcp::permanent_tools::SkillLibraryDescriptorMode;
 use crate::mcp::server::LabMcpServer;
 
 /// Remove MCP App bindings whose backing resources are not readable on the
@@ -161,6 +166,21 @@ impl LabMcpServer {
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await;
         let mut builtin_names = HashSet::new();
+        #[cfg(feature = "skills")]
+        let skill_library_allowed_actions = self.allowed_mcp_actions("skills").await;
+        #[cfg(feature = "skills")]
+        let skill_library_mode = if self.skill_library_http_management_visible(&context) {
+            let skills_auth = auth_context_from_extensions(&context.extensions);
+            SkillLibraryDescriptorMode::Management {
+                app_visible: code_mode_read_scope_allowed(skills_auth)
+                    && self.route_scope.exposes_resources(),
+                allowed_actions: skill_library_allowed_actions.as_deref(),
+            }
+        } else {
+            SkillLibraryDescriptorMode::Compatibility
+        };
+        #[cfg(not(feature = "skills"))]
+        let skill_library_mode = SkillLibraryDescriptorMode::Compatibility;
         for svc in self.registry.services() {
             // `service_visible_on_mcp` already checks `route_scope.allows_service`.
             if self.service_visible_on_mcp(svc.name).await {
@@ -169,11 +189,11 @@ impl LabMcpServer {
                     suppressed_builtin_tool_count += 1;
                 } else {
                     advertised_names.insert(svc.name.to_string());
-                    descriptors.push(
-                        self.registry
-                            .permanent_tools()
-                            .builtin_service_tool(svc, server_logs_app_visible),
-                    );
+                    descriptors.push(self.registry.permanent_tools().builtin_service_tool(
+                        svc,
+                        server_logs_app_visible,
+                        skill_library_mode,
+                    ));
                     builtin_tool_count += 1;
                 }
             }
@@ -635,6 +655,51 @@ fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> M
         );
     }
     MetaObject(meta)
+}
+
+/// Agent-readable fallback for hosts that do not render the attached app.
+#[cfg(feature = "skills")]
+pub(crate) fn skill_library_tool_description(service_description: &str) -> String {
+    format!(
+        "{service_description} This tool also opens Labby's Skill Library app on compatible hosts. On non-App hosts, call the documented skills.* and skill_library.* actions directly with the same action and params envelope. Save and import do not activate a Skill."
+    )
+}
+
+/// Bind the canonical `skills` service descriptor to both supported app hosts.
+/// Authorization is still evaluated by the shared dispatcher at call time.
+#[cfg(feature = "skills")]
+pub(crate) fn skill_library_tool_meta(tool_name: &str) -> MetaObject {
+    let resource_uri = skill_library_app_resource_uri_for_tool(tool_name)
+        .expect("Skill Library tool must have an associated UI resource");
+    let mut meta = owned_app_tool_meta(
+        resource_uri.clone(),
+        skill_library_app_skybridge_uri_for_tool(tool_name),
+    );
+    meta.0.insert(
+        "ui".to_string(),
+        serde_json::json!({
+            "resourceUri": resource_uri,
+            "visibility": ["model", "app"]
+        }),
+    );
+    meta.0
+        .insert("openai/widgetAccessible".to_string(), Value::Bool(true));
+    meta.0.insert(
+        "openai/toolInvocation/invoking".to_string(),
+        Value::String("Opening the Skill Library…".to_string()),
+    );
+    meta.0.insert(
+        "openai/toolInvocation/invoked".to_string(),
+        Value::String("Skill Library ready".to_string()),
+    );
+    meta.0.insert(
+        "securitySchemes".to_string(),
+        serde_json::json!([{
+            "type": "oauth2",
+            "scopes": ["lab:read", "lab", "lab:admin"]
+        }]),
+    );
+    meta
 }
 
 #[cfg(feature = "gateway")]

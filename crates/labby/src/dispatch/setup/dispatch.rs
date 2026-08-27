@@ -435,7 +435,7 @@ fn settings_update_action(params: &Value) -> Result<Value, ToolError> {
 
 fn refresh_built_in_upstream_registry(enabled: bool) {
     crate::registry::set_runtime_built_in_upstream_apis_enabled(enabled);
-    // Notify the live gateway manager so upstream discovery reflects the change.
+    // Replace the registry used by subsequent upstream discovery.
     // The gateway manager only exists with the gateway feature; without it there
     // is nothing to refresh.
     #[cfg(feature = "gateway")]

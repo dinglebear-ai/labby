@@ -716,6 +716,7 @@ mod tests {
     fn prompt_test_server(route_scope: McpRouteScope) -> LabMcpServer {
         LabMcpServer {
             registry: Arc::new(build_default_registry()),
+            access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             peers: Default::default(),

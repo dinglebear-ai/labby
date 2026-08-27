@@ -23,7 +23,6 @@ use tower_http::{
     compression::CompressionLayer,
     cors::{AllowOrigin, CorsLayer},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use tracing::Level;
@@ -51,6 +50,33 @@ use super::dev_mockup::{dev_mockup, dev_mockup_named};
 use super::{health, services, state::AppState};
 use crate::api::error::ApiError;
 use crate::dispatch::error::ToolError;
+
+/// Ordinary API handlers must fail promptly when a dependency stalls.
+const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// MCP tool calls can use the gateway's five-minute relay budget. In
+/// particular, provider-managed VM installs download and unpack a large image
+/// before they return a single MCP result.
+const MCP_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
+
+fn http_request_timeout(path: &str) -> Duration {
+    if path == "/mcp" || path.starts_with("/mcp/") {
+        MCP_HTTP_REQUEST_TIMEOUT
+    } else {
+        DEFAULT_HTTP_REQUEST_TIMEOUT
+    }
+}
+
+async fn request_timeout(request: Request<Body>, next: Next) -> axum::response::Response {
+    match tokio::time::timeout(
+        http_request_timeout(request.uri().path()),
+        next.run(request),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
+    }
+}
 
 fn app_auth_state(state: &AppState) -> Result<labby_auth::state::AuthState, LabAuthError> {
     state
@@ -1696,6 +1722,13 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
             services::auth_admin::routes(state.clone()),
         );
 
+    if state.oauth_state.is_some() {
+        v1 = v1.nest(
+            "/access/bootstrap-owner",
+            services::access_bootstrap::routes(state.clone()),
+        );
+    }
+
     #[cfg(feature = "fs")]
     if state
         .registry
@@ -1722,7 +1755,48 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
         }
     }
 
-    v1
+    // Anything under /v1 that no route above matches — a typo, or (the case
+    // that motivated this) a service deliberately not mounted in this
+    // deployment shape, like /v1/fs without auth or /v1/gateway without
+    // api_auth_configured — would otherwise fall through this nest to the
+    // outer SPA fallback, which answers non-GET requests with a bare
+    // empty-body 404. The frontend has nothing to render from that but a
+    // generic "An error occurred" (bead lab-gug4m), exactly the failure mode
+    // docs/contracts/agent-error-contract.md forbids.
+    //
+    // NOTE ON REACHABILITY AND WORDING. This handler answers UNAUTHENTICATED
+    // callers: `Router::nest` hoists an inner fallback into the outer
+    // `fallback_router`, and `Router::route_layer` passes `fallback_router`
+    // through unlayered by design, so the `/v1` auth layer never wraps it.
+    // (Registering it as a catch-all route instead — which would land in
+    // `path_router` and therefore be covered — is not possible: `/{*rest}`
+    // collides with the `/{service}/actions` route above.)
+    //
+    // Anyone can already distinguish "mounted but unauthorized" (401) from
+    // "not mounted" (404) by status code alone, and could before this change
+    // too, since unmounted paths previously reached the SPA fallback's 404.
+    // So the message deliberately states ONLY the method and path the caller
+    // already sent, and must stay that way: naming mount state, or pointing
+    // at `*.mount.skipped` logs, would add real deployment-shape detail to an
+    // anonymous response on the one surface that refuses to mount
+    // stdio-spawning gateway admin without auth. Operator-facing recovery
+    // belongs in the startup warnings (which do name the skipped service) and
+    // in the error contract's own `recovery` guidance, not here.
+    v1.fallback(v1_route_not_found)
+}
+
+async fn v1_route_not_found(
+    method: Method,
+    // `OriginalUri`, not `Uri`: this handler is nested under `/v1`, so a plain
+    // `Uri` extractor only sees the path remaining after the nest strips its
+    // prefix — `OriginalUri` preserves the full incoming path.
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> axum::response::Response {
+    ApiError::new(ToolError::Sdk {
+        sdk_kind: "route_not_found".into(),
+        message: format!("no route matches {method} {path}", path = uri.path()),
+    })
+    .into_response()
 }
 
 async fn labby_discovery(State(state): State<AppState>) -> axum::response::Response {
@@ -2181,6 +2255,13 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn mcp_requests_use_the_long_running_budget() {
+        assert_eq!(http_request_timeout("/mcp"), Duration::from_mins(5));
+        assert_eq!(http_request_timeout("/mcp/"), Duration::from_mins(5));
+        assert_eq!(http_request_timeout("/v1/setup"), Duration::from_secs(30));
+    }
+
     async fn actor_key_probe(
         auth: Option<Extension<crate::api::oauth::AuthContext>>,
     ) -> Json<serde_json::Value> {
@@ -2232,6 +2313,121 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["kind"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn v1_unmounted_service_route_returns_structured_json_not_bare_404() {
+        // AppState::new() has no bearer/OAuth configured, so /v1/gateway is
+        // never nested (see the `gateway.mount.skipped` guard in
+        // build_v1_router) and previously fell through the SPA fallback to a
+        // bare, empty-body 404 — surfaced by the web UI as a generic "An error
+        // occurred" toast (bead lab-gug4m). It must now match the same structured
+        // agent-error-contract envelope as every other /v1 failure.
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/gateway")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(content_type.contains("application/json"));
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!body.is_empty(), "fallback must not return an empty body");
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "route_not_found");
+        assert!(json["message"].as_str().unwrap().contains("/v1/gateway"));
+    }
+
+    #[tokio::test]
+    async fn v1_unmatched_route_response_discloses_nothing_beyond_the_request() {
+        // This fallback is reachable unauthenticated (`nest` hoists it into
+        // the outer `fallback_router`, which `route_layer` leaves unlayered),
+        // so its body must not name mount state or point at internal logs —
+        // it may only echo the method and path the caller already sent.
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/no-such-service")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "route_not_found");
+
+        let message = json["message"].as_str().unwrap();
+        assert!(message.contains("/v1/no-such-service"));
+        for leak in ["mount", "skipped", "deployment", "log"] {
+            assert!(
+                !message.to_ascii_lowercase().contains(leak),
+                "anonymous 404 body must not mention `{leak}`; got: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_fallback_does_not_shadow_real_routes_or_swallow_405() {
+        // The fallback must lose to a more specific match, and must not
+        // absorb method-not-allowed for a path that does exist.
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+
+        let real_route = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/setup/actions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            real_route.status(),
+            StatusCode::OK,
+            "the fallback must not shadow a registered route"
+        );
+
+        let wrong_method = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/v1/setup/actions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            wrong_method.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "an existing path with a wrong method must stay 405, not become 404"
+        );
     }
 
     #[tokio::test]
@@ -3116,6 +3312,222 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn access_owner_bootstrap_requires_browser_csrf() {
+        let auth_state = test_lab_auth_state().await;
+        let session = seed_browser_session(&auth_state).await;
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
+        let app = build_router(
+            AppState::new().with_auth_config(config),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{}={}",
+                            labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                            session.session_id
+                        ),
+                    )
+                    .body(Body::from(
+                        r#"{"organization_name":"Local","project_name":"Default"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_maps_json_rejection_to_canonical_no_store_error() {
+        let auth_state = test_lab_auth_state().await;
+        let session = seed_browser_session(&auth_state).await;
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
+        let app = build_router(
+            AppState::new().with_auth_config(config),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{}={}",
+                            labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                            session.session_id
+                        ),
+                    )
+                    .header(labby_auth::session::BROWSER_CSRF_HEADER_NAME, "csrf-123")
+                    .body(Body::from(
+                        r#"{"organization_name":"Local","project_name":"Default","subject":"forged"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["contract_version"], 1);
+        assert_eq!(json["kind"], "validation_failed");
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_creates_then_returns_idempotent_success() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let auth_state = test_lab_auth_state().await;
+        let session = seed_browser_session(&auth_state).await;
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
+        let access_runtime = Arc::new(
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+        );
+        let app = build_router(
+            AppState::new()
+                .with_auth_config(config)
+                .with_access_runtime(access_runtime),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/v1/access/bootstrap-owner")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "{}={}",
+                        labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                        session.session_id
+                    ),
+                )
+                .header(labby_auth::session::BROWSER_CSRF_HEADER_NAME, "csrf-123")
+                .body(Body::from(
+                    r#"{"organization_name":"Local","project_name":"Default"}"#,
+                ))
+                .unwrap()
+        };
+
+        for (expected_status, expected_outcome) in [
+            (StatusCode::CREATED, "created"),
+            (StatusCode::OK, "already_applied"),
+        ] {
+            let response = app.clone().oneshot(request()).await.unwrap();
+            assert_eq!(response.status(), expected_status);
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "private, no-store"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["status"], expected_outcome);
+        }
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_rejects_bearer_and_is_absent_without_oauth() {
+        let auth_state = test_lab_auth_state().await;
+        let token = issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:admin");
+        let config = labby_auth::config::AuthConfig {
+            admin_email: "browser@example.com".into(),
+            ..Default::default()
+        };
+        let authenticated = build_router(
+            AppState::new().with_auth_config(config),
+            None,
+            Some(auth_state),
+            None,
+            &[],
+        );
+        let body = r#"{"organization_name":"Local","project_name":"Default"}"#;
+        let bearer = authenticated
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bearer.status(), StatusCode::FORBIDDEN);
+
+        let loopback = build_router(AppState::new(), None, None, None, &[])
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::HOST, "127.0.0.1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(loopback.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn access_owner_bootstrap_is_absent_without_oauth_before_body_validation() {
+        let response = build_router(AppState::new(), None, None, None, &[])
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/access/bootstrap-owner")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"organization_name":"Local","project_name":"Default","email":"owner@example.com","subject":"forged"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn auth_session_returns_browser_identity_and_csrf_token() {
         let state = AppState::new();
         let auth_state = test_lab_auth_state().await;
@@ -3245,7 +3657,7 @@ mod tests {
 
     // lab-0bl3m: resolve_web_ui_auth_disabled() defaults web_ui_auth_disabled
     // to true for the bearer-only + embedded-web-UI shape, and /auth/session
-    // is now registered unconditionally (lab-cfl3v) — together those mean
+    // is now registered unconditionally (bead lab-cfl3v) — together those mean
     // this dev-bypass branch is reachable by an unauthenticated caller in
     // that default deployment shape, not just in explicit local-dev setups.
     // This test pins the exact observable behavior so a future change to
@@ -5020,6 +5432,8 @@ mod tests {
                 jti: "test-jti".to_string(),
                 scope: scope.to_string(),
                 azp: "client".to_string(),
+                identity_issuer: Some("https://accounts.google.com".to_string()),
+                identity_credential_id: None,
             })
             .unwrap()
     }

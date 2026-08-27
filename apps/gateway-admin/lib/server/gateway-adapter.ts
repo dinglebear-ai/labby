@@ -9,7 +9,7 @@ import type {
   TransportType,
   UpdateGatewayInput,
 } from '../types/gateway'
-import { EXPOSE_NONE_PATTERN, stripExposeNonePattern } from '../api/tool-exposure-draft.ts'
+import { stripExposeNonePattern } from '../api/tool-exposure-draft.ts'
 import {
   matchPattern,
   previewExposurePolicy as sharedPreviewExposurePolicy,
@@ -190,8 +190,15 @@ function normalizeEnv(env?: Record<string, string>): Record<string, string> | un
 // the semantic drift identified in lab-2oec.7.
 export { matchPattern }
 
+// Absent (null/undefined) and empty (`[]`) are NOT the same exposure state, and
+// these helpers must mirror the backend's `ToolExposurePolicy::from_optional`
+// exactly: `None` compiles to `All` (everything exposed), while `Some([])`
+// compiles to an `AllowList` that matches nothing (everything hidden).
+// Collapsing the two here renders every tool/resource/prompt as "Exposed" on a
+// server the gateway is actually hiding in full — the precise inverse of the
+// truth. See bead lab-sc8ba, which made `[]` persistable in the first place.
 function matchTool(toolName: string, patterns?: string[] | null): string | null {
-  if (!patterns || patterns.length === 0) {
+  if (!patterns) {
     return '*'
   }
 
@@ -204,16 +211,31 @@ function matchTool(toolName: string, patterns?: string[] | null): string | null 
   return null
 }
 
-function primitiveExposed(name: string, patterns: string[] | null | undefined, proxyEnabled: boolean): boolean {
+// Resources and prompts resolve through the same matcher as tools. The backend
+// compiles all four exposure fields with `resolve_named_exposure_policy` and
+// matches them through `ToolExposurePolicy::matches`, which is wildcard-capable
+// — so an exact `includes()` here disagreed with the gateway for any pattern
+// containing `*`: `expose_resources = ["res://docs/*"]` badged every resource
+// "Hidden" while the gateway happily served them all.
+//
+// `subject` must be the same string the backend matches against. For prompts
+// that is the prompt name; for resources it is the bare, upstream-native URI
+// (see `resource_exposed`), NOT the display name — those differ whenever a
+// server gives its resources human-readable titles.
+function primitiveExposed(
+  subject: string,
+  patterns: string[] | null | undefined,
+  proxyEnabled: boolean,
+): boolean {
   if (!proxyEnabled) {
     return false
   }
 
-  if (!patterns || patterns.length === 0) {
+  if (!patterns) {
     return true
   }
 
-  return patterns.includes(name)
+  return patterns.some((pattern) => matchPattern(subject, pattern))
 }
 
 function matchVirtualServerAction(
@@ -579,9 +601,11 @@ export function normalizeGateway(
           name,
           uri,
           ...(typeof resource !== 'string' && resource.description ? { description: resource.description } : {}),
+          // Matched on `uri`, not `name`: the backend's `expose_resources`
+          // patterns are compared against the bare upstream URI.
           exposed: typeof resource === 'string'
-            ? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? true)
-            : resource.exposed ?? primitiveExposed(name, config.expose_resources, config.proxy_resources ?? true),
+            ? primitiveExposed(uri, config.expose_resources, config.proxy_resources ?? true)
+            : resource.exposed ?? primitiveExposed(uri, config.expose_resources, config.proxy_resources ?? true),
         }
       }),
       prompts: discovery.prompts.map((prompt) => {
@@ -786,13 +810,18 @@ export function buildGatewayUpdatePayload(
 }
 
 export function exposurePolicyFromConfig(config: BackendGatewayConfigView): ExposurePolicy {
-  const rawPatterns = config.expose_tools ?? []
-  const patterns = stripExposeNonePattern(rawPatterns)
-  if (rawPatterns.includes(EXPOSE_NONE_PATTERN)) {
-    return { mode: 'allowlist', patterns: [] }
-  }
-  if (patterns.length === 0) {
+  const rawPatterns = config.expose_tools
+  // Absent means no allowlist is configured at all → expose everything.
+  if (!rawPatterns) {
     return { mode: 'expose_all', patterns: [] }
+  }
+  // A genuinely empty allowlist and the legacy `__labby_expose_none__`
+  // sentinel both mean the same thing: an allowlist that matches nothing.
+  // (The sentinel exists only because `[]` used to be unpersistable — see
+  // lab-sc8ba — and stays supported for configs already written with it.)
+  const patterns = stripExposeNonePattern(rawPatterns)
+  if (patterns.length === 0) {
+    return { mode: 'allowlist', patterns: [] }
   }
 
   return { mode: 'allowlist', patterns }

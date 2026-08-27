@@ -2,8 +2,9 @@
 //!
 //! Doctor is a Bootstrap utility: no external service URL, no feature gate.
 //! `system.checks` reads local state; `audit.full` combines the checks that
-//! actually exist in the slim product (system, auth, gateway, and relay).
+//! actually exist in the slim product (system, auth, access, gateway, and relay).
 
+mod access;
 mod catalog;
 mod client;
 mod dispatch;
@@ -30,7 +31,7 @@ use labby_primitives::plugin::{Category, PluginMeta};
 pub const META: PluginMeta = PluginMeta {
     name: "doctor",
     display_name: "Doctor",
-    description: "Comprehensive health audit: env vars, system, gateway, and OAuth relay checks",
+    description: "Comprehensive health audit: env vars, system, access store, gateway, and OAuth relay checks",
     category: Category::Bootstrap,
     docs_url: "https://github.com/dinglebear-ai/labby",
     required_env: &[],

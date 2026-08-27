@@ -577,7 +577,7 @@ fn expose_tools_patch_distinguishes_absent_null_empty_and_values() {
     assert!(absent.expose_tools.is_none());
     // null → Some(None) (clear the filter)
     assert_eq!(null.expose_tools, Some(None));
-    // empty array → Some(Some([])) (will be normalized to clear)
+    // empty array → Some(Some([])) (explicit expose-none allowlist)
     assert_eq!(empty.expose_tools, Some(Some(vec![])));
     // values → Some(Some([...]))
     assert_eq!(
@@ -619,7 +619,7 @@ fn update_upstream_clears_expose_tools_with_null() {
 }
 
 #[test]
-fn update_upstream_clears_expose_tools_with_empty_array() {
+fn update_upstream_keeps_empty_expose_tools_as_expose_none() {
     let mut cfg = sample_config();
 
     // First set a filter
@@ -634,7 +634,10 @@ fn update_upstream_clears_expose_tools_with_empty_array() {
     .expect("set filter");
     assert!(cfg.upstream[1].expose_tools.is_some());
 
-    // Clear with empty array (normalized to None)
+    // An empty array is an explicit hide-everything allowlist and must persist
+    // as such — collapsing it to None silently re-exposed everything the
+    // operator just hid (bead lab-sc8ba). Clearing the filter is expressed with
+    // null (Some(None)), covered by the test above.
     update_upstream(
         &mut cfg,
         "b",
@@ -643,10 +646,113 @@ fn update_upstream_clears_expose_tools_with_empty_array() {
             ..GatewayUpdatePatch::default()
         },
     )
-    .expect("clear filter");
-    assert!(
-        cfg.upstream[1].expose_tools.is_none(),
-        "empty array should clear expose_tools"
+    .expect("set expose-none");
+    assert_eq!(
+        cfg.upstream[1].expose_tools,
+        Some(vec![]),
+        "empty array must persist as an expose-none allowlist"
+    );
+}
+
+#[test]
+fn update_upstream_keeps_empty_expose_resources_and_prompts_as_expose_none() {
+    // The user-visible report behind bead lab-sc8ba was against the resource
+    // and prompt panels, not tools: hiding every resource reported success and
+    // silently re-exposed all of them. Tools and skills each have their own
+    // test above, so pin these two directly rather than assuming the shared
+    // code path covers them.
+    let mut cfg = sample_config();
+
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            expose_resources: Some(Some(vec!["res://keep".to_string()])),
+            expose_prompts: Some(Some(vec!["prompt.keep".to_string()])),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("set filters");
+    assert!(cfg.upstream[1].expose_resources.is_some());
+    assert!(cfg.upstream[1].expose_prompts.is_some());
+
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            expose_resources: Some(Some(vec![])),
+            expose_prompts: Some(Some(vec![])),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("set expose-none");
+    assert_eq!(
+        cfg.upstream[1].expose_resources,
+        Some(vec![]),
+        "an empty resource allowlist must hide every resource, not re-expose all"
+    );
+    assert_eq!(
+        cfg.upstream[1].expose_prompts,
+        Some(vec![]),
+        "an empty prompt allowlist must hide every prompt, not re-expose all"
+    );
+
+    // null remains the way to clear a filter back to expose-all.
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            expose_resources: Some(None),
+            expose_prompts: Some(None),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("clear filters");
+    assert_eq!(cfg.upstream[1].expose_resources, None);
+    assert_eq!(cfg.upstream[1].expose_prompts, None);
+}
+
+#[test]
+fn empty_exposure_allowlists_survive_a_config_file_round_trip() {
+    // `Some(vec![])` is now the difference between "expose nothing" and
+    // "expose everything" on disk, and the gateway_config fields carry no
+    // `skip_serializing_if`, so the distinction depends on the TOML
+    // serializer emitting `expose_tools = []` for `Some([])` and omitting the
+    // key entirely for `None`. Pin that, since silently losing it would
+    // re-open bead lab-sc8ba at the persistence layer.
+    let mut cfg = sample_config();
+    update_upstream(
+        &mut cfg,
+        "b",
+        GatewayUpdatePatch {
+            expose_tools: Some(Some(vec![])),
+            expose_resources: Some(Some(vec![])),
+            expose_prompts: Some(Some(vec![])),
+            ..GatewayUpdatePatch::default()
+        },
+    )
+    .expect("set expose-none");
+
+    let serialized = toml::to_string(&cfg).expect("config serializes");
+    let restored: GatewayConfig = toml::from_str(&serialized).expect("config round-trips");
+
+    let upstream = restored
+        .upstream
+        .iter()
+        .find(|entry| entry.name == "b")
+        .expect("upstream b survives the round trip");
+    assert_eq!(upstream.expose_tools, Some(vec![]));
+    assert_eq!(upstream.expose_resources, Some(vec![]));
+    assert_eq!(upstream.expose_prompts, Some(vec![]));
+
+    let untouched = restored
+        .upstream
+        .iter()
+        .find(|entry| entry.name == "a")
+        .expect("upstream a survives the round trip");
+    assert_eq!(
+        untouched.expose_tools, None,
+        "an absent allowlist must stay absent, not become an empty one"
     );
 }
 

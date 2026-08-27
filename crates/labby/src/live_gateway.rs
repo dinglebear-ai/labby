@@ -1769,6 +1769,7 @@ mod tests {
             "gateway.reload",
             "gateway.mcp.enable",
             "gateway.mcp.disable",
+            "gateway.mcp.restart",
         ] {
             assert_eq!(
                 dispatch_timeout_for_action(action, Duration::from_secs(30)),
@@ -1824,6 +1825,7 @@ mod tests {
             "gateway.reload",
             "gateway.mcp.enable",
             "gateway.mcp.disable",
+            "gateway.mcp.restart",
         ]
         .into_iter()
         .collect::<BTreeSet<_>>();

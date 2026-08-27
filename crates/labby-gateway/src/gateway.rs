@@ -37,6 +37,15 @@ pub use catalog::{ACTIONS, AUTHORITATIVE_RESULT_ACTIONS, requires_authoritative_
 pub use client::{current_gateway_manager, install_gateway_manager, require_gateway_manager};
 pub use config_store::GatewayConfigStore;
 pub use dispatch::{dispatch, dispatch_with_manager, dispatch_with_manager_scoped};
+pub use manager::{
+    LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,
+    PublishedLoadoutMcpCatalogSnapshot, PublishedLoadoutService,
+    PublishedLoadoutServiceCatalogSnapshot,
+};
 pub use params::GatewayEnrichmentScope;
-pub use service_registry::{GatewayServiceRegistry, ServiceActionInfo};
+pub use service_registry::{
+    GatewayServiceRegistry, PublishedService, PublishedServiceAction,
+    PublishedServiceRegistrySnapshot, ServiceActionInfo, ServiceRegistryPublicationError,
+    ServiceRegistryPublicationGeneration,
+};
 pub use shared::SHARED_GATEWAY_OAUTH_SUBJECT;

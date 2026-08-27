@@ -423,7 +423,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     #[cfg(unix)]
     let pgid_for_runtime =
         pg_guard.and_then(super::super::process_guard::ProcessGroupGuard::disarm);
-    // On Windows pgid has no meaning — leave it None. The job_handle field
+    // On Windows pgid has no meaning — leave it None. The job field
     // (set below) is the Windows-only reaping resource.
     #[cfg(windows)]
     let pgid_for_runtime: Option<u32> = None;
@@ -432,12 +432,9 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     #[cfg(all(not(unix), not(windows)))]
     let pgid_for_runtime: Option<u32> = None;
 
-    // `disarm()` returns the job handle as `isize` (`0` == no job). When no
-    // pid was available the guard is `None`, so default to the `0` sentinel.
+    // Transfer exclusive job ownership into the connection runtime.
     #[cfg(windows)]
-    let job_handle_for_runtime: isize = job_guard
-        .map(super::super::process_guard::JobObjectGuard::disarm)
-        .unwrap_or(0);
+    let job_for_runtime = job_guard.and_then(super::super::process_guard::JobObjectGuard::disarm);
 
     let conn = UpstreamConnection::new_with_client_service(
         service,
@@ -448,7 +445,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             generation: Some(generation),
             pgid: pgid_for_runtime,
             #[cfg(windows)]
-            job_handle: job_handle_for_runtime,
+            job: job_for_runtime,
             started_at: Some(std::time::SystemTime::now()),
             origin: command.runtime_origin.clone(),
             owner: command.runtime_owner.clone(),

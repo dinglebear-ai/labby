@@ -528,17 +528,27 @@ export const gatewayApi = {
   },
 
   async test(id: string, signal?: AbortSignal): Promise<TestGatewayResult> {
+    // The runtime view returned by `gateway.test` carries no timing field of
+    // its own, so this is the only latency figure available to show the
+    // operator — measure it around just the probe call, not the concurrent
+    // `gateway.get` fetch, so it reflects what "the connection test" actually
+    // took.
+    const startedAt = performance.now()
+    let elapsedMs: number | undefined
     const [runtime, view] = await Promise.all([
       gatewayAction<BackendGatewayRuntimeView>(
         'gateway.test',
         confirmGatewayParams({ name: id }),
         signal,
-      ),
+      ).then((result) => {
+        elapsedMs = Math.round(performance.now() - startedAt)
+        return result
+      }),
       gatewayAction<BackendGatewayView>('gateway.get', { name: id }, signal),
     ])
     const probe = probeStatusFromRuntime(runtime)
     const detail = humanizeProbeError(probe.last_error, view.config)
-    return testResultFromProbe(runtime, probe, detail)
+    return testResultFromProbe(runtime, probe, detail, elapsedMs)
   },
 
   async reload(id: string, signal?: AbortSignal): Promise<ReloadGatewayResult> {
@@ -576,6 +586,10 @@ export const gatewayApi = {
   async setExposurePolicy(id: string, policy: ExposurePolicy, signal?: AbortSignal): Promise<ExposurePolicy> {
     const serverView = await findServerView(id, signal)
     if (serverView.source === 'in_process') {
+      // Virtual servers genuinely still need the sentinel: on this surface
+      // `allowed_actions: []` means expose-ALL (see `matchVirtualServerAction`
+      // and `getExposurePolicy`), so an empty list cannot express expose-none
+      // and a pattern matching nothing is the only encoding available.
       const allowedActions = policy.mode === 'allowlist'
         ? policy.patterns.length === 0 ? [EXPOSE_NONE_PATTERN] : policy.patterns
         : []
@@ -593,9 +607,13 @@ export const gatewayApi = {
       }
     }
 
-    const exposeTools = policy.mode === 'allowlist'
-      ? policy.patterns.length === 0 ? [EXPOSE_NONE_PATTERN] : policy.patterns
-      : null
+    // Custom gateways express "expose nothing" as a real empty allowlist.
+    // They used to need EXPOSE_NONE_PATTERN here because `update_upstream`
+    // collapsed `[]` to null (expose-all); it no longer does, so writing the
+    // sentinel would only keep manufacturing configs that carry a magic
+    // string chosen to look like a tool name. Reads still strip it for
+    // configs already written that way — see `exposurePolicyFromConfig`.
+    const exposeTools = policy.mode === 'allowlist' ? policy.patterns : null
     await gatewayAction<BackendGatewayView>(
       'gateway.update',
       confirmGatewayParams({
