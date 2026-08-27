@@ -158,3 +158,4 @@ Prototype notebooks use a local path or approved pinned Git SHA. They do not cla
 
 Destructive confirmation, multi-tool graphs, conditionals, repeaters, Tasks, elicitation, upstream MCP Apps, AI AppSpecs, persistent indexing, Hex publication, Git/deployment integration, custom widgets, Markdown, and arbitrary nested schemas are outside V1.
 
+

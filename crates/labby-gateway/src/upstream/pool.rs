@@ -34,7 +34,7 @@ mod cache_repair;
 mod capability;
 mod capability_call;
 mod catalog_pagination;
-mod catalog_publication;
+mod checked_call;
 mod completion;
 mod connect;
 mod connect_stdio;
@@ -109,14 +109,7 @@ mod usage_record;
 mod validate;
 
 pub use capability_call::CapabilityCallError;
-pub use catalog_publication::{
-    PromptCatalogGeneration, PromptCatalogPublicationError, PublishedPromptCatalogSnapshot,
-    PublishedPromptRoute, PublishedResourceCatalogSnapshot, PublishedResourceRoute,
-    PublishedResourceTemplateCatalogSnapshot, PublishedResourceTemplateRoute,
-    PublishedToolCatalogSnapshot, PublishedToolRoute, ResourceCatalogGeneration,
-    ResourceCatalogPublicationError, ResourceTemplateCatalogGeneration,
-    ResourceTemplateCatalogPublicationError, ToolCatalogGeneration, ToolCatalogPublicationError,
-};
+pub(crate) use checked_call::CheckedToolCallError;
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
@@ -249,6 +242,10 @@ impl HeaderRecoveryMetricsStore {
 /// Upstream connection pool — holds live connections and discovered tool catalogs.
 #[derive(Clone)]
 pub struct UpstreamPool {
+    /// Immutable process-local identity for this published pool generation.
+    revision: u64,
+    /// Keeps a checked invocation on one live pool while reload drains wait.
+    invocation_barrier: Arc<RwLock<()>>,
     /// Discovered upstream state, keyed by upstream name.
     catalog: Arc<RwLock<catalog_publication::CatalogState>>,
     /// Live client connections, keyed by upstream name.
@@ -484,6 +481,8 @@ where
     }
 }
 
+static NEXT_POOL_REVISION: AtomicU64 = AtomicU64::new(1);
+
 pub struct InProcessRegistration {
     pub connection: Option<UpstreamConnection>,
     pub tools: Vec<rmcp::model::Tool>,
@@ -509,6 +508,11 @@ type TestUpstreamConnector = Arc<
 >;
 
 impl UpstreamPool {
+    #[must_use]
+    pub fn revision_label(&self) -> String {
+        format!("pool:{}", self.revision)
+    }
+
     /// Create a new empty pool.
     #[must_use]
     pub fn new() -> Self {
@@ -531,7 +535,9 @@ impl UpstreamPool {
         );
         let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {
-            catalog: Arc::new(RwLock::new(catalog_publication::CatalogState::new())),
+            revision: NEXT_POOL_REVISION.fetch_add(1, Ordering::Relaxed),
+            invocation_barrier: Arc::new(RwLock::new(())),
+            catalog: Arc::new(RwLock::new(HashMap::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
             connection_catalog_binding: Arc::new(Mutex::new(())),
             generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),

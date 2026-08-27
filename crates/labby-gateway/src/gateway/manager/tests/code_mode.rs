@@ -5,6 +5,7 @@
 use labby_codemode::{CodeModeCaller, CodeModeHost, CodeModeSurface, ToolScope};
 use labby_runtime::error::ToolError;
 use serde_json::json;
+use tracing_subscriber::layer::SubscriberExt;
 
 use super::*;
 
@@ -918,6 +919,303 @@ async fn palette_catalog_scope_and_fingerprint_follow_visible_schema() {
     assert_ne!(scoped_catalog.fingerprint, changed.fingerprint);
 }
 
+fn palette_contract_hash(
+    catalog: &crate::gateway::palette::LauncherCatalogView,
+    id: &str,
+) -> String {
+    catalog
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            crate::gateway::palette::LauncherEntryView::McpTool(entry) if entry.id == id => {
+                Some(entry.contract_hash.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing palette entry {id}"))
+}
+
+#[tokio::test]
+async fn palette_execute_binds_oauth_catalog_and_call_to_the_same_subject() {
+    let upstream = fixture_oauth_upstream("private", "http://unused.invalid/mcp");
+    let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
+    let subject_tool = |property: &str| {
+        let properties =
+            serde_json::Map::from_iter([(property.to_string(), json!({"type": "string"}))]);
+        let mut tool = rmcp::model::Tool::new(
+            "private_ping".to_string(),
+            "private ping",
+            Arc::new(serde_json::Map::from_iter([(
+                "properties".to_string(),
+                serde_json::Value::Object(properties),
+            )])),
+        );
+        tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+        tool
+    };
+    pool.install_test_subject_tools_for_upstream(&upstream, "alice", vec![subject_tool("alice")])
+        .await;
+    pool.install_test_subject_tools_for_upstream(&upstream, "bob", vec![subject_tool("bob")])
+        .await;
+
+    let alice = crate::gateway::palette::PaletteCaller::admin(Some("alice"), Some("req-123"));
+    let bob = crate::gateway::palette::PaletteCaller::admin(Some("bob"), Some("req-bob"));
+    let alice_catalog = manager
+        .palette_catalog(&alice)
+        .await
+        .expect("alice catalog");
+    let bob_catalog = manager.palette_catalog(&bob).await.expect("bob catalog");
+    let id = "mcp:private::private_ping";
+    let alice_hash = palette_contract_hash(&alice_catalog, id);
+    let bob_hash = palette_contract_hash(&bob_catalog, id);
+    assert_ne!(
+        alice_hash, bob_hash,
+        "subject-specific schemas must not cross"
+    );
+
+    let response = manager
+        .palette_execute(
+            &alice,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: id.to_string(),
+                params: json!({"token": "TOKEN-CANARY"}),
+                confirm_destructive: false,
+                expected_contract_hash: alice_hash.clone(),
+            },
+        )
+        .await
+        .expect("Alice executes against Alice's subject connection");
+
+    assert_eq!(response.receipt.request_id, "req-123");
+    assert_eq!(response.receipt.tool_id, id);
+    assert_eq!(response.receipt.contract_hash, alice_hash);
+    let receipt = serde_json::to_string(&response.receipt).expect("receipt serializes");
+    for forbidden in ["alice", "TOKEN-CANARY", "oauth", "params", "result"] {
+        assert!(
+            !receipt.contains(forbidden),
+            "receipt leaked {forbidden}: {receipt}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn palette_execute_does_not_reuse_an_invalidated_oauth_subject_connection() {
+    let upstream = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
+    let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
+    let mut tool = rmcp::model::Tool::new(
+        "private_ping".to_string(),
+        "private ping",
+        Arc::new(serde_json::Map::new()),
+    );
+    tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+    pool.install_test_subject_tools_for_upstream(&upstream, "alice", vec![tool])
+        .await;
+    let alice = crate::gateway::palette::PaletteCaller::admin(Some("alice"), Some("req-revoked"));
+    let catalog = manager
+        .palette_catalog(&alice)
+        .await
+        .expect("catalog before revocation");
+    let contract_hash = palette_contract_hash(&catalog, "mcp:private::private_ping");
+
+    pool.invalidate_oauth_subject_sessions("private", "alice", "credential revoked")
+        .await;
+    let error = manager
+        .palette_execute(
+            &alice,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:private::private_ping".to_string(),
+                params: json!({}),
+                expected_contract_hash: contract_hash,
+                confirm_destructive: false,
+            },
+        )
+        .await
+        .expect_err("revoked subject connection must not be reused");
+    assert!(
+        matches!(
+            error.kind(),
+            "upstream_connect_error" | "network_error" | "auth_failed"
+        ),
+        "unexpected revocation error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn palette_execute_rechecks_the_published_config_after_catalog_preview() {
+    let mut upstream = fixture_http_upstream("alpha");
+    let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+    let caller = crate::gateway::palette::PaletteCaller::admin(Some("alice"), Some("req-reload"));
+    let catalog = manager
+        .palette_catalog(&caller)
+        .await
+        .expect("catalog before reload");
+    let contract_hash = palette_contract_hash(&catalog, "mcp:alpha::ping");
+
+    upstream.priority = 0.0;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            upstream: vec![upstream],
+            ..GatewayConfig::default()
+        })
+        .await;
+    let error = manager
+        .palette_execute(
+            &caller,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:alpha::ping".to_string(),
+                params: json!({}),
+                expected_contract_hash: contract_hash,
+                confirm_destructive: false,
+            },
+        )
+        .await
+        .expect_err("disabled published revision must win over the preview");
+    assert_eq!(error.kind(), "not_found");
+}
+
+#[tokio::test]
+async fn palette_execute_fails_closed_when_the_previewed_contract_changes() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("github")]).await;
+    pool.insert_entry_for_tests("github", healthy_entry_with_tool("github", "search_issues"))
+        .await;
+    let alice = crate::gateway::palette::PaletteCaller::admin(Some("alice"), Some("req-drift"));
+    let catalog = manager
+        .palette_catalog(&alice)
+        .await
+        .expect("preview catalog");
+    let id = "mcp:github::search_issues";
+    let old_hash = palette_contract_hash(&catalog, id);
+
+    let mut changed = pool.healthy_tools_for_upstream("github").await;
+    changed[0].input_schema = Some(json!({
+        "type": "object",
+        "properties": {"query": {"type": "string"}}
+    }));
+    pool.insert_entry_for_tests(
+        "github",
+        fixture_upstream_entry(
+            "github",
+            HashMap::from([("search_issues".to_string(), changed.remove(0))]),
+        ),
+    )
+    .await;
+
+    let buffer = crate::test_support::SharedBuf::default();
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .without_time(),
+    );
+    let tracing_guard = tracing::subscriber::set_default(subscriber);
+    let error = manager
+        .palette_execute(
+            &alice,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: id.to_string(),
+                params: json!({"query": "bug"}),
+                expected_contract_hash: old_hash,
+                confirm_destructive: false,
+            },
+        )
+        .await
+        .expect_err("changed contract must fail closed");
+    assert_eq!(error.kind(), "contract_changed");
+    drop(tracing_guard);
+    let logs = crate::test_support::captured_logs(&buffer);
+    assert!(
+        !logs.contains("upstream.request"),
+        "contract drift dispatched an upstream request: {logs}"
+    );
+}
+
+#[tokio::test]
+async fn palette_execute_rejects_cross_upstream_scope_and_destructive_reclassification() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "safe"))
+        .await;
+    pool.insert_entry_for_tests("beta", healthy_entry_with_tool("beta", "other"))
+        .await;
+    let caller = crate::gateway::palette::PaletteCaller {
+        caller: CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                can_use_snippets: false,
+                is_admin: false,
+            },
+            sub: Some("alice".to_string()),
+        },
+        caller_auth: labby_runtime::caller_auth::PropagatedCallerAuth {
+            sub: Some("alice".to_string()),
+            scopes: vec![
+                "mcp:read".to_string(),
+                "mcp:write".to_string(),
+                "gateway:alpha".to_string(),
+            ],
+            trusted_local: false,
+        },
+        scope: ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new()),
+        owner: crate::gateway::shared::make_api_runtime_owner(Some("alice"), Some("req-scope")),
+        oauth_subject: "alice".to_string(),
+    };
+
+    let error = manager
+        .palette_execute(
+            &caller,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:beta::other".to_string(),
+                params: json!({}),
+                expected_contract_hash: "a".repeat(64),
+                confirm_destructive: false,
+            },
+        )
+        .await
+        .expect_err("cross-upstream call denied");
+    assert_eq!(error.kind(), "forbidden");
+
+    let catalog = manager
+        .palette_catalog(&caller)
+        .await
+        .expect("scoped catalog");
+    let old_hash = palette_contract_hash(&catalog, "mcp:alpha::safe");
+    let mut reclassified = pool.healthy_tools_for_upstream("alpha").await;
+    reclassified[0].destructive = true;
+    pool.insert_entry_for_tests(
+        "alpha",
+        fixture_upstream_entry(
+            "alpha",
+            HashMap::from([("safe".to_string(), reclassified.remove(0))]),
+        ),
+    )
+    .await;
+    let error = manager
+        .palette_execute(
+            &caller,
+            crate::gateway::palette::PaletteExecuteRequest {
+                id: "mcp:alpha::safe".to_string(),
+                params: json!({}),
+                expected_contract_hash: old_hash,
+                confirm_destructive: true,
+            },
+        )
+        .await
+        .expect_err("destructive reclassification is contract drift");
+    assert_eq!(error.kind(), "contract_changed");
+}
+
 #[tokio::test]
 async fn palette_execute_rejects_unknown_hidden_destructive_and_read_only_calls() {
     let mut suppressed = fixture_http_upstream("suppressed");
@@ -949,6 +1247,11 @@ async fn palette_execute_rejects_unknown_hidden_destructive_and_read_only_calls(
         Some("req-2"),
         vec!["alpha".to_string()],
     );
+    let catalog = manager
+        .palette_catalog(&admin)
+        .await
+        .expect("admin catalog");
+    let destructive_hash = palette_contract_hash(&catalog, "mcp:alpha::delete");
 
     let err = manager
         .palette_execute(
@@ -957,6 +1260,7 @@ async fn palette_execute_rejects_unknown_hidden_destructive_and_read_only_calls(
                 id: "mcp:missing::tool".to_string(),
                 params: json!({}),
                 confirm_destructive: false,
+                expected_contract_hash: "a".repeat(64),
             },
         )
         .await
@@ -970,6 +1274,7 @@ async fn palette_execute_rejects_unknown_hidden_destructive_and_read_only_calls(
                 id: "mcp:suppressed::secret".to_string(),
                 params: json!({}),
                 confirm_destructive: false,
+                expected_contract_hash: "a".repeat(64),
             },
         )
         .await
@@ -983,6 +1288,7 @@ async fn palette_execute_rejects_unknown_hidden_destructive_and_read_only_calls(
                 id: "mcp:alpha::delete".to_string(),
                 params: json!({}),
                 confirm_destructive: true,
+                expected_contract_hash: destructive_hash.clone(),
             },
         )
         .await
@@ -996,6 +1302,7 @@ async fn palette_execute_rejects_unknown_hidden_destructive_and_read_only_calls(
                 id: "mcp:alpha::delete".to_string(),
                 params: json!({}),
                 confirm_destructive: false,
+                expected_contract_hash: destructive_hash,
             },
         )
         .await

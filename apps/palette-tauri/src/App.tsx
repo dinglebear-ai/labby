@@ -40,7 +40,7 @@ export default function App() {
   const settingsFocusRef = useRef<HTMLDivElement | null>(null);
   const schemaCacheRef = useRef(new Map<string, unknown>());
 
-  const { actions: catalogActions, error: catalogError } = useLauncherCatalog();
+  const { actions: catalogActions, error: catalogError, refresh: refreshCatalog } = useLauncherCatalog();
   const { config, draftConfig, setDraftConfig, configError, saveSettings } = usePaletteConfig();
 
   usePaletteLifecycle(
@@ -126,9 +126,24 @@ export default function App() {
     lastParamsRef.current = params;
     setRun({ kind: "running", title: action.label });
     try {
-      const result = await executeLauncherEntry(action.id, params, { confirmDestructive: action.destructive });
-      recordPaletteLaunch(action, params, result);
+      const result = await executeLauncherEntry(action, params, { confirmDestructive: action.destructive });
+      recordPaletteLaunch(action, result);
       if (runRequestIdRef.current !== requestId) return;
+      if (
+        !result.ok &&
+        result.payload &&
+        typeof result.payload === "object" &&
+        !Array.isArray(result.payload) &&
+        (result.payload as Record<string, unknown>).kind === "contract_changed"
+      ) {
+        refreshCatalog();
+        schemaCacheRef.current.clear();
+        setPendingConfirm(null);
+        setMode("browse");
+        modeRef.current = "browse";
+        activeActionIdRef.current = null;
+        setActiveAction(null);
+      }
       setRun(
         result.ok
           ? { kind: "success", title: action.label, result }
@@ -152,7 +167,7 @@ export default function App() {
         message,
       });
     }
-  }, []);
+  }, [refreshCatalog]);
 
   const hydrateSchema = useCallback(async (action: LauncherEntry) => {
     if (action.inputSchema || !action.schemaFingerprint) return action;

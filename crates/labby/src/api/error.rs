@@ -127,6 +127,7 @@ impl IntoResponse for ApiError {
             | "not_connected"
             | "invalid_provider_output" => StatusCode::BAD_GATEWAY,
             "conflict"
+            | "contract_changed"
             | "ambiguous_tool"
             | "restart_required"
             | "stale_suggestion"
@@ -198,6 +199,11 @@ mod tests {
         .into_response();
 
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn contract_changed_maps_to_conflict() {
+        assert_eq!(status_for("contract_changed"), StatusCode::CONFLICT);
     }
 
     #[test]

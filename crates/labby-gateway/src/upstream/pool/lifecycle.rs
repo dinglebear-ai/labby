@@ -93,6 +93,7 @@ impl UpstreamPool {
     }
 
     pub async fn drain_for_swap(&self, reason: &'static str) {
+        let _invocations = self.invocation_barrier.write().await;
         let started = Instant::now();
         let catalog_count = self.catalog.read().await.len();
         let connection_count = self.connections.read().await.len();

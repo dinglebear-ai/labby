@@ -6,24 +6,150 @@
 //! dispatching through the same upstream call helper used by Code Mode.
 
 use std::collections::BTreeSet;
-use std::time::Instant;
+use std::io::{self, Write};
+use std::time::{Duration, Instant};
 
-use labby_codemode::{
-    CodeModeCaller, CodeModeCallerCapabilities, CodeModeSurface, ToolCallOutcome, ToolScope,
-    destructive_permitted,
-};
+use labby_codemode::{CodeModeCaller, CodeModeCallerCapabilities, ToolCallOutcome, ToolScope};
+use labby_runtime::caller_auth::{PropagatedCallerAuth, PropagatedCallerUpstreamScope};
 use labby_runtime::error::ToolError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
-use crate::gateway::code_mode::validate_code_mode_params_against_schema;
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::sanitize_tool_text;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 
 const MAX_SCHEMA_BYTES: usize = 64 * 1024;
+const MAX_SCHEMA_DEPTH: usize = 64;
+const MAX_CONTRACT_BYTES: usize = 160 * 1024;
+const CAPABILITY_CONTRACT_VERSION: u8 = 1;
+const MAX_DESCRIPTION_CHARS: usize = 2_048;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityAnnotations {
+    pub read_only_hint: Option<bool>,
+    pub destructive_hint: Option<bool>,
+    pub idempotent_hint: Option<bool>,
+    pub open_world_hint: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityContract {
+    pub contract_version: u8,
+    pub id: String,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+    pub annotations: CapabilityAnnotations,
+    pub destructive: bool,
+    pub contract_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityDescriptor {
+    pub contract_version: u8,
+    pub catalog_revision: String,
+    pub id: String,
+    pub upstream: String,
+    pub tool: String,
+    pub description: String,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+    pub annotations: CapabilityAnnotations,
+    pub destructive: bool,
+    pub contract_hash: String,
+}
+
+impl CapabilityContract {
+    pub fn from_upstream_tool(tool: &UpstreamTool) -> Result<Self, ToolError> {
+        validate_contract_schema(tool.input_schema.as_ref())?;
+        validate_contract_schema(tool.output_schema.as_ref())?;
+        let annotations = tool.tool.annotations.as_ref();
+        let mut contract = Self {
+            contract_version: CAPABILITY_CONTRACT_VERSION,
+            id: format!("mcp:{}::{}", tool.upstream_name, tool.tool.name),
+            input_schema: project_contract_schema(tool.input_schema.as_ref())?,
+            output_schema: project_contract_schema(tool.output_schema.as_ref())?,
+            annotations: CapabilityAnnotations {
+                read_only_hint: annotations.and_then(|value| value.read_only_hint),
+                destructive_hint: annotations.and_then(|value| value.destructive_hint),
+                idempotent_hint: annotations.and_then(|value| value.idempotent_hint),
+                open_world_hint: annotations.and_then(|value| value.open_world_hint),
+            },
+            destructive: tool.destructive,
+            contract_hash: String::new(),
+        };
+        contract.contract_hash =
+            contract.compute_hash(tool.input_schema.as_ref(), tool.output_schema.as_ref())?;
+        Ok(contract)
+    }
+
+    /// Compute the same v1 contract hash used by palette descriptors for
+    /// Code Mode's pre-dispatch TOCTOU check, without applying the palette's
+    /// presentation-size caps. Large but otherwise valid MCP schemas must not
+    /// become uncallable merely because they cannot be rendered as an App
+    /// Forge descriptor. The shared depth guard remains in force, and hashing
+    /// streams directly into SHA-256 so this does not allocate a second copy of
+    /// the schema.
+    pub(crate) fn execution_hash_from_upstream_tool(
+        tool: &UpstreamTool,
+    ) -> Result<String, ToolError> {
+        if tool
+            .input_schema
+            .as_ref()
+            .is_some_and(schema_depth_exceeds_limit)
+            || tool
+                .output_schema
+                .as_ref()
+                .is_some_and(schema_depth_exceeds_limit)
+        {
+            return Err(descriptor_unsupported());
+        }
+
+        let annotations = tool.tool.annotations.as_ref();
+        let contract = Self {
+            contract_version: CAPABILITY_CONTRACT_VERSION,
+            id: format!("mcp:{}::{}", tool.upstream_name, tool.tool.name),
+            input_schema: None,
+            output_schema: None,
+            annotations: CapabilityAnnotations {
+                read_only_hint: annotations.and_then(|value| value.read_only_hint),
+                destructive_hint: annotations.and_then(|value| value.destructive_hint),
+                idempotent_hint: annotations.and_then(|value| value.idempotent_hint),
+                open_world_hint: annotations.and_then(|value| value.open_world_hint),
+            },
+            destructive: tool.destructive,
+            contract_hash: String::new(),
+        };
+        let mut writer = CappedHashWriter::new(usize::MAX);
+        write_contract_canonical(
+            &mut writer,
+            &contract,
+            tool.input_schema.as_ref(),
+            tool.output_schema.as_ref(),
+        )
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "invalid_tool_schema".to_string(),
+            message: format!("failed to hash capability contract: {error}"),
+        })?;
+        Ok(hex_digest(&writer.finish()))
+    }
+
+    fn compute_hash(
+        &self,
+        exact_input_schema: Option<&Value>,
+        exact_output_schema: Option<&Value>,
+    ) -> Result<String, ToolError> {
+        let mut writer = CappedHashWriter::new(MAX_CONTRACT_BYTES);
+        write_contract_canonical(&mut writer, self, exact_input_schema, exact_output_schema)
+            .map_err(|_| descriptor_unsupported())?;
+        Ok(hex_digest(&writer.finish()))
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +175,7 @@ pub struct LabbyActionLauncherEntry {
     pub destructive: bool,
     pub input_schema: Option<Value>,
     pub schema_fingerprint: Option<String>,
+    pub contract_hash: String,
     pub service: String,
     pub action: String,
 }
@@ -63,6 +190,7 @@ pub struct McpToolLauncherEntry {
     pub destructive: bool,
     pub input_schema: Option<Value>,
     pub schema_fingerprint: Option<String>,
+    pub contract_hash: String,
     pub upstream: String,
     pub tool: String,
 }
@@ -70,6 +198,7 @@ pub struct McpToolLauncherEntry {
 #[derive(Debug, Clone)]
 pub struct PaletteCaller {
     pub caller: CodeModeCaller,
+    pub caller_auth: PropagatedCallerAuth,
     pub scope: ToolScope,
     pub owner: UpstreamRuntimeOwner,
     pub oauth_subject: String,
@@ -80,6 +209,9 @@ impl PaletteCaller {
     pub fn admin(subject: Option<&str>, request_id: Option<&str>) -> Self {
         let owner = crate::gateway::shared::make_api_runtime_owner(subject, request_id);
         let subject = subject.map(ToOwned::to_owned);
+        let oauth_subject = subject
+            .clone()
+            .unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string());
         Self {
             caller: CodeModeCaller::Scoped {
                 capabilities: CodeModeCallerCapabilities {
@@ -88,11 +220,16 @@ impl PaletteCaller {
                     can_use_snippets: false,
                     is_admin: true,
                 },
-                sub: subject,
+                sub: subject.clone(),
+            },
+            caller_auth: PropagatedCallerAuth {
+                sub: subject.clone(),
+                scopes: vec!["lab:admin".to_string()],
+                trusted_local: false,
             },
             scope: ToolScope::default(),
             owner,
-            oauth_subject: SHARED_GATEWAY_OAUTH_SUBJECT.to_string(),
+            oauth_subject,
         }
     }
 
@@ -104,6 +241,13 @@ impl PaletteCaller {
     ) -> Self {
         let owner = crate::gateway::shared::make_api_runtime_owner(subject, request_id);
         let subject = subject.map(ToOwned::to_owned);
+        let scopes = std::iter::once("mcp:read".to_string())
+            .chain(
+                allowed_upstreams
+                    .iter()
+                    .map(|name| format!("gateway:{name}")),
+            )
+            .collect();
         Self {
             caller: CodeModeCaller::Scoped {
                 capabilities: CodeModeCallerCapabilities {
@@ -114,9 +258,45 @@ impl PaletteCaller {
                 },
                 sub: subject.clone(),
             },
+            caller_auth: PropagatedCallerAuth {
+                sub: subject.clone(),
+                scopes,
+                trusted_local: false,
+            },
             scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()).read_only(),
             owner,
             oauth_subject: subject.unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn scoped(
+        subject: &str,
+        request_id: Option<&str>,
+        scopes: Vec<String>,
+        allowed_upstreams: Vec<String>,
+    ) -> Self {
+        let can_read = scopes.iter().any(|scope| scope == "mcp:read");
+        let can_execute =
+            scopes.iter().any(|scope| scope == "mcp:write") && !allowed_upstreams.is_empty();
+        Self {
+            caller: CodeModeCaller::Scoped {
+                capabilities: CodeModeCallerCapabilities {
+                    can_read,
+                    can_execute,
+                    can_use_snippets: false,
+                    is_admin: false,
+                },
+                sub: Some(subject.to_string()),
+            },
+            caller_auth: PropagatedCallerAuth {
+                sub: Some(subject.to_string()),
+                scopes,
+                trusted_local: false,
+            },
+            scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()),
+            owner: crate::gateway::shared::make_api_runtime_owner(Some(subject), request_id),
+            oauth_subject: subject.to_string(),
         }
     }
 
@@ -131,6 +311,7 @@ pub struct PaletteExecuteRequest {
     pub id: String,
     #[serde(default)]
     pub params: Value,
+    pub expected_contract_hash: String,
     #[serde(default)]
     pub confirm_destructive: bool,
 }
@@ -140,27 +321,114 @@ pub struct PaletteExecuteRequest {
 pub struct PaletteExecuteResponse {
     pub id: String,
     pub result: Value,
+    pub receipt: PaletteExecutionReceipt,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PaletteExecutionReceipt {
+    pub request_id: String,
+    pub tool_id: String,
+    pub contract_hash: String,
+    pub catalog_revision: String,
+    pub truncated: bool,
+}
+
 impl GatewayManager {
+    pub async fn palette_descriptor(
+        &self,
+        caller: &PaletteCaller,
+        id: &str,
+    ) -> Result<CapabilityDescriptor, ToolError> {
+        if !caller.caller.can_read() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: "palette descriptor requires mcp:read permission".to_string(),
+            });
+        }
+        let (upstream, tool_name) = parse_mcp_launcher_id(id)?;
+        if caller
+            .allowed_upstreams()
+            .is_some_and(|allowed| !allowed.contains(upstream))
+        {
+            return Err(ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("launcher entry `{id}` was not found"),
+            });
+        }
+        let tool = self
+            .resolve_code_mode_upstream_tool(
+                upstream,
+                tool_name,
+                Some(&caller.owner),
+                Some(&caller.oauth_subject),
+            )
+            .await
+            .map_err(map_unknown_tool_to_not_found)?;
+        let contract = CapabilityContract::from_upstream_tool(&tool)?;
+        let (_, pool) = self.published_config_and_pool().await;
+        let descriptor = CapabilityDescriptor {
+            contract_version: contract.contract_version,
+            catalog_revision: pool
+                .map(|pool| pool.revision_label())
+                .unwrap_or_else(|| "unavailable".to_string()),
+            id: contract.id,
+            upstream: upstream.to_string(),
+            tool: tool_name.to_string(),
+            description: sanitize_tool_text(
+                tool.tool.description.as_deref().unwrap_or(""),
+                MAX_DESCRIPTION_CHARS,
+            ),
+            input_schema: contract.input_schema,
+            output_schema: contract.output_schema,
+            annotations: contract.annotations,
+            destructive: contract.destructive,
+            contract_hash: contract.contract_hash,
+        };
+        let mut writer = CountingWriter::new(MAX_CONTRACT_BYTES);
+        serde_json::to_writer(&mut writer, &descriptor).map_err(|_| descriptor_unsupported())?;
+        Ok(descriptor)
+    }
+
     pub async fn palette_catalog(
         &self,
         caller: &PaletteCaller,
     ) -> Result<LauncherCatalogView, ToolError> {
+        self.palette_catalog_inner(caller, true).await
+    }
+
+    pub async fn palette_catalog_snapshot(
+        &self,
+        caller: &PaletteCaller,
+    ) -> Result<LauncherCatalogView, ToolError> {
+        self.palette_catalog_inner(caller, false).await
+    }
+
+    async fn palette_catalog_inner(
+        &self,
+        caller: &PaletteCaller,
+        refresh: bool,
+    ) -> Result<LauncherCatalogView, ToolError> {
+        if !caller.caller.can_read() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: "palette catalog requires mcp:read permission".to_string(),
+            });
+        }
         let start = Instant::now();
         let mut entries = Vec::new();
         let mut schema_bytes = 0usize;
 
-        self.refresh_code_mode_catalog_allowed(
-            Some(&caller.owner),
-            Some(&caller.oauth_subject),
-            caller.allowed_upstreams(),
-        )
-        .await?;
-        // Refresh can publish a new pool, so take a new coherent revision for
-        // rendering rather than pairing the pre-refresh config with it.
+        if refresh {
+            self.refresh_code_mode_catalog_allowed(
+                Some(&caller.owner),
+                Some(&caller.oauth_subject),
+                caller.allowed_upstreams(),
+            )
+            .await?;
+        }
         let (cfg, pool) = self.published_config_and_pool().await;
         if let Some(pool) = pool {
             for upstream in cfg.upstream.iter().filter(|upstream| {
@@ -170,10 +438,19 @@ impl GatewayManager {
                         .allowed_upstreams()
                         .is_none_or(|allowed| allowed.contains(&upstream.name))
             }) {
-                let mut tools = pool.healthy_tools_for_upstream(&upstream.name).await;
+                let mut tools = if upstream.oauth.is_some() {
+                    pool.subject_scoped_upstream_tools_allowed(
+                        std::slice::from_ref(upstream),
+                        &caller.oauth_subject,
+                        None,
+                    )
+                    .await
+                } else {
+                    pool.healthy_tools_for_upstream(&upstream.name).await
+                };
                 tools.sort_by(|a, b| a.tool.name.cmp(&b.tool.name));
                 for tool in tools {
-                    let entry = mcp_entry(&upstream.name, tool);
+                    let entry = mcp_entry(&upstream.name, tool)?;
                     schema_bytes += entry
                         .input_schema
                         .as_ref()
@@ -209,66 +486,85 @@ impl GatewayManager {
         request: PaletteExecuteRequest,
     ) -> Result<PaletteExecuteResponse, ToolError> {
         let start = Instant::now();
-        let (upstream, tool) = parse_mcp_launcher_id(&request.id)?;
-        if caller
-            .allowed_upstreams()
-            .is_some_and(|allowed| !allowed.contains(upstream))
-        {
-            return Err(ToolError::Sdk {
-                sdk_kind: "forbidden".to_string(),
-                message: format!("upstream `{upstream}` is outside the caller scope"),
-            });
-        }
-        if !caller.caller.can_execute() {
-            return Err(ToolError::Sdk {
-                sdk_kind: "forbidden".to_string(),
-                message: "palette execution requires execute permission".to_string(),
-            });
-        }
-
-        let upstream_tool = self
-            .resolve_code_mode_upstream_tool(
-                upstream,
-                tool,
-                Some(&caller.owner),
-                Some(&caller.oauth_subject),
-            )
-            .await
-            .map_err(map_unknown_tool_to_not_found)?;
-
-        if upstream_tool.destructive {
-            if !destructive_permitted(CodeModeSurface::Mcp, &caller.caller) {
+        let tool_id = request.id.clone();
+        let (upstream, tool) = parse_mcp_launcher_id(&tool_id)?;
+        validate_contract_hash(&request.expected_contract_hash)?;
+        let contract_hash = request.expected_contract_hash.clone();
+        let result = async {
+            if caller
+                .allowed_upstreams()
+                .is_some_and(|allowed| !allowed.contains(upstream))
+            {
                 return Err(ToolError::Sdk {
                     sdk_kind: "forbidden".to_string(),
-                    message: format!("tool `{upstream}::{tool}` requires execute permission"),
+                    message: format!("upstream `{upstream}` is outside the caller scope"),
                 });
             }
-            if !request.confirm_destructive {
+            if !caller.caller.can_execute() {
                 return Err(ToolError::Sdk {
-                    sdk_kind: "confirmation_required".to_string(),
-                    message: format!("tool `{upstream}::{tool}` is destructive"),
+                    sdk_kind: "forbidden".to_string(),
+                    message: "palette execution requires execute permission".to_string(),
                 });
             }
-        }
 
-        validate_code_mode_params_against_schema(
-            &request.params,
-            upstream_tool.input_schema.as_ref(),
-        )?;
-        let outcome = self
-            .execute_upstream_tool(upstream, tool, request.params)
-            .await?;
-        tracing::info!(
-            surface = "api",
-            service = "palette",
-            action = "palette.execute",
+            let destructive_allowed = caller.caller.is_admin() && request.confirm_destructive;
+            let destructive_denial_kind = if caller.caller.is_admin() {
+                "confirmation_required"
+            } else {
+                "forbidden"
+            };
+            let checked = self
+                .execute_upstream_tool_checked(
+                    upstream,
+                    tool,
+                    request.params,
+                    &caller.owner,
+                    Some(&caller.oauth_subject),
+                    Some(caller.caller_auth.clone()),
+                    Some(PropagatedCallerUpstreamScope::new(
+                        caller.scope.allowed_namespaces().cloned(),
+                    )),
+                    &contract_hash,
+                    destructive_allowed,
+                    destructive_denial_kind,
+                )
+                .await
+                .map_err(map_unknown_tool_to_not_found)?;
+            let receipt = PaletteExecutionReceipt {
+                request_id: caller
+                    .owner
+                    .request_id
+                    .clone()
+                    .unwrap_or_else(|| "unavailable".to_string()),
+                tool_id: tool_id.clone(),
+                contract_hash: checked.contract_hash,
+                catalog_revision: checked.catalog_revision,
+                truncated: false,
+            };
+            Ok(execution_response(
+                tool_id.clone(),
+                checked.outcome,
+                receipt,
+            ))
+        };
+        let result = result.await;
+        let catalog_revision = result
+            .as_ref()
+            .ok()
+            .map(|response| response.receipt.catalog_revision.as_str())
+            .unwrap_or("unavailable");
+        log_palette_execution(
+            caller,
             upstream,
             tool,
-            destructive = upstream_tool.destructive,
-            elapsed_ms = start.elapsed().as_millis(),
-            "palette launcher tool executed"
+            &contract_hash,
+            catalog_revision,
+            result
+                .as_ref()
+                .map_or_else(|error| error.kind(), |_| "success"),
+            start.elapsed(),
         );
-        Ok(execution_response(request.id, outcome))
+        result
     }
 
     pub async fn palette_schema(
@@ -276,6 +572,12 @@ impl GatewayManager {
         caller: &PaletteCaller,
         id: &str,
     ) -> Result<Option<Value>, ToolError> {
+        if !caller.caller.can_read() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: "palette schema requires mcp:read permission".to_string(),
+            });
+        }
         let start = Instant::now();
         let (upstream, tool) = parse_mcp_launcher_id(id)?;
         if caller
@@ -315,11 +617,12 @@ impl GatewayManager {
     }
 }
 
-fn mcp_entry(upstream: &str, tool: UpstreamTool) -> McpToolLauncherEntry {
+fn mcp_entry(upstream: &str, tool: UpstreamTool) -> Result<McpToolLauncherEntry, ToolError> {
+    let contract = CapabilityContract::from_upstream_tool(&tool)?;
     let name = tool.tool.name.to_string();
     let input_schema = project_palette_schema(tool.input_schema);
     let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
-    McpToolLauncherEntry {
+    Ok(McpToolLauncherEntry {
         id: format!("mcp:{upstream}::{name}"),
         label: name.clone(),
         description: sanitize_tool_text(
@@ -334,15 +637,21 @@ fn mcp_entry(upstream: &str, tool: UpstreamTool) -> McpToolLauncherEntry {
         destructive: tool.destructive,
         input_schema,
         schema_fingerprint,
+        contract_hash: contract.contract_hash,
         upstream: upstream.to_string(),
         tool: name,
-    }
+    })
 }
 
-fn execution_response(id: String, outcome: ToolCallOutcome) -> PaletteExecuteResponse {
+fn execution_response(
+    id: String,
+    outcome: ToolCallOutcome,
+    receipt: PaletteExecutionReceipt,
+) -> PaletteExecuteResponse {
     PaletteExecuteResponse {
         id,
         result: outcome.value,
+        receipt,
         ui: outcome.ui.map(|ui| ui.ui_meta),
     }
 }
@@ -385,11 +694,103 @@ fn map_unknown_tool_to_not_found(error: ToolError) -> ToolError {
 
 fn project_palette_schema(schema: Option<Value>) -> Option<Value> {
     let mut schema = schema?;
+    if schema_depth_exceeds_limit(&schema) {
+        return None;
+    }
     redact_schema_value(&mut schema);
     if schema.to_string().len() > MAX_SCHEMA_BYTES {
         return None;
     }
     Some(schema)
+}
+
+fn project_contract_schema(schema: Option<&Value>) -> Result<Option<Value>, ToolError> {
+    let Some(schema) = schema else {
+        return Ok(None);
+    };
+    let mut projected = schema.clone();
+    redact_schema_value(&mut projected);
+    let mut writer = CountingWriter::new(MAX_SCHEMA_BYTES);
+    serde_json::to_writer(&mut writer, &projected).map_err(|_| descriptor_unsupported())?;
+    Ok(Some(projected))
+}
+
+fn validate_contract_schema(schema: Option<&Value>) -> Result<(), ToolError> {
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+    if schema_depth_exceeds_limit(schema) {
+        return Err(descriptor_unsupported());
+    }
+    let mut writer = CountingWriter::new(MAX_SCHEMA_BYTES);
+    serde_json::to_writer(&mut writer, schema).map_err(|_| descriptor_unsupported())
+}
+
+fn schema_depth_exceeds_limit(schema: &Value) -> bool {
+    let mut pending = vec![(schema, 1usize)];
+    while let Some((value, depth)) = pending.pop() {
+        if depth > MAX_SCHEMA_DEPTH {
+            return true;
+        }
+        match value {
+            Value::Object(map) => pending.extend(map.values().filter_map(|child| {
+                matches!(child, Value::Object(_) | Value::Array(_)).then_some((child, depth + 1))
+            })),
+            Value::Array(values) => pending.extend(values.iter().filter_map(|child| {
+                matches!(child, Value::Object(_) | Value::Array(_)).then_some((child, depth + 1))
+            })),
+            _ => {}
+        }
+    }
+    false
+}
+
+fn descriptor_unsupported() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "descriptor_unsupported".to_string(),
+        message: "capability descriptor exceeds the v1 contract limits".to_string(),
+    }
+}
+
+fn validate_contract_hash(hash: &str) -> Result<(), ToolError> {
+    if hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Ok(());
+    }
+    Err(ToolError::Sdk {
+        sdk_kind: "invalid_param".to_string(),
+        message: "expectedContractHash must be 64 lowercase hexadecimal characters".to_string(),
+    })
+}
+
+fn log_palette_execution(
+    caller: &PaletteCaller,
+    upstream: &str,
+    tool: &str,
+    contract_hash: &str,
+    catalog_revision: &str,
+    kind: &str,
+    elapsed: Duration,
+) {
+    let request_id = caller.owner.request_id.as_deref().unwrap_or("unavailable");
+    let subject_fingerprint = labby_auth::util::fingerprint(&caller.oauth_subject);
+    tracing::info!(
+        surface = "api",
+        service = "palette",
+        action = "palette.execute",
+        request_id,
+        upstream,
+        tool,
+        subject_fingerprint,
+        contract_hash,
+        catalog_revision,
+        elapsed_ms = elapsed.as_millis(),
+        kind,
+        "palette launcher execution completed"
+    );
 }
 
 fn redact_schema_value(value: &mut Value) {
@@ -449,14 +850,10 @@ fn catalog_fingerprint(entries: &[LauncherEntryView]) -> String {
         hasher.update([0]);
         match entry {
             LauncherEntryView::LabbyAction(entry) => {
-                if let Some(fp) = &entry.schema_fingerprint {
-                    hasher.update(fp.as_bytes());
-                }
+                hasher.update(entry.contract_hash.as_bytes());
             }
             LauncherEntryView::McpTool(entry) => {
-                if let Some(fp) = &entry.schema_fingerprint {
-                    hasher.update(fp.as_bytes());
-                }
+                hasher.update(entry.contract_hash.as_bytes());
             }
         }
         hasher.update([0xff]);
@@ -480,10 +877,158 @@ fn hex_digest(bytes: &[u8]) -> String {
     out
 }
 
+struct CountingWriter {
+    written: usize,
+    cap: usize,
+}
+
+impl CountingWriter {
+    fn new(cap: usize) -> Self {
+        Self { written: 0, cap }
+    }
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.written.saturating_add(bytes.len()) > self.cap {
+            return Err(io::Error::other("serialized value exceeds cap"));
+        }
+        self.written += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct CappedHashWriter {
+    hasher: Sha256,
+    written: usize,
+    cap: usize,
+}
+
+impl CappedHashWriter {
+    fn new(cap: usize) -> Self {
+        Self {
+            hasher: Sha256::new(),
+            written: 0,
+            cap,
+        }
+    }
+
+    fn finish(self) -> [u8; 32] {
+        self.hasher.finalize().into()
+    }
+}
+
+impl Write for CappedHashWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.written.saturating_add(bytes.len()) > self.cap {
+            return Err(io::Error::other("canonical contract exceeds cap"));
+        }
+        self.hasher.update(bytes);
+        self.written += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn write_contract_canonical(
+    writer: &mut impl Write,
+    contract: &CapabilityContract,
+    exact_input_schema: Option<&Value>,
+    exact_output_schema: Option<&Value>,
+) -> io::Result<()> {
+    writer.write_all(b"{\"annotations\":{")?;
+    write_optional_bool(
+        writer,
+        "destructiveHint",
+        contract.annotations.destructive_hint,
+    )?;
+    writer.write_all(b",")?;
+    write_optional_bool(
+        writer,
+        "idempotentHint",
+        contract.annotations.idempotent_hint,
+    )?;
+    writer.write_all(b",")?;
+    write_optional_bool(
+        writer,
+        "openWorldHint",
+        contract.annotations.open_world_hint,
+    )?;
+    writer.write_all(b",")?;
+    write_optional_bool(writer, "readOnlyHint", contract.annotations.read_only_hint)?;
+    writer.write_all(b"},\"contractVersion\":")?;
+    serde_json::to_writer(&mut *writer, &contract.contract_version)?;
+    writer.write_all(b",\"destructive\":")?;
+    serde_json::to_writer(&mut *writer, &contract.destructive)?;
+    writer.write_all(b",\"id\":")?;
+    serde_json::to_writer(&mut *writer, &contract.id)?;
+    writer.write_all(b",\"inputSchema\":")?;
+    write_optional_json_canonical(writer, exact_input_schema)?;
+    writer.write_all(b",\"outputSchema\":")?;
+    write_optional_json_canonical(writer, exact_output_schema)?;
+    writer.write_all(b"}")
+}
+
+fn write_optional_bool(writer: &mut impl Write, key: &str, value: Option<bool>) -> io::Result<()> {
+    serde_json::to_writer(&mut *writer, key)?;
+    writer.write_all(b":")?;
+    serde_json::to_writer(writer, &value).map_err(io::Error::other)
+}
+
+fn write_optional_json_canonical(writer: &mut impl Write, value: Option<&Value>) -> io::Result<()> {
+    match value {
+        Some(value) => write_json_canonical(writer, value),
+        None => writer.write_all(b"null"),
+    }
+}
+
+fn write_json_canonical(writer: &mut impl Write, value: &Value) -> io::Result<()> {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            serde_json::to_writer(writer, value).map_err(io::Error::other)
+        }
+        Value::Array(values) => {
+            writer.write_all(b"[")?;
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    writer.write_all(b",")?;
+                }
+                write_json_canonical(writer, value)?;
+            }
+            writer.write_all(b"]")
+        }
+        Value::Object(map) => {
+            writer.write_all(b"{")?;
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    writer.write_all(b",")?;
+                }
+                serde_json::to_writer(&mut *writer, key).map_err(io::Error::other)?;
+                writer.write_all(b":")?;
+                write_json_canonical(writer, &map[key])?;
+            }
+            writer.write_all(b"}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
+
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
+    use tracing_subscriber::layer::SubscriberExt;
 
     #[test]
     fn palette_schema_projection_redacts_defaults_examples_and_secret_enums() {
@@ -507,5 +1052,252 @@ mod tests {
             projected.pointer("/properties/apiKey"),
             Some(&Value::String("[REDACTED]".to_string()))
         );
+    }
+
+    #[test]
+    fn capability_contract_hash_matches_the_v1_canonical_vector() {
+        let upstream_name = Arc::<str>::from("alpha");
+        let tool = UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                "ping".to_string(),
+                "description is display-only",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": {"q": {"type": "string"}}
+            })),
+            output_schema: None,
+            upstream_name,
+            destructive: false,
+        };
+
+        let contract = CapabilityContract::from_upstream_tool(&tool).expect("bounded contract");
+
+        assert_eq!(contract.contract_version, 1);
+        assert_eq!(contract.id, "mcp:alpha::ping");
+        assert_eq!(
+            contract.contract_hash,
+            "f54cdd4d74a33e09b603d2856fdfeb1f706d22c08cb7c386cfb7aa8354528ddf"
+        );
+    }
+
+    #[test]
+    fn capability_contract_hash_excludes_description_but_covers_safety_hints() {
+        let make = |description: &str, destructive: bool| {
+            let mut tool = rmcp::model::Tool::new(
+                "ping".to_string(),
+                description.to_string(),
+                Arc::new(serde_json::Map::new()),
+            );
+            tool.annotations = Some(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(!destructive)
+                    .destructive(destructive),
+            );
+            UpstreamTool {
+                tool,
+                input_schema: Some(json!({"type": "object"})),
+                output_schema: None,
+                upstream_name: Arc::from("alpha"),
+                destructive,
+            }
+        };
+
+        let first =
+            CapabilityContract::from_upstream_tool(&make("first", false)).expect("first contract");
+        let renamed = CapabilityContract::from_upstream_tool(&make("renamed", false))
+            .expect("renamed contract");
+        let destructive = CapabilityContract::from_upstream_tool(&make("first", true))
+            .expect("destructive contract");
+
+        assert_eq!(first.contract_hash, renamed.contract_hash);
+        assert_ne!(first.contract_hash, destructive.contract_hash);
+    }
+
+    #[test]
+    fn capability_contract_hash_covers_sensitive_property_validation_semantics() {
+        let make = |property: &str, schema: Value| UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                "ping".to_string(),
+                "ping",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: Some(json!({
+                "type": "object",
+                "properties": {property: schema}
+            })),
+            output_schema: None,
+            upstream_name: Arc::from("alpha"),
+            destructive: false,
+        };
+
+        for property in ["apiKey", "token", "password"] {
+            let string_contract = CapabilityContract::from_upstream_tool(&make(
+                property,
+                json!({"type": "string", "minLength": 8}),
+            ))
+            .expect("string contract");
+            let integer_contract = CapabilityContract::from_upstream_tool(&make(
+                property,
+                json!({"type": "integer", "minimum": 1}),
+            ))
+            .expect("integer contract");
+            assert_ne!(
+                string_contract.contract_hash, integer_contract.contract_hash,
+                "{property} validation changes must alter the contract hash"
+            );
+        }
+    }
+
+    #[test]
+    fn capability_contract_accepts_depth_64_and_rejects_depth_65() {
+        fn nested_schema(depth: usize) -> Value {
+            let mut schema = json!({"type": "string"});
+            for _ in 1..depth {
+                schema = json!({"nested": schema});
+            }
+            schema
+        }
+
+        let make = |depth| UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                "ping".to_string(),
+                "ping",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: Some(nested_schema(depth)),
+            output_schema: None,
+            upstream_name: Arc::from("alpha"),
+            destructive: false,
+        };
+
+        CapabilityContract::from_upstream_tool(&make(64)).expect("depth 64 is supported");
+        let error = CapabilityContract::from_upstream_tool(&make(65))
+            .expect_err("depth 65 must fail before recursive projection");
+        assert_eq!(error.kind(), "descriptor_unsupported");
+    }
+
+    #[test]
+    fn capability_contract_rejects_an_oversized_schema_instead_of_hashing_null() {
+        let enum_values = (0..200)
+            .map(|index| format!("{index:03}-{}", "x".repeat(509)))
+            .collect::<Vec<_>>();
+        let tool = UpstreamTool {
+            tool: rmcp::model::Tool::new(
+                "ping".to_string(),
+                "ping",
+                Arc::new(serde_json::Map::new()),
+            ),
+            input_schema: Some(json!({"type": "string", "enum": enum_values})),
+            output_schema: None,
+            upstream_name: Arc::from("alpha"),
+            destructive: false,
+        };
+
+        let error = CapabilityContract::from_upstream_tool(&tool)
+            .expect_err("oversized schemas fail explicitly");
+        assert_eq!(error.kind(), "descriptor_unsupported");
+    }
+
+    #[test]
+    fn capability_contract_v1_golden_vectors_match_canonical_json_and_sha256() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/capability-contract-v1.json"
+        ))
+        .expect("golden fixture parses");
+        let cases = fixture["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty());
+        for case in cases {
+            let name = case["name"].as_str().expect("case name");
+            let mut canonical = Vec::new();
+            let result = write_json_canonical(&mut canonical, &case["normalizedInput"]);
+            assert!(
+                result.is_ok(),
+                "{name}: canonicalization failed: {result:?}"
+            );
+            let canonical = String::from_utf8(canonical).expect("canonical JSON is UTF-8");
+            assert_eq!(canonical, case["canonicalJson"], "{name}: canonical JSON");
+            let digest = Sha256::digest(canonical.as_bytes());
+            assert_eq!(
+                hex_digest(digest.as_slice()),
+                case["expectedSha256"],
+                "{name}: SHA-256"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_execution_telemetry_is_complete_and_redacted_for_every_outcome() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let buffer = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(buffer.clone())
+                .with_ansi(false)
+                .without_time(),
+        );
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let caller = PaletteCaller::admin(Some("raw-subject-CANARY"), Some("req-telemetry-123"));
+        let contract_hash = "a".repeat(64);
+        for kind in [
+            "success",
+            "not_found",
+            "contract_changed",
+            "invalid_param",
+            "auth_failed",
+            "timeout",
+            "upstream_error",
+        ] {
+            log_palette_execution(
+                &caller,
+                "github",
+                "search_issues",
+                &contract_hash,
+                "catalog-revision-1",
+                kind,
+                Duration::from_millis(7),
+            );
+        }
+        drop(_guard);
+
+        let logs = crate::test_support::captured_logs(&buffer);
+        let subject_fingerprint = labby_auth::util::fingerprint("raw-subject-CANARY");
+        for expected in [
+            "req-telemetry-123",
+            "github",
+            "search_issues",
+            &subject_fingerprint,
+            &contract_hash,
+            "elapsed_ms",
+            "success",
+            "not_found",
+            "contract_changed",
+            "invalid_param",
+            "auth_failed",
+            "timeout",
+            "upstream_error",
+        ] {
+            assert!(
+                logs.contains(expected),
+                "missing `{expected}` from logs: {logs}"
+            );
+        }
+        for forbidden in [
+            "raw-subject-CANARY",
+            "TOKEN-CANARY",
+            "params",
+            "inputSchema",
+            "result-CANARY",
+            "oauth-CANARY",
+        ] {
+            assert!(
+                !logs.contains(forbidden),
+                "logs leaked `{forbidden}`: {logs}"
+            );
+        }
     }
 }
