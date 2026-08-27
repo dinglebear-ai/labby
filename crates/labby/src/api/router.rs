@@ -1504,78 +1504,12 @@ async fn protected_mcp_route_entry(
     )
     .await
     {
-        Ok(authenticated) => authenticated,
-        Err(response) => return response,
-    };
-    if let ProtectedMcpRouteEffectiveTarget::GatewaySubset(target) = route.effective_target() {
-        if let Some(project_id) = target.project_id.as_deref() {
-            let identity = match labby_auth::verified_identity_from_access_claims(
-                &authenticated.claims,
-                &state
-                    .oauth_state
-                    .as_ref()
-                    .expect("authenticated OAuth route has state")
-                    .config,
-            ) {
-                Ok(identity) => identity,
-                Err(_) => {
-                    return auth_error_response_with_challenge(
-                        "invalid authenticated identity",
-                        &route_resource_metadata_url(&route),
-                        &route.scopes,
-                    );
-                }
-            };
-            let credential = match crate::mcp::bound_access::validate_transport_credential_binding(
-                &authenticated.claims.iss,
-                &authenticated.claims.jti,
-                authenticated.claims.exp,
-                std::time::SystemTime::now(),
-            ) {
-                Ok(credential) => credential,
-                Err(_) => {
-                    return auth_error_response_with_challenge(
-                        "invalid bearer token",
-                        &route_resource_metadata_url(&route),
-                        &route.scopes,
-                    );
-                }
-            };
-            request.extensions_mut().insert(identity.clone());
-            let binding = match state.gateway_manager.as_ref() {
-                Some(manager) => match crate::mcp::bound_access::bind_access_context(
-                    state.access_runtime.as_ref(),
-                    manager,
-                    identity,
-                    &route.name,
-                    &route.public_resource(),
-                    project_id,
-                )
-                .await
-                {
-                    Ok(core) => match crate::mcp::bound_access::TransportBoundAccessContext::new(
-                        core,
-                        credential,
-                        std::time::SystemTime::now(),
-                    ) {
-                        Ok(binding) => Ok(binding),
-                        Err(_) => {
-                            return auth_error_response_with_challenge(
-                                "invalid bearer token",
-                                &route_resource_metadata_url(&route),
-                                &route.scopes,
-                            );
-                        }
-                    },
-                    Err(error) => Err(error),
-                },
-                None => Err(crate::mcp::bound_access::BoundAccessContextError::Unavailable),
-            };
-            crate::mcp::bound_access::attach_project_access_observation(
-                request.extensions_mut(),
-                binding,
-            );
-        }
+        return response;
+    }
+    if matches!(
+        route.effective_target(),
+        ProtectedMcpRouteEffectiveTarget::GatewaySubset(_)
+    ) {
         let Some(router) = state
             .protected_mcp_routers
             .as_ref()

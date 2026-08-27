@@ -773,11 +773,7 @@ async fn handle_gateway_actions(
             manager
                 .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
                 .await;
-            to_json(
-                manager
-                    .status_scoped(params.name.as_deref(), &enrichment_scope)
-                    .await?,
-            )
+            to_json(manager.status(params.name.as_deref()).await?)
         }
         "gateway.client_config.get" => {
             let params: GatewayClientConfigParams = parse_params(params_value)?;
@@ -1301,19 +1297,13 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         .skills
         .iter()
         .map(|item| {
-            let skill = &item.descriptor;
+            let skill = &item.skill;
             serde_json::json!({
                 "name": skill.name,
-                "uri": skill.source_uri,
-                "description": skill.description,
-                "resource_count": skill.resource_count,
-                "identity": skill.id,
-                "exposed": item.exposure.exposed,
-                "exposure": {
-                    "status": item.exposure.status(),
-                    "reason": item.exposure.reason.as_str(),
-                    "matched_pattern": item.exposure.matched_pattern,
-                },
+                "uri": skill.entry.uri,
+                "description": skill.entry.frontmatter.get("description").and_then(|value| value.as_str()),
+                "resource_count": skill.entry.resources.as_ref().map_or(0, Vec::len),
+                "exposed": item.exposed,
             })
         })
         .collect();
@@ -1332,11 +1322,7 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         skills,
         rejected,
         discovered_count: operator.discovered_count,
-        exposed_count: operator
-            .skills
-            .iter()
-            .filter(|item| item.exposure.exposed)
-            .count(),
+        exposed_count: operator.skills.iter().filter(|item| item.exposed).count(),
     }
 }
 

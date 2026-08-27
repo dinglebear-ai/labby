@@ -69,11 +69,7 @@ export function RejectedSkillsList({ rejected }: { rejected: UpstreamSkillsRow['
     >
       <div className="flex flex-col gap-3">
         <p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>
-          Labby validates manifests against the pinned{' '}
-          <a className="text-aurora-accent-primary underline-offset-2 hover:underline" href="https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640" target="_blank" rel="noreferrer">
-            SEP-2640 Agent Skills contract
-          </a>{' '}
-          before exposure.
+          Labby validates manifests against the pinned SEP-2640 Agent Skills contract before exposure.
           Rejections are grouped by the upstream change needed.
         </p>
         {groups.map((group) => (
@@ -264,7 +260,7 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
                 <p className={cn(AURORA_DENSE_META, 'mt-1 max-w-3xl text-aurora-text-muted')}>
                   Advertising the extension does not make its instructions trusted. Labby only reads catalogs
                   from servers with <code>proxy_skills</code> enabled, validates every manifest against the pinned
-                  <a className="text-aurora-accent-primary underline-offset-2 hover:underline" href="https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640" target="_blank" rel="noreferrer">SEP-2640 contract</a>, and republishes only the selection allowed by <code>expose_skills</code>.
+                  SEP-2640 contract, and republishes only the selection allowed by <code>expose_skills</code>.
                 </p>
               </div>
               {readiness ? (
