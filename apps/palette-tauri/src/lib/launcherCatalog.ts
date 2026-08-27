@@ -17,6 +17,7 @@ interface BaseLauncherEntry {
   category: string;
   source: string;
   destructive: boolean;
+  contractHash: string;
   params: ParamEntry[];
   argMode: ArgMode;
   inputSchema?: unknown;
@@ -51,6 +52,7 @@ function normalizeEntry(entry: BridgeLauncherEntry): LauncherEntry {
       category: "mcp",
       source: entry.source || entry.upstream,
       destructive: Boolean(entry.destructive),
+      contractHash: entry.contractHash ?? "",
       params: [],
       argMode: "json",
       inputSchema: entry.inputSchema,
@@ -73,6 +75,7 @@ function normalizeEntry(entry: BridgeLauncherEntry): LauncherEntry {
     category: "labby",
     source: entry.source || entry.service,
     destructive: Boolean(entry.destructive),
+    contractHash: entry.contractHash ?? "",
     params: [],
     argMode: entry.inputSchema || entry.schemaFingerprint ? "json" : "none",
     inputSchema: entry.inputSchema,

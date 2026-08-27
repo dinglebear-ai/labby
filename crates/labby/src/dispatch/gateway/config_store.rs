@@ -209,6 +209,53 @@ fn isolated_test_config_path(path: PathBuf) -> PathBuf {
     ))
 }
 
+/// [`LabConfigStore`] with the process-wide Code Mode side effect suppressed.
+///
+/// `set_process_code_mode_enabled` writes a process-global atomic. Test
+/// managers reload config freely and concurrently, so letting them drive that
+/// global made them clobber whatever a `process_code_mode_test_guard` holder
+/// had just set — `cargo test` runs these in parallel, and the guard's mutex
+/// only serializes tests that take it, not managers reloading config. The
+/// gateway crate's own test stores already no-op this hook
+/// (`labby_gateway::gateway::config_store`); this keeps the host's test manager
+/// consistent with them. Every other method delegates to the real store, so
+/// persistence and credential behavior stay under test.
+#[cfg(test)]
+struct ProcessCodeModeInertStore(LabConfigStore);
+
+#[cfg(test)]
+impl GatewayConfigStore for ProcessCodeModeInertStore {
+    fn public_urls(&self) -> ResolvedPublicUrls {
+        self.0.public_urls()
+    }
+
+    fn set_process_code_mode_enabled(&self, _enabled: bool) {}
+
+    fn env_path(&self) -> PathBuf {
+        self.0.env_path()
+    }
+
+    fn persist(&self, cfg: &GatewayConfig) -> Result<(), ToolError> {
+        self.0.persist(cfg)
+    }
+
+    fn persist_gateway_bearer_token<'a>(
+        &'a self,
+        env_name: &'a str,
+        token_value: &'a str,
+    ) -> StoreFuture<'a, Result<(), ToolError>> {
+        self.0.persist_gateway_bearer_token(env_name, token_value)
+    }
+
+    fn persist_service_env<'a>(
+        &'a self,
+        service: &'a str,
+        values: &'a BTreeMap<String, String>,
+    ) -> StoreFuture<'a, Result<(), ToolError>> {
+        self.0.persist_service_env(service, values)
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn test_gateway_manager(
     path: PathBuf,
@@ -216,7 +263,10 @@ pub(crate) fn test_gateway_manager(
 ) -> labby_gateway::gateway::manager::GatewayManager {
     let path = isolated_test_config_path(path);
     let config = Arc::new(RwLock::new(LabConfig::default()));
-    let store = Arc::new(LabConfigStore::new(config, path.clone()));
+    let store = Arc::new(ProcessCodeModeInertStore(LabConfigStore::new(
+        config,
+        path.clone(),
+    )));
     labby_gateway::gateway::manager::GatewayManager::with_store(path, runtime, store)
 }
 

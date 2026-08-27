@@ -34,7 +34,7 @@
         },
         {
           "name": "gateway.list",
-          "description": "List configured gateways",
+          "description": "List configured gateways using the current cached runtime snapshot without connecting upstreams",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
@@ -91,7 +91,7 @@
               "name": "trusted_read_only_tools",
               "ty": "array",
               "required": false,
-              "description": "Exact upstream::tool ids operator-trusted for codemode_read (live readOnlyHint is also required)"
+              "description": "Deprecated compatibility list; codemode_read uses live MCP safety annotations"
             },
             {
               "name": "mcp_ui_enabled",
@@ -1361,7 +1361,7 @@
         },
         {
           "name": "gateway.status",
-          "description": "Get current runtime gateway status",
+          "description": "Refresh and return runtime gateway status",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
@@ -1676,13 +1676,20 @@
         },
         {
           "name": "gateway.mcp.list",
-          "description": "List upstream MCP runtime state, discovery counts, and likely stale process counts",
+          "description": "List the current upstream MCP runtime snapshot, discovery counts, and likely stale process counts without connecting upstreams",
           "destructive": false,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
           ],
-          "params": [],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": false,
+              "description": "Optional gateway name filter"
+            }
+          ],
           "returns": "GatewayMcpRuntimeView[]"
         },
         {
@@ -1725,6 +1732,30 @@
             }
           ],
           "returns": "GatewayView + optional cleanup result"
+        },
+        {
+          "name": "gateway.mcp.restart",
+          "description": "Replace one enabled upstream MCP connection, clean up stale runtime processes, and reconnect it",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Gateway name"
+            },
+            {
+              "name": "aggressive",
+              "ty": "boolean",
+              "required": false,
+              "description": "When true, use broader host-wide process matching during cleanup"
+            }
+          ],
+          "returns": "GatewayView + cleanup result"
         },
         {
           "name": "gateway.mcp.cleanup",
@@ -1771,7 +1802,7 @@
     },
     {
       "name": "doctor",
-      "description": "Comprehensive health audit: env vars, system, gateway, and OAuth relay checks",
+      "description": "Comprehensive health audit: env vars, system, access store, gateway, and OAuth relay checks",
       "category": "bootstrap",
       "status": "available",
       "requires_http_subject": false,
@@ -1822,6 +1853,15 @@
         {
           "name": "auth.check",
           "description": "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "DoctorReport"
+        },
+        {
+          "name": "access.check",
+          "description": "Inspect access-control store readiness and safety without modifying it",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -2386,7 +2426,7 @@
     },
     {
       "name": "skills",
-      "description": "Discover and read Agent Skills through a universal compatibility surface",
+      "description": "Discover, read, and manage Agent Skills through one shared service",
       "category": "bootstrap",
       "status": "available",
       "requires_http_subject": false,

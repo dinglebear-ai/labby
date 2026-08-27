@@ -156,6 +156,7 @@ fn gateway_actions_include_management_surface() {
     assert!(names.contains(&"gateway.oauth.resource_lease.release"));
     assert!(names.contains(&"gateway.mcp.enable"));
     assert!(names.contains(&"gateway.mcp.disable"));
+    assert!(names.contains(&"gateway.mcp.restart"));
     assert!(names.contains(&"gateway.mcp.cleanup"));
     assert!(names.contains(&"gateway.public_urls.get"));
 
@@ -669,6 +670,163 @@ async fn gateway_usage_calls_rejects_route_hidden_explicit_upstream() {
 }
 
 #[tokio::test]
+async fn gateway_status_rejects_route_hidden_explicit_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.status",
+        json!({"name": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_status_aggregate_only_returns_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.status",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect("scoped status succeeds");
+
+    let rows = result.as_array().expect("status rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], json!("github"));
+}
+
+#[tokio::test]
+async fn gateway_mcp_list_can_return_one_targeted_snapshot() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.list",
+        json!({"name": "gateway-alpha"}),
+    )
+    .await
+    .expect("targeted runtime snapshot succeeds");
+
+    let rows = result.as_array().expect("runtime rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], json!("gateway-alpha"));
+}
+
+#[tokio::test]
+async fn gateway_mcp_list_rejects_route_hidden_explicit_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.mcp.list",
+        json!({"name": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_mcp_list_aggregate_only_returns_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.mcp.list",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect("scoped runtime list succeeds");
+
+    let rows = result.as_array().expect("runtime rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], json!("github"));
+}
+
+#[tokio::test]
 async fn gateway_usage_metrics_scoped_aggregate_restricts_to_visible_upstreams() {
     let manager = test_manager();
     manager
@@ -828,11 +986,13 @@ impl crate::gateway::service_registry::GatewayServiceRegistry for DeployTestRegi
                     name: "deploy.plan",
                     description: "Plan a deployment",
                     destructive: false,
+                    requires_admin: false,
                 },
                 crate::gateway::service_registry::ServiceActionInfo {
                     name: "deploy.apply",
                     description: "Apply a deployment",
                     destructive: true,
+                    requires_admin: true,
                 },
             ]
         })
@@ -1119,7 +1279,7 @@ async fn gateway_servers_marks_oauth_catalog_rows_as_request_scoped_not_healthy_
             exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             resource_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             prompt_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
-            skill_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            skill_exposure_policy: crate::upstream::types::SkillExposurePolicy::all(),
             proxy_skills: false,
             supports_skills: None,
             proxy_resources: false,
@@ -1317,6 +1477,7 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
         health_path: None,
         target: Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 upstreams: vec!["gateway-alpha".to_string()],
                 services: Vec::new(),
                 expose_code_mode: false,
@@ -1324,6 +1485,72 @@ fn protected_gateway_subset_route_fixture(name: &str) -> ProtectedMcpRouteConfig
             },
         )),
     }
+}
+
+#[tokio::test]
+async fn staged_route_update_preserves_project_binding_inside_mutation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut current = protected_gateway_subset_route_fixture("ops");
+    let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = current.target.as_mut() else {
+        panic!("fixture is gateway subset")
+    };
+    target.project_id = Some("project-current".to_string());
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![current],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.stage_update",
+        json!({
+            "name": "ops",
+            "route": protected_gateway_subset_route_fixture("ops"),
+            "preserve_project_id": true,
+        }),
+    )
+    .await
+    .expect("preserve binding under manager mutation lock");
+
+    assert_eq!(result["route"]["target"]["project_id"], "project-current");
+}
+
+#[tokio::test]
+async fn direct_route_update_ignores_project_preservation_flag() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            protected_mcp_routes: vec![protected_route_fixture("syslog")],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+    let mut replacement = protected_route_fixture("syslog");
+    replacement.public_path = "/updated".to_string();
+
+    let result = dispatch_with_manager(
+        &manager,
+        "gateway.protected_route.update",
+        json!({
+            "name": "syslog",
+            "route": replacement,
+            "preserve_project_id": true,
+        }),
+    )
+    .await
+    .expect("ordinary direct update remains compatible");
+
+    assert_eq!(result["public_path"], "/updated");
+    assert!(result["target"].is_null());
 }
 
 #[tokio::test]
@@ -2220,7 +2447,7 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
             .expect("policy"),
             resource_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
             prompt_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
-            skill_exposure_policy: crate::upstream::types::ToolExposurePolicy::All,
+            skill_exposure_policy: crate::upstream::types::SkillExposurePolicy::all(),
             proxy_skills: false,
             supports_skills: None,
             proxy_resources: true,
@@ -3221,6 +3448,106 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
 
     drop(child.kill());
     panic!("github-chat stand-in process was not terminated by disable cleanup");
+}
+
+#[tokio::test]
+async fn gateway_mcp_restart_rejects_a_disabled_upstream_without_enabling_it() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "disabled-restart",
+            Some("http://127.0.0.1:1/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.restart",
+        json!({"name": "disabled-restart"}),
+    )
+    .await
+    .expect_err("disabled upstream restart must fail");
+
+    assert!(matches!(error, ToolError::InvalidParam { .. }));
+    assert!(
+        !manager
+            .upstream_config("disabled-restart")
+            .await
+            .expect("disabled upstream")
+            .enabled
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn gateway_mcp_restart_cleans_the_old_runtime_and_returns_enabled() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    let manager = test_manager();
+    let upstream_name = "restart-dispatch";
+    let runtime_arg = "restart-dispatch-mcp";
+    manager
+        .replace_config_for_tests(vec![UpstreamConfig {
+            enabled: true,
+            name: upstream_name.to_string(),
+            url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: Some("uvx".to_string()),
+            args: vec![runtime_arg.to_string()],
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }])
+        .await;
+
+    let mut command = Command::new("python3");
+    command
+        .args(["-c", "import time; time.sleep(60)", runtime_arg])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command.process_group(0);
+    let mut child = command.spawn().expect("spawn restart stand-in");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_cleanup_match(&manager, upstream_name).await;
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.restart",
+        json!({"name": upstream_name, "aggressive": false}),
+    )
+    .await
+    .expect("restart dispatch");
+
+    assert_eq!(value["gateway"]["config"]["name"], upstream_name);
+    assert_eq!(value["gateway"]["config"]["enabled"], true);
+    assert_eq!(value["cleanup"]["upstream"], upstream_name);
+
+    for _ in 0..20 {
+        if child.try_wait().expect("try_wait").is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    drop(child.kill());
+    panic!("restart stand-in process was not terminated");
 }
 
 #[cfg(target_os = "linux")]

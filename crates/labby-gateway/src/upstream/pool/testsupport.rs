@@ -15,11 +15,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorData,
-    GetPromptRequestParams, GetPromptResponse, GetPromptResult, ListPromptsResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage,
-    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource, Role,
-    ServerCapabilities, ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, CustomRequest,
+    CustomResult, ErrorCode, ErrorData, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
+    ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt,
+    PromptMessage, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    Role, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -177,6 +177,19 @@ pub(super) async fn catalog_pool_with_server<S>(upstream_name: &str, server: S) 
 where
     S: ServerHandler,
 {
+    catalog_pool_with_server_and_timeout(upstream_name, server, None).await
+}
+
+/// [`catalog_pool_with_server`] with an explicit per-request timeout, for tests
+/// that need the pool's own deadline to fire.
+pub(super) async fn catalog_pool_with_server_and_timeout<S>(
+    upstream_name: &str,
+    server: S,
+    request_timeout: Option<Duration>,
+) -> Arc<UpstreamPool>
+where
+    S: ServerHandler,
+{
     let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
     let server_task = tokio::spawn(async move {
         let running = server
@@ -191,21 +204,27 @@ where
         .expect("catalog client starts");
     let peer = client_service.peer().clone();
 
-    let pool = Arc::new(UpstreamPool::new());
+    let base = UpstreamPool::new();
+    let pool = Arc::new(match request_timeout {
+        Some(timeout) => base.with_request_timeout(timeout),
+        None => base,
+    });
     let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
-    pool.catalog.write().await.insert(
-        upstream_name.to_string(),
-        healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
-    );
-    pool.connections.write().await.insert(
-        upstream_name.to_string(),
-        UpstreamConnection {
-            _client_service: client_service.into(),
-            _server_task: Some(server_task),
-            peer,
-            runtime: UpstreamRuntimeMetadata::default(),
-        },
-    );
+    let previous = pool
+        .install_connection_catalog_entry(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
+            },
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        )
+        .await
+        .expect("connection identity");
+    assert!(previous.is_none());
     pool.resource_upstreams
         .write()
         .await
@@ -296,6 +315,7 @@ pub(super) async fn slow_response_pool(upstream_name: &str) -> Arc<UpstreamPool>
             _server_task: Some(server_task),
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         },
     );
     pool.resource_upstreams
@@ -307,6 +327,154 @@ pub(super) async fn slow_response_pool(upstream_name: &str) -> Arc<UpstreamPool>
 }
 
 impl UpstreamPool {
+    /// Register a hermetic skills-capable MCP peer for downstream facade tests.
+    ///
+    /// The peer returns `list_result` from `skills/list`, `get_entry` from
+    /// `skills/get`, and serves the exact text values keyed by native resource
+    /// URI. This deliberately exposes data rather than an arbitrary server
+    /// implementation as part of the testkit API.
+    pub async fn insert_scripted_skills_server_for_tests(
+        &self,
+        upstream_name: &str,
+        list_result: serde_json::Value,
+        get_entry: serde_json::Value,
+        resources: HashMap<String, String>,
+    ) {
+        #[derive(Clone)]
+        struct ScriptedSkillsServer {
+            list_result: serde_json::Value,
+            get_entry: serde_json::Value,
+            resources: Arc<HashMap<String, String>>,
+        }
+
+        impl ServerHandler for ScriptedSkillsServer {
+            fn get_info(&self) -> ServerInfo {
+                let mut capabilities = ServerCapabilities::builder().enable_tools().build();
+                let mut extensions = rmcp::model::ExtensionCapabilities::new();
+                extensions.insert(
+                    labby_runtime::skills::wire::SKILLS_EXTENSION_KEY.to_string(),
+                    serde_json::Map::new(),
+                );
+                capabilities.extensions = Some(extensions);
+                ServerInfo::new(capabilities)
+            }
+
+            async fn read_resource(
+                &self,
+                request: ReadResourceRequestParams,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<ReadResourceResponse, ErrorData> {
+                let text = self.resources.get(&request.uri).cloned().ok_or_else(|| {
+                    ErrorData::new(ErrorCode::RESOURCE_NOT_FOUND, "resource not found", None)
+                })?;
+                Ok(
+                    ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(
+                        text,
+                        request.uri,
+                    )])
+                    .into(),
+                )
+            }
+
+            async fn on_custom_request(
+                &self,
+                request: CustomRequest,
+                _context: RequestContext<RoleServer>,
+            ) -> Result<CustomResult, ErrorData> {
+                match request.method.as_str() {
+                    "skills/list" => Ok(CustomResult::new(self.list_result.clone())),
+                    "skills/get" => Ok(CustomResult::new(serde_json::json!({
+                        "resultType": "complete",
+                        "skill": self.get_entry,
+                    }))),
+                    _ => Err(ErrorData::new(
+                        ErrorCode::METHOD_NOT_FOUND,
+                        "method not found",
+                        None,
+                    )),
+                }
+            }
+        }
+
+        let server = ScriptedSkillsServer {
+            list_result,
+            get_entry,
+            resources: Arc::new(resources),
+        };
+        let fixture = catalog_pool_with_server(upstream_name, server).await;
+        let connection = fixture
+            .connections
+            .write()
+            .await
+            .remove(upstream_name)
+            .expect("scripted skills connection");
+        let entry = fixture
+            .catalog
+            .write()
+            .await
+            .remove(upstream_name)
+            .expect("scripted skills catalog entry");
+        self.catalog
+            .write()
+            .await
+            .insert(upstream_name.to_string(), entry);
+        self.connections
+            .write()
+            .await
+            .insert(upstream_name.to_string(), connection);
+        self.resource_upstreams
+            .write()
+            .await
+            .push(upstream_name.to_string());
+    }
+    /// Install an incarnation-bound in-process server for cross-crate Tool
+    /// execution fixtures. Product code cannot call this outside `testkit`.
+    pub async fn install_tool_server_for_tests<S>(&self, upstream_name: &str, server: S)
+    where
+        S: ServerHandler,
+    {
+        self.install_prompt_server_for_tests(upstream_name, server)
+            .await;
+    }
+    /// Install an incarnation-bound in-process server for cross-crate Prompt
+    /// execution fixtures. Product code cannot call this outside `testkit`.
+    pub async fn install_prompt_server_for_tests<S>(&self, upstream_name: &str, server: S)
+    where
+        S: ServerHandler,
+    {
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = server
+                .serve(server_transport)
+                .await
+                .expect("prompt fixture server starts");
+            running.waiting().await.expect("prompt fixture server runs");
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> = ()
+            .serve(client_transport)
+            .await
+            .expect("prompt fixture client starts");
+        let peer = client_service.peer().clone();
+        let previous = self
+            .install_connection_catalog_entry(
+                upstream_name.to_string(),
+                UpstreamConnection {
+                    _client_service: client_service.into(),
+                    _server_task: Some(server_task),
+                    peer,
+                    runtime: UpstreamRuntimeMetadata::default(),
+                    incarnation: None,
+                },
+                healthy_in_process_entry(Arc::from(upstream_name), HashMap::new()),
+            )
+            .await
+            .expect("prompt fixture identity");
+        if let Some(previous) = previous {
+            previous
+                .shutdown(upstream_name, "test.prompt-server.replace")
+                .await;
+        }
+    }
     /// Register an in-process upstream whose tool call returns a successful MCP
     /// response carrying `is_error=true`.
     pub async fn insert_tool_error_server_for_tests(
@@ -359,6 +527,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }
@@ -410,6 +579,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }
@@ -483,6 +653,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
             },
         );
     }

@@ -17,13 +17,14 @@ use super::params::{
     CodeModeSetParams, GatewayAddParams, GatewayClientConfigParams, GatewayDiscoverParams,
     GatewayEnrichApplyParams, GatewayEnrichPreviewParams, GatewayEnrichmentScope,
     GatewayImportParams, GatewayImportTombstoneParams, GatewayMcpCleanupParams,
-    GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams, GatewayReloadParams,
-    GatewayStatusParams, GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch,
-    GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams, LoadoutPatchParams,
-    LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams, ProtectedRouteSpecParams,
-    ProtectedRouteUpdateParams, ResourceLeaseCreateParams, ResourceLeaseReleaseParams,
-    ResourceLeaseRenewParams, ServiceConfigGetParams, ServiceConfigSetParams,
-    VirtualServerMcpPolicyParams, VirtualServerNameParams, VirtualServerSurfaceParams,
+    GatewayMcpRestartParams, GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams,
+    GatewayReloadParams, GatewayStatusParams, GatewayTestParams, GatewayUpdateParams,
+    GatewayUpdatePatch, GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams,
+    LoadoutPatchParams, LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams,
+    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ResourceLeaseCreateParams,
+    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServiceConfigGetParams,
+    ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
+    VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
@@ -175,7 +176,7 @@ pub async fn dispatch_with_manager_scoped(
             handle_oauth_actions(manager, action, params_value).await
         }
         action if action.starts_with("gateway.mcp.") => {
-            handle_mcp_actions(manager, action, params_value).await
+            handle_mcp_actions(manager, action, params_value, enrichment_scope).await
         }
         unknown => unknown_action(unknown),
     }
@@ -538,7 +539,7 @@ async fn handle_protected_route_actions(
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             to_json(
                 manager
-                    .protected_route_update(&params.name, params.route)
+                    .protected_route_update(&params.name, params.route, params.preserve_project_id)
                     .await?,
             )
         }
@@ -553,7 +554,11 @@ async fn handle_protected_route_actions(
         "gateway.protected_route.stage_update" => {
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             manager
-                .protected_route_stage_update(&params.name, params.route)
+                .protected_route_stage_update(
+                    &params.name,
+                    params.route,
+                    params.preserve_project_id,
+                )
                 .await
         }
         "gateway.protected_route.stage_remove" => {
@@ -946,6 +951,7 @@ async fn handle_mcp_actions(
     manager: &GatewayManager,
     action: &str,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
         "gateway.mcp.enable" => {
@@ -965,7 +971,14 @@ async fn handle_mcp_actions(
                     .await?,
             )
         }
-        "gateway.mcp.list" => to_json(manager.mcp_runtime_list().await?),
+        "gateway.mcp.list" => {
+            let params: GatewayStatusParams = parse_params(params_value)?;
+            to_json(
+                manager
+                    .mcp_runtime_list(params.name.as_deref(), &enrichment_scope)
+                    .await?,
+            )
+        }
         "gateway.clients.list" => to_json(manager.clients().await?),
         "gateway.mcp.disable" => {
             let params: GatewayMcpToggleParams = parse_params(params_value)?;
@@ -994,6 +1007,63 @@ async fn handle_mcp_actions(
                 "gateway": gateway,
                 "cleanup": cleanup,
             }))
+        }
+        "gateway.mcp.restart" => {
+            let params: GatewayMcpRestartParams = parse_params(params_value)?;
+            let upstream =
+                manager
+                    .upstream_config(&params.name)
+                    .await
+                    .ok_or_else(|| ToolError::Sdk {
+                        sdk_kind: "not_found".to_string(),
+                        message: format!("upstream MCP server '{}' was not found", params.name),
+                    })?;
+            if !upstream.enabled {
+                return Err(ToolError::InvalidParam {
+                    message: format!(
+                        "upstream MCP server '{}' is disabled; enable it before restarting its connection",
+                        params.name
+                    ),
+                    param: "name".to_string(),
+                });
+            }
+
+            manager
+                .update(
+                    &params.name,
+                    GatewayUpdatePatch {
+                        enabled: Some(false),
+                        ..GatewayUpdatePatch::default()
+                    },
+                    None,
+                    params.origin.as_deref(),
+                    params.owner.clone().map(Into::into),
+                )
+                .await?;
+
+            let cleanup = manager
+                .cleanup_upstream_processes(&params.name, params.aggressive, false)
+                .await;
+            let gateway = manager
+                .update(
+                    &params.name,
+                    GatewayUpdatePatch {
+                        enabled: Some(true),
+                        ..GatewayUpdatePatch::default()
+                    },
+                    None,
+                    params.origin.as_deref(),
+                    params.owner.map(Into::into),
+                )
+                .await;
+
+            match (cleanup, gateway) {
+                (Ok(cleanup), Ok(gateway)) => to_json(serde_json::json!({
+                    "gateway": gateway,
+                    "cleanup": cleanup,
+                })),
+                (Err(error), Ok(_)) | (_, Err(error)) => Err(error),
+            }
         }
         "gateway.mcp.cleanup" => {
             let params: GatewayMcpCleanupParams = parse_params(params_value)?;

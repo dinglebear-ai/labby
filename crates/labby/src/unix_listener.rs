@@ -453,7 +453,16 @@ fn validate_trusted_directory(
         {
             if metadata.uid() == 0
                 && macos_system_alias_target(path).is_some_and(|expected_target| {
-                    fs::read_link(path).is_ok_and(|target| target == expected_target)
+                    fs::read_link(path).is_ok_and(|target| {
+                        let resolved = if target.is_absolute() {
+                            target
+                        } else {
+                            path.parent()
+                                .map(|parent| parent.join(&target))
+                                .unwrap_or(target)
+                        };
+                        resolved == expected_target
+                    })
                 })
             {
                 let target_metadata = fs::metadata(path)
@@ -548,7 +557,9 @@ fn publish_socket_no_replace(staging_path: &Path, path: &Path) -> Result<()> {
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     {
         if fs::symlink_metadata(path).is_ok() {
-            anyhow::bail!("refusing to replace an existing Unix socket path during publication");
+            anyhow::bail!(
+                "refusing to publish configured Unix socket without replacing an existing entry"
+            );
         }
         fs::rename(staging_path, path).context("publish configured Unix socket")
     }
@@ -681,6 +692,12 @@ pub(super) async fn inject_peer_auth(mut request: Request, next: Next) -> Respon
     };
 
     let subject = format!("unix-peer:uid={}:gid={}", peer.uid, peer.gid);
+    let identity = labby_auth::VerifiedIdentity::local_credential(
+        labby_auth::Authenticator::UnixPeer,
+        subject.clone(),
+    )
+    .expect("kernel-derived Unix peer identity is non-empty");
+    request.extensions_mut().insert(identity);
     request.extensions_mut().insert(AuthContext {
         actor_key: None,
         sub: subject,
@@ -956,7 +973,10 @@ mod tests {
 
     #[tokio::test]
     async fn missing_parent_is_created_without_group_or_world_write_access() {
-        let tempdir = tempfile::tempdir().unwrap();
+        // macOS has a shorter `sun_path` limit than Linux. Keep the test root
+        // short enough that the private staging directory plus nested parent
+        // still fits in a filesystem socket address.
+        let tempdir = tempfile::tempdir_in("/tmp").unwrap();
         let parent = tempdir.path().join("nested").join("runtime");
         let path = parent.join("labby.sock");
 
@@ -1057,6 +1077,7 @@ mod tests {
         use axum::Router;
         use axum::middleware;
         use axum::routing::get;
+        use labby_auth::{PrincipalLink, VerifiedIdentity};
 
         let tempdir = tempfile::tempdir().unwrap();
         let path = tempdir.path().join("peer-principal.sock");
@@ -1069,7 +1090,17 @@ mod tests {
         let router = Router::new()
             .route(
                 "/peer",
-                get(|Extension(context): Extension<AuthContext>| async move { context.sub }),
+                get(
+                    |Extension(context): Extension<AuthContext>,
+                     Extension(identity): Extension<VerifiedIdentity>| async move {
+                        let PrincipalLink::LocalCredential { credential_id } =
+                            identity.principal_link()
+                        else {
+                            panic!("Unix peer must use a local credential Principal link")
+                        };
+                        format!("{}|{credential_id}", context.sub)
+                    },
+                ),
             )
             .layer(Extension(loopback_connect_info()))
             .layer(middleware::from_fn(inject_peer_auth));
@@ -1094,7 +1125,7 @@ mod tests {
         assert_eq!(
             subject,
             format!(
-                "unix-peer:uid={}:gid={}",
+                "unix-peer:uid={0}:gid={1}|unix-peer:uid={0}:gid={1}",
                 Uid::effective().as_raw(),
                 Gid::effective().as_raw()
             )

@@ -24,7 +24,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use crate::registry::InProcessService;
 
-use super::types::{UpstreamEntry, UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
+use super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 
 #[cfg(test)]
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
@@ -34,6 +34,7 @@ mod cache_repair;
 mod capability;
 mod capability_call;
 mod catalog_pagination;
+mod checked_call;
 mod completion;
 mod connect;
 mod connect_stdio;
@@ -48,6 +49,7 @@ pub mod entries;
 mod health;
 mod helpers;
 mod http_cancellation;
+mod incarnation;
 mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
@@ -56,6 +58,8 @@ mod notifications;
 #[cfg(test)]
 mod notifications_tests;
 mod oauth_invalidation;
+#[cfg(test)]
+mod pooled_cancellation_tests;
 mod probe;
 mod prompts_exposure;
 #[cfg(test)]
@@ -79,6 +83,10 @@ pub(crate) use skills::OperatorSkillRejection;
 pub(crate) use skills::OperatorSkills;
 mod skills_cache;
 mod skills_list;
+#[cfg(feature = "skills")]
+mod skills_provider;
+#[cfg(feature = "skills")]
+pub use skills_provider::SepSkillProvider;
 mod skills_tests;
 mod spawn_lock;
 mod stdio_stderr;
@@ -88,8 +96,10 @@ mod task_route;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]
 mod testsupport;
+mod tool_call_cancel;
 mod tools;
 mod tools_call;
+mod tools_call_exact;
 #[cfg(test)]
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
@@ -98,6 +108,7 @@ mod usage_record;
 mod validate;
 
 pub use capability_call::CapabilityCallError;
+pub(crate) use checked_call::CheckedToolCallError;
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
@@ -109,9 +120,16 @@ pub(crate) use helpers::{
 };
 pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
+pub(crate) use prompts_get::ExactPromptCallError;
+pub use prompts_list::ListedUpstreamPrompt;
+pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate};
+pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
-pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
+pub use tools::{
+    MAX_UPSTREAM_TOOLS, tool_is_mcp_app_host_visible_for_config,
+    upstream_has_mcp_app_ui_owner_for_config,
+};
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
 
@@ -223,11 +241,17 @@ impl HeaderRecoveryMetricsStore {
 /// Upstream connection pool — holds live connections and discovered tool catalogs.
 #[derive(Clone)]
 pub struct UpstreamPool {
+    /// Immutable process-local identity for this published pool generation.
+    revision: u64,
+    /// Keeps a checked invocation on one live pool while reload drains wait.
+    invocation_barrier: Arc<RwLock<()>>,
     /// Discovered upstream state, keyed by upstream name.
-    catalog: Arc<RwLock<HashMap<String, UpstreamEntry>>>,
+    catalog: Arc<RwLock<catalog_publication::CatalogState>>,
     /// Live client connections, keyed by upstream name.
     /// Each is an `Arc<Peer<RoleClient>>` that can `call_tool` / `list_tools`.
     connections: Arc<RwLock<HashMap<String, UpstreamConnection>>>,
+    /// Linearizes generic connection/catalog-entry identity publication.
+    connection_catalog_binding: Arc<Mutex<()>>,
     /// OAuth subject provenance for entries in the generic connection map.
     /// Absence means the generic peer was connected without upstream OAuth.
     generic_oauth_subjects: Arc<RwLock<HashMap<String, String>>>,
@@ -418,6 +442,7 @@ where
     pub(crate) peer: rmcp::service::Peer<RoleClient>,
     /// Runtime metadata for process-backed upstreams.
     pub(crate) runtime: UpstreamRuntimeMetadata,
+    incarnation: Option<incarnation::ConnectionIncarnation>,
 }
 
 impl<H> UpstreamConnection<H>
@@ -450,9 +475,12 @@ where
             _server_task: server_task,
             peer,
             runtime,
+            incarnation: None,
         }
     }
 }
+
+static NEXT_POOL_REVISION: AtomicU64 = AtomicU64::new(1);
 
 pub struct InProcessRegistration {
     pub connection: Option<UpstreamConnection>,
@@ -479,6 +507,11 @@ type TestUpstreamConnector = Arc<
 >;
 
 impl UpstreamPool {
+    #[must_use]
+    pub fn revision_label(&self) -> String {
+        format!("pool:{}", self.revision)
+    }
+
     /// Create a new empty pool.
     #[must_use]
     pub fn new() -> Self {
@@ -501,8 +534,11 @@ impl UpstreamPool {
         );
         let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {
+            revision: NEXT_POOL_REVISION.fetch_add(1, Ordering::Relaxed),
+            invocation_barrier: Arc::new(RwLock::new(())),
             catalog: Arc::new(RwLock::new(HashMap::new())),
             connections: Arc::new(RwLock::new(HashMap::new())),
+            connection_catalog_binding: Arc::new(Mutex::new(())),
             generic_oauth_subjects: Arc::new(RwLock::new(HashMap::new())),
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
@@ -663,6 +699,21 @@ impl UpstreamPool {
         self
     }
 
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn usage_row_count_for_tests(&self) -> i64 {
+        let Some(store) = self.usage_store.as_ref() else {
+            return 0;
+        };
+        store
+            .with_conn(|connection| {
+                connection
+                    .query_row("SELECT COUNT(*) FROM upstream_calls", [], |row| row.get(0))
+                    .map_err(crate::usage::store::sqlite_error)
+            })
+            .await
+            .expect("test usage count")
+    }
+
     /// Configured wall-clock request budget used by surface adapters that must
     /// compose multiple upstream passes under one absolute deadline.
     pub fn request_timeout(&self) -> Duration {
@@ -714,6 +765,11 @@ impl UpstreamPool {
     #[must_use]
     pub(crate) fn header_recovery_metrics(&self, upstream_name: &str) -> HeaderRecoveryMetrics {
         self.header_recovery_metrics_store.snapshot(upstream_name)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn header_recovery_is_empty_for_tests(&self, upstream_name: &str) -> bool {
+        self.header_recovery_metrics(upstream_name) == HeaderRecoveryMetrics::default()
     }
 }
 

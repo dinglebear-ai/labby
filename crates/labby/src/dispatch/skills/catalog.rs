@@ -14,7 +14,7 @@ const URI_PARAM: ParamSpec = ParamSpec {
     description: "Published skill or skill-file URI",
 };
 
-pub const ACTIONS: &[ActionSpec] = &[
+pub(crate) const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "help",
         description: "Show this action catalog",
@@ -91,3 +91,93 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[URI_PARAM],
     },
 ];
+
+const fn api_actions() -> [ActionSpec; 19] {
+    let mut result = [ACTIONS[0]; 19];
+    let mut index = 0;
+    while index < ACTIONS.len() {
+        result[index] = ACTIONS[index];
+        index += 1;
+    }
+    let mut management = 0;
+    while management < crate::dispatch::skill_library::catalog::ACTIONS.len() {
+        result[index] = crate::dispatch::skill_library::catalog::ACTIONS[management];
+        index += 1;
+        management += 1;
+    }
+    result
+}
+
+const ALL_MANAGEMENT_ACTIONS: [ActionSpec; 19] = api_actions();
+/// Authenticated HTTP MCP/App contract: compatibility reads plus the bounded
+/// Skill Library management vocabulary. Stdio and private in-process callers
+/// intentionally retain [`ACTIONS`].
+pub(crate) const MCP_ACTIONS: &[ActionSpec] = &ALL_MANAGEMENT_ACTIONS;
+pub(crate) const API_ACTIONS: &[ActionSpec] = MCP_ACTIONS;
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn api_catalog_contains_compatibility_and_management_without_collisions() {
+        let names = API_ACTIONS
+            .iter()
+            .map(|action| action.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 19);
+        assert_eq!(
+            names.iter().copied().collect::<BTreeSet<_>>().len(),
+            names.len()
+        );
+        assert!(names.contains(&"skills.list"));
+        assert!(names.contains(&"skill_library.activate"));
+        assert!(!names.iter().any(|name| name.contains("list_changed")));
+        for action in API_ACTIONS.iter().filter(|action| {
+            matches!(
+                action.name,
+                "skill_library.create"
+                    | "skill_library.save"
+                    | "skill_library.activate"
+                    | "skill_library.deactivate"
+                    | "skill_library.archive"
+                    | "skill_library.rollback"
+                    | "skill_library.import"
+                    | "skill_library.refresh"
+            )
+        }) {
+            let names = action
+                .params
+                .iter()
+                .map(|param| param.name)
+                .collect::<BTreeSet<_>>();
+            assert!(
+                names.contains("expected_library_version"),
+                "{} lacks CAS",
+                action.name
+            );
+            assert!(
+                names.contains("idempotency_key"),
+                "{} lacks idempotency",
+                action.name
+            );
+        }
+    }
+
+    #[test]
+    fn shared_mcp_and_cli_catalog_excludes_management_and_callbacks() {
+        assert_eq!(ACTIONS.len(), 6);
+        assert!(
+            ACTIONS
+                .iter()
+                .all(|action| !action.name.starts_with("skill_library."))
+        );
+        assert!(
+            ACTIONS
+                .iter()
+                .all(|action| !action.name.contains("callback"))
+        );
+    }
+}

@@ -20,9 +20,9 @@ mod paths;
 mod secret_files;
 
 pub use env_writer::{EnvCredential, write_env_pairs, write_service_creds};
-pub(crate) use paths::home_dir;
 #[cfg(test)]
 use paths::resolve_usage_telemetry_enabled;
+pub(crate) use paths::{access_db_path, home_dir};
 pub use paths::{
     codemode_journal_db_path, codemode_journal_enabled, config_toml_path, dotenv_path,
     toml_candidates, usage_db_path, usage_telemetry_enabled, workspace_root_for_home,
@@ -30,6 +30,8 @@ pub use paths::{
 };
 pub use secret_files::heal_env_file_permissions;
 
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::{
@@ -49,6 +51,8 @@ static PROCESS_CODE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 static PROCESS_CODE_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static PROCESS_CODE_MODE_TEST_OVERRIDE: AtomicU8 = AtomicU8::new(0);
 
 #[cfg(test)]
 pub(crate) struct ProcessCodeModeTestGuard {
@@ -60,6 +64,7 @@ pub(crate) struct ProcessCodeModeTestGuard {
 impl Drop for ProcessCodeModeTestGuard {
     fn drop(&mut self) {
         set_process_code_mode_enabled(self.previous);
+        PROCESS_CODE_MODE_TEST_OVERRIDE.store(0, Ordering::Release);
     }
 }
 
@@ -68,9 +73,11 @@ pub(crate) fn process_code_mode_test_guard() -> ProcessCodeModeTestGuard {
     let lock = PROCESS_CODE_MODE_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let previous = PROCESS_CODE_MODE_ENABLED.load(Ordering::Acquire);
+    PROCESS_CODE_MODE_TEST_OVERRIDE.store(u8::from(previous) + 1, Ordering::Release);
     ProcessCodeModeTestGuard {
         _lock: lock,
-        previous: process_code_mode_enabled(),
+        previous,
     }
 }
 
@@ -88,7 +95,21 @@ pub(crate) fn set_process_code_mode_enabled(enabled: bool) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn set_process_code_mode_enabled_for_test(enabled: bool) {
+    set_process_code_mode_enabled(enabled);
+    PROCESS_CODE_MODE_TEST_OVERRIDE.store(u8::from(enabled) + 1, Ordering::Release);
+}
+
 pub(crate) fn process_code_mode_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = match PROCESS_CODE_MODE_TEST_OVERRIDE.load(Ordering::Acquire) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    } {
+        return enabled;
+    }
     PROCESS_CODE_MODE_ENABLED.load(Ordering::Acquire)
 }
 
@@ -277,6 +298,13 @@ const MAX_CATALOG_NOTIFICATION_TIMEOUT_MS: u64 = 60_000;
 /// lifetime. Only the relay path uses this; the pooled hot path keeps
 /// [`DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS`].
 const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
+/// Headroom added to the longest configured upstream deadline when deriving the
+/// hosted HTTP transport timeout (see [`LabConfig::http_request_timeout`]).
+///
+/// Covers the work bracketing the upstream call itself — auth, Code Mode
+/// compilation, connection-pool checkout, response serialization — so the inner
+/// deadline is always the one that fires on a slow upstream.
+const HTTP_REQUEST_TIMEOUT_MARGIN: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 static TEST_CONFIG_TOML_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -335,6 +363,9 @@ pub struct LabConfig {
     /// Visibility of Labby-owned MCP App surfaces other than Code Mode.
     #[serde(default)]
     pub mcp_apps: McpAppsConfig,
+    /// Optional server-held exact-revision Skill acquisition connections.
+    #[serde(default)]
+    pub skill_library: SkillLibraryPreferences,
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -392,6 +423,31 @@ pub struct LabConfig {
     /// credentials are read from `OPENAPI_<LABEL>_*` env vars, never TOML.
     #[serde(default)]
     pub openapi: OpenApiTomlSection,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SkillLibraryPreferences {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SkillLibrarySourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLibrarySourceConfig {
+    pub id: String,
+    pub kind: SkillLibrarySourceKind,
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_addresses: Vec<std::net::IpAddr>,
+    /// Name of an environment variable containing the server-held bearer secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillLibrarySourceKind {
+    Depot,
+    Repository,
 }
 
 /// `[openapi]` config section: a list of `[[openapi.specs]]` tables.
@@ -556,6 +612,25 @@ impl LabConfig {
         )
     }
 
+    /// Transport-level deadline for one hosted HTTP request.
+    ///
+    /// This is a backstop for requests that outlive every inner deadline, not a
+    /// product timeout. It is derived from the configured upstream deadlines so
+    /// it can never fire *before* the timeout it is supposed to wrap: a request
+    /// that exceeds `upstream_request_timeout` / `upstream_relay_timeout` must
+    /// fail with a structured MCP error from the dispatch layer, not a bare 504
+    /// from the HTTP stack.
+    ///
+    /// A fixed cap here previously overrode both settings — an operator raising
+    /// `upstream_request_timeout_ms` past 30s got no effect, because the
+    /// transport killed the response first and discarded a tool call that had
+    /// already succeeded.
+    pub fn http_request_timeout(&self) -> Duration {
+        self.upstream_request_timeout()
+            .max(self.upstream_relay_timeout())
+            .saturating_add(HTTP_REQUEST_TIMEOUT_MARGIN)
+    }
+
     pub fn normalize_protected_mcp_routes(&mut self) -> Result<(), ConfigError> {
         for route in &mut self.protected_mcp_routes {
             route.upstream = route
@@ -564,6 +639,22 @@ impl LabConfig {
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty());
             if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &mut route.target {
+                if let Some(project_id) = target.project_id.take() {
+                    let project_id = project_id.trim().to_string();
+                    if !labby_runtime::gateway_config::is_canonical_project_id(&project_id) {
+                        return Err(ConfigError::InvalidProtectedRoute {
+                            name: route.name.clone(),
+                            field: "target.project_id",
+                            value: "project binding must not be empty".to_string(),
+                        });
+                    }
+                    target.project_id = Some(project_id);
+                }
+                target.loadout = target
+                    .loadout
+                    .take()
+                    .map(|name| name.trim().to_string())
+                    .filter(|name| !name.is_empty());
                 normalize_string_list(&mut target.upstreams, "target.upstreams").map_err(
                     |field| ConfigError::InvalidProtectedRoute {
                         name: route.name.clone(),
@@ -665,9 +756,19 @@ fn validate_protected_mcp_routes_for_startup(cfg: &LabConfig) -> Result<(), Conf
         .iter()
         .map(|service| service.name)
         .collect();
+    let loadout_names: std::collections::HashSet<&str> = cfg
+        .loadouts
+        .iter()
+        .map(|loadout| loadout.name.as_str())
+        .collect();
 
     for route in &cfg.protected_mcp_routes {
-        validate_protected_mcp_route_for_startup(route, &upstream_names, &service_names)?;
+        validate_protected_mcp_route_for_startup(
+            route,
+            &upstream_names,
+            &service_names,
+            &loadout_names,
+        )?;
         if !names.insert(route.name.trim().to_string()) {
             return Err(ConfigError::InvalidProtectedRoute {
                 name: route.name.clone(),
@@ -702,6 +803,7 @@ fn validate_protected_mcp_route_for_startup(
     route: &ProtectedMcpRouteConfig,
     upstream_names: &std::collections::HashSet<&str>,
     service_names: &std::collections::HashSet<&str>,
+    loadout_names: &std::collections::HashSet<&str>,
 ) -> Result<(), ConfigError> {
     if route.name.trim().is_empty() {
         return invalid_protected_route(
@@ -721,11 +823,35 @@ fn validate_protected_mcp_route_for_startup(
     }
 
     if let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) = &route.target {
-        if target.upstreams.is_empty() && target.services.is_empty() && !target.expose_code_mode {
+        if target.loadout.is_some()
+            && (!target.upstreams.is_empty()
+                || !target.services.is_empty()
+                || target.expose_code_mode)
+        {
+            return invalid_protected_route(
+                route,
+                "target.loadout",
+                "gateway_subset target with `loadout` cannot also set inline upstreams, services, or expose_code_mode",
+            );
+        }
+        if target.loadout.is_none()
+            && target.upstreams.is_empty()
+            && target.services.is_empty()
+            && !target.expose_code_mode
+        {
             return invalid_protected_route(
                 route,
                 "target",
-                "gateway_subset target must expose at least one upstream, service, or Code Mode",
+                "gateway_subset target must set a loadout or expose at least one upstream, service, or Code Mode",
+            );
+        }
+        if let Some(loadout) = target.loadout.as_deref()
+            && !loadout_names.contains(loadout)
+        {
+            return invalid_protected_route(
+                route,
+                "target.loadout",
+                format!("unknown gateway_subset loadout `{loadout}`"),
             );
         }
         if route.enabled {
@@ -3142,6 +3268,51 @@ upstream_request_timeout_ms = 60000
         cfg.validate().expect("timeout validates");
     }
 
+    /// The HTTP transport backstop must never fire before the upstream deadline
+    /// it wraps. A fixed 30s cap in the router used to override both settings:
+    /// a 60s `upstream_request_timeout_ms` still returned a bare 504 at 30s,
+    /// discarding a tool call that went on to succeed.
+    #[test]
+    fn http_request_timeout_never_undercuts_configured_upstream_deadlines() {
+        for toml_src in [
+            "",
+            "upstream_request_timeout_ms = 60000",
+            // Both knobs at the top of their validated ranges.
+            "upstream_request_timeout_ms = 300000\nupstream_relay_timeout_ms = 1800000",
+            // Relay left at its 5 minute default while the pooled path is raised.
+            "upstream_request_timeout_ms = 120000",
+            // Relay raised while the pooled path stays at its default.
+            "upstream_relay_timeout_ms = 900000",
+        ] {
+            let cfg = toml::from_str::<LabConfig>(toml_src).expect("config parses");
+            cfg.validate().expect("config validates");
+
+            let http = cfg.http_request_timeout();
+            assert!(
+                http > cfg.upstream_request_timeout(),
+                "http timeout {http:?} must exceed the pooled upstream deadline {:?} for {toml_src:?}",
+                cfg.upstream_request_timeout(),
+            );
+            assert!(
+                http > cfg.upstream_relay_timeout(),
+                "http timeout {http:?} must exceed the relay deadline {:?} for {toml_src:?}",
+                cfg.upstream_relay_timeout(),
+            );
+        }
+    }
+
+    /// The 5 minute relay default is the binding constraint out of the box, so
+    /// a default deployment must not cap HTTP requests at the 30s pooled value.
+    #[test]
+    fn http_request_timeout_default_accommodates_the_relay_path() {
+        let cfg = LabConfig::default();
+        assert_eq!(
+            cfg.http_request_timeout(),
+            cfg.upstream_relay_timeout() + HTTP_REQUEST_TIMEOUT_MARGIN,
+        );
+        assert!(cfg.http_request_timeout() > Duration::from_secs(30));
+    }
+
     #[test]
     fn upstream_relay_timeout_defaults_to_five_minutes_and_is_configurable() {
         // Unset → 5 minute default (NOT the 30s request-timeout default), so a
@@ -3421,6 +3592,11 @@ upstreams = ["gateway-alpha", " "]
     #[test]
     fn protected_route_allows_same_gateway_subset_path_on_different_hosts() {
         let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+enabled = false
+url = "https://gateway-alpha.example.com/mcp"
+
 [[protected_mcp_routes]]
 name = "media-a"
 public_host = "mcp-a.example.com"
@@ -3512,6 +3688,40 @@ kind = "gateway_subset"
     }
 
     #[test]
+    fn config_validation_accepts_gateway_subset_loadout_target() {
+        let toml = r#"
+[[upstream]]
+name = "gateway-alpha"
+enabled = false
+url = "https://gateway-alpha.example.com/mcp"
+
+[[loadouts]]
+name = "sd"
+upstreams = ["gateway-alpha"]
+
+[[protected_mcp_routes]]
+name = "sd"
+public_host = "sd.example.com"
+public_path = "/mcp"
+scopes = ["mcp:read"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+loadout = " sd "
+"#;
+        let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
+
+        cfg.normalize_protected_mcp_routes()
+            .expect("loadout route normalization succeeds");
+        cfg.validate().expect("known loadout route is valid");
+        let ProtectedMcpRouteTarget::GatewaySubset(target) = cfg.protected_mcp_routes[0]
+            .target
+            .as_ref()
+            .expect("gateway subset target");
+        assert_eq!(target.loadout.as_deref(), Some("sd"));
+    }
+
+    #[test]
     fn config_validation_rejects_unknown_gateway_subset_targets() {
         let toml = r#"
 [[upstream]]
@@ -3596,13 +3806,13 @@ services = ["removed-service"]
     fn process_code_mode_flag_round_trips() {
         let _guard = process_code_mode_test_guard();
 
-        set_process_code_mode_enabled(true);
+        set_process_code_mode_enabled_for_test(true);
         assert!(
             process_code_mode_enabled(),
             "code_mode must be true after set_process_code_mode_enabled(true)"
         );
 
-        set_process_code_mode_enabled(false);
+        set_process_code_mode_enabled_for_test(false);
         assert!(
             !process_code_mode_enabled(),
             "code_mode must be false after set_process_code_mode_enabled(false)"
@@ -3749,6 +3959,7 @@ services = ["removed-service"]
         route.backend_url = String::new();
         route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
             ProtectedGatewaySubsetTarget {
+                project_id: None,
                 upstreams: vec![format!("{IN_PROCESS_UPSTREAM_PREFIX}setup")],
                 services: Vec::new(),
                 expose_code_mode: false,
@@ -3765,5 +3976,56 @@ services = ["removed-service"]
             .expect_err("the serve-path copy must reject the reserved prefix");
         let rendered = error.to_string();
         assert!(rendered.contains("__in_process__setup"), "{rendered}");
+    }
+
+    #[test]
+    fn serve_path_project_id_normalization_is_bounded_and_compatible() {
+        fn config(project_id: Option<String>) -> LabConfig {
+            let mut route: ProtectedMcpRouteConfig = toml::from_str(
+                "name=\"scoped\"\npublic_host=\"mcp.example.com\"\npublic_path=\"/svc\"\n",
+            )
+            .unwrap();
+            route.backend_url = String::new();
+            route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+                ProtectedGatewaySubsetTarget {
+                    project_id,
+                    ..Default::default()
+                },
+            ));
+            LabConfig {
+                protected_mcp_routes: vec![route],
+                ..Default::default()
+            }
+        }
+
+        let mut omitted = config(None);
+        omitted
+            .normalize_protected_mcp_routes()
+            .expect("legacy None");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            omitted.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id, None);
+
+        let max = labby_runtime::gateway_config::MAX_PROJECT_ID_LEN;
+        let expected = "x".repeat(max);
+        let mut trimmed = config(Some(format!("  {expected}  ")));
+        trimmed.normalize_protected_mcp_routes().expect("128 bytes");
+        let Some(ProtectedMcpRouteTarget::GatewaySubset(target)) =
+            trimmed.protected_mcp_routes[0].target.as_ref()
+        else {
+            unreachable!()
+        };
+        assert_eq!(target.project_id.as_deref(), Some(expected.as_str()));
+
+        for invalid in ["   ".to_string(), "x".repeat(max + 1)] {
+            assert!(
+                config(Some(invalid))
+                    .normalize_protected_mcp_routes()
+                    .is_err()
+            );
+        }
     }
 }

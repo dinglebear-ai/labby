@@ -20,7 +20,13 @@ use super::http_cancellation::HttpCancellationSender;
 
 const RELAY_CANCELLATION_ATTEMPT_TIMEOUT: std::time::Duration =
     std::time::Duration::from_millis(250);
-const RELAY_CANCELLATION_DELIVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+/// Ceiling on best-effort delivery of an upstream cancellation.
+///
+/// Shared with the pooled tool-call guard (`tool_call_cancel.rs`): both
+/// detach delivery, so both need the same bound to stop a wedged upstream
+/// accumulating parked tasks.
+pub(super) const CANCELLATION_DELIVERY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(1);
 const RELAY_CANCELLATION_RETRY_DELAYS: [std::time::Duration; 3] = [
     std::time::Duration::from_millis(10),
     std::time::Duration::from_millis(25),
@@ -118,7 +124,7 @@ async fn deliver_peer_relay_cancellation(
         return true;
     }
     if request_id
-        .wait(RELAY_CANCELLATION_DELIVERY_TIMEOUT)
+        .wait(CANCELLATION_DELIVERY_TIMEOUT)
         .await
         .is_none()
     {
@@ -166,7 +172,7 @@ pub(super) async fn deliver_http_relay_cancellation(
         return true;
     }
     if request_id
-        .wait(RELAY_CANCELLATION_DELIVERY_TIMEOUT)
+        .wait(CANCELLATION_DELIVERY_TIMEOUT)
         .await
         .is_none()
     {
@@ -204,7 +210,7 @@ pub(super) fn dispatch_relay_cancellation(
         let token = token.to_string();
         tokio::spawn(async move {
             match tokio::time::timeout(
-                RELAY_CANCELLATION_DELIVERY_TIMEOUT,
+                CANCELLATION_DELIVERY_TIMEOUT,
                 deliver_http_relay_cancellation(sender, request_id, reason, token),
             )
             .await
@@ -224,7 +230,7 @@ pub(super) fn dispatch_relay_cancellation(
     let token_for_peer = token.to_string();
     tokio::spawn(async move {
         match tokio::time::timeout(
-            RELAY_CANCELLATION_DELIVERY_TIMEOUT,
+            CANCELLATION_DELIVERY_TIMEOUT,
             deliver_peer_relay_cancellation(
                 peer_for_token,
                 request_id_for_token,
@@ -252,7 +258,7 @@ pub(super) fn dispatch_relay_cancellation(
     let reason = reason.to_string();
     let token = token.to_string();
     tokio::spawn(async move {
-        let Some(request_id) = request_id.wait(RELAY_CANCELLATION_DELIVERY_TIMEOUT).await else {
+        let Some(request_id) = request_id.wait(CANCELLATION_DELIVERY_TIMEOUT).await else {
             tracing::debug!("upstream request id was unavailable for standard cancellation");
             return;
         };
@@ -263,7 +269,7 @@ pub(super) fn dispatch_relay_cancellation(
             let token = token.clone();
             tokio::spawn(async move {
                 match tokio::time::timeout(
-                    RELAY_CANCELLATION_DELIVERY_TIMEOUT,
+                    CANCELLATION_DELIVERY_TIMEOUT,
                     sender.send(request_id_for_http.clone(), Some(reason_for_http), &token),
                 )
                 .await
@@ -286,7 +292,7 @@ pub(super) fn dispatch_relay_cancellation(
             Some(request_id.clone()),
             Some(reason),
         ));
-        match tokio::time::timeout(RELAY_CANCELLATION_DELIVERY_TIMEOUT, notification).await {
+        match tokio::time::timeout(CANCELLATION_DELIVERY_TIMEOUT, notification).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::debug!(
                 request_id = ?request_id,
@@ -343,7 +349,7 @@ pub(super) fn spawn_bounded_handle_cancellation(
     cancellation: impl Future<Output = Result<(), ServiceError>> + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        match tokio::time::timeout(RELAY_CANCELLATION_DELIVERY_TIMEOUT, cancellation).await {
+        match tokio::time::timeout(CANCELLATION_DELIVERY_TIMEOUT, cancellation).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::debug!(
                 error = %error,

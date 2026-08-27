@@ -70,6 +70,20 @@ impl UsageStore {
         Arc::clone(&self.write_semaphore)
     }
 
+    /// Wait until every fire-and-forget usage write that acquired a permit has
+    /// finished. This is a test-only synchronization seam; production callers
+    /// retain best-effort, non-blocking telemetry semantics.
+    #[cfg(test)]
+    pub(crate) async fn drain_pending_writes(&self) {
+        let permits = self
+            .write_semaphore
+            .clone()
+            .acquire_many_owned(WRITE_SEMAPHORE_PERMITS as u32)
+            .await
+            .expect("usage write semaphore remains open");
+        drop(permits);
+    }
+
     pub async fn record_call(&self, record: UpstreamCallRecord) -> Result<(), ToolError> {
         debug_assert!(
             !record.actor.is_empty(),

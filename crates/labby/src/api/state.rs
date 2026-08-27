@@ -84,6 +84,11 @@ pub struct AppState {
     pub bearer_token: Option<Arc<str>>,
     /// HTTP bind host resolved by `labby serve`.
     pub http_bind_host: Option<Arc<String>>,
+    /// Process-scoped owner of the access-store lifecycle.
+    ///
+    /// The default is a conservative, non-I/O unavailable runtime. Server
+    /// startup replaces it after resolving and observing the configured store.
+    pub(crate) access_runtime: Arc<crate::access::AccessRuntime>,
 }
 
 impl AppState {
@@ -141,6 +146,7 @@ impl AppState {
             web_ui_auth_disabled: false,
             bearer_token: None,
             http_bind_host: None,
+            access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             server_start: std::time::Instant::now(),
         }
     }
@@ -149,6 +155,16 @@ impl AppState {
     #[must_use]
     pub fn with_auth_config(mut self, config: labby_auth::config::AuthConfig) -> Self {
         self.auth_config = Some(Arc::new(config));
+        self
+    }
+
+    /// Attach the initialized process-scoped access runtime.
+    #[must_use]
+    pub(crate) fn with_access_runtime(
+        mut self,
+        runtime: Arc<crate::access::AccessRuntime>,
+    ) -> Self {
+        self.access_runtime = runtime;
         self
     }
 
@@ -279,5 +295,33 @@ fn build_protected_mcp_http_client() -> reqwest::Client {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod access_runtime_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn default_state_uses_non_io_unavailable_access_runtime() {
+        let state = AppState::new();
+
+        assert_eq!(
+            state.access_runtime.status().await,
+            crate::access::AccessRuntimeStatus::Blocked(
+                crate::access::AccessBlockedReason::Unavailable
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn access_runtime_builder_keeps_the_injected_process_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+        );
+        let state = AppState::new().with_access_runtime(Arc::clone(&runtime));
+
+        assert!(Arc::ptr_eq(&state.access_runtime, &runtime));
     }
 }

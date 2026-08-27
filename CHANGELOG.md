@@ -72,6 +72,14 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [1.14.1](https://github.com/dinglebear-ai/labby/compare/v1.14.0...v1.14.1) (2026-08-24)
+
+
+### Fixed
+
+* **codemode:** restore Windows warning-clean build ([#474](https://github.com/dinglebear-ai/labby/issues/474)) ([176495d](https://github.com/dinglebear-ai/labby/commit/176495de6837c1683c22e5b4f41bc092c4d6ec17))
+* **gateway:** stop Loadouts page renderer crash and harden parallel tests ([#489](https://github.com/dinglebear-ai/labby/issues/489)) ([172e078](https://github.com/dinglebear-ai/labby/commit/172e07896aef3fadc037f77e55be1499b62e02ad))
+
 ## [1.14.0](https://github.com/dinglebear-ai/labby/compare/v1.13.3...v1.14.0) (2026-08-21)
 
 

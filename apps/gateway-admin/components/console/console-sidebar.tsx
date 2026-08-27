@@ -480,6 +480,7 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
       ) : null}
 
       <button
+        data-sidebar-toggle="1"
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}

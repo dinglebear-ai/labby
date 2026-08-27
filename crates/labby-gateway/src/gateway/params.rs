@@ -127,6 +127,8 @@ pub(crate) struct ProtectedRouteSpecParams {
 pub(crate) struct ProtectedRouteUpdateParams {
     pub name: String,
     pub route: ProtectedMcpRouteConfig,
+    #[serde(default)]
+    pub preserve_project_id: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +402,17 @@ pub(crate) struct GatewayMcpToggleParams {
     pub name: String,
     #[serde(default)]
     pub cleanup: bool,
+    #[serde(default)]
+    pub aggressive: bool,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub owner: Option<GatewayRuntimeOwnerParams>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct GatewayMcpRestartParams {
+    pub name: String,
     #[serde(default)]
     pub aggressive: bool,
     #[serde(default)]

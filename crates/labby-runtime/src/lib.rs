@@ -27,6 +27,8 @@ pub mod error;
 pub mod gateway_config;
 pub mod helpers;
 pub mod path_safety;
+/// Versioned Phabby/Depot delivery wire contracts and fail-closed validation.
+pub mod phabby_delivery;
 pub mod redact;
 pub mod skills;
 

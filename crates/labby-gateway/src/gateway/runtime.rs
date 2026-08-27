@@ -1,11 +1,15 @@
 #[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
+use arc_swap::ArcSwap;
 use futures::StreamExt;
 #[cfg(unix)]
 use nix::errno::Errno;
@@ -26,9 +30,64 @@ use crate::upstream::types::UpstreamRuntimeOwner;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
 
+static NEXT_POOL_PUBLICATION_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_pool_publication_generation() -> u64 {
+    NEXT_POOL_PUBLICATION_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            generation.checked_add(1)
+        })
+        .expect("gateway pool publication generation exhausted")
+}
+
+/// Opaque process-local identity of a published pool revision.
+///
+/// Equality is meaningful only within this process. Every publication receives
+/// a fresh identity, even when it republishes the same pool or `None`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolPublicationGeneration(u64);
+
+impl PoolPublicationGeneration {
+    #[must_use]
+    pub fn fingerprint_bytes(self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+}
+
+struct PublishedPoolState {
+    // Consumed by the manager publication composer in the next bounded wave.
+    #[allow(dead_code)]
+    generation: PoolPublicationGeneration,
+    pool: Option<Arc<UpstreamPool>>,
+}
+
+/// A pool and its publication identity read from one immutable state.
+pub(crate) struct PublishedPoolSnapshot {
+    state: Arc<PublishedPoolState>,
+}
+
+impl PublishedPoolSnapshot {
+    // Consumed by the manager publication composer in the next bounded wave.
+    #[allow(dead_code)]
+    pub(crate) fn generation(&self) -> PoolPublicationGeneration {
+        self.state.generation
+    }
+
+    // Consumed by the manager publication composer in the next bounded wave.
+    #[allow(dead_code)]
+    pub(crate) fn pool(&self) -> Option<&Arc<UpstreamPool>> {
+        self.state.pool.as_ref()
+    }
+
+    pub(crate) fn into_pool(self) -> Option<Arc<UpstreamPool>> {
+        self.state.pool.clone()
+    }
+}
+
 #[derive(Clone)]
 pub struct GatewayRuntimeHandle {
-    pool: Arc<ArcSwapOption<UpstreamPool>>,
+    published_pool: Arc<ArcSwap<PublishedPoolState>>,
+    pool_publication: Arc<tokio::sync::RwLock<()>>,
     pool_changes: tokio::sync::watch::Sender<Option<Arc<UpstreamPool>>>,
 }
 
@@ -36,15 +95,41 @@ impl Default for GatewayRuntimeHandle {
     fn default() -> Self {
         let (pool_changes, _receiver) = tokio::sync::watch::channel(None);
         Self {
-            pool: Arc::new(ArcSwapOption::empty()),
+            published_pool: Arc::new(ArcSwap::from_pointee(PublishedPoolState {
+                generation: PoolPublicationGeneration(next_pool_publication_generation()),
+                pool: None,
+            })),
+            pool_publication: Arc::new(tokio::sync::RwLock::new(())),
             pool_changes,
         }
     }
 }
 
 impl GatewayRuntimeHandle {
+    pub(crate) async fn apply_to_exact_pool_publication<T, F, Fut>(
+        &self,
+        expected_generation: PoolPublicationGeneration,
+        expected_pool: &Arc<UpstreamPool>,
+        apply: F,
+    ) -> Option<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let _publication = self.pool_publication.read().await;
+        let current = self.published_pool_snapshot();
+        if current.generation() != expected_generation
+            || current
+                .pool()
+                .is_none_or(|pool| !Arc::ptr_eq(pool, expected_pool))
+        {
+            return None;
+        }
+        Some(apply().await)
+    }
+
     pub fn current_pool_sync(&self) -> Option<Arc<UpstreamPool>> {
-        self.pool.load_full()
+        self.published_pool_snapshot().into_pool()
     }
 
     pub async fn current_pool(&self) -> Option<Arc<UpstreamPool>> {
@@ -52,8 +137,21 @@ impl GatewayRuntimeHandle {
     }
 
     pub async fn swap(&self, pool: Option<Arc<UpstreamPool>>) {
-        self.pool.store(pool.clone());
+        // Keep generation allocation, coherent-state publication, and the
+        // compatibility watch notification in one total order. Without this
+        // lease concurrent swaps could publish generations out of order.
+        let _publication = self.pool_publication.write().await;
+        self.published_pool.store(Arc::new(PublishedPoolState {
+            generation: PoolPublicationGeneration(next_pool_publication_generation()),
+            pool: pool.clone(),
+        }));
         self.pool_changes.send_replace(pool);
+    }
+
+    pub(crate) fn published_pool_snapshot(&self) -> PublishedPoolSnapshot {
+        PublishedPoolSnapshot {
+            state: self.published_pool.load_full(),
+        }
     }
 
     pub fn subscribe_pool_changes(
@@ -247,14 +345,25 @@ impl GatewayManager {
 
     pub async fn mcp_runtime_list(
         &self,
+        name: Option<&str>,
+        scope: &crate::gateway::params::GatewayEnrichmentScope,
     ) -> Result<Vec<super::types::GatewayMcpRuntimeView>, ToolError> {
+        if let Some(name) = name {
+            scope.ensure_visible(name)?;
+        }
         let cfg = self.config.read().await.clone();
         let pool = self.runtime.current_pool().await;
         // Runtime inspection reports the current snapshot. It must not start or
         // connect upstreams; refresh/test/reload own active discovery.
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
-        for upstream in &cfg.upstream {
+        for upstream in cfg.upstream.iter().filter(|upstream| {
+            name.is_none_or(|name| upstream.name == name)
+                && scope
+                    .route_visible_upstreams
+                    .as_ref()
+                    .is_none_or(|visible| visible.contains(&upstream.name))
+        }) {
             let (summary, health) =
                 upstream_summary_with_health(pool.as_deref(), &upstream.name).await;
             let runtime = match pool.as_deref() {
@@ -866,6 +975,129 @@ fn terminate_process_group(_pid: u32) -> Result<(), ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pool_publication_generations_are_clone_shared_and_handle_unique() {
+        let handle = GatewayRuntimeHandle::default();
+        let clone = handle.clone();
+        let distinct = GatewayRuntimeHandle::default();
+
+        assert_eq!(
+            handle.published_pool_snapshot().generation(),
+            clone.published_pool_snapshot().generation()
+        );
+        assert_ne!(
+            handle.published_pool_snapshot().generation(),
+            distinct.published_pool_snapshot().generation()
+        );
+
+        clone.swap(None).await;
+        assert_eq!(
+            handle.published_pool_snapshot().generation(),
+            clone.published_pool_snapshot().generation()
+        );
+    }
+
+    #[tokio::test]
+    async fn every_pool_swap_advances_generation_including_identical_none_and_aba() {
+        let handle = GatewayRuntimeHandle::default();
+        let pool_a = Arc::new(UpstreamPool::new());
+        let pool_b = Arc::new(UpstreamPool::new());
+        let mut generations = vec![handle.published_pool_snapshot().generation()];
+
+        handle.swap(None).await;
+        generations.push(handle.published_pool_snapshot().generation());
+        handle.swap(Some(pool_a.clone())).await;
+        generations.push(handle.published_pool_snapshot().generation());
+        handle.swap(Some(pool_a.clone())).await;
+        generations.push(handle.published_pool_snapshot().generation());
+        handle.swap(Some(pool_b)).await;
+        generations.push(handle.published_pool_snapshot().generation());
+        handle.swap(Some(pool_a.clone())).await;
+        let aba = handle.published_pool_snapshot();
+        generations.push(aba.generation());
+        handle.swap(None).await;
+        generations.push(handle.published_pool_snapshot().generation());
+        handle.swap(None).await;
+        generations.push(handle.published_pool_snapshot().generation());
+
+        for (index, generation) in generations.iter().enumerate() {
+            assert!(
+                !generations[..index].contains(generation),
+                "publication {index} reused a generation"
+            );
+        }
+        assert!(Arc::ptr_eq(aba.pool().expect("ABA pool"), &pool_a));
+    }
+
+    #[tokio::test]
+    async fn identical_pool_swaps_preserve_legacy_watch_notifications() {
+        let handle = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        let mut changes = handle.subscribe_pool_changes();
+
+        handle.swap(Some(pool.clone())).await;
+        changes.changed().await.expect("first Some notification");
+        assert!(Arc::ptr_eq(
+            changes.borrow().as_ref().expect("watched pool"),
+            &pool
+        ));
+
+        handle.swap(Some(pool.clone())).await;
+        changes
+            .changed()
+            .await
+            .expect("identical Some notification");
+        assert!(Arc::ptr_eq(
+            changes.borrow().as_ref().expect("watched pool"),
+            &pool
+        ));
+
+        handle.swap(None).await;
+        changes.changed().await.expect("first None notification");
+        assert!(changes.borrow().is_none());
+        handle.swap(None).await;
+        changes
+            .changed()
+            .await
+            .expect("identical None notification");
+        assert!(changes.borrow().is_none());
+        assert!(handle.current_pool_sync().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pool_snapshot_reader_observes_coherent_old_or_new_state() {
+        let handle = GatewayRuntimeHandle::default();
+        let old = handle.published_pool_snapshot();
+        let new_pool = Arc::new(UpstreamPool::new());
+        let reader = handle.clone();
+        let start = Arc::new(tokio::sync::Barrier::new(2));
+        let reader_start = start.clone();
+
+        let reads = tokio::spawn(async move {
+            reader_start.wait().await;
+            (0..10_000)
+                .map(|_| {
+                    let snapshot = reader.published_pool_snapshot();
+                    (snapshot.generation(), snapshot.pool().cloned())
+                })
+                .collect::<Vec<_>>()
+        });
+        start.wait().await;
+        handle.swap(Some(new_pool.clone())).await;
+        let new = handle.published_pool_snapshot();
+        let reads = reads.await.expect("reader task");
+
+        assert_ne!(old.generation(), new.generation());
+        for (generation, pool) in reads {
+            if generation == old.generation() {
+                assert!(pool.is_none());
+            } else {
+                assert_eq!(generation, new.generation());
+                assert!(Arc::ptr_eq(pool.as_ref().expect("new pool"), &new_pool));
+            }
+        }
+    }
 
     #[tokio::test]
     async fn malformed_runtime_state_is_quarantined_instead_of_overwritten() {

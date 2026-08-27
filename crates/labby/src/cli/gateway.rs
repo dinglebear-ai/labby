@@ -175,6 +175,7 @@ pub async fn run(args: GatewayArgs, format: OutputFormat, config: &LabConfig) ->
             command: GatewayMcpCommand::List
                 | GatewayMcpCommand::Enable(_)
                 | GatewayMcpCommand::Disable(_)
+                | GatewayMcpCommand::Restart(_)
                 | GatewayMcpCommand::Cleanup(_)
                 | GatewayMcpCommand::Auth(GatewayMcpAuthArgs {
                     command: GatewayMcpAuthCommand::Status(_) | GatewayMcpAuthCommand::Clear(_),
@@ -325,6 +326,17 @@ mod tests {
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "list",]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "clients", "list",]).is_ok());
         assert!(Cli::try_parse_from(["lab", "gateway", "mcp", "enable", "fixture-http",]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "lab",
+                "gateway",
+                "mcp",
+                "restart",
+                "fixture-http",
+                "--aggressive",
+            ])
+            .is_ok()
+        );
         assert!(
             Cli::try_parse_from([
                 "lab",
@@ -783,6 +795,12 @@ mod tests {
             "https://lab.example.com/auth/upstream/callback".to_string(),
         );
 
+        // Building a real manager runs `LabConfigStore::set_process_code_mode_enabled`,
+        // which writes the process-wide Code Mode atomic. Hold the same lock the
+        // Code Mode tests use so this does not clobber their setting mid-run —
+        // `cargo test` runs these in parallel. The guard also restores the
+        // previous value on drop.
+        let _code_mode_guard = crate::config::process_code_mode_test_guard();
         let manager = build_manager_with_upstream_oauth_runtime(&config, true, Some(oauth_runtime))
             .await
             .expect("build gateway manager");

@@ -13,6 +13,22 @@ export function installTestDom() {
   Object.defineProperty(globalThis, 'MouseEvent', { value: window.MouseEvent, configurable: true })
   Object.defineProperty(globalThis, 'PointerEvent', { value: window.PointerEvent, configurable: true })
   Object.defineProperty(globalThis, 'KeyboardEvent', { value: window.KeyboardEvent, configurable: true })
+  Object.defineProperty(globalThis, 'CustomEvent', { value: window.CustomEvent, configurable: true })
+  Object.defineProperty(globalThis, 'Element', { value: window.Element, configurable: true })
+  Object.defineProperty(globalThis, 'HTMLElement', { value: window.HTMLElement, configurable: true })
+  Object.defineProperty(globalThis, 'getComputedStyle', {
+    value: window.getComputedStyle.bind(window),
+    configurable: true,
+  })
+  Object.defineProperty(globalThis, 'MutationObserver', { value: window.MutationObserver, configurable: true })
+  Object.defineProperty(globalThis, 'requestAnimationFrame', {
+    configurable: true,
+    value: (callback: FrameRequestCallback) => window.setTimeout(() => callback(Date.now()), 0),
+  })
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+    configurable: true,
+    value: (handle: number) => window.clearTimeout(handle as unknown as Parameters<typeof window.clearTimeout>[0]),
+  })
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { value: true, configurable: true })
   return window
 }

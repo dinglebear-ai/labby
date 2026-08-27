@@ -1,0 +1,22 @@
+{
+  "iss": "https://depot.example.test",
+  "dnsPolicyId": "dns_14daa3df83a36b1d6375378fae3383d2db1f610b1de901de23b47becb2313359",
+  "sub": "acct_01K35DRD17JYEQ7Y6G12CCJAXW",
+  "aud": "labby:delivery",
+  "tenantId": "ten_01K35DRR08706RPZ8A1WQF77ZC",
+  "targetId": "labby_01K35DSQXE7V4ZMN5Z2A06S6QF",
+  "connectionId": "con_01K35DT9YW8H1X4Q1MNG3BBR2Q",
+  "deliveryId": "del_01K35DWEEVDTNC2FW4Z6QB8MM8",
+  "resourceKind": "artifact",
+  "resourceId": "art_5c9597f642c50c814c1585b49ac19921520d780d259678dabd6502608179f6ce",
+  "revisionId": "rev_01K35DV2SSZYJZ7NR7P3P8CSD8",
+  "contentDigest": "sha256:feda49490988a21b01ea9d6548f2c893a7cea6c4e9834322985c28d82280c13f",
+  "manifestDigest": "sha256:d42149a6e66408ab4f8c55534ff7d098c90637714de8a03f6263c54d3236eb13",
+  "purpose": "depot-to-labby-pull",
+  "protocolVersion": "dinglebear.depot-delivery/v1",
+  "artifactSchemaVersion": "dinglebear.artifact-interchange/v1",
+  "jti": "jti_01K35DX1A3G6ER7DY51MW5NEMQ",
+  "iat": 1787392800,
+  "nbf": 1787392800,
+  "exp": 1787393100
+}

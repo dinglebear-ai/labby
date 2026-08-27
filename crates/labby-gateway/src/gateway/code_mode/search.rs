@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use crate::gateway::manager::GatewayManager;
 use crate::gateway::projection::{sanitize_schema, sanitize_tool_text};
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
-use labby_runtime::CodeModeConfig;
 use labby_runtime::error::ToolError;
 use labby_runtime::lab_home;
 
@@ -144,26 +143,21 @@ pub(crate) async fn build_tools_render(
             )
             .await?
     };
-    let code_mode_config = manager.code_mode_config().await;
     catalog_from_tools(
         manager,
-        filter_tools_for_access(raw_tools, scope, &code_mode_config),
+        filter_tools_for_access(raw_tools, scope),
         include_snippets,
     )
     .await
 }
 
-fn filter_tools_for_access(
-    tools: Vec<UpstreamTool>,
-    scope: &ToolScope,
-    config: &CodeModeConfig,
-) -> Vec<UpstreamTool> {
+fn filter_tools_for_access(tools: Vec<UpstreamTool>, scope: &ToolScope) -> Vec<UpstreamTool> {
     if !scope.is_read_only() {
         return tools;
     }
     tools
         .into_iter()
-        .filter(|tool| super::code_mode_host::tool_is_trusted_read_only(config, tool))
+        .filter(super::code_mode_host::tool_is_explicitly_read_only)
         .collect()
 }
 
@@ -793,31 +787,34 @@ mod tests {
         let tools = vec![
             make(None),
             make(Some(rmcp::model::ToolAnnotations::new().destructive(false))),
-            make(Some(rmcp::model::ToolAnnotations::new().read_only(true))),
+            make(Some(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false),
+            )),
         ];
 
-        let config = CodeModeConfig {
-            trusted_read_only_tools: vec!["fixture::query".to_string()],
-            ..CodeModeConfig::default()
-        };
         let read_only_scope = ToolScope::default().read_only();
-        let filtered = filter_tools_for_access(tools, &read_only_scope, &config);
+        let filtered = filter_tools_for_access(tools, &read_only_scope);
         assert_eq!(filtered.len(), 1);
-        assert!(super::super::code_mode_host::tool_is_trusted_read_only(
-            &config,
+        assert!(super::super::code_mode_host::tool_is_explicitly_read_only(
             &filtered[0]
         ));
     }
 
     #[test]
-    fn read_only_catalog_requires_operator_trust_in_addition_to_hint() {
+    fn read_only_catalog_uses_standard_mcp_safety_annotations() {
         let named = Arc::<str>::from("fixture");
         let mut tool = rmcp::model::Tool::new(
             "query".to_string(),
             "Query data",
             Arc::new(serde_json::Map::new()),
         );
-        tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+        tool.annotations = Some(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false),
+        );
         let tool = UpstreamTool {
             tool,
             input_schema: None,
@@ -827,21 +824,8 @@ mod tests {
         };
 
         let read_only_scope = ToolScope::default().read_only();
-        assert!(
-            filter_tools_for_access(
-                vec![tool.clone()],
-                &read_only_scope,
-                &CodeModeConfig::default()
-            )
-            .is_empty()
-        );
-
-        let trusted = CodeModeConfig {
-            trusted_read_only_tools: vec!["fixture::query".to_string()],
-            ..CodeModeConfig::default()
-        };
         assert_eq!(
-            filter_tools_for_access(vec![tool], &read_only_scope, &trusted).len(),
+            filter_tools_for_access(vec![tool], &read_only_scope).len(),
             1
         );
     }

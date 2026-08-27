@@ -77,6 +77,9 @@ pub struct PropagatedCallerAuth {
     /// JWT `sub`, when the caller had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub: Option<String>,
+    /// Opaque, host-minted capability for the private in-process hop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_context_token: Option<String>,
 }
 
 impl PropagatedCallerAuth {
@@ -87,6 +90,7 @@ impl PropagatedCallerAuth {
             trusted_local: true,
             scopes: Vec::new(),
             sub: None,
+            private_context_token: None,
         }
     }
 
@@ -97,7 +101,14 @@ impl PropagatedCallerAuth {
             trusted_local: false,
             scopes,
             sub,
+            private_context_token: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_private_context_token(mut self, token: String) -> Self {
+        self.private_context_token = Some(token);
+        self
     }
 
     /// Whether these facts satisfy an admin-gated action.

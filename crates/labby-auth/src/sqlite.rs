@@ -1717,7 +1717,11 @@ mod tests {
         assert_eq!(row.token_received_at, Some(now));
         assert_eq!(row.access_token_expires_at, Some(now + 3600));
         assert_eq!(row.issuer.as_deref(), Some("https://accounts.google.com"));
-        assert_eq!(row.last_scope_upgrade_at, Some(now));
+        let persisted_scope_upgrade = row.last_scope_upgrade_at.expect("scope upgrade timestamp");
+        assert!(
+            (now..=now_unix()).contains(&persisted_scope_upgrade),
+            "scope upgrade timestamp must be recorded during the write"
+        );
     }
 
     #[tokio::test]

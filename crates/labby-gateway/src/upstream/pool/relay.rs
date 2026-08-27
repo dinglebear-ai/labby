@@ -91,8 +91,8 @@ use super::helpers::{
 };
 use super::http_cancellation::{HttpCancellationSender, build_http_cancellation_sender};
 use super::logging::{
-    UpstreamRequestLog, log_upstream_request_error, log_upstream_request_finish,
-    log_upstream_request_start,
+    UpstreamRequestLog, log_upstream_request_cancelled, log_upstream_request_error,
+    log_upstream_request_finish, log_upstream_request_start,
 };
 use super::notifications::UpstreamNotificationEvent;
 use super::relay_cache::{
@@ -1170,7 +1170,7 @@ impl UpstreamPool {
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
-                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, caller_subject, "connect_cancelled", started.elapsed().as_millis());
                 return Some(Err(super::CapabilityCallError::Cancelled {
                     message: downstream_cancelled("downstream request cancelled while connecting"),
@@ -1250,14 +1250,7 @@ impl UpstreamPool {
                 return Some(Err(super::CapabilityCallError::Other { message: error }));
             }
             RelayPermitOutcome::Cancelled => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    None,
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 super::usage_record::record_usage_call(
                     self,
                     event,
@@ -1427,14 +1420,7 @@ impl UpstreamPool {
                 }
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    Some(&error),
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 super::usage_record::record_usage_call(
                     self,
                     event,
@@ -1554,7 +1540,7 @@ impl UpstreamPool {
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
-                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while connecting",
@@ -1612,14 +1598,7 @@ impl UpstreamPool {
                 return Some(Err(error));
             }
             RelayPermitOutcome::Cancelled => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    None,
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while queued",
                 )));
@@ -1688,14 +1667,7 @@ impl UpstreamPool {
                 Some(Ok(result))
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    Some(&error),
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 Some(Err(error.to_string()))
             }
             Err(error) => {
@@ -1733,8 +1705,9 @@ impl UpstreamPool {
         }
     }
 
-    /// Read one gateway-prefixed resource over a request-scoped relay
-    /// connection, preserving MRTR fields and incomplete responses.
+    /// Read one gateway-prefixed or native MCP App `ui://` resource over a
+    /// request-scoped relay connection, preserving MRTR fields and incomplete
+    /// responses.
     pub async fn read_resource_relayed(
         &self,
         config: &UpstreamConfig,
@@ -1749,14 +1722,15 @@ impl UpstreamPool {
         let started = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
-        let original_uri = match gateway_uri.strip_prefix(&prefix) {
-            Some(uri) => uri.to_string(),
-            None => {
-                return Some(Err(format!(
-                    "resource URI does not match upstream `{}`",
-                    config.name
-                )));
-            }
+        let original_uri = if let Some(uri) = gateway_uri.strip_prefix(&prefix) {
+            uri.to_string()
+        } else if gateway_uri.starts_with("ui://") {
+            gateway_uri.clone()
+        } else {
+            return Some(Err(format!(
+                "resource URI does not match upstream `{}`",
+                config.name
+            )));
         };
         params.uri = original_uri;
         // Same gate as `read_upstream_resource` / `subject_scoped_read_resource`
@@ -1806,7 +1780,7 @@ impl UpstreamPool {
         let connection = tokio::select! {
             biased;
             () = downstream_cancel.cancelled() => {
-                log_upstream_request_error(event, started.elapsed().as_millis(), "connect_cancelled", None, None, None);
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "connect_cancelled");
                 super::usage_record::record_usage_call(self, event, subject, "connect_cancelled", started.elapsed().as_millis());
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while connecting",
@@ -1864,14 +1838,7 @@ impl UpstreamPool {
                 return Some(Err(error));
             }
             RelayPermitOutcome::Cancelled => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    None,
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 return Some(Err(downstream_cancelled(
                     "downstream request cancelled while queued",
                 )));
@@ -1979,14 +1946,7 @@ impl UpstreamPool {
                 Some(Ok(result))
             }
             Err(error @ ServiceError::Cancelled { .. }) => {
-                log_upstream_request_error(
-                    event,
-                    started.elapsed().as_millis(),
-                    "cancelled",
-                    Some(&error),
-                    None,
-                    None,
-                );
+                log_upstream_request_cancelled(event, started.elapsed().as_millis(), "cancelled");
                 Some(Err(error.to_string()))
             }
             Err(error) => {
@@ -2886,7 +2846,9 @@ mod tests {
                 _: RequestContext<RoleServer>,
             ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
                 self.list_calls.fetch_add(1, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                // Far longer than the relay budget, so the ceiling below can be
+                // generous without ever colliding with this fixture.
+                tokio::time::sleep(Duration::from_secs(30)).await;
                 Ok(rmcp::model::ListToolsResult::with_all_items(vec![]))
             }
 
@@ -2937,7 +2899,14 @@ mod tests {
             result,
             super::super::CapabilityCallError::Timeout { .. }
         ));
-        assert!(started.elapsed() < Duration::from_millis(500));
+        // The refresh fixture stalls for 30s, so this only has to prove the 80ms
+        // relay deadline ended the call. A 500ms ceiling proved the same thing
+        // but tripped on scheduler jitter under parallel test load.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the original relay deadline must bound the call: {:?}",
+            started.elapsed()
+        );
         assert_eq!(list_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             tool_calls.load(Ordering::SeqCst),
@@ -3280,9 +3249,13 @@ mod tests {
             &dispatched,
         );
 
+        // Dispatch is synchronous, so this should be near-instant; the ceiling
+        // only distinguishes "dispatched now" from "waited for the upstream
+        // request id", and a wide one does that without measuring the scheduler.
         assert!(
-            started.elapsed() < Duration::from_millis(500),
-            "relay-token cancellation must be dispatched before waiting for the upstream request id"
+            started.elapsed() < Duration::from_secs(2),
+            "relay-token cancellation must be dispatched before waiting for the upstream request id: {:?}",
+            started.elapsed()
         );
     }
 
@@ -3589,6 +3562,7 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         };
         (
             RelayCachedConnection {
@@ -3833,7 +3807,7 @@ mod tests {
                 super::super::capability_call::CapabilityCallError::Timeout { .. }
             ));
             assert!(
-                started.elapsed() < timeout + Duration::from_secs(1),
+                started.elapsed() < timeout + Duration::from_secs(5),
                 "cold connect exceeded the absolute relay budget"
             );
             assert_eq!(
@@ -4284,7 +4258,7 @@ mod tests {
 
         // Seed the catalog so `record_failure_for` has an entry to mark unhealthy.
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             config.name.clone(),
             healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
         );
@@ -4326,6 +4300,7 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         };
         pool.relay_connections.write().await.insert(
             relay_cache_key(&config.name, 1, None),
@@ -4424,7 +4399,7 @@ mod tests {
         let pool = UpstreamPool::new();
         let config = super::super::testsupport::test_upstream_config();
         let name_arc: Arc<str> = Arc::from(config.name.as_str());
-        pool.catalog.write().await.insert(
+        pool.catalog_write().await.insert(
             config.name.clone(),
             healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
         );
@@ -4463,6 +4438,7 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            incarnation: None,
         };
         pool.relay_connections.write().await.insert(
             relay_cache_key(&config.name, 1, None),

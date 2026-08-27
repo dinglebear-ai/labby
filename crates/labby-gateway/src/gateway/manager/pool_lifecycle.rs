@@ -362,6 +362,7 @@ impl GatewayManager {
             *self.protected_route_index.write().await =
                 ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
             *self.config.write().await = runtime_cfg;
+            self.advance_runtime_config_generation();
             let diff = GatewayCatalogDiff {
                 tools_changed: lab_owned_surface_changed,
                 resources_changed: lab_owned_surface_changed,
@@ -409,6 +410,7 @@ impl GatewayManager {
                 *self.protected_route_index.write().await =
                     ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
                 *self.config.write().await = cfg.clone();
+                self.advance_runtime_config_generation();
                 pool.reconcile_lazy_upstreams(
                     &cfg.upstream,
                     &changed_upstreams,
@@ -464,6 +466,7 @@ impl GatewayManager {
                     *self.protected_route_index.write().await =
                         ProtectedRouteIndex::from_routes(&previous_cfg.protected_mcp_routes);
                     *self.config.write().await = previous_cfg.clone();
+                    self.advance_runtime_config_generation();
                     pool.reconcile_lazy_upstreams(
                         &previous_cfg.upstream,
                         &changed_upstreams,
@@ -652,6 +655,7 @@ impl GatewayManager {
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
         *self.config.write().await = runtime_cfg;
+        self.advance_runtime_config_generation();
         let observed = ReconcileCatalogObservation::observe(
             &before,
             &after,

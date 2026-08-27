@@ -8,6 +8,17 @@ pub(crate) const SERVER_LOGS_APP_SKYBRIDGE_URI: &str = "ui://lab/server-logs/vie
 
 pub(crate) const SERVER_LOGS_APP_HTML: &str = include_str!("mcp/assets/server_logs_app.html");
 
+/// Stable Lab-owned MCP App resource for the shared Skill Library.
+#[cfg(feature = "skills")]
+pub(crate) const SKILL_LIBRARY_APP_URI_PREFIX: &str = "ui://lab/skill-library/";
+#[cfg(feature = "skills")]
+pub(crate) const SKILL_LIBRARY_APP_URI: &str = "ui://lab/skill-library/app";
+/// OpenAI Apps skybridge projection of the same bundled shell.
+#[cfg(feature = "skills")]
+pub(crate) const SKILL_LIBRARY_APP_SKYBRIDGE_URI: &str = "ui://lab/skill-library/app.skybridge";
+#[cfg(feature = "skills")]
+pub(crate) const SKILL_LIBRARY_APP_HTML: &str = include_str!("mcp/assets/skill_library_app.html");
+
 #[cfg(feature = "gateway")]
 pub(crate) const ADD_SERVER_APP_URI: &str = "ui://lab/gateway/add-server";
 /// OpenAI Apps skybridge variant for ChatGPT / Codex hosts.

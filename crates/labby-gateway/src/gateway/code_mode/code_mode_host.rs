@@ -19,11 +19,11 @@ use std::sync::Arc;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
 use crate::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::gateway::manager::GatewayManager;
-use crate::upstream::pool::CapabilityCallError;
+use crate::gateway::palette::CapabilityContract;
+use crate::upstream::pool::{CapabilityCallError, CheckedToolCallError};
 use crate::upstream::tool_error::mcp_error_data_kind;
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::caller_auth::{
@@ -36,6 +36,17 @@ use labby_runtime::lab_home;
 use super::search;
 use super::tool_error::{completed_tool_error, upstream_tool_safety};
 use super::validate_code_mode_params_against_schema;
+
+pub(crate) struct CheckedToolCallOutcome {
+    pub(crate) outcome: ToolCallOutcome,
+    pub(crate) contract_hash: String,
+    pub(crate) catalog_revision: String,
+}
+
+struct CheckedDispatch {
+    safety: CodeModeToolSafetyHints,
+    contract_hash: String,
+}
 
 impl CodeModeHost for GatewayManager {
     async fn list_tools(
@@ -92,8 +103,7 @@ impl CodeModeHost for GatewayManager {
         // Discovery is advisory; authorization is checked again against the
         // live descriptor immediately before invocation so an annotation
         // change or stale render cannot turn a read-only run into a write.
-        let code_mode_config = self.code_mode_config().await;
-        if scope.is_read_only() && !tool_is_trusted_read_only(&code_mode_config, &upstream_tool) {
+        if scope.is_read_only() && !tool_is_explicitly_read_only(&upstream_tool) {
             tracing::warn!(
                 surface = "dispatch",
                 service = "code_mode",
@@ -101,13 +111,11 @@ impl CodeModeHost for GatewayManager {
                 upstream,
                 tool,
                 kind = "forbidden",
-                "blocked tool without operator trust and an explicit read-only annotation"
+                "blocked tool without an explicit read-only annotation"
             );
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
-                message: format!(
-                    "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
-                ),
+                message: format!("Tool `{upstream}::{tool}` is not explicitly read-only."),
             }
             .into());
         }
@@ -138,22 +146,25 @@ impl CodeModeHost for GatewayManager {
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
         let tool_ui = extract_tool_ui_link(&upstream_tool);
-        let safety = upstream_tool_safety(&upstream_tool);
-        let checked_contract = code_mode_tool_contract_digest(&upstream_tool);
+        let checked_contract_hash =
+            CapabilityContract::execution_hash_from_upstream_tool(&upstream_tool)?;
         let mut outcome = self
-            .execute_upstream_tool_with_contract(
+            .execute_upstream_tool_checked(
                 upstream,
                 tool,
                 params,
-                safety,
+                &owner,
                 oauth_subject,
-                Some((&checked_contract, scope.is_read_only())),
                 Some(propagated_caller_auth(caller)),
                 Some(PropagatedCallerUpstreamScope::new(
                     scope.allowed_namespaces().cloned(),
                 )),
+                &checked_contract_hash,
+                destructive_permitted(surface, caller),
+                "forbidden",
             )
-            .await?;
+            .await?
+            .outcome;
         if outcome.ui.is_none()
             && let Some(ui) = tool_ui
         {
@@ -450,31 +461,13 @@ pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
 
 fn rmcp_tool_is_explicitly_read_only(tool: &rmcp::model::Tool) -> bool {
     tool.annotations.as_ref().is_some_and(|annotations| {
-        annotations.read_only_hint == Some(true) && annotations.destructive_hint != Some(true)
+        annotations.read_only_hint == Some(true) && annotations.destructive_hint == Some(false)
     })
 }
 
 pub(super) fn tool_is_trusted_read_only(config: &CodeModeConfig, tool: &UpstreamTool) -> bool {
     tool_is_explicitly_read_only(tool)
         && config.trusts_read_only_tool(&tool.upstream_name, tool.tool.name.as_ref())
-}
-
-/// Fingerprint every descriptor field used for authorization, validation, and
-/// model-facing discovery. Dispatch rechecks this value against the selected
-/// live pool so a concurrent gateway reload cannot swap in a different tool
-/// contract after the caller's descriptor was authorized.
-fn code_mode_tool_contract_digest(tool: &UpstreamTool) -> String {
-    rmcp_tool_contract_digest(&tool.upstream_name, &tool.tool)
-}
-
-fn rmcp_tool_contract_digest(upstream: &str, tool: &rmcp::model::Tool) -> String {
-    let payload = serde_json::json!({
-        "upstream": upstream,
-        "tool": tool,
-    });
-    let serialized = serde_json::to_vec(&payload).unwrap_or_default();
-    let digest = Sha256::digest(serialized);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Per-run caller identity stamped onto journal rows at flush time (captured
@@ -592,22 +585,30 @@ impl GatewayManager {
     /// Dispatch a resolved Code Mode call to the upstream MCP pool and unwrap
     /// the result. Shared by the durable and write-free `call_tool` paths
     /// (mcp-ui capture, error classification, success/failure recording).
+    #[cfg(test)]
     pub(crate) async fn execute_upstream_tool(
         &self,
         upstream: &str,
         tool: &str,
         params: Value,
     ) -> Result<ToolCallOutcome, ToolError> {
-        self.execute_upstream_tool_with_contract(
+        let arguments = upstream_arguments(upstream, tool, params)?;
+        let (config, pool) = self.published_config_and_pool().await;
+        let pool = pool.ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "upstream_error".to_string(),
+            message: "gateway upstream pool is unavailable".to_string(),
+        })?;
+        let oauth_config = config.upstream.into_iter().find(|candidate| {
+            candidate.enabled && candidate.name == upstream && candidate.oauth.is_some()
+        });
+        self.dispatch_upstream_tool(
+            pool,
             upstream,
             tool,
-            params,
+            arguments,
             CodeModeToolSafetyHints::default(),
+            oauth_config,
             Some(SHARED_GATEWAY_OAUTH_SUBJECT),
-            None,
-            // No caller in scope here. Propagating nothing leaves the
-            // receiving gate at its fail-closed default rather than inventing
-            // an authorization this path cannot vouch for.
             None,
             None,
         )
@@ -615,21 +616,88 @@ impl GatewayManager {
         .map_err(CodeModeCallError::into_tool_error)
     }
 
-    async fn execute_upstream_tool_with_contract(
+    pub(crate) async fn execute_upstream_tool_checked(
         &self,
         upstream: &str,
         tool: &str,
         params: Value,
-        safety: CodeModeToolSafetyHints,
+        owner: &UpstreamRuntimeOwner,
         oauth_subject: Option<&str>,
-        checked_contract: Option<(&str, bool)>,
         caller_auth: Option<PropagatedCallerAuth>,
         caller_scope: Option<PropagatedCallerUpstreamScope>,
-    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        expected_contract_hash: &str,
+        destructive_allowed: bool,
+        destructive_denial_kind: &'static str,
+    ) -> Result<CheckedToolCallOutcome, ToolError> {
+        self.execute_upstream_tool_checked_inner(
+            upstream,
+            tool,
+            params,
+            owner,
+            oauth_subject,
+            caller_auth,
+            caller_scope,
+            expected_contract_hash,
+            destructive_allowed,
+            destructive_denial_kind,
+        )
+        .await
+        .map_err(CodeModeCallError::into_tool_error)
+    }
+
+    async fn execute_upstream_tool_checked_inner(
+        &self,
+        upstream: &str,
+        tool: &str,
+        params: Value,
+        owner: &UpstreamRuntimeOwner,
+        oauth_subject: Option<&str>,
+        caller_auth: Option<PropagatedCallerAuth>,
+        caller_scope: Option<PropagatedCallerUpstreamScope>,
+        expected_contract_hash: &str,
+        destructive_allowed: bool,
+        destructive_denial_kind: &'static str,
+    ) -> Result<CheckedToolCallOutcome, CodeModeCallError> {
         let id = format!("{upstream}::{tool}");
         let arguments =
             upstream_arguments(upstream, tool, params).map_err(CodeModeCallError::from)?;
-        let Some(pool) = self.current_pool().await else {
+        if caller_scope
+            .as_ref()
+            .and_then(|scope| scope.allowed_upstreams.as_ref())
+            .is_some_and(|allowed| !allowed.contains(upstream))
+        {
+            return Err(CodeModeCallError::new(
+                "forbidden",
+                format!("upstream `{upstream}` is outside the caller scope"),
+            )
+            .with_tool(id)
+            .with_origin(CodeModeErrorOrigin::Policy)
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+        }
+        let previewed_tool = self
+            .resolve_code_mode_upstream_tool(upstream, tool, Some(owner), oauth_subject)
+            .await
+            .map_err(|error| CodeModeCallError::from(error))?;
+        let previewed_contract_hash =
+            CapabilityContract::execution_hash_from_upstream_tool(&previewed_tool)
+                .map_err(CodeModeCallError::from)?;
+        if previewed_contract_hash != expected_contract_hash {
+            return Err(contract_changed_call_error(&id));
+        }
+        if previewed_tool.destructive && !destructive_allowed {
+            return Err(CodeModeCallError::new(
+                destructive_denial_kind,
+                format!("Tool `{upstream}::{tool}` is destructive and not permitted."),
+            )
+            .with_tool(id.clone())
+            .with_origin(CodeModeErrorOrigin::Policy)
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+        }
+        self.ensure_upstream_tool_runtime_ready(upstream, Some(owner), oauth_subject)
+            .await
+            .map_err(CodeModeCallError::from)?;
+        let (config, pool) = self.published_config_and_pool().await;
+        let Some(pool) = pool else {
             return Err(CodeModeCallError::new(
                 "upstream_error",
                 "gateway upstream pool is unavailable",
@@ -638,81 +706,121 @@ impl GatewayManager {
             .with_origin(CodeModeErrorOrigin::UpstreamTransport)
             .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
         };
-        let oauth_config = self
-            .config
-            .read()
-            .await
+        if !config.code_mode.enabled {
+            return Err(CodeModeCallError::new(
+                "contract_changed",
+                "the gateway Code Mode catalog changed before dispatch",
+            )
+            .with_tool(id)
+            .with_origin(CodeModeErrorOrigin::Discovery)
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+        }
+        let upstream_config = config
             .upstream
             .iter()
-            .find(|config| config.enabled && config.name == upstream && config.oauth.is_some())
-            .cloned();
-        if let Some((expected_contract, require_read_only)) = checked_contract {
-            // OAuth descriptors are subject-scoped and can differ from the
-            // gateway catalog. Re-resolve through the same subject connection
-            // cache used by the eventual call. Non-OAuth calls bind to this
-            // exact pool Arc, so a manager reload cannot swap the checked
-            // descriptor out before dispatch.
-            let current_tool = if let Some(config) = oauth_config.as_ref() {
-                let subject = oauth_subject.ok_or_else(|| {
-                    CodeModeCallError::new(
-                        "auth_failed",
-                        format!(
-                            "upstream `{upstream}` requires an authenticated subject for tool execution"
-                        ),
-                    )
-                    .with_tool(id.clone())
-                })?;
-                pool.subject_scoped_tools(std::slice::from_ref(config), subject)
-                    .await
-                    .into_iter()
-                    .flat_map(|(_, tools)| tools)
-                    .find(|candidate| candidate.name.as_ref() == tool)
-            } else {
-                pool.healthy_tools_for_upstream(upstream)
-                    .await
-                    .into_iter()
-                    .find(|candidate| candidate.tool.name.as_ref() == tool)
-                    .map(|candidate| candidate.tool)
-            }
+            .find(|candidate| {
+                candidate.enabled && candidate.priority > 0.0 && candidate.name == upstream
+            })
+            .cloned()
             .ok_or_else(|| {
-                    CodeModeCallError::new(
-                        "unknown_tool",
-                        format!(
-                            "Tool `{upstream}::{tool}` changed or disappeared before dispatch; rediscover it and retry."
-                        ),
-                    )
+                CodeModeCallError::new("not_found", format!("upstream tool `{id}` was not found"))
                     .with_tool(id.clone())
-                    .with_origin(CodeModeErrorOrigin::Discovery)
-                    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
-                })?;
-            if rmcp_tool_contract_digest(upstream, &current_tool) != expected_contract {
-                return Err(CodeModeCallError::new(
-                    "unknown_tool",
-                    format!(
-                        "Tool `{upstream}::{tool}` changed before dispatch; rediscover it and retry."
-                    ),
-                )
-                .with_tool(id.clone())
-                .with_origin(CodeModeErrorOrigin::Discovery)
-                .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
-            }
-            if require_read_only {
-                let config = self.code_mode_config().await;
-                if !config.trusts_read_only_tool(upstream, tool)
-                    || !rmcp_tool_is_explicitly_read_only(&current_tool)
-                {
-                    return Err(CodeModeCallError::new(
-                        "forbidden",
-                        format!(
-                            "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
-                        ),
-                    )
-                    .with_tool(id.clone())
-                    .with_origin(CodeModeErrorOrigin::Policy)
-                    .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
-                }
-            }
+            })?;
+        let mut upstream_params = CallToolRequestParams::new(tool.to_string());
+        upstream_params.arguments = Some(arguments.clone());
+        if is_in_process_upstream(upstream)
+            && let Some(auth) = caller_auth.as_ref()
+        {
+            upstream_params.meta = Some(caller_meta(auth, caller_scope.as_ref()));
         }
+        let caller_is_read_only = caller_auth.as_ref().is_some_and(|auth| {
+            !auth.trusted_local
+                && !auth
+                    .scopes
+                    .iter()
+                    .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin" | "mcp:write"))
+        });
+        let checked = pool
+            .checked_call_tool(
+                &upstream_config,
+                oauth_subject,
+                upstream_params,
+                |current_tool| {
+                    let current_contract_hash =
+                        CapabilityContract::execution_hash_from_upstream_tool(current_tool)
+                            .map_err(CodeModeCallError::from)?;
+                    if current_contract_hash != expected_contract_hash {
+                        return Err(contract_changed_call_error(&id).into());
+                    }
+                    if current_tool.destructive && !destructive_allowed {
+                        return Err(CodeModeCallError::new(
+                            destructive_denial_kind,
+                            format!("Tool `{upstream}::{tool}` is destructive and not permitted."),
+                        )
+                        .with_tool(id.clone())
+                        .with_origin(CodeModeErrorOrigin::Policy)
+                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                        .into());
+                    }
+                    if caller_is_read_only
+                        && (!config.code_mode.trusts_read_only_tool(upstream, tool)
+                            || !tool_is_explicitly_read_only(current_tool))
+                    {
+                        return Err(CodeModeCallError::new(
+                            "forbidden",
+                            format!(
+                                "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
+                            ),
+                        )
+                        .with_tool(id.clone())
+                        .with_origin(CodeModeErrorOrigin::Policy)
+                        .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+                        .into());
+                    }
+                    validate_code_mode_params_against_schema(
+                        &Value::Object(arguments.clone()),
+                        current_tool.input_schema.as_ref(),
+                    )
+                    .map_err(CodeModeCallError::from)
+                    .map_err(Box::new)?;
+                    Ok(CheckedDispatch {
+                        safety: upstream_tool_safety(current_tool),
+                        contract_hash: current_contract_hash,
+                    })
+                },
+            )
+            .await
+            .map_err(|error| map_checked_call_error(error, &id))?;
+        let outcome = self
+            .finish_dispatched_tool(
+                Arc::clone(&pool),
+                upstream,
+                tool,
+                checked.checked.safety,
+                Some(Ok(checked.result)),
+            )
+            .await?;
+        Ok(CheckedToolCallOutcome {
+            outcome,
+            contract_hash: checked.checked.contract_hash,
+            catalog_revision: checked.catalog_revision,
+        })
+    }
+
+    #[allow(dead_code, clippy::too_many_arguments)]
+    async fn dispatch_upstream_tool(
+        &self,
+        pool: Arc<crate::upstream::pool::UpstreamPool>,
+        upstream: &str,
+        tool: &str,
+        arguments: Map<String, Value>,
+        safety: CodeModeToolSafetyHints,
+        oauth_config: Option<labby_runtime::gateway_config::UpstreamConfig>,
+        oauth_subject: Option<&str>,
+        caller_auth: Option<PropagatedCallerAuth>,
+        caller_scope: Option<PropagatedCallerUpstreamScope>,
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        let id = format!("{upstream}::{tool}");
         let mut upstream_params = CallToolRequestParams::new(tool.to_string());
         upstream_params.arguments = Some(arguments);
         // Carry the caller's authorization across the in-process hop, and only
@@ -746,6 +854,19 @@ impl GatewayManager {
         } else {
             pool.call_tool_classified(upstream, upstream_params).await
         };
+        self.finish_dispatched_tool(pool, upstream, tool, safety, call_result)
+            .await
+    }
+
+    async fn finish_dispatched_tool(
+        &self,
+        pool: Arc<crate::upstream::pool::UpstreamPool>,
+        upstream: &str,
+        tool: &str,
+        safety: CodeModeToolSafetyHints,
+        call_result: Option<Result<CallToolResult, CapabilityCallError>>,
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        let id = format!("{upstream}::{tool}");
         match call_result {
             Some(Ok(result)) => {
                 // `is_error=true` is an MCP tool-level failure carried inside
@@ -805,6 +926,64 @@ impl GatewayManager {
                     format!("upstream tool `{upstream}::{tool}` was not found"),
                 )
                 .with_tool(id))
+            }
+        }
+    }
+}
+
+fn contract_changed_call_error(id: &str) -> CodeModeCallError {
+    CodeModeCallError::new(
+        "contract_changed",
+        format!("Tool `{id}` changed before dispatch; rediscover it and retry."),
+    )
+    .with_tool(id.to_string())
+    .with_origin(CodeModeErrorOrigin::Discovery)
+    .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+}
+
+fn map_checked_call_error(error: CheckedToolCallError, id: &str) -> CodeModeCallError {
+    match error {
+        CheckedToolCallError::Check(error) => *error,
+        CheckedToolCallError::MissingTool => contract_changed_call_error(id),
+        CheckedToolCallError::Unavailable => {
+            CodeModeCallError::new("not_found", format!("upstream tool `{id}` was not found"))
+                .with_tool(id.to_string())
+        }
+        CheckedToolCallError::Connect(message) => CodeModeCallError::new(
+            "auth_failed",
+            labby_runtime::agent_error::sanitize_error_text(
+                &message,
+                MAX_UPSTREAM_MCP_MESSAGE_CHARS,
+            ),
+        )
+        .with_tool(id.to_string()),
+        CheckedToolCallError::Catalog { kind, message } => CodeModeCallError::new(
+            kind,
+            labby_runtime::agent_error::sanitize_error_text(
+                &message,
+                MAX_UPSTREAM_MCP_MESSAGE_CHARS,
+            ),
+        )
+        .with_tool(id.to_string())
+        .with_origin(CodeModeErrorOrigin::Discovery)
+        .with_side_effects(CodeModeSideEffectRisk::NoneExpected),
+        CheckedToolCallError::Capability(error) => {
+            let (kind, message) = code_mode_capability_error_info(&error);
+            match error {
+                CapabilityCallError::Mcp { .. } => CodeModeCallError::new(
+                    kind,
+                    labby_runtime::agent_error::sanitize_error_text(
+                        &message,
+                        MAX_UPSTREAM_MCP_MESSAGE_CHARS,
+                    ),
+                )
+                .with_tool(id.to_string()),
+                _ => CodeModeCallError::upstream_transport_classified(
+                    id.to_string(),
+                    kind,
+                    message,
+                    CodeModeToolSafetyHints::default(),
+                ),
             }
         }
     }
@@ -1014,6 +1193,24 @@ pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCalle
             }
             PropagatedCallerAuth::scoped(scopes, sub.clone())
         }
+        CodeModeCaller::ScopedPrivate {
+            capabilities,
+            sub,
+            context_token,
+        } => {
+            let mut scopes = Vec::new();
+            if capabilities.is_admin {
+                scopes.push("lab:admin".to_string());
+            }
+            if capabilities.can_execute {
+                scopes.push("lab".to_string());
+            }
+            if capabilities.can_read {
+                scopes.push("lab:read".to_string());
+            }
+            PropagatedCallerAuth::scoped(scopes, sub.clone())
+                .with_private_context_token(context_token.clone())
+        }
     }
 }
 
@@ -1174,8 +1371,15 @@ mod tests {
         assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().destructive(false),)
         )));
-        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
+        assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().read_only(true),)
+        )));
+        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
+            Some(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false),
+            )
         )));
         assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(
@@ -1185,17 +1389,12 @@ mod tests {
             )
         )));
 
-        let hinted =
-            upstream_with_annotations(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
-        assert!(!tool_is_trusted_read_only(
-            &CodeModeConfig::default(),
-            &hinted
+        let hinted = upstream_with_annotations(Some(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false),
         ));
-        let trusted = CodeModeConfig {
-            trusted_read_only_tools: vec!["fixture::query".to_string()],
-            ..CodeModeConfig::default()
-        };
-        assert!(tool_is_trusted_read_only(&trusted, &hinted));
+        assert!(tool_is_explicitly_read_only(&hinted));
     }
 
     #[test]
@@ -1224,18 +1423,44 @@ mod tests {
         };
 
         let checked = make("Query data", true);
+        let checked_hash = CapabilityContract::execution_hash_from_upstream_tool(&checked)
+            .expect("checked execution contract");
         assert_eq!(
-            code_mode_tool_contract_digest(&checked),
-            code_mode_tool_contract_digest(&checked.clone())
+            checked_hash,
+            CapabilityContract::from_upstream_tool(&checked)
+                .expect("bounded palette contract")
+                .contract_hash,
+            "Code Mode and palette hashes must agree for bounded descriptors"
+        );
+        assert_eq!(
+            checked_hash,
+            CapabilityContract::execution_hash_from_upstream_tool(&checked.clone())
+                .expect("cloned execution contract")
+        );
+        assert_eq!(
+            checked_hash,
+            CapabilityContract::execution_hash_from_upstream_tool(&make("Changed contract", true))
+                .expect("description-only change")
         );
         assert_ne!(
-            code_mode_tool_contract_digest(&checked),
-            code_mode_tool_contract_digest(&make("Changed contract", true))
+            checked_hash,
+            CapabilityContract::execution_hash_from_upstream_tool(&make("Query data", false))
+                .expect("safety change")
         );
-        assert_ne!(
-            code_mode_tool_contract_digest(&checked),
-            code_mode_tool_contract_digest(&make("Query data", false))
+
+        let mut oversized = checked.clone();
+        oversized.input_schema = Some(serde_json::json!({
+            "type": "object",
+            "description": "x".repeat(70 * 1024)
+        }));
+        assert!(
+            CapabilityContract::from_upstream_tool(&oversized).is_err(),
+            "App Forge descriptor projection must retain its 64 KiB schema cap"
         );
+        let oversized_hash = CapabilityContract::execution_hash_from_upstream_tool(&oversized)
+            .expect("Code Mode execution hash must accept large schemas");
+        assert_eq!(oversized_hash.len(), 64);
+        assert_ne!(checked_hash, oversized_hash);
     }
 
     #[tokio::test]

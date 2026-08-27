@@ -15,6 +15,7 @@ function entry(inputSchema: unknown): LauncherEntry {
     category: "mcp",
     source: "github",
     destructive: false,
+    contractHash: "a".repeat(64),
     params: [],
     argMode: "json",
     inputSchema,

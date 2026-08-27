@@ -10,8 +10,8 @@
 //!
 //! Health-accounting contract (bead `lab-ak0mh`): **the pool owns upstream
 //! health accounting for every call that reaches an upstream.** Both pooled
-//! paths (`call_tool_once_classified` / `subject_scoped_call_tool_once_classified`
-//! via `timed_capability_call`) and the relay path (`call_tool_relayed`,
+//! paths (`call_tool_once_classified` /
+//! `subject_scoped_call_tool_once_classified` via `timed_capability_call`) and the relay path (`call_tool_relayed`,
 //! including `acquire_or_connect_relay` connect failures) record circuit-breaker
 //! success/failure themselves — success for completed results AND for valid
 //! JSON-RPC/MCP application errors (`CapabilityCallError::Mcp`, which prove the
@@ -561,8 +561,18 @@ impl LabMcpServer {
                         .await
                         .map(|result| result.map_err(UpstreamCallFailure::classified))
                     }
+                    // The pooled path carries the same cancellation token as the
+                    // relayed one above. Without it a downstream client that
+                    // disconnects (or whose request the HTTP transport times
+                    // out) leaves this call running to completion unheard, and
+                    // the upstream is never told to stop — so a client that
+                    // retries can execute a side-effecting tool twice.
                     _ => pool
-                        .call_tool_once_classified(&upstream_name, upstream_params)
+                        .call_tool_once_classified(
+                            &upstream_name,
+                            upstream_params,
+                            Some(&relay_cancellation_token(context)),
+                        )
                         .await
                         .map(|result| result.map_err(UpstreamCallFailure::classified)),
                 };
@@ -838,6 +848,7 @@ impl LabMcpServer {
                             &config,
                             oauth_subject.as_ref(),
                             upstream_params,
+                            Some(&relay_cancellation_token(context)),
                         )
                         .await
                         .map_err(UpstreamCallFailure::classified)
@@ -1379,6 +1390,7 @@ mod tests {
                 .await;
             LabMcpServer {
                 registry: Arc::new(crate::registry::ToolRegistry::new()),
+                access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
                 gateway_manager: Some(manager),
                 peers: Default::default(),
                 code_mode_app_state: Default::default(),

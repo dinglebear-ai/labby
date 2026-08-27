@@ -18,7 +18,9 @@ use std::time::Instant;
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types;
-use super::super::types::{ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool};
+use super::super::types::{
+    SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
+};
 
 pub(super) fn health_str(health: UpstreamHealth) -> &'static str {
     match health {
@@ -81,7 +83,7 @@ pub(super) fn healthy_in_process_entry(
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
-        skill_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: SkillExposurePolicy::all(),
         proxy_skills: false,
         supports_skills: None,
         proxy_resources: true,
@@ -113,7 +115,7 @@ pub(super) fn failed_in_process_entry(name: Arc<str>, error_message: String) -> 
         exposure_policy: ToolExposurePolicy::All,
         resource_exposure_policy: ToolExposurePolicy::All,
         prompt_exposure_policy: ToolExposurePolicy::All,
-        skill_exposure_policy: ToolExposurePolicy::All,
+        skill_exposure_policy: SkillExposurePolicy::all(),
         proxy_skills: false,
         supports_skills: None,
         proxy_resources: true,
@@ -212,7 +214,7 @@ pub(super) struct UpstreamExposurePolicies {
     pub(super) tools: ToolExposurePolicy,
     pub(super) resources: ToolExposurePolicy,
     pub(super) prompts: ToolExposurePolicy,
-    pub(super) skills: ToolExposurePolicy,
+    pub(super) skills: SkillExposurePolicy,
 }
 
 pub(super) fn resolve_upstream_exposure_policies(
@@ -281,16 +283,17 @@ pub fn resolve_request_prompt_exposure_policy(
 pub(super) fn resolve_skill_exposure_policy(
     upstream_name: &str,
     expose_skills: Option<Vec<String>>,
-) -> ToolExposurePolicy {
-    resolve_named_exposure_policy(upstream_name, "expose_skills", "skills", expose_skills)
+) -> SkillExposurePolicy {
+    resolve_named_exposure_policy(upstream_name, "expose_skills", "skills", expose_skills).into()
 }
 
 /// [`resolve_skill_exposure_policy`] for paths that run once per request.
 pub(super) fn resolve_request_skill_exposure_policy(
     upstream_name: &str,
     expose_skills: Option<Vec<String>>,
-) -> ToolExposurePolicy {
+) -> SkillExposurePolicy {
     resolve_request_named_exposure_policy(upstream_name, "expose_skills", "skills", expose_skills)
+        .into()
 }
 
 /// The one fail-closed allowlist compiler shared by all four capabilities.
@@ -421,6 +424,14 @@ mod tests {
         let policy = resolve_exposure_policy("github", Some(vec!["   ".to_string()]));
         assert_eq!(policy, ToolExposurePolicy::AllowList(Vec::new()));
         assert!(!policy.matches("search_repos"));
+    }
+
+    #[test]
+    fn invalid_skill_exposure_policy_uses_the_shared_fail_closed_compiler() {
+        let policy = resolve_skill_exposure_policy("depot", Some(vec!["   ".to_string()]));
+
+        assert!(!policy.is_unrestricted());
+        assert!(!policy.matches("review-pr"));
     }
 
     #[test]

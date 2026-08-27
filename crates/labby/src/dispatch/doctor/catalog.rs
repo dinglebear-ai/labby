@@ -47,6 +47,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         params: &[],
     },
     ActionSpec {
+        name: "access.check",
+        description: "Inspect access-control store readiness and safety without modifying it",
+        destructive: false,
+        requires_admin: false,
+        returns: "DoctorReport",
+        params: &[],
+    },
+    ActionSpec {
         name: "proxy.preflight",
         description: "Validate persisted stdio-proxy configuration and read-only local dependencies",
         destructive: false,
