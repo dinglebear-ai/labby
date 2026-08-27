@@ -73,6 +73,27 @@ Startup also fails if:
 - `LABBY_AUTH_ADMIN_EMAIL` is missing — fail-closed default so no Google account can authenticate without explicit permission
 - the auth database or signing key has insecure file permissions
 
+## Owner bootstrap and project-bound credentials
+
+The current public owner-bootstrap route is
+`POST /v1/access/bootstrap-owner`. It is available only after a user has
+completed the configured Google-backed browser login. The request must carry
+that browser session, its valid CSRF token, `lab:admin`, a canonical external
+identity, and an email matching `LABBY_AUTH_ADMIN_EMAIL`. Identical eligible
+requests are idempotent; identity, organization-name, or project-name drift
+fails closed. Static bearer authentication, OAuth client bearer tokens, MCP,
+CLI, loopback origin, and direct local credentials do not bypass these gates.
+
+Labby does not currently expose a public local-first contract that combines
+first-owner creation, project Loadout assignment, and issuance of a unique
+short-lived project-bound credential. `POST /token` exchanges an already
+authorized OAuth grant or configured machine-client grant; it does not perform
+owner bootstrap. `LABBY_MCP_HTTP_TOKEN` is process configuration rather than an
+issued per-project credential and has no per-credential public revocation
+lifecycle. Operators and automation must not work around these boundaries by
+editing the access database or minting tokens outside the supported OAuth
+flow.
+
 ## Registration and Authorize Flow
 
 OAuth mode exposes:
