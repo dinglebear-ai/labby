@@ -878,6 +878,16 @@ visibility requires `lab:admin`. Its own manager UI is opt-in like every other
 Labby-owned app surface. The control tool is omitted from protected subset routes
 so a subset-scoped token cannot mutate gateway-global UI visibility.
 
+Gateway management actions on a protected `gateway_subset` route are bounded
+to that route's configured upstream allowlist. Aggregate `gateway.list`,
+`gateway.status`, and `gateway.mcp.list` results contain only route-visible
+upstreams. Named configuration, status, discovery, client-config, test, update,
+and remove operations reject an upstream outside the subset as unknown. A
+subset route also rejects `gateway.test` with an unsaved inline `spec`, because
+that operation could otherwise execute an arbitrary stdio command outside the
+mounted subset. These restrictions apply even when the token has an admin
+scope; the route remains an authority boundary, not merely a catalog filter.
+
 Synthetic Code Mode keeps ordinary raw upstream tools out of the approval-facing
 catalog. Upstream MCP App owners and callbacks pass through only when the same
 allowed upstream exposes a real native `ui://` app binding and proxies that

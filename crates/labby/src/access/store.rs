@@ -179,7 +179,7 @@ impl AccessStore {
                 permission,
             )?;
             let result = executor(snapshot);
-            drop(transaction);
+            transaction.rollback().map_err(map_sqlite_error)?;
             Ok(result)
         })
         .await

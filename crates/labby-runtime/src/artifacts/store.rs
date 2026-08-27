@@ -250,17 +250,33 @@ impl ArtifactStore {
                 .sync_all()
                 .map_err(ArtifactError::from)
         }) {
-            drop(std::fs::remove_dir_all(&staging));
+            cleanup_recovery_dir(&staging, artifact_id, "staging");
             return Err(error);
         }
 
         if workspace.exists() {
             reject_symlink(&workspace).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
         }
-        let had_workspace = promote_workspace(&staging, &workspace, &previous)?;
-        File::open(artifact_dir)?.sync_all()?;
-        if had_workspace {
-            drop(std::fs::remove_dir_all(previous));
+        let promotion = promote_workspace(&staging, &workspace, &previous)?;
+        if let Err(sync_error) = File::open(artifact_dir).and_then(|dir| dir.sync_all()) {
+            rollback_promoted_workspace(&workspace, &previous, &staging, promotion).map_err(
+                |rollback_error| {
+                    ArtifactError::Io(std::io::Error::new(
+                        rollback_error.kind(),
+                        format!(
+                            "workspace parent sync failed ({sync_error}); rollback failed ({rollback_error}); recovery trees retained at {} and {}",
+                            staging.display(),
+                            previous.display()
+                        ),
+                    ))
+                },
+            )?;
+            File::open(artifact_dir)?.sync_all()?;
+            cleanup_recovery_dir(&staging, artifact_id, "rolled-back staging");
+            return Err(ArtifactError::Io(sync_error));
+        }
+        if promotion == WorkspacePromotion::Replaced {
+            cleanup_recovery_dir(&previous, artifact_id, "previous workspace");
         }
         Ok(())
     }
@@ -530,7 +546,7 @@ fn promote_workspace(
     staging: &Path,
     workspace: &Path,
     previous: &Path,
-) -> Result<bool, ArtifactError> {
+) -> Result<WorkspacePromotion, ArtifactError> {
     promote_workspace_with(staging, workspace, previous, &mut |from, to| {
         std::fs::rename(from, to)
     })
@@ -541,7 +557,7 @@ fn promote_workspace_with(
     workspace: &Path,
     previous: &Path,
     rename: &mut impl FnMut(&Path, &Path) -> std::io::Result<()>,
-) -> Result<bool, ArtifactError> {
+) -> Result<WorkspacePromotion, ArtifactError> {
     let had_workspace = workspace.exists();
     if had_workspace {
         rename(workspace, previous)?;
@@ -559,7 +575,52 @@ fn promote_workspace_with(
         }
         return Err(ArtifactError::Io(promotion_error));
     }
-    Ok(had_workspace)
+    Ok(if had_workspace {
+        WorkspacePromotion::Replaced
+    } else {
+        WorkspacePromotion::Created
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspacePromotion {
+    Created,
+    Replaced,
+}
+
+fn rollback_promoted_workspace(
+    workspace: &Path,
+    previous: &Path,
+    staging: &Path,
+    promotion: WorkspacePromotion,
+) -> std::io::Result<()> {
+    std::fs::rename(workspace, staging)?;
+    if promotion == WorkspacePromotion::Replaced {
+        std::fs::rename(previous, workspace).map_err(|error| {
+            let restore_new_error = std::fs::rename(staging, workspace).err();
+            std::io::Error::new(
+                error.kind(),
+                match restore_new_error {
+                    Some(restore_error) => format!(
+                        "restoring previous workspace failed ({error}); restoring promoted workspace also failed ({restore_error})"
+                    ),
+                    None => format!("restoring previous workspace failed ({error})"),
+                },
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn cleanup_recovery_dir(path: &Path, artifact_id: &str, kind: &str) {
+    if let Err(error) = std::fs::remove_dir_all(path) {
+        tracing::warn!(
+            artifact_id,
+            recovery_path = %path.display(),
+            error = %error,
+            "failed to remove {kind}; recovery tree retained"
+        );
+    }
 }
 
 fn validate_store_creation_ancestor(root: &Path) -> Result<(), ArtifactError> {

@@ -2281,7 +2281,7 @@ client_secret_env = "SECRET"
     }
 
     #[test]
-    fn code_mode_read_only_tool_trust_is_exact_and_fail_closed() {
+    fn legacy_read_only_tool_trust_matcher_is_exact_and_fail_closed() {
         let mut cfg = CodeModeConfig::default();
         assert!(!cfg.trusts_read_only_tool("dookie", "read_file"));
 

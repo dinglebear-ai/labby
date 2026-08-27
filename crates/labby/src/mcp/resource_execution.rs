@@ -146,7 +146,11 @@ pub(crate) async fn read_exact_project_resource(
     {
         return Err(ResourceReadResolutionError::Unavailable);
     }
-    result.map_err(|error| match error {
+    result.map_err(map_published_resource_error)
+}
+
+fn map_published_resource_error(error: PublishedResourceReadError) -> ResourceReadResolutionError {
+    match error {
         PublishedResourceReadError::Unavailable => ResourceReadResolutionError::Unavailable,
         PublishedResourceReadError::QueueUnavailable => {
             ResourceReadResolutionError::QueueUnavailable
@@ -155,7 +159,20 @@ pub(crate) async fn read_exact_project_resource(
         PublishedResourceReadError::Timeout => ResourceReadResolutionError::Timeout,
         PublishedResourceReadError::Cancelled => ResourceReadResolutionError::Cancelled,
         PublishedResourceReadError::TooLarge => ResourceReadResolutionError::TooLarge,
-    })
+    }
+}
+
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn published_cancellation_remains_cancelled() {
+        assert_eq!(
+            map_published_resource_error(PublishedResourceReadError::Cancelled),
+            ResourceReadResolutionError::Cancelled
+        );
+    }
 }
 
 /// Execute from one middleware-owned protected-transport binding.

@@ -675,6 +675,7 @@ async fn handle_gateway_actions(
         "gateway.list" => to_json(manager.list_scoped(&enrichment_scope).await?),
         "gateway.server.get" => {
             let params: VirtualServerNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.id)?;
             to_json(manager.get_server(&params.id).await?)
         }
         "gateway.supported_services" => {
@@ -701,8 +702,19 @@ async fn handle_gateway_actions(
             // and probes it exactly as the gateway would during live operation.
             let params: GatewayTestParams = parse_params(params_value)?;
             match (params.name.as_deref(), params.spec.as_ref()) {
-                (Some(name), None) => to_json(manager.test(Err(name)).await?),
-                (None, Some(spec)) => to_json(manager.test(Ok(spec)).await?),
+                (Some(name), None) => {
+                    enrichment_scope.ensure_visible(name)?;
+                    to_json(manager.test(Err(name)).await?)
+                }
+                (None, Some(spec)) => {
+                    if enrichment_scope.route_visible_upstreams.is_some() {
+                        return Err(ToolError::Sdk {
+                            sdk_kind: "forbidden".to_string(),
+                            message: "testing an unsaved gateway spec is unavailable on a protected subset route".to_string(),
+                        });
+                    }
+                    to_json(manager.test(Ok(spec)).await?)
+                }
                 (Some(_), Some(_)) => Err(ToolError::InvalidParam {
                     message: "gateway.test accepts either `name` or `spec`, not both".to_string(),
                     param: "name".to_string(),
@@ -729,6 +741,7 @@ async fn handle_gateway_actions(
         }
         "gateway.update" => {
             let params: GatewayUpdateParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .update(
@@ -743,6 +756,7 @@ async fn handle_gateway_actions(
         }
         "gateway.remove" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .remove(
@@ -781,6 +795,7 @@ async fn handle_gateway_actions(
         }
         "gateway.client_config.get" => {
             let params: GatewayClientConfigParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.client_config(&params.name).await?)
         }
         "gateway.public_urls.get" => {
@@ -794,14 +809,17 @@ async fn handle_gateway_actions(
         }
         "gateway.discovered_tools" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.discovered_tools(&params.name).await?)
         }
         "gateway.discovered_resources" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.discovered_resources(&params.name).await?)
         }
         "gateway.discovered_prompts" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.discovered_prompts(&params.name).await?)
         }
         unknown => unknown_action(unknown),

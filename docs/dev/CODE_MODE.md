@@ -349,8 +349,9 @@ name and in a route's `target.upstreams`, so the exclusion is enforced,
 not merely conventional.
 Authorization matches ordinary upstream tools: builtin peers carry no
 annotations, so they fail closed as destructive (Code Mode execute
-permission required) and are excluded from read-only Code Mode unless
-operator-trusted. Each peer serves exactly its own service, pinned to Raw
+permission required) and are always excluded from read-only Code Mode. The
+legacy `trusted_read_only_tools` setting does not override missing live MCP
+safety annotations. Each peer serves exactly its own service, pinned to Raw
 mode regardless of the process-wide Code Mode flag.
 
 The peer transport carries no `AuthContext` — there is no HTTP layer to

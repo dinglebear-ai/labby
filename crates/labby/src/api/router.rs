@@ -53,28 +53,32 @@ use crate::dispatch::error::ToolError;
 
 /// Ordinary API handlers must fail promptly when a dependency stalls.
 const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// MCP tool calls can use the gateway's five-minute relay budget. In
-/// particular, provider-managed VM installs download and unpack a large image
-/// before they return a single MCP result.
-const MCP_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
-
-fn http_request_timeout(path: &str) -> Duration {
+fn http_request_timeout(path: &str, config: &crate::config::LabConfig) -> Duration {
     if path == "/mcp" || path.starts_with("/mcp/") {
-        MCP_HTTP_REQUEST_TIMEOUT
+        config.http_request_timeout()
     } else {
         DEFAULT_HTTP_REQUEST_TIMEOUT
     }
 }
 
-async fn request_timeout(request: Request<Body>, next: Next) -> axum::response::Response {
-    match tokio::time::timeout(
-        http_request_timeout(request.uri().path()),
-        next.run(request),
-    )
-    .await
-    {
+async fn request_timeout(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> axum::response::Response {
+    let path = request.uri().path().to_string();
+    let timeout = http_request_timeout(&path, &state.config);
+    match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
-        Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
+        Err(_) => {
+            tracing::error!(
+                surface = "api",
+                path,
+                timeout_ms = timeout.as_millis(),
+                "HTTP request exceeded the transport backstop"
+            );
+            StatusCode::GATEWAY_TIMEOUT.into_response()
+        }
     }
 }
 
@@ -2146,6 +2150,7 @@ pub(crate) fn build_router_with_external_auth(
 
     #[cfg(feature = "gateway")]
     let protected_proxy_state = state.clone();
+    let request_timeout_state = state.clone();
     let router = router.with_state(state);
     #[cfg(feature = "gateway")]
     let router = router.layer(axum::middleware::from_fn_with_state(
@@ -2155,7 +2160,10 @@ pub(crate) fn build_router_with_external_auth(
     router
         .layer(build_cors_layer(config_cors_origins))
         .layer(CompressionLayer::new())
-        .layer(axum::middleware::from_fn(request_timeout))
+        .layer(axum::middleware::from_fn_with_state(
+            request_timeout_state,
+            request_timeout,
+        ))
         // PropagateRequestId echoes the id back in the response header.
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         // TraceLayer reads x-request-id set by SetRequestId (outermost).
@@ -2313,9 +2321,19 @@ mod tests {
 
     #[test]
     fn mcp_requests_use_the_long_running_budget() {
-        assert_eq!(http_request_timeout("/mcp"), Duration::from_mins(5));
-        assert_eq!(http_request_timeout("/mcp/"), Duration::from_mins(5));
-        assert_eq!(http_request_timeout("/v1/setup"), Duration::from_secs(30));
+        let config = crate::config::LabConfig::default();
+        assert_eq!(
+            http_request_timeout("/mcp", &config),
+            config.http_request_timeout()
+        );
+        assert_eq!(
+            http_request_timeout("/mcp/", &config),
+            config.http_request_timeout()
+        );
+        assert_eq!(
+            http_request_timeout("/v1/setup", &config),
+            Duration::from_secs(30)
+        );
     }
 
     async fn actor_key_probe(

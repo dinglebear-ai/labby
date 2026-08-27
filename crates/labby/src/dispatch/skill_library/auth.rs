@@ -1077,15 +1077,18 @@ mod tests {
         });
         entered_rx.recv().unwrap();
 
+        let (revocation_started_tx, revocation_started_rx) = tokio::sync::oneshot::channel();
         let mut revocation = tokio::spawn(async move {
+            let _ = revocation_started_tx.send(());
             secondary
                 .execute_test_statement(
                     "UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
                 )
                 .await
         });
+        revocation_started_rx.await.unwrap();
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), &mut revocation)
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut revocation)
                 .await
                 .is_err(),
             "revocation must wait for the commit-bound authorization lease"

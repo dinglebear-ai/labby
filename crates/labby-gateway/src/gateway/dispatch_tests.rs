@@ -761,6 +761,58 @@ async fn gateway_get_rejects_route_hidden_upstream() {
 }
 
 #[tokio::test]
+async fn named_gateway_actions_reject_route_hidden_upstreams_before_dispatch() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+    let scope = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::collections::BTreeSet::from([
+            "gateway-alpha".to_string()
+        ])),
+        oauth_subject: None,
+    };
+
+    for (action, params) in [
+        ("gateway.server.get", json!({"id": "github"})),
+        ("gateway.test", json!({"name": "github"})),
+        ("gateway.update", json!({"name": "github", "patch": {}})),
+        ("gateway.remove", json!({"name": "github"})),
+        ("gateway.client_config.get", json!({"name": "github"})),
+        ("gateway.discovered_tools", json!({"name": "github"})),
+        ("gateway.discovered_resources", json!({"name": "github"})),
+        ("gateway.discovered_prompts", json!({"name": "github"})),
+    ] {
+        let error = dispatch_with_manager_scoped(&manager, action, params, scope.clone())
+            .await
+            .expect_err("route-hidden upstream must fail before action dispatch");
+        assert_eq!(error.kind(), "unknown_upstream", "action: {action}");
+    }
+}
+
+#[tokio::test]
+async fn protected_route_rejects_unsaved_gateway_test_spec() {
+    let manager = test_manager();
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.test",
+        json!({"spec": {"name": "candidate", "url": "https://example.invalid/mcp"}}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("protected subset must not execute an unsaved gateway spec");
+
+    assert_eq!(error.kind(), "forbidden");
+}
+
+#[tokio::test]
 async fn gateway_status_aggregate_only_returns_route_visible_upstreams() {
     let manager = test_manager();
     manager
