@@ -88,57 +88,6 @@ impl CapabilityContract {
         Ok(contract)
     }
 
-    /// Compute the same v1 contract hash used by palette descriptors for
-    /// Code Mode's pre-dispatch TOCTOU check, without applying the palette's
-    /// presentation-size caps. Large but otherwise valid MCP schemas must not
-    /// become uncallable merely because they cannot be rendered as an App
-    /// Forge descriptor. The shared depth guard remains in force, and hashing
-    /// streams directly into SHA-256 so this does not allocate a second copy of
-    /// the schema.
-    pub(crate) fn execution_hash_from_upstream_tool(
-        tool: &UpstreamTool,
-    ) -> Result<String, ToolError> {
-        if tool
-            .input_schema
-            .as_ref()
-            .is_some_and(schema_depth_exceeds_limit)
-            || tool
-                .output_schema
-                .as_ref()
-                .is_some_and(schema_depth_exceeds_limit)
-        {
-            return Err(descriptor_unsupported());
-        }
-
-        let annotations = tool.tool.annotations.as_ref();
-        let contract = Self {
-            contract_version: CAPABILITY_CONTRACT_VERSION,
-            id: format!("mcp:{}::{}", tool.upstream_name, tool.tool.name),
-            input_schema: None,
-            output_schema: None,
-            annotations: CapabilityAnnotations {
-                read_only_hint: annotations.and_then(|value| value.read_only_hint),
-                destructive_hint: annotations.and_then(|value| value.destructive_hint),
-                idempotent_hint: annotations.and_then(|value| value.idempotent_hint),
-                open_world_hint: annotations.and_then(|value| value.open_world_hint),
-            },
-            destructive: tool.destructive,
-            contract_hash: String::new(),
-        };
-        let mut writer = CappedHashWriter::new(usize::MAX);
-        write_contract_canonical(
-            &mut writer,
-            &contract,
-            tool.input_schema.as_ref(),
-            tool.output_schema.as_ref(),
-        )
-        .map_err(|error| ToolError::Sdk {
-            sdk_kind: "invalid_tool_schema".to_string(),
-            message: format!("failed to hash capability contract: {error}"),
-        })?;
-        Ok(hex_digest(&writer.finish()))
-    }
-
     fn compute_hash(
         &self,
         exact_input_schema: Option<&Value>,

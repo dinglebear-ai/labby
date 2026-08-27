@@ -146,8 +146,7 @@ impl CodeModeHost for GatewayManager {
         }
         validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
         let tool_ui = extract_tool_ui_link(&upstream_tool);
-        let checked_contract_hash =
-            CapabilityContract::execution_hash_from_upstream_tool(&upstream_tool)?;
+        let checked_contract = CapabilityContract::from_upstream_tool(&upstream_tool)?;
         let mut outcome = self
             .execute_upstream_tool_checked(
                 upstream,
@@ -159,7 +158,7 @@ impl CodeModeHost for GatewayManager {
                 Some(PropagatedCallerUpstreamScope::new(
                     scope.allowed_namespaces().cloned(),
                 )),
-                &checked_contract_hash,
+                &checked_contract.contract_hash,
                 destructive_permitted(surface, caller),
                 "forbidden",
             )
@@ -678,10 +677,9 @@ impl GatewayManager {
             .resolve_code_mode_upstream_tool(upstream, tool, Some(owner), oauth_subject)
             .await
             .map_err(|error| CodeModeCallError::from(error))?;
-        let previewed_contract_hash =
-            CapabilityContract::execution_hash_from_upstream_tool(&previewed_tool)
-                .map_err(CodeModeCallError::from)?;
-        if previewed_contract_hash != expected_contract_hash {
+        let previewed_contract = CapabilityContract::from_upstream_tool(&previewed_tool)
+            .map_err(CodeModeCallError::from)?;
+        if previewed_contract.contract_hash != expected_contract_hash {
             return Err(contract_changed_call_error(&id));
         }
         if previewed_tool.destructive && !destructive_allowed {
@@ -746,10 +744,9 @@ impl GatewayManager {
                 oauth_subject,
                 upstream_params,
                 |current_tool| {
-                    let current_contract_hash =
-                        CapabilityContract::execution_hash_from_upstream_tool(current_tool)
-                            .map_err(CodeModeCallError::from)?;
-                    if current_contract_hash != expected_contract_hash {
+                    let current_contract = CapabilityContract::from_upstream_tool(current_tool)
+                        .map_err(CodeModeCallError::from)?;
+                    if current_contract.contract_hash != expected_contract_hash {
                         return Err(contract_changed_call_error(&id).into());
                     }
                     if current_tool.destructive && !destructive_allowed {
@@ -785,7 +782,7 @@ impl GatewayManager {
                     .map_err(Box::new)?;
                     Ok(CheckedDispatch {
                         safety: upstream_tool_safety(current_tool),
-                        contract_hash: current_contract_hash,
+                        contract_hash: current_contract.contract_hash,
                     })
                 },
             )
@@ -1423,39 +1420,26 @@ mod tests {
         };
 
         let checked = make("Query data", true);
-        let checked_hash = CapabilityContract::execution_hash_from_upstream_tool(&checked)
-            .expect("checked execution contract");
+        let checked_hash = CapabilityContract::from_upstream_tool(&checked)
+            .expect("checked contract")
+            .contract_hash;
         assert_eq!(
             checked_hash,
-            CapabilityContract::from_upstream_tool(&checked)
-                .expect("bounded palette contract")
-                .contract_hash,
-            "Code Mode and palette hashes must agree for bounded descriptors"
+            CapabilityContract::from_upstream_tool(&checked.clone())
+                .expect("cloned contract")
+                .contract_hash
         );
         assert_eq!(
             checked_hash,
-            CapabilityContract::execution_hash_from_upstream_tool(&checked.clone())
-                .expect("cloned execution contract")
-        );
-        assert_eq!(
-            checked_hash,
-            CapabilityContract::execution_hash_from_upstream_tool(&make("Changed contract", true))
+            CapabilityContract::from_upstream_tool(&make("Changed contract", true))
                 .expect("description-only change")
+                .contract_hash
         );
         assert_ne!(
             checked_hash,
-            CapabilityContract::execution_hash_from_upstream_tool(&make("Query data", false))
+            CapabilityContract::from_upstream_tool(&make("Query data", false))
                 .expect("safety change")
-        );
-
-        let mut oversized = checked.clone();
-        oversized.input_schema = Some(serde_json::json!({
-            "type": "object",
-            "description": "x".repeat(70 * 1024)
-        }));
-        assert!(
-            CapabilityContract::from_upstream_tool(&oversized).is_err(),
-            "App Forge descriptor projection must retain its 64 KiB schema cap"
+                .contract_hash
         );
         let oversized_hash = CapabilityContract::execution_hash_from_upstream_tool(&oversized)
             .expect("Code Mode execution hash must accept large schemas");
