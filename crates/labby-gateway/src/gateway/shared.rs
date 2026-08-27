@@ -74,7 +74,6 @@ pub fn action_accepts_runtime_owner(action: &str) -> bool {
             | "gateway.import_tombstones.restore"
             | "gateway.mcp.enable"
             | "gateway.mcp.disable"
-            | "gateway.mcp.restart"
     )
 }
 
@@ -92,7 +91,6 @@ mod tests {
             "gateway.import_tombstones.restore",
             "gateway.mcp.enable",
             "gateway.mcp.disable",
-            "gateway.mcp.restart",
         ] {
             assert!(action_accepts_runtime_owner(action), "{action}");
         }

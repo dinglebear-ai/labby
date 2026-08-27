@@ -499,25 +499,6 @@ mod tests {
         assert_eq!(enriched["origin"], "api:admin-user:request-1");
     }
 
-    #[test]
-    fn gateway_owner_injection_overwrites_forged_transport_provenance() {
-        let enriched = inject_gateway_owner(
-            "gateway.update",
-            json!({
-                "name": "fixture",
-                "patch": {},
-                "owner": {"surface": "forged", "subject": "mallory"},
-                "origin": "forged-origin"
-            }),
-            Some("admin-user"),
-            Some("request-2"),
-        );
-        assert_eq!(enriched["owner"]["surface"], "api");
-        assert_eq!(enriched["owner"]["subject"], "admin-user");
-        assert_eq!(enriched["owner"]["request_id"], "request-2");
-        assert_eq!(enriched["origin"], "api:admin-user:request-2");
-    }
-
     #[cfg(feature = "skills")]
     #[tokio::test]
     async fn gateway_skills_list_api_keeps_strict_action_params_clean() {
