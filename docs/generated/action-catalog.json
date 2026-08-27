@@ -1,6 +1,26 @@
 [
   {
     "service": "doctor",
+    "action": "access.check",
+    "description": "Inspect access-control store readiness and safety without modifying it",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "DoctorReport",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "doctor",
     "action": "audit.full",
     "description": "Run system, auth, gateway-upstream, and OAuth-relay checks; streams results",
     "destructive": false,
@@ -435,7 +455,7 @@
         "name": "trusted_read_only_tools",
         "ty": "array",
         "required": false,
-        "description": "Exact upstream::tool ids operator-trusted for codemode_read (live readOnlyHint is also required)"
+        "description": "Deprecated compatibility list; codemode_read uses live MCP safety annotations"
       },
       {
         "name": "mcp_ui_enabled",
@@ -1449,6 +1469,41 @@
       }
     ],
     "returns": "GatewayMcpRuntimeView[]",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "gateway",
+    "action": "gateway.mcp.restart",
+    "description": "Replace one enabled upstream MCP connection, clean up stale runtime processes, and reconnect it",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Gateway name"
+      },
+      {
+        "name": "aggressive",
+        "ty": "boolean",
+        "required": false,
+        "description": "When true, use broader host-wide process matching during cleanup"
+      }
+    ],
+    "returns": "GatewayView + cleanup result",
     "surface_availability": {
       "cli": true,
       "mcp": true,

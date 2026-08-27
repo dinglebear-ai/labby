@@ -28,6 +28,18 @@ use crate::error::ToolError;
 use super::pool::config::PoolConfig;
 use super::pool::runner_handle::PooledRunner;
 
+async fn shutdown_runner(runner: PooledRunner, action: &'static str) {
+    if let Err(error) = runner.shutdown().await {
+        tracing::warn!(
+            surface = "dispatch",
+            service = "code_mode",
+            action,
+            error = %error,
+            "Code Mode runner shutdown did not complete cleanly"
+        );
+    }
+}
+
 static MICROSANDBOX_ADMISSION: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 fn microsandbox_admission() -> Arc<Semaphore> {
@@ -75,8 +87,6 @@ struct PoolState {
 }
 
 pub(crate) mod config;
-#[cfg(windows)]
-pub(crate) mod job_guard;
 mod microsandbox;
 pub(crate) mod runner_handle;
 
@@ -337,7 +347,13 @@ impl RunnerPool {
         let mut guard = self.slots[index].lock().await;
         match guard.take() {
             Some(runner) if runner.microsandbox_lifetime_elapsed() => {
-                drop(tokio::time::timeout_at(deadline, runner.shutdown()).await);
+                drop(
+                    tokio::time::timeout_at(
+                        deadline,
+                        shutdown_runner(runner, "pool.microsandbox_lifetime"),
+                    )
+                    .await,
+                );
                 if tokio::time::Instant::now() >= deadline {
                     return Err(timeout_error());
                 }
@@ -363,7 +379,7 @@ impl RunnerPool {
         }
         for slot in &self.slots {
             if let Some(runner) = slot.lock().await.take() {
-                runner.shutdown().await;
+                shutdown_runner(runner, "pool.shutdown").await;
             }
         }
     }
@@ -547,7 +563,7 @@ impl RunnerLease {
                         "recycling pooled Code Mode runner after threshold"
                     );
                     // Drop (kill) the runner; leave the slot empty to respawn.
-                    runner.shutdown().await;
+                    shutdown_runner(runner, "pool.recycle").await;
                 } else {
                     *slot.lock().await = Some(runner);
                 }
@@ -555,7 +571,7 @@ impl RunnerLease {
                 finish_lease(active_leases, drained, returned);
             }
             // Ephemeral runner, or pooled with no runner (already taken): drop.
-            (_, Some(runner)) => runner.shutdown().await,
+            (_, Some(runner)) => shutdown_runner(runner, "pool.release_ephemeral").await,
             (_, None) => {}
         }
         self.finish();
@@ -568,7 +584,7 @@ impl RunnerLease {
     /// The slot index still returns to the free-list so the slot is reusable.
     pub(crate) async fn evict(mut self) {
         if let Some(runner) = self.runner.take() {
-            runner.shutdown().await;
+            shutdown_runner(runner, "pool.evict").await;
         }
         if let LeaseKind::Pooled {
             state,

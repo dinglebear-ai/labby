@@ -17,13 +17,14 @@ use super::params::{
     CodeModeSetParams, GatewayAddParams, GatewayClientConfigParams, GatewayDiscoverParams,
     GatewayEnrichApplyParams, GatewayEnrichPreviewParams, GatewayEnrichmentScope,
     GatewayImportParams, GatewayImportTombstoneParams, GatewayMcpCleanupParams,
-    GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams, GatewayReloadParams,
-    GatewayStatusParams, GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch,
-    GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams, LoadoutPatchParams,
-    LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams, ProtectedRouteSpecParams,
-    ProtectedRouteUpdateParams, ResourceLeaseCreateParams, ResourceLeaseReleaseParams,
-    ResourceLeaseRenewParams, ServiceConfigGetParams, ServiceConfigSetParams,
-    VirtualServerMcpPolicyParams, VirtualServerNameParams, VirtualServerSurfaceParams,
+    GatewayMcpRestartParams, GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams,
+    GatewayReloadParams, GatewayStatusParams, GatewayTestParams, GatewayUpdateParams,
+    GatewayUpdatePatch, GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams,
+    LoadoutPatchParams, LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams,
+    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ResourceLeaseCreateParams,
+    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServiceConfigGetParams,
+    ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
+    VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, ImportErrorView, ImportSkipReason, ImportSkipView,
@@ -538,7 +539,7 @@ async fn handle_protected_route_actions(
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             to_json(
                 manager
-                    .protected_route_update(&params.name, params.route)
+                    .protected_route_update(&params.name, params.route, params.preserve_project_id)
                     .await?,
             )
         }
@@ -553,7 +554,11 @@ async fn handle_protected_route_actions(
         "gateway.protected_route.stage_update" => {
             let params: ProtectedRouteUpdateParams = parse_params(params_value)?;
             manager
-                .protected_route_stage_update(&params.name, params.route)
+                .protected_route_stage_update(
+                    &params.name,
+                    params.route,
+                    params.preserve_project_id,
+                )
                 .await
         }
         "gateway.protected_route.stage_remove" => {
@@ -768,11 +773,7 @@ async fn handle_gateway_actions(
             manager
                 .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
                 .await;
-            to_json(
-                manager
-                    .status_scoped(params.name.as_deref(), &enrichment_scope)
-                    .await?,
-            )
+            to_json(manager.status(params.name.as_deref()).await?)
         }
         "gateway.client_config.get" => {
             let params: GatewayClientConfigParams = parse_params(params_value)?;
@@ -1007,6 +1008,63 @@ async fn handle_mcp_actions(
                 "cleanup": cleanup,
             }))
         }
+        "gateway.mcp.restart" => {
+            let params: GatewayMcpRestartParams = parse_params(params_value)?;
+            let upstream =
+                manager
+                    .upstream_config(&params.name)
+                    .await
+                    .ok_or_else(|| ToolError::Sdk {
+                        sdk_kind: "not_found".to_string(),
+                        message: format!("upstream MCP server '{}' was not found", params.name),
+                    })?;
+            if !upstream.enabled {
+                return Err(ToolError::InvalidParam {
+                    message: format!(
+                        "upstream MCP server '{}' is disabled; enable it before restarting its connection",
+                        params.name
+                    ),
+                    param: "name".to_string(),
+                });
+            }
+
+            manager
+                .update(
+                    &params.name,
+                    GatewayUpdatePatch {
+                        enabled: Some(false),
+                        ..GatewayUpdatePatch::default()
+                    },
+                    None,
+                    params.origin.as_deref(),
+                    params.owner.clone().map(Into::into),
+                )
+                .await?;
+
+            let cleanup = manager
+                .cleanup_upstream_processes(&params.name, params.aggressive, false)
+                .await;
+            let gateway = manager
+                .update(
+                    &params.name,
+                    GatewayUpdatePatch {
+                        enabled: Some(true),
+                        ..GatewayUpdatePatch::default()
+                    },
+                    None,
+                    params.origin.as_deref(),
+                    params.owner.map(Into::into),
+                )
+                .await;
+
+            match (cleanup, gateway) {
+                (Ok(cleanup), Ok(gateway)) => to_json(serde_json::json!({
+                    "gateway": gateway,
+                    "cleanup": cleanup,
+                })),
+                (Err(error), Ok(_)) | (_, Err(error)) => Err(error),
+            }
+        }
         "gateway.mcp.cleanup" => {
             let params: GatewayMcpCleanupParams = parse_params(params_value)?;
             to_json(
@@ -1239,19 +1297,13 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         .skills
         .iter()
         .map(|item| {
-            let skill = &item.descriptor;
+            let skill = &item.skill;
             serde_json::json!({
                 "name": skill.name,
-                "uri": skill.source_uri,
-                "description": skill.description,
-                "resource_count": skill.resource_count,
-                "identity": skill.id,
-                "exposed": item.exposure.exposed,
-                "exposure": {
-                    "status": item.exposure.status(),
-                    "reason": item.exposure.reason.as_str(),
-                    "matched_pattern": item.exposure.matched_pattern,
-                },
+                "uri": skill.entry.uri,
+                "description": skill.entry.frontmatter.get("description").and_then(|value| value.as_str()),
+                "resource_count": skill.entry.resources.as_ref().map_or(0, Vec::len),
+                "exposed": item.exposed,
             })
         })
         .collect();
@@ -1270,11 +1322,7 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         skills,
         rejected,
         discovered_count: operator.discovered_count,
-        exposed_count: operator
-            .skills
-            .iter()
-            .filter(|item| item.exposure.exposed)
-            .count(),
+        exposed_count: operator.skills.iter().filter(|item| item.exposed).count(),
     }
 }
 

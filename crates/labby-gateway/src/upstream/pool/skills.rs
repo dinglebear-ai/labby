@@ -84,22 +84,22 @@ pub(crate) struct OperatorSkill {
 
 /// Operator-only reason a skill entry was rejected during ingest.
 #[derive(Debug, Clone)]
-pub(crate) struct OperatorSkillRejection {
-    pub(crate) reason: String,
-    pub(crate) uri: String,
-    pub(crate) detail: String,
+pub struct OperatorSkillRejection {
+    pub reason: String,
+    pub uri: String,
+    pub detail: String,
 }
 
 /// Operator-only skills snapshot. Unlike the downstream view, this retains
 /// validated-but-hidden skills so the admin UI can manage exposure safely.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct OperatorSkills {
-    pub(crate) supports_skills: Option<bool>,
-    pub(crate) discovered_count: usize,
-    pub(crate) skills: Vec<OperatorSkill>,
-    pub(crate) rejected: Vec<OperatorSkillRejection>,
-    pub(crate) truncated: bool,
-    pub(crate) age_secs: u64,
+pub struct OperatorSkills {
+    pub supports_skills: Option<bool>,
+    pub discovered_count: usize,
+    pub skills: Vec<OperatorSkill>,
+    pub rejected: Vec<OperatorSkillRejection>,
+    pub truncated: bool,
+    pub age_secs: u64,
 }
 
 impl UpstreamPool {
@@ -252,7 +252,7 @@ impl UpstreamPool {
         // simply has no skills, and caching that avoids re-asking every read.
         if !peer_declares_skills(&peer) {
             {
-                let mut catalog = self.catalog.write().await;
+                let mut catalog = self.catalog_write().await;
                 if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                     catalog_entry.supports_skills = Some(false);
                     catalog_entry.skill_count = 0;
@@ -265,7 +265,7 @@ impl UpstreamPool {
             return Ok(empty);
         }
         {
-            let mut catalog = self.catalog.write().await;
+            let mut catalog = self.catalog_write().await;
             if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                 catalog_entry.supports_skills = Some(true);
             }
@@ -289,7 +289,7 @@ impl UpstreamPool {
                 )
                 .await;
                 {
-                    let mut catalog = self.catalog.write().await;
+                    let mut catalog = self.catalog_write().await;
                     if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                         catalog_entry.supports_skills = Some(true);
                         catalog_entry.skill_count = discovered_count;
@@ -571,7 +571,7 @@ impl UpstreamPool {
         let mut cache = self.skills_cache.write().await;
         cache.retain(|(upstream, _), _| upstream != name);
         drop(cache);
-        let mut catalog = self.catalog.write().await;
+        let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(name) {
             entry.skill_count = 0;
             entry.skill_names.clear();

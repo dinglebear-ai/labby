@@ -43,6 +43,7 @@ pub const AUTHORITATIVE_RESULT_ACTIONS: &[&str] = &[
     "gateway.reload",
     "gateway.mcp.enable",
     "gateway.mcp.disable",
+    "gateway.mcp.restart",
 ];
 
 #[must_use]
@@ -132,7 +133,7 @@ pub const ACTIONS: &[ActionSpec] = &[
                 name: "trusted_read_only_tools",
                 ty: "array",
                 required: false,
-                description: "Exact upstream::tool ids operator-trusted for codemode_read (live readOnlyHint is also required)",
+                description: "Deprecated compatibility list; codemode_read uses live MCP safety annotations",
             },
             ParamSpec {
                 name: "mcp_ui_enabled",
@@ -1383,6 +1384,22 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "When true, run runtime cleanup after disabling",
             },
+            ParamSpec {
+                name: "aggressive",
+                ty: "boolean",
+                required: false,
+                description: "When true, use broader host-wide process matching during cleanup",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "gateway.mcp.restart",
+        description: "Replace one enabled upstream MCP connection, clean up stale runtime processes, and reconnect it",
+        destructive: false,
+        requires_admin: true,
+        returns: "GatewayView + cleanup result",
+        params: &[
+            NAME_PARAM,
             ParamSpec {
                 name: "aggressive",
                 ty: "boolean",

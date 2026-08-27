@@ -507,9 +507,25 @@ async fn enterprise_managed_grant(
                 "requested scope exceeds ID-JAG grant".to_string(),
             ));
         }
-        return build_token_response(&state, client_id, claims.sub, resource, requested, None);
+        return build_token_response(
+            &state,
+            client_id,
+            claims.sub,
+            resource,
+            requested,
+            None,
+            TokenIdentity::ExternalIssuer(claims.iss),
+        );
     }
-    build_token_response(&state, client_id, claims.sub, resource, scope, None)
+    build_token_response(
+        &state,
+        client_id,
+        claims.sub,
+        resource,
+        scope,
+        None,
+        TokenIdentity::ExternalIssuer(claims.iss),
+    )
 }
 
 fn ensure_allowed_algorithm(algorithm: Algorithm) -> Result<(), AuthError> {
@@ -762,7 +778,15 @@ async fn client_credentials_grant(
             "requested scope exceeds machine client grant".to_string(),
         ));
     }
-    build_token_response(&state, client_id.clone(), client_id, resource, scope, None)
+    build_token_response(
+        &state,
+        client_id.clone(),
+        client_id.clone(),
+        resource,
+        scope,
+        None,
+        TokenIdentity::LocalCredential(format!("machine-client:{client_id}")),
+    )
 }
 
 async fn authenticate_machine_client(
@@ -1323,6 +1347,7 @@ async fn authorization_code_grant(
         resource,
         row.scope,
         refresh_token,
+        TokenIdentity::ExternalIssuer(crate::google::GOOGLE_ISSUER.to_string()),
     )
 }
 
@@ -1710,6 +1735,7 @@ async fn complete_claimed_refresh(
         stored_resource.clone(),
         elevated_scope.clone(),
         Some(replacement_refresh_token),
+        TokenIdentity::ExternalIssuer(crate::google::GOOGLE_ISSUER.to_string()),
     )?;
     let response_ttl = i64::try_from(response.expires_in).unwrap_or(i64::MAX);
     let replay_expires_at = now.saturating_add(REFRESH_REPLAY_GRACE_SECONDS.min(response_ttl));
@@ -1738,6 +1764,11 @@ async fn complete_claimed_refresh(
     Ok(response)
 }
 
+enum TokenIdentity {
+    ExternalIssuer(String),
+    LocalCredential(String),
+}
+
 fn build_token_response(
     state: &AuthState,
     client_id: String,
@@ -1745,6 +1776,7 @@ fn build_token_response(
     resource: String,
     scope: String,
     refresh_token: Option<String>,
+    identity: TokenIdentity,
 ) -> Result<TokenResponse, AuthError> {
     let issuer = crate::metadata::public_base_url(state);
     let now = timestamp_usize(now_unix(), "current unix timestamp")?;
@@ -1753,6 +1785,10 @@ fn build_token_response(
         &format!("{}_AUTH_ACCESS_TOKEN_TTL_SECS", state.config.env_prefix),
     )?;
     let subject_id = fingerprint(&subject);
+    let (identity_issuer, identity_credential_id) = match identity {
+        TokenIdentity::ExternalIssuer(issuer) => (Some(issuer), None),
+        TokenIdentity::LocalCredential(credential_id) => (None, Some(credential_id)),
+    };
     let access_token = state.signing_keys.issue_access_token(&AccessClaims {
         iss: issuer,
         sub: subject.clone(),
@@ -1768,6 +1804,8 @@ fn build_token_response(
         jti: random_token(18)?,
         scope: scope.clone(),
         azp: client_id.clone(),
+        identity_issuer,
+        identity_credential_id,
     })?;
     info!(
         client_id = %client_id,
@@ -1981,7 +2019,7 @@ mod tests {
     async fn token_endpoint_mints_lab_jwt_and_refresh_token() {
         let state = test_auth_state_with_registered_client().await;
         seed_authorization_code(&state).await;
-        let app = router(state);
+        let app = router(state.clone());
         let response = app.oneshot(
                 Request::builder()
                     .method("POST")
@@ -2040,7 +2078,7 @@ mod tests {
             (*base.signing_keys).clone(),
             (*base.google).clone(),
         );
-        let app = router(state);
+        let app = router(state.clone());
         let metadata = app
             .clone()
             .oneshot(
@@ -2098,13 +2136,55 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let claims =
-            insecure_decode::<crate::jwt::AccessClaims>(json["access_token"].as_str().unwrap())
-                .unwrap()
-                .claims;
+        let access_token = json["access_token"].as_str().unwrap();
+        let claims = insecure_decode::<crate::jwt::AccessClaims>(access_token)
+            .unwrap()
+            .claims;
         assert_eq!(claims.sub, "ci-agent");
         assert_eq!(claims.aud, "https://lab.example.com/mcp");
         assert_eq!(claims.scope, "lab");
+        assert_eq!(claims.identity_issuer, None);
+        assert_eq!(
+            claims.identity_credential_id.as_deref(),
+            Some("machine-client:ci-agent")
+        );
+
+        let identity_app = axum::Router::new()
+            .route(
+                "/probe",
+                axum::routing::get(
+                    |axum::Extension(identity): axum::Extension<crate::VerifiedIdentity>| async move {
+                        let link = match identity.principal_link() {
+                            crate::PrincipalLink::LocalCredential { credential_id } => {
+                                format!("local|{credential_id}")
+                            }
+                            crate::PrincipalLink::External { issuer, subject } => {
+                                format!("external|{issuer}|{subject}")
+                            }
+                        };
+                        format!("{link}|{}", identity.transport_credential_issuer())
+                    },
+                ),
+            )
+            .route_layer(crate::AuthLayer::from_state(std::sync::Arc::new(state)));
+        let middleware_response = identity_app
+            .oneshot(
+                Request::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {access_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(middleware_response.status(), StatusCode::OK);
+        let middleware_body = axum::body::to_bytes(middleware_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            &middleware_body[..],
+            b"local|machine-client:ci-agent|https://lab.example.com"
+        );
         assert!(json.get("refresh_token").is_none());
     }
 
@@ -2580,6 +2660,11 @@ mod tests {
                 .claims;
         assert_eq!(claims.sub, "employee-42");
         assert_eq!(claims.aud, "https://lab.example.com/mcp");
+        assert_eq!(
+            claims.identity_issuer.as_deref(),
+            Some("https://idp.example.com")
+        );
+        assert_eq!(claims.identity_credential_id, None);
     }
 
     fn assertion_key() -> (EncodingKey, serde_json::Value) {

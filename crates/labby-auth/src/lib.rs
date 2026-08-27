@@ -31,6 +31,12 @@ pub mod types;
 #[cfg(feature = "upstream-oauth-rmcp")]
 pub mod upstream;
 pub mod util;
+mod verified_identity;
+
+pub use verified_identity::{
+    Authenticator, PrincipalLink, VerifiedIdentity, VerifiedIdentityError,
+    verified_identity_from_access_claims,
+};
 
 #[cfg(feature = "http-axum")]
 pub use auth_context::{AuthContext, auth_context, www_authenticate_value};

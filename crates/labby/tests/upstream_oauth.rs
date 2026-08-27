@@ -18,6 +18,7 @@
 //! authorize, issuer binding, S256 enforcement, and CIMD registration.
 
 use std::io;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
@@ -40,22 +41,47 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 static TRACING_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Where the process-wide capture subscriber writes, and which thread it
+/// accepts events from.
+static CAPTURE_TARGET: Mutex<Option<(std::thread::ThreadId, SharedBuf)>> = Mutex::new(None);
+
 #[derive(Clone, Default)]
 struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
-impl<'a> MakeWriter<'a> for SharedBuf {
-    type Writer = SharedWriter;
+/// Writer for the single globally-installed capture subscriber.
+///
+/// These tests used to install a thread-local subscriber each
+/// (`tracing::subscriber::set_default`). That looks isolated but is not:
+/// `tracing` keeps a *process-wide* max-level hint, and installing or dropping
+/// a subscriber recomputes it. While one test held its subscriber, another
+/// test's guard dropping on a different thread could flip the hint back to
+/// OFF, disabling callsites globally — so the running test's own events were
+/// filtered out before they ever reached its buffer, and it failed asserting
+/// on logs it should have captured. It only ever reproduced under parallel
+/// execution (6/10 runs; 0/8 with `--test-threads=1`).
+///
+/// Installing one subscriber for the whole binary keeps the hint stably on.
+/// Capture stays scoped to the calling thread so a concurrent test's events
+/// cannot land in this test's buffer.
+struct CaptureWriter;
+
+impl<'a> MakeWriter<'a> for CaptureWriter {
+    type Writer = CaptureSink;
 
     fn make_writer(&'a self) -> Self::Writer {
-        SharedWriter(Arc::clone(&self.0))
+        CaptureSink
     }
 }
 
-struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+struct CaptureSink;
 
-impl io::Write for SharedWriter {
+impl io::Write for CaptureSink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        if let Some((thread, target)) = CAPTURE_TARGET.lock().unwrap().as_ref()
+            && *thread == std::thread::current().id()
+        {
+            target.0.lock().unwrap().extend_from_slice(buf);
+        }
         Ok(buf.len())
     }
 
@@ -64,8 +90,43 @@ impl io::Write for SharedWriter {
     }
 }
 
-fn captured_logs(buf: &SharedBuf) -> String {
-    String::from_utf8(buf.0.lock().unwrap().clone()).unwrap()
+/// Route this thread's `labby`/`labby_auth` events into a fresh buffer until
+/// the returned guard drops.
+fn capture_logs_for_this_thread() -> LogCapture {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new("labby=info,labby_auth=info"))
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_writer(CaptureWriter)
+                    .with_ansi(false)
+                    .without_time(),
+            );
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("install the capture subscriber once for this test binary");
+    });
+
+    let buf = SharedBuf::default();
+    *CAPTURE_TARGET.lock().unwrap() = Some((std::thread::current().id(), buf.clone()));
+    LogCapture { buf }
+}
+
+struct LogCapture {
+    buf: SharedBuf,
+}
+
+impl LogCapture {
+    fn logs(&self) -> String {
+        String::from_utf8(self.buf.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl Drop for LogCapture {
+    fn drop(&mut self) {
+        *CAPTURE_TARGET.lock().unwrap() = None;
+    }
 }
 
 // ---------- harness ----------
@@ -497,20 +558,32 @@ async fn subject_lookup_survives_restart_for_saved_state() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[allow(clippy::await_holding_lock)]
 async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() {
-    let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let buf = SharedBuf::default();
-    let subscriber = tracing_subscriber::registry()
-        .with(EnvFilter::new("labby=info,labby_auth=info"))
-        .with(
-            fmt::layer()
-                .json()
-                .with_writer(buf.clone())
-                .with_ansi(false)
-                .without_time(),
+    if std::env::var_os("LABBY_UPSTREAM_OAUTH_LOG_CHILD").is_none() {
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .env("LABBY_UPSTREAM_OAUTH_LOG_CHILD", "1")
+            .args([
+                "--exact",
+                "build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets",
+                "--nocapture",
+            ])
+            .output()
+            .expect("spawn isolated OAuth log-capture test");
+        assert!(
+            output.status.success(),
+            "isolated OAuth log-capture test failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
-    let _guard = tracing::subscriber::set_default(subscriber);
+        return;
+    }
+    build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets_inner().await;
+}
+
+#[allow(clippy::await_holding_lock)]
+async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets_inner() {
+    let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let capture = capture_logs_for_this_thread();
 
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
@@ -532,8 +605,7 @@ async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() 
 
     let _client = m.build_auth_client("alice").await.expect("auth client");
 
-    drop(_guard);
-    let logs = captured_logs(&buf);
+    let logs = capture.logs();
     assert!(logs.contains("upstream oauth: access token nearing expiry"));
     assert!(logs.contains("upstream oauth: token refresh attempt"));
     assert!(logs.contains("upstream oauth: token refresh succeeded"));
@@ -551,25 +623,37 @@ async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets() 
     assert!(!logs.contains(&state), "csrf state leaked: {logs}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle() {
+    if std::env::var_os("LABBY_UPSTREAM_OAUTH_LOG_CHILD").is_none() {
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .env("LABBY_UPSTREAM_OAUTH_LOG_CHILD", "1")
+            .args([
+                "--exact",
+                "build_auth_client_with_logs_near_expiry_refresh_lifecycle",
+                "--nocapture",
+            ])
+            .output()
+            .expect("spawn isolated OAuth log-capture test");
+        assert!(
+            output.status.success(),
+            "isolated OAuth log-capture test failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    build_auth_client_with_logs_near_expiry_refresh_lifecycle_inner().await;
+}
+
+async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle_inner() {
     // Regression test for the live P-H4 pool path (`build_auth_client_with`,
     // reached via `AuthClientCache::get_or_build_capped`): it used to swallow
     // the get_access_token() outcome with no success/failure log at all,
     // unlike its `build_auth_client` twin above, which masked a stuck
     // token-refresh failure in production for weeks.
     let _tracing_lock = TRACING_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let buf = SharedBuf::default();
-    let subscriber = tracing_subscriber::registry()
-        .with(EnvFilter::new("labby=info"))
-        .with(
-            fmt::layer()
-                .json()
-                .with_writer(buf.clone())
-                .with_ansi(false)
-                .without_time(),
-        );
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let capture = capture_logs_for_this_thread();
 
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
@@ -594,8 +678,7 @@ async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle() {
         .await
         .expect("auth client");
 
-    drop(_guard);
-    let logs = captured_logs(&buf);
+    let logs = capture.logs();
     assert!(logs.contains("upstream oauth: access token nearing expiry"));
     assert!(logs.contains("upstream oauth: token refresh attempt"));
     assert!(logs.contains("upstream oauth: token refresh succeeded (with_client)"));

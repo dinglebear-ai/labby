@@ -14,6 +14,7 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Service model](./dev/SERVICES.md) — the current registered service inventory and onboarding rules.
 - [CLI](./surfaces/CLI.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
 - [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
+- [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
 - [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — active specification, contract, implementation plan, and progress tracker for universal Skills access.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
@@ -31,10 +32,15 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `server_logs` | [services/SERVER_LOGS.md](./services/SERVER_LOGS.md) | Labby's own server-process log query and journal tail |
 | `fs` | [services/FILESYSTEM.md](./services/FILESYSTEM.md) | Optional jailed read-only workspace browsing and preview |
 | `snippets` | [services/SNIPPETS.md](./services/SNIPPETS.md) | Reusable Code Mode workflow storage, validation, execution, testing, promotion |
+| `skills` | [services/SKILLS.md](./services/SKILLS.md) | Native and compatibility reads plus the authenticated local Skill Library MCP App |
 | `lab_admin` | [services/LAB_ADMIN.md](./services/LAB_ADMIN.md) | Runtime-conditional onboarding audit surface |
+| access owner bootstrap | [services/ACCESS.md](./services/ACCESS.md) | Browser-only explicit creation of the first access-control owner |
 | direct stdio proxy | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | One selected stdio MCP server exposed over Streamable HTTP |
 
 Do not hand-maintain a duplicate action inventory in prose. Use the generated [action catalog](./generated/action-catalog.md) for exact action names, parameters, scopes, destructive classification, and surfaces.
+
+The browser-only [access owner bootstrap workflow](./services/ACCESS.md) is an
+HTTP route, not a registered multi-surface service.
 
 ## Public Surfaces
 

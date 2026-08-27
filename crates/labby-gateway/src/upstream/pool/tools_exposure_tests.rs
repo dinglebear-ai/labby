@@ -531,6 +531,7 @@ async fn a_hidden_tool_is_refused_as_unknown_tool_not_as_a_retryable_error() {
             &config,
             "alice",
             rmcp::model::CallToolRequestParams::new("delete_repo"),
+            None,
         )
         .await
         .expect_err("a hidden tool must not be callable");

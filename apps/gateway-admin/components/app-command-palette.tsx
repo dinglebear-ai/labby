@@ -277,7 +277,12 @@ export function AppCommandPalette() {
 
   // Issue 4: destructure error so we can surface catalog fetch failures
   const { data: catalogServices, isLoading: catalogLoading, error: catalogError } = useCommandCatalog()
-  const { data: gateways = [] } = useGateways()
+  // Gateway rows only exist inside the open palette, and `gateway.list` warms
+  // the whole upstream pool — cold-spawning every stdio server. The palette is
+  // mounted by the admin layout on every page, so fetching on mount undid the
+  // deliberate gating the Loadouts page added and made each navigation spawn
+  // the fleet. Fetch when the operator actually opens the palette.
+  const { data: gateways = [], isLoading: gatewaysLoading } = useGateways(open)
   const { createGateway, testGateway, reloadGateway, enableGateway, disableGateway } =
     useGatewayMutations()
 
@@ -987,6 +992,15 @@ export function AppCommandPalette() {
                         </>
                       )}
 
+                      {/* Servers are fetched on first open, so say so rather
+                          than rendering as if the fleet were empty. */}
+                      {gatewaysLoading && currentPage === '' && paletteScopeShows(scope, 'servers') && (
+                        <div className="pal-empty">
+                          <Loader2 className="mr-2 inline size-4 animate-spin" />
+                          Loading servers...
+                        </div>
+                      )}
+
                       {/* Servers */}
                       {gatewayItems.length > 0 && (
                         <>
@@ -1012,6 +1026,7 @@ export function AppCommandPalette() {
 
                       {/* Empty state */}
                       {!catalogLoading &&
+                        !gatewaysLoading &&
                         alerts.length === 0 &&
                         !showAddServerRow &&
                         state.items.length === 0 &&

@@ -1,11 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
+import { SWRConfig } from 'swr'
 
 import { GatewayApiError } from '../../lib/api/gateway-client-core.ts'
 import { __setBrowserSessionStateForTests, loadBrowserSession } from '../../lib/auth/session-store.ts'
 import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils.tsx'
-import { ToolBrowser, toolBrowserError } from './tool-browser.tsx'
+import { ToolBrowser, resultsSummary, toolBrowserError } from './tool-browser.tsx'
 
 async function waitFor(assertion: () => void) {
   const deadline = Date.now() + 2_000
@@ -146,4 +147,117 @@ test('tool browser clears stale search results and retries the failed detail ope
     assert.doesNotMatch(view.container.textContent ?? '', /alpha\.ping/)
     assert.doesNotMatch(view.container.textContent ?? '', /No matching tools/)
   } finally { await view.unmount() }
+})
+
+test('a completed empty browse names Code Mode being disabled, instead of looking unchanged', async () => {
+  // Previously a zero-result "Browse all" rendered the exact same placeholder
+  // text as before any search ran — an operator clicking it with Code Mode
+  // off saw no feedback that anything had happened at all.
+  installTestDom()
+  __setBrowserSessionStateForTests({
+    status: 'authenticated', user: { sub: 'admin', email: 'admin@example.com' },
+    expiresAt: 100, csrfToken: 'csrf', isAdmin: true,
+  })
+  globalThis.fetch = async (input, init) => {
+    const path = String(input)
+    if (path.endsWith('/search')) {
+      return new Response(JSON.stringify({ results: [], total: 0, truncated: false }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (path.endsWith('/gateway')) {
+      const body = JSON.parse(String(init?.body)) as { action?: string }
+      if (body.action === 'gateway.code_mode.get') {
+        return new Response(JSON.stringify({
+          enabled: false, timeout_ms: 5000, max_tool_calls: 10, max_response_bytes: 1024, max_response_tokens: 1024,
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+    }
+    return new Response('{}', { status: 404 })
+  }
+
+  const view = await renderClient(
+    // `ToolBrowser` also reads the code-mode config via SWR, whose cache is a
+    // module-level singleton — an isolated provider keeps this test's mock
+    // from reading whatever an earlier test in this file already cached
+    // under the same key.
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <ToolBrowser />
+    </SWRConfig>,
+  )
+  try {
+    assert.match(view.container.textContent ?? '', /Search, or browse the live catalog without a query/)
+    const form = view.container.querySelector('form'); assert.ok(form)
+    await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })) })
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Code Mode is disabled/))
+    assert.doesNotMatch(view.container.textContent ?? '', /Search, or browse the live catalog without a query/)
+  } finally { await view.unmount() }
+})
+
+// The summary rules are tested directly rather than through the component.
+// A UI-driven version of these cases is not possible here: the unit-test DOM
+// does not implement React's synthetic change events, so a simulated keystroke
+// leaves `query` untouched and the assertions pass against the bug exactly as
+// readily as against the fix. Verified empirically — both the native value
+// setter and a dispatched `change` left the controlled input at its old value.
+const summaryState = (overrides: Partial<Parameters<typeof resultsSummary>[0]> = {}) => ({
+  total: 0,
+  shown: 0,
+  hasError: false,
+  executedQuery: null,
+  loading: false,
+  codeModeEnabled: true,
+  codeModeConfigMissing: false,
+  codeModeConfigFailed: false,
+  ...overrides,
+})
+
+test('the summary describes the executed query, not the live input box', () => {
+  // The bug: clearing the box after a fruitless search for "zzz" flipped the
+  // label from "no matches for zzz" to a confident gateway-wide claim, because
+  // the branch read the live input. `executedQuery` stays "zzz" until the next
+  // submit, so the label must too.
+  assert.equal(resultsSummary(summaryState({ executedQuery: 'zzz' })), 'No matching tools')
+  assert.equal(
+    resultsSummary(summaryState({ executedQuery: '' })),
+    'No tools exposed by any connected server.',
+    'only an executed *empty* browse may make a claim about the whole gateway',
+  )
+  assert.equal(
+    resultsSummary(summaryState({ executedQuery: null })),
+    'Search, or browse the live catalog without a query',
+    'before any search there is nothing to report',
+  )
+})
+
+test('a failed Code Mode config read never yields a confident gateway-wide claim', () => {
+  // SWR keeps serving the last-good `data` when a revalidation fails, so the
+  // config being present says nothing about whether it is current.
+  assert.equal(
+    resultsSummary(summaryState({ executedQuery: '', codeModeConfigFailed: true })),
+    'No tools returned, and the Code Mode setting could not be read to explain why.',
+  )
+  assert.equal(
+    resultsSummary(
+      summaryState({ executedQuery: '', codeModeConfigMissing: true, codeModeEnabled: undefined }),
+    ),
+    'No tools returned.',
+    'a config that has not loaded yet cannot explain the empty catalog either',
+  )
+  assert.equal(
+    resultsSummary(summaryState({ executedQuery: '', codeModeEnabled: false })),
+    'Code Mode is disabled, so this catalog is empty. Enable it from Gateway.',
+  )
+})
+
+test('a failed detail fetch keeps the result count on screen', () => {
+  // `loadDetail` sets `error` without touching results, so the cards are still
+  // rendered; blanking their count reads as a broken page.
+  assert.equal(resultsSummary(summaryState({ total: 7, shown: 5, hasError: true })), '7 matches · showing 5')
+  assert.equal(
+    resultsSummary(summaryState({ hasError: true, executedQuery: 'zzz' })),
+    '',
+    'with no results to caption, the error banner speaks for itself',
+  )
 })

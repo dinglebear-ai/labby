@@ -103,8 +103,7 @@ impl CodeModeHost for GatewayManager {
         // Discovery is advisory; authorization is checked again against the
         // live descriptor immediately before invocation so an annotation
         // change or stale render cannot turn a read-only run into a write.
-        let code_mode_config = self.code_mode_config().await;
-        if scope.is_read_only() && !tool_is_trusted_read_only(&code_mode_config, &upstream_tool) {
+        if scope.is_read_only() && !tool_is_explicitly_read_only(&upstream_tool) {
             tracing::warn!(
                 surface = "dispatch",
                 service = "code_mode",
@@ -112,13 +111,11 @@ impl CodeModeHost for GatewayManager {
                 upstream,
                 tool,
                 kind = "forbidden",
-                "blocked tool without operator trust and an explicit read-only annotation"
+                "blocked tool without an explicit read-only annotation"
             );
             return Err(ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
-                message: format!(
-                    "Tool `{upstream}::{tool}` is not operator-trusted for read-only Code Mode."
-                ),
+                message: format!("Tool `{upstream}::{tool}` is not explicitly read-only."),
             }
             .into());
         }
@@ -463,7 +460,7 @@ pub(super) fn tool_is_explicitly_read_only(tool: &UpstreamTool) -> bool {
 
 fn rmcp_tool_is_explicitly_read_only(tool: &rmcp::model::Tool) -> bool {
     tool.annotations.as_ref().is_some_and(|annotations| {
-        annotations.read_only_hint == Some(true) && annotations.destructive_hint != Some(true)
+        annotations.read_only_hint == Some(true) && annotations.destructive_hint == Some(false)
     })
 }
 
@@ -1193,6 +1190,24 @@ pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCalle
             }
             PropagatedCallerAuth::scoped(scopes, sub.clone())
         }
+        CodeModeCaller::ScopedPrivate {
+            capabilities,
+            sub,
+            context_token,
+        } => {
+            let mut scopes = Vec::new();
+            if capabilities.is_admin {
+                scopes.push("lab:admin".to_string());
+            }
+            if capabilities.can_execute {
+                scopes.push("lab".to_string());
+            }
+            if capabilities.can_read {
+                scopes.push("lab:read".to_string());
+            }
+            PropagatedCallerAuth::scoped(scopes, sub.clone())
+                .with_private_context_token(context_token.clone())
+        }
     }
 }
 
@@ -1353,8 +1368,15 @@ mod tests {
         assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().destructive(false),)
         )));
-        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
+        assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(rmcp::model::ToolAnnotations::new().read_only(true),)
+        )));
+        assert!(tool_is_explicitly_read_only(&upstream_with_annotations(
+            Some(
+                rmcp::model::ToolAnnotations::new()
+                    .read_only(true)
+                    .destructive(false),
+            )
         )));
         assert!(!tool_is_explicitly_read_only(&upstream_with_annotations(
             Some(
@@ -1364,17 +1386,12 @@ mod tests {
             )
         )));
 
-        let hinted =
-            upstream_with_annotations(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
-        assert!(!tool_is_trusted_read_only(
-            &CodeModeConfig::default(),
-            &hinted
+        let hinted = upstream_with_annotations(Some(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false),
         ));
-        let trusted = CodeModeConfig {
-            trusted_read_only_tools: vec!["fixture::query".to_string()],
-            ..CodeModeConfig::default()
-        };
-        assert!(tool_is_trusted_read_only(&trusted, &hinted));
+        assert!(tool_is_explicitly_read_only(&hinted));
     }
 
     #[test]
@@ -1424,6 +1441,10 @@ mod tests {
                 .expect("safety change")
                 .contract_hash
         );
+        let oversized_hash = CapabilityContract::execution_hash_from_upstream_tool(&oversized)
+            .expect("Code Mode execution hash must accept large schemas");
+        assert_eq!(oversized_hash.len(), 64);
+        assert_ne!(checked_hash, oversized_hash);
     }
 
     #[tokio::test]

@@ -223,7 +223,13 @@ labby mcp
 `labby serve` starts the hosted HTTP runtime: `/v1` product APIs, `/mcp`
 streamable HTTP MCP, auth routes, OAuth relay endpoints, and static Labby web
 assets when an export is available. `labby mcp` is the stdio MCP entrypoint for
-local MCP clients.
+local MCP clients. A client configured to launch `labby mcp` does not need an
+HTTP URL: when a `labby serve` daemon is reachable, the stdio process becomes a
+transparent bridge to that daemon and uses its gateway configuration, upstream
+connections, and OAuth state. If no daemon is found and no explicit target is
+set, it starts a standalone local gateway instead. See the
+[local bridge guide](./docs/surfaces/TRANSPORT.md#local-bridge-to-the-running-daemon)
+for client configuration and `LABBY_SERVER_URL` fail-closed behavior.
 
 ### Manage Upstream MCP Gateways
 
@@ -543,8 +549,8 @@ provider tools. It does not install ACP adapters or mount ACP-specific state.
 
 Release Please maintains the version/changelog pull request and creates the
 stable tag plus draft GitHub release when that pull request merges. Publishing
-the release triggers the heavy GitHub-hosted x86_64 workflows. They build Linux
-and Windows archives with checksums, build and scan the GHCR image, build and
+the release triggers the heavy GitHub-hosted workflows. They build Linux,
+macOS, and Windows archives with checksums, build and scan the GHCR image, build and
 smoke the Incus image, publish the npm launcher, and publish Labby's
 `server.json` metadata to the official MCP Registry.
 

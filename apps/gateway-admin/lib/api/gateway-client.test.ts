@@ -471,6 +471,69 @@ test('gatewayApi protected route actions use gateway service action payloads', a
   )
 })
 
+test('gatewayApi restores Loadout selection arrays the gateway omits when empty', async () => {
+  // `GatewayLoadoutConfig` uses `skip_serializing_if = "Vec::is_empty"`, so a
+  // Loadout that selects only upstreams omits `services` on the wire (and vice
+  // versa). The Loadouts page reads `.length` off both, so an un-normalized
+  // payload threw `Cannot read properties of undefined (reading 'length')` and
+  // took down the whole renderer.
+  const upstreamsOnly = {
+    name: 'sd',
+    upstreams: ['chrome-devtools'],
+    expose_tools: true,
+    expose_resources: true,
+    expose_prompts: true,
+    expose_skills: true,
+    expose_code_mode: true,
+  }
+  const servicesOnly = {
+    name: 'services-only',
+    services: ['gateway'],
+    expose_tools: true,
+    expose_resources: true,
+    expose_prompts: true,
+    expose_skills: true,
+    expose_code_mode: true,
+  }
+
+  await withGatewayFetch(
+    {
+      'gateway.loadout.list_state': () => [upstreamsOnly, servicesOnly],
+      'gateway.loadout.get': () => upstreamsOnly,
+      'gateway.loadout.add': () => servicesOnly,
+    },
+    async () => {
+      const listed = await gatewayApi.listLoadouts()
+      assert.deepEqual(listed[0]?.services, [])
+      assert.deepEqual(listed[0]?.upstreams, ['chrome-devtools'])
+      assert.deepEqual(listed[1]?.upstreams, [])
+      assert.deepEqual(listed[1]?.services, ['gateway'])
+
+      assert.deepEqual((await gatewayApi.getLoadout('sd')).services, [])
+      assert.deepEqual((await gatewayApi.addLoadout({ ...servicesOnly, upstreams: [] })).upstreams, [])
+    },
+  )
+
+  await withGatewayFetch(
+    {
+      'gateway.loadout.stage_update': () => ({
+        loadout: upstreamsOnly,
+        restart_required: true,
+        pending_operation: 'update',
+        restart_note: 'restart',
+      }),
+    },
+    async () => {
+      const staged = await gatewayApi.stageLoadoutUpdate('sd', {
+        ...upstreamsOnly,
+        services: [],
+      })
+      assert.deepEqual(staged.loadout.services, [])
+      assert.deepEqual(staged.loadout.upstreams, ['chrome-devtools'])
+    },
+  )
+})
+
 test('gatewayApi Loadout actions use shared gateway dispatch payloads', async () => {
   const loadout = {
     name: 'operations',
@@ -1034,10 +1097,6 @@ test('gatewayApi.get preserves side-effect-free runtime diagnostics without test
       assert.equal(gateway.status.runtime_state_path, '/tmp/gateway.runtime.json')
       assert.equal(gateway.status.reconciled_at, '2026-08-22T05:00:00Z')
       assert.equal(gateway.status.likely_stale_count, 1)
-      assert.deepEqual(
-        requests.find((request) => request.action === 'gateway.mcp.list')?.params,
-        { name: 'Asana' },
-      )
       assert.deepEqual(
         requests.map((request) => request.action),
         [

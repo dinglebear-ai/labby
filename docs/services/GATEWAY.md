@@ -52,13 +52,25 @@ loss.
 
 The gateway validates that the `command` basename of any stdio upstream is in a
 built-in allowlist (`npx`, `uvx`, `docker`, `node`, `bun`, `python`, `python3`,
-`deno`, `pipx`, `dnx`) before writing the config. Two `[gateway]` knobs in
-`config.toml` control this:
+`deno`, `pipx`, `dnx`, `ssh`) before writing the config. SSH can therefore be
+used directly as a stdio transport for MCP services that speak MCP over a
+remote command. Two `[gateway]` knobs in `config.toml` control this:
+
+```toml
+[[upstream]]
+name = "remote-mcp"
+transport = "stdio"
+command = "/usr/bin/ssh"
+args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "user@example.test", "/usr/local/bin/remote-mcp", "mcp"]
+```
 
 ```toml
 [gateway]
-# Allow additional binaries beyond the built-in list.
-extra_stdio_commands = ["myserver", "labby"]
+# Allow additional binaries beyond the built-in list. An entry may be a bare
+# binary name, which matches that basename at any path ("myserver" allows
+# /usr/local/bin/myserver), or a full command path, which matches only that
+# exact command ("/opt/tools/myserver" does not allow /tmp/myserver).
+extra_stdio_commands = ["myserver", "/opt/tools/pinned-server"]
 
 # Or disable the guard entirely (operator takes full responsibility).
 disable_spawn_guard = true
@@ -76,7 +88,9 @@ republished by `lab`, via `expose_tools`, `expose_resources`, and
 
 - when an allowlist is unset, everything discovered for that capability remains exposed
 - allowlists accept exact names and simple `*` wildcards
-- an empty allowlist is treated as "clear the filter" rather than "block everything"
+- an empty allowlist blocks everything for that capability. To clear a filter and
+  go back to exposing everything, set it to `null` (omit the key in
+  `config.toml`, or send `null` in a `gateway.update` patch) — not `[]`
 - filtered items disappear from the merged MCP listing **and** cannot be reached
   directly through the proxy — `tools/call`, `resources/read`, `prompts/get`, and
   `completion/complete` all re-check the allowlist, on the shared, OAuth
@@ -210,15 +224,24 @@ Root-gateway clients with `lab` or `lab:admin` also receive the always-on
 `mcp_app` tool bound to `ui://lab/apps/manage`. Its UI is the recovery
 switchboard for Labby's own app surfaces: Code Mode Inspector, Gateway Status,
 Server Logs, and Add Server. Status reads require `lab` or `lab:admin`;
-enable/disable mutations require `lab:admin`. The manager is intentionally not
-advertised on protected subset routes and cannot disable itself.
+enable/disable mutations require `lab:admin`. The `mcp_app` control tool is
+intentionally omitted from protected subset routes. Its own manager UI can be
+disabled, but the text-only control tool remains available on the root gateway.
 
 The Code Mode Inspector keeps its compatibility switch at
 `code_mode.mcp_ui_enabled`. The other visibility switches are
-`mcp_apps.gateway_status`, `mcp_apps.server_logs`, and
-`mcp_apps.add_server`, all defaulting to `true`. App-only mutations persist
-without rebuilding the upstream pool and publish both tool and resource
-list-changed notifications.
+`mcp_apps.manager`, `mcp_apps.gateway_status`, `mcp_apps.server_logs`,
+`mcp_apps.add_server`, and `mcp_apps.settings`. Every Labby-owned app surface
+defaults to `false` and must be explicitly enabled. The `mcp_app` control tool
+remains available without UI metadata so an administrator can inspect or restore
+any app, including its own manager UI. App-only mutations persist without
+rebuilding the upstream pool and publish both tool and resource list-changed
+notifications. Upstream MCP Apps are not governed by these switches. Their app
+tools/callbacks pass through only when an allowed upstream exposes a real
+resource-backed app owner, `proxy_resources` is enabled, and the bound `ui://`
+URI passes `expose_resources`. Callback markers without such an owner and
+ambiguous tool names fail closed. Destructive app tools require execute scope,
+and OAuth app resources remain subject-bound on read.
 
 ### Add Server MCP App
 
@@ -241,6 +264,24 @@ Calling it opens a responsive, read-only snapshot of connected upstreams, their
 exposed capability counts, transport, and warnings. Its `refresh` callback
 delegates to `gateway.list`, and late launch output cannot overwrite a newer
 manual refresh.
+
+### Prompt and resource discovery warnings
+
+Prompts and resources are optional MCP capabilities, so a failure to list them
+never marks an upstream disconnected — its tools keep working and the row keeps
+reading **Connected**. That would otherwise make a broken capability look
+identical to an absent one, so a genuine failure raises a warning instead:
+
+| Code | Meaning |
+| --- | --- |
+| `prompts_unavailable` | `prompts/list` failed or timed out. The server's prompts are missing from the catalog; its tools are unaffected. |
+| `resources_unavailable` | `resources/list` failed or timed out, with the same consequences. |
+
+An upstream that simply does not implement the capability replies `-32601`, and
+that is treated as success — it produces no warning and no error. So seeing one
+of these codes means discovery genuinely broke, not that the server has nothing
+to offer. Reconnecting an upstream clears the capability's circuit breaker and
+retries discovery.
 
 The tool and resource require `lab:admin`. They are advertised only when the
 active MCP route has a gateway manager, includes the `gateway` service, and
@@ -555,6 +596,7 @@ Fields:
 | `backend_mcp_path` | Deprecated compatibility field for older configs. New routes should put the path in `backend_url`. |
 | `scopes` | OAuth scopes advertised and enforced for this route. Defaults to `mcp:read` and `mcp:write`. |
 | `health_path` | Optional backend health path used by route test actions. |
+| `target.project_id` | Optional access-control Project binding for a `gateway_subset` target. It supplies project authorization context and is not valid for raw-backend or named-upstream routes. |
 
 Management actions:
 
@@ -598,6 +640,21 @@ labby gateway protected-route add \
   --upstream axon \
   --scope mcp:read \
   --scope mcp:write
+labby gateway protected-route test \
+  --name project-ops \
+  --public-host mcp.example.com \
+  --public-path /project-ops \
+  --gateway-subset \
+  --project-id project-42 \
+  --loadout operations
+labby gateway protected-route add \
+  --name project-ops \
+  --public-host mcp.example.com \
+  --public-path /project-ops \
+  --gateway-subset \
+  --project-id project-42 \
+  --loadout operations \
+  --stage-for-restart
 labby gateway protected-route update syslog \
   --public-host mcp.example.com \
   --public-path /syslog \
@@ -605,6 +662,12 @@ labby gateway protected-route update syslog \
   --enabled false
 labby gateway protected-route remove syslog
 ```
+
+For a gateway-subset update, omitting `--project-id` preserves the existing
+Project binding. Use `--project-id <id>` to replace it or
+`--clear-project-id` to remove it explicitly; an ordinary update never silently
+unbinds the route. Project-bound gateway subsets are staged for restart under
+the same rules as other gateway-subset routes.
 
 Route testing has two layers:
 

@@ -5,10 +5,9 @@
 //! compatibility service, CLI, and API all consume this facade.
 
 use std::collections::BTreeSet;
-#[cfg(feature = "gateway")]
 use std::sync::Arc;
-use std::sync::OnceLock;
 
+use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId, SkillVisibility};
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
 use labby_runtime::skills::wire::{
@@ -29,7 +28,7 @@ use labby_gateway::gateway::manager::GatewayManager;
 use labby_gateway::upstream::pool::{SepSkillProvider, UpstreamPool};
 
 use super::aggregate::{self, ToolAccess};
-use super::providers::FirstPartySkillProviders;
+use super::registry::{FirstPartyGeneration, first_party_generation_manager};
 
 /// Caller-dependent inputs that affect which skills may be observed.
 ///
@@ -104,20 +103,54 @@ impl SkillCallerScope {
 /// back to process-global gateway state because doing so would erase protected
 /// route and OAuth-subject boundaries.
 pub(crate) struct SkillRegistryContext {
-    first_party: &'static FirstPartySkillProviders,
+    first_party: Arc<FirstPartyGeneration>,
     #[cfg(feature = "gateway")]
     manager: Option<Arc<GatewayManager>>,
     scope: SkillCallerScope,
+    artifact_access: Option<ArtifactAccessSnapshot>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ArtifactAccessSnapshot {
+    tenant_id: LibraryTenantId,
+    actor_id: LibraryActorId,
+    is_admin: bool,
+}
+
+impl ArtifactAccessSnapshot {
+    pub(crate) fn new(
+        tenant_id: LibraryTenantId,
+        actor_id: LibraryActorId,
+        is_admin: bool,
+    ) -> Self {
+        Self {
+            tenant_id,
+            actor_id,
+            is_admin,
+        }
+    }
+
+    pub(crate) fn permits(
+        &self,
+        ownership: &labby_runtime::artifacts::LibraryOwnership,
+        visibility: SkillVisibility,
+    ) -> bool {
+        ownership.tenant_id == self.tenant_id
+            && (ownership.owner_id == self.actor_id
+                || self.is_admin
+                || visibility == SkillVisibility::Tenant)
+    }
 }
 
 impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn first_party_only() -> Self {
         Self {
-            first_party: first_party_providers(),
+            first_party: first_party_generation_manager().generation(),
             #[cfg(feature = "gateway")]
             manager: None,
             scope: SkillCallerScope::first_party_only(),
+            artifact_access: None,
         }
     }
 
@@ -125,16 +158,63 @@ impl SkillRegistryContext {
     #[must_use]
     pub(crate) fn with_manager(manager: Arc<GatewayManager>, scope: SkillCallerScope) -> Self {
         Self {
-            first_party: first_party_providers(),
+            first_party: first_party_generation_manager().generation(),
             manager: Some(manager),
             scope,
+            artifact_access: None,
         }
     }
-}
 
-fn first_party_providers() -> &'static FirstPartySkillProviders {
-    static PROVIDERS: OnceLock<FirstPartySkillProviders> = OnceLock::new();
-    PROVIDERS.get_or_init(FirstPartySkillProviders::load)
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn from_generation(first_party: Arc<FirstPartyGeneration>) -> Self {
+        Self {
+            first_party,
+            #[cfg(feature = "gateway")]
+            manager: None,
+            scope: SkillCallerScope::first_party_only(),
+            artifact_access: None,
+        }
+    }
+
+    #[cfg(all(test, feature = "gateway"))]
+    #[must_use]
+    pub(crate) fn from_generation_with_manager(
+        first_party: Arc<FirstPartyGeneration>,
+        manager: Arc<GatewayManager>,
+        scope: SkillCallerScope,
+    ) -> Self {
+        Self {
+            first_party,
+            manager: Some(manager),
+            scope,
+            artifact_access: None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn generation_id(&self) -> u64 {
+        self.first_party.id
+    }
+
+    #[must_use]
+    pub(crate) fn generation_digest(&self) -> &str {
+        &self.first_party.digest
+    }
+
+    pub(crate) fn with_artifact_access(mut self, access: ArtifactAccessSnapshot) -> Self {
+        self.artifact_access = Some(access);
+        self
+    }
+
+    fn permits_first_party_uri(&self, uri: &str) -> bool {
+        let Some(metadata) = self.first_party.providers.artifact_access(uri) else {
+            return true;
+        };
+        self.artifact_access
+            .as_ref()
+            .is_some_and(|access| access.permits(&metadata.ownership, metadata.visibility))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,19 +228,43 @@ pub(crate) struct VisibleSkillFile {
 }
 
 pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> SkillsListResult {
+    let artifact_entries_filtered = context
+        .first_party
+        .providers
+        .discover()
+        .iter()
+        .filter(|entry| !context.permits_first_party_uri(entry.descriptor().id.source_id()))
+        .count();
     let mut listing = SkillsListResult {
         skills: context
             .first_party
+            .providers
             .discover()
             .iter()
+            .filter(|entry| context.permits_first_party_uri(entry.descriptor().id.source_id()))
             .cloned()
             .map(provider_entry_to_wire)
             .collect(),
         next_cursor: None,
-        ttl_ms: Some(3_600_000),
-        cache_scope: Some(CACHE_SCOPE_PUBLIC.to_string()),
+        // SEP-2640 has no list-changed notification. A generation can refresh,
+        // so clients must re-list instead of treating this snapshot as fresh.
+        ttl_ms: Some(0),
+        cache_scope: Some(
+            if context.artifact_access.is_some()
+                && context.first_party.providers.has_artifact_skills()
+            {
+                CACHE_SCOPE_PRIVATE
+            } else {
+                CACHE_SCOPE_PUBLIC
+            }
+            .to_string(),
+        ),
         meta: None,
     };
+    tracing::debug!(
+        artifact_entries_filtered,
+        "filtered first-party Artifact Skills"
+    );
 
     #[cfg(feature = "gateway")]
     {
@@ -195,8 +299,10 @@ pub(crate) async fn get_visible_skill(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Option<SkillEntry> {
-    if let Some(entry) = context.first_party.find(uri) {
-        return Some(provider_entry_to_wire(entry.clone()));
+    if let Some(entry) = context.first_party.providers.find(uri) {
+        return context
+            .permits_first_party_uri(uri)
+            .then(|| provider_entry_to_wire(entry.clone()));
     }
 
     #[cfg(feature = "gateway")]
@@ -285,8 +391,11 @@ pub(crate) async fn read_visible_skill_file(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Result<VisibleSkillFile, ToolError> {
-    if let Some(provider_entry) = context.first_party.find(uri) {
-        let entry = provider_entry_to_wire(provider_entry.clone());
+    if let Some(provider_entry) = context.first_party.providers.find(uri) {
+        if !context.permits_first_party_uri(uri) {
+            return Err(unknown_file(uri));
+        }
+        let entry = &provider_entry.validated().entry;
         let resource = entry
             .resources
             .as_ref()
@@ -294,6 +403,7 @@ pub(crate) async fn read_visible_skill_file(
             .ok_or_else(|| stale_manifest(uri))?;
         let verified = context
             .first_party
+            .providers
             .read(&provider_entry, uri, limits::MAX_SKILL_RESOURCE_BYTES)
             .await
             .map_err(first_party_provider_error_to_tool)?;
@@ -303,7 +413,7 @@ pub(crate) async fn read_visible_skill_file(
         )?;
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
-            skill_uri: entry.uri,
+            skill_uri: entry.uri.clone(),
             origin: labby_runtime::skills::FIRST_PARTY_ORIGIN.to_string(),
             digest: resource.digest.clone(),
             mime_type: None,
@@ -547,6 +657,71 @@ fn min_ttl(current: Option<u64>, incoming: Option<u64>) -> Option<u64> {
 mod tests {
     use super::*;
 
+    fn artifact_context(visibility: SkillVisibility) -> SkillRegistryContext {
+        use std::collections::BTreeMap;
+
+        use crate::skills::local::LocalSkill;
+        use crate::skills::providers::{ArtifactSkillAccess, FirstPartySkillProviders};
+        use crate::skills::registry::FirstPartyGeneration;
+        use labby_runtime::artifacts::LibraryOwnership;
+        use labby_runtime::skills::ResourceDigest;
+        use labby_runtime::skills::wire::{SkillEntry, SkillResource};
+
+        let manifest = "skill://labby/artifact/SKILL.md";
+        let support = "skill://labby/artifact/notes.md";
+        let body = "---\nname: artifact\ndescription: private\n---\n\nbody\n";
+        let notes = "owner notes";
+        let skill = LocalSkill {
+            entry: SkillEntry {
+                uri: manifest.to_owned(),
+                frontmatter: labby_runtime::skills::parse_skill_md_frontmatter(body).unwrap(),
+                resources: Some(vec![
+                    SkillResource {
+                        uri: manifest.to_owned(),
+                        digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+                    },
+                    SkillResource {
+                        uri: support.to_owned(),
+                        digest: ResourceDigest::of_bytes(notes.as_bytes()).to_wire(),
+                    },
+                ]),
+                meta: None,
+            },
+            files: BTreeMap::from([
+                (manifest.to_owned(), body.to_owned()),
+                (support.to_owned(), notes.to_owned()),
+            ]),
+        };
+        let providers = FirstPartySkillProviders::from_artifact_skills([(
+            skill,
+            ArtifactSkillAccess {
+                ownership: LibraryOwnership::canonical(
+                    LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+                    LibraryActorId::from_canonical_projection("owner").unwrap(),
+                ),
+                visibility,
+            },
+        )]);
+        SkillRegistryContext::from_generation(Arc::new(FirstPartyGeneration {
+            id: 7,
+            digest: "digest".to_owned(),
+            active_digest: "active".to_owned(),
+            providers,
+            rejected: Vec::new(),
+            bytes: body.len() + notes.len(),
+            resources: 2,
+            degraded: None,
+        }))
+    }
+
+    fn artifact_access(tenant: &str, actor: &str, is_admin: bool) -> ArtifactAccessSnapshot {
+        ArtifactAccessSnapshot::new(
+            LibraryTenantId::from_canonical_projection(tenant).unwrap(),
+            LibraryActorId::from_canonical_projection(actor).unwrap(),
+            is_admin,
+        )
+    }
+
     #[cfg(all(feature = "gateway", feature = "skills", feature = "proxy-testkit"))]
     use labby_runtime::skills::digest::ResourceDigest;
 
@@ -598,6 +773,124 @@ mod tests {
             .and_then(|resources| resources.iter().find(|resource| resource.uri == entry.uri))
             .expect("SKILL.md digest");
         assert_eq!(file.digest, digest.digest);
+        assert_eq!(listing.ttl_ms, Some(0));
+    }
+
+    #[tokio::test]
+    async fn artifact_visibility_filters_manifest_and_unlisted_support_uri() {
+        let private = artifact_context(SkillVisibility::Private);
+        assert!(
+            get_visible_skill(&private, "skill://labby/using-labby/SKILL.md")
+                .await
+                .is_some()
+        );
+        assert!(
+            get_visible_skill(&private, "skill://labby/artifact/SKILL.md")
+                .await
+                .is_none()
+        );
+        assert!(
+            get_visible_skill(&private, "skill://labby/artifact/notes.md")
+                .await
+                .is_none()
+        );
+        assert!(
+            read_visible_skill_file(&private, "skill://labby/artifact/notes.md")
+                .await
+                .is_err()
+        );
+
+        let member = artifact_context(SkillVisibility::Private)
+            .with_artifact_access(artifact_access("tenant-a", "member", false));
+        assert!(
+            get_visible_skill(&member, "skill://labby/artifact/SKILL.md")
+                .await
+                .is_none()
+        );
+
+        let owner = artifact_context(SkillVisibility::Private)
+            .with_artifact_access(artifact_access("tenant-a", "owner", false));
+        assert_eq!(
+            read_visible_skill_file(&owner, "skill://labby/artifact/notes.md")
+                .await
+                .unwrap()
+                .text,
+            "owner notes"
+        );
+        assert_eq!(
+            list_visible_skills(&owner).await.cache_scope.as_deref(),
+            Some(CACHE_SCOPE_PRIVATE)
+        );
+
+        let admin = artifact_context(SkillVisibility::Private)
+            .with_artifact_access(artifact_access("tenant-a", "admin", true));
+        assert!(
+            get_visible_skill(&admin, "skill://labby/artifact/notes.md")
+                .await
+                .is_some()
+        );
+
+        let tenant_member = artifact_context(SkillVisibility::Tenant)
+            .with_artifact_access(artifact_access("tenant-a", "member", false));
+        assert!(
+            get_visible_skill(&tenant_member, "skill://labby/artifact/notes.md")
+                .await
+                .is_some()
+        );
+
+        let cross_tenant = artifact_context(SkillVisibility::Tenant)
+            .with_artifact_access(artifact_access("tenant-b", "owner", true));
+        assert!(
+            get_visible_skill(&cross_tenant, "skill://labby/artifact/notes.md")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn supporting_file_and_manifest_remain_on_the_captured_generation() {
+        use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
+
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("pinned");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pinned\ndescription: old\n---\n\nold\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), "old notes").unwrap();
+        let manager = FirstPartyGenerationManager::new(
+            temp.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        let pinned = SkillRegistryContext::from_generation(manager.generation());
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: pinned\ndescription: new\n---\n\nnew\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("notes.md"), "new notes").unwrap();
+        manager.refresh(None).unwrap();
+
+        let notes_uri = "skill://labby/pinned/notes.md";
+        let old_entry = get_visible_skill(&pinned, notes_uri).await.unwrap();
+        let old_file = read_visible_skill_file(&pinned, notes_uri).await.unwrap();
+        assert_eq!(old_entry.frontmatter["description"], "old");
+        assert_eq!(old_file.text, "old notes");
+        let resource = old_entry
+            .resources
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|resource| resource.uri == notes_uri)
+            .unwrap();
+        assert_eq!(resource.digest, old_file.digest);
+        assert!(
+            labby_runtime::skills::parse_digest(&resource.digest)
+                .unwrap()
+                .matches(old_file.text.as_bytes())
+        );
     }
 
     #[tokio::test]
@@ -664,22 +957,45 @@ mod tests {
         };
         let runtime = GatewayRuntimeHandle::default();
         runtime.swap(Some(pool)).await;
-        let manager = Arc::new(
+        let gateway_manager = Arc::new(
             crate::dispatch::gateway::config_store::test_gateway_manager(
                 std::path::PathBuf::from("config.toml"),
                 runtime,
             ),
         );
-        manager
+        gateway_manager
             .seed_config_unchecked_for_tests(GatewayConfig {
                 upstream: vec![upstream],
                 ..GatewayConfig::default()
             })
             .await;
-        let context = SkillRegistryContext::with_manager(
-            manager,
+        let generation_root = tempfile::tempdir().unwrap();
+        let generation_skill = generation_root.path().join("generation-marker");
+        std::fs::create_dir_all(&generation_skill).unwrap();
+        std::fs::write(
+            generation_skill.join("SKILL.md"),
+            "---\nname: generation-marker\ndescription: old\n---\n",
+        )
+        .unwrap();
+        let generation_manager = crate::skills::registry::FirstPartyGenerationManager::new(
+            generation_root.path().to_path_buf(),
+            crate::skills::registry::GenerationLimits::default(),
+        );
+        let pinned_generation = generation_manager.generation();
+        let pinned_id = pinned_generation.id;
+        let context = SkillRegistryContext::from_generation_with_manager(
+            pinned_generation,
+            gateway_manager,
             SkillCallerScope::root(Some("alice".to_string()), ToolAccess::Direct),
         );
+        std::fs::write(
+            generation_skill.join("SKILL.md"),
+            "---\nname: generation-marker\ndescription: new\n---\n",
+        )
+        .unwrap();
+        generation_manager.refresh(None).unwrap();
+        assert_ne!(pinned_id, generation_manager.generation().id);
+        assert_eq!(context.generation_id(), pinned_id);
 
         let fetched = get_visible_skill(&context, reminted_skill_uri)
             .await

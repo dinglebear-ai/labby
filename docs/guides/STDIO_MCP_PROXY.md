@@ -161,7 +161,7 @@ Proxy-relevant environment variables:
 | `LABBY_PROXY_BEARER_TOKEN` | Default secret source. If `bearer_token_env` names another key, that configured key is used instead. |
 | `LABBY_TAILSCALE_BIN` | Overrides the `tailscale` executable used by publication and proxy preflight. |
 | `LABBY_GW_UPSTREAM_STDERR` | Controls the redacted child-stderr forwarding level; default `debug`, and `off` discards it. |
-| `LABBY_HOME` | Relocates Labby's config and secret root. |
+| `LABBY_HOME` | Absolute durable-state root. Relocates config/secrets and fixes the access store at `$LABBY_HOME/access.db`; relative values fail closed. |
 | `LABBY_MCP_HTTP_HOST`, `LABBY_MCP_HTTP_PORT` | First live-daemon candidate for OAuth lease actions. |
 | `LABBY_MCP_HTTP_TOKEN` | Authenticates the proxy CLI to the daemon's admin gateway action route; it is not accepted by the proxied OAuth resource. |
 | `LABBY_PUBLIC_URL`, `LABBY_MCP_GATEWAY_URL` | Public live-daemon fallback candidates and stable OAuth issuer configuration, as described in the OAuth guide. |

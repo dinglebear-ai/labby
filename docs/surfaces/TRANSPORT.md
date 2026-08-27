@@ -21,6 +21,52 @@ labby mcp
 Stdio is intended for local editor and desktop clients. Protocol messages use
 stdin/stdout; logs must never be written to stdout.
 
+### Local bridge to the running daemon
+
+Use `labby mcp` when the MCP client can launch a local command but should use
+the same gateway state as a long-running `labby serve` daemon. The client talks
+to `labby mcp` over stdin/stdout, so the client configuration does not need an
+HTTP URL:
+
+```json
+{
+  "mcpServers": {
+    "labby": {
+      "command": "labby",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Start the daemon once, either in a terminal or as the installed user service:
+
+```bash
+labby serve --host 127.0.0.1 --port 8765
+```
+
+When `labby mcp` starts, it probes the local daemon. If one is reachable, it
+becomes a transparent stdio-to-MCP bridge: tools, resources, prompts,
+notifications, cancellation, and task responses are forwarded to the daemon.
+The bridge does not create a second gateway manager, upstream pool, or OAuth
+state, so the local client sees the same configuration and connections as the
+web UI and HTTP clients.
+
+If no explicit remote target is configured and no daemon is found, `labby mcp`
+starts a standalone local gateway instead. This is useful for a fully local
+setup, but it has its own configuration and runtime state. To require one
+specific daemon and prevent that standalone fallback, set `LABBY_SERVER_URL`:
+
+```bash
+LABBY_SERVER_URL=http://127.0.0.1:8765 labby mcp
+```
+
+Explicit targets fail closed when they are invalid, unreachable, unauthorized,
+or not a compatible Labby daemon. For a daemon on another host, use an HTTPS
+`LABBY_SERVER_URL` and the daemon's matching `LABBY_MCP_HTTP_TOKEN`; use the
+HTTP MCP endpoint directly when the client cannot launch local commands. The
+full target and token rules are in [Environment](../runtime/ENV.md#remote-gateway-cli-usage).
+
 ## Streamable HTTP
 
 Run:
