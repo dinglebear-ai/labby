@@ -220,12 +220,16 @@ fn test_server(
     route_scope: crate::mcp::route_scope::McpRouteScope,
     logging_level: crate::mcp::logging::LoggingLevel,
 ) -> LabMcpServer {
+    let code_mode_app_state = gateway_manager
+        .as_ref()
+        .map(|manager| manager.code_mode_app_state())
+        .unwrap_or_default();
     LabMcpServer {
         registry: Arc::new(registry),
         access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
         gateway_manager,
         peers: Default::default(),
-        code_mode_app_state: Default::default(),
+        code_mode_app_state,
         last_listed_tool_contract: Default::default(),
         route_runtime: Default::default(),
         client_registry: Default::default(),
@@ -252,7 +256,15 @@ async fn code_mode_manager(
             crate::config::LabConfig {
                 code_mode: crate::config::CodeModeConfig {
                     enabled,
+                    mcp_ui_enabled: true,
                     ..crate::config::CodeModeConfig::default()
+                },
+                mcp_apps: crate::config::McpAppsConfig {
+                    manager: true,
+                    add_server: true,
+                    server_logs: true,
+                    gateway_status: true,
+                    settings: true,
                 },
                 ..crate::config::LabConfig::default()
             }
@@ -301,7 +313,15 @@ async fn code_mode_manager_with_test_runner(
             crate::config::LabConfig {
                 code_mode: crate::config::CodeModeConfig {
                     enabled,
+                    mcp_ui_enabled: true,
                     ..crate::config::CodeModeConfig::default()
+                },
+                mcp_apps: crate::config::McpAppsConfig {
+                    manager: true,
+                    add_server: true,
+                    server_logs: true,
+                    gateway_status: true,
+                    settings: true,
                 },
                 upstream: upstreams,
                 ..crate::config::LabConfig::default()
@@ -425,7 +445,15 @@ async fn code_mode_manager_with_pool_and_upstreams(
             crate::config::LabConfig {
                 code_mode: crate::config::CodeModeConfig {
                     enabled,
+                    mcp_ui_enabled: true,
                     ..crate::config::CodeModeConfig::default()
+                },
+                mcp_apps: crate::config::McpAppsConfig {
+                    manager: true,
+                    add_server: true,
+                    server_logs: true,
+                    gateway_status: true,
+                    settings: true,
                 },
                 upstream: upstreams,
                 ..crate::config::LabConfig::default()
@@ -1020,6 +1048,7 @@ fn mcp_app_schema_and_meta_cover_managed_apps() {
     assert_eq!(
         schema["properties"]["target"]["enum"],
         serde_json::json!([
+            "manager",
             "codemode",
             "gateway_status",
             "server_logs",
@@ -1259,6 +1288,58 @@ async fn list_tools_advertises_code_mode_output_schemas() {
 }
 
 #[tokio::test]
+async fn mcp_app_control_tool_survives_manager_ui_disable() {
+    let manager = code_mode_manager(true).await;
+    manager
+        .set_mcp_app_visibility("manager", false, None)
+        .await
+        .expect("disable manager UI");
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("tools with manager UI disabled");
+    let control = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
+        .expect("mcp_app control tool");
+    assert!(control.meta.is_none(), "manager UI metadata must be opt-in");
+
+    let resources = running
+        .service()
+        .list_resources_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
+        .await
+        .expect("resources with manager UI disabled");
+    assert!(
+        resources
+            .resources
+            .iter()
+            .all(|resource| !resource.uri.starts_with(MCP_APPS_APP_URI))
+    );
+    running
+        .service()
+        .read_resource_impl(
+            ReadResourceRequestParams::new(MCP_APPS_APP_URI),
+            scoped_context(peer, &["lab:admin"]),
+        )
+        .await
+        .expect_err("disabled manager UI resource must be unreadable");
+}
+
+#[tokio::test]
 async fn mcp_app_manager_stays_visible_when_code_mode_is_disabled() {
     let server = test_server(
         crate::registry::build_default_registry(),
@@ -1304,13 +1385,81 @@ async fn mcp_app_manager_stays_visible_when_code_mode_is_disabled() {
 }
 
 #[tokio::test]
-async fn mcp_app_status_reports_runtime_state() {
+async fn manager_config_is_authoritative_over_a_stale_code_mode_app_mirror() {
+    let manager = code_mode_manager(true).await;
     let server = test_server(
         completion_test_registry(),
-        Some(code_mode_manager(true).await),
+        Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
+    server.code_mode_app_state.set_enabled(false);
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    assert!(running.service().code_mode_app_enabled_on_mcp().await);
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab"]))
+        .await
+        .expect("tools from manager-backed config");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME),
+        "manager config must win over a stale disabled session mirror"
+    );
+
+    manager
+        .set_mcp_app_visibility("codemode", false, None)
+        .await
+        .expect("disable Code Mode app");
+    running.service().code_mode_app_state.set_enabled(true);
+    assert!(!running.service().code_mode_app_enabled_on_mcp().await);
+    let tools = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab"]))
+        .await
+        .expect("tools after disabling manager config");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != CODE_MODE_UI_TOOL_NAME),
+        "stale enabled session mirror must not resurrect a disabled app"
+    );
+    let denied = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_UI_TOOL_NAME),
+            scoped_context(peer, &["lab"]),
+        )
+        .await
+        .expect("disabled UI call result");
+    assert!(denied.is_error.unwrap_or(false));
+    assert!(
+        denied.content[0]
+            .as_text()
+            .expect("text")
+            .text
+            .contains("app_disabled"),
+    );
+}
+
+#[tokio::test]
+async fn mcp_app_status_reports_runtime_state() {
+    let manager = code_mode_manager(true).await;
+    let mut server = test_server(
+        completion_test_registry(),
+        Some(Arc::clone(&manager)),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.code_mode_app_state = manager.code_mode_app_state();
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
         server, transport, None,
@@ -1347,11 +1496,6 @@ async fn mcp_app_status_reports_runtime_state() {
 
 #[tokio::test]
 async fn mcp_app_enable_is_idempotent_for_admin_scope() {
-    let app_state = crate::mcp::catalog::CodeModeAppState::default();
-    assert!(
-        app_state.is_enabled(),
-        "the gateway MCP App switch defaults to enabled"
-    );
     let server = test_server(
         completion_test_registry(),
         Some(code_mode_manager(true).await),
@@ -1406,12 +1550,14 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
         crate::mcp::logging::LoggingLevel::Emergency,
     );
     sibling_session.code_mode_app_state = shared_state;
-    let independent_gateway = test_server(
+    let independent_manager = code_mode_manager(true).await;
+    let mut independent_gateway = test_server(
         completion_test_registry(),
-        Some(code_mode_manager(true).await),
+        Some(Arc::clone(&independent_manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
+    independent_gateway.code_mode_app_state = independent_manager.code_mode_app_state();
 
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1579,11 +1725,12 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
     assert_eq!(structured["enabled"], false);
     assert_eq!(structured["changed"], true);
     assert_eq!(structured["apps"]["server_logs"]["enabled"], false);
-    for target in ["codemode", "gateway_status", "add_server"] {
+    for target in ["manager", "codemode", "gateway_status", "add_server"] {
         assert_eq!(structured["apps"][target]["enabled"], true, "{target}");
     }
 
     let cfg = manager.current_config().await;
+    assert!(cfg.mcp_apps.manager);
     assert!(cfg.code_mode.mcp_ui_enabled);
     assert!(cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
@@ -1745,6 +1892,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert_eq!(structured["enabled"], false);
     assert_eq!(structured["changed"], true);
     for target in [
+        "manager",
         "codemode",
         "gateway_status",
         "server_logs",
@@ -1755,6 +1903,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     }
 
     let cfg = manager.current_config().await;
+    assert!(!cfg.mcp_apps.manager);
     assert!(!cfg.code_mode.mcp_ui_enabled);
     assert!(!cfg.mcp_apps.gateway_status);
     assert!(!cfg.mcp_apps.server_logs);
@@ -1778,6 +1927,15 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
     assert!(!names.contains(&GATEWAY_STATUS_TOOL_NAME));
     assert!(!names.contains(&ADD_SERVER_TOOL_NAME));
     assert!(!names.contains(&SETTINGS_TOOL_NAME));
+    let manager_tool = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
+        .expect("mcp_app control tool remains available");
+    assert!(
+        manager_tool.meta.is_none(),
+        "disabled manager UI must leave the control tool text-only"
+    );
     let logs = tools
         .tools
         .iter()
@@ -1793,14 +1951,8 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         .list_resources_impl(None, scoped_context(peer.clone(), &["lab:admin"]))
         .await
         .expect("resources after bulk disable");
-    assert!(
-        resources
-            .resources
-            .iter()
-            .any(|resource| resource.uri.starts_with(MCP_APPS_APP_URI)),
-        "the recovery manager resource must stay listed"
-    );
     for hidden_prefix in [
+        MCP_APPS_APP_URI,
         CODE_MODE_APP_URI_PREFIX,
         GATEWAY_STATUS_APP_URI,
         SERVER_LOGS_APP_URI,
@@ -1816,6 +1968,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         );
     }
     for stale_uri in [
+        MCP_APPS_APP_URI,
         CODE_MODE_APP_URI,
         GATEWAY_STATUS_APP_URI,
         SERVER_LOGS_APP_URI,
@@ -1833,15 +1986,6 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         assert!(stale.message.contains("unknown UI resource"), "{stale:?}");
     }
 
-    running
-        .service()
-        .read_resource_impl(
-            ReadResourceRequestParams::new(MCP_APPS_APP_URI),
-            scoped_context(peer.clone(), &["lab:admin"]),
-        )
-        .await
-        .expect("manager resource remains readable");
-
     let enable = running
         .service()
         .call_tool_impl(
@@ -1857,6 +2001,7 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         .expect("bulk enable result");
     assert!(!enable.is_error.unwrap_or(false));
     let cfg = manager.current_config().await;
+    assert!(cfg.mcp_apps.manager);
     assert!(cfg.code_mode.mcp_ui_enabled);
     assert!(cfg.mcp_apps.gateway_status);
     assert!(cfg.mcp_apps.server_logs);
@@ -1894,6 +2039,70 @@ async fn mcp_app_mutation_requires_admin_scope() {
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     assert!(text.contains("lab:admin"), "{text}");
+}
+
+#[tokio::test]
+async fn mcp_app_rejects_malformed_control_shape_without_mutation() {
+    let manager = code_mode_manager(true).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(Arc::clone(&manager)),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    for (arguments, expected_param) in [
+        (
+            serde_json::json!({
+                "action": "disable",
+                "target": 7,
+                "params": { "target": "manager" }
+            }),
+            "target",
+        ),
+        (
+            serde_json::json!({ "action": "disable", "params": "manager" }),
+            "params",
+        ),
+        (
+            serde_json::json!({ "action": 7, "target": "manager" }),
+            "action",
+        ),
+        (
+            serde_json::json!({
+                "action": "disable",
+                "target": "manager",
+                "params": { "target": "codemode" }
+            }),
+            "target",
+        ),
+    ] {
+        let result = running
+            .service()
+            .call_tool_impl(
+                CallToolRequestParams::new(MCP_APP_TOOL_NAME)
+                    .with_arguments(arguments.as_object().expect("object").clone()),
+                scoped_context(running.peer().clone(), &["lab:admin"]),
+            )
+            .await
+            .expect("malformed mcp_app result");
+        assert!(result.is_error.unwrap_or(false));
+        let text = result.content[0].as_text().expect("text").text.as_str();
+        assert!(text.contains("invalid_param"), "{text}");
+        assert!(text.contains(expected_param), "{text}");
+
+        let cfg = manager.current_config().await;
+        assert!(cfg.mcp_apps.manager);
+        assert!(cfg.code_mode.mcp_ui_enabled);
+        assert!(cfg.mcp_apps.gateway_status);
+        assert!(cfg.mcp_apps.server_logs);
+        assert!(cfg.mcp_apps.add_server);
+        assert!(cfg.mcp_apps.settings);
+    }
 }
 
 #[tokio::test]
@@ -2413,6 +2622,11 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
         Some("ui://apps/youtube-search.html"),
     );
     let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
+    let mut app_callback = fixture_upstream_tool(&upstream_name, "youtube_app_callback", None);
+    app_callback.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
+        "ui".to_string(),
+        serde_json::json!({ "visibility": ["app"] }),
+    )])));
     let pool = Arc::new(UpstreamPool::new());
     pool.insert_entry_for_test(
         "apps",
@@ -2420,6 +2634,7 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
             "apps",
             HashMap::from([
                 ("youtube_search_ui".to_string(), ui_tool),
+                ("youtube_app_callback".to_string(), app_callback),
                 ("youtube_probe".to_string(), plain_tool),
             ]),
         ),
@@ -2461,7 +2676,11 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
         .map(|tool| tool.name.as_ref())
         .collect::<Vec<_>>();
 
-    assert!(!names.contains(&"youtube_search_ui"));
+    assert!(
+        names.contains(&"youtube_search_ui"),
+        "upstream MCP App tools must pass through while ordinary raw tools stay hidden"
+    );
+    assert!(names.contains(&"youtube_app_callback"));
     assert!(!names.contains(&"youtube_probe"));
     assert!(names.contains(&CODE_MODE_TOOL_NAME));
     assert!(!names.contains(&"hidden-upstream"));
@@ -2489,19 +2708,20 @@ async fn tool_catalog_snapshot_keeps_code_mode_contract_health_independent() {
     )
     .await;
     let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
-    let server = test_server(
+    let mut server = test_server(
         completion_test_registry(),
-        Some(manager),
+        Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
+    server.code_mode_app_state = manager.code_mode_app_state();
 
     let snapshot = server.snapshot_tool_catalog().await;
 
     assert!(snapshot.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(snapshot.tools.contains(CODE_MODE_UI_TOOL_NAME));
     assert!(snapshot.tools.contains(MCP_APP_TOOL_NAME));
-    assert!(!snapshot.tools.contains("youtube_search_ui"));
+    assert!(snapshot.tools.contains("youtube_search_ui"));
     assert!(!snapshot.tools.contains("youtube_probe"));
 }
 
@@ -2914,7 +3134,10 @@ async fn protected_code_mode_list_tools_hides_raw_siblings_and_disallowed_builti
     assert!(!names.contains(&"gateway-alpha"));
     assert!(!names.contains(&"hidden-upstream"));
     assert!(names.contains(&CODE_MODE_TOOL_NAME));
-    assert!(!names.contains(&"youtube_search_ui"));
+    assert!(
+        names.contains(&"youtube_search_ui"),
+        "upstream MCP App tools must pass through while ordinary raw tools stay hidden"
+    );
     assert!(!names.contains(&"youtube_probe"));
 }
 
@@ -3155,7 +3378,77 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
 }
 
 #[tokio::test]
-async fn app_visible_callbacks_are_hidden_but_directly_callable_with_read_scope() {
+async fn destructive_direct_mcp_app_tools_require_execute_scope() {
+    let upstream_name: Arc<str> = Arc::from("apps");
+    let mut ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_delete_ui",
+        Some("ui://apps/youtube-delete.html"),
+    );
+    ui_tool.destructive = true;
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "apps",
+        fixture_upstream_entry(
+            "apps",
+            HashMap::from([("youtube_delete_ui".to_string(), ui_tool)]),
+        ),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, fixture_upstream_config("apps"), pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+
+    let read_context = scoped_context(running.peer().clone(), &["lab:read"]);
+    let tools = running
+        .service()
+        .list_tools_impl(None, read_context.clone())
+        .await
+        .expect("read-scope tools");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "youtube_delete_ui"),
+        "read-only catalogs must not advertise destructive upstream MCP App tools"
+    );
+
+    let denied = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("youtube_delete_ui"),
+        read_context,
+    ))
+    .await
+    .expect("read-scope destructive call result");
+    assert!(denied.is_error.unwrap_or(false));
+    let denied_text = denied.content[0].as_text().expect("text").text.as_str();
+    assert!(
+        denied_text.contains("\"kind\":\"forbidden\"") && denied_text.contains("lab:admin"),
+        "destructive app tool must require execute scope, got {denied_text}"
+    );
+
+    let allowed = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("youtube_delete_ui"),
+        scoped_context(running.peer().clone(), &["lab"]),
+    ))
+    .await
+    .expect("execute-scope destructive call result");
+    let allowed_text = allowed.content[0].as_text().expect("text").text.as_str();
+    assert!(
+        allowed_text.contains("upstream_error"),
+        "execute scope should reach normal upstream routing, got {allowed_text}"
+    );
+}
+
+#[tokio::test]
+async fn app_callback_markers_without_ui_owner_stay_hidden_and_uncallable() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut standard = fixture_upstream_tool(&upstream_name, "standard_app_callback", None);
     standard.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
@@ -3198,11 +3491,11 @@ async fn app_visible_callbacks_are_hidden_but_directly_callable_with_read_scope(
         .expect("read-scope tools");
     for name in ["standard_app_callback", "openai_app_callback"] {
         assert!(
-            !advertised
+            advertised
                 .tools
                 .iter()
-                .any(|tool| tool.name.as_ref() == name),
-            "{name} should stay out of the synthetic Code Mode tools/list contract"
+                .all(|tool| tool.name.as_ref() != name),
+            "{name} must not escape raw-tool suppression without an exposed UI owner"
         );
 
         let result = Box::pin(running.service().call_tool_impl(
@@ -3213,13 +3506,11 @@ async fn app_visible_callbacks_are_hidden_but_directly_callable_with_read_scope(
         .expect("call tool result");
         assert!(result.is_error.unwrap_or(false));
         let text = result.content[0].as_text().expect("text").text.as_str();
+        let envelope: Value = serde_json::from_str(text).expect("error envelope");
+        assert_eq!(envelope["error"]["kind"], "not_found");
         assert!(
-            !text.contains("\"kind\":\"forbidden\""),
-            "hidden MCP App callback {name} should pass the direct read-scope bridge gate, got {text}"
-        );
-        assert!(
-            text.contains("upstream_error"),
-            "test fixture has no live peer, so allowed callback {name} should fail at proxy call, got {text}"
+            text.contains("hidden while code_mode mode is enabled"),
+            "callback-only metadata must not create an app-call bypass, got {text}"
         );
     }
 }
@@ -3955,6 +4246,104 @@ async fn call_tool_honors_route_scope_for_mcp_app_sibling_callbacks() {
     assert!(
         !text.contains("blocked_apps"),
         "route-scope denial should not reach the blocked upstream, got {text}"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "proxy-testkit")]
+async fn list_tools_passes_through_subject_scoped_oauth_mcp_apps_in_code_mode() {
+    let upstream_name: Arc<str> = Arc::from("oauth_apps");
+    let ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_search_ui",
+        Some("ui://oauth-apps/youtube-search.html"),
+    );
+    let plain_tool = fixture_upstream_tool(&upstream_name, "youtube_probe", None);
+    let pool = Arc::new(UpstreamPool::new());
+    let upstream = fixture_oauth_upstream_config("oauth_apps");
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        "reader",
+        vec![ui_tool.tool, plain_tool.tool],
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab"]);
+
+    let contract_tools = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let result = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list subject-scoped OAuth tools");
+    assert_eq!(result.tools, contract_tools);
+    let names = result
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"youtube_search_ui"));
+    assert!(!names.contains(&"youtube_probe"));
+}
+
+#[tokio::test]
+#[cfg(feature = "proxy-testkit")]
+async fn list_tools_hides_subject_scoped_oauth_app_when_ui_resource_is_not_exposed() {
+    let upstream_name: Arc<str> = Arc::from("oauth_apps");
+    let ui_tool = fixture_upstream_tool(
+        &upstream_name,
+        "youtube_search_ui",
+        Some("ui://oauth-apps/youtube-search.html"),
+    );
+    let pool = Arc::new(UpstreamPool::new());
+    let mut upstream = fixture_oauth_upstream_config("oauth_apps");
+    upstream.expose_resources = Some(vec!["ui://oauth-apps/allowed-only.html".to_string()]);
+    pool.install_test_subject_tools_for_upstream(&upstream, "reader", vec![ui_tool.tool])
+        .await;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab"]);
+
+    let contract_tools = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let result = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("list subject-scoped OAuth tools");
+    assert_eq!(result.tools, contract_tools);
+    assert!(
+        result
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "youtube_search_ui"),
+        "a subject-scoped app tool must not advertise a UI resource blocked by expose_resources"
     );
 }
 
@@ -5426,7 +5815,10 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
     assert!(code_mode_contract.tools.contains(CODE_MODE_TOOL_NAME));
     assert!(code_mode_contract.tools.contains(CODE_MODE_UI_TOOL_NAME));
     assert!(code_mode_contract.tools.contains(MCP_APP_TOOL_NAME));
-    assert!(!code_mode_contract.tools.contains("youtube_search_ui"));
+    assert!(
+        code_mode_contract.tools.contains("youtube_search_ui"),
+        "upstream MCP App tools pass through under Code Mode"
+    );
     assert!(
         !code_mode_contract.tools.contains("youtube_probe"),
         "raw upstream tools stay hidden under Code Mode"

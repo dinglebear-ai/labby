@@ -158,7 +158,6 @@ enum WidgetCallbackGate {
     },
     Destructive {
         resolved: Box<PreResolvedUpstreamTool>,
-        requires_scope_check: bool,
     },
     Ambiguous {
         valid: Vec<String>,
@@ -685,7 +684,7 @@ impl LabMcpServer {
 
         #[cfg(feature = "gateway")]
         {
-            // ── Always-on MCP App manager. It is root-gateway scoped so a
+            // ── Always-available MCP App control tool. It is root-gateway scoped so a
             // protected subset cannot mutate gateway-global UI visibility.
             if service == MCP_APP_TOOL_NAME {
                 if !self.route_scope.is_root() {
@@ -707,10 +706,34 @@ impl LabMcpServer {
                 }
 
                 let auth = auth_context_from_extensions(&context.extensions);
-                let synthetic_action = if action.is_empty() {
-                    "status"
-                } else {
-                    action.as_str()
+                let synthetic_action = match args.get("action") {
+                    None => "status",
+                    Some(Value::String(value)) if value.is_empty() => "status",
+                    Some(Value::String(value)) => value.as_str(),
+                    Some(_) => {
+                        let envelope = build_error_extra(
+                            &service,
+                            "call_tool",
+                            "invalid_param",
+                            "MCP App action must be a string",
+                            &serde_json::json!({ "param": "action", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                };
+                let params_object = match args.get("params") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Object(value)) => Some(value),
+                    Some(_) => {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App params must be an object",
+                            &serde_json::json!({ "param": "params", "expected": "object" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
                 };
                 if !tool_execute_scope_allowed(auth) {
                     let envelope = build_error_extra(
@@ -723,14 +746,73 @@ impl LabMcpServer {
                     return Ok(error_result_from_envelope(envelope).into());
                 }
 
-                let target = args
-                    .get("target")
-                    .or_else(|| params.get("target"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("codemode");
+                if let (Some(top), Some(nested)) = (
+                    args.get("target"),
+                    params_object.and_then(|params| params.get("target")),
+                ) {
+                    let Some(top) = top.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    let Some(nested) = nested.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "params.target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    if top != nested {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "conflicting MCP App targets were provided",
+                            &serde_json::json!({ "param": "target" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    }
+                }
+
+                let target = if let Some(value) = args.get("target") {
+                    let Some(target) = value.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    target
+                } else if let Some(value) = params_object.and_then(|params| params.get("target")) {
+                    let Some(target) = value.as_str() else {
+                        let envelope = build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "invalid_param",
+                            "MCP App target must be a string",
+                            &serde_json::json!({ "param": "params.target", "expected": "string" }),
+                        );
+                        return Ok(error_result_from_envelope(envelope).into());
+                    };
+                    target
+                } else {
+                    "codemode"
+                };
                 if !matches!(
                     target,
-                    "codemode"
+                    "manager"
+                        | "codemode"
                         | "gateway_status"
                         | "server_logs"
                         | "add_server"
@@ -743,7 +825,7 @@ impl LabMcpServer {
                         "invalid_param",
                         &format!("unsupported MCP App target `{target}`"),
                         &serde_json::json!({
-                            "valid": ["codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
+                            "valid": ["manager", "codemode", "gateway_status", "server_logs", "add_server", "settings", "all"]
                         }),
                     );
                     return Ok(error_result_from_envelope(envelope).into());
@@ -838,13 +920,15 @@ impl LabMcpServer {
                     .as_ref()
                     .map_or(previous_apps, |cfg| cfg.mcp_apps);
                 let enabled = match target {
+                    "manager" => enabled_apps.manager,
                     "codemode" => enabled_code_mode,
                     "gateway_status" => enabled_apps.gateway_status,
                     "server_logs" => enabled_apps.server_logs,
                     "add_server" => enabled_apps.add_server,
                     "settings" => enabled_apps.settings,
                     "all" => {
-                        enabled_code_mode
+                        enabled_apps.manager
+                            && enabled_code_mode
                             && enabled_apps.gateway_status
                             && enabled_apps.server_logs
                             && enabled_apps.add_server
@@ -854,6 +938,7 @@ impl LabMcpServer {
                 };
                 let changed = desired.is_some()
                     && match target {
+                        "manager" => previous_apps.manager != enabled_apps.manager,
                         "codemode" => previous_code_mode != enabled_code_mode,
                         "gateway_status" => {
                             previous_apps.gateway_status != enabled_apps.gateway_status
@@ -889,6 +974,10 @@ impl LabMcpServer {
                     "text_tool": CODE_MODE_TOOL_NAME,
                     "ui_tool": CODE_MODE_UI_TOOL_NAME,
                     "apps": {
+                        "manager": {
+                            "enabled": enabled_apps.manager,
+                            "tool": MCP_APP_TOOL_NAME,
+                        },
                         "codemode": {
                             "enabled": enabled_code_mode,
                             "tool": CODE_MODE_UI_TOOL_NAME,
@@ -944,7 +1033,7 @@ impl LabMcpServer {
                     )
                     .into());
                 }
-                if service == CODE_MODE_UI_TOOL_NAME && !self.code_mode_app_state.is_enabled() {
+                if service == CODE_MODE_UI_TOOL_NAME && !self.code_mode_app_enabled_on_mcp().await {
                     let envelope = build_error_extra(
                         &service,
                         "call_tool",
@@ -1290,20 +1379,15 @@ impl LabMcpServer {
                 None
             };
             match widget_callback {
-                Some(WidgetCallbackGate::Destructive {
-                    resolved,
-                    requires_scope_check,
-                }) => {
-                    if requires_scope_check
-                        && !tool_execute_scope_allowed(auth_context_from_extensions(
-                            &context.extensions,
-                        ))
-                    {
+                Some(WidgetCallbackGate::Destructive { resolved }) => {
+                    if !tool_execute_scope_allowed(auth_context_from_extensions(
+                        &context.extensions,
+                    )) {
                         let envelope = build_error_extra(
                             &service,
                             &action,
                             "forbidden",
-                            "hidden-tool widget callbacks require one of scopes: lab, lab:admin",
+                            "destructive MCP App callbacks require one of scopes: lab, lab:admin",
                             &serde_json::json!({
                                 "required_scopes": ["lab", "lab:admin"],
                             }),
@@ -1585,6 +1669,25 @@ impl LabMcpServer {
         request: &CallToolRequestParams,
         context: &RequestContext<RoleServer>,
     ) -> Option<CallToolResponse> {
+        #[cfg(feature = "gateway")]
+        {
+            let auth = auth_context_from_extensions(&context.extensions);
+            if !tool_execute_scope_allowed(auth)
+                && self.code_mode_visibility().await.hides_raw_tools()
+                && request.name.as_ref() != SERVER_LOGS_TOOL_NAME
+                && matches!(
+                    self.resolve_widget_callback_gate(request.name.as_ref(), context)
+                        .await,
+                    Ok(Some(WidgetCallbackGate::Destructive { .. }))
+                )
+            {
+                // Authorization precedes elicitation: a read-only caller must not
+                // be prompted to confirm a destructive app operation they cannot
+                // execute. The normal call path will return `forbidden`.
+                return None;
+            }
+        }
+
         if !self.tool_request_is_destructive(request, context).await {
             return None;
         }
@@ -1882,10 +1985,7 @@ fn classify_widget_callback_candidates(
     }
     .into();
     if resolved.tool.destructive {
-        return Some(WidgetCallbackGate::Destructive {
-            resolved,
-            requires_scope_check,
-        });
+        return Some(WidgetCallbackGate::Destructive { resolved });
     }
 
     Some(WidgetCallbackGate::Allowed {

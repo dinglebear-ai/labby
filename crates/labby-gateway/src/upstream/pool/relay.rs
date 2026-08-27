@@ -1705,8 +1705,9 @@ impl UpstreamPool {
         }
     }
 
-    /// Read one gateway-prefixed resource over a request-scoped relay
-    /// connection, preserving MRTR fields and incomplete responses.
+    /// Read one gateway-prefixed or native MCP App `ui://` resource over a
+    /// request-scoped relay connection, preserving MRTR fields and incomplete
+    /// responses.
     pub async fn read_resource_relayed(
         &self,
         config: &UpstreamConfig,
@@ -1721,14 +1722,15 @@ impl UpstreamPool {
         let started = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
-        let original_uri = match gateway_uri.strip_prefix(&prefix) {
-            Some(uri) => uri.to_string(),
-            None => {
-                return Some(Err(format!(
-                    "resource URI does not match upstream `{}`",
-                    config.name
-                )));
-            }
+        let original_uri = if let Some(uri) = gateway_uri.strip_prefix(&prefix) {
+            uri.to_string()
+        } else if gateway_uri.starts_with("ui://") {
+            gateway_uri.clone()
+        } else {
+            return Some(Err(format!(
+                "resource URI does not match upstream `{}`",
+                config.name
+            )));
         };
         params.uri = original_uri;
         // Same gate as `read_upstream_resource` / `subject_scoped_read_resource`

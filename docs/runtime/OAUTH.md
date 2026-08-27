@@ -872,16 +872,26 @@ instead of one action per upstream tool. `codemode_read` accepts `lab:read`,
 `lab`, or `lab:admin` and can invoke only tools whose live descriptor explicitly
 sets `readOnlyHint: true` without a contradictory `destructiveHint: true`.
 `codemode` and the optional `codemode_ui` require `lab` or `lab:admin` and retain
-full execution authority. On the root gateway, the always-on `mcp_app` manager
-uses the same read/open scopes, while changing Labby-owned app visibility
-requires `lab:admin`. The manager is omitted from protected subset routes so a
-subset-scoped token cannot mutate gateway-global UI visibility.
+full execution authority. On the root gateway, the always-available `mcp_app`
+control tool uses the same read/open scopes, while changing Labby-owned app
+visibility requires `lab:admin`. Its own manager UI is opt-in like every other
+Labby-owned app surface. The control tool is omitted from protected subset routes
+so a subset-scoped token cannot mutate gateway-global UI visibility.
 
-Those approval-facing descriptors do not embed current upstream names, health,
-hints, or counts. Raw upstream MCP App callback descriptors are not advertised
-while synthetic Code Mode is active. Upstream churn therefore changes the live
-catalog discovered inside `codemode.search(...)` / `codemode.describe(...)`,
-not the OAuth connector's Tool JSON or action set.
+Synthetic Code Mode keeps ordinary raw upstream tools out of the approval-facing
+catalog. Upstream MCP App owners and callbacks pass through only when the same
+allowed upstream exposes a real native `ui://` app binding and proxies that
+resource; both `proxy_resources` and `expose_resources` are enforced. Callback
+metadata alone does not escape raw-tool suppression, ambiguous names fail
+closed, and destructive app tools require `lab` or `lab:admin` rather than
+`lab:read`.
+
+For OAuth upstreams, the app tool catalog is taken only from that caller's cached
+subject connection. Native `ui://` reads resolve back to that same subject-bound
+upstream and preserve relay/cancellation metadata; a subject-scoped resource
+policy denial cannot fall through to a global connection. Other upstream churn
+remains discoverable inside `codemode.search(...)` / `codemode.describe(...)`
+without expanding the host Tool JSON.
 
 ## Auth Precedence
 

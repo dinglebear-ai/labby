@@ -845,7 +845,16 @@ mod tests {
         let _guard = crate::config::process_code_mode_test_guard();
         let (manager, path) = test_manager_with_path();
         manager
-            .seed_config_unchecked_for_tests(LabConfig::default().to_gateway_config())
+            .seed_config_unchecked_for_tests(
+                LabConfig {
+                    code_mode: crate::config::CodeModeConfig {
+                        mcp_ui_enabled: true,
+                        ..crate::config::CodeModeConfig::default()
+                    },
+                    ..LabConfig::default()
+                }
+                .to_gateway_config(),
+            )
             .await;
         assert!(manager.code_mode_app_state().is_enabled());
 

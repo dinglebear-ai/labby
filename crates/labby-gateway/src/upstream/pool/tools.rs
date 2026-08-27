@@ -12,11 +12,13 @@ use serde_json::Value;
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::super::types::{
-    UpstreamCapability, UpstreamEnrichmentCatalogEntry, UpstreamHealth, UpstreamRuntimeMetadata,
-    UpstreamTool, UpstreamToolExposureRow,
+    ToolExposurePolicy, UpstreamCapability, UpstreamEnrichmentCatalogEntry, UpstreamHealth,
+    UpstreamRuntimeMetadata, UpstreamTool, UpstreamToolExposureRow,
 };
 use super::UpstreamPool;
-use super::entries::resolve_request_exposure_policy;
+use super::entries::{
+    resolve_request_exposure_policy, resolve_request_resource_exposure_policy, resource_exposed,
+};
 use super::helpers::{SUBJECT_CONN_IDLE_TTL, UpstreamCachedSummary, cached_upstream_tool};
 
 /// Hard cap on the total number of tools returned by a single `healthy_tools()` call.
@@ -74,6 +76,38 @@ fn insert_bounded_upstream_tool(tools: &mut Vec<UpstreamTool>, tool: UpstreamToo
             tools.pop();
         }
     }
+}
+
+fn insert_bounded_unambiguous_upstream_tool(
+    tools: &mut BTreeMap<String, Option<UpstreamTool>>,
+    tool: UpstreamTool,
+    limit: usize,
+) {
+    if limit == 0 {
+        return;
+    }
+    let name = tool.tool.name.to_string();
+    if let Some(existing) = tools.get_mut(&name) {
+        *existing = None;
+        return;
+    }
+    if tools.len() < limit {
+        tools.insert(name, Some(tool));
+        return;
+    }
+    let should_enter = tools
+        .last_key_value()
+        .is_some_and(|(largest, _)| name < *largest);
+    if should_enter {
+        tools.insert(name, Some(tool));
+        tools.pop_last();
+    }
+}
+
+fn finish_unambiguous_upstream_tools(
+    tools: BTreeMap<String, Option<UpstreamTool>>,
+) -> Vec<UpstreamTool> {
+    tools.into_values().flatten().collect::<Vec<_>>()
 }
 
 fn insert_bounded_name(names: &mut Vec<String>, name: String, limit: usize) {
@@ -153,44 +187,6 @@ impl UpstreamPool {
             tracing::warn!(
                 limit = MAX_UPSTREAM_TOOLS,
                 "upstream tool catalog exceeds limit — truncating to cap"
-            );
-        }
-        tools
-    }
-
-    /// Return healthy tools that an MCP App host must advertise.
-    ///
-    /// This includes both tools that own a UI resource and private/app-visible
-    /// callbacks invoked by that resource. Hosts such as Codex reject an app's
-    /// `tools/call` before it reaches Labby when the callback is absent from
-    /// `tools/list`, even though the callback remains hidden from the model.
-    pub async fn healthy_ui_tools_allowed(
-        &self,
-        allowed: Option<&BTreeSet<String>>,
-    ) -> Vec<UpstreamTool> {
-        let catalog = self.catalog.read().await;
-        let mut tools = Vec::new();
-        let mut candidate_count = 0usize;
-        for tool in catalog
-            .iter()
-            .filter(|(name, _)| upstream_allowed(allowed, name))
-            .filter(|(_, entry)| entry.tool_health.is_routable())
-            .filter(|(_, entry)| entry.proxy_resources)
-            .flat_map(|(_, entry)| {
-                entry.tools.values().filter_map(|tool| {
-                    (entry.exposure_policy.matches(tool.tool.name.as_ref())
-                        && tool_is_mcp_app_host_visible(tool))
-                    .then(|| tool.clone())
-                })
-            })
-        {
-            candidate_count = candidate_count.saturating_add(1);
-            insert_bounded_upstream_tool(&mut tools, tool, MAX_UPSTREAM_TOOLS);
-        }
-        if candidate_count > MAX_UPSTREAM_TOOLS {
-            tracing::warn!(
-                limit = MAX_UPSTREAM_TOOLS,
-                "upstream MCP App tool catalog exceeds limit — truncating to cap"
             );
         }
         tools
@@ -287,7 +283,10 @@ impl UpstreamPool {
         let catalog = self.catalog.read().await;
         let mut matches = Vec::new();
         for (upstream_name, entry) in catalog.iter() {
-            if !upstream_allowed(allowed, upstream_name) || !entry.tool_health.is_routable() {
+            if !upstream_allowed(allowed, upstream_name)
+                || !entry.tool_health.is_routable()
+                || !entry.proxy_resources
+            {
                 continue;
             }
             let Some(tool) = entry.tools.get(tool_name) else {
@@ -299,6 +298,10 @@ impl UpstreamPool {
             let has_ui_sibling = entry.tools.values().any(|candidate| {
                 entry.exposure_policy.matches(candidate.tool.name.as_ref())
                     && tool_has_mcp_app_ui_resource(candidate)
+                    && mcp_tool_resource_bindings_are_exposed(
+                        &candidate.tool,
+                        &entry.resource_exposure_policy,
+                    )
             });
             if has_ui_sibling {
                 matches.push((upstream_name.clone(), tool.clone()));
@@ -411,6 +414,193 @@ impl UpstreamPool {
             by_upstream.entry(upstream).or_default().push(tool);
         }
         by_upstream.into_iter().collect()
+    }
+
+    /// Return the complete cached MCP App tool contract for one request,
+    /// combining global and subject-scoped OAuth upstreams before resolving
+    /// duplicate names.
+    ///
+    /// The result is cache-only, exposure-aware, resource-backed, and bounded.
+    /// A name claimed by more than one eligible upstream is omitted entirely
+    /// because MCP `tools/call` has no upstream discriminator and execution
+    /// would correctly reject that name as ambiguous.
+    pub async fn cached_mcp_app_tools_allowed(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+        oauth_configs: &[UpstreamConfig],
+        oauth_subject: Option<&str>,
+        limit: usize,
+    ) -> Vec<UpstreamTool> {
+        let mut tools = BTreeMap::<String, Option<UpstreamTool>>::new();
+        let mut candidate_count = 0usize;
+        {
+            let catalog = self.catalog.read().await;
+            for (_, entry) in catalog.iter().filter(|(name, entry)| {
+                upstream_allowed(allowed, name)
+                    && entry.tool_health.is_routable()
+                    && entry.proxy_resources
+            }) {
+                let has_exposed_owner = entry.tools.values().any(|candidate| {
+                    entry.exposure_policy.matches(candidate.tool.name.as_ref())
+                        && mcp_tool_resource_bindings(&candidate.tool)
+                            .into_iter()
+                            .any(|uri| uri.is_some())
+                        && mcp_tool_resource_bindings_are_exposed(
+                            &candidate.tool,
+                            &entry.resource_exposure_policy,
+                        )
+                });
+                for tool in entry.tools.values() {
+                    if !entry.exposure_policy.matches(tool.tool.name.as_ref())
+                        || !mcp_tool_is_mcp_app_host_visible_with_owner(
+                            &tool.tool,
+                            has_exposed_owner,
+                            &entry.resource_exposure_policy,
+                        )
+                    {
+                        continue;
+                    }
+                    candidate_count = candidate_count.saturating_add(1);
+                    insert_bounded_unambiguous_upstream_tool(&mut tools, tool.clone(), limit);
+                }
+            }
+        }
+
+        if let Some(subject) = oauth_subject {
+            let cache = self.subject_connections.read().await;
+            for config in oauth_configs.iter().filter(|config| {
+                config.enabled
+                    && config.oauth.is_some()
+                    && config.proxy_resources
+                    && upstream_allowed(allowed, &config.name)
+            }) {
+                let key = (config.name.clone(), subject.to_string());
+                let Some(entry) = cache.get(&key) else {
+                    continue;
+                };
+                if entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL {
+                    continue;
+                }
+                let tool_policy =
+                    resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+                let resource_policy = resolve_request_resource_exposure_policy(
+                    &config.name,
+                    config.expose_resources.clone(),
+                );
+                let has_exposed_owner = entry.tools.iter().any(|candidate| {
+                    tool_policy.matches(candidate.name.as_ref())
+                        && mcp_tool_resource_bindings(candidate)
+                            .into_iter()
+                            .any(|uri| uri.is_some())
+                        && mcp_tool_resource_bindings_are_exposed(candidate, &resource_policy)
+                });
+                let upstream_name = std::sync::Arc::<str>::from(config.name.as_str());
+                for tool in &entry.tools {
+                    if !tool_policy.matches(tool.name.as_ref())
+                        || !mcp_tool_is_mcp_app_host_visible_with_owner(
+                            tool,
+                            has_exposed_owner,
+                            &resource_policy,
+                        )
+                    {
+                        continue;
+                    }
+                    candidate_count = candidate_count.saturating_add(1);
+                    let (_, routed) = cached_upstream_tool(tool.clone(), &upstream_name);
+                    insert_bounded_unambiguous_upstream_tool(&mut tools, routed, limit);
+                }
+            }
+        }
+
+        if candidate_count > limit {
+            tracing::warn!(
+                limit,
+                candidate_count,
+                "combined MCP App tool catalog exceeds limit — truncating to cap"
+            );
+        }
+        finish_unambiguous_upstream_tools(tools)
+    }
+
+    /// Resolve the cached OAuth owner of one native MCP App `ui://` resource
+    /// without crossing subjects or cold-connecting an upstream.
+    ///
+    /// Tool metadata is authoritative ownership evidence. The URI authority is
+    /// retained as the same compatibility fallback used by the global catalog
+    /// path for dynamic result UIs that are not present in `tools/list`.
+    pub async fn cached_subject_scoped_ui_resource_owner(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        uri: &str,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> Result<Option<UpstreamConfig>, String> {
+        let authority = mcp_ui_uri_authority(uri);
+        let global_metadata_owner = {
+            let catalog = self.catalog.read().await;
+            catalog
+                .iter()
+                .filter(|(name, entry)| {
+                    upstream_allowed(allowed, name)
+                        && entry.tool_health.is_routable()
+                        && entry.proxy_resources
+                })
+                .any(|(_, entry)| {
+                    entry.tools.values().any(|tool| {
+                        entry.exposure_policy.matches(tool.tool.name.as_ref())
+                            && mcp_tool_owns_mcp_app_resource(&tool.tool, uri)
+                            && resource_exposed(&entry.resource_exposure_policy, uri)
+                    })
+                })
+        };
+        let cache = self.subject_connections.read().await;
+        let mut owner: Option<UpstreamConfig> = None;
+        for config in configs
+            .iter()
+            .filter(|config| config.enabled && config.oauth.is_some())
+        {
+            let authority_owner = authority == Some(config.name.as_str());
+            let key = (config.name.clone(), subject.to_string());
+            let metadata_owner = cache.get(&key).is_some_and(|entry| {
+                if entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL {
+                    return false;
+                }
+                let tool_policy =
+                    resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+                entry.tools.iter().any(|tool| {
+                    tool_policy.matches(tool.name.as_ref())
+                        && mcp_tool_owns_mcp_app_resource(tool, uri)
+                })
+            });
+            if global_metadata_owner && metadata_owner {
+                return Err(format!(
+                    "native UI resource `{uri}` is claimed by both global and OAuth upstream catalogs"
+                ));
+            }
+            if !metadata_owner && (!authority_owner || global_metadata_owner) {
+                continue;
+            }
+            let resource_policy = resolve_request_resource_exposure_policy(
+                &config.name,
+                config.expose_resources.clone(),
+            );
+            if !config.proxy_resources || !resource_exposed(&resource_policy, uri) {
+                return Err(format!(
+                    "native UI resource `{uri}` is not exposed by OAuth upstream `{}`",
+                    config.name
+                ));
+            }
+            if let Some(existing) = owner.as_ref()
+                && existing.name != config.name
+            {
+                return Err(format!(
+                    "native UI resource `{uri}` is claimed by multiple OAuth upstreams: `{}` and `{}`",
+                    existing.name, config.name
+                ));
+            }
+            owner = Some(config.clone());
+        }
+        Ok(owner)
     }
 
     /// Return the OAuth tools visible to one subject in the same routed form
@@ -793,56 +983,63 @@ impl UpstreamPool {
         }
         names
     }
-
-    /// Return just the names of healthy MCP App host-visible tools allowed by a route scope.
-    ///
-    /// Mirrors `healthy_ui_tools_allowed` without cloning tool schemas, for
-    /// downstream `tools/list_changed` snapshot comparisons.
-    pub async fn healthy_ui_tool_names_allowed(
-        &self,
-        allowed: Option<&BTreeSet<String>>,
-    ) -> Vec<String> {
-        let catalog = self.catalog.read().await;
-        let mut names = Vec::new();
-        for name in catalog
-            .iter()
-            .filter(|(name, entry)| {
-                upstream_allowed(allowed, name) && entry.tool_health.is_routable()
-            })
-            .filter(|(_, entry)| entry.proxy_resources)
-            .flat_map(|(_, entry)| {
-                entry.tools.values().filter_map(|tool| {
-                    (entry.exposure_policy.matches(tool.tool.name.as_ref())
-                        && tool_is_mcp_app_host_visible(tool))
-                    .then(|| tool.tool.name.to_string())
-                })
-            })
-        {
-            insert_bounded_name(&mut names, name, MAX_UPSTREAM_TOOLS);
-        }
-        names
-    }
 }
 
-pub(super) fn tool_mcp_app_ui_resource_uri(tool: &UpstreamTool) -> Option<&str> {
-    tool.tool
+fn mcp_ui_uri_authority(uri: &str) -> Option<&str> {
+    let rest = uri.strip_prefix("ui://")?;
+    let authority = rest.split('/').next()?;
+    (!authority.is_empty()).then_some(authority)
+}
+
+fn mcp_tool_resource_bindings(tool: &rmcp::model::Tool) -> [Option<&str>; 2] {
+    let standard = tool
         .meta
         .as_ref()
         .and_then(|meta| meta.0.get("ui"))
         .and_then(|ui| ui.get("resourceUri"))
         .and_then(Value::as_str)
-        .filter(|uri| uri.starts_with("ui://"))
+        .filter(|uri| uri.starts_with("ui://"));
+    let openai = tool
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.0.get("openai/outputTemplate"))
+        .and_then(Value::as_str)
+        .filter(|uri| uri.starts_with("ui://"));
+    [standard, openai]
 }
 
-pub fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
-    tool_mcp_app_ui_resource_uri(tool).is_some()
+pub(super) fn tool_mcp_app_ui_resource_uri(tool: &UpstreamTool) -> Option<&str> {
+    mcp_tool_resource_bindings(&tool.tool)
+        .into_iter()
+        .flatten()
+        .next()
 }
 
-pub fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
-    if tool_has_mcp_app_ui_resource(tool) {
-        return true;
-    }
-    let Some(meta) = tool.tool.meta.as_ref() else {
+pub(super) fn mcp_tool_owns_mcp_app_resource(tool: &rmcp::model::Tool, uri: &str) -> bool {
+    mcp_tool_resource_bindings(tool)
+        .into_iter()
+        .flatten()
+        .any(|candidate| candidate == uri)
+}
+
+fn mcp_tool_resource_bindings_are_exposed(
+    tool: &rmcp::model::Tool,
+    policy: &ToolExposurePolicy,
+) -> bool {
+    mcp_tool_resource_bindings(tool)
+        .into_iter()
+        .flatten()
+        .all(|uri| resource_exposed(policy, uri))
+}
+
+pub(super) fn tool_has_mcp_app_ui_resource(tool: &UpstreamTool) -> bool {
+    mcp_tool_resource_bindings(&tool.tool)
+        .into_iter()
+        .any(|uri| uri.is_some())
+}
+
+fn mcp_tool_is_mcp_app_callback(tool: &rmcp::model::Tool) -> bool {
+    let Some(meta) = tool.meta.as_ref() else {
         return false;
     };
     let app_visible = meta
@@ -857,6 +1054,64 @@ pub fn tool_is_mcp_app_host_visible(tool: &UpstreamTool) -> bool {
         .and_then(Value::as_bool)
         == Some(true);
     app_visible || openai_widget_callback
+}
+
+fn mcp_tool_is_mcp_app_host_visible_with_owner(
+    tool: &rmcp::model::Tool,
+    has_exposed_owner: bool,
+    resource_policy: &ToolExposurePolicy,
+) -> bool {
+    if mcp_tool_resource_bindings(tool)
+        .into_iter()
+        .any(|uri| uri.is_some())
+    {
+        return mcp_tool_resource_bindings_are_exposed(tool, resource_policy);
+    }
+    has_exposed_owner && mcp_tool_is_mcp_app_callback(tool)
+}
+
+fn upstream_has_exposed_mcp_app_owner(
+    tools: &[UpstreamTool],
+    resource_policy: &ToolExposurePolicy,
+) -> bool {
+    tools.iter().any(|candidate| {
+        mcp_tool_resource_bindings(&candidate.tool)
+            .into_iter()
+            .any(|uri| uri.is_some())
+            && mcp_tool_resource_bindings_are_exposed(&candidate.tool, resource_policy)
+    })
+}
+
+pub fn upstream_has_mcp_app_ui_owner_for_config(
+    tools: &[UpstreamTool],
+    config: &UpstreamConfig,
+) -> bool {
+    if !config.proxy_resources {
+        return false;
+    }
+    let resource_policy =
+        resolve_request_resource_exposure_policy(&config.name, config.expose_resources.clone());
+    upstream_has_exposed_mcp_app_owner(tools, &resource_policy)
+}
+
+pub fn tool_is_mcp_app_host_visible_for_config(
+    tool: &UpstreamTool,
+    upstream_tools: &[UpstreamTool],
+    config: &UpstreamConfig,
+) -> bool {
+    if !config.proxy_resources {
+        return false;
+    }
+    let resource_policy =
+        resolve_request_resource_exposure_policy(&config.name, config.expose_resources.clone());
+    if mcp_tool_resource_bindings(&tool.tool)
+        .into_iter()
+        .any(|uri| uri.is_some())
+    {
+        return mcp_tool_resource_bindings_are_exposed(&tool.tool, &resource_policy);
+    }
+    mcp_tool_is_mcp_app_callback(&tool.tool)
+        && upstream_has_exposed_mcp_app_owner(upstream_tools, &resource_policy)
 }
 
 #[cfg(test)]
@@ -889,6 +1144,7 @@ mod tests {
                 "standard_app_callback",
                 "openai_public_callback",
                 "openai_private_callback",
+                "openai_render_tool",
                 "unrelated_model_tool",
             ],
         );
@@ -923,6 +1179,14 @@ mod tests {
             serde_json::json!(true),
         )])));
         tools
+            .get_mut("openai_render_tool")
+            .expect("OpenAI render tool")
+            .tool
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
+            "openai/outputTemplate".to_string(),
+            serde_json::json!("ui://quick-shell/openai-widget.html"),
+        )])));
+        tools
             .get_mut("openai_private_callback")
             .expect("OpenAI private callback")
             .tool
@@ -942,7 +1206,9 @@ mod tests {
             .await
             .insert("quick-shell".to_string(), entry);
 
-        let listed = pool.healthy_ui_tools_allowed(None).await;
+        let listed = pool
+            .cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+            .await;
         let mut names = listed
             .iter()
             .map(|tool| tool.tool.name.as_ref())
@@ -955,9 +1221,312 @@ mod tests {
                 "open_quick_shell",
                 "openai_private_callback",
                 "openai_public_callback",
+                "openai_render_tool",
                 "standard_app_callback",
             ],
             "the host needs standard and compatibility app callbacks in tools/list, while unrelated model tools stay hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn code_mode_ui_catalog_rejects_callback_markers_without_an_app_owner() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("apps");
+        let mut tools = test_upstream_tools(&upstream_name, &["callback_only"]);
+        tools.get_mut("callback_only").expect("callback").tool.meta =
+            Some(MetaObject(serde_json::Map::from_iter([(
+                "ui".to_string(),
+                serde_json::json!({ "visibility": ["app"] }),
+            )])));
+        let mut entry = healthy_in_process_entry(Arc::clone(&upstream_name), tools);
+        entry.proxy_resources = true;
+        pool.catalog.write().await.insert("apps".to_string(), entry);
+
+        assert!(
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .is_empty()
+        );
+        assert!(
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .into_iter()
+                .map(|tool| tool.tool.name.to_string())
+                .collect::<Vec<_>>()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn code_mode_ui_catalog_respects_resource_exposure_for_bound_widgets() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("apps");
+        let mut tools = test_upstream_tools(&upstream_name, &["render_app"]);
+        tools.get_mut("render_app").expect("render app").tool.meta =
+            Some(MetaObject(serde_json::Map::from_iter([(
+                "ui".to_string(),
+                serde_json::json!({ "resourceUri": "ui://apps/widget.html" }),
+            )])));
+        let mut entry = healthy_in_process_entry(Arc::clone(&upstream_name), tools);
+        entry.proxy_resources = true;
+        entry.resource_exposure_policy =
+            ToolExposurePolicy::from_patterns(vec!["file:///allowed-only".into()])
+                .expect("resource policy");
+        pool.catalog.write().await.insert("apps".to_string(), entry);
+
+        assert!(
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .is_empty()
+        );
+        assert!(
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .into_iter()
+                .map(|tool| tool.tool.name.to_string())
+                .collect::<Vec<_>>()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn code_mode_ui_catalog_omits_ambiguous_tool_names() {
+        let pool = UpstreamPool::new();
+        for upstream in ["alpha", "beta"] {
+            let upstream_name: Arc<str> = Arc::from(upstream);
+            let mut tools = test_upstream_tools(&upstream_name, &["shared_app"]);
+            tools.get_mut("shared_app").expect("shared app").tool.meta =
+                Some(MetaObject(serde_json::Map::from_iter([(
+                    "ui".to_string(),
+                    serde_json::json!({ "resourceUri": format!("ui://{upstream}/widget.html") }),
+                )])));
+            let mut entry = healthy_in_process_entry(Arc::clone(&upstream_name), tools);
+            entry.proxy_resources = true;
+            pool.catalog
+                .write()
+                .await
+                .insert(upstream.to_string(), entry);
+        }
+
+        assert!(
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .is_empty(),
+            "an ambiguous app tool name must not advertise an arbitrary upstream descriptor"
+        );
+        assert!(
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .into_iter()
+                .map(|tool| tool.tool.name.to_string())
+                .collect::<Vec<_>>()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn combined_mcp_app_catalog_omits_global_oauth_name_collisions() {
+        let pool = UpstreamPool::new();
+
+        let global_name: Arc<str> = Arc::from("global-apps");
+        let mut global_tools = test_upstream_tools(&global_name, &["shared_app"]);
+        global_tools
+            .get_mut("shared_app")
+            .expect("global app")
+            .tool
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://global-apps/widget.html" }),
+        )])));
+        let mut global_entry = healthy_in_process_entry(global_name, global_tools);
+        global_entry.proxy_resources = true;
+        pool.catalog
+            .write()
+            .await
+            .insert("global-apps".to_string(), global_entry);
+
+        let oauth_name: Arc<str> = Arc::from("oauth-apps");
+        let mut oauth_tools = test_upstream_tools(&oauth_name, &["shared_app"]);
+        oauth_tools
+            .get_mut("shared_app")
+            .expect("oauth app")
+            .tool
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://oauth-apps/widget.html" }),
+        )])));
+        let mut oauth = named_test_upstream_config("oauth-apps");
+        oauth.proxy_resources = true;
+        oauth.oauth = Some(labby_runtime::gateway_config::UpstreamOauthConfig {
+            mode: labby_runtime::gateway_config::UpstreamOauthMode::AuthorizationCodePkce,
+            registration: labby_runtime::gateway_config::UpstreamOauthRegistration::Preregistered {
+                client_id: "client-id".to_string(),
+                client_secret_env: None,
+            },
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        });
+        pool.install_test_subject_tools_for_upstream(
+            &oauth,
+            "alice",
+            oauth_tools.into_values().map(|tool| tool.tool).collect(),
+        )
+        .await;
+
+        assert!(
+            pool.cached_mcp_app_tools_allowed(
+                None,
+                std::slice::from_ref(&oauth),
+                Some("alice"),
+                MAX_UPSTREAM_TOOLS,
+            )
+            .await
+            .is_empty(),
+            "a tool name claimed by global and OAuth upstreams must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_ui_resource_owner_rejects_global_metadata_collision() {
+        let pool = UpstreamPool::new();
+
+        let global_name: Arc<str> = Arc::from("global-apps");
+        let mut global_tools = test_upstream_tools(&global_name, &["global_render"]);
+        global_tools
+            .get_mut("global_render")
+            .expect("global render")
+            .tool
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://oauth-apps/widget.html" }),
+        )])));
+        let mut global_entry = healthy_in_process_entry(global_name, global_tools);
+        global_entry.proxy_resources = true;
+        pool.catalog
+            .write()
+            .await
+            .insert("global-apps".to_string(), global_entry);
+
+        let oauth_name: Arc<str> = Arc::from("oauth-apps");
+        let mut oauth_tools = test_upstream_tools(&oauth_name, &["oauth_render"]);
+        oauth_tools
+            .get_mut("oauth_render")
+            .expect("oauth render")
+            .tool
+            .meta = Some(MetaObject(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://oauth-apps/widget.html" }),
+        )])));
+        let mut oauth = named_test_upstream_config("oauth-apps");
+        oauth.proxy_resources = true;
+        oauth.oauth = Some(labby_runtime::gateway_config::UpstreamOauthConfig {
+            mode: labby_runtime::gateway_config::UpstreamOauthMode::AuthorizationCodePkce,
+            registration: labby_runtime::gateway_config::UpstreamOauthRegistration::Preregistered {
+                client_id: "client-id".to_string(),
+                client_secret_env: None,
+            },
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        });
+        pool.install_test_subject_tools_for_upstream(
+            &oauth,
+            "alice",
+            oauth_tools.into_values().map(|tool| tool.tool).collect(),
+        )
+        .await;
+
+        assert!(
+            pool.cached_subject_scoped_ui_resource_owner(
+                std::slice::from_ref(&oauth),
+                "alice",
+                "ui://oauth-apps/widget.html",
+                None,
+            )
+            .await
+            .is_err(),
+            "the same native UI URI claimed by global and OAuth metadata must fail closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_mcp_app_listing_owner_and_native_read_share_subject_scope() {
+        let pool = UpstreamPool::new();
+        let upstream_name: Arc<str> = Arc::from("oauth-apps");
+        let mut tools = test_upstream_tools(&upstream_name, &["render_app"]);
+        let tool = tools.get_mut("render_app").expect("render app");
+        tool.tool.meta = Some(MetaObject(serde_json::Map::from_iter([(
+            "ui".to_string(),
+            serde_json::json!({ "resourceUri": "ui://oauth-apps/widget.html" }),
+        )])));
+        let tool = tool.tool.clone();
+        let mut config = named_test_upstream_config("oauth-apps");
+        config.proxy_resources = true;
+        config.oauth = Some(labby_runtime::gateway_config::UpstreamOauthConfig {
+            mode: labby_runtime::gateway_config::UpstreamOauthMode::AuthorizationCodePkce,
+            registration: labby_runtime::gateway_config::UpstreamOauthRegistration::Preregistered {
+                client_id: "client-id".to_string(),
+                client_secret_env: None,
+            },
+            scopes: None,
+            credential: Default::default(),
+            prefer_client_metadata_document: None,
+        });
+        pool.install_test_subject_tools_for_upstream(&config, "alice", vec![tool])
+            .await;
+
+        let listed = pool
+            .cached_mcp_app_tools_allowed(
+                None,
+                std::slice::from_ref(&config),
+                Some("alice"),
+                MAX_UPSTREAM_TOOLS,
+            )
+            .await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].tool.name.as_ref(), "render_app");
+        let owner = pool
+            .cached_subject_scoped_ui_resource_owner(
+                std::slice::from_ref(&config),
+                "alice",
+                "ui://oauth-apps/widget.html",
+                None,
+            )
+            .await
+            .expect("unambiguous OAuth UI owner")
+            .expect("OAuth UI owner");
+        assert_eq!(owner.name, "oauth-apps");
+
+        pool.subject_scoped_read_resource_request(
+            &config,
+            "alice",
+            rmcp::model::ReadResourceRequestParams::new("ui://oauth-apps/widget.html"),
+        )
+        .await
+        .expect("native OAuth UI resource should use the subject-scoped connection");
+
+        config.expose_resources = Some(vec!["ui://oauth-apps/allowed-only.html".to_string()]);
+        assert!(
+            pool.cached_mcp_app_tools_allowed(
+                None,
+                std::slice::from_ref(&config),
+                Some("alice"),
+                MAX_UPSTREAM_TOOLS,
+            )
+            .await
+            .is_empty()
+        );
+        assert!(
+            pool.cached_subject_scoped_ui_resource_owner(
+                std::slice::from_ref(&config),
+                "alice",
+                "ui://oauth-apps/widget.html",
+                None,
+            )
+            .await
+            .is_err(),
+            "an OAuth-owned URI blocked by expose_resources must fail closed instead of falling back to a global connection"
         );
     }
 
@@ -1310,7 +1879,11 @@ mod tests {
 
         // Only the UI tool is individually visible under Code Mode.
         assert_eq!(
-            pool.healthy_ui_tool_names_allowed(None).await,
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .into_iter()
+                .map(|tool| tool.tool.name.to_string())
+                .collect::<Vec<_>>(),
             vec!["youtube_search_ui".to_string()]
         );
 
@@ -1325,7 +1898,11 @@ mod tests {
 
         // Code-Mode projection is unchanged → reconcile diff stays tools_changed=false.
         assert_eq!(
-            pool.healthy_ui_tool_names_allowed(None).await,
+            pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
+                .await
+                .into_iter()
+                .map(|tool| tool.tool.name.to_string())
+                .collect::<Vec<_>>(),
             vec!["youtube_search_ui".to_string()],
             "raw upstream tool churn must not alter the Code-Mode-visible tool set"
         );

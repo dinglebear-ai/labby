@@ -669,7 +669,14 @@ impl LabMcpServer {
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
         #[cfg(feature = "gateway")]
-        let mcp_apps_config = self.mcp_apps_config().await;
+        let (code_mode_app_enabled, mcp_apps_config) =
+            crate::mcp::peer_contract::mcp_app_visibility_snapshot(
+                self.gateway_manager.as_deref(),
+                &self.code_mode_app_state,
+            )
+            .await;
+        #[cfg(not(feature = "gateway"))]
+        let code_mode_app_enabled = self.code_mode_app_state.is_enabled();
         #[cfg(feature = "gateway")]
         let server_logs_app_enabled = mcp_apps_config.server_logs;
         #[cfg(not(feature = "gateway"))]
@@ -886,7 +893,11 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if !resources.finished() && self.route_scope.is_root() && tool_execute_scope_allowed(auth) {
+        if !resources.finished()
+            && mcp_apps_config.manager
+            && self.route_scope.is_root()
+            && tool_execute_scope_allowed(auth)
+        {
             for resource in mcp_apps_app_resources() {
                 resources.accept(resource);
                 if resources.finished() {
@@ -896,7 +907,7 @@ impl LabMcpServer {
         }
 
         if !resources.finished()
-            && self.code_mode_app_state.is_enabled()
+            && code_mode_app_enabled
             && code_mode_app_resources_visible(
                 self.code_mode_visibility().await.exposes_synthetic_tools(),
                 auth,
@@ -913,7 +924,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         if !resources.finished()
             && admin_app_resources_visible(auth)
-            && self.gateway_status_app_available_on_mcp().await
+            && self
+                .gateway_status_app_available_on_mcp_with(mcp_apps_config)
+                .await
         {
             for resource in gateway_status_app_resources() {
                 resources.accept(resource);
@@ -955,7 +968,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         if !resources.finished()
             && admin_app_resources_visible(auth)
-            && self.add_server_app_available_on_mcp().await
+            && self
+                .add_server_app_available_on_mcp_with(mcp_apps_config)
+                .await
         {
             for resource in add_server_app_resources() {
                 resources.accept(resource);
@@ -1542,10 +1557,13 @@ impl LabMcpServer {
         // Branch 0: MCP Apps UI resources. This must precede all lab://
         // fallbacks so ui:// has its own exact lookup semantics.
         //
-        // The MCP App manager is always locally owned and must remain readable
-        // even when every managed app surface is disabled.
+        // The `mcp_app` control tool is always locally available, but its own
+        // Labby-owned UI is opt-in like every other Labby-owned MCP App.
         #[cfg(feature = "gateway")]
         if uri.starts_with(MCP_APPS_APP_URI) {
+            if !self.mcp_apps_config().await.manager {
+                return Err(unknown_resource_error(&uri, true));
+            }
             return self
                 .read_mcp_apps_app_resource_impl(&uri, &subject, start, &context)
                 .await
@@ -1626,9 +1644,8 @@ impl LabMcpServer {
             }
             if let Some(pool) = self.current_upstream_pool().await {
                 return self
-                    .read_upstream_ui_resource_impl(&pool, &uri, &subject, start, &context)
-                    .await
-                    .map(Into::into);
+                    .read_upstream_ui_resource_impl(&pool, request, &subject, start, &context)
+                    .await;
             }
             return Err(unknown_resource_error(&uri, true));
         }
@@ -2050,7 +2067,7 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
         if !self.code_mode_visibility().await.exposes_synthetic_tools()
-            || !self.code_mode_app_state.is_enabled()
+            || !self.code_mode_app_enabled_on_mcp().await
         {
             return Err(unknown_resource_error(uri, true));
         }
@@ -2560,7 +2577,7 @@ fn gateway_status_app_resources() -> Vec<Resource> {
 }
 
 #[cfg(feature = "gateway")]
-/// Build the discoverable always-on MCP App manager resource.
+/// Build the discoverable opt-in MCP App manager UI resources.
 fn mcp_apps_app_resources() -> Vec<Resource> {
     mcp_apps_app().listed_resources()
 }
@@ -3055,19 +3072,28 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 crate::config::LabConfig {
                     code_mode: crate::config::CodeModeConfig {
                         enabled: true,
+                        mcp_ui_enabled: true,
                         ..crate::config::CodeModeConfig::default()
+                    },
+                    mcp_apps: crate::config::McpAppsConfig {
+                        manager: true,
+                        add_server: true,
+                        server_logs: true,
+                        gateway_status: true,
+                        settings: true,
                     },
                     ..crate::config::LabConfig::default()
                 }
                 .to_gateway_config(),
             )
             .await;
+        let code_mode_app_state = manager.code_mode_app_state();
         LabMcpServer {
             registry: Arc::new(crate::registry::ToolRegistry::new()),
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
             gateway_manager: Some(manager),
             peers: Default::default(),
-            code_mode_app_state: Default::default(),
+            code_mode_app_state,
             last_listed_tool_contract: Default::default(),
             route_runtime: Default::default(),
             client_registry: Default::default(),
@@ -3420,7 +3446,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
     }
 
     #[tokio::test]
-    async fn code_mode_keeps_upstream_ui_resources_without_advertising_callback_tools() {
+    async fn code_mode_passes_through_upstream_mcp_app_tool_and_resource() {
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
             code_mode_server_with_upstream_ui_resource().await,
@@ -3435,25 +3461,19 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             .list_tools_impl(None, tool_context)
             .await
             .expect("list tools");
-        let codemode_tool = tools
-            .tools
-            .iter()
-            .find(|tool| tool.name.as_ref() == CODE_MODE_UI_TOOL_NAME)
-            .expect("Code Mode UI tool should be listed");
         assert!(
-            codemode_tool
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.0["ui"]["resourceUri"].as_str())
-                .is_some_and(|uri| uri.starts_with(CODE_MODE_APP_URI_PREFIX)),
-            "Code Mode tool must keep its local UI resource: {codemode_tool:?}"
+            tools
+                .tools
+                .iter()
+                .all(|tool| tool.name.as_ref() != CODE_MODE_UI_TOOL_NAME),
+            "Labby-owned Code Mode UI must stay opt-in by default"
         );
         assert!(
             tools
                 .tools
                 .iter()
-                .all(|tool| tool.name.as_ref() != UPSTREAM_UI_TOOL_NAME),
-            "upstream callback tools must not churn the synthetic Code Mode contract"
+                .any(|tool| tool.name.as_ref() == UPSTREAM_UI_TOOL_NAME),
+            "upstream MCP App tools must pass through synthetic Code Mode"
         );
 
         let resources = running
@@ -3468,8 +3488,8 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             .collect::<Vec<_>>();
         assert!(
             uris.iter()
-                .any(|uri| strip_app_version(uri) == CODE_MODE_APP_URI),
-            "Code Mode app resource should be listed alongside upstream UI resources: {uris:?}"
+                .all(|uri| strip_app_version(uri) != CODE_MODE_APP_URI),
+            "Labby-owned Code Mode app resource must stay hidden by default: {uris:?}"
         );
         assert!(
             uris.contains(&UPSTREAM_UI_URI),
@@ -3506,24 +3526,14 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             .expect("complete upstream resource template");
         assert_eq!(completion.completion.values, vec!["sys-completion"]);
 
-        let code_mode_read = complete_resource(
-            running
-                .service()
-                .read_resource_impl(
-                    ReadResourceRequestParams::new(CODE_MODE_APP_URI),
-                    resource_context.clone(),
-                )
-                .await
-                .expect("read Code Mode UI resource"),
-        );
-        let ResourceContents::TextResourceContents {
-            text: code_mode_html,
-            ..
-        } = &code_mode_read.contents[0]
-        else {
-            panic!("expected Code Mode text resource");
-        };
-        assert!(code_mode_html.contains("Lab Code Mode Inspector"));
+        running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(CODE_MODE_APP_URI),
+                resource_context.clone(),
+            )
+            .await
+            .expect_err("disabled Labby-owned Code Mode UI resource must not be readable");
 
         let upstream_read = complete_resource(
             running
@@ -4564,6 +4574,7 @@ if (!probe.connected || !probe.healthy || !probe.empty) {{
 
         for expected in [
             "MCP Apps",
+            "id:\"manager\"",
             "Enable all",
             "Disable all",
             "role='switch'",

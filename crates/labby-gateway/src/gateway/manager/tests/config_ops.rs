@@ -857,9 +857,14 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     let mut manager = GatewayManager::new(path.clone(), runtime.clone());
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
     manager.set_notifier(crate::gateway::types::CatalogChangeNotifier::new(notify_tx));
-    manager
-        .seed_config_unchecked_for_tests(GatewayConfig::default())
-        .await;
+    let mut initial = GatewayConfig::default();
+    initial.code_mode.mcp_ui_enabled = true;
+    initial.mcp_apps.manager = true;
+    initial.mcp_apps.gateway_status = true;
+    initial.mcp_apps.server_logs = true;
+    initial.mcp_apps.add_server = true;
+    initial.mcp_apps.settings = true;
+    manager.seed_config_unchecked_for_tests(initial).await;
     assert!(runtime.current_pool().await.is_none());
 
     let updated = manager
@@ -871,6 +876,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
         .await
         .expect("persist MCP App visibility");
 
+    assert!(!updated.mcp_apps.manager);
     assert!(!updated.code_mode.mcp_ui_enabled);
     assert!(!updated.mcp_apps.gateway_status);
     assert!(!updated.mcp_apps.server_logs);
@@ -899,6 +905,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     );
 
     let persisted = load_gateway_config(&path).expect("load persisted config");
+    assert!(!persisted.mcp_apps.manager);
     assert!(!persisted.code_mode.mcp_ui_enabled);
     assert!(!persisted.mcp_apps.gateway_status);
     assert!(!persisted.mcp_apps.server_logs);
@@ -909,6 +916,7 @@ async fn mcp_app_visibility_setting_persists_notifies_and_skips_pool_rebuild() {
     restarted.seed_config_unchecked_for_tests(persisted).await;
     assert!(!restarted.code_mode_app_state().is_enabled());
     let restarted_apps = restarted.mcp_apps_config().await;
+    assert!(!restarted_apps.manager);
     assert!(!restarted_apps.gateway_status);
     assert!(!restarted_apps.server_logs);
     assert!(!restarted_apps.add_server);

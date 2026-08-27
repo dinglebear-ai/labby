@@ -134,8 +134,10 @@ pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate}
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
-pub use tools::{MAX_UPSTREAM_TOOLS, tool_has_mcp_app_ui_resource, tool_is_mcp_app_host_visible};
-pub(crate) use tools_call_exact::ExactToolCallError;
+pub use tools::{
+    MAX_UPSTREAM_TOOLS, tool_is_mcp_app_host_visible_for_config,
+    upstream_has_mcp_app_ui_owner_for_config,
+};
 // Catalog size caps are used by pool child modules directly via `super::tools::*`.
 // No external consumer references them through this path, so no `pub use` needed.
 

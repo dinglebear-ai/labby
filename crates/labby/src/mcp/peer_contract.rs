@@ -121,14 +121,33 @@ pub(crate) async fn mcp_apps_config(
     }
 }
 
+/// Capture one coherent Labby-owned MCP App visibility snapshot for catalog building.
+#[cfg(feature = "gateway")]
+pub(crate) async fn mcp_app_visibility_snapshot(
+    gateway_manager: Option<&GatewayManager>,
+    fallback_code_mode_app_state: &CodeModeAppState,
+) -> (bool, labby_runtime::gateway_config::McpAppsConfig) {
+    match gateway_manager {
+        Some(manager) => {
+            let config = manager.current_config().await;
+            (config.code_mode.mcp_ui_enabled, config.mcp_apps)
+        }
+        None => (
+            fallback_code_mode_app_state.is_enabled(),
+            labby_runtime::gateway_config::McpAppsConfig::default(),
+        ),
+    }
+}
+
 /// Whether the current route can safely advertise and execute Add Server.
 #[cfg(feature = "gateway")]
 pub(crate) async fn add_server_app_available(
     route_scope: &McpRouteScope,
     gateway_manager: Option<&GatewayManager>,
     registry: &ToolRegistry,
+    apps: labby_runtime::gateway_config::McpAppsConfig,
 ) -> bool {
-    if !mcp_apps_config(gateway_manager).await.add_server {
+    if !apps.add_server {
         return false;
     }
     admin_gateway_app_available(
@@ -146,8 +165,9 @@ pub(crate) async fn gateway_status_app_available(
     route_scope: &McpRouteScope,
     gateway_manager: Option<&GatewayManager>,
     registry: &ToolRegistry,
+    apps: labby_runtime::gateway_config::McpAppsConfig,
 ) -> bool {
-    if !mcp_apps_config(gateway_manager).await.gateway_status {
+    if !apps.gateway_status {
         return false;
     }
     admin_gateway_app_available(route_scope, gateway_manager, registry, &["gateway.list"]).await
@@ -299,8 +319,8 @@ pub(crate) struct PeerContract {
     pub(crate) gateway_manager: Option<Arc<GatewayManager>>,
     pub(crate) route_scope: McpRouteScope,
     /// Whether the optional `codemode_ui` MCP App surface is advertised. The
-    /// text-only `codemode` executor and always-on `mcp_app` manager never
-    /// depend on the inspector switch.
+    /// text-only `codemode` executor and always-available `mcp_app` control tool
+    /// never depend on the inspector switch.
     pub(crate) code_mode_app_state: CodeModeAppState,
     pub(crate) audience: PeerCatalogAudience,
 }
@@ -413,21 +433,29 @@ impl PeerContract {
     }
 
     #[cfg(feature = "gateway")]
-    async fn add_server_app_available(&self) -> bool {
+    async fn add_server_app_available(
+        &self,
+        apps: labby_runtime::gateway_config::McpAppsConfig,
+    ) -> bool {
         add_server_app_available(
             &self.route_scope,
             self.gateway_manager.as_deref(),
             &self.registry,
+            apps,
         )
         .await
     }
 
     #[cfg(feature = "gateway")]
-    async fn gateway_status_app_available(&self) -> bool {
+    async fn gateway_status_app_available(
+        &self,
+        apps: labby_runtime::gateway_config::McpAppsConfig,
+    ) -> bool {
         gateway_status_app_available(
             &self.route_scope,
             self.gateway_manager.as_deref(),
             &self.registry,
+            apps,
         )
         .await
     }
@@ -491,6 +519,10 @@ impl PeerContract {
         let visibility = self.code_mode_visibility().await;
         let hide_raw_tools = visibility.hides_raw_tools();
         #[cfg(feature = "gateway")]
+        let (code_mode_app_enabled, mcp_apps_config) =
+            mcp_app_visibility_snapshot(self.gateway_manager.as_deref(), &self.code_mode_app_state)
+                .await;
+        #[cfg(feature = "gateway")]
         if !hide_raw_tools {
             self.ensure_protected_subset_tools().await;
         }
@@ -500,7 +532,7 @@ impl PeerContract {
         let server_logs_app_visible = {
             #[cfg(feature = "gateway")]
             {
-                self.audience.admin_apps_visible && self.mcp_apps_config().await.server_logs
+                self.audience.admin_apps_visible && mcp_apps_config.server_logs
             }
             #[cfg(not(feature = "gateway"))]
             {
@@ -576,7 +608,7 @@ impl PeerContract {
                 advertised_names.insert(tool.name.as_ref().to_string());
                 descriptors.push(tool);
 
-                if self.code_mode_app_state.is_enabled() {
+                if code_mode_app_enabled {
                     let tool = self
                         .registry
                         .permanent_tools()
@@ -588,21 +620,17 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if matches!(project_shadow, ProjectDiscoveryShadow::Legacy)
-            && self.route_scope.is_root()
-            && self.audience.code_mode_execute_allowed
-        {
-            let tool = self.registry.permanent_tools().mcp_app_tool();
+        if self.route_scope.is_root() && self.audience.code_mode_execute_allowed {
+            let tool = self
+                .registry
+                .permanent_tools()
+                .mcp_app_tool(mcp_apps_config.manager);
             advertised_names.insert(MCP_APP_TOOL_NAME.to_string());
             descriptors.push(tool);
         }
 
         #[cfg(feature = "gateway")]
-        if self.audience.admin_apps_visible
-            && self.add_server_app_available().await
-            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
-                || project_shadow.allows_builtin_service("gateway", SystemTime::now())
-                    == Some(true))
+        if self.audience.admin_apps_visible && self.add_server_app_available(mcp_apps_config).await
         {
             let tool = self.registry.permanent_tools().add_server_tool();
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
@@ -611,10 +639,7 @@ impl PeerContract {
 
         #[cfg(feature = "gateway")]
         if self.audience.admin_apps_visible
-            && self.gateway_status_app_available().await
-            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
-                || project_shadow.allows_builtin_service("gateway", SystemTime::now())
-                    == Some(true))
+            && self.gateway_status_app_available(mcp_apps_config).await
         {
             let tool = self.registry.permanent_tools().gateway_status_tool();
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
@@ -623,7 +648,7 @@ impl PeerContract {
 
         #[cfg(feature = "gateway")]
         if self.audience.admin_apps_visible
-            && self.mcp_apps_config().await.settings
+            && mcp_apps_config.settings
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await
             && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
@@ -635,12 +660,39 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if !hide_raw_tools && let Some(pool) = self.current_upstream_pool().await {
+        if self.route_scope.exposes_tools()
+            && let Some(pool) = self.current_upstream_pool().await
+        {
             let mut upstream_tool_count = 0usize;
-            let upstream_tools = pool
-                .healthy_tools_allowed(self.route_scope.allowed_upstreams())
-                .await;
+            let oauth_subject = self.audience.oauth_subject.as_deref();
+            let oauth_configs = if oauth_subject.is_some() {
+                self.route_scoped_oauth_upstream_configs().await
+            } else {
+                Vec::new()
+            };
+            let upstream_tools = if hide_raw_tools {
+                if self.route_scope.exposes_resources() {
+                    pool.cached_mcp_app_tools_allowed(
+                        self.route_scope.allowed_upstreams(),
+                        &oauth_configs,
+                        oauth_subject,
+                        MAX_UPSTREAM_TOOLS,
+                    )
+                    .await
+                } else {
+                    Vec::new()
+                }
+            } else {
+                pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
+                    .await
+            };
             for upstream_tool in upstream_tools {
+                if hide_raw_tools
+                    && !self.audience.code_mode_execute_allowed
+                    && upstream_tool.destructive
+                {
+                    continue;
+                }
                 let name = upstream_tool.tool.name.as_ref();
                 if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
                     && project_shadow.allows_upstream_tool(
@@ -661,13 +713,14 @@ impl PeerContract {
                 upstream_tool_count += 1;
             }
 
-            if matches!(project_shadow, ProjectDiscoveryShadow::Legacy)
-                && let Some(subject) = self.audience.oauth_subject.as_deref()
-            {
-                let configs = self.route_scoped_oauth_upstream_configs().await;
+            if !hide_raw_tools && let Some(subject) = oauth_subject {
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, tools) in pool
-                    .cached_subject_scoped_tools_bounded(&configs, subject, subject_tool_limit)
+                    .cached_subject_scoped_tools_bounded(
+                        &oauth_configs,
+                        subject,
+                        subject_tool_limit,
+                    )
                     .await
                 {
                     for tool in tools {
