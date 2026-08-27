@@ -483,7 +483,14 @@ impl LabMcpServer {
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
         #[cfg(feature = "gateway")]
-        let mcp_apps_config = self.mcp_apps_config().await;
+        let (code_mode_app_enabled, mcp_apps_config) =
+            crate::mcp::peer_contract::mcp_app_visibility_snapshot(
+                self.gateway_manager.as_deref(),
+                &self.code_mode_app_state,
+            )
+            .await;
+        #[cfg(not(feature = "gateway"))]
+        let code_mode_app_enabled = self.code_mode_app_state.is_enabled();
         #[cfg(feature = "gateway")]
         let server_logs_app_enabled = mcp_apps_config.server_logs;
         #[cfg(not(feature = "gateway"))]
@@ -659,7 +666,7 @@ impl LabMcpServer {
         }
 
         if !resources.finished()
-            && self.code_mode_app_state.is_enabled()
+            && code_mode_app_enabled
             && code_mode_app_resources_visible(
                 self.code_mode_visibility().await.exposes_synthetic_tools(),
                 auth,
@@ -676,7 +683,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         if !resources.finished()
             && admin_app_resources_visible(auth)
-            && self.gateway_status_app_available_on_mcp().await
+            && self
+                .gateway_status_app_available_on_mcp_with(mcp_apps_config)
+                .await
         {
             for resource in gateway_status_app_resources() {
                 resources.accept(resource);
@@ -718,7 +727,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         if !resources.finished()
             && admin_app_resources_visible(auth)
-            && self.add_server_app_available_on_mcp().await
+            && self
+                .add_server_app_available_on_mcp_with(mcp_apps_config)
+                .await
         {
             for resource in add_server_app_resources() {
                 resources.accept(resource);
@@ -1189,9 +1200,8 @@ impl LabMcpServer {
             }
             if let Some(pool) = self.current_upstream_pool().await {
                 return self
-                    .read_upstream_ui_resource_impl(&pool, &uri, &subject, start, &context)
-                    .await
-                    .map(Into::into);
+                    .read_upstream_ui_resource_impl(&pool, request, &subject, start, &context)
+                    .await;
             }
             return Err(unknown_resource_error(&uri, true));
         }
@@ -1557,7 +1567,7 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
         if !self.code_mode_visibility().await.exposes_synthetic_tools()
-            || !self.code_mode_app_state.is_enabled()
+            || !self.code_mode_app_enabled_on_mcp().await
         {
             return Err(unknown_resource_error(uri, true));
         }

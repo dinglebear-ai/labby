@@ -138,12 +138,21 @@ disabling Settings leaves the underlying `setup` service contract intact. The
 Code Mode inspector retains the existing `code_mode.mcp_ui_enabled` setting;
 the other switches live under `[mcp_apps]`.
 
-Synthetic Code Mode keeps ordinary raw upstream tools hidden, but upstream MCP
-Apps pass through automatically. When an allowed upstream proxies resources,
-Labby preserves its MCP-App host-visible tools and callbacks in `tools/list`,
-keeps their `_meta.ui` metadata intact, and proxies their native `ui://`
-resources. This passthrough is independent of the Labby-owned app toggles; route
-allowlists and `proxy_resources = false` still fail closed.
+Synthetic Code Mode keeps ordinary raw upstream tools hidden, but valid upstream
+MCP Apps pass through automatically. An app owner must carry an exposed native
+`ui://` binding (`ui.resourceUri` or `openai/outputTemplate`) on an allowed
+upstream with `proxy_resources = true`; `expose_resources` applies to that exact
+widget URI. Callback-only markers such as `ui.visibility=["app"]` or
+`openai/widgetAccessible=true` are admitted only when the same upstream has such
+an exposed owner. Duplicate tool names across global or subject-scoped OAuth
+upstreams fail closed and are omitted rather than binding an arbitrary owner.
+
+`lab:read` catalogs omit destructive upstream app tools/callbacks; invoking a
+known destructive app tool requires `lab` or `lab:admin` before any elicitation.
+OAuth app tools and their native `ui://` reads remain bound to the authenticated
+subject's cached connection, and a subject-scoped resource denial is terminal
+rather than falling back to a global connection. These passthrough rules are
+independent of Labby-owned app toggles.
 
 Code Mode may call exposed upstream MCP tools only. Lab actions are not callable
 from inside its sandbox. Large upstream results must be projected or sliced

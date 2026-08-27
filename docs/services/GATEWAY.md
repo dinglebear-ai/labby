@@ -222,9 +222,12 @@ defaults to `false` and must be explicitly enabled. The `mcp_app` control tool
 remains available without UI metadata so an administrator can inspect or restore
 any app, including its own manager UI. App-only mutations persist without
 rebuilding the upstream pool and publish both tool and resource list-changed
-notifications. Upstream MCP Apps are not governed by these switches: allowed
-upstream MCP-App tools/callbacks, `_meta.ui` metadata, and `ui://` resources pass
-through automatically when that upstream proxies resources.
+notifications. Upstream MCP Apps are not governed by these switches. Their app
+tools/callbacks pass through only when an allowed upstream exposes a real
+resource-backed app owner, `proxy_resources` is enabled, and the bound `ui://`
+URI passes `expose_resources`. Callback markers without such an owner and
+ambiguous tool names fail closed. Destructive app tools require execute scope,
+and OAuth app resources remain subject-bound on read.
 
 ### Add Server MCP App
 

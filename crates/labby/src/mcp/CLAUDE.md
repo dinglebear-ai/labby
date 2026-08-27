@@ -229,13 +229,18 @@ Resources are read-only. Do not use them for mutations.
 - `ui://lab/settings/editor` — the admin-only schema-backed settings app bound
   to the synthetic `settings` tool. Its callbacks delegate to the canonical
   `setup settings.*` dispatch actions; do not add a second configuration model.
-- any other `ui://<upstream>/…` — an upstream mcp-ui widget resource (referenced
-  by a tool result's `_meta.ui.resourceUri`). Routed to the owning upstream peer
-  via `pool.read_upstream_ui_resource` (catalog reverse-lookup, native URI
-  preserved). When synthetic Code Mode hides ordinary raw tools, upstream
-  MCP-App host-visible tools/callbacks still pass through automatically if the
-  route allows that upstream and `proxy_resources` is enabled. See
-  `resource_proxy.rs::read_upstream_ui_resource_impl`.
+- any other `ui://<upstream>/…` — an upstream MCP App widget resource. Owners may
+  bind through standard `ui.resourceUri` or OpenAI `openai/outputTemplate`; the
+  native URI is preserved. Under synthetic Code Mode, an owner passes through
+  only when the route allows its upstream, `proxy_resources` is enabled, and the
+  exact binding passes `expose_resources`. Callback-only metadata is accepted
+  only when the same upstream has an exposed owner, ambiguous tool names are
+  omitted, and destructive app tools require execute scope. OAuth app discovery
+  and native `ui://` reads stay on the same subject-scoped cached connection; a
+  subject resource denial must never fall through to a global peer. Keep
+  `handlers_tools.rs` and `peer_contract.rs` on the single combined app-catalog
+  helper so the advertised descriptor set and `tools/list_changed` hash cannot
+  drift. See `resource_proxy.rs::read_upstream_ui_resource_impl`.
 
 ## Transport auth for fs
 

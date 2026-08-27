@@ -26,7 +26,7 @@ use super::helpers::{
     redact_resource_uri_for_logging, upstream_transport,
 };
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
-use super::tools::tool_mcp_app_ui_resource_uri;
+use super::tools::mcp_tool_owns_mcp_app_resource;
 
 impl UpstreamPool {
     /// Read a resource from an upstream, given a prefixed URI.
@@ -123,7 +123,7 @@ impl UpstreamPool {
                         && (entry.resource_uris.iter().any(|cached| cached == uri)
                             || entry.tools.values().any(|tool| {
                                 entry.exposure_policy.matches(tool.tool.name.as_ref())
-                                    && tool_mcp_app_ui_resource_uri(tool) == Some(uri)
+                                    && mcp_tool_owns_mcp_app_resource(&tool.tool, uri)
                             }))
                 })
                 .map(|(name, _)| name.clone())
@@ -312,10 +312,13 @@ impl UpstreamPool {
         let start = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
-        params.uri = gateway_uri
-            .strip_prefix(&prefix)
-            .ok_or_else(|| "resource uri does not match upstream".to_string())?
-            .to_string();
+        params.uri = if let Some(uri) = gateway_uri.strip_prefix(&prefix) {
+            uri.to_string()
+        } else if gateway_uri.starts_with("ui://") {
+            gateway_uri.clone()
+        } else {
+            return Err("resource uri does not match upstream".to_string());
+        };
         // OAuth reads never touch the catalog, so resolve the same fail-closed
         // policy from the live config. Without this the list filter above would
         // be cosmetic: the URI stays readable by anyone who knows it.

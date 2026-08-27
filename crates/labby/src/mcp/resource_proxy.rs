@@ -374,11 +374,80 @@ impl LabMcpServer {
     pub(crate) async fn read_upstream_ui_resource_impl(
         &self,
         pool: &Arc<UpstreamPool>,
-        uri: &str,
+        request: ReadResourceRequestParams,
         subject: &str,
         start: Instant,
         context: &RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let uri = request.uri.clone();
+        let auth = auth_context_from_extensions(&context.extensions);
+        let oauth_subject = oauth_upstream_subject_for_request(auth, self.request_subject(context));
+        if let Some(oauth_subject) = oauth_subject.as_ref() {
+            let configs = self.route_scoped_oauth_upstream_configs().await;
+            match pool
+                .cached_subject_scoped_ui_resource_owner(
+                    &configs,
+                    oauth_subject.as_ref(),
+                    &uri,
+                    self.route_scope.allowed_upstreams(),
+                )
+                .await
+            {
+                Ok(Some(config)) => {
+                    tracing::info!(
+                        surface = "mcp",
+                        service = "labby",
+                        action = "read_resource",
+                        resource_uri = redact_resource_uri_for_logging(&uri),
+                        upstream = %config.name,
+                        route = "subject_scoped_ui",
+                        oauth_subject = redacted_oauth_subject_label(),
+                        "dispatch route selected"
+                    );
+                    return self
+                        .read_subject_scoped_resource_impl(
+                            pool,
+                            &config,
+                            oauth_subject.as_ref(),
+                            request,
+                            subject,
+                            start,
+                            context,
+                        )
+                        .await;
+                }
+                Err(message) => {
+                    let elapsed_ms = start.elapsed().as_millis();
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "labby",
+                        action = "read_resource",
+                        resource_uri = redact_resource_uri_for_logging(&uri),
+                        elapsed_ms,
+                        kind = "subject_scoped_ui_unavailable",
+                        error = %message,
+                        "OAuth UI resource cannot be routed safely"
+                    );
+                    self.emit_dispatch_notification(
+                        context,
+                        "lab",
+                        "read_resource",
+                        elapsed_ms,
+                        DispatchLogOutcome::Failure {
+                            level: LoggingLevel::Warning,
+                            kind: "subject_scoped_ui_unavailable",
+                        },
+                    )
+                    .await;
+                    return Err(ErrorData::resource_not_found(
+                        format!("unavailable UI resource: {uri}"),
+                        None,
+                    ));
+                }
+                Ok(None) => {}
+            }
+        }
+
         tracing::info!(
             surface = "mcp",
             service = "labby",
@@ -388,7 +457,7 @@ impl LabMcpServer {
             "dispatch route selected"
         );
         let result = pool
-            .read_upstream_ui_resource_allowed(uri, self.route_scope.allowed_upstreams())
+            .read_upstream_ui_resource_allowed(&uri, self.route_scope.allowed_upstreams())
             .await;
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {
@@ -407,7 +476,7 @@ impl LabMcpServer {
                     elapsed_ms,
                     "ui resource proxy ok"
                 );
-                (DispatchLogOutcome::Success, Ok(result))
+                (DispatchLogOutcome::Success, Ok(result.into()))
             }
             Some(Err(message)) => {
                 tracing::warn!(

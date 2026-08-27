@@ -19,7 +19,7 @@ use rmcp::service::RequestContext;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
-use crate::dispatch::upstream::pool::{MAX_UPSTREAM_TOOLS, mcp_tool_is_mcp_app_host_visible};
+use crate::dispatch::upstream::pool::MAX_UPSTREAM_TOOLS;
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
 #[cfg(feature = "gateway")]
@@ -138,7 +138,12 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
-        let mcp_apps_config = self.mcp_apps_config().await;
+        let (code_mode_app_enabled, mcp_apps_config) =
+            crate::mcp::peer_contract::mcp_app_visibility_snapshot(
+                self.gateway_manager.as_deref(),
+                &self.code_mode_app_state,
+            )
+            .await;
         let server_logs_app_visible = {
             #[cfg(feature = "gateway")]
             {
@@ -150,11 +155,15 @@ impl LabMcpServer {
             }
         };
         #[cfg(feature = "gateway")]
-        let add_server_app_visible =
-            admin_app_resources_visible(auth) && self.add_server_app_available_on_mcp().await;
+        let add_server_app_visible = admin_app_resources_visible(auth)
+            && self
+                .add_server_app_available_on_mcp_with(mcp_apps_config)
+                .await;
         #[cfg(feature = "gateway")]
-        let gateway_status_app_visible =
-            admin_app_resources_visible(auth) && self.gateway_status_app_available_on_mcp().await;
+        let gateway_status_app_visible = admin_app_resources_visible(auth)
+            && self
+                .gateway_status_app_available_on_mcp_with(mcp_apps_config)
+                .await;
         #[cfg(feature = "gateway")]
         let settings_app_visible = mcp_apps_config.settings
             && admin_app_resources_visible(auth)
@@ -217,7 +226,7 @@ impl LabMcpServer {
                 advertised_names.insert(CODE_MODE_TOOL_NAME.to_string());
                 gateway_tool_count += 1;
 
-                if self.code_mode_app_state.is_enabled() {
+                if code_mode_app_enabled {
                     let codemode_resource_uri =
                         code_mode_app_resource_uri_for_tool(CODE_MODE_UI_TOOL_NAME)
                             .unwrap_or_else(|| "<missing>".to_string());
@@ -291,12 +300,24 @@ impl LabMcpServer {
                 .iter()
                 .filter(|(_, health)| health.is_open())
                 .count();
+            let oauth_subject =
+                oauth_upstream_subject_for_request(auth, self.request_subject(&context));
+            let oauth_configs = if oauth_subject.is_some() {
+                self.route_scoped_oauth_upstream_configs().await
+            } else {
+                Vec::new()
+            };
             let upstream_tools = if !self.route_scope.exposes_tools() {
                 Vec::new()
             } else if hide_raw_tools {
                 if self.route_scope.exposes_resources() {
-                    pool.healthy_ui_tools_allowed(self.route_scope.allowed_upstreams())
-                        .await
+                    pool.cached_mcp_app_tools_allowed(
+                        self.route_scope.allowed_upstreams(),
+                        &oauth_configs,
+                        oauth_subject.as_deref(),
+                        MAX_UPSTREAM_TOOLS,
+                    )
+                    .await
                 } else {
                     Vec::new()
                 }
@@ -305,6 +326,9 @@ impl LabMcpServer {
                     .await
             };
             for ut in upstream_tools {
+                if hide_raw_tools && !tool_execute_scope_allowed(auth) && ut.destructive {
+                    continue;
+                }
                 let tool_name = ut.tool.name.as_ref();
                 if builtin_names.contains(tool_name)
                     || !advertised_names.insert(tool_name.to_string())
@@ -321,32 +345,20 @@ impl LabMcpServer {
                 descriptors.push(ut.tool);
                 upstream_tool_count += 1;
             }
-            let oauth_subject =
-                oauth_upstream_subject_for_request(auth, self.request_subject(&context));
-            if self.route_scope.exposes_tools()
+            if !hide_raw_tools
+                && self.route_scope.exposes_tools()
                 && let Some(oauth_subject) = oauth_subject.as_ref()
             {
-                let mut configs = self.route_scoped_oauth_upstream_configs().await;
-                if hide_raw_tools {
-                    if !self.route_scope.exposes_resources() {
-                        configs.clear();
-                    } else {
-                        configs.retain(|config| config.proxy_resources);
-                    }
-                }
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
                 for (_, upstream_tools) in pool
                     .cached_subject_scoped_tools_bounded(
-                        &configs,
+                        &oauth_configs,
                         oauth_subject.as_ref(),
                         subject_tool_limit,
                     )
                     .await
                 {
                     for ut in upstream_tools {
-                        if hide_raw_tools && !mcp_tool_is_mcp_app_host_visible(&ut) {
-                            continue;
-                        }
                         let tool_name = ut.name.as_ref();
                         if builtin_names.contains(tool_name)
                             || !advertised_names.insert(tool_name.to_string())

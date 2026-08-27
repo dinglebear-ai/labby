@@ -846,12 +846,19 @@ Labby-owned app surface. The control tool is omitted from protected subset route
 so a subset-scoped token cannot mutate gateway-global UI visibility.
 
 Synthetic Code Mode keeps ordinary raw upstream tools out of the approval-facing
-catalog, but upstream MCP App host-visible tools and callbacks pass through
-automatically when their upstream is allowed and its resources are proxied.
-Their `_meta.ui` bindings therefore remain usable without turning the whole raw
-upstream catalog back on. Other upstream churn remains discoverable inside
-`codemode.search(...)` / `codemode.describe(...)` without expanding the host
-Tool JSON.
+catalog. Upstream MCP App owners and callbacks pass through only when the same
+allowed upstream exposes a real native `ui://` app binding and proxies that
+resource; both `proxy_resources` and `expose_resources` are enforced. Callback
+metadata alone does not escape raw-tool suppression, ambiguous names fail
+closed, and destructive app tools require `lab` or `lab:admin` rather than
+`lab:read`.
+
+For OAuth upstreams, the app tool catalog is taken only from that caller's cached
+subject connection. Native `ui://` reads resolve back to that same subject-bound
+upstream and preserve relay/cancellation metadata; a subject-scoped resource
+policy denial cannot fall through to a global connection. Other upstream churn
+remains discoverable inside `codemode.search(...)` / `codemode.describe(...)`
+without expanding the host Tool JSON.
 
 ## Auth Precedence
 
