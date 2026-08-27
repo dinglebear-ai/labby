@@ -23,7 +23,6 @@ use tower_http::{
     compression::CompressionLayer,
     cors::{AllowOrigin, CorsLayer},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
-    timeout::TimeoutLayer,
     trace::TraceLayer,
 };
 use tracing::Level;
@@ -51,6 +50,33 @@ use super::dev_mockup::{dev_mockup, dev_mockup_named};
 use super::{health, services, state::AppState};
 use crate::api::error::ApiError;
 use crate::dispatch::error::ToolError;
+
+/// Ordinary API handlers must fail promptly when a dependency stalls.
+const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// MCP tool calls can use the gateway's five-minute relay budget. In
+/// particular, provider-managed VM installs download and unpack a large image
+/// before they return a single MCP result.
+const MCP_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
+
+fn http_request_timeout(path: &str) -> Duration {
+    if path == "/mcp" || path.starts_with("/mcp/") {
+        MCP_HTTP_REQUEST_TIMEOUT
+    } else {
+        DEFAULT_HTTP_REQUEST_TIMEOUT
+    }
+}
+
+async fn request_timeout(request: Request<Body>, next: Next) -> axum::response::Response {
+    match tokio::time::timeout(
+        http_request_timeout(request.uri().path()),
+        next.run(request),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
+    }
+}
 
 fn app_auth_state(state: &AppState) -> Result<labby_auth::state::AuthState, LabAuthError> {
     state
@@ -2052,10 +2078,7 @@ pub(crate) fn build_router_with_external_auth(
     router
         .layer(build_cors_layer(config_cors_origins))
         .layer(CompressionLayer::new())
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::GATEWAY_TIMEOUT,
-            Duration::from_secs(30),
-        ))
+        .layer(axum::middleware::from_fn(request_timeout))
         // PropagateRequestId echoes the id back in the response header.
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         // TraceLayer reads x-request-id set by SetRequestId (outermost).
@@ -2210,6 +2233,13 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+
+    #[test]
+    fn mcp_requests_use_the_long_running_budget() {
+        assert_eq!(http_request_timeout("/mcp"), Duration::from_mins(5));
+        assert_eq!(http_request_timeout("/mcp/"), Duration::from_mins(5));
+        assert_eq!(http_request_timeout("/v1/setup"), Duration::from_secs(30));
+    }
 
     async fn actor_key_probe(
         auth: Option<Extension<crate::api::oauth::AuthContext>>,

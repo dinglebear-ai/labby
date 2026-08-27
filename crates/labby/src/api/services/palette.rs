@@ -12,7 +12,7 @@ use labby_gateway::gateway::palette::{
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -26,6 +26,7 @@ static PALETTE_CATALOG_CACHE: OnceLock<Mutex<Option<CachedPaletteCatalog>>> = On
 
 #[derive(Clone)]
 struct CachedPaletteCatalog {
+    manager: Weak<crate::dispatch::gateway::manager::GatewayManager>,
     key: String,
     expires_at: Instant,
     catalog: LauncherCatalogView,
@@ -94,6 +95,10 @@ async fn compact_palette_catalog(
     {
         let cached = cache.lock().await;
         if let Some(cached) = cached.as_ref()
+            && cached
+                .manager
+                .upgrade()
+                .is_some_and(|cached_manager| Arc::ptr_eq(&cached_manager, &manager))
             && cached.key == cache_key
             && cached.expires_at > Instant::now()
         {
@@ -106,6 +111,7 @@ async fn compact_palette_catalog(
     append_labby_actions(&mut catalog, state, auth);
     compact_catalog_schemas(&mut catalog);
     *cache.lock().await = Some(CachedPaletteCatalog {
+        manager: Arc::downgrade(&manager),
         key: cache_key,
         expires_at: Instant::now() + PALETTE_CATALOG_CACHE_TTL,
         catalog: catalog.clone(),
@@ -115,10 +121,10 @@ async fn compact_palette_catalog(
 
 fn palette_catalog_cache_key(
     state: &AppState,
-    manager: &std::sync::Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    manager: &Arc<crate::dispatch::gateway::manager::GatewayManager>,
     auth: Option<&AuthContext>,
 ) -> String {
-    let mut key = format!("manager:{:p}", std::sync::Arc::as_ptr(manager));
+    let mut key = format!("manager:{:p}", Arc::as_ptr(manager));
     key.push_str("|services:");
     let mut services = state
         .enabled_services

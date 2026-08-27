@@ -219,7 +219,7 @@ mod tests {
     #[tokio::test]
     async fn in_process_peer_lists_its_service_under_process_code_mode() {
         let _guard = crate::config::process_code_mode_test_guard();
-        crate::config::set_process_code_mode_enabled(true);
+        crate::config::set_process_code_mode_enabled_for_test(true);
 
         let service = RegisteredService {
             name: "gateway-alpha",
