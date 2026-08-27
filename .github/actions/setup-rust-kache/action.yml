@@ -143,7 +143,7 @@ runs:
         env.KACHE_S3_SECRET_KEY != ''
       uses: kunobi-ninja/kache-action@a257c055543c2840700a9bbca8f9c3094a421b1b
       with:
-        version: "0.13.0"
+        version: "0.15.1"
         s3-bucket: ${{ env.KACHE_S3_BUCKET || 'kache' }}
         s3-region: us-east-1
         s3-prefix: ${{ env.KACHE_S3_PREFIX || 'rust' }}
