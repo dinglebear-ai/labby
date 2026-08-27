@@ -75,87 +75,43 @@ impl MicrosandboxGuard {
                 );
             }
             Ok(output) => {
-                let error = helper_diagnostic(&output);
-                if sandbox_absent(&identity).await {
-                    self.removed = true;
-                    complete_cleanup(&identity, self.counted, self.failed_cleanup_recorded);
-                    self.counted = false;
-                    self.failed_cleanup_recorded = false;
-                    tracing::info!(
-                        surface = "dispatch",
-                        service = "code_mode",
-                        action = "microsandbox.remove",
-                        kind = "already_absent",
-                        sandbox = %self.name,
-                        status = %output.status,
-                        error,
-                        "Microsandbox cleanup target is already absent"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "success",
-                        Some("already_absent"),
-                    );
-                } else {
-                    cleanup_failed(&identity, self.counted);
-                    self.failed_cleanup_recorded = true;
-                    tracing::warn!(
-                        surface = "dispatch",
-                        service = "code_mode",
-                        action = "microsandbox.remove",
-                        kind = "cleanup_failed",
-                        sandbox = %self.name,
-                        status = %output.status,
-                        error,
-                        "Microsandbox cleanup failed"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "failed",
-                        Some("cleanup_failed"),
-                    );
-                }
+                cleanup_failed(&identity, self.counted);
+                self.failed_cleanup_recorded = true;
+                let error = sanitize_stderr(&output.stderr);
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "microsandbox.remove",
+                    kind = "cleanup_failed",
+                    sandbox = %self.name,
+                    status = %output.status,
+                    error,
+                    "Microsandbox cleanup failed"
+                );
+                log_lifecycle(
+                    "microsandbox.remove",
+                    &identity.name,
+                    started,
+                    "failed",
+                    Some("cleanup_failed"),
+                );
             }
             Err(error) => {
-                if sandbox_absent(&identity).await {
-                    self.removed = true;
-                    complete_cleanup(&identity, self.counted, self.failed_cleanup_recorded);
-                    self.counted = false;
-                    self.failed_cleanup_recorded = false;
-                    tracing::info!(
-                        surface = "dispatch", service = "code_mode",
-                        action = "microsandbox.remove", kind = "already_absent",
-                        sandbox = %self.name, executable = %self.executable.display(),
-                        error = %error.message, "Microsandbox cleanup target is already absent"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "success",
-                        Some("already_absent"),
-                    );
-                } else {
-                    cleanup_failed(&identity, self.counted);
-                    self.failed_cleanup_recorded = true;
-                    tracing::warn!(
-                        surface = "dispatch", service = "code_mode",
-                        action = "microsandbox.remove", kind = error.kind,
-                        sandbox = %self.name, executable = %self.executable.display(),
-                        error = %error.message, "Microsandbox cleanup failed"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "failed",
-                        Some(error.kind),
-                    );
-                }
+                cleanup_failed(&identity, self.counted);
+                self.failed_cleanup_recorded = true;
+                tracing::warn!(
+                    surface = "dispatch", service = "code_mode",
+                    action = "microsandbox.remove", kind = error.kind,
+                    sandbox = %self.name, executable = %self.executable.display(),
+                    error = %error.message, "Microsandbox cleanup failed"
+                );
+                log_lifecycle(
+                    "microsandbox.remove",
+                    &identity.name,
+                    started,
+                    "failed",
+                    Some(error.kind),
+                );
             }
         }
     }
@@ -1145,8 +1101,7 @@ if [ "$1" = remove ]; then
   count=$((count + 1))
   printf '%s
 ' "$count" > '{count}'
-  if [ "$count" -eq 1 ]; then exit 9; fi
-  if [ "$count" -eq 2 ]; then rm -f '{name}'; exit 9; fi
+  if [ "$count" -le 2 ]; then rm -f '{name}'; exit 9; fi
   rm -f '{name}'
 fi
 exit 0

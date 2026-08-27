@@ -10,7 +10,7 @@ use crate::gateway::view_models::{
 };
 use crate::gateway::virtual_servers::{VirtualServerRecord, VirtualServerSource};
 use crate::upstream::pool::{UpstreamCachedSummary, UpstreamPool};
-use crate::upstream::types::{UpstreamCapability, UpstreamHealth};
+use crate::upstream::types::UpstreamHealth;
 use labby_runtime::gateway_config::{CodeModeConfig, UpstreamConfig, normalize_code_mode_hint};
 use labby_runtime::redact::{
     redact_secret_like_segments, redact_stdio_args, redact_stdio_value, redact_url,
@@ -620,7 +620,6 @@ pub(super) async fn server_view_from_upstream(
             message: "upstream is healthy but its capability catalog has not been materialized yet; counts are provisional until discovery or refresh completes".to_string(),
         });
     }
-    warnings.extend(optional_capability_warnings(pool, upstream).await);
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
@@ -929,11 +928,9 @@ mod tests {
     #[test]
     fn healthy_catalog_race_prefers_materialized_second_summary() {
         let first = UpstreamCachedSummary::default();
-        let refreshed = UpstreamCachedSummary {
-            discovered_tool_count: 30,
-            exposed_tool_count: 30,
-            ..UpstreamCachedSummary::default()
-        };
+        let mut refreshed = UpstreamCachedSummary::default();
+        refreshed.discovered_tool_count = 30;
+        refreshed.exposed_tool_count = 30;
 
         let settled =
             settle_summary_after_health(first, Some(UpstreamHealth::Healthy), Some(refreshed));
@@ -955,10 +952,8 @@ mod tests {
 
     #[test]
     fn unhealthy_catalog_does_not_adopt_concurrent_summary() {
-        let refreshed = UpstreamCachedSummary {
-            discovered_tool_count: 30,
-            ..UpstreamCachedSummary::default()
-        };
+        let mut refreshed = UpstreamCachedSummary::default();
+        refreshed.discovered_tool_count = 30;
         let settled = settle_summary_after_health(
             UpstreamCachedSummary::default(),
             Some(UpstreamHealth::Unhealthy {
@@ -992,10 +987,8 @@ mod tests {
 
     #[test]
     fn materialized_catalog_is_never_reported_as_warming() {
-        let summary = UpstreamCachedSummary {
-            discovered_tool_count: 1,
-            ..UpstreamCachedSummary::default()
-        };
+        let mut summary = UpstreamCachedSummary::default();
+        summary.discovered_tool_count = 1;
 
         assert!(!catalog_is_warming(
             &summary,

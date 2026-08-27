@@ -63,33 +63,16 @@ pub(super) async fn prepare_before_restart() -> Result<(), ToolError> {
     }
 
     let source = locate_persistent_source(MSB_IMAGE_ENV)?;
-    let migration = async {
-        let changed_dropin =
-            rewrite_persistent_source(&source, MSB_IMAGE_ENV, &canonical).await?;
-        if changed_dropin {
-            super::run_systemctl(&["daemon-reload"]).await?;
-        }
-
-        let refreshed = effective_service_environment().await?;
-        if refreshed.get(MSB_IMAGE_ENV).map(String::as_str) != Some(canonical.as_str()) {
-            return Err(preflight_error(format!(
-                "migrated {MSB_IMAGE_ENV}, but systemd still resolves a different value; refusing to restart labby.service"
-            )));
-        }
-        Ok(())
+    let changed_dropin = rewrite_persistent_source(&source, MSB_IMAGE_ENV, &canonical).await?;
+    if changed_dropin {
+        super::run_systemctl(&["daemon-reload"]).await?;
     }
-    .await;
-    if let Err(error) = migration {
-        if let Err(rollback_error) =
-            restore_persistent_source(&source, MSB_IMAGE_ENV, image, &canonical).await
-        {
-            return Err(preflight_error(format!(
-                "{}; rollback also failed: {}",
-                error.user_message(),
-                rollback_error.user_message()
-            )));
-        }
-        return Err(error);
+
+    let refreshed = effective_service_environment().await?;
+    if refreshed.get(MSB_IMAGE_ENV).map(String::as_str) != Some(canonical.as_str()) {
+        return Err(preflight_error(format!(
+            "migrated {MSB_IMAGE_ENV}, but systemd still resolves a different value; refusing to restart labby.service"
+        )));
     }
 
     tracing::info!(
@@ -99,95 +82,6 @@ pub(super) async fn prepare_before_restart() -> Result<(), ToolError> {
         source = %source_path(&source).display(),
         "prepared immutable cached Microsandbox image before service restart"
     );
-    Ok(())
-}
-
-async fn restore_persistent_source(
-    source: &PersistentSource,
-    key: &str,
-    original_value: &str,
-    migrated_value: &str,
-) -> Result<(), ToolError> {
-    match source {
-        PersistentSource::EnvFile(path) => {
-            let before = std::fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .map_err(super::io_error)?;
-            let text = std::fs::read_to_string(path).map_err(super::io_error)?;
-            let after = std::fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .map_err(super::io_error)?;
-            if before != after {
-                return Err(preflight_error(format!(
-                    "persistent {key} changed concurrently; refusing rollback"
-                )));
-            }
-            let current = env_assignment_value(&text, key)?;
-            ensure_rollback_value(key, current.as_deref(), original_value, migrated_value)?;
-            if current.as_deref() == Some(original_value) {
-                return Ok(());
-            }
-            env_merge::merge(
-                path,
-                MergeRequest {
-                    entries: vec![EnvEntry::new(key, original_value).force()],
-                    force: true,
-                    expected_mtime: Some(after),
-                },
-            )
-            .map_err(|error| {
-                preflight_error(format!("failed to roll back {}: {error}", path.display()))
-            })?;
-        }
-        PersistentSource::DropIn(path) => {
-            let lock_path = PathBuf::from(format!("{}.lock", path.display()));
-            let lock = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&lock_path)
-                .map_err(super::io_error)?;
-            lock.lock().map_err(super::io_error)?;
-            let before = std::fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .map_err(super::io_error)?;
-            let text = std::fs::read_to_string(path).map_err(super::io_error)?;
-            let after = std::fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .map_err(super::io_error)?;
-            if before != after {
-                return Err(preflight_error(format!(
-                    "persistent {key} changed concurrently; refusing rollback"
-                )));
-            }
-            let current = systemd_environment_value(&text, key)?;
-            ensure_rollback_value(key, current.as_deref(), original_value, migrated_value)?;
-            if current.as_deref() == Some(original_value) {
-                return Ok(());
-            }
-            let rewritten = rewrite_systemd_environment(&text, key, original_value)?;
-            atomic_rewrite_preserving_metadata(path, rewritten.as_bytes(), Some(after))?;
-            super::run_systemctl(&["daemon-reload"]).await?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_rollback_value(
-    key: &str,
-    current: Option<&str>,
-    original_value: &str,
-    migrated_value: &str,
-) -> Result<(), ToolError> {
-    if current == Some(original_value) {
-        return Ok(());
-    }
-    if current != Some(migrated_value) {
-        return Err(preflight_error(format!(
-            "persistent {key} changed concurrently; refusing to overwrite it during rollback"
-        )));
-    }
     Ok(())
 }
 
@@ -201,152 +95,58 @@ async fn effective_service_environment()
         "--no-pager",
     ])
     .await?;
-    let env_file = match std::fs::read_to_string(SERVICE_ENV_PATH) {
-        Ok(text) => Some(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(preflight_error(format!(
-                "cannot read service EnvironmentFile {SERVICE_ENV_PATH}: {error}"
-            )));
-        }
-    };
-    merge_environment_sources(env_file.as_deref(), &output.stdout)
+    let env_file = std::fs::read_to_string(SERVICE_ENV_PATH).ok();
+    Ok(merge_environment_sources(
+        env_file.as_deref(),
+        &output.stdout,
+    ))
 }
 
 fn merge_environment_sources(
     env_file: Option<&str>,
     systemd_environment: &str,
-) -> Result<std::collections::BTreeMap<String, String>, ToolError> {
+) -> std::collections::BTreeMap<String, String> {
     // systemd.exec(5): EnvironmentFile= assignments override Environment=.
     // Mirror the service manager rather than treating `systemctl show Environment`
     // as the final effective environment (it omits EnvironmentFile contents).
-    let mut merged = parse_environment_property(systemd_environment)?;
+    let mut merged = parse_environment_property(systemd_environment);
     if let Some(env_file) = env_file {
-        merged.extend(parse_env_file(env_file)?);
+        merged.extend(parse_env_file(env_file));
     }
-    Ok(merged)
+    merged
 }
 
-fn parse_env_file(text: &str) -> Result<std::collections::BTreeMap<String, String>, ToolError> {
-    let mut parsed = std::collections::BTreeMap::new();
-    for (index, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with(['#', ';']) {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let relevant = matches!(key, BACKEND_ENV | MSB_EXE_ENV | MSB_IMAGE_ENV);
-        if !relevant {
-            if key
-                .strip_prefix("export ")
-                .is_some_and(|key| matches!(key, BACKEND_ENV | MSB_EXE_ENV | MSB_IMAGE_ENV))
-            {
-                return Err(preflight_error(format!(
-                    "invalid EnvironmentFile variable name at line {}: {key:?}",
-                    index + 1
-                )));
+fn parse_env_file(text: &str) -> std::collections::BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
             }
-            continue;
-        }
-        let value = parse_systemd_environment_file_value(value.trim()).map_err(|error| {
-            preflight_error(format!(
-                "invalid EnvironmentFile value at line {}: {}",
-                index + 1,
-                error.user_message()
+            let (key, value) = line.split_once('=')?;
+            Some((
+                key.trim().to_string(),
+                value
+                    .trim()
+                    .trim_matches('\"')
+                    .trim_matches('\'')
+                    .to_string(),
             ))
-        })?;
-        parsed.insert(key.to_string(), value);
-    }
-    Ok(parsed)
-}
-
-fn parse_systemd_environment_file_value(text: &str) -> Result<String, ToolError> {
-    let mut value = String::new();
-    let mut quote = None;
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' && quote != Some('\'') {
-            match (quote, chars.peek().copied()) {
-                (Some('"'), Some(next)) if !matches!(next, '"' | '\\' | '$' | '`' | '\n') => {
-                    value.push('\\');
-                }
-                (_, Some('\n')) => {
-                    chars.next();
-                }
-                (_, Some(_)) => value.push(chars.next().expect("peeked character exists")),
-                (_, None) => return Err(preflight_error("trailing escape".to_string())),
-            }
-        } else if quote == Some(ch) {
-            quote = None;
-        } else if quote.is_none() && matches!(ch, '\'' | '"') {
-            quote = Some(ch);
-        } else {
-            value.push(ch);
-        }
-    }
-    if quote.is_some() {
-        return Err(preflight_error("unterminated quote".to_string()));
-    }
-    Ok(value)
-}
-
-fn parse_environment_property(
-    text: &str,
-) -> Result<std::collections::BTreeMap<String, String>, ToolError> {
-    Ok(split_systemd_words(text)?
-        .into_iter()
-        .filter_map(|token| {
-            let (key, value) = token.split_once('=')?;
-            Some((key.to_string(), value.to_string()))
         })
-        .collect())
+        .collect()
 }
 
-fn split_systemd_words(text: &str) -> Result<Vec<String>, ToolError> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut quote = None;
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' && quote != Some('\'') {
-            match (quote, chars.peek().copied()) {
-                (Some('"'), Some(next)) if !matches!(next, '"' | '\\' | '$' | '`' | '\n') => {
-                    word.push('\\');
-                }
-                (_, Some('\n')) => {
-                    chars.next();
-                }
-                (_, Some(_)) => word.push(chars.next().expect("peeked character exists")),
-                (_, None) => {
-                    return Err(preflight_error(
-                        "invalid systemd environment assignment: trailing escape".to_string(),
-                    ));
-                }
-            }
-        } else if quote == Some(ch) {
-            quote = None;
-        } else if quote.is_none() && matches!(ch, '\'' | '"') {
-            quote = Some(ch);
-        } else if quote.is_none() && ch.is_whitespace() {
-            if !word.is_empty() {
-                words.push(std::mem::take(&mut word));
-            }
-        } else {
-            word.push(ch);
-        }
-    }
-    if quote.is_some() {
-        return Err(preflight_error(
-            "invalid systemd environment assignment: unterminated quote".to_string(),
-        ));
-    }
-    if !word.is_empty() {
-        words.push(word);
-    }
-    Ok(words)
+fn parse_environment_property(text: &str) -> std::collections::BTreeMap<String, String> {
+    text.split_whitespace()
+        .filter_map(|token| {
+            let token = token.trim_matches('"').trim_matches('\'');
+            let (key, value) = token.split_once('=')?;
+            Some((
+                key.to_string(),
+                value.trim_matches('"').trim_matches('\'').to_string(),
+            ))
+        })
+        .collect()
 }
 
 fn immutable_parts(image: &str) -> Option<(&str, &str)> {
@@ -464,28 +264,28 @@ fn locate_persistent_source(key: &str) -> Result<PersistentSource, ToolError> {
     // EnvironmentFile= overrides Environment= in systemd. If the service env
     // file defines the key, it is the winning persistent source even when a
     // drop-in also contains an Environment= assignment.
-    match std::fs::read_to_string(&env_path) {
-        Ok(text) if env_assignment_value(&text, key)?.is_some() => {
-            return Ok(PersistentSource::EnvFile(env_path));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(super::io_error(error)),
+    if std::fs::read_to_string(&env_path)
+        .ok()
+        .is_some_and(|text| env_assignment_value(&text, key).is_some())
+    {
+        return Ok(PersistentSource::EnvFile(env_path));
     }
 
     let mut selected = None;
-    let mut dropins = match std::fs::read_dir(SYSTEM_DROPIN_DIR) {
-        Ok(entries) => entries
-            .map(|entry| entry.map(|entry| entry.path()).map_err(super::io_error))
-            .collect::<Result<Vec<_>, _>>()?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(super::io_error(error)),
-    };
-    dropins.retain(|path| path.extension().and_then(|ext| ext.to_str()) == Some("conf"));
+    let mut dropins = std::fs::read_dir(SYSTEM_DROPIN_DIR)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("conf"))
+        .collect::<Vec<_>>();
     dropins.sort();
     for path in dropins {
-        let text = std::fs::read_to_string(&path).map_err(super::io_error)?;
-        if systemd_environment_value(&text, key)?.is_some() {
+        if std::fs::read_to_string(&path)
+            .ok()
+            .is_some_and(|text| systemd_environment_value(&text, key).is_some())
+        {
             selected = Some(PersistentSource::DropIn(path));
         }
     }
@@ -516,50 +316,20 @@ async fn rewrite_persistent_source(
                 preflight_error(format!("failed to update {}: {err}", path.display()))
             })?;
             if outcome.written > 0 {
-                let ownership_result = async {
-                    if let Some(backup) = outcome.backup_path.as_deref() {
-                        super::run_command("chown", &["labby:labby", path_text(backup)?]).await?;
-                    }
-                    super::run_command("chown", &["labby:labby", path_text(path)?]).await
-                }
-                .await;
-                if let Err(error) = ownership_result {
-                    if let Some(backup) = outcome.backup_path.as_deref() {
-                        std::fs::rename(backup, path).map_err(super::io_error)?;
-                        let parent = path.parent().ok_or_else(|| {
-                            preflight_error(format!(
-                                "cannot determine parent directory for {}",
-                                path.display()
-                            ))
-                        })?;
-                        std::fs::File::open(parent)
-                            .and_then(|dir| dir.sync_all())
-                            .map_err(super::io_error)?;
-                    }
-                    return Err(error);
+                super::run_command("chown", &["labby:labby", path_text(path)?]).await?;
+                if let Some(backup) = outcome.backup_path.as_deref() {
+                    super::run_command("chown", &["labby:labby", path_text(backup)?]).await?;
                 }
             }
             Ok(false)
         }
         PersistentSource::DropIn(path) => {
-            let before = std::fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .map_err(super::io_error)?;
             let original = std::fs::read_to_string(path).map_err(super::io_error)?;
-            let after = std::fs::metadata(path)
-                .and_then(|metadata| metadata.modified())
-                .map_err(super::io_error)?;
-            if before != after {
-                return Err(preflight_error(format!(
-                    "{} changed concurrently; refusing migration",
-                    path.display()
-                )));
-            }
             let rewritten = rewrite_systemd_environment(&original, key, value)?;
             if rewritten == original {
                 return Ok(false);
             }
-            atomic_rewrite_preserving_metadata(path, rewritten.as_bytes(), Some(after))?;
+            atomic_rewrite_preserving_metadata(path, rewritten.as_bytes())?;
             Ok(true)
         }
     }
@@ -568,35 +338,12 @@ async fn rewrite_persistent_source(
 fn rewrite_systemd_environment(text: &str, key: &str, value: &str) -> Result<String, ToolError> {
     let mut found = false;
     let mut out = String::with_capacity(text.len() + value.len());
-    let key_prefix = format!("{key}=");
     for line in text.split_inclusive('\n') {
         let had_newline = line.ends_with('\n');
         let body = line.strip_suffix('\n').unwrap_or(line);
-        if let Some(assignments) = parse_systemd_environment_line(body)?
-            && assignments
-                .iter()
-                .any(|assignment| assignment.starts_with(&key_prefix))
-        {
+        if systemd_environment_value(body, key).is_some() {
             found = true;
-            out.push_str("Environment=");
-            for (index, assignment) in assignments.iter().enumerate() {
-                if index > 0 {
-                    out.push(' ');
-                }
-                let assignment = if assignment.starts_with(&key_prefix) {
-                    format!("{key}={value}")
-                } else {
-                    assignment.clone()
-                };
-                out.push('"');
-                for ch in assignment.chars() {
-                    if matches!(ch, '\\' | '"') {
-                        out.push('\\');
-                    }
-                    out.push(ch);
-                }
-                out.push('"');
-            }
+            out.push_str(&format!("Environment={key}={value}"));
             if had_newline {
                 out.push('\n');
             }
@@ -612,37 +359,31 @@ fn rewrite_systemd_environment(text: &str, key: &str, value: &str) -> Result<Str
     Ok(out)
 }
 
-fn env_assignment_value(text: &str, key: &str) -> Result<Option<String>, ToolError> {
-    Ok(parse_env_file(text)?.remove(key))
+fn env_assignment_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == key).then(|| value.trim().trim_matches('"').trim_matches('\''))
+        })
+        .last()
 }
 
-fn parse_systemd_environment_line(line: &str) -> Result<Option<Vec<String>>, ToolError> {
-    let Some(raw) = line.trim().strip_prefix("Environment=") else {
-        return Ok(None);
-    };
-    split_systemd_words(raw.trim()).map(Some)
+fn systemd_environment_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines()
+        .filter_map(|line| {
+            let raw = line.trim().strip_prefix("Environment=")?.trim();
+            let raw = raw.trim_matches('"').trim_matches('\'');
+            let (name, value) = raw.split_once('=')?;
+            (name == key).then(|| value.trim_matches('"').trim_matches('\''))
+        })
+        .last()
 }
 
-fn systemd_environment_value(text: &str, key: &str) -> Result<Option<String>, ToolError> {
-    let mut found = None;
-    for line in text.lines() {
-        if let Some(assignments) = parse_systemd_environment_line(line)?
-            && let Some(value) = assignments.into_iter().find_map(|assignment| {
-                let (name, value) = assignment.split_once('=')?;
-                (name == key).then(|| value.to_string())
-            })
-        {
-            found = Some(value);
-        }
-    }
-    Ok(found)
-}
-
-fn atomic_rewrite_preserving_metadata(
-    path: &Path,
-    bytes: &[u8],
-    expected_mtime: Option<std::time::SystemTime>,
-) -> Result<(), ToolError> {
+fn atomic_rewrite_preserving_metadata(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
     use std::io::Write as _;
 
     let parent = path.parent().ok_or_else(|| {
@@ -655,14 +396,15 @@ fn atomic_rewrite_preserving_metadata(
     let permissions = metadata.permissions();
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(super::io_error)?;
     temp.write_all(bytes).map_err(super::io_error)?;
-    temp.as_file_mut()
-        .set_permissions(permissions)
-        .map_err(super::io_error)?;
+    temp.as_file_mut().sync_all().map_err(super::io_error)?;
+    temp.persist(path)
+        .map_err(|err| super::io_error(err.error))?;
+    std::fs::set_permissions(path, permissions).map_err(super::io_error)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
         nix::unistd::chown(
-            temp.path(),
+            path,
             Some(nix::unistd::Uid::from_raw(metadata.uid())),
             Some(nix::unistd::Gid::from_raw(metadata.gid())),
         )
@@ -673,22 +415,9 @@ fn atomic_rewrite_preserving_metadata(
             ))
         })?;
     }
-    temp.as_file_mut().sync_all().map_err(super::io_error)?;
-    if let Some(expected) = expected_mtime {
-        let current = std::fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .map_err(super::io_error)?;
-        if current != expected {
-            return Err(preflight_error(format!(
-                "{} changed concurrently; refusing atomic rewrite",
-                path.display()
-            )));
-        }
+    if let Ok(dir) = std::fs::File::open(parent) {
+        drop(dir.sync_all());
     }
-    temp.persist(path)
-        .map_err(|err| super::io_error(err.error))?;
-    let dir = std::fs::File::open(parent).map_err(super::io_error)?;
-    dir.sync_all().map_err(super::io_error)?;
     Ok(())
 }
 
@@ -759,8 +488,7 @@ mod tests {
     fn parses_effective_systemd_environment() {
         let env = parse_environment_property(
             "HOME=/home/labby LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox LABBY_CODE_MODE_MICROSANDBOX_IMAGE=debian",
-        )
-        .unwrap();
+        );
         assert_eq!(
             env.get(BACKEND_ENV).map(String::as_str),
             Some("microsandbox")
@@ -772,7 +500,7 @@ mod tests {
     fn environment_file_values_override_systemd_environment_assignments() {
         let env_file = format!("{BACKEND_ENV}=microsandbox\n{MSB_IMAGE_ENV}=debian\n");
         let systemd = format!("{BACKEND_ENV}=process");
-        let merged = merge_environment_sources(Some(&env_file), &systemd).unwrap();
+        let merged = merge_environment_sources(Some(&env_file), &systemd);
 
         assert_eq!(
             merged.get(BACKEND_ENV).map(String::as_str),
@@ -790,83 +518,8 @@ mod tests {
         let pinned = format!("docker.io/library/debian@{DIGEST}");
         let output = rewrite_systemd_environment(input, MSB_IMAGE_ENV, &pinned).unwrap();
         assert!(output.contains("Environment=LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox"));
-        assert!(output.contains(&format!("Environment=\"{MSB_IMAGE_ENV}={pinned}\"")));
+        assert!(output.contains(&format!("Environment={MSB_IMAGE_ENV}={pinned}")));
         assert!(!output.contains("MICROSANDBOX_IMAGE=debian\n"));
-    }
-
-    #[test]
-    fn rewrites_target_inside_multi_assignment_without_losing_siblings() {
-        let input =
-            format!("[Service]\nEnvironment=KEEP=hello\\ world \"{MSB_IMAGE_ENV}=debian\"\n");
-        let pinned = format!("docker.io/library/debian@{DIGEST}");
-        let output = rewrite_systemd_environment(&input, MSB_IMAGE_ENV, &pinned).unwrap();
-        assert!(output.contains("\"KEEP=hello world\""));
-        assert!(output.contains(&format!("\"{MSB_IMAGE_ENV}={pinned}\"")));
-    }
-
-    #[test]
-    fn rewrite_preserves_effective_sibling_assignment_values() {
-        let input = format!(
-            "Environment=\"SPACE=hello world\" 'SLASH=C:\\\\tools' \"EQUAL=a=b\" \"{MSB_IMAGE_ENV}=debian\"\n"
-        );
-        let before = parse_systemd_environment_line(input.trim())
-            .unwrap()
-            .unwrap();
-        let output = rewrite_systemd_environment(&input, MSB_IMAGE_ENV, "pinned").unwrap();
-        let after = parse_systemd_environment_line(output.trim())
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(&before[..3], &after[..3]);
-        assert_eq!(after[3], format!("{MSB_IMAGE_ENV}=pinned"));
-    }
-
-    #[test]
-    fn rejects_shell_export_syntax_in_environment_file() {
-        let text = format!("export {BACKEND_ENV}=microsandbox\n");
-        assert!(parse_env_file(&text).is_err());
-    }
-
-    #[test]
-    fn ignores_systemd_environment_file_comments_and_non_assignments() {
-        let text = format!("; comment\nignored text\n{BACKEND_ENV}=microsandbox\n");
-        let parsed = parse_env_file(&text).unwrap();
-        assert_eq!(
-            parsed.get(BACKEND_ENV).map(String::as_str),
-            Some("microsandbox")
-        );
-    }
-
-    #[test]
-    fn preserves_unquoted_whitespace_in_environment_file_values() {
-        let parsed = parse_env_file(&format!("{MSB_EXE_ENV}=path with spaces\n")).unwrap();
-        assert_eq!(
-            parsed.get(MSB_EXE_ENV).map(String::as_str),
-            Some("path with spaces")
-        );
-    }
-
-    #[test]
-    fn rejects_malformed_systemd_assignments_before_rewrite() {
-        for input in [
-            format!("Environment=\"{MSB_IMAGE_ENV}=debian\n"),
-            format!("Environment={MSB_IMAGE_ENV}=debian\\\n"),
-        ] {
-            let error = rewrite_systemd_environment(&input, MSB_IMAGE_ENV, "pinned").unwrap_err();
-            assert_eq!(error.kind(), "invalid_param");
-        }
-    }
-
-    #[test]
-    fn rewrite_preserves_double_quoted_non_special_backslashes() {
-        let input = format!("Environment=\"KEEP=C:\\tools\" \"{MSB_IMAGE_ENV}=debian\"\n");
-        let output = rewrite_systemd_environment(&input, MSB_IMAGE_ENV, "pinned").unwrap();
-        assert_eq!(
-            systemd_environment_value(&output, "KEEP")
-                .unwrap()
-                .as_deref(),
-            Some("C:\\tools")
-        );
     }
 
     #[test]
