@@ -1,7 +1,7 @@
 use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{ConnectInfo, State},
     http::HeaderMap,
     response::sse::{Event, KeepAlive, Sse},
@@ -17,10 +17,27 @@ use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_wi
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::doctor::ACTIONS;
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/", post(handle))
-        .route("/audit-full/stream", get(stream_audit_full))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), post(handle))
+        .route(descriptors.next().unwrap(), get(stream_audit_full))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new("POST", "/", "handle", "doctor", RouteAuth::V1).host_validated(),
+        RouteDescriptor::new(
+            "GET",
+            "/audit-full/stream",
+            "stream_audit_full",
+            "doctor",
+            RouteAuth::V1,
+        )
+        .host_validated(),
+    ]
 }
 
 async fn handle(

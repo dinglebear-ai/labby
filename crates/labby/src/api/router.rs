@@ -1722,7 +1722,11 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 
 /// Build the `/v1` sub-router with all feature-gated service routes.
 #[cfg_attr(not(feature = "fs"), allow(unused_variables))]
-fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppState> {
+fn build_v1_router(
+    state: &AppState,
+    api_auth_configured: bool,
+) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor, RouteGroup};
     #[cfg(feature = "api-docs")]
     let openapi_spec: Arc<String> = super::openapi::build_openapi_spec(state.registry.services())
         .unwrap_or_else(|e| {
@@ -1732,8 +1736,16 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
     #[cfg(feature = "api-docs")]
     let spec_for_route = openapi_spec;
 
-    let mut v1 = Router::new();
-    v1 = v1.route("/{service}/actions", get(service_actions));
+    let mut v1 = RouteGroup::empty().route(
+        RouteDescriptor::new(
+            "GET",
+            "/{service}/actions",
+            "service_actions",
+            "services",
+            RouteAuth::V1,
+        ),
+        get(service_actions),
+    );
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
     if api_auth_configured {
         v1 = v1.nest(
@@ -1810,7 +1822,8 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
     {
         v1 = v1
             .route(
-                "/openapi.json",
+                RouteDescriptor::new("GET", "/openapi.json", "openapi", "openapi", RouteAuth::V1)
+                    .feature("api-docs"),
                 get(move || {
                     let spec = spec_for_route.clone();
                     async move {
@@ -1825,16 +1838,21 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
                 }),
             )
             .route(
-                "/docs",
+                RouteDescriptor::new("GET", "/docs", "openapi_docs", "openapi", RouteAuth::V1)
+                    .feature("api-docs"),
                 get(|| async { Html(include_str!("openapi_docs.html")) }),
             );
     }
 
     v1 = v1
         .route(
-            APPS_MANIFEST_API_ROUTE
-                .strip_prefix("/v1")
-                .expect("apps manifest route must be under /v1"),
+            RouteDescriptor::new(
+                "GET",
+                APPS_MANIFEST_API_ROUTE.strip_prefix("/v1").unwrap(),
+                "apps_manifest",
+                "apps",
+                RouteAuth::V1,
+            ),
             get(apps_manifest),
         )
         .nest("/server_logs", services::server_logs::routes(state.clone()))
@@ -1849,15 +1867,19 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
         // (DNS rebinding mitigation for the v1 wizard, lab-bg3e.3.3).
         .nest(
             "/doctor",
-            services::doctor::routes(state.clone()).layer(axum::middleware::from_fn(
-                crate::api::host_validation::host_validation_layer,
-            )),
+            services::doctor::routes(state.clone()).map_router(|router| {
+                router.layer(axum::middleware::from_fn(
+                    crate::api::host_validation::host_validation_layer,
+                ))
+            }),
         )
         .nest(
             "/setup",
-            services::setup::routes(state.clone()).layer(axum::middleware::from_fn(
-                crate::api::host_validation::host_validation_layer,
-            )),
+            services::setup::routes(state.clone()).map_router(|router| {
+                router.layer(axum::middleware::from_fn(
+                    crate::api::host_validation::host_validation_layer,
+                ))
+            }),
         )
         .nest(
             "/auth/allowed-emails",
@@ -1924,7 +1946,8 @@ fn build_v1_router(state: &AppState, api_auth_configured: bool) -> Router<AppSta
     // stdio-spawning gateway admin without auth. Operator-facing recovery
     // belongs in the startup warnings (which do name the skipped service) and
     // in the error contract's own `recovery` guidance, not here.
-    v1.fallback(v1_route_not_found)
+    v1.router = v1.router.fallback(v1_route_not_found);
+    v1
 }
 
 async fn v1_route_not_found(
@@ -2022,13 +2045,19 @@ pub(crate) fn build_router_with_external_auth(
         );
     }
 
+    let route_service_names = state
+        .registry
+        .services()
+        .iter()
+        .map(|service| service.name.to_string())
+        .collect::<Vec<_>>();
     let v1 = build_v1_router(&state, protected_route_auth_configured);
 
     let x_request_id = HeaderName::from_static("x-request-id");
 
     // Build separate protected sub-routers so `/v1/*` can accept browser
     // sessions while `/mcp` remains token-authenticated only.
-    let v1_router = Router::new().nest("/v1", v1);
+    let v1_group = crate::api::route_registry::RouteGroup::empty().nest("/v1", v1);
     let resource_url: Option<Arc<str>> = auth_state
         .as_ref()
         .map(|state| labby_auth::metadata::canonical_resource_url(state.as_ref()))
@@ -2073,9 +2102,9 @@ pub(crate) fn build_router_with_external_auth(
         layer
     };
     let v1_protected = if credential_auth_configured {
-        v1_router.route_layer(make_auth_layer(true))
+        v1_group.map_router(|router| router.route_layer(make_auth_layer(true)))
     } else {
-        v1_router
+        v1_group
     };
 
     let mcp_protected = mcp_router.map(|mcp| {
@@ -2090,20 +2119,45 @@ pub(crate) fn build_router_with_external_auth(
     // Layers apply bottom-up: last .layer() call = outermost middleware.
     // Desired execution order (outermost → innermost → handler):
     //   SetRequestId → TraceLayer → PropagateRequestId → Timeout → Compression → CORS → handler
-    let mut router = Router::new()
-        .route("/health", get(health::health))
-        .route("/ready", get(health::ready))
-        .route("/.well-known/labby.json", get(labby_discovery))
-        .merge(services::oauth_relay::public_routes(state.clone()))
-        .merge(v1_protected);
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    let public_relay = services::oauth_relay::public_routes(state.clone());
+    let public_core = crate::api::route_registry::RouteGroup::empty()
+        .route(
+            RouteDescriptor::new("GET", "/health", "health", "health", RouteAuth::Public),
+            get(health::health),
+        )
+        .route(
+            RouteDescriptor::new("GET", "/ready", "ready", "health", RouteAuth::Public),
+            get(health::ready),
+        )
+        .route(
+            RouteDescriptor::new(
+                "GET",
+                "/.well-known/labby.json",
+                "labby_discovery",
+                "discovery",
+                RouteAuth::Public,
+            ),
+            get(labby_discovery),
+        )
+        .merge(public_relay);
+    let mut route_group = public_core.merge(v1_protected);
     #[cfg(feature = "gateway")]
     {
-        router = router
-            .merge(crate::api::upstream_oauth::browser_routes(state.clone()))
-            .merge(crate::api::upstream_oauth::well_known_routes(state.clone()));
+        let browser_oauth = crate::api::upstream_oauth::browser_routes(state.clone());
+        let well_known_oauth = crate::api::upstream_oauth::well_known_routes(state.clone());
+        route_group = route_group.merge(browser_oauth).merge(well_known_oauth);
     }
     if let Some(mcp) = mcp_protected {
-        router = router.merge(mcp);
+        route_group = route_group.merge_runtime_router(
+            mcp,
+            [
+                RouteDescriptor::new("GET", "/mcp", "mcp", "mcp", RouteAuth::BearerOnly)
+                    .when("mounted only when an MCP HTTP router is configured"),
+                RouteDescriptor::new("POST", "/mcp", "mcp", "mcp", RouteAuth::BearerOnly)
+                    .when("mounted only when an MCP HTTP router is configured"),
+            ],
+        );
     }
     // /auth/session and /auth/logout are registered unconditionally — unlike
     // the OAuth-specific routes below, their handlers (browser_session.rs)
@@ -2129,47 +2183,62 @@ pub(crate) fn build_router_with_external_auth(
     // /v1/* access (gated separately by the configured auth boundary), but it does render an
     // "authenticated" admin UI shell for unauthenticated visitors. Tracked
     // in lab-0bl3m — not fixed here.
-    router = router
+    route_group = route_group
         .route(
-            "/auth/session",
+            RouteDescriptor::new(
+                "GET",
+                "/auth/session",
+                "auth_session",
+                "oauth",
+                RouteAuth::BrowserSession,
+            ),
             get(crate::api::browser_session::auth_session),
         )
         .route(
-            "/auth/logout",
+            RouteDescriptor::new(
+                "POST",
+                "/auth/logout",
+                "auth_logout",
+                "oauth",
+                RouteAuth::BrowserSession,
+            ),
             post(crate::api::browser_session::auth_logout),
         );
     if let Some(auth_state) = auth_state.as_ref() {
         let _ = auth_state;
-        let auth_routes = Router::new()
+        let mut descriptors = crate::api::route_registry::oauth_protocol_descriptors().into_iter();
+        let auth_routes = crate::api::route_registry::RouteGroup::empty()
             .route(
-                "/.well-known/oauth-authorization-server",
+                descriptors.next().unwrap(),
                 get(auth_authorization_server_metadata),
             )
             .route(
-                "/.well-known/oauth-authorization-server/{*route}",
+                descriptors.next().unwrap(),
                 get(auth_authorization_server_metadata),
             )
             .route(
-                "/.well-known/oauth-protected-resource",
+                descriptors.next().unwrap(),
                 get(auth_protected_resource_metadata),
             )
-            .route("/jwks", get(auth_jwks))
-            .route("/register", post(auth_register))
-            .route("/authorize", get(auth_authorize))
-            .route("/auth/login", get(auth_browser_login))
-            .route("/auth/google/callback", get(auth_callback))
-            .route("/native/callback", get(auth_native_callback))
-            .route("/native/poll", post(auth_native_poll))
-            .route("/token", post(auth_token))
-            .route("/revoke", post(auth_revoke))
-            .layer(axum::middleware::from_fn(
-                labby_auth::routes::auth_dispatch_observability,
-            ));
-        router = router.merge(auth_routes);
+            .route(descriptors.next().unwrap(), get(auth_jwks))
+            .route(descriptors.next().unwrap(), post(auth_register))
+            .route(descriptors.next().unwrap(), get(auth_authorize))
+            .route(descriptors.next().unwrap(), get(auth_browser_login))
+            .route(descriptors.next().unwrap(), get(auth_callback))
+            .route(descriptors.next().unwrap(), get(auth_native_callback))
+            .route(descriptors.next().unwrap(), post(auth_native_poll))
+            .route(descriptors.next().unwrap(), post(auth_token))
+            .route(descriptors.next().unwrap(), post(auth_revoke))
+            .map_router(|router| {
+                router.layer(axum::middleware::from_fn(
+                    labby_auth::routes::auth_dispatch_observability,
+                ))
+            });
+        route_group = route_group.merge(auth_routes);
         #[cfg(feature = "gateway")]
         {
-            router = router.route(
-                "/.well-known/oauth-protected-resource/{*route}",
+            route_group = route_group.route(
+                descriptors.next().unwrap(),
                 get(protected_route_resource_metadata),
             );
         }
@@ -2178,40 +2247,92 @@ pub(crate) fn build_router_with_external_auth(
     // Development mockups are registered before the Next.js static fallback so
     // `/dev/mockup*` resolves from ~/.superpowers/brainstorm/content rather than
     // being swallowed by the SPA. See docs/design/component-development.md.
-    let dev_routes = Router::new()
-        .route("/dev/mockup", get(dev_mockup))
-        .route("/dev/mockup/", get(dev_mockup))
-        .route("/dev/mockup/{name}", get(dev_mockup_named))
-        .route("/dev/mockup/{name}/", get(dev_mockup_named));
+    let dev_routes = crate::api::route_registry::RouteGroup::empty()
+        .route(
+            RouteDescriptor::new(
+                "GET",
+                "/dev/mockup",
+                "dev_mockup",
+                "dev",
+                RouteAuth::BrowserSession,
+            )
+            .aliases(&["/dev/mockup/"])
+            .when("development/mockup routes"),
+            get(dev_mockup),
+        )
+        .route(
+            RouteDescriptor::new(
+                "GET",
+                "/dev/mockup/{name}",
+                "dev_mockup_named",
+                "dev",
+                RouteAuth::BrowserSession,
+            )
+            .aliases(&["/dev/mockup/{name}/"])
+            .when("development/mockup routes"),
+            get(dev_mockup_named),
+        );
     let dev_routes = if credential_auth_configured {
-        dev_routes.route_layer(make_auth_layer(true))
+        dev_routes.map_router(|router| router.route_layer(make_auth_layer(true)))
     } else {
         dev_routes
     };
-    router = router.merge(dev_routes);
+    route_group = route_group.merge(dev_routes);
 
-    let asset_routes = Router::new().route(LABBY_APP_HOST_JS_ROUTE, get(labby_app_host_js));
-    router = router.merge(asset_routes);
+    route_group = route_group.route(
+        RouteDescriptor::new(
+            "GET",
+            LABBY_APP_HOST_JS_ROUTE,
+            "labby_app_host_js",
+            "apps",
+            RouteAuth::Public,
+        ),
+        get(labby_app_host_js),
+    );
 
-    let app_routes = Router::new()
-        .route(APPS_LAUNCHER_ROUTE, get(apps_launcher_page))
-        .route(&format!("{APPS_LAUNCHER_ROUTE}/"), get(apps_launcher_page))
-        .route(SERVER_LOGS_BROWSER_ROUTE, get(server_logs_app_page))
+    let app_routes = crate::api::route_registry::RouteGroup::empty()
         .route(
-            &format!("{SERVER_LOGS_BROWSER_ROUTE}/"),
+            RouteDescriptor::new(
+                "GET",
+                APPS_LAUNCHER_ROUTE,
+                "apps_launcher_page",
+                "apps",
+                RouteAuth::BrowserSession,
+            )
+            .aliases(&[&format!("{APPS_LAUNCHER_ROUTE}/")]),
+            get(apps_launcher_page),
+        )
+        .route(
+            RouteDescriptor::new(
+                "GET",
+                SERVER_LOGS_BROWSER_ROUTE,
+                "server_logs_app_page",
+                "apps",
+                RouteAuth::BrowserSession,
+            )
+            .aliases(&[&format!("{SERVER_LOGS_BROWSER_ROUTE}/")]),
             get(server_logs_app_page),
         );
     let app_routes = if credential_auth_configured {
-        app_routes.route_layer(make_auth_layer(true))
+        app_routes.map_router(|router| router.route_layer(make_auth_layer(true)))
     } else {
         app_routes
     };
-    router = router.merge(app_routes);
+    route_group = route_group.merge(app_routes);
+
+    let declared_descriptors =
+        crate::api::route_registry::build_route_descriptors(&route_service_names);
+    crate::api::route_registry::validate_mounted_inventory(
+        &route_group.descriptors,
+        &declared_descriptors,
+    )
+    .expect("runtime HTTP routes diverged from the declared inventory");
 
     // Static-file fallback for the Next.js SPA. Protected MCP virtual-host
     // proxying is mounted as an inner middleware below so intercepted responses
     // still pass through the shared request-id/trace/timeout/compression/CORS
     // stack.
+    let mut router = route_group.router;
     if state.web_assets_enabled() {
         router = router.fallback(crate::api::web::serve_web_request);
     }
@@ -3010,6 +3131,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn public_health_ready_and_discovery_stay_outside_bearer_protection() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, Some("secret-token".into()), None);
+        for path in ["/health", "/ready", "/.well-known/labby.json"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path} became protected");
+        }
+        let protected = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/setup/actions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(protected.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[cfg(feature = "api-docs")]

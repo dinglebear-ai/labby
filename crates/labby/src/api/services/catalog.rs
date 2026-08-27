@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use axum::{
-    Json, Router,
+    Json,
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
@@ -51,8 +51,20 @@ fn etag_matches(if_none_match: &str, etag: &str) -> bool {
 }
 
 /// Register the catalog route: `GET /v1/catalog`.
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", get(get_catalog))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(descriptors().remove(0), get(get_catalog))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![RouteDescriptor::new(
+        "GET",
+        "/",
+        "get_catalog",
+        "catalog",
+        RouteAuth::V1,
+    )]
 }
 
 /// `GET /v1/catalog` — serializes the enabled-service slice of the startup catalog.
@@ -171,7 +183,7 @@ mod tests {
         // Route is registered as "/" inside `routes()` and is nested under
         // "/v1/catalog" in the full router (router.rs:985). Here we mount it
         // directly at "/" to keep the test helper simple; requests use "/".
-        super::routes(state.clone()).with_state(state)
+        super::routes(state.clone()).router.with_state(state)
     }
 
     #[tokio::test]

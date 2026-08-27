@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json, Router, routing};
+use axum::{Extension, Json, routing};
 use labby_auth::{Authenticator, PrincipalLink, VerifiedIdentity};
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +29,23 @@ struct BootstrapOwnerResponse {
     status: &'static str,
 }
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", routing::post(bootstrap_owner))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(descriptors().remove(0), routing::post(bootstrap_owner))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new(
+            "POST",
+            "/",
+            "bootstrap_owner",
+            "access",
+            RouteAuth::BrowserSession,
+        )
+        .when("OAuth mode only; requires a verified configured admin identity"),
+    ]
 }
 
 async fn bootstrap_owner(

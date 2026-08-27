@@ -7,7 +7,7 @@
 use std::net::SocketAddr;
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{ConnectInfo, State},
     http::{HeaderMap, header::HOST},
     routing::post,
@@ -23,8 +23,14 @@ use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::setup::ACTIONS;
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", post(handle))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(descriptors().remove(0), post(handle))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![RouteDescriptor::new("POST", "/", "handle", "setup", RouteAuth::V1).host_validated()]
 }
 
 async fn handle(

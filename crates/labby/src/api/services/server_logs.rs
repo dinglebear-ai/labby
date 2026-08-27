@@ -5,7 +5,7 @@
 //! removed syslog/fleet log-ingestion service.
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::Query,
     http::HeaderMap,
     routing::{get, post},
@@ -20,12 +20,36 @@ use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::server_logs::ACTIONS;
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", post(handle))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(descriptors().remove(0), post(handle))
 }
 
-pub fn data_routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/query", get(query))
+pub fn data_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(data_descriptors().remove(0), get(query))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![RouteDescriptor::new(
+        "POST",
+        "/",
+        "handle",
+        "server_logs",
+        RouteAuth::V1,
+    )]
+}
+
+pub(crate) fn data_descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![RouteDescriptor::new(
+        "GET",
+        "/query",
+        "query",
+        "server_logs_data",
+        RouteAuth::V1,
+    )]
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -163,8 +187,8 @@ mod tests {
     fn app_with_auth(auth: AuthContext) -> Router {
         let state = AppState::from_registry(crate::registry::build_default_registry());
         Router::new()
-            .merge(super::routes(state.clone()))
-            .merge(super::data_routes(state.clone()))
+            .merge(super::routes(state.clone()).router)
+            .merge(super::data_routes(state.clone()).router)
             .layer(Extension(auth))
             .with_state(state)
     }

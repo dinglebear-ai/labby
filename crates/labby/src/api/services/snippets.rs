@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{ConnectInfo, State},
     http::HeaderMap,
     routing::post,
@@ -14,8 +14,18 @@ use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_wi
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", post(handle))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(descriptors().remove(0), post(handle))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new("POST", "/", "handle", "snippets", RouteAuth::V1)
+            .feature("gateway")
+            .when("mounted only when API authentication is configured"),
+    ]
 }
 
 fn snippets_action_requires_admin(action: &str) -> bool {
@@ -151,6 +161,7 @@ mod tests {
     fn app_with_auth(auth: AuthContext) -> Router {
         let state = AppState::from_registry(crate::registry::build_default_registry());
         super::routes(state.clone())
+            .router
             .layer(Extension(auth))
             .with_state(state)
     }

@@ -137,8 +137,10 @@ pub struct FeatureMismatch {
 pub struct RouteDoc {
     pub method: String,
     pub path: String,
+    pub aliases: Vec<String>,
     pub surface: String,
     pub handler_group: String,
+    pub handler_identity: String,
     pub feature: Option<String>,
     pub runtime_condition: Option<String>,
     pub auth_required: bool,
