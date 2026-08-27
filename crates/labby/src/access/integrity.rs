@@ -209,7 +209,11 @@ fn schema_manifest(
 }
 
 fn normalize_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("( ", "(")
+        .replace(" )", ")")
 }
 
 const fn integrity(check: &'static str) -> AccessStoreError {

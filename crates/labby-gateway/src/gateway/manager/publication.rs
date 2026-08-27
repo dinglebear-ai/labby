@@ -2,9 +2,12 @@
 
 use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use labby_runtime::gateway_config::{GatewayLoadoutConfig, VirtualServerConfig};
 use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, ProtectedMcpRouteTarget};
+use sha2::{Digest as _, Sha256};
+use tokio::sync::OwnedRwLockReadGuard;
 
 use crate::gateway::runtime::{PoolPublicationGeneration, PublishedPoolSnapshot};
 use crate::upstream::pool::{
@@ -48,6 +51,69 @@ impl GatewayRuntimeConfigGeneration {
     pub fn fingerprint_bytes(self) -> [u8; 8] {
         self.0.to_be_bytes()
     }
+}
+
+const BOOTSTRAP_POLICY_LEASE_DEADLINE: Duration = Duration::from_millis(100);
+
+/// Immutable authorization-policy publication held stable across the short
+/// access bootstrap transaction. This is intentionally distinct from the
+/// observational MCP item catalogs: credential authority binds the published
+/// Loadout and protected-route policy, not transient upstream discovery.
+pub struct PublishedBootstrapPolicyLease {
+    _publication: OwnedRwLockReadGuard<()>,
+    loadout_id: String,
+    loadout_generation: u64,
+    catalog_generation: u64,
+    policy_fingerprint: [u8; 32],
+    route_id: String,
+    route_generation: u64,
+    resource: String,
+    audience: String,
+    scopes: Vec<String>,
+}
+
+impl PublishedBootstrapPolicyLease {
+    #[must_use]
+    pub fn loadout_id(&self) -> &str {
+        &self.loadout_id
+    }
+    #[must_use]
+    pub fn loadout_generation(&self) -> u64 {
+        self.loadout_generation
+    }
+    #[must_use]
+    pub fn catalog_generation(&self) -> u64 {
+        self.catalog_generation
+    }
+    #[must_use]
+    pub fn policy_fingerprint(&self) -> [u8; 32] {
+        self.policy_fingerprint
+    }
+    #[must_use]
+    pub fn route_id(&self) -> &str {
+        &self.route_id
+    }
+    #[must_use]
+    pub fn route_generation(&self) -> u64 {
+        self.route_generation
+    }
+    #[must_use]
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+    #[must_use]
+    pub fn audience(&self) -> &str {
+        &self.audience
+    }
+    #[must_use]
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BootstrapPolicyLeaseError {
+    Unavailable,
 }
 
 /// A Loadout resolved only from the runtime configuration published by this
@@ -603,6 +669,73 @@ impl PublishedRuntimeLoadoutSnapshot {
 }
 
 impl GatewayManager {
+    /// Acquire a bounded lease over the exact published Loadout and protected
+    /// route policy used for first-owner credential admission.
+    pub async fn acquire_published_bootstrap_policy_lease(
+        &self,
+        loadout_id: &str,
+        route_id: &str,
+    ) -> Result<PublishedBootstrapPolicyLease, BootstrapPolicyLeaseError> {
+        let started = tokio::time::Instant::now();
+        let publication = tokio::time::timeout(
+            BOOTSTRAP_POLICY_LEASE_DEADLINE,
+            std::sync::Arc::clone(&self.publication_barrier).read_owned(),
+        )
+        .await
+        .map_err(|_| BootstrapPolicyLeaseError::Unavailable)?;
+        let remaining = BOOTSTRAP_POLICY_LEASE_DEADLINE
+            .checked_sub(started.elapsed())
+            .ok_or(BootstrapPolicyLeaseError::Unavailable)?;
+        let config = tokio::time::timeout(remaining, self.config.read())
+            .await
+            .map_err(|_| BootstrapPolicyLeaseError::Unavailable)?;
+        let loadout = config
+            .loadouts
+            .iter()
+            .find(|candidate| candidate.name == loadout_id)
+            .filter(|loadout| !loadout.name.is_empty())
+            .ok_or(BootstrapPolicyLeaseError::Unavailable)?;
+        let route = config
+            .protected_mcp_routes
+            .iter()
+            .find(|candidate| candidate.name == route_id && candidate.enabled)
+            .filter(|route| {
+                route
+                    .gateway_subset_target()
+                    .and_then(|target| target.loadout.as_deref())
+                    == Some(loadout_id)
+            })
+            .ok_or(BootstrapPolicyLeaseError::Unavailable)?;
+        let generation =
+            GatewayRuntimeConfigGeneration(self.runtime_config_generation.load(Ordering::Relaxed));
+        let generation_value = u64::from_be_bytes(generation.fingerprint_bytes());
+        let mut scopes = route.scopes.clone();
+        scopes.sort();
+        scopes.dedup();
+        if scopes.is_empty() {
+            return Err(BootstrapPolicyLeaseError::Unavailable);
+        }
+        let resource = route.public_resource();
+        let policy = serde_json::to_vec(&(loadout, route, &scopes))
+            .map_err(|_| BootstrapPolicyLeaseError::Unavailable)?;
+        let policy_fingerprint = Sha256::digest(policy).into();
+        let admitted_loadout_id = loadout.name.clone();
+        let admitted_route_id = route.name.clone();
+        drop(config);
+        Ok(PublishedBootstrapPolicyLease {
+            _publication: publication,
+            loadout_id: admitted_loadout_id,
+            loadout_generation: generation_value,
+            catalog_generation: generation_value,
+            policy_fingerprint,
+            route_id: admitted_route_id,
+            route_generation: generation_value,
+            audience: resource.clone(),
+            resource,
+            scopes,
+        })
+    }
+
     async fn route_publication_observation(
         &self,
         route_name: &str,

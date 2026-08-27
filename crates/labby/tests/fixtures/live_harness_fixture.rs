@@ -21,7 +21,7 @@ fn main() {
     match mode.as_str() {
         "grandchild-listener" => {
             #[allow(clippy::zombie_processes)]
-            let child = Command::new(std::env::current_exe().expect("fixture executable"))
+            let _child = Command::new(std::env::current_exe().expect("fixture executable"))
                 .args(["child-listener", &port.to_string()])
                 .arg(&marker)
                 .stdin(Stdio::null())
@@ -29,21 +29,17 @@ fn main() {
                 .stderr(Stdio::null())
                 .spawn()
                 .expect("spawn grandchild listener");
-            std::fs::write(&marker, child.id().to_string()).expect("write grandchild marker");
             loop {
                 std::thread::sleep(Duration::from_mins(1));
             }
         }
         "child-listener" => {
             let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind held listener");
-            while !marker.exists() {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(&marker)
-                .ok()
-                .and_then(|mut file| writeln!(file, " ready").ok());
+            let address = listener.local_addr().expect("held listener address");
+            let mut file = std::fs::File::create(&marker).expect("create grandchild marker");
+            writeln!(file, "{} {} ready", std::process::id(), address.port())
+                .expect("write grandchild marker");
+            file.sync_all().expect("sync grandchild marker");
             let _listener = listener;
             loop {
                 std::thread::sleep(Duration::from_mins(1));

@@ -216,6 +216,14 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
+    if current < 12 {
+        add_column_if_missing(conn, "browser_sessions", "project_binding_json", "TEXT")?;
+        conn.execute_batch("PRAGMA user_version = 12;")
+            .map_err(sqlite_error)?;
+    }
+    // Repair databases that were stamped v12 by the initial project-session
+    // migration even if the binding column was not durably installed.
+    add_column_if_missing(conn, "browser_sessions", "project_binding_json", "TEXT")?;
     Ok(())
 }
 

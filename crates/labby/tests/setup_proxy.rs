@@ -4,6 +4,10 @@ use std::process::Command;
 mod support;
 
 fn command(home: &std::path::Path) -> Command {
+    // `isolated_command` deliberately redirects temporary files into the test
+    // home. tempfile requires that TMPDIR already exist, just as a real login
+    // environment's system temporary directory does.
+    std::fs::create_dir_all(home.join("tmp")).expect("create isolated TMPDIR");
     support::isolated_command(home)
 }
 

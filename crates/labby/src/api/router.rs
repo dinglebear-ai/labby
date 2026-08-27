@@ -1892,6 +1892,10 @@ fn build_v1_router(
             services::access_bootstrap::routes(state.clone()),
         );
     }
+    v1 = v1.nest(
+        "/access/credentials",
+        services::access_credentials::routes(state.clone()),
+    );
 
     #[cfg(feature = "fs")]
     if state
@@ -2022,6 +2026,24 @@ pub(crate) fn build_router_with_external_auth(
     if let Some(ref auth_state) = auth_state {
         state = state.with_oauth_state(auth_state.clone());
     }
+    #[cfg(feature = "gateway")]
+    if state.access_bootstrap_proof.is_none()
+        && let Some(manager) = state.gateway_manager.as_ref()
+    {
+        let policy = Arc::new(
+            crate::dispatch::access_bootstrap::GatewayBootstrapPolicyAuthority::new(
+                manager.as_ref().clone(),
+                state.access_runtime.as_ref().clone(),
+            ),
+        );
+        let service = Arc::new(
+            crate::dispatch::access_bootstrap::DaemonAccessBootstrapProofService::new(
+                state.access_runtime.as_ref().clone(),
+                policy,
+            ),
+        );
+        state = state.with_access_bootstrap_proof(service);
+    }
     if let Some(auth_state) = auth_state.as_ref() {
         if let Err(error) = auth_state.replace_configured_resource_scopes(
             state
@@ -2099,6 +2121,13 @@ pub(crate) fn build_router_with_external_auth(
                 .into_response()
             })
             .with_allow_session_cookie(allow_session_cookie);
+        layer = layer.with_project_session_state(state.project_session_state.clone());
+        if let Some(adapter) = state.access_credential_adapter.clone() {
+            layer = layer
+                .with_product_credential_verifier(adapter.clone())
+                .with_product_access_grant_resolver(adapter.clone())
+                .with_project_session_revalidator(adapter);
+        }
         layer
     };
     let v1_protected = if credential_auth_configured {
@@ -2204,6 +2233,13 @@ pub(crate) fn build_router_with_external_auth(
             ),
             post(crate::api::browser_session::auth_logout),
         );
+    let local_session_routes = services::local_session::routes(state.clone())
+        .map_router(|router| router.route_layer(make_auth_layer(true)));
+    route_group = route_group.merge(local_session_routes);
+    route_group = route_group.nest(
+        "/auth/bootstrap",
+        services::access_bootstrap_proof::routes(state.clone()),
+    );
     if let Some(auth_state) = auth_state.as_ref() {
         let _ = auth_state;
         let mut descriptors = crate::api::route_registry::oauth_protocol_descriptors().into_iter();
@@ -5890,6 +5926,7 @@ mod tests {
             csrf_token: "csrf-123".to_string(),
             created_at: 1,
             expires_at: i64::MAX,
+            project_binding: None,
         };
         auth_state
             .store

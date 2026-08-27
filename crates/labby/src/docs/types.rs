@@ -145,10 +145,13 @@ pub struct RouteDoc {
     pub runtime_condition: Option<String>,
     pub auth_required: bool,
     pub bearer_only: bool,
+    pub bootstrap_proof: bool,
     pub session_cookie_allowed: bool,
     pub csrf_required: bool,
     pub host_validation: bool,
     pub master_only: bool,
     pub cache_posture: String,
+    pub failure_disclosure: String,
+    pub side_effects: String,
     pub notes: String,
 }

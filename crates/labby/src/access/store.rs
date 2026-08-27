@@ -367,17 +367,16 @@ fn open_connection(path: &Path) -> AccessStoreResult<Connection> {
             path: path.to_path_buf(),
         });
     }
-    labby_runtime::path_safety::reject_existing_symlinks_in_path(path).map_err(|_| {
-        AccessStoreError::InsecurePath {
-            path: path.to_path_buf(),
-        }
-    })?;
     let parent = path
         .parent()
         .ok_or_else(|| AccessStoreError::InsecurePath {
             path: path.to_path_buf(),
         })?;
     prepare_parent(parent)?;
+    let canonical_path = std::fs::canonicalize(parent)
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+        .join("access.db");
+    let path = canonical_path.as_path();
     validate_existing_store_files(path)?;
 
     let existed = path.exists();
@@ -408,6 +407,10 @@ fn open_existing_current_connection(path: &Path) -> AccessStoreResult<Connection
             path: path.to_path_buf(),
         })?;
     validate_secure_parent(parent)?;
+    let canonical_path = std::fs::canonicalize(parent)
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))?
+        .join("access.db");
+    let path = canonical_path.as_path();
     validate_existing_store_files(path)?;
     reject_rollback_journal(path)?;
     validate_store_file(path)?;
@@ -501,11 +504,7 @@ fn validate_path_shape(path: &Path) -> AccessStoreResult<()> {
             path: path.to_path_buf(),
         });
     }
-    labby_runtime::path_safety::reject_existing_symlinks_in_path(path).map_err(|_| {
-        AccessStoreError::InsecurePath {
-            path: path.to_path_buf(),
-        }
-    })
+    Ok(())
 }
 
 fn open_nofollow(path: &Path) -> AccessStoreResult<Connection> {
@@ -557,11 +556,11 @@ fn prepare_parent(path: &Path) -> AccessStoreResult<()> {
             path: ancestor.to_path_buf(),
         });
     }
-    labby_runtime::path_safety::reject_existing_symlinks_in_path(ancestor).map_err(|_| {
-        AccessStoreError::InsecurePath {
-            path: ancestor.to_path_buf(),
-        }
-    })?;
+    // `InstallationPaths` validates the canonical installation root. Direct
+    // AccessStore callers additionally require this immediate owner-controlled
+    // boundary to be restrictive, but must not reject OS-managed ancestor
+    // aliases such as macOS `/var` -> `/private/var`.
+    validate_secure_parent(ancestor)?;
     create_restricted_directory(path)?;
     validate_secure_parent(path)
 }
@@ -736,12 +735,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_store_has_exact_v2_schema_and_security_pragmas() {
+    async fn fresh_store_has_exact_current_schema_and_security_pragmas() {
         let directory = tempfile::tempdir().unwrap();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path).await.unwrap();
 
-        assert_eq!(store.pragma_for_test("user_version").await.unwrap(), "2");
+        assert_eq!(
+            store.pragma_for_test("user_version").await.unwrap(),
+            super::super::migrations::SCHEMA_VERSION.to_string()
+        );
         assert_eq!(store.pragma_for_test("journal_mode").await.unwrap(), "wal");
         assert_eq!(store.pragma_for_test("synchronous").await.unwrap(), "2");
         assert_eq!(store.pragma_for_test("foreign_keys").await.unwrap(), "1");
@@ -749,13 +751,21 @@ mod tests {
         assert_eq!(
             store.tables_for_test().await.unwrap(),
             vec![
+                "access_admission_buckets",
                 "access_audit",
+                "access_installations",
                 "access_metadata",
+                "access_security_events",
+                "access_tombstones",
+                "bootstrap_proofs",
+                "credential_idempotency",
                 "organizations",
                 "principal_links",
                 "principals",
+                "project_credentials",
                 "project_loadouts",
                 "project_memberships",
+                "project_policy_publications",
                 "projects",
             ]
         );
@@ -791,15 +801,18 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 3).unwrap();
+        let newer = super::super::migrations::SCHEMA_VERSION + 1;
+        connection
+            .pragma_update(None, "user_version", newer)
+            .unwrap();
         drop(connection);
         restrict_permissions(&path).unwrap();
         assert!(matches!(
             AccessStore::open(path.clone()).await,
             Err(AccessStoreError::UnsupportedSchema {
-                found: 3,
-                supported: 2
-            })
+                found,
+                supported
+            }) if found == newer && supported == super::super::migrations::SCHEMA_VERSION
         ));
     }
 
@@ -832,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canonical_v1_migrates_to_v2_and_preserves_revision() {
+    async fn canonical_v1_migrates_to_current_and_preserves_revision() {
         let directory = tempfile::tempdir().unwrap();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
@@ -861,7 +874,10 @@ mod tests {
         restrict_permissions(&path).unwrap();
 
         let store = AccessStore::open(path).await.unwrap();
-        assert_eq!(store.pragma_for_test("user_version").await.unwrap(), "2");
+        assert_eq!(
+            store.pragma_for_test("user_version").await.unwrap(),
+            super::super::migrations::SCHEMA_VERSION.to_string()
+        );
         assert_eq!(store.metadata_for_test().await.unwrap().2, 9);
         assert_eq!(
             store.bootstrap_metadata_for_test().await.unwrap(),
@@ -1129,5 +1145,26 @@ mod tests {
             std::fs::metadata(&weak).unwrap().permissions().mode() & 0o777,
             0o755
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn secure_immediate_parent_is_accepted_through_managed_ancestor_alias() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let base = tempfile::tempdir().unwrap();
+        let actual = base.path().join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        std::fs::set_permissions(&actual, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let alias = base.path().join("managed-alias");
+        symlink(&actual, &alias).unwrap();
+        let secure_parent = alias.join("access-state");
+        std::fs::create_dir(&secure_parent).unwrap();
+        std::fs::set_permissions(&secure_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let store = AccessStore::open(secure_parent.join("access.db"))
+            .await
+            .unwrap();
+        assert_eq!(store.pragma_for_test("journal_mode").await.unwrap(), "wal");
     }
 }

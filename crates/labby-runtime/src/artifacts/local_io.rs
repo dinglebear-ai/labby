@@ -40,10 +40,14 @@ pub(crate) fn snapshot_local_path(source: &Path) -> Result<Vec<SnapshotFile>, Ar
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn snapshot_local_path_portable(source: &Path) -> Result<Vec<SnapshotFile>, ArtifactError> {
-    reject_existing_symlinks_in_path(source).map_err(|_| ArtifactError::UnsafePath("symlink"))?;
     reject_symlink(source).map_err(|_| ArtifactError::UnsafePath("symlink"))?;
     let root = canonicalize_and_reject_read_path(source)
         .map_err(|_| ArtifactError::UnsafePath("source_root"))?;
+    // Treat the validated, non-symlink source directory as the ownership
+    // boundary. Canonicalizing first normalizes platform-managed ancestor
+    // aliases such as macOS `/var` -> `/private/var`; all traversal below the
+    // canonical boundary remains lstat/openat guarded.
+    reject_existing_symlinks_in_path(&root).map_err(|_| ArtifactError::UnsafePath("symlink"))?;
     let metadata = std::fs::metadata(&root)?;
     let mut files = Vec::new();
     let mut total = 0_u64;
@@ -353,8 +357,9 @@ fn read_one_with_hook(
     after_open: impl FnOnce(),
 ) -> Result<SnapshotFile, ArtifactError> {
     validate_relative_path(relative)?;
+    let root = std::fs::canonicalize(root)?;
     let canonical = std::fs::canonicalize(path)?;
-    if canonical != root && !canonical.starts_with(root) {
+    if canonical != root && !canonical.starts_with(&root) {
         return Err(ArtifactError::UnsafePath("source_escape"));
     }
     let mut options = OpenOptions::new();

@@ -345,19 +345,41 @@ impl SqliteStore {
 
     pub async fn upsert_browser_session(
         &self,
-        session: BrowserSessionRow,
+        mut session: BrowserSessionRow,
     ) -> Result<(), AuthError> {
+        if let Some(binding) = session.project_binding.as_ref() {
+            if session.subject != binding.subject {
+                return Err(AuthError::Validation(
+                    "project session subject does not match its authorization binding".into(),
+                ));
+            }
+            let cap = i64::try_from(binding.source_credential_expires_at).map_err(|_| {
+                AuthError::Validation(
+                    "project session expiry is outside the supported range".into(),
+                )
+            })?;
+            session.expires_at = session.expires_at.min(cap);
+        }
+        let project_binding_json = session
+            .project_binding
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                AuthError::Storage(format!("project session encoding failed: {error}"))
+            })?;
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO browser_sessions (
-                    session_id, subject, email, csrf_token, created_at, expires_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    session_id, subject, email, csrf_token, created_at, expires_at, project_binding_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(session_id) DO UPDATE SET
                     subject = excluded.subject,
                     email = excluded.email,
                     csrf_token = excluded.csrf_token,
                     created_at = excluded.created_at,
-                    expires_at = excluded.expires_at",
+                    expires_at = excluded.expires_at,
+                    project_binding_json = excluded.project_binding_json",
                 params![
                     session.session_id,
                     session.subject,
@@ -365,6 +387,7 @@ impl SqliteStore {
                     session.csrf_token,
                     session.created_at,
                     session.expires_at,
+                    project_binding_json,
                 ],
             )
             .map_err(sqlite_error)?;
@@ -381,7 +404,7 @@ impl SqliteStore {
         let now = now_unix();
         self.with_conn(move |conn| {
             conn.query_row(
-                "SELECT session_id, subject, email, csrf_token, created_at, expires_at
+                "SELECT session_id, subject, email, csrf_token, created_at, expires_at, project_binding_json
                  FROM browser_sessions
                  WHERE session_id = ?1
                    AND expires_at > ?2",
@@ -1281,7 +1304,8 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             email TEXT,
             csrf_token TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL
+            expires_at INTEGER NOT NULL,
+            project_binding_json TEXT
         );
         CREATE TABLE IF NOT EXISTS browser_login_states (
             state TEXT PRIMARY KEY,
@@ -2788,7 +2812,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            11
+            12
         );
     }
 
@@ -2844,7 +2868,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 11);
+        assert_eq!(schema_version, 12);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await
@@ -3115,6 +3139,7 @@ mod tests {
             csrf_token: "csrf_123".into(),
             created_at: 1,
             expires_at: now_unix() + 9_999,
+            project_binding: None,
         };
 
         store.upsert_browser_session(row.clone()).await.unwrap();
@@ -3358,6 +3383,7 @@ mod tests {
             csrf_token: "csrf_123".into(),
             created_at: 1,
             expires_at: now_unix() + 9_999,
+            project_binding: None,
         };
 
         store.upsert_browser_session(row).await.unwrap();

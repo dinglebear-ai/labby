@@ -17,6 +17,8 @@ pub enum Authenticator {
     OauthBearer,
     /// Authenticated by a configured static bearer credential.
     StaticBearer,
+    /// Authenticated by a verified, project-bound product credential.
+    ProductCredential,
     /// Authenticated by kernel-provided Unix peer credentials.
     UnixPeer,
 }
@@ -27,6 +29,7 @@ impl Authenticator {
             Self::BrowserSession => "browser-session",
             Self::OauthBearer => "labby-jwt",
             Self::StaticBearer => "local",
+            Self::ProductCredential => "product-credential",
             Self::UnixPeer => "unix-peer",
         }
     }
@@ -251,6 +254,7 @@ impl VerifiedIdentity {
             Authenticator::BrowserSession => "browser_session",
             Authenticator::OauthBearer => "oauth_bearer",
             Authenticator::StaticBearer => "static_bearer",
+            Authenticator::ProductCredential => "product_credential",
             Authenticator::UnixPeer => "unix_peer",
         };
         let principal = self.principal_link.safe_fingerprint();

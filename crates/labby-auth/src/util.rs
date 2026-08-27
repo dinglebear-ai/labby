@@ -6,9 +6,7 @@ use std::path::Path;
 #[cfg(feature = "http-axum")]
 use std::time::Duration;
 
-#[cfg(feature = "http-axum")]
 use base64::Engine;
-#[cfg(feature = "http-axum")]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
@@ -22,7 +20,6 @@ pub fn now_unix() -> i64 {
     i64::try_from(secs).unwrap_or(i64::MAX)
 }
 
-#[cfg(feature = "http-axum")]
 pub(crate) fn random_token(bytes: usize) -> Result<String, AuthError> {
     let mut buf = vec![0_u8; bytes];
     getrandom::fill(&mut buf)

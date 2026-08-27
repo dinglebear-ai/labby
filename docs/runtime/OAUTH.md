@@ -75,24 +75,35 @@ Startup also fails if:
 
 ## Owner bootstrap and project-bound credentials
 
-The current public owner-bootstrap route is
-`POST /v1/access/bootstrap-owner`. It is available only after a user has
-completed the configured Google-backed browser login. The request must carry
-that browser session, its valid CSRF token, `lab:admin`, a canonical external
-identity, and an email matching `LABBY_AUTH_ADMIN_EMAIL`. Identical eligible
-requests are idempotent; identity, organization-name, or project-name drift
-fails closed. Static bearer authentication, OAuth client bearer tokens, MCP,
-CLI, loopback origin, and direct local credentials do not bypass these gates.
+Labby supports two separate first-owner flows:
 
-Labby does not currently expose a public local-first contract that combines
-first-owner creation, project Loadout assignment, and issuance of a unique
-short-lived project-bound credential. `POST /token` exchanges an already
-authorized OAuth grant or configured machine-client grant; it does not perform
-owner bootstrap. `LABBY_MCP_HTTP_TOKEN` is process configuration rather than an
-issued per-project credential and has no per-credential public revocation
-lifecycle. Operators and automation must not work around these boundaries by
-editing the access database or minting tokens outside the supported OAuth
-flow.
+- `POST /v1/access/bootstrap-owner` remains the Google-backed browser flow. It
+  requires the authenticated browser session, CSRF token, `lab:admin`, the
+  canonical external identity, and an email matching
+  `LABBY_AUTH_ADMIN_EMAIL`.
+- `labby setup access-bootstrap` is the direct-local operator flow documented
+  in [Local access bootstrap](../guides/LOCAL_ACCESS_BOOTSTRAP.md). Eligibility
+  comes only from a one-time 256-bit proof prepared offline while the
+  installation is pristine. Loopback location by itself grants nothing.
+
+The local flow binds the first owner, default Project, already-published
+Loadout, protected route, resource, audience, ordered scopes, installation
+generation, and client-generated credential digest in one access-store
+transaction. It does not depend on OAuth being configured. Its consume,
+status, and cleanup routes accept `X-Labby-Bootstrap-Proof` only from a direct
+loopback or Unix peer, reject forwarded authority, return uniform
+non-enumerating denials, and set private no-store/no-referrer response headers.
+
+Issued `lby_pc_v1_...` product credentials are distinct from OAuth access
+tokens and from `LABBY_MCP_HTTP_TOKEN`. Every request revalidates the source
+credential, project membership, policy epochs, published Loadout/route
+generations, resource, audience, and scopes. Revocation therefore immediately
+denies both the credential and browser sessions derived from it, even if
+best-effort session-row cleanup has not completed.
+
+`POST /token` continues to exchange OAuth grants only; it never consumes a
+bootstrap proof or issues a project credential. Never edit the access database,
+forge credential rows, or treat loopback reachability as bootstrap authority.
 
 ## Registration and Authorize Flow
 

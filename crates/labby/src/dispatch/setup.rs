@@ -6,6 +6,7 @@
 //! single sanctioned cross-service dispatch call (see the orchestrator
 //! exception clause in `crates/labby/src/dispatch/CLAUDE.md`).
 
+pub(crate) mod access_bootstrap;
 mod bootstrap;
 mod catalog;
 mod claude_plugins;
@@ -19,16 +20,23 @@ mod plugin_hook;
 pub(crate) mod provision;
 pub(crate) mod proxy;
 mod secret_mask;
+mod secure_file;
 mod settings;
 mod state;
 mod token;
 mod types;
 
+pub use access_bootstrap::{
+    cleanup_prepare, complete_prepare, consume_prepare, inspect_prepare, prepare_access_bootstrap,
+    recover_prepare, revoke_prepare, status_prepare,
+};
 pub use bootstrap::{BootstrapOutcome, bootstrap, bootstrap_action, should_bootstrap};
 pub use catalog::{ACTIONS, LOCAL_ONLY_ACTIONS, PLUGIN_LIFECYCLE_ACTIONS};
 pub use dispatch::dispatch;
 pub use types::{
-    CommitOutcome, DraftEntry, SECRET_SENTINEL, SetupClient, SetupSnapshot, SetupState,
+    AccessBootstrapManifest, AccessBootstrapPrepare, AccessBootstrapPrepareOutcome, CommitOutcome,
+    DraftEntry, PrepareJournal, PrepareJournalState, SECRET_SENTINEL, SetupClient, SetupSnapshot,
+    SetupState,
 };
 
 use labby_primitives::plugin::{Category, PluginMeta};

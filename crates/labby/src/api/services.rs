@@ -9,12 +9,15 @@
 
 /// Shared dispatch wrapper: confirmation gate, timing, logging.
 pub mod helpers;
+pub mod local_session;
 
 /// Admin-only allowlist management (`/v1/auth/allowed-emails`).
 pub mod auth_admin;
 
 /// Browser-session-only owner bootstrap (`/v1/access/bootstrap-owner`).
 pub mod access_bootstrap;
+pub mod access_bootstrap_proof;
+pub mod access_credentials;
 
 /// `GET /v1/catalog` — filtered service+action catalog for the ⌘K palette.
 pub mod catalog;

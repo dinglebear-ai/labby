@@ -168,20 +168,28 @@ pub fn feature_matrix(matrix: &FeatureMatrix) -> String {
 pub fn api_routes(routes: &[RouteDoc]) -> String {
     let mut out = header("api-routes", "labby docs generate");
     out.push_str(
-        "| Method | Path | Auth | Session | CSRF | Host Validation | Master | Group | Notes |\n",
+        "| Method | Path | Auth | Credential | Session | CSRF | Host Validation | Cache | Side Effects | Group | Notes |\n",
     );
-    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for route in routes {
         writeln!(
             out,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             cell(&route.method),
             code(&route.path),
             route.auth_required,
+            if route.bootstrap_proof {
+                "bootstrap proof"
+            } else if route.bearer_only {
+                "bearer only"
+            } else {
+                "standard"
+            },
             route.session_cookie_allowed,
             route.csrf_required,
             route.host_validation,
-            route.master_only,
+            cell(&route.cache_posture),
+            cell(&route.side_effects),
             cell(&route.handler_group),
             cell(&route.notes)
         )

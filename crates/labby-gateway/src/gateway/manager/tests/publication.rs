@@ -2494,6 +2494,80 @@ fn config_with_loadout(loadout: GatewayLoadoutConfig) -> GatewayConfig {
 }
 
 #[tokio::test]
+async fn bootstrap_policy_lease_binds_route_and_blocks_publication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("bootstrap-policy.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let mut config = config_with_loadout(loadout("production", &[]));
+    config.protected_mcp_routes.push(ProtectedMcpRouteConfig {
+        name: "operator".into(),
+        enabled: true,
+        public_host: "mcp.example".into(),
+        public_path: "/operator".into(),
+        upstream: None,
+        backend_url: String::new(),
+        backend_mcp_path: "/mcp".into(),
+        scopes: vec!["lab:read".into(), "lab:admin".into()],
+        health_path: None,
+        target: Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                loadout: Some("production".into()),
+                ..Default::default()
+            },
+        )),
+    });
+    manager.seed_config_unchecked_for_tests(config).await;
+
+    let lease = manager
+        .acquire_published_bootstrap_policy_lease("production", "operator")
+        .await
+        .expect("published bootstrap policy");
+    assert_eq!(lease.resource(), "https://mcp.example/operator");
+    assert_eq!(lease.audience(), lease.resource());
+    assert_eq!(lease.scopes(), &["lab:admin", "lab:read"]);
+    let leased_fingerprint = lease.policy_fingerprint();
+    let publishing_manager = manager.clone();
+    let publication = tokio::spawn(async move {
+        let _publication = publishing_manager.publication_barrier.write().await;
+    });
+    // Product authority performs its awaited durable reconciliation here. A
+    // concurrently queued publisher must remain blocked for the full async
+    // critical section, and the lease must still expose the same snapshot.
+    tokio::task::yield_now().await;
+    assert!(
+        !publication.is_finished(),
+        "publication interleaved the lease"
+    );
+    assert_eq!(lease.policy_fingerprint(), leased_fingerprint);
+    drop(lease);
+    tokio::time::timeout(Duration::from_millis(100), publication)
+        .await
+        .expect("publication resumes after lease release")
+        .expect("publication task completes");
+}
+
+#[tokio::test]
+async fn bootstrap_policy_lease_rejects_configured_but_unbound_loadout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("bootstrap-policy.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    manager
+        .seed_config_unchecked_for_tests(config_with_loadout(loadout("production", &[])))
+        .await;
+    assert_eq!(
+        manager
+            .acquire_published_bootstrap_policy_lease("production", "missing")
+            .await
+            .err(),
+        Some(crate::gateway::manager::BootstrapPolicyLeaseError::Unavailable)
+    );
+}
+
+#[tokio::test]
 async fn runtime_config_generations_are_shared_by_clones_and_distinct_between_managers() {
     let first_dir = tempfile::tempdir().expect("first tempdir");
     let second_dir = tempfile::tempdir().expect("second tempdir");

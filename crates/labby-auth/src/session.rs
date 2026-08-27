@@ -48,6 +48,7 @@ pub async fn create_browser_session(
             state.config.refresh_token_ttl,
             &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
         )?,
+        project_binding: None,
     };
     state.store.upsert_browser_session(session.clone()).await?;
     Ok(session)

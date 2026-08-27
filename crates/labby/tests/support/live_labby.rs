@@ -85,6 +85,7 @@ pub(crate) struct LiveLabbyBuilder {
     ready_path: String,
     config: Option<String>,
     fail_evidence_writes: bool,
+    existing_root: Option<PathBuf>,
 }
 
 impl Default for LiveLabbyBuilder {
@@ -97,6 +98,7 @@ impl Default for LiveLabbyBuilder {
             ready_path: "/ready".to_string(),
             config: None,
             fail_evidence_writes: false,
+            existing_root: None,
         }
     }
 }
@@ -141,6 +143,14 @@ impl LiveLabbyBuilder {
         self
     }
 
+    /// Start in a caller-owned canonical test root. This supports workflows
+    /// whose offline setup phase must precede daemon startup in the same
+    /// installation. The caller retains ownership and cleanup responsibility.
+    pub(crate) fn existing_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.existing_root = Some(root.into());
+        self
+    }
+
     pub(crate) async fn start(self) -> Result<LiveLabbyGuard, String> {
         self.start_with_retries(4).await
     }
@@ -153,11 +163,16 @@ impl LiveLabbyBuilder {
             let retry = self.clone();
             let owned_parent = std::env::temp_dir().join("labby-live-e2e");
             std::fs::create_dir_all(&owned_parent).map_err(|error| error.to_string())?;
-            let root_guard = tempfile::Builder::new()
-                .prefix("run-")
-                .tempdir_in(&owned_parent)
-                .map_err(|error| error.to_string())?;
-            let root = canonical_owned_root(root_guard.path(), &owned_parent)?;
+            let (root_guard, root) = if let Some(root) = &self.existing_root {
+                (None, canonical_owned_root(root, &owned_parent)?)
+            } else {
+                let guard = tempfile::Builder::new()
+                    .prefix("run-")
+                    .tempdir_in(&owned_parent)
+                    .map_err(|error| error.to_string())?;
+                let root = canonical_owned_root(guard.path(), &owned_parent)?;
+                (Some(guard), root)
+            };
             let identity = build_identity()?;
             let credential_canary = random_secret_canary()?;
             let nonce_path = root.join("ownership.nonce");
@@ -281,7 +296,7 @@ impl LiveLabbyBuilder {
                 ready_url: format!("http://{address}{}", self.ready_path),
             };
             let mut guard = LiveLabbyGuard {
-                root_guard: Some(root_guard),
+                root_guard,
                 root,
                 manifest_path,
                 nonce_path,
@@ -588,6 +603,7 @@ impl LiveLabbyGuard {
             scan_file_for_canaries(&retained, &self.secret_canaries, &mut result.failures);
         }
         self.finalized = true;
+        let owns_root = self.root_guard.is_some();
         if let Some(root_guard) = self.root_guard.take()
             && let Err(error) = root_guard.close()
         {
@@ -595,7 +611,7 @@ impl LiveLabbyGuard {
                 .failures
                 .push(format!("owned root deletion failed: {error}"));
         }
-        if self.root.exists() {
+        if owns_root && self.root.exists() {
             result.failures.push(format!(
                 "owned root retained after cleanup: {}",
                 self.root.display()
@@ -1540,12 +1556,11 @@ mod tests {
             .stop_process(Instant::now() + Duration::from_secs(5))
             .await
             .unwrap();
-        let address = guard.ledger.listener.unwrap();
         let marker = guard.root.join("panic-grandchild.marker");
         let mut command = TokioCommand::new(env!("CARGO_BIN_EXE_live-harness-fixture"));
         command
             .env_clear()
-            .args(["grandchild-listener", &address.port().to_string()])
+            .args(["grandchild-listener", "0"])
             .arg(&marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1558,11 +1573,10 @@ mod tests {
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         guard.child = Some(child);
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !std::fs::read_to_string(&marker).is_ok_and(|value| value.contains("ready")) {
-            assert!(Instant::now() < deadline);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let address = wait_for_fixture_listener(&marker, Duration::from_secs(3)).await;
+        guard.ledger.listener = Some(address);
+        guard.ledger.listener_identity = Some(format!("tcp:{address}"));
+        write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         let root = guard.root.clone();
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = guard;
@@ -1614,12 +1628,11 @@ mod tests {
             .stop_process(Instant::now() + Duration::from_secs(5))
             .await
             .unwrap();
-        let address = guard.ledger.listener.unwrap();
         let marker = guard.root.join("grandchild.marker");
         let mut command = TokioCommand::new(env!("CARGO_BIN_EXE_live-harness-fixture"));
         command
             .env_clear()
-            .args(["grandchild-listener", &address.port().to_string()])
+            .args(["grandchild-listener", "0"])
             .arg(&marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1632,14 +1645,10 @@ mod tests {
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         guard.child = Some(child);
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !std::fs::read_to_string(&marker).is_ok_and(|value| value.contains("ready")) {
-            assert!(
-                Instant::now() < deadline,
-                "grandchild listener did not become ready"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let address = wait_for_fixture_listener(&marker, Duration::from_secs(3)).await;
+        guard.ledger.listener = Some(address);
+        guard.ledger.listener_identity = Some(format!("tcp:{address}"));
+        write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         assert!(
             TcpListener::bind(address).is_err(),
             "fixture must hold listener"
@@ -1650,5 +1659,26 @@ mod tests {
             TcpListener::bind(address).is_ok(),
             "grandchild listener leaked"
         );
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_fixture_listener(marker: &Path, timeout: Duration) -> SocketAddr {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(value) = std::fs::read_to_string(marker) {
+                let fields = value.split_whitespace().collect::<Vec<_>>();
+                if fields.len() == 3
+                    && fields[2] == "ready"
+                    && let Ok(port) = fields[1].parse::<u16>()
+                {
+                    return SocketAddr::from(([127, 0, 0, 1], port));
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "grandchild listener did not become ready"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

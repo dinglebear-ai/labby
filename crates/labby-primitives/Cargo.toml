@@ -13,6 +13,7 @@ categories = ["development-tools"]
 publish = false
 
 [dependencies]
+base64.workspace = true
 thiserror.workspace = true
 url.workspace = true
 

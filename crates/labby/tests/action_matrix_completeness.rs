@@ -480,9 +480,7 @@ fn security_invariants_are_independent_of_execution_intent() {
             support::action_matrix::Surface::Api,
             support::action_matrix::Surface::WebUi,
         ] {
-            let discovered = catalog_by_key[key]
-                .surfaces()
-                .contains(&surface);
+            let discovered = catalog_by_key[key].surfaces().contains(&surface);
             assert_eq!(
                 intent.applicable_surfaces.contains(&surface),
                 discovered,

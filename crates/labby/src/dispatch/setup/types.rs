@@ -12,6 +12,103 @@ use thiserror::Error;
 /// `UiSchema.secret == true` flag is set.
 pub const SECRET_SENTINEL: &str = "***";
 
+/// Fully normalized, replay-stable bootstrap request. This contains no secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessBootstrapManifest {
+    pub version: u8,
+    pub installation_id: String,
+    pub canonical_issuer: String,
+    pub organization_name: String,
+    pub project_name: String,
+    pub subject: String,
+    pub loadout_id: String,
+    pub route_id: String,
+    pub resource: String,
+    pub scopes: Vec<String>,
+    pub ttl_seconds: u64,
+    pub credential_id: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccessBootstrapPrepare {
+    pub proof_file: PathBuf,
+    pub credential_file: PathBuf,
+    pub organization_name: String,
+    pub project_name: String,
+    pub subject: String,
+    pub loadout_id: String,
+    pub route_id: String,
+    pub resource: String,
+    pub scopes: Vec<String>,
+    pub ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccessBootstrapPrepareOutcome {
+    pub prepare_id: String,
+    pub proof_id: String,
+    pub credential_id: String,
+    pub journal_state: PrepareJournalState,
+    pub proof_file: PathBuf,
+    pub credential_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrepareJournalState {
+    Allocating,
+    FilesPublished,
+    ProofActive,
+    Consumed,
+    Revoked,
+    Cleaned,
+    ManualFileCleanupRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrepareFileIdentity {
+    pub path: PathBuf,
+    pub digest_hex: String,
+    #[cfg(unix)]
+    pub device: u64,
+    #[cfg(unix)]
+    pub inode: u64,
+    #[cfg(unix)]
+    pub parent_device: u64,
+    #[cfg(unix)]
+    pub parent_inode: u64,
+    #[cfg(unix)]
+    pub owner: u32,
+    #[cfg(unix)]
+    pub mode: u32,
+    #[cfg(unix)]
+    pub links: u64,
+}
+
+/// Secret-free, installation-owned crash recovery authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrepareJournal {
+    pub version: u8,
+    pub prepare_id: String,
+    pub installation_id: String,
+    pub proof_id: String,
+    pub proof_digest_hex: String,
+    pub credential_id: String,
+    pub credential_digest_hex: String,
+    pub manifest: AccessBootstrapManifest,
+    pub manifest_digest_hex: String,
+    pub request_digest_hex: String,
+    pub idempotency_digest_hex: String,
+    pub state: PrepareJournalState,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub proof_path: PathBuf,
+    pub credential_path: PathBuf,
+    pub proof_file: Option<PrepareFileIdentity>,
+    pub credential_file: Option<PrepareFileIdentity>,
+}
+
 /// First-run setup state machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

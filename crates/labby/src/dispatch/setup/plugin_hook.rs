@@ -588,9 +588,9 @@ fn check_access_store(path: &Path) -> SetupCheck {
     let health = inspect_health(path);
     let (ok, severity) = match health.status {
         AccessHealthStatus::Ready => (true, SetupSeverity::Advisory),
-        AccessHealthStatus::Missing | AccessHealthStatus::Uninitialized => {
-            (false, SetupSeverity::Advisory)
-        }
+        AccessHealthStatus::Missing
+        | AccessHealthStatus::Uninitialized
+        | AccessHealthStatus::Prepared => (false, SetupSeverity::Advisory),
         AccessHealthStatus::Insecure
         | AccessHealthStatus::Corrupt
         | AccessHealthStatus::NewerSchema

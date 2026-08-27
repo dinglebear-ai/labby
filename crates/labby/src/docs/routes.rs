@@ -9,7 +9,10 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
                 matches!(route.auth, RouteAuth::V1 | RouteAuth::BrowserSession);
             let auth_required = matches!(
                 route.auth,
-                RouteAuth::V1 | RouteAuth::BearerOnly | RouteAuth::BrowserSession
+                RouteAuth::V1
+                    | RouteAuth::BearerOnly
+                    | RouteAuth::BrowserSession
+                    | RouteAuth::BootstrapProof
             );
             RouteDoc {
                 method: route.method.to_string(),
@@ -22,6 +25,7 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
                 runtime_condition: route.runtime_condition.map(str::to_string),
                 auth_required,
                 bearer_only: route.auth == RouteAuth::BearerOnly,
+                bootstrap_proof: route.auth == RouteAuth::BootstrapProof,
                 session_cookie_allowed,
                 csrf_required: session_cookie_allowed
                     && !matches!(route.method, "GET" | "HEAD" | "OPTIONS"),
@@ -30,12 +34,16 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
                 // master/admin API routes. Keep this axis independent from
                 // authentication and CSRF posture.
                 master_only: matches!(route.auth, RouteAuth::V1 | RouteAuth::BearerOnly),
-                cache_posture: if route.auth == RouteAuth::Public {
+                cache_posture: if route.cache_posture != "route-defined" {
+                    route.cache_posture
+                } else if route.auth == RouteAuth::Public {
                     "route-defined"
                 } else {
                     "not cacheable"
                 }
                 .to_string(),
+                failure_disclosure: route.failure_disclosure.to_string(),
+                side_effects: route.side_effects.to_string(),
                 notes: route.handler.replace('_', " "),
             }
         })
@@ -94,6 +102,29 @@ mod tests {
         assert!(logout.csrf_required);
         assert!(!logout.master_only);
         assert_eq!(logout.cache_posture, "not cacheable");
+    }
+
+    #[test]
+    fn bootstrap_proof_routes_have_distinct_hardened_contract() {
+        let routes = build_route_docs(&[]);
+        for path in [
+            "/auth/bootstrap/consume",
+            "/auth/bootstrap/status",
+            "/auth/bootstrap/cleanup",
+        ] {
+            let route = routes.iter().find(|route| route.path == path).unwrap();
+            assert!(route.auth_required);
+            assert!(route.bootstrap_proof);
+            assert!(!route.bearer_only);
+            assert!(!route.session_cookie_allowed);
+            assert_eq!(route.cache_posture, "private, no-store");
+            assert_eq!(route.failure_disclosure, "uniform non-enumerating denial");
+        }
+        let status = routes
+            .iter()
+            .find(|route| route.path == "/auth/bootstrap/status")
+            .unwrap();
+        assert_eq!(status.side_effects, "none_expected");
     }
 
     #[test]

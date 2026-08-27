@@ -92,6 +92,8 @@ pub enum SetupCommand {
     Wizard(WizardArgs),
     /// Manage the local setup draft.
     Draft(DraftArgs),
+    /// Prepare and operate the local project-credential bootstrap flow.
+    AccessBootstrap(AccessBootstrapArgs),
     /// Manage the systemd Labby gateway service.
     HostService(HostServiceArgs),
     /// List installed Claude Code lab plugins.
@@ -136,6 +138,63 @@ pub enum SetupCommand {
     InstallPlugin(PluginMutationArgs),
     /// Uninstall the Claude Code plugin for a service.
     UninstallPlugin(PluginMutationArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AccessBootstrapArgs {
+    #[command(subcommand)]
+    pub command: AccessBootstrapCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AccessBootstrapCommand {
+    /// Securely create a one-time proof bundle and client credential.
+    Prepare {
+        #[arg(long)]
+        proof_file: PathBuf,
+        #[arg(long)]
+        credential_file: PathBuf,
+        #[arg(long)]
+        organization_name: String,
+        #[arg(long)]
+        project_name: String,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        loadout_id: String,
+        #[arg(long)]
+        route_id: String,
+        #[arg(long)]
+        resource: String,
+        #[arg(long, required = true)]
+        scope: Vec<String>,
+        #[arg(long, default_value_t = 600)]
+        ttl: u64,
+    },
+    /// Submit the prepared request to the running daemon without local mutation.
+    Consume {
+        #[arg(long)]
+        prepare_id: String,
+    },
+    /// Ask the running daemon for authoritative prepare status.
+    Status {
+        #[arg(long)]
+        prepare_id: String,
+    },
+    /// Verify a prepare and report its current recovery state.
+    Recover {
+        #[arg(long)]
+        prepare_id: String,
+        #[arg(long, conflicts_with = "revoke")]
+        complete: bool,
+        #[arg(long, conflicts_with = "complete")]
+        revoke: bool,
+    },
+    /// Offline cleanup; requires the daemon to be stopped and durable tombstones.
+    Cleanup {
+        #[arg(long)]
+        prepare_id: String,
+    },
 }
 
 #[derive(Debug, Args, Clone, Copy)]
@@ -596,6 +655,64 @@ async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<Exit
         SetupCommand::Draft(args) => {
             run_draft_command(args, format).await?;
         }
+        SetupCommand::AccessBootstrap(args) => match args.command {
+            AccessBootstrapCommand::Prepare {
+                proof_file,
+                credential_file,
+                organization_name,
+                project_name,
+                subject,
+                loadout_id,
+                route_id,
+                resource,
+                scope,
+                ttl,
+            } => {
+                let outcome = crate::dispatch::setup::prepare_access_bootstrap(
+                    crate::dispatch::setup::AccessBootstrapPrepare {
+                        proof_file,
+                        credential_file,
+                        organization_name,
+                        project_name,
+                        subject,
+                        loadout_id,
+                        route_id,
+                        resource,
+                        scopes: scope,
+                        ttl_seconds: ttl,
+                    },
+                )
+                .await?;
+                print(&serde_json::to_value(outcome)?, format)?;
+            }
+            AccessBootstrapCommand::Consume { prepare_id } => {
+                let outcome = crate::dispatch::setup::consume_prepare(&prepare_id).await?;
+                print(&outcome, format)?;
+            }
+            AccessBootstrapCommand::Status { prepare_id } => {
+                let outcome = crate::dispatch::setup::status_prepare(&prepare_id).await?;
+                print(&outcome, format)?;
+            }
+            AccessBootstrapCommand::Recover {
+                prepare_id,
+                complete,
+                revoke,
+            } => {
+                let journal = crate::dispatch::setup::recover_prepare(&prepare_id)?;
+                let journal = if complete {
+                    crate::dispatch::setup::complete_prepare(&prepare_id).await?
+                } else if revoke {
+                    crate::dispatch::setup::revoke_prepare(&prepare_id).await?
+                } else {
+                    journal
+                };
+                print(&serde_json::to_value(journal)?, format)?;
+            }
+            AccessBootstrapCommand::Cleanup { prepare_id } => {
+                let journal = crate::dispatch::setup::cleanup_prepare(&prepare_id).await?;
+                print(&serde_json::to_value(journal)?, format)?;
+            }
+        },
         SetupCommand::HostService(args) => {
             run_host_service_command(args, format).await?;
         }

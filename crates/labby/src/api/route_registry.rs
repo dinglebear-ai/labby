@@ -14,6 +14,7 @@ pub enum RouteAuth {
     V1,
     BearerOnly,
     BrowserSession,
+    BootstrapProof,
     OAuthProtocol,
 }
 
@@ -37,6 +38,9 @@ pub struct RouteDescriptor {
     pub presence: RoutePresence,
     pub aliases: Vec<String>,
     pub host_validation: bool,
+    pub cache_posture: &'static str,
+    pub failure_disclosure: &'static str,
+    pub side_effects: &'static str,
 }
 
 impl RouteDescriptor {
@@ -58,6 +62,13 @@ impl RouteDescriptor {
             presence: RoutePresence::Static,
             aliases: Vec::new(),
             host_validation: false,
+            cache_posture: "route-defined",
+            failure_disclosure: "standard",
+            side_effects: if matches!(method, "GET" | "HEAD" | "OPTIONS") {
+                "none_expected"
+            } else {
+                "possible"
+            },
         }
     }
 
@@ -90,6 +101,24 @@ impl RouteDescriptor {
     #[must_use]
     pub fn host_validated(mut self) -> Self {
         self.host_validation = true;
+        self
+    }
+
+    #[must_use]
+    pub fn private_no_store(mut self) -> Self {
+        self.cache_posture = "private, no-store";
+        self
+    }
+
+    #[must_use]
+    pub fn non_enumerating(mut self) -> Self {
+        self.failure_disclosure = "uniform non-enumerating denial";
+        self
+    }
+
+    #[must_use]
+    pub fn side_effects(mut self, side_effects: &'static str) -> Self {
+        self.side_effects = side_effects;
         self
     }
 }
@@ -379,6 +408,15 @@ pub fn build_route_descriptors(_service_names: &[String]) -> Vec<RouteDescriptor
     routes.extend(prefixed(
         "/v1/access/bootstrap-owner",
         crate::api::services::access_bootstrap::descriptors(),
+    ));
+    routes.extend(prefixed(
+        "/auth/bootstrap",
+        crate::api::services::access_bootstrap_proof::descriptors(),
+    ));
+    routes.extend(crate::api::services::local_session::descriptors());
+    routes.extend(prefixed(
+        "/v1/access/credentials",
+        crate::api::services::access_credentials::descriptors(),
     ));
 
     #[cfg(feature = "skills")]
