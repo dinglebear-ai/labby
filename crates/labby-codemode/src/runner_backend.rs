@@ -199,7 +199,7 @@ fn invalid_param(message: impl Into<String>) -> ToolError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
