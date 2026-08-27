@@ -108,9 +108,16 @@ pub async fn dispatch_with_manager_scoped(
             to_json(manager.usage_calls_scoped(params, enrichment_scope).await?)
         }
         "gateway.import" => handle_import(manager, params_value, enrichment_scope).await,
-        "gateway.import_pending.list" => to_json(manager.list_pending_imports().await),
+        "gateway.import_pending.list" => {
+            let mut pending = manager.list_pending_imports().await;
+            if let Some(visible) = enrichment_scope.route_visible_upstreams.as_ref() {
+                pending.retain(|candidate| visible.contains(&candidate.name));
+            }
+            to_json(pending)
+        }
         "gateway.import_pending.approve" => {
             let name = require_str(&params_value, "name")?;
+            enrichment_scope.ensure_visible(name)?;
             to_json(
                 manager
                     .approve_pending_import_scoped(name, enrichment_scope)
@@ -119,12 +126,13 @@ pub async fn dispatch_with_manager_scoped(
         }
         "gateway.import_pending.reject" => {
             let name = require_str(&params_value, "name")?;
+            enrichment_scope.ensure_visible(name)?;
             to_json(manager.reject_pending_import(name).await?)
         }
         "gateway.import_tombstones.list"
         | "gateway.import_tombstones.clear"
         | "gateway.import_tombstones.restore" => {
-            handle_import_tombstone_actions(manager, action, params_value).await
+            handle_import_tombstone_actions(manager, action, params_value, enrichment_scope).await
         }
         "gateway.servers" => to_json(
             manager
@@ -173,7 +181,7 @@ pub async fn dispatch_with_manager_scoped(
             handle_service_actions(manager, action, params_value).await
         }
         action if action.starts_with("gateway.oauth.") => {
-            handle_oauth_actions(manager, action, params_value).await
+            handle_oauth_actions(manager, action, params_value, enrichment_scope).await
         }
         action if action.starts_with("gateway.mcp.") => {
             handle_mcp_actions(manager, action, params_value, enrichment_scope).await
@@ -372,15 +380,24 @@ async fn handle_import_tombstone_actions(
     manager: &GatewayManager,
     action: &str,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
-        "gateway.import_tombstones.list" => to_json(manager.list_import_tombstones().await),
+        "gateway.import_tombstones.list" => {
+            let mut tombstones = manager.list_import_tombstones().await;
+            if let Some(visible) = enrichment_scope.route_visible_upstreams.as_ref() {
+                tombstones.retain(|tombstone| visible.contains(&tombstone.name));
+            }
+            to_json(tombstones)
+        }
         "gateway.import_tombstones.clear" => {
             let params: GatewayImportTombstoneParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.clear_import_tombstone(params.into()).await?)
         }
         "gateway.import_tombstones.restore" => {
             let params: GatewayImportTombstoneParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             let origin = params.origin.clone();
             let owner = params.owner.clone();
             to_json(
@@ -830,6 +847,7 @@ async fn handle_oauth_actions(
     manager: &GatewayManager,
     action: &str,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
         "gateway.oauth.resource_lease.create" => {
@@ -867,6 +885,7 @@ async fn handle_oauth_actions(
         "gateway.oauth.start" => {
             reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             to_json(
                 crate::gateway::oauth::begin_authorization(
                     manager,
@@ -879,6 +898,7 @@ async fn handle_oauth_actions(
         "gateway.oauth.status" => {
             reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             to_json(
                 crate::gateway::oauth::status(
                     manager,
@@ -891,6 +911,7 @@ async fn handle_oauth_actions(
         "gateway.oauth.clear" => {
             reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             crate::gateway::oauth::clear(manager, &params.upstream, SHARED_GATEWAY_OAUTH_SUBJECT)
                 .await?;
             to_json(serde_json::json!({ "ok": true }))
@@ -908,6 +929,7 @@ async fn handle_oauth_actions(
                 });
             }
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             to_json(crate::gateway::oauth::revoke_google(manager, &params.upstream).await?)
         }
         // Q-H3: poll loop moved from cli/gateway.rs into shared dispatch so all
@@ -920,6 +942,7 @@ async fn handle_oauth_actions(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120);
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             let timeout = std::time::Duration::from_secs(timeout_secs);
             let authenticated = manager
                 .await_upstream_authorization(
@@ -978,6 +1001,7 @@ async fn handle_mcp_actions(
     match action {
         "gateway.mcp.enable" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .update(
@@ -1004,6 +1028,7 @@ async fn handle_mcp_actions(
         "gateway.clients.list" => to_json(manager.clients().await?),
         "gateway.mcp.disable" => {
             let params: GatewayMcpToggleParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             let gateway = manager
                 .update(
                     &params.name,
@@ -1032,6 +1057,7 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.restart" => {
             let params: GatewayMcpRestartParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             let upstream =
                 manager
                     .upstream_config(&params.name)
@@ -1089,6 +1115,7 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.cleanup" => {
             let params: GatewayMcpCleanupParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .cleanup_upstream_processes(&params.name, params.aggressive, params.dry_run)

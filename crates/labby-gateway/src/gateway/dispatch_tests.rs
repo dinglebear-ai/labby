@@ -786,6 +786,25 @@ async fn named_gateway_actions_reject_route_hidden_upstreams_before_dispatch() {
         ("gateway.discovered_tools", json!({"name": "github"})),
         ("gateway.discovered_resources", json!({"name": "github"})),
         ("gateway.discovered_prompts", json!({"name": "github"})),
+        ("gateway.mcp.enable", json!({"name": "github"})),
+        ("gateway.mcp.disable", json!({"name": "github"})),
+        ("gateway.mcp.restart", json!({"name": "github"})),
+        ("gateway.mcp.cleanup", json!({"name": "github"})),
+        ("gateway.oauth.start", json!({"upstream": "github"})),
+        ("gateway.oauth.status", json!({"upstream": "github"})),
+        ("gateway.oauth.clear", json!({"upstream": "github"})),
+        (
+            "gateway.oauth.google_revoke",
+            json!({"upstream": "github", "confirm": true}),
+        ),
+        ("gateway.oauth.wait", json!({"upstream": "github"})),
+        ("gateway.import_pending.approve", json!({"name": "github"})),
+        ("gateway.import_pending.reject", json!({"name": "github"})),
+        ("gateway.import_tombstones.clear", json!({"name": "github"})),
+        (
+            "gateway.import_tombstones.restore",
+            json!({"name": "github"}),
+        ),
     ] {
         let error = dispatch_with_manager_scoped(&manager, action, params, scope.clone())
             .await

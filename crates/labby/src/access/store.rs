@@ -179,7 +179,15 @@ impl AccessStore {
                 permission,
             )?;
             let result = executor(snapshot);
-            transaction.rollback().map_err(map_sqlite_error)?;
+            if let Err(error) = transaction.rollback() {
+                tracing::error!(
+                    project_id,
+                    executor_failed = result.is_err(),
+                    error = %error,
+                    "failed to roll back the Skill Library authorization lease"
+                );
+                return Err(map_sqlite_error(error));
+            }
             Ok(result)
         })
         .await

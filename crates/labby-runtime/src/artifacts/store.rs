@@ -271,7 +271,15 @@ impl ArtifactStore {
                     ))
                 },
             )?;
-            File::open(artifact_dir)?.sync_all()?;
+            if let Err(resync_error) = File::open(artifact_dir).and_then(|dir| dir.sync_all()) {
+                return Err(ArtifactError::Io(std::io::Error::new(
+                    resync_error.kind(),
+                    format!(
+                        "workspace parent sync failed ({sync_error}); rollback succeeded but its parent sync failed ({resync_error}); recovery tree retained at {}",
+                        staging.display()
+                    ),
+                )));
+            }
             cleanup_recovery_dir(&staging, artifact_id, "rolled-back staging");
             return Err(ArtifactError::Io(sync_error));
         }
