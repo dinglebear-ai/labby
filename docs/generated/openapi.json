@@ -2304,6 +2304,7 @@
               "gateway.mcp.list",
               "gateway.clients.list",
               "gateway.mcp.disable",
+              "gateway.mcp.restart",
               "gateway.mcp.cleanup",
               "gateway.public_urls.get"
             ]
@@ -2719,6 +2720,20 @@
       "GatewayGatewayMcpListParams": {
         "type": "object",
         "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GatewayGatewayMcpRestartParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "aggressive": {
+            "type": "boolean"
+          },
           "name": {
             "type": "string"
           }

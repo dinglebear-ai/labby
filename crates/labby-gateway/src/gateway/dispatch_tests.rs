@@ -156,6 +156,7 @@ fn gateway_actions_include_management_surface() {
     assert!(names.contains(&"gateway.oauth.resource_lease.release"));
     assert!(names.contains(&"gateway.mcp.enable"));
     assert!(names.contains(&"gateway.mcp.disable"));
+    assert!(names.contains(&"gateway.mcp.restart"));
     assert!(names.contains(&"gateway.mcp.cleanup"));
     assert!(names.contains(&"gateway.public_urls.get"));
 
@@ -3378,6 +3379,106 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
 
     drop(child.kill());
     panic!("github-chat stand-in process was not terminated by disable cleanup");
+}
+
+#[tokio::test]
+async fn gateway_mcp_restart_rejects_a_disabled_upstream_without_enabling_it() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "disabled-restart",
+            Some("http://127.0.0.1:1/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.restart",
+        json!({"name": "disabled-restart"}),
+    )
+    .await
+    .expect_err("disabled upstream restart must fail");
+
+    assert!(matches!(error, ToolError::InvalidParam { .. }));
+    assert!(
+        !manager
+            .upstream_config("disabled-restart")
+            .await
+            .expect("disabled upstream")
+            .enabled
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn gateway_mcp_restart_cleans_the_old_runtime_and_returns_enabled() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    let manager = test_manager();
+    let upstream_name = "restart-dispatch";
+    let runtime_arg = "restart-dispatch-mcp";
+    manager
+        .replace_config_for_tests(vec![UpstreamConfig {
+            enabled: true,
+            name: upstream_name.to_string(),
+            url: None,
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: Some("uvx".to_string()),
+            args: vec![runtime_arg.to_string()],
+            env: std::collections::BTreeMap::new(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }])
+        .await;
+
+    let mut command = Command::new("python3");
+    command
+        .args(["-c", "import time; time.sleep(60)", runtime_arg])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command.process_group(0);
+    let mut child = command.spawn().expect("spawn restart stand-in");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_cleanup_match(&manager, upstream_name).await;
+
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.mcp.restart",
+        json!({"name": upstream_name, "aggressive": false}),
+    )
+    .await
+    .expect("restart dispatch");
+
+    assert_eq!(value["gateway"]["config"]["name"], upstream_name);
+    assert_eq!(value["gateway"]["config"]["enabled"], true);
+    assert_eq!(value["cleanup"]["upstream"], upstream_name);
+
+    for _ in 0..20 {
+        if child.try_wait().expect("try_wait").is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    drop(child.kill());
+    panic!("restart stand-in process was not terminated");
 }
 
 #[cfg(target_os = "linux")]
