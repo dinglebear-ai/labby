@@ -74,7 +74,9 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
-        "gateway.skills.list" => handle_skills_list(manager, params_value).await,
+        "gateway.skills.list" => {
+            handle_skills_list(manager, params_value, enrichment_scope).await
+        }
         "gateway.code_mode.get" | "gateway.code_mode.set" => {
             handle_tool_actions(manager, action, params_value).await
         }
@@ -107,7 +109,10 @@ pub async fn dispatch_with_manager_scoped(
             let params: GatewayUsageCallsParams = parse_params(params_value)?;
             to_json(manager.usage_calls_scoped(params, enrichment_scope).await?)
         }
-        "gateway.import" => handle_import(manager, params_value, enrichment_scope).await,
+        "gateway.import" => {
+            enrichment_scope.deny_on_subset_route("gateway.import")?;
+            handle_import(manager, params_value, enrichment_scope).await
+        }
         "gateway.import_pending.list" => {
             let mut pending = manager.list_pending_imports().await;
             if let Some(visible) = enrichment_scope.route_visible_upstreams.as_ref() {
@@ -743,6 +748,7 @@ async fn handle_gateway_actions(
             }
         }
         "gateway.add" => {
+            enrichment_scope.deny_on_subset_route("gateway.add")?;
             let params: GatewayAddParams = parse_params(params_value)?;
             to_json(
                 manager
@@ -785,8 +791,9 @@ async fn handle_gateway_actions(
             )
         }
         "gateway.reload" => {
+            enrichment_scope.deny_on_subset_route("gateway.reload")?;
             let params: GatewayReloadParams = parse_params(params_value)?;
-            // Bounded below the API router's 30s TimeoutLayer so a slow full
+            // Bounded below the API router's transport backstop so a slow full
             // rebuild reports "still reconciling" instead of the middleware
             // cancelling the reload mid-flight and discarding the config.
             to_json(
@@ -1194,6 +1201,7 @@ mod tests;
 async fn handle_skills_list(
     manager: &GatewayManager,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     #[derive(serde::Deserialize, Default)]
     #[serde(deny_unknown_fields)]
@@ -1209,6 +1217,12 @@ async fn handle_skills_list(
     };
 
     let started = std::time::Instant::now();
+    // Enforce route scope BEFORE the existence probe below: that probe reports
+    // `not_found` with discovery advice, which would otherwise confirm to a
+    // subset-route caller whether an out-of-scope upstream name exists.
+    if let Some(filter) = params.upstream.as_deref() {
+        enrichment_scope.ensure_visible(filter)?;
+    }
     let cfg = manager.current_config().await;
     if let Some(filter) = params.upstream.as_deref()
         && !cfg.upstream.iter().any(|config| config.name == filter)
@@ -1237,6 +1251,12 @@ async fn handle_skills_list(
     let configs = cfg
         .upstream
         .into_iter()
+        .filter(|config| {
+            enrichment_scope
+                .route_visible_upstreams
+                .as_ref()
+                .is_none_or(|visible| visible.contains(&config.name))
+        })
         .filter(|config| {
             params
                 .upstream
@@ -1410,6 +1430,7 @@ fn skills_operator_row(
 async fn handle_skills_list(
     _manager: &GatewayManager,
     _params_value: Value,
+    _enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     // Not `unknown_action`: that kind's recovery advice is "rediscover", and
     // rediscovery re-advertises this same action, so an agent would loop. The

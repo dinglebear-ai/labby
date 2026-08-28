@@ -814,6 +814,75 @@ async fn named_gateway_actions_reject_route_hidden_upstreams_before_dispatch() {
 }
 
 #[tokio::test]
+async fn protected_route_rejects_config_materializing_actions() {
+    // `gateway.add` + `gateway.reload` was a full bypass of the subset-route
+    // authority boundary: neither takes a name that `ensure_visible` can check,
+    // so an admin-scoped token minted for an unrelated subset could add a stdio
+    // upstream and reload it into existence. `gateway.test` already refuses an
+    // inline spec for exactly this reason.
+    let manager = test_manager();
+    let scope = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+        oauth_subject: None,
+    };
+
+    for (action, params) in [
+        (
+            "gateway.add",
+            json!({"spec": {"name": "escape", "command": "/bin/sh", "args": ["-c", "true"]}}),
+        ),
+        ("gateway.reload", json!({})),
+        ("gateway.import", json!({"all": true})),
+    ] {
+        let error = dispatch_with_manager_scoped(&manager, action, params, scope.clone())
+            .await
+            .expect_err("subset route must not materialize upstreams it cannot name");
+        assert_eq!(error.kind(), "forbidden", "action: {action}");
+    }
+}
+
+#[tokio::test]
+async fn gateway_skills_list_is_restricted_to_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture("github", Some("https://example.invalid/mcp".to_string()), None),
+            upstream_fixture("secret", Some("https://example.invalid/mcp".to_string()), None),
+        ])
+        .await;
+    let scope = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+        oauth_subject: None,
+    };
+
+    // A hidden upstream must be indistinguishable from an absent one: the
+    // `not_found` probe would otherwise confirm that `secret` is configured.
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.skills.list",
+        json!({"upstream": "secret"}),
+        scope.clone(),
+    )
+    .await
+    .expect_err("route-hidden upstream must not be listable");
+    assert_eq!(error.kind(), "unknown_upstream");
+
+    let absent = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.skills.list",
+        json!({"upstream": "does-not-exist"}),
+        scope,
+    )
+    .await
+    .expect_err("absent upstream must not be listable either");
+    assert_eq!(
+        absent.kind(),
+        "unknown_upstream",
+        "hidden and absent upstreams must report the same kind"
+    );
+}
+
+#[tokio::test]
 async fn protected_route_rejects_unsaved_gateway_test_spec() {
     let manager = test_manager();
     let error = dispatch_with_manager_scoped(

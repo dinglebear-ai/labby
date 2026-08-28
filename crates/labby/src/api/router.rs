@@ -51,14 +51,17 @@ use super::{health, services, state::AppState};
 use crate::api::error::ApiError;
 use crate::dispatch::error::ToolError;
 
-/// Ordinary API handlers must fail promptly when a dependency stalls.
-const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-fn http_request_timeout(path: &str, config: &crate::config::LabConfig) -> Duration {
-    if path == "/mcp" || path.starts_with("/mcp/") {
-        config.http_request_timeout()
-    } else {
-        DEFAULT_HTTP_REQUEST_TIMEOUT
-    }
+/// Transport backstop for one hosted HTTP request.
+///
+/// Derived from the configured upstream deadlines on **every** route, never a
+/// fixed cap. `/v1` handlers relay upstream calls too (palette execute, gateway
+/// dispatch), so a fixed cap would return a bare 504 for a call that had
+/// already succeeded — the regression documented on
+/// `LabConfig::http_request_timeout` — and would blind the upstream circuit
+/// breaker, which declines to count `Cancelled` as a failure precisely because
+/// this backstop is derived to exceed the upstream deadline.
+fn http_request_timeout(config: &crate::config::LabConfig) -> Duration {
+    config.http_request_timeout()
 }
 
 async fn request_timeout(
@@ -67,7 +70,7 @@ async fn request_timeout(
     next: Next,
 ) -> axum::response::Response {
     let path = request.uri().path().to_string();
-    let timeout = http_request_timeout(&path, &state.config);
+    let timeout = http_request_timeout(&state.config);
     match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
         Err(_) => {
@@ -2320,20 +2323,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_requests_use_the_long_running_budget() {
-        let config = crate::config::LabConfig::default();
-        assert_eq!(
-            http_request_timeout("/mcp", &config),
-            config.http_request_timeout()
-        );
-        assert_eq!(
-            http_request_timeout("/mcp/", &config),
-            config.http_request_timeout()
-        );
-        assert_eq!(
-            http_request_timeout("/v1/setup", &config),
-            Duration::from_secs(30)
-        );
+    fn every_route_backstop_is_derived_from_configured_deadlines() {
+        // The backstop must never fire before the deadline it wraps, on ANY
+        // route. A fixed cap for non-`/mcp` paths previously returned a bare
+        // 504 for calls that had already succeeded and blinded the upstream
+        // circuit breaker.
+        for config in [
+            crate::config::LabConfig::default(),
+            {
+                let mut short = crate::config::LabConfig::default();
+                short.upstream_request_timeout_ms = Some(1_000);
+                short.upstream_relay_timeout_ms = Some(1_000);
+                short
+            },
+            {
+                let mut long = crate::config::LabConfig::default();
+                long.upstream_relay_timeout_ms = Some(900_000);
+                long
+            },
+        ] {
+            assert_eq!(
+                http_request_timeout(&config),
+                config.http_request_timeout(),
+                "backstop must track the configured upstream deadlines"
+            );
+        }
     }
 
     async fn actor_key_probe(

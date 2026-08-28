@@ -297,6 +297,32 @@ impl GatewayEnrichmentScope {
         Ok(())
     }
 
+    /// Refuse an action that materializes upstreams the route cannot name.
+    ///
+    /// A protected subset route is an **authority boundary**, not merely a
+    /// catalog filter, so these actions are refused there even when the token
+    /// carries an admin scope. `ensure_visible` cannot express this: these
+    /// actions either take no upstream name (`gateway.reload`) or take a name
+    /// that does not exist yet (`gateway.add`, `gateway.import`), so there is
+    /// nothing to check against the allowlist. Left open, `gateway.add`
+    /// followed by `gateway.reload` spawns an arbitrary stdio command from a
+    /// route mounted over an unrelated subset — the same execution risk
+    /// `gateway.test` already refuses for an inline `spec`.
+    pub(crate) fn deny_on_subset_route(
+        &self,
+        action: &str,
+    ) -> Result<(), labby_runtime::error::ToolError> {
+        if self.route_visible_upstreams.is_some() {
+            return Err(labby_runtime::error::ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: format!(
+                    "`{action}` is unavailable on a protected subset route"
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// The route-visible allowlist as an owned `Vec`, or `None` when unscoped.
     pub(crate) fn allowlist(&self) -> Option<Vec<String>> {
         self.route_visible_upstreams
