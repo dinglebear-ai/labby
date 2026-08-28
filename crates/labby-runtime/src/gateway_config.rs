@@ -183,8 +183,12 @@ pub struct CodeModeConfig {
     /// Whether the MCP gateway advertises `codemode`.
     #[serde(default)]
     pub enabled: bool,
-    /// Deprecated compatibility field. `codemode_read` now uses the live MCP
-    /// safety annotations on each tool descriptor.
+    /// Retired compatibility field, retained so existing configs still parse.
+    ///
+    /// It has no production reader: both catalog admission and the execution
+    /// gate gate on the upstream's own `readOnlyHint` annotation. Setting it
+    /// grants nothing, so it must never be presented as a security control.
+    /// `gateway.code_mode.set` warns when a non-empty value is supplied.
     #[serde(default)]
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.

@@ -83,10 +83,11 @@ mod skills;
 mod skills_exposure;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills::OperatorSkill;
+#[cfg(all(test, feature = "skills"))]
 pub(crate) use skills::OperatorSkillRejection;
 #[cfg(feature = "skills")]
 pub(crate) use skills::OperatorSkills;
-#[cfg(test)]
+#[cfg(all(test, feature = "skills"))]
 pub(crate) use skills_exposure::{SkillExposureDecision, SkillExposureReason};
 mod skills_cache;
 mod skills_list;

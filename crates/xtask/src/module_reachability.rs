@@ -21,11 +21,11 @@ use std::path::{Path, PathBuf};
 
 /// One source file that no parent module declares.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Orphan {
+struct Orphan {
     /// Repository-relative path of the unreachable file.
-    pub file: String,
+    file: String,
     /// Repository-relative path of the parent expected to declare it.
-    pub expected_parent: String,
+    expected_parent: String,
 }
 
 /// Collect every `mod NAME;` declared in `source`, plus every `#[path = "..."]`
@@ -163,7 +163,7 @@ fn relative(path: &Path, repo_root: &Path) -> String {
 }
 
 /// Every `.rs` file under `crates/*/src` that no parent module declares.
-pub fn orphaned_modules(repo_root: &Path) -> Vec<Orphan> {
+fn orphaned_modules(repo_root: &Path) -> Vec<Orphan> {
     let mut orphans = Vec::new();
     let Ok(crates) = fs::read_dir(repo_root.join("crates")) else {
         return orphans;

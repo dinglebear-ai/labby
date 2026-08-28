@@ -66,16 +66,17 @@ pub(crate) fn render(uri: &str, message: impl Into<String>) -> ErrorData {
     )
 }
 
+/// A read failure reported under its own stable kind.
+///
+/// `fetch` flattens every cause to `upstream_error`. `cancelled`, `timeout`,
+/// and `response_too_large` are distinct documented kinds with different
+/// recovery advice (docs/dev/ERRORS.md), so a caller that can act on the
+/// difference must be able to see it.
 #[must_use]
 #[cfg(feature = "gateway")]
-pub(crate) fn fetch(uri: &str) -> ErrorData {
+pub(crate) fn fetch_classified(uri: &str, kind: &'static str, summary: &str) -> ErrorData {
     let context = context(uri);
-    internal_agent_error(
-        "upstream_error",
-        format!("Resource `{uri}` could not be fetched."),
-        None,
-        &context,
-    )
+    internal_agent_error(kind, format!("Resource `{uri}` {summary}."), None, &context)
 }
 
 #[cfg(test)]

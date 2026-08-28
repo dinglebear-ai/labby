@@ -900,7 +900,16 @@ mod tests {
                 )
                 .await
                 .expect_err("operational Resource read failure");
-            assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+            // Each cause keeps its own stable kind rather than flattening to
+            // `upstream_error`: an oversized response tells the caller to
+            // reduce work, an upstream fault does not. Redaction is about the
+            // private failure text, not about hiding the documented kind.
+            let expected_kind = if oversized {
+                "response_too_large"
+            } else {
+                "upstream_error"
+            };
+            assert_eq!(error.data.as_ref().unwrap()["kind"], expected_kind);
             assert!(!error.message.contains("private"));
             assert!(
                 !error

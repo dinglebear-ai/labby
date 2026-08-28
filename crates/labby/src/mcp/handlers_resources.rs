@@ -27,7 +27,7 @@ use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
 #[cfg(feature = "gateway")]
-use crate::mcp::resource_errors::fetch as resource_fetch_error;
+use crate::mcp::resource_errors::fetch_classified as resource_fetch_classified;
 use crate::mcp::resource_errors::{
     forbidden as forbidden_resource_error, render as resource_render_error,
     route_scope as route_scope_resource_error, unknown as unknown_resource_error,
@@ -1451,10 +1451,33 @@ impl LabMcpServer {
                         use crate::mcp::resource_execution::ResourceReadResolutionError;
                         let unavailable =
                             matches!(&error, ResourceReadResolutionError::Unavailable);
-                        let (level, kind) = if unavailable {
-                            (LoggingLevel::Warning, "not_found")
-                        } else {
-                            (LoggingLevel::Error, "internal_error")
+                        // Preserve the distinct causes instead of collapsing
+                        // them: `cancelled` is not automatically retryable and
+                        // `response_too_large` tells the caller to reduce work,
+                        // while a bare `internal_error` invites a blind retry.
+                        // Cancellation is caller-driven, so it must not log at
+                        // ERROR and page an operator for a healthy upstream.
+                        let (level, kind, summary) = match &error {
+                            ResourceReadResolutionError::Unavailable => {
+                                (LoggingLevel::Warning, "not_found", "is unavailable")
+                            }
+                            ResourceReadResolutionError::Cancelled => {
+                                (LoggingLevel::Warning, "cancelled", "read was cancelled")
+                            }
+                            ResourceReadResolutionError::Timeout => {
+                                (LoggingLevel::Error, "timeout", "read timed out")
+                            }
+                            ResourceReadResolutionError::TooLarge => (
+                                LoggingLevel::Warning,
+                                "response_too_large",
+                                "response exceeded the gateway cap",
+                            ),
+                            ResourceReadResolutionError::QueueUnavailable
+                            | ResourceReadResolutionError::Upstream => (
+                                LoggingLevel::Error,
+                                "upstream_error",
+                                "could not be fetched",
+                            ),
                         };
                         self.emit_dispatch_notification(
                             &context,
@@ -1467,7 +1490,7 @@ impl LabMcpServer {
                         if unavailable {
                             Err(unknown_resource_error(&uri, false))
                         } else {
-                            Err(resource_fetch_error(&uri))
+                            Err(resource_fetch_classified(&uri, kind, summary))
                         }
                     }
                 };

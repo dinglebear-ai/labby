@@ -2330,16 +2330,14 @@ mod tests {
         // circuit breaker.
         for config in [
             crate::config::LabConfig::default(),
-            {
-                let mut short = crate::config::LabConfig::default();
-                short.upstream_request_timeout_ms = Some(1_000);
-                short.upstream_relay_timeout_ms = Some(1_000);
-                short
+            crate::config::LabConfig {
+                upstream_request_timeout_ms: Some(1_000),
+                upstream_relay_timeout_ms: Some(1_000),
+                ..crate::config::LabConfig::default()
             },
-            {
-                let mut long = crate::config::LabConfig::default();
-                long.upstream_relay_timeout_ms = Some(900_000);
-                long
+            crate::config::LabConfig {
+                upstream_relay_timeout_ms: Some(900_000),
+                ..crate::config::LabConfig::default()
             },
         ] {
             assert_eq!(

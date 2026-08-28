@@ -75,92 +75,43 @@ impl MicrosandboxGuard {
                 );
             }
             Ok(output) => {
+                cleanup_failed(&identity, self.counted);
+                self.failed_cleanup_recorded = true;
                 let error = sanitize_stderr(&output.stderr);
-                // `remove` failing because the sandbox is already gone — swept
-                // by a prior pass, or its microVM crashed — is a benign
-                // condition, not a leak. Without this probe it is recorded as
-                // a permanent cleanup failure and the owner is reported as
-                // leaked forever.
-                if sandbox_absent(&identity).await {
-                    self.removed = true;
-                    complete_cleanup(&identity, self.counted, self.failed_cleanup_recorded);
-                    self.counted = false;
-                    self.failed_cleanup_recorded = false;
-                    tracing::info!(
-                        surface = "dispatch",
-                        service = "code_mode",
-                        action = "microsandbox.remove",
-                        kind = "already_absent",
-                        sandbox = %self.name,
-                        status = %output.status,
-                        error,
-                        "Microsandbox cleanup target is already absent"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "success",
-                        Some("already_absent"),
-                    );
-                } else {
-                    cleanup_failed(&identity, self.counted);
-                    self.failed_cleanup_recorded = true;
-                    tracing::warn!(
-                        surface = "dispatch",
-                        service = "code_mode",
-                        action = "microsandbox.remove",
-                        kind = "cleanup_failed",
-                        sandbox = %self.name,
-                        status = %output.status,
-                        error,
-                        "Microsandbox cleanup failed"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "failed",
-                        Some("cleanup_failed"),
-                    );
-                }
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "microsandbox.remove",
+                    kind = "cleanup_failed",
+                    sandbox = %self.name,
+                    status = %output.status,
+                    error,
+                    "Microsandbox cleanup failed"
+                );
+                log_lifecycle(
+                    "microsandbox.remove",
+                    &identity.name,
+                    started,
+                    "failed",
+                    Some("cleanup_failed"),
+                );
             }
             Err(error) => {
-                if sandbox_absent(&identity).await {
-                    self.removed = true;
-                    complete_cleanup(&identity, self.counted, self.failed_cleanup_recorded);
-                    self.counted = false;
-                    self.failed_cleanup_recorded = false;
-                    tracing::info!(
-                        surface = "dispatch", service = "code_mode",
-                        action = "microsandbox.remove", kind = "already_absent",
-                        sandbox = %self.name, executable = %self.executable.display(),
-                        error = %error.message, "Microsandbox cleanup target is already absent"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "success",
-                        Some("already_absent"),
-                    );
-                } else {
-                    cleanup_failed(&identity, self.counted);
-                    self.failed_cleanup_recorded = true;
-                    tracing::warn!(
-                        surface = "dispatch", service = "code_mode",
-                        action = "microsandbox.remove", kind = error.kind,
-                        sandbox = %self.name, executable = %self.executable.display(),
-                        error = %error.message, "Microsandbox cleanup failed"
-                    );
-                    log_lifecycle(
-                        "microsandbox.remove",
-                        &identity.name,
-                        started,
-                        "failed",
-                        Some(error.kind),
-                    );
-                }
+                cleanup_failed(&identity, self.counted);
+                self.failed_cleanup_recorded = true;
+                tracing::warn!(
+                    surface = "dispatch", service = "code_mode",
+                    action = "microsandbox.remove", kind = error.kind,
+                    sandbox = %self.name, executable = %self.executable.display(),
+                    error = %error.message, "Microsandbox cleanup failed"
+                );
+                log_lifecycle(
+                    "microsandbox.remove",
+                    &identity.name,
+                    started,
+                    "failed",
+                    Some(error.kind),
+                );
             }
         }
     }
@@ -781,29 +732,6 @@ fn helper_diagnostic(output: &HelperOutput) -> String {
         (true, false) => stdout,
         (true, true) => "helper returned no diagnostic output".to_string(),
     }
-}
-
-/// Whether the sandbox is genuinely gone, per the helper's own listing.
-///
-/// `remove` reports failure both when cleanup broke and when there was nothing
-/// left to clean. Only the listing distinguishes them, and conflating the two
-/// turns an ordinary already-swept sandbox into a permanent leak record.
-async fn sandbox_absent(identity: &CleanupIdentity) -> bool {
-    let mut list = Command::new(&identity.executable);
-    list.args(["list", "--quiet", "--label", "labby.owner=codemode"])
-        .env_clear()
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    matches!(
-        run_helper(list, Duration::from_secs(2)).await,
-        Ok(output)
-            if output.status.success()
-                && !String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .any(|name| name.trim() == identity.name)
-    )
 }
 
 #[cfg(all(test, unix))]

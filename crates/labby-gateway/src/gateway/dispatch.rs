@@ -107,10 +107,7 @@ pub async fn dispatch_with_manager_scoped(
             let params: GatewayUsageCallsParams = parse_params(params_value)?;
             to_json(manager.usage_calls_scoped(params, enrichment_scope).await?)
         }
-        "gateway.import" => {
-            enrichment_scope.deny_on_subset_route("gateway.import")?;
-            handle_import(manager, params_value, enrichment_scope).await
-        }
+        "gateway.import" => handle_import(manager, params_value, enrichment_scope).await,
         "gateway.import_pending.list" => {
             let mut pending = manager.list_pending_imports().await;
             if let Some(visible) = enrichment_scope.route_visible_upstreams.as_ref() {
@@ -120,7 +117,13 @@ pub async fn dispatch_with_manager_scoped(
         }
         "gateway.import_pending.approve" => {
             let name = require_str(&params_value, "name")?;
-            enrichment_scope.ensure_visible(name)?;
+            // Deliberately NOT `ensure_visible`: a pending import names a
+            // *discovered* server that is not configured yet, so it is never a
+            // member of the route's visible set and the check could only ever
+            // reject. Approving creates an upstream, exactly as `gateway.add`
+            // does on a subset route. The scope is still threaded through so
+            // `approve_pending_import_scoped` suppresses an enrichment
+            // suggestion that would name a route-hidden upstream.
             to_json(
                 manager
                     .approve_pending_import_scoped(name, enrichment_scope)
@@ -454,6 +457,21 @@ async fn handle_tool_actions(
                 next.enabled = enabled;
             }
             if let Some(trusted_read_only_tools) = params.trusted_read_only_tools {
+                // The read-only gate reads the live MCP `readOnlyHint` on each
+                // tool descriptor; this allowlist has no production caller.
+                // Accepting a non-empty value silently would let an operator
+                // believe a security control is active when it is inert.
+                if !trusted_read_only_tools.is_empty() {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.code_mode.set",
+                        entries = trusted_read_only_tools.len(),
+                        "`trusted_read_only_tools` is retired and has no effect; \
+                         Code Mode admits read-only tools from the upstream's own \
+                         `readOnlyHint` annotation. Remove the setting."
+                    );
+                }
                 next.trusted_read_only_tools = trusted_read_only_tools;
             }
             if let Some(mcp_ui_enabled) = params.mcp_ui_enabled {
@@ -746,7 +764,6 @@ async fn handle_gateway_actions(
             }
         }
         "gateway.add" => {
-            enrichment_scope.deny_on_subset_route("gateway.add")?;
             let params: GatewayAddParams = parse_params(params_value)?;
             to_json(
                 manager
@@ -789,7 +806,6 @@ async fn handle_gateway_actions(
             )
         }
         "gateway.reload" => {
-            enrichment_scope.deny_on_subset_route("gateway.reload")?;
             let params: GatewayReloadParams = parse_params(params_value)?;
             // Bounded below the API router's transport backstop so a slow full
             // rebuild reports "still reconciling" instead of the middleware

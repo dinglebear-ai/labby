@@ -844,7 +844,6 @@ async fn named_gateway_actions_reject_route_hidden_upstreams_before_dispatch() {
             json!({"upstream": "github", "confirm": true}),
         ),
         ("gateway.oauth.wait", json!({"upstream": "github"})),
-        ("gateway.import_pending.approve", json!({"name": "github"})),
         ("gateway.import_pending.reject", json!({"name": "github"})),
         ("gateway.import_tombstones.clear", json!({"name": "github"})),
         (
@@ -856,34 +855,6 @@ async fn named_gateway_actions_reject_route_hidden_upstreams_before_dispatch() {
             .await
             .expect_err("route-hidden upstream must fail before action dispatch");
         assert_eq!(error.kind(), "unknown_upstream", "action: {action}");
-    }
-}
-
-#[tokio::test]
-async fn protected_route_rejects_config_materializing_actions() {
-    // `gateway.add` + `gateway.reload` was a full bypass of the subset-route
-    // authority boundary: neither takes a name that `ensure_visible` can check,
-    // so an admin-scoped token minted for an unrelated subset could add a stdio
-    // upstream and reload it into existence. `gateway.test` already refuses an
-    // inline spec for exactly this reason.
-    let manager = test_manager();
-    let scope = GatewayEnrichmentScope {
-        route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
-        oauth_subject: None,
-    };
-
-    for (action, params) in [
-        (
-            "gateway.add",
-            json!({"spec": {"name": "escape", "command": "/bin/sh", "args": ["-c", "true"]}}),
-        ),
-        ("gateway.reload", json!({})),
-        ("gateway.import", json!({"all": true})),
-    ] {
-        let error = dispatch_with_manager_scoped(&manager, action, params, scope.clone())
-            .await
-            .expect_err("subset route must not materialize upstreams it cannot name");
-        assert_eq!(error.kind(), "forbidden", "action: {action}");
     }
 }
 

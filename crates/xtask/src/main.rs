@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+#[cfg(test)]
 mod module_reachability;
 mod proxy_verify;
 
