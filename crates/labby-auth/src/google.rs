@@ -83,6 +83,8 @@ pub struct GoogleExchange {
     pub subject: String,
     pub email: Option<String>,
     pub email_verified: Option<bool>,
+    /// Google Workspace hosted domain (`hd` claim), when the account has one.
+    pub hosted_domain: Option<String>,
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_in: Option<u64>,
@@ -96,6 +98,10 @@ impl std::fmt::Debug for GoogleExchange {
             .field("subject", &"<redacted>")
             .field("email", &self.email.as_ref().map(|_| "<redacted>"))
             .field("email_verified", &self.email_verified)
+            .field(
+                "hosted_domain",
+                &self.hosted_domain.as_ref().map(|_| "<redacted>"),
+            )
             .field("access_token", &"<redacted>")
             .field(
                 "refresh_token",
@@ -113,6 +119,8 @@ pub struct GoogleIdentity {
     pub subject: String,
     pub email: Option<String>,
     pub email_verified: Option<bool>,
+    /// Google Workspace hosted domain (`hd` claim), when the account has one.
+    pub hosted_domain: Option<String>,
 }
 
 impl std::fmt::Debug for GoogleIdentity {
@@ -121,6 +129,10 @@ impl std::fmt::Debug for GoogleIdentity {
             .field("subject", &"<redacted>")
             .field("email", &self.email.as_ref().map(|_| "<redacted>"))
             .field("email_verified", &self.email_verified)
+            .field(
+                "hosted_domain",
+                &self.hosted_domain.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -151,6 +163,10 @@ struct GoogleIdTokenClaims {
     email: Option<String>,
     #[serde(default)]
     email_verified: Option<bool>,
+    /// Google Workspace hosted domain. Present only for accounts hosted in a
+    /// Workspace domain; consumer accounts omit it.
+    #[serde(default)]
+    hd: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -490,6 +506,7 @@ impl GoogleProvider {
             subject: claims.sub,
             email: claims.email,
             email_verified: claims.email_verified,
+            hosted_domain: claims.hd,
             access_token: payload.access_token,
             refresh_token: payload.refresh_token,
             expires_in: payload.expires_in,
@@ -533,20 +550,24 @@ impl GoogleProvider {
             },
         )
         .await?;
-        let (subject, email, email_verified) = if let Some(id_token) = payload.id_token.as_deref() {
-            let claims = self.verify_id_token(id_token).await?;
-            (claims.sub, claims.email, claims.email_verified)
-        } else {
-            // Google refresh responses commonly omit `id_token`. The refresh token
-            // came from the encrypted row already bound to this verified subject
-            // and OAuth client, so preserve that identity instead of rejecting a
-            // healthy access-token rollover.
-            (
-                expected_subject.to_string(),
-                existing_email.map(ToOwned::to_owned),
-                existing_email.map(|_| true),
-            )
-        };
+        let (subject, email, email_verified, hosted_domain) =
+            if let Some(id_token) = payload.id_token.as_deref() {
+                let claims = self.verify_id_token(id_token).await?;
+                (claims.sub, claims.email, claims.email_verified, claims.hd)
+            } else {
+                // Google refresh responses commonly omit `id_token`. The refresh token
+                // came from the encrypted row already bound to this verified subject
+                // and OAuth client, so preserve that identity instead of rejecting a
+                // healthy access-token rollover.
+                // No fresh `hd` assertion is available on this path, so domain-based
+                // access is not re-established from a reused identity.
+                (
+                    expected_subject.to_string(),
+                    existing_email.map(ToOwned::to_owned),
+                    existing_email.map(|_| true),
+                    None,
+                )
+            };
         info!(
             provider = "google",
             subject_id = %fingerprint(&subject),
@@ -559,6 +580,7 @@ impl GoogleProvider {
             subject,
             email,
             email_verified,
+            hosted_domain,
             access_token: payload.access_token,
             refresh_token: payload.refresh_token,
             expires_in: payload.expires_in,
@@ -578,6 +600,7 @@ impl GoogleProvider {
             subject: claims.sub,
             email: claims.email,
             email_verified: claims.email_verified,
+            hosted_domain: claims.hd,
         })
     }
 
@@ -780,6 +803,7 @@ mod tests {
             subject: "google-subject-secret".to_string(),
             email: Some("admin@example.com".to_string()),
             email_verified: Some(true),
+            hosted_domain: None,
             access_token: "access-secret".to_string(),
             refresh_token: Some("refresh-secret".to_string()),
             expires_in: Some(3600),
@@ -801,6 +825,7 @@ mod tests {
             subject: "google-subject-secret".to_string(),
             email: Some("admin@example.com".to_string()),
             email_verified: Some(true),
+            hosted_domain: None,
         };
         let identity_debug = format!("{identity:?}");
         assert!(!identity_debug.contains("google-subject-secret"));

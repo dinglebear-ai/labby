@@ -54,15 +54,26 @@ fn remote_ip(addr: SocketAddr) -> IpAddr {
 
 /// Enforces the configured email allowlist.
 ///
+/// Access is granted by either an exact address match against `allowed_emails`
+/// or, for Google Workspace accounts, a match of the ID token's `hd` (hosted
+/// domain) claim against `allowed_domains`.
+///
 /// `email_verified` is enforced before the email comparison: without this guard,
 /// an attacker who creates a Google account with someone else's address (without
 /// verifying it) could bypass the allowlist.
+///
+/// Domain access deliberately keys on `hd` rather than the address suffix.
+/// Google asserts `hd` only for accounts genuinely hosted in that Workspace
+/// domain, so a consumer account cannot present one; matching on the address
+/// would instead accept lookalikes such as `user@evil-example.com`.
 fn check_email_allowlist(
     email: Option<&str>,
     email_verified: Option<bool>,
+    hosted_domain: Option<&str>,
     allowed_emails: &[String],
+    allowed_domains: &[String],
 ) -> Result<(), AuthError> {
-    if allowed_emails.is_empty() {
+    if allowed_emails.is_empty() && allowed_domains.is_empty() {
         return Ok(());
     }
     if email_verified != Some(true) {
@@ -81,6 +92,13 @@ fn check_email_allowlist(
     if allowed_emails
         .iter()
         .any(|a| a.eq_ignore_ascii_case(trimmed))
+    {
+        return Ok(());
+    }
+    if let Some(domain) = hosted_domain.map(str::trim).filter(|d| !d.is_empty())
+        && allowed_domains
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(domain))
     {
         return Ok(());
     }
@@ -431,7 +449,13 @@ pub async fn callback(
             .exchange_code(&query.code, &login.provider_code_verifier)
             .await?;
         let allowed = state.resolve_allowed_emails().await?;
-        check_email_allowlist(google.email.as_deref(), google.email_verified, &allowed)?;
+        check_email_allowlist(
+            google.email.as_deref(),
+            google.email_verified,
+            google.hosted_domain.as_deref(),
+            &allowed,
+            &state.config.allowed_email_domains,
+        )?;
         let session = create_browser_session(&state, google.subject, google.email).await?;
         let mut response = Redirect::to(&login.return_to).into_response();
         append_set_cookie(
@@ -477,9 +501,13 @@ pub async fn callback(
     // not surface as a JSON HTTP error. The denial reason is sourced from the
     // AuthError so we only log once (inside check_email_allowlist).
     let allowed = state.resolve_allowed_emails().await?;
-    if let Err(denial) =
-        check_email_allowlist(google.email.as_deref(), google.email_verified, &allowed)
-    {
+    if let Err(denial) = check_email_allowlist(
+        google.email.as_deref(),
+        google.email_verified,
+        google.hosted_domain.as_deref(),
+        &allowed,
+        &state.config.allowed_email_domains,
+    ) {
         let mut redirect_target = url::Url::parse(&request.redirect_uri).map_err(|error| {
             // Unreachable in practice: redirect_uri was validated against the
             // client's registered URIs before being stored.
@@ -3363,19 +3391,28 @@ pub mod tests {
 
         #[test]
         fn empty_allowlist_permits_any_email() {
-            assert!(check_email_allowlist(Some("anyone@example.com"), Some(true), &[]).is_ok());
+            assert!(
+                check_email_allowlist(Some("anyone@example.com"), Some(true), None, &[], &[])
+                    .is_ok()
+            );
         }
 
         #[test]
         fn empty_allowlist_permits_even_unverified_email() {
             // When no allowlist is configured, email_verified is not enforced.
-            assert!(check_email_allowlist(Some("anyone@example.com"), Some(false), &[]).is_ok());
+            assert!(
+                check_email_allowlist(Some("anyone@example.com"), Some(false), None, &[], &[])
+                    .is_ok()
+            );
         }
 
         #[test]
         fn matching_verified_email_is_permitted() {
             let list = vec!["alice@example.com".to_string()];
-            assert!(check_email_allowlist(Some("alice@example.com"), Some(true), &list).is_ok());
+            assert!(
+                check_email_allowlist(Some("alice@example.com"), Some(true), None, &list, &[])
+                    .is_ok()
+            );
         }
 
         #[test]
@@ -3383,31 +3420,146 @@ pub mod tests {
             // Allowlist is pre-normalized to lowercase at config load.
             // Incoming email from Google may have any case.
             let list = vec!["alice@example.com".to_string()];
-            assert!(check_email_allowlist(Some("Alice@Example.com"), Some(true), &list).is_ok());
+            assert!(
+                check_email_allowlist(Some("Alice@Example.com"), Some(true), None, &list, &[])
+                    .is_ok()
+            );
+        }
+
+        #[test]
+        fn matching_hosted_domain_is_permitted() {
+            // A Workspace account whose `hd` matches an allowed domain gets in
+            // without being listed individually.
+            assert!(
+                check_email_allowlist(
+                    Some("newhire@lime-technology.com"),
+                    Some(true),
+                    Some("lime-technology.com"),
+                    &["admin@example.com".to_string()],
+                    &["lime-technology.com".to_string()],
+                )
+                .is_ok()
+            );
+        }
+
+        #[test]
+        fn hosted_domain_match_is_case_insensitive() {
+            assert!(
+                check_email_allowlist(
+                    Some("newhire@lime-technology.com"),
+                    Some(true),
+                    Some("Lime-Technology.COM"),
+                    &[],
+                    &["lime-technology.com".to_string()],
+                )
+                .is_ok()
+            );
+        }
+
+        #[test]
+        fn hosted_domain_must_be_verified() {
+            // An unverified address is rejected even when `hd` matches.
+            assert!(
+                check_email_allowlist(
+                    Some("newhire@lime-technology.com"),
+                    Some(false),
+                    Some("lime-technology.com"),
+                    &[],
+                    &["lime-technology.com".to_string()],
+                )
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn address_suffix_alone_does_not_grant_domain_access() {
+            // The whole point of keying on `hd`: a consumer account cannot claim
+            // a Workspace domain, so a lookalike address must not be admitted.
+            assert!(
+                check_email_allowlist(
+                    Some("attacker@lime-technology.com"),
+                    Some(true),
+                    None,
+                    &[],
+                    &["lime-technology.com".to_string()],
+                )
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn lookalike_hosted_domain_is_rejected() {
+            assert!(
+                check_email_allowlist(
+                    Some("attacker@evil-lime-technology.com"),
+                    Some(true),
+                    Some("evil-lime-technology.com"),
+                    &[],
+                    &["lime-technology.com".to_string()],
+                )
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn subdomain_of_allowed_domain_is_rejected() {
+            assert!(
+                check_email_allowlist(
+                    Some("attacker@sub.lime-technology.com"),
+                    Some(true),
+                    Some("sub.lime-technology.com"),
+                    &[],
+                    &["lime-technology.com".to_string()],
+                )
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn domain_allowlist_alone_still_enforces_the_gate() {
+            // With only a domain configured, a non-member is still rejected.
+            assert!(
+                check_email_allowlist(
+                    Some("outsider@example.com"),
+                    Some(true),
+                    None,
+                    &[],
+                    &["lime-technology.com".to_string()],
+                )
+                .is_err()
+            );
         }
 
         #[test]
         fn non_matching_email_is_rejected() {
             let list = vec!["alice@example.com".to_string()];
-            assert!(check_email_allowlist(Some("eve@example.com"), Some(true), &list).is_err());
+            assert!(
+                check_email_allowlist(Some("eve@example.com"), Some(true), None, &list, &[])
+                    .is_err()
+            );
         }
 
         #[test]
         fn unverified_email_is_rejected_even_when_in_allowlist() {
             let list = vec!["alice@example.com".to_string()];
-            assert!(check_email_allowlist(Some("alice@example.com"), Some(false), &list).is_err());
+            assert!(
+                check_email_allowlist(Some("alice@example.com"), Some(false), None, &list, &[])
+                    .is_err()
+            );
         }
 
         #[test]
         fn missing_email_verified_claim_is_rejected_when_allowlist_is_set() {
             let list = vec!["alice@example.com".to_string()];
-            assert!(check_email_allowlist(Some("alice@example.com"), None, &list).is_err());
+            assert!(
+                check_email_allowlist(Some("alice@example.com"), None, None, &list, &[]).is_err()
+            );
         }
 
         #[test]
         fn none_email_is_rejected_when_allowlist_is_set() {
             let list = vec!["alice@example.com".to_string()];
-            assert!(check_email_allowlist(None, Some(true), &list).is_err());
+            assert!(check_email_allowlist(None, Some(true), None, &list, &[]).is_err());
         }
     }
 }

@@ -147,6 +147,17 @@ pub struct AuthConfig {
     /// Required when `mode == AuthMode::OAuth`. Additional users are granted
     /// through the SQLite-backed allowlist managed via the web UI.
     pub admin_email: String,
+    /// Google Workspace hosted domains whose members may log in, in addition to
+    /// [`Self::admin_email`] and the SQLite-backed per-email allowlist.
+    ///
+    /// Matching is against the Google ID token's `hd` (hosted domain) claim, not
+    /// the email address suffix. Google asserts `hd` only for accounts hosted in
+    /// that Workspace domain, so a consumer account cannot claim one; suffix
+    /// matching on the address would accept lookalikes such as
+    /// `user@evil-example.com` or unverified subdomains.
+    ///
+    /// Empty (the default) disables domain-based access entirely.
+    pub allowed_email_domains: Vec<String>,
     pub google: GoogleConfig,
     pub access_token_ttl: Duration,
     pub refresh_token_ttl: Duration,
@@ -221,6 +232,7 @@ impl Default for AuthConfig {
             bootstrap_secret: None,
             allowed_client_redirect_uris: Vec::new(),
             admin_email: String::new(),
+            allowed_email_domains: Vec::new(),
             google: GoogleConfig::default(),
             access_token_ttl: Duration::from_secs(DEFAULT_ACCESS_TOKEN_TTL_SECS),
             refresh_token_ttl: Duration::from_secs(DEFAULT_REFRESH_TOKEN_TTL_SECS),
@@ -510,6 +522,7 @@ impl AuthConfigBuilder {
         let key_max_pending = env_key(&prefix, "AUTH_MAX_PENDING_OAUTH_STATES");
         let key_codex_issuer_compatibility = env_key(&prefix, "AUTH_CODEX_ISSUER_COMPATIBILITY");
         let key_enc_key = env_key(&prefix, "TOKEN_ENCRYPTION_KEY");
+        let key_allowed_domains = env_key(&prefix, "AUTH_ALLOWED_EMAIL_DOMAINS");
         let key_scopes_supported = env_key(&prefix, "AUTH_SCOPES_SUPPORTED");
         let key_machine_clients = env_key(&prefix, "AUTH_MACHINE_CLIENTS_JSON");
         let key_enterprise_issuers = env_key(&prefix, "AUTH_ENTERPRISE_ISSUERS_JSON");
@@ -532,6 +545,15 @@ impl AuthConfigBuilder {
             bootstrap_secret: read_string(&vars, &key_secret),
             allowed_client_redirect_uris: read_csv(&vars, &key_redirects).unwrap_or_default(),
             admin_email,
+            allowed_email_domains: read_csv(&vars, &key_allowed_domains)
+                .map(|domains| {
+                    domains
+                        .into_iter()
+                        .map(|d| d.trim().trim_start_matches('@').to_ascii_lowercase())
+                        .filter(|d| !d.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
             google: GoogleConfig {
                 client_id: read_string(&vars, &key_g_id).unwrap_or_default(),
                 client_secret: read_string(&vars, &key_g_secret).unwrap_or_default(),
