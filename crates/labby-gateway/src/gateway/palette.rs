@@ -327,10 +327,20 @@ pub struct PaletteExecuteResponse {
 #[serde(rename_all = "camelCase")]
 pub struct PaletteExecutionReceipt {
     pub request_id: String,
+    pub audit_id: String,
     pub tool_id: String,
     pub contract_hash: String,
     pub catalog_revision: String,
+    pub execution_mode: PaletteExecutionMode,
+    pub llm_invocations: u8,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteExecutionMode {
+    Exact,
+    LabbyAction,
 }
 
 impl GatewayManager {
@@ -527,15 +537,19 @@ impl GatewayManager {
                 )
                 .await
                 .map_err(map_unknown_tool_to_not_found)?;
+            let request_id = caller
+                .owner
+                .request_id
+                .clone()
+                .unwrap_or_else(|| "unavailable".to_string());
             let receipt = PaletteExecutionReceipt {
-                request_id: caller
-                    .owner
-                    .request_id
-                    .clone()
-                    .unwrap_or_else(|| "unavailable".to_string()),
+                audit_id: request_id.clone(),
+                request_id,
                 tool_id: tool_id.clone(),
                 contract_hash: checked.contract_hash,
                 catalog_revision: checked.catalog_revision,
+                execution_mode: PaletteExecutionMode::Exact,
+                llm_invocations: 0,
                 truncated: false,
             };
             Ok(execution_response(
@@ -1222,6 +1236,26 @@ mod tests {
                 "{name}: SHA-256"
             );
         }
+    }
+
+    #[test]
+    fn exact_execution_receipt_is_explicitly_no_llm_and_audit_correlated() {
+        let receipt = PaletteExecutionReceipt {
+            request_id: "request-123".to_string(),
+            audit_id: "request-123".to_string(),
+            tool_id: "mcp:alpha::ping".to_string(),
+            contract_hash: "a".repeat(64),
+            catalog_revision: "catalog-7".to_string(),
+            execution_mode: PaletteExecutionMode::Exact,
+            llm_invocations: 0,
+            truncated: false,
+        };
+
+        let value = serde_json::to_value(receipt).expect("receipt serializes");
+        assert_eq!(value["executionMode"], "exact");
+        assert_eq!(value["llmInvocations"], 0);
+        assert_eq!(value["auditId"], "request-123");
+        assert_eq!(value["requestId"], "request-123");
     }
 
     #[test]
