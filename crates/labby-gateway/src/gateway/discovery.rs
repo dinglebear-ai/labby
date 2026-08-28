@@ -91,7 +91,35 @@ pub fn discover_all(home: &Path) -> Vec<DiscoveredServer> {
         .collect()
 }
 
+/// Test-only override for the discovery root.
+///
+/// Discovery walks a real home directory looking for editor MCP configs. In a
+/// test that must be pinned: on a developer machine that actually uses these
+/// tools, discovery finds live servers and any import of them behaves
+/// unpredictably (a stdio command outside the spawn-guard allowlist, for
+/// instance), failing tests for reasons unrelated to what they assert.
+#[cfg(test)]
+static TEST_HOME_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn set_test_home_dir(path: Option<PathBuf>) {
+    *TEST_HOME_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test home dir lock") = path;
+}
+
 pub(crate) fn home_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_HOME_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test home dir lock")
+        .clone()
+    {
+        return Some(path);
+    }
     dirs::home_dir()
 }
 

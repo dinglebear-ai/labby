@@ -3076,6 +3076,18 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         }
     }
 
+    /// Turn the Code Mode MCP App off through the authority a manager-backed
+    /// server actually reads.
+    async fn disable_code_mode_ui(server: &LabMcpServer) {
+        let manager = server
+            .gateway_manager
+            .as_ref()
+            .expect("code mode test server is manager-backed");
+        let mut config = manager.current_config().await;
+        config.code_mode.mcp_ui_enabled = false;
+        manager.seed_config_unchecked_for_tests(config).await;
+    }
+
     async fn code_mode_server() -> LabMcpServer {
         code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::Root).await
     }
@@ -5055,7 +5067,11 @@ for (const value of [
     #[tokio::test]
     async fn disabled_code_mode_app_denies_cached_resource_reads() {
         let server = code_mode_server().await;
-        server.code_mode_app_state.set_enabled(false);
+        // A manager-backed server reads the published config directly, so a
+        // config mutation cannot race the mirrored session atomic. Disable
+        // through that authority rather than the atomic, which such a server
+        // does not consult.
+        disable_code_mode_ui(&server).await;
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
             server, transport, None,

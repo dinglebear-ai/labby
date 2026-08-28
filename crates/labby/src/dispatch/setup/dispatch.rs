@@ -1254,6 +1254,14 @@ mod tests {
         std::fs::write(&config_path, original).expect("write config");
         crate::config::set_test_config_toml_path(Some(config_path.clone()));
 
+        // Pin an empty Lab home. Without this the dispatch loads the developer's
+        // real `~/.labby/.env`, and on any machine that actually runs Labby that
+        // file defines `LABBY_MCP_HTTP_PORT`, which makes `mcp.port` report as
+        // env-shadowed and fails this test for reasons unrelated to it.
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir));
+
         let updated = dispatch(
             "settings.config.update",
             json!({
@@ -1299,6 +1307,7 @@ mod tests {
             ToolError::InvalidParam { param, .. } => assert_eq!(param, "mcp.port"),
             other => panic!("expected invalid_param, got {other:?}"),
         }
+        crate::dispatch::helpers::set_test_lab_home(None);
         assert!(
             std::fs::read_to_string(&config_path)
                 .expect("read config")
