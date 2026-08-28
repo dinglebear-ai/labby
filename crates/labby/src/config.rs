@@ -1074,6 +1074,13 @@ pub struct AuthFileConfig {
     /// Additional redirect URI patterns allowed for dynamic client registration.
     #[serde(default)]
     pub allowed_client_redirect_uris: Option<Vec<String>>,
+    /// Google Workspace hosted domains whose members may log in, in addition to
+    /// the admin email and the per-email allowlist.
+    ///
+    /// Matched against the Google ID token's `hd` claim, so only accounts truly
+    /// hosted in the domain qualify.
+    #[serde(default)]
+    pub allowed_email_domains: Option<Vec<String>>,
     /// Google OAuth client ID.
     #[serde(default)]
     pub google_client_id: Option<String>,
@@ -1204,6 +1211,12 @@ fn resolve_auth_with_env(
             merged.insert(
                 "LABBY_AUTH_ALLOWED_REDIRECT_URIS".to_string(),
                 patterns.join(","),
+            );
+        }
+        if let Some(domains) = config.allowed_email_domains.as_ref() {
+            merged.insert(
+                "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS".to_string(),
+                domains.join(","),
             );
         }
         insert_if_some(
@@ -2574,6 +2587,7 @@ future = "keep"
             allowed_client_redirect_uris: Some(vec![
                 "https://callback.example.com/callback/*".to_string(),
             ]),
+            allowed_email_domains: None,
             google_client_id: Some("client-id".to_string()),
             google_client_secret: Some("client-secret".to_string()),
             google_callback_path: Some("/auth/google/callback".to_string()),
@@ -2604,6 +2618,42 @@ future = "keep"
         assert_eq!(resolved.token_requests_per_minute, 25);
         assert_eq!(resolved.max_pending_oauth_states, 256);
         assert!(resolved.codex_issuer_compatibility);
+    }
+
+    fn minimal_oauth_file_config() -> AuthFileConfig {
+        AuthFileConfig {
+            mode: Some("oauth".to_string()),
+            public_url: Some("https://lab.example.com".to_string()),
+            bootstrap_secret: Some("bootstrap".to_string()),
+            google_client_id: Some("client-id".to_string()),
+            google_client_secret: Some("client-secret".to_string()),
+            admin_email: Some("admin@example.com".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_auth_reads_allowed_email_domains_from_config_toml() {
+        let mut cfg = minimal_oauth_file_config();
+        cfg.allowed_email_domains = Some(vec![
+            "Lime-Technology.com".to_string(),
+            "@example.org".to_string(),
+        ]);
+
+        let resolved = resolve_oauth_fixture(&cfg);
+
+        // Normalized to lowercase with any leading `@` stripped, so operators can
+        // write either `example.org` or `@example.org`.
+        assert_eq!(
+            resolved.allowed_email_domains,
+            vec!["lime-technology.com".to_string(), "example.org".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_auth_defaults_allowed_email_domains_to_empty() {
+        let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
+        assert!(resolved.allowed_email_domains.is_empty());
     }
 
     #[test]

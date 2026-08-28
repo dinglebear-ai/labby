@@ -80,6 +80,7 @@ Optional auth overrides:
 LABBY_AUTH_SQLITE_PATH=/var/lib/labby/auth.db
 LABBY_AUTH_KEY_PATH=/var/lib/labby/auth-jwt.pem
 LABBY_AUTH_ALLOWED_REDIRECT_URIS=https://callback.example.com/callback/*
+LABBY_AUTH_ALLOWED_EMAIL_DOMAINS=example.com,corp.example.com
 LABBY_GOOGLE_CALLBACK_PATH=/auth/google/callback
 LABBY_GOOGLE_SCOPES=openid,email,profile
 LABBY_AUTH_ACCESS_TOKEN_TTL_SECS=3600
@@ -99,6 +100,11 @@ Rules:
 - bearer mode keeps using `LABBY_MCP_HTTP_TOKEN`
 - oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and `LABBY_AUTH_ADMIN_EMAIL`
 - `LABBY_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Future SQLite-backed allowlist (web-UI managed) will grant access to additional users.
+- `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` grants access to every member of one or more Google
+  Workspace domains, in addition to the admin email and the SQLite-backed allowlist. It is
+  matched against the ID token's `hd` (hosted domain) claim, never the address suffix, so a
+  consumer account cannot claim a domain it does not belong to. Empty (the default) disables
+  domain-based access. `email_verified` is still enforced.
 - `LABBY_GOOGLE_CALLBACK_URL` optionally sends the browser callback to a webapp host that differs from the stable OAuth issuer in `LABBY_PUBLIC_URL`
 - `LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY=true` is an explicit temporary workaround for [openai/codex#34684](https://github.com/openai/codex/issues/34684); it disables RFC 9207 response-issuer advertisement and emission and should be removed after affected Codex clients are fixed
 - the old external issuer variables (`LABBY_OAUTH_ISSUER`, `LABBY_OAUTH_AUDIENCE`, `LABBY_OAUTH_CLIENT_ID`) are no longer used
