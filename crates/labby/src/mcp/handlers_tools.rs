@@ -1122,6 +1122,11 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
     Arc::clone(&TRACE_OUTPUT_SCHEMA)
 }
 
+// These tests drive the live upstream pool through labby-gateway's `testkit`
+// helpers. `proxy-testkit` is the documented switch that enables that feature,
+// so gating here keeps labby-gateway out of the ordinary slice builds the
+// feature contract exists to isolate. `--all-features` (what `just test` runs)
+// turns it on.
 #[cfg(test)]
-#[cfg(feature = "gateway")]
+#[cfg(all(feature = "gateway", feature = "proxy-testkit"))]
 mod tests;

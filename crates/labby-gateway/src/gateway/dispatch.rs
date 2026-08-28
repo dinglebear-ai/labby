@@ -117,13 +117,19 @@ pub async fn dispatch_with_manager_scoped(
         }
         "gateway.import_pending.approve" => {
             let name = require_str(&params_value, "name")?;
-            // Deliberately NOT `ensure_visible`: a pending import names a
-            // *discovered* server that is not configured yet, so it is never a
-            // member of the route's visible set and the check could only ever
-            // reject. Approving creates an upstream, exactly as `gateway.add`
-            // does on a subset route. The scope is still threaded through so
-            // `approve_pending_import_scoped` suppresses an enrichment
-            // suggestion that would name a route-hidden upstream.
+            // Deliberately NOT `ensure_visible`. Approving is a *creation*
+            // operation and is unscoped for the same reason `gateway.add` is: the
+            // upstream it creates does not exist yet, so a visibility check has
+            // nothing to check against. Note this means a pending name that *is*
+            // route-visible (`import_pending.list` filters on exactly that) is
+            // still approved without a visibility check — the carve-out is on the
+            // operation, not on the name. `reject` stays scoped because it only
+            // tombstones a row the route can already see.
+            //
+            // Creation from a subset route is therefore an accepted gap, not an
+            // enforced boundary; `docs/runtime/OAUTH.md` says so explicitly. The
+            // scope is still threaded through so `approve_pending_import_scoped`
+            // suppresses an enrichment suggestion naming a route-hidden upstream.
             to_json(
                 manager
                     .approve_pending_import_scoped(name, enrichment_scope)
@@ -459,20 +465,22 @@ async fn handle_tool_actions(
             if let Some(trusted_read_only_tools) = params.trusted_read_only_tools {
                 // The read-only gate reads the live MCP `readOnlyHint` on each
                 // tool descriptor; this allowlist has no production caller.
-                // Accepting a non-empty value silently would let an operator
-                // believe a security control is active when it is inert.
+                // Persisting it would let an operator believe a security control
+                // is active when it is inert, so drop the value rather than
+                // storing it. The param is still accepted so a get/set round trip
+                // from an existing client does not start failing.
                 if !trusted_read_only_tools.is_empty() {
                     tracing::warn!(
                         surface = "dispatch",
                         service = "gateway",
                         action = "gateway.code_mode.set",
                         entries = trusted_read_only_tools.len(),
-                        "`trusted_read_only_tools` is retired and has no effect; \
+                        "`trusted_read_only_tools` is retired and was discarded; \
                          Code Mode admits read-only tools from the upstream's own \
                          `readOnlyHint` annotation. Remove the setting."
                     );
                 }
-                next.trusted_read_only_tools = trusted_read_only_tools;
+                next.trusted_read_only_tools.clear();
             }
             if let Some(mcp_ui_enabled) = params.mcp_ui_enabled {
                 next.mcp_ui_enabled = mcp_ui_enabled;

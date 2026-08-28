@@ -107,7 +107,35 @@ pub(crate) fn set_test_home_dir(path: Option<PathBuf>) {
     *TEST_HOME_DIR
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
-        .expect("test home dir lock") = path;
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+}
+
+/// RAII pin for [`set_test_home_dir`].
+///
+/// The override is process-global and nextest runs tests concurrently in one
+/// binary, so clearing it with a trailing call at the end of a test body leaks
+/// the pin to unrelated tests whenever the body panics or returns early.
+#[cfg(test)]
+pub(crate) struct TestHomeDirGuard(Option<PathBuf>);
+
+#[cfg(test)]
+impl TestHomeDirGuard {
+    pub(crate) fn set(path: PathBuf) -> Self {
+        let previous = TEST_HOME_DIR
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        set_test_home_dir(Some(path));
+        Self(previous)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestHomeDirGuard {
+    fn drop(&mut self) {
+        set_test_home_dir(self.0.take());
+    }
 }
 
 pub(crate) fn home_dir() -> Option<PathBuf> {

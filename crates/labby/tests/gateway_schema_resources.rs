@@ -16,7 +16,9 @@
 //! Any change to a top-level key here is a contract change — update
 //! `docs/contracts/gateway-schema-resources.md` in the same PR.
 
-#![cfg(feature = "gateway")]
+// Drives the upstream pool through labby-gateway's `testkit` helpers;
+// `proxy-testkit` is the documented switch that enables them.
+#![cfg(all(feature = "gateway", feature = "proxy-testkit"))]
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -4076,11 +4076,10 @@ async fn gateway_import_result_has_correct_shape() {
     // Pin discovery at an empty home. Otherwise this walks the developer's real
     // editor configs, and `all=true` tries to import whatever it finds there.
     let home = tempfile::tempdir().expect("tempdir");
-    crate::gateway::discovery::set_test_home_dir(Some(home.path().to_path_buf()));
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
     let result = dispatch_with_manager(&manager, "gateway.import", json!({"all": true}))
         .await
         .expect("all=true should succeed even with no discovered servers");
-    crate::gateway::discovery::set_test_home_dir(None);
     // The result should be an object (ImportResultView), not an array
     assert!(
         result.is_object(),

@@ -62,10 +62,11 @@ lint: skill-drift rust-toolchain-sync module-reachability
     cargo clippy --workspace --all-features --all-targets -- -D warnings
     cargo fmt --all -- --check
 
-# Fail when a source file exists on disk that no parent module declares.
+# Fail when a file under `crates/*/src` exists on disk that no parent module
+# declares — or a whole directory that no sibling module file can declare.
 # rustc never sees such a file, so it produces no warning and any tests inside
 # it silently stop running — the failure mode that orphaned `paginate.rs` and
-# two test modules for months.
+# two test modules for months. Rust crates outside `crates/` are not walked.
 module-reachability:
     cargo test -p xtask module_reachability
 

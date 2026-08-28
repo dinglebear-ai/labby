@@ -1260,7 +1260,7 @@ mod tests {
         // env-shadowed and fails this test for reasons unrelated to it.
         let lab_dir = temp.path().join("lab-home");
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
-        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir));
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir);
 
         let updated = dispatch(
             "settings.config.update",
@@ -1307,7 +1307,6 @@ mod tests {
             ToolError::InvalidParam { param, .. } => assert_eq!(param, "mcp.port"),
             other => panic!("expected invalid_param, got {other:?}"),
         }
-        crate::dispatch::helpers::set_test_lab_home(None);
         assert!(
             std::fs::read_to_string(&config_path)
                 .expect("read config")
@@ -1330,7 +1329,7 @@ mod tests {
         let lab_dir = temp.path().join("lab-home");
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
         std::fs::write(lab_dir.join(".env"), "LABBY_MCP_HTTP_PORT=9999\n").expect("write env");
-        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir));
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir);
 
         let err = dispatch(
             "settings.config.update",
@@ -1358,7 +1357,6 @@ mod tests {
                 .contains("port = 8765")
         );
 
-        crate::dispatch::helpers::set_test_lab_home(None);
         crate::config::set_test_config_toml_path(None);
     }
 
@@ -1370,7 +1368,7 @@ mod tests {
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
         let env_file = lab_dir.join(".env");
         std::fs::write(&env_file, "LABBY_LOG=labby=info\n").expect("write env");
-        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir.clone()));
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
 
         let updated = dispatch(
             "settings.env.update",
@@ -1393,8 +1391,6 @@ mod tests {
                 .unwrap()
                 .contains("LABBY_LOG=labby=debug")
         );
-
-        crate::dispatch::helpers::set_test_lab_home(None);
     }
 
     #[tokio::test]
@@ -1405,7 +1401,7 @@ mod tests {
         std::fs::create_dir_all(&lab_dir).expect("lab dir");
         let env_file = lab_dir.join(".env");
         std::fs::write(&env_file, "LABBY_LOG=labby=warn\n").expect("write env");
-        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir.clone()));
+        let _lab_home_guard = crate::dispatch::helpers::TestLabHomeGuard::set(lab_dir.clone());
 
         let err = dispatch(
             "settings.env.update",
@@ -1428,8 +1424,6 @@ mod tests {
                 .unwrap()
                 .contains("LABBY_LOG=labby=warn")
         );
-
-        crate::dispatch::helpers::set_test_lab_home(None);
     }
 
     #[tokio::test]

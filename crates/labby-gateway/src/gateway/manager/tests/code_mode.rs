@@ -657,6 +657,88 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
     assert!(err.user_message().contains("alpha::delete"));
 }
 
+/// The read-only Code Mode gate rests entirely on the upstream's own
+/// `readOnlyHint`; the operator-held `trusted_read_only_tools` allowlist that
+/// used to be a second required conjunct is retired. These two tests pin both
+/// directions of what is now the only gate, so a future change to it cannot
+/// widen read-only execution unnoticed.
+#[tokio::test]
+async fn code_mode_host_blocks_unannotated_tools_for_read_only_callers() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    // Not destructive, and carrying no annotations at all — the ordinary shape
+    // of an upstream tool that never declared its safety.
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+
+    let err = CodeModeHost::call_tool(
+        &manager,
+        "alpha::ping",
+        json!({}),
+        &CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+            sub: Some("user-1".to_string()),
+        },
+        CodeModeSurface::Mcp,
+        &ToolScope::new(Vec::new(), Vec::new()),
+        labby_codemode::ExecCtx::none(),
+    )
+    .await
+    .expect_err("a read-only caller must not execute an unannotated tool");
+
+    // Two layers deny this, and the catalog is the first: an unannotated tool is
+    // not admitted to a read-only caller's catalog at all, so resolution fails
+    // before the execution gate is consulted. `forbidden` would mean the catalog
+    // admitted it and only the gate caught it; either is a denial, and asserting
+    // both keeps this test honest if the layering ever shifts.
+    assert!(
+        matches!(err.kind(), "not_found" | "forbidden"),
+        "a read-only caller must be denied an unannotated tool, got kind {}: {}",
+        err.kind(),
+        err.user_message()
+    );
+}
+
+#[tokio::test]
+async fn code_mode_host_admits_annotated_read_only_tools_without_an_operator_allowlist() {
+    let (manager, pool) =
+        code_mode_manager_with_upstreams(vec![fixture_http_upstream("alpha")]).await;
+    let mut entry = healthy_entry_with_tool("alpha", "ping");
+    entry
+        .tools
+        .get_mut("ping")
+        .expect("fixture tool")
+        .tool
+        .annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+    pool.insert_entry_for_tests("alpha", entry).await;
+
+    // The fixture upstream is not reachable, so the call still fails — but it
+    // must fail past the policy gate, not at it. Nothing here configures a
+    // `trusted_read_only_tools` allowlist, which is the point: the annotation
+    // alone is now sufficient.
+    let outcome = CodeModeHost::call_tool(
+        &manager,
+        "alpha::ping",
+        json!({}),
+        &CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+            sub: Some("user-1".to_string()),
+        },
+        CodeModeSurface::Mcp,
+        &ToolScope::new(Vec::new(), Vec::new()),
+        labby_codemode::ExecCtx::none(),
+    )
+    .await;
+
+    if let Err(err) = outcome {
+        assert!(
+            !err.user_message().contains("not explicitly annotated"),
+            "an annotated read-only tool must clear the read-only gate, got: {}",
+            err.user_message()
+        );
+    }
+}
+
 #[tokio::test]
 async fn mcp_tool_error_result_does_not_poison_upstream_connection_health() {
     let (manager, pool) =

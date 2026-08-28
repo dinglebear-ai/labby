@@ -802,12 +802,15 @@ mod tests {
         http::{Request, StatusCode, header},
     };
     use labby_gateway::gateway::palette::LauncherCatalogView;
+    #[cfg(feature = "proxy-testkit")]
     use labby_gateway::upstream::pool::UpstreamPool;
     use labby_gateway::upstream::types::{
         SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
     };
     use labby_primitives::action::{ActionSpec, ParamSpec};
-    use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
+    use labby_runtime::gateway_config::UpstreamConfig;
+    #[cfg(feature = "proxy-testkit")]
+    use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig};
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
@@ -1134,6 +1137,10 @@ mod tests {
         assert!(entry["schemaFingerprint"].as_str().is_some());
     }
 
+    // `insert_entry_for_test` lives behind labby-gateway's `testkit` feature,
+    // which `proxy-testkit` is the documented switch for. Gating here keeps the
+    // gateway crate out of the ordinary slice builds the feature contract isolates.
+    #[cfg(feature = "proxy-testkit")]
     #[tokio::test]
     async fn palette_catalog_includes_configured_upstream_mcp_tools() {
         let runtime = GatewayRuntimeHandle::default();
@@ -1192,6 +1199,10 @@ mod tests {
         assert!(upstream.get("inputSchema").is_none() || upstream["inputSchema"].is_null());
     }
 
+    // `insert_entry_for_test` lives behind labby-gateway's `testkit` feature,
+    // which `proxy-testkit` is the documented switch for. Gating here keeps the
+    // gateway crate out of the ordinary slice builds the feature contract isolates.
+    #[cfg(feature = "proxy-testkit")]
     #[tokio::test]
     async fn palette_schema_returns_lazy_labby_and_upstream_schemas() {
         let runtime = GatewayRuntimeHandle::default();
@@ -1263,6 +1274,10 @@ mod tests {
         assert_eq!(value["inputSchema"]["required"][0], "q");
     }
 
+    // `insert_entry_for_test` lives behind labby-gateway's `testkit` feature,
+    // which `proxy-testkit` is the documented switch for. Gating here keeps the
+    // gateway crate out of the ordinary slice builds the feature contract isolates.
+    #[cfg(feature = "proxy-testkit")]
     #[tokio::test]
     async fn palette_descriptor_returns_the_bounded_live_mcp_contract() {
         let runtime = GatewayRuntimeHandle::default();
@@ -1373,6 +1388,10 @@ mod tests {
         assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
     }
 
+    // `insert_entry_for_test` lives behind labby-gateway's `testkit` feature,
+    // which `proxy-testkit` is the documented switch for. Gating here keeps the
+    // gateway crate out of the ordinary slice builds the feature contract isolates.
+    #[cfg(feature = "proxy-testkit")]
     #[tokio::test]
     async fn palette_catalog_filters_disabled_and_priority_zero_upstreams() {
         let runtime = GatewayRuntimeHandle::default();

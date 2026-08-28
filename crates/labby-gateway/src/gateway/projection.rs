@@ -369,6 +369,11 @@ async fn optional_capability_warnings(
         if indicates_capability_absent(&message) {
             continue;
         }
+        // Upstream listing failures routinely carry the request URL, and a URL
+        // can carry an api key in its query string. This message is operator-
+        // visible, so it goes through the same redaction as every other
+        // upstream-derived string in this projection.
+        let message = redact_secret_like_segments(&message);
         warnings.push(super::view_models::ServerWarningView {
             code: code.to_string(),
             message: format!(

@@ -1,5 +1,8 @@
 //! Guard against source files that exist on disk but are unreachable.
 //!
+//! Scope: every `.rs` file under `crates/*/src`. Rust crates outside `crates/`
+//! (notably `apps/palette-tauri/src-tauri`) are not walked.
+//!
 //! Rust compiles a file only when some parent declares it with `mod`. A file
 //! whose declaration is dropped stays on disk, compiles nowhere, and produces
 //! no warning — `rustc` never sees it, so there is no `dead_code` lint to fire.
@@ -69,6 +72,9 @@ fn declared_names(source: &str) -> (BTreeSet<String>, BTreeSet<String>) {
 ///
 /// For a crate's `src/` that is `lib.rs` or `main.rs`; for `src/foo/` it is the
 /// sibling `src/foo.rs`. The repo bans `mod.rs`, so it is not considered.
+///
+/// `None` means nothing can declare the files in `dir` — see `visit`, which
+/// reports the directory itself rather than skipping it.
 fn parent_module_file(dir: &Path, crate_src: &Path) -> Option<PathBuf> {
     if dir == crate_src {
         for entry in ["lib.rs", "main.rs"] {
@@ -99,55 +105,69 @@ fn visit(dir: &Path, crate_src: &Path, repo_root: &Path, orphans: &mut Vec<Orpha
         }
     }
 
-    if let Some(parent) = parent_module_file(dir, crate_src) {
-        let source = fs::read_to_string(&parent).unwrap_or_default();
-        let (mut names, mut paths) = declared_names(&source);
-
-        // A sibling may attach a file with `#[path]` rather than the parent
-        // doing it — `gateway/dispatch.rs` owns `gateway/dispatch_tests.rs`
-        // that way. Fold in every sibling's declarations so those are not
-        // reported as orphans.
-        for sibling in &files {
-            if *sibling == parent {
-                continue;
-            }
-            let sibling_source = fs::read_to_string(sibling).unwrap_or_default();
-            let (sibling_names, sibling_paths) = declared_names(&sibling_source);
-            names.extend(sibling_names);
-            paths.extend(sibling_paths);
-        }
-
-        for file in &files {
-            // The parent declares the children; it does not declare itself,
-            // and a crate root is reached through Cargo, not through `mod`.
-            if *file == parent {
-                continue;
-            }
-            // A crate can have both a library and a binary root; neither is
-            // reached through `mod`.
-            if dir == crate_src
-                && file
-                    .file_name()
-                    .is_some_and(|name| name == "lib.rs" || name == "main.rs")
-            {
-                continue;
-            }
-            let stem = file
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default();
-            let name = file
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            if names.contains(stem) || paths.iter().any(|target| target.ends_with(name)) {
-                continue;
-            }
+    let Some(parent) = parent_module_file(dir, crate_src) else {
+        // No file owns declarations for this directory. Cargo reaches
+        // `src/bin/*.rs` on its own, but anything else here is a whole
+        // subtree that compiles nowhere — the same failure this gate exists
+        // to catch, one level up. Report the directory and stop: descending
+        // would report each unreachable child against a parent that is itself
+        // unreachable.
+        if !files.is_empty() && dir.file_name().is_some_and(|name| name != "bin") {
             orphans.push(Orphan {
-                file: relative(file, repo_root),
-                expected_parent: relative(&parent, repo_root),
+                file: relative(dir, repo_root),
+                expected_parent: relative(&dir.with_extension("rs"), repo_root),
             });
         }
+        return;
+    };
+
+    let source = fs::read_to_string(&parent).unwrap_or_default();
+    let (mut names, mut paths) = declared_names(&source);
+
+    // A sibling may attach a file with `#[path]` rather than the parent
+    // doing it — `gateway/dispatch.rs` owns `gateway/dispatch_tests.rs`
+    // that way. Fold in every sibling's declarations so those are not
+    // reported as orphans.
+    for sibling in &files {
+        if *sibling == parent {
+            continue;
+        }
+        let sibling_source = fs::read_to_string(sibling).unwrap_or_default();
+        let (sibling_names, sibling_paths) = declared_names(&sibling_source);
+        names.extend(sibling_names);
+        paths.extend(sibling_paths);
+    }
+
+    for file in &files {
+        // The parent declares the children; it does not declare itself,
+        // and a crate root is reached through Cargo, not through `mod`.
+        if *file == parent {
+            continue;
+        }
+        // A crate can have both a library and a binary root; neither is
+        // reached through `mod`.
+        if dir == crate_src
+            && file
+                .file_name()
+                .is_some_and(|name| name == "lib.rs" || name == "main.rs")
+        {
+            continue;
+        }
+        let stem = file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        let name = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if names.contains(stem) || paths.iter().any(|target| target.ends_with(name)) {
+            continue;
+        }
+        orphans.push(Orphan {
+            file: relative(file, repo_root),
+            expected_parent: relative(&parent, repo_root),
+        });
     }
 
     for subdir in subdirs {
@@ -217,6 +237,42 @@ mod tests {
         assert!(
             !names.contains("gamma"),
             "an undeclared module must not be treated as reachable"
+        );
+    }
+
+    #[test]
+    fn a_directory_with_no_parent_module_file_is_itself_an_orphan() {
+        // The blind spot this closes: `visit` used to skip a directory whose
+        // files nothing could declare, so an entire unreachable subtree — tests
+        // included — went unreported while the check still passed.
+        let root = tempfile::tempdir().expect("tempdir");
+        let src = root.path().join("crates").join("ghost").join("src");
+        fs::create_dir_all(src.join("orphan_dir")).expect("dirs");
+        fs::write(src.join("lib.rs"), "").expect("lib.rs");
+        fs::write(src.join("orphan_dir").join("ghost.rs"), "").expect("ghost.rs");
+
+        let orphans = orphaned_modules(root.path());
+        assert_eq!(
+            orphans
+                .iter()
+                .map(|orphan| orphan.file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["crates/ghost/src/orphan_dir"],
+            "a directory no sibling module file can declare must be reported"
+        );
+    }
+
+    #[test]
+    fn cargo_discovered_bin_directories_are_not_orphans() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let src = root.path().join("crates").join("ghost").join("src");
+        fs::create_dir_all(src.join("bin")).expect("dirs");
+        fs::write(src.join("main.rs"), "").expect("main.rs");
+        fs::write(src.join("bin").join("extra.rs"), "").expect("extra.rs");
+
+        assert!(
+            orphaned_modules(root.path()).is_empty(),
+            "Cargo reaches src/bin/*.rs without a `mod` declaration"
         );
     }
 

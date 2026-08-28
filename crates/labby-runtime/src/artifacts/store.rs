@@ -254,10 +254,24 @@ impl ArtifactStore {
             return Err(error);
         }
 
-        if workspace.exists() {
-            reject_symlink(&workspace).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+        if workspace.exists()
+            && let Err(error) =
+                reject_symlink(&workspace).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))
+        {
+            cleanup_recovery_dir(&staging, artifact_id, "staging");
+            return Err(error);
         }
-        let promotion = promote_workspace(&staging, &workspace, &previous)?;
+        // A promotion failure has already rolled back internally, so the fully
+        // materialized staging tree is now unreferenced. Without this it is left in
+        // the artifact directory with nothing to reap it, and repeated failures
+        // accumulate full copies of the workspace on disk.
+        let promotion = match promote_workspace(&staging, &workspace, &previous) {
+            Ok(promotion) => promotion,
+            Err(error) => {
+                cleanup_recovery_dir(&staging, artifact_id, "staging");
+                return Err(error);
+            }
+        };
         if let Err(sync_error) = File::open(artifact_dir).and_then(|dir| dir.sync_all()) {
             rollback_promoted_workspace(&workspace, &previous, &staging, promotion).map_err(
                 |rollback_error| {
@@ -602,10 +616,25 @@ fn rollback_promoted_workspace(
     staging: &Path,
     promotion: WorkspacePromotion,
 ) -> std::io::Result<()> {
-    std::fs::rename(workspace, staging)?;
+    rollback_promoted_workspace_with(workspace, previous, staging, promotion, &mut |from, to| {
+        std::fs::rename(from, to)
+    })
+}
+
+/// Rollback with an injectable rename, so its recovery arms are reachable from
+/// tests. The production path only reaches this after a parent-directory
+/// `sync_all` failure, which a test cannot provoke.
+fn rollback_promoted_workspace_with(
+    workspace: &Path,
+    previous: &Path,
+    staging: &Path,
+    promotion: WorkspacePromotion,
+    rename: &mut impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    rename(workspace, staging)?;
     if promotion == WorkspacePromotion::Replaced {
-        std::fs::rename(previous, workspace).map_err(|error| {
-            let restore_new_error = std::fs::rename(staging, workspace).err();
+        rename(previous, workspace).map_err(|error| {
+            let restore_new_error = rename(staging, workspace).err();
             std::io::Error::new(
                 error.kind(),
                 match restore_new_error {
@@ -828,6 +857,121 @@ mod tests {
         );
         assert!(staging.join("replacement.txt").exists());
         assert!(!previous.exists());
+    }
+
+    #[test]
+    fn rollback_restores_the_previous_tree_and_parks_the_promoted_one() {
+        // The production caller only reaches rollback after a parent-directory
+        // `sync_all` failure, which a test cannot provoke — hence the injectable
+        // rename. Without coverage this recovery path ships unexercised.
+        let data = tempdir().unwrap();
+        let workspace = data.path().join("workspace");
+        let staging = data.path().join("staging");
+        let previous = data.path().join("previous");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&previous).unwrap();
+        std::fs::write(workspace.join("promoted.txt"), b"promoted").unwrap();
+        std::fs::write(previous.join("preserved.txt"), b"preserved").unwrap();
+
+        rollback_promoted_workspace_with(
+            &workspace,
+            &previous,
+            &staging,
+            WorkspacePromotion::Replaced,
+            &mut |from, to| std::fs::rename(from, to),
+        )
+        .expect("rollback succeeds");
+
+        assert_eq!(
+            std::fs::read(workspace.join("preserved.txt")).unwrap(),
+            b"preserved",
+            "the previous tree must be back in place"
+        );
+        assert!(
+            staging.join("promoted.txt").exists(),
+            "the promoted tree must be parked in staging, not destroyed"
+        );
+        assert!(!previous.exists());
+    }
+
+    #[test]
+    fn a_rollback_that_cannot_restore_the_previous_tree_puts_the_promoted_one_back() {
+        // Worst case: the previous tree cannot be restored. Rather than leaving
+        // no workspace at all, the promoted tree is put back and the error names
+        // both failures.
+        let data = tempdir().unwrap();
+        let workspace = data.path().join("workspace");
+        let staging = data.path().join("staging");
+        let previous = data.path().join("previous");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&previous).unwrap();
+        std::fs::write(workspace.join("promoted.txt"), b"promoted").unwrap();
+
+        let mut rename_count = 0;
+        let error = rollback_promoted_workspace_with(
+            &workspace,
+            &previous,
+            &staging,
+            WorkspacePromotion::Replaced,
+            &mut |from, to| {
+                rename_count += 1;
+                if rename_count == 2 {
+                    Err(std::io::Error::other("injected restore failure"))
+                } else {
+                    std::fs::rename(from, to)
+                }
+            },
+        )
+        .expect_err("an unrestorable previous tree must surface as an error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("restoring previous workspace failed"),
+            "the error must name the restore failure, got: {error}"
+        );
+        assert!(
+            workspace.join("promoted.txt").exists(),
+            "the promoted tree must be put back rather than leaving no workspace"
+        );
+    }
+
+    #[test]
+    fn a_successful_materialization_leaves_no_recovery_trees_behind() {
+        // A leaked `.workspace.stage-*` / `.workspace.previous-*` is a full copy
+        // of a possibly-private workspace with nothing to reap it.
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let artifact_id = "artifact-recovery-cleanup";
+        let file = SnapshotFile {
+            path: "only.txt".into(),
+            bytes: b"first".to_vec(),
+            unix_mode: None,
+        };
+        store.materialize_workspace(artifact_id, &[file]).unwrap();
+        let replacement = SnapshotFile {
+            path: "only.txt".into(),
+            bytes: b"second".to_vec(),
+            unix_mode: None,
+        };
+        store
+            .materialize_workspace(artifact_id, &[replacement])
+            .unwrap();
+
+        let workspace = store.workspace_path(artifact_id).unwrap();
+        let artifact_dir = workspace.parent().unwrap();
+        let leaked: Vec<String> = std::fs::read_dir(artifact_dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| {
+                name.starts_with(".workspace.stage-") || name.starts_with(".workspace.previous-")
+            })
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "a successful promotion must reap its recovery trees, found: {leaked:?}"
+        );
     }
 
     #[test]

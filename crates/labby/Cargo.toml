@@ -126,7 +126,6 @@ labby-winjob = { path = "../labby-winjob" }
 
 [dev-dependencies]
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
-labby-gateway = { path = "../labby-gateway", features = ["testkit"] }
 wiremock.workspace = true
 proptest = "1"
 tracing-core = "0.1"

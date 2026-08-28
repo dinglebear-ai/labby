@@ -188,8 +188,9 @@ pub struct CodeModeConfig {
     /// It has no production reader: both catalog admission and the execution
     /// gate gate on the upstream's own `readOnlyHint` annotation. Setting it
     /// grants nothing, so it must never be presented as a security control.
-    /// `gateway.code_mode.set` warns when a non-empty value is supplied.
-    #[serde(default)]
+    /// `gateway.code_mode.set` warns and drops a non-empty value, and the field
+    /// is never serialized back out, so no surface can present it as live.
+    #[serde(default, skip_serializing)]
     pub trusted_read_only_tools: Vec<String>,
     /// Whether the explicit `codemode_ui` MCP App tool and resources are advertised.
     /// The text-only `codemode` executor remains available when this is false.
@@ -286,18 +287,6 @@ impl Default for CodeModeConfig {
 }
 
 impl CodeModeConfig {
-    /// Whether the deprecated compatibility list contains this exact tool id.
-    #[must_use]
-    pub fn trusts_read_only_tool(&self, upstream: &str, tool: &str) -> bool {
-        self.trusted_read_only_tools.iter().any(|candidate| {
-            candidate
-                .split_once("::")
-                .is_some_and(|(trusted_upstream, trusted_tool)| {
-                    trusted_upstream == upstream && trusted_tool == tool
-                })
-        })
-    }
-
     /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !(1..=60_000).contains(&self.timeout_ms) {
@@ -2285,15 +2274,19 @@ client_secret_env = "SECRET"
     }
 
     #[test]
-    fn legacy_read_only_tool_trust_matcher_is_exact_and_fail_closed() {
-        let mut cfg = CodeModeConfig::default();
-        assert!(!cfg.trusts_read_only_tool("dookie", "read_file"));
+    fn a_legacy_trusted_read_only_tools_list_still_parses_but_is_never_echoed_back() {
+        // The field is retired: it exists only so an existing config file keeps
+        // parsing. It must not round-trip, or an operator reading the config back
+        // would see a populated list that looks like a live security control.
+        let cfg: CodeModeConfig =
+            toml::from_str("trusted_read_only_tools = [\"dookie::read_file\"]\n").unwrap();
+        assert_eq!(cfg.trusted_read_only_tools, vec!["dookie::read_file"]);
 
-        cfg.trusted_read_only_tools = vec!["dookie::read_file".to_string()];
-        assert!(cfg.trusts_read_only_tool("dookie", "read_file"));
-        assert!(!cfg.trusts_read_only_tool("dookie", "write_file"));
-        assert!(!cfg.trusts_read_only_tool("other", "read_file"));
-        assert!(!cfg.trusts_read_only_tool("dookie", "read_file::extra"));
+        let round_tripped = serde_json::to_value(&cfg).unwrap();
+        assert!(
+            round_tripped.get("trusted_read_only_tools").is_none(),
+            "the retired field must never be serialized back to any surface"
+        );
     }
 
     #[test]

@@ -83,9 +83,15 @@ impl AccessStore {
         let connection = Arc::clone(&self.connection);
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            // Recover from poisoning rather than wedging the store for the
+            // process lifetime. Callers now run arbitrary executor closures under
+            // this lock (`authorize_skill_library_and_execute`), so one panic must
+            // not make every subsequent authorization permanently unavailable. An
+            // unwind drops any open `Transaction`, which rolls back, so the
+            // connection is left consistent.
             let mut connection = connection
                 .lock()
-                .map_err(|_| AccessStoreError::Unavailable("connection mutex poisoned".into()))?;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             operation(&mut connection)
         })
         .await
@@ -154,6 +160,12 @@ impl AccessStore {
 
     /// Holds SQLite's writer reservation from the current membership read through one
     /// synchronous library commit, linearizing that commit with membership revocation.
+    ///
+    /// `executor` runs while this task owns the single connection admission permit
+    /// *and* the connection mutex, so for its whole duration every access-store
+    /// operation process-wide is blocked. It must stay short and synchronous, and it
+    /// must never call back into `AccessStore` — doing so deadlocks against the
+    /// permit it is already holding.
     pub(crate) async fn authorize_skill_library_and_execute<T, E>(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -180,13 +192,18 @@ impl AccessStore {
             )?;
             let result = executor(snapshot);
             if let Err(error) = transaction.rollback() {
+                // The executor has already run and, on success, already committed
+                // its own durable state. Reporting the lease rollback as the
+                // operation's result would tell the caller a completed commit
+                // failed, and the retry would duplicate the work. Record the
+                // rollback failure as observability and return the real outcome.
                 tracing::error!(
                     project_id,
                     executor_failed = result.is_err(),
                     error = %error,
-                    "failed to roll back the Skill Library authorization lease"
+                    "failed to roll back the Skill Library authorization lease; \
+                     the executor outcome is still authoritative"
                 );
-                return Err(map_sqlite_error(error));
             }
             Ok(result)
         })

@@ -341,10 +341,24 @@ pub(crate) async fn authorize_at_boundary(
                     SkillLibraryAuditOutcome::Deny,
                     SkillLibraryAuthorizationError::Denied,
                 ),
-                _ => (
-                    SkillLibraryAuditOutcome::Unavailable,
-                    SkillLibraryAuthorizationError::Unavailable,
-                ),
+                // `Locked`, `Corrupt`, `DiskFull`, `ReadOnly`, and
+                // `Unavailable(String)` all collapse to one opaque agent-facing
+                // kind. `map_sqlite_error` separated them for a reason, so record
+                // the concrete cause before it is erased — otherwise "retry" and
+                // "page an operator" are indistinguishable in the logs too.
+                _ => {
+                    tracing::error!(
+                        surface = ?surface,
+                        project_id,
+                        action = ?action,
+                        error = %error,
+                        "Skill Library authorization unavailable"
+                    );
+                    (
+                        SkillLibraryAuditOutcome::Unavailable,
+                        SkillLibraryAuthorizationError::Unavailable,
+                    )
+                }
             };
             let event = SkillLibraryAuditEvent::new(
                 correlation_id.clone(),
@@ -370,10 +384,31 @@ fn decision_from_snapshot(
     surface: SkillLibrarySurface,
 ) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError> {
     let audit_sink = skill_library_audit_sink();
+    // Every other failure below records an audit event. A malformed persisted
+    // identifier is exactly the condition `MalformedVocabulary` names, and it
+    // fails every Skill Library call for the tenant — it must not be the one
+    // path that leaves no trace. Log the field name only, never the value.
+    let projection_failure = |field: &'static str| {
+        tracing::error!(
+            surface = ?surface,
+            action = ?action,
+            field,
+            "Skill Library access snapshot carries a malformed canonical identifier"
+        );
+        audit_sink.record(SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Unavailable,
+            SkillLibraryAuditStage::AccessSnapshot,
+        ));
+        SkillLibraryAuthorizationError::Unavailable
+    };
     let tenant_id = LibraryTenantId::from_canonical_projection(snapshot.organization_id)
-        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+        .map_err(|_| projection_failure("organization_id"))?;
     let actor_id = LibraryActorId::from_canonical_projection(snapshot.principal_id)
-        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+        .map_err(|_| projection_failure("principal_id"))?;
     let is_admin = matches!(snapshot.role, ProjectRole::Owner | ProjectRole::Admin);
     let (grant, ownership) = resolve_grant(&snapshot.role, &tenant_id, &actor_id, target)
         .ok_or_else(|| {
@@ -475,7 +510,18 @@ where
     T: Send + 'static,
     E: Send + 'static,
 {
-    debug_assert!(action.is_mutation());
+    // `Permission::AssetUse` below is hardcoded on the strength of this
+    // invariant. A `debug_assert` lets a release build silently take a path the
+    // caller believed impossible, so check it for real.
+    if !action.is_mutation() {
+        tracing::error!(
+            action = ?action,
+            "authorize_and_commit called with a non-mutating action"
+        );
+        return Err(SkillLibraryCommitError::Authorization(
+            SkillLibraryAuthorizationError::Unavailable,
+        ));
+    }
     let target = if action == SkillLibraryAction::Create {
         SkillLibraryTarget::CreateForCaller
     } else {
@@ -552,10 +598,24 @@ where
                     SkillLibraryAuditOutcome::Deny,
                     SkillLibraryAuthorizationError::Denied,
                 ),
-                _ => (
-                    SkillLibraryAuditOutcome::Unavailable,
-                    SkillLibraryAuthorizationError::Unavailable,
-                ),
+                // `Locked`, `Corrupt`, `DiskFull`, `ReadOnly`, and
+                // `Unavailable(String)` all collapse to one opaque agent-facing
+                // kind. `map_sqlite_error` separated them for a reason, so record
+                // the concrete cause before it is erased — otherwise "retry" and
+                // "page an operator" are indistinguishable in the logs too.
+                _ => {
+                    tracing::error!(
+                        surface = ?surface,
+                        project_id,
+                        action = ?action,
+                        error = %error,
+                        "Skill Library authorization unavailable"
+                    );
+                    (
+                        SkillLibraryAuditOutcome::Unavailable,
+                        SkillLibraryAuthorizationError::Unavailable,
+                    )
+                }
             };
             audit_sink.record(SkillLibraryAuditEvent::new(
                 failure_correlation_id,
@@ -1077,26 +1137,42 @@ mod tests {
         });
         entered_rx.recv().unwrap();
 
+        // Assert the ordering positively rather than by wall clock. "the
+        // revocation did not finish within 500ms" passes on a loaded machine
+        // even with the lease removed, because the spawned task may simply not
+        // have been scheduled. Instead the revocation reports whether the lease
+        // had already been released when its write landed, which is the actual
+        // linearization property and has no timing budget in it.
+        let lease_released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed_release = std::sync::Arc::clone(&lease_released);
         let (revocation_started_tx, revocation_started_rx) = tokio::sync::oneshot::channel();
-        let mut revocation = tokio::spawn(async move {
+        let revocation = tokio::spawn(async move {
             let _ = revocation_started_tx.send(());
-            secondary
+            let result = secondary
                 .execute_test_statement(
                     "UPDATE project_memberships SET status='suspended' WHERE membership_id='bootstrap-owner-membership'",
                 )
-                .await
+                .await;
+            (
+                result,
+                observed_release.load(std::sync::atomic::Ordering::SeqCst),
+            )
         });
         revocation_started_rx.await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(500), &mut revocation)
-                .await
-                .is_err(),
-            "revocation must wait for the commit-bound authorization lease"
-        );
 
+        lease_released.store(true, std::sync::atomic::Ordering::SeqCst);
         release_tx.send(()).unwrap();
         assert!(guarded.await.unwrap().unwrap().is_ok());
-        revocation.await.unwrap().unwrap();
+        let (revocation_result, saw_release) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), revocation)
+                .await
+                .expect("revocation must not deadlock once the lease is released")
+                .unwrap();
+        revocation_result.unwrap();
+        assert!(
+            saw_release,
+            "the revocation write must land after the commit-bound authorization lease is released"
+        );
 
         let executed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let marker = std::sync::Arc::clone(&executed);

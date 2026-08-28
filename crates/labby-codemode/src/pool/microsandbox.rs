@@ -766,6 +766,33 @@ fn helper_diagnostic(output: &HelperOutput) -> String {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn the_running_process_reads_as_alive() {
+        // The regression this pins is data destruction: when this returned
+        // false for a live owner, reconciliation deleted sandboxes belonging to
+        // running processes — this one included.
+        assert!(owner_process_is_alive(std::process::id()));
+    }
+
+    #[test]
+    fn a_pid_outside_the_platform_range_is_proof_of_death() {
+        // The one arm that returns `false` without an `ESRCH` from the kernel.
+        // A pid that cannot be represented cannot name a live process, so
+        // treating it as dead is proof rather than a guess.
+        assert!(!owner_process_is_alive(
+            u32::try_from(i32::MAX).expect("i32::MAX fits in u32") + 1
+        ));
+        assert!(!owner_process_is_alive(u32::MAX));
+    }
+
+    #[test]
+    fn an_unprovable_pid_fails_closed_as_alive() {
+        // pid 1 always exists and, unprivileged, `kill(1, 0)` answers EPERM
+        // rather than ESRCH. An owner we cannot prove dead must keep its
+        // sandbox, so EPERM must read as alive.
+        assert!(owner_process_is_alive(1));
+    }
+
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
