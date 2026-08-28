@@ -88,6 +88,51 @@ impl CapabilityContract {
         Ok(contract)
     }
 
+    /// Hash the exact executable contract without applying palette display-size caps.
+    pub(crate) fn execution_hash_from_upstream_tool(
+        tool: &UpstreamTool,
+    ) -> Result<String, ToolError> {
+        if tool
+            .input_schema
+            .as_ref()
+            .is_some_and(schema_depth_exceeds_limit)
+            || tool
+                .output_schema
+                .as_ref()
+                .is_some_and(schema_depth_exceeds_limit)
+        {
+            return Err(descriptor_unsupported());
+        }
+
+        let annotations = tool.tool.annotations.as_ref();
+        let contract = Self {
+            contract_version: CAPABILITY_CONTRACT_VERSION,
+            id: format!("mcp:{}::{}", tool.upstream_name, tool.tool.name),
+            input_schema: None,
+            output_schema: None,
+            annotations: CapabilityAnnotations {
+                read_only_hint: annotations.and_then(|value| value.read_only_hint),
+                destructive_hint: annotations.and_then(|value| value.destructive_hint),
+                idempotent_hint: annotations.and_then(|value| value.idempotent_hint),
+                open_world_hint: annotations.and_then(|value| value.open_world_hint),
+            },
+            destructive: tool.destructive,
+            contract_hash: String::new(),
+        };
+        let mut writer = CappedHashWriter::new(usize::MAX);
+        write_contract_canonical(
+            &mut writer,
+            &contract,
+            tool.input_schema.as_ref(),
+            tool.output_schema.as_ref(),
+        )
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "invalid_tool_schema".to_string(),
+            message: format!("failed to hash capability contract: {error}"),
+        })?;
+        Ok(hex_digest(&writer.finish()))
+    }
+
     fn compute_hash(
         &self,
         exact_input_schema: Option<&Value>,
@@ -175,6 +220,7 @@ impl PaletteCaller {
                 sub: subject.clone(),
                 scopes: vec!["lab:admin".to_string()],
                 trusted_local: false,
+                private_context_token: None,
             },
             scope: ToolScope::default(),
             owner,
@@ -211,6 +257,7 @@ impl PaletteCaller {
                 sub: subject.clone(),
                 scopes,
                 trusted_local: false,
+                private_context_token: None,
             },
             scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()).read_only(),
             owner,
@@ -242,6 +289,7 @@ impl PaletteCaller {
                 sub: Some(subject.to_string()),
                 scopes,
                 trusted_local: false,
+                private_context_token: None,
             },
             scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()),
             owner: crate::gateway::shared::make_api_runtime_owner(Some(subject), request_id),

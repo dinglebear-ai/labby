@@ -54,6 +54,8 @@ pub(crate) enum ResourceReadResolutionError {
     Upstream,
     #[error("resource read timed out")]
     Timeout,
+    #[error("resource read was cancelled")]
+    Cancelled,
     #[error("resource response is too large")]
     TooLarge,
 }
@@ -144,15 +146,33 @@ pub(crate) async fn read_exact_project_resource(
     {
         return Err(ResourceReadResolutionError::Unavailable);
     }
-    result.map_err(|error| match error {
+    result.map_err(map_published_resource_error)
+}
+
+fn map_published_resource_error(error: PublishedResourceReadError) -> ResourceReadResolutionError {
+    match error {
         PublishedResourceReadError::Unavailable => ResourceReadResolutionError::Unavailable,
         PublishedResourceReadError::QueueUnavailable => {
             ResourceReadResolutionError::QueueUnavailable
         }
         PublishedResourceReadError::Upstream => ResourceReadResolutionError::Upstream,
         PublishedResourceReadError::Timeout => ResourceReadResolutionError::Timeout,
+        PublishedResourceReadError::Cancelled => ResourceReadResolutionError::Cancelled,
         PublishedResourceReadError::TooLarge => ResourceReadResolutionError::TooLarge,
-    })
+    }
+}
+
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn published_cancellation_remains_cancelled() {
+        assert_eq!(
+            map_published_resource_error(PublishedResourceReadError::Cancelled),
+            ResourceReadResolutionError::Cancelled
+        );
+    }
 }
 
 /// Execute from one middleware-owned protected-transport binding.
@@ -880,7 +900,16 @@ mod tests {
                 )
                 .await
                 .expect_err("operational Resource read failure");
-            assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
+            // Each cause keeps its own stable kind rather than flattening to
+            // `upstream_error`: an oversized response tells the caller to
+            // reduce work, an upstream fault does not. Redaction is about the
+            // private failure text, not about hiding the documented kind.
+            let expected_kind = if oversized {
+                "response_too_large"
+            } else {
+                "upstream_error"
+            };
+            assert_eq!(error.data.as_ref().unwrap()["kind"], expected_kind);
             assert!(!error.message.contains("private"));
             assert!(
                 !error

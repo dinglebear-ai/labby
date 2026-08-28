@@ -89,6 +89,17 @@ pub struct AppState {
     /// The default is a conservative, non-I/O unavailable runtime. Server
     /// startup replaces it after resolving and observing the configured store.
     pub(crate) access_runtime: Arc<crate::access::AccessRuntime>,
+    #[cfg(feature = "skills")]
+    pub(crate) skill_library: Option<
+        Arc<
+            crate::dispatch::skill_library::dispatch::SkillLibraryService<
+                crate::skills::registry::FirstPartyGeneration,
+            >,
+        >,
+    >,
+    #[cfg(feature = "skills")]
+    pub(crate) skill_library_imports:
+        Option<Arc<crate::dispatch::skill_library::import::ImportCoordinator>>,
 }
 
 impl AppState {
@@ -147,6 +158,10 @@ impl AppState {
             bearer_token: None,
             http_bind_host: None,
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            #[cfg(feature = "skills")]
+            skill_library: None,
+            #[cfg(feature = "skills")]
+            skill_library_imports: None,
             server_start: std::time::Instant::now(),
         }
     }
@@ -165,6 +180,30 @@ impl AppState {
         runtime: Arc<crate::access::AccessRuntime>,
     ) -> Self {
         self.access_runtime = runtime;
+        self
+    }
+
+    #[cfg(feature = "skills")]
+    #[must_use]
+    pub(crate) fn with_skill_library(
+        mut self,
+        service: Arc<
+            crate::dispatch::skill_library::dispatch::SkillLibraryService<
+                crate::skills::registry::FirstPartyGeneration,
+            >,
+        >,
+    ) -> Self {
+        self.skill_library = Some(service);
+        self
+    }
+
+    #[cfg(feature = "skills")]
+    #[must_use]
+    pub(crate) fn with_skill_library_imports(
+        mut self,
+        imports: Arc<crate::dispatch::skill_library::import::ImportCoordinator>,
+    ) -> Self {
+        self.skill_library_imports = Some(imports);
         self
     }
 

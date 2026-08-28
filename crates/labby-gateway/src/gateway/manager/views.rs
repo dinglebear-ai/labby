@@ -140,6 +140,17 @@ impl GatewayManager {
         Ok(views)
     }
 
+    pub async fn list_scoped(
+        &self,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<ServerView>, ToolError> {
+        let mut views = self.list().await?;
+        if let Some(visible) = scope.route_visible_upstreams.as_ref() {
+            views.retain(|view| view.source == "custom_gateway" && visible.contains(&view.id));
+        }
+        Ok(views)
+    }
+
     pub async fn get_server(&self, id: &str) -> Result<ServerView, ToolError> {
         let (cfg, pool) = self.published_config_and_pool().await;
 
@@ -181,6 +192,15 @@ impl GatewayManager {
             enrichment_suggestion: None,
             enrichment_suggestion_error: None,
         })
+    }
+
+    pub async fn get_scoped(
+        &self,
+        name: &str,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<GatewayView, ToolError> {
+        scope.ensure_visible(name)?;
+        self.get(name).await
     }
 
     pub async fn surface_enabled_for_service(&self, service: &str, surface: &str) -> bool {

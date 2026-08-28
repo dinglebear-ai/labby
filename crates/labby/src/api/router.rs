@@ -3,7 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "api-docs")]
 use axum::response::Html;
@@ -51,30 +51,43 @@ use super::{health, services, state::AppState};
 use crate::api::error::ApiError;
 use crate::dispatch::error::ToolError;
 
-/// Ordinary API handlers must fail promptly when a dependency stalls.
-const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// MCP tool calls can use the gateway's five-minute relay budget. In
-/// particular, provider-managed VM installs download and unpack a large image
-/// before they return a single MCP result.
-const MCP_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
-
-fn http_request_timeout(path: &str) -> Duration {
-    if path == "/mcp" || path.starts_with("/mcp/") {
-        MCP_HTTP_REQUEST_TIMEOUT
-    } else {
-        DEFAULT_HTTP_REQUEST_TIMEOUT
-    }
+/// Transport backstop for one hosted HTTP request.
+///
+/// Derived from the configured upstream deadlines on **every** route, never a
+/// fixed cap. `/v1` handlers relay upstream calls too (palette execute, gateway
+/// dispatch), so a fixed cap would return a bare 504 for a call that had
+/// already succeeded — the regression documented on
+/// `LabConfig::http_request_timeout` — and would blind the upstream circuit
+/// breaker, which declines to count `Cancelled` as a failure precisely because
+/// this backstop is derived to exceed the upstream deadline.
+///
+/// Still a startup snapshot: `AppState::config` is an `Arc<LabConfig>` set once
+/// by `with_config` and never replaced on gateway reload, so raising
+/// `upstream_request_timeout_ms` / `upstream_relay_timeout_ms` does not move
+/// this backstop until the process restarts. Restart after widening a timeout,
+/// or make `AppState::config` re-read on reload.
+fn http_request_timeout(config: &crate::config::LabConfig) -> Duration {
+    config.http_request_timeout()
 }
 
-async fn request_timeout(request: Request<Body>, next: Next) -> axum::response::Response {
-    match tokio::time::timeout(
-        http_request_timeout(request.uri().path()),
-        next.run(request),
-    )
-    .await
-    {
+async fn request_timeout(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> axum::response::Response {
+    let path = request.uri().path().to_string();
+    let timeout = http_request_timeout(&state.config);
+    match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
-        Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
+        Err(_) => {
+            tracing::error!(
+                surface = "api",
+                path,
+                timeout_ms = timeout.as_millis(),
+                "HTTP request exceeded the transport backstop"
+            );
+            StatusCode::GATEWAY_TIMEOUT.into_response()
+        }
     }
 }
 
@@ -1504,12 +1517,137 @@ async fn protected_mcp_route_entry(
     )
     .await
     {
-        return response;
-    }
-    if matches!(
-        route.effective_target(),
-        ProtectedMcpRouteEffectiveTarget::GatewaySubset(_)
-    ) {
+        Ok(authenticated) => authenticated,
+        Err(response) => return response,
+    };
+    if let ProtectedMcpRouteEffectiveTarget::GatewaySubset(target) = route.effective_target() {
+        if let Some(project_id) = target.project_id.as_deref() {
+            // `authenticate_protected_route_request` already rejects a route with no
+            // OAuth state, so this is unreachable — but the invariant lives in a
+            // different function, and a panic in a request handler is a poor way to
+            // discover it drifted.
+            let Some(oauth) = state.oauth_state.as_ref() else {
+                tracing::error!(
+                    surface = "api",
+                    route = %route.name,
+                    resource = %route.public_resource(),
+                    "protected MCP route authenticated without OAuth state"
+                );
+                return auth_error_response_with_challenge(
+                    "invalid authenticated identity",
+                    &route_resource_metadata_url(&route),
+                    &route.scopes,
+                );
+            };
+            let identity = match labby_auth::verified_identity_from_access_claims(
+                &authenticated.claims,
+                &oauth.config,
+            ) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    tracing::warn!(
+                        surface = "api",
+                        route = %route.name,
+                        resource = %route.public_resource(),
+                        project_id,
+                        error = %error,
+                        "protected MCP route rejected: identity not derivable from access claims"
+                    );
+                    return auth_error_response_with_challenge(
+                        "invalid authenticated identity",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
+            };
+            let credential = match crate::mcp::bound_access::validate_transport_credential_binding(
+                &authenticated.claims.iss,
+                &authenticated.claims.jti,
+                authenticated.claims.exp,
+                std::time::SystemTime::now(),
+            ) {
+                Ok(credential) => credential,
+                Err(error) => {
+                    tracing::warn!(
+                        surface = "api",
+                        route = %route.name,
+                        resource = %route.public_resource(),
+                        project_id,
+                        error = %error,
+                        "protected MCP route rejected: transport credential binding invalid"
+                    );
+                    return auth_error_response_with_challenge(
+                        "invalid bearer token",
+                        &route_resource_metadata_url(&route),
+                        &route.scopes,
+                    );
+                }
+            };
+            request.extensions_mut().insert(identity.clone());
+            let binding = match state.gateway_manager.as_ref() {
+                Some(manager) => match crate::mcp::bound_access::bind_access_context(
+                    state.access_runtime.as_ref(),
+                    manager,
+                    identity,
+                    &route.name,
+                    &route.public_resource(),
+                    project_id,
+                )
+                .await
+                {
+                    Ok(core) => match crate::mcp::bound_access::TransportBoundAccessContext::new(
+                        core,
+                        credential,
+                        std::time::SystemTime::now(),
+                    ) {
+                        Ok(binding) => Ok(binding),
+                        Err(error) => {
+                            tracing::warn!(
+                                surface = "api",
+                                route = %route.name,
+                                resource = %route.public_resource(),
+                                project_id,
+                                error = %error,
+                                "protected MCP route rejected: access context outlived its credential"
+                            );
+                            return auth_error_response_with_challenge(
+                                "invalid bearer token",
+                                &route_resource_metadata_url(&route),
+                                &route.scopes,
+                            );
+                        }
+                    },
+                    // Not a rejection: the request proceeds with an `Unavailable`
+                    // observation and the handler serves an empty project tool list.
+                    // Without this the operator sees only that symptom, never a cause.
+                    Err(error) => {
+                        tracing::warn!(
+                            surface = "api",
+                            route = %route.name,
+                            resource = %route.public_resource(),
+                            project_id,
+                            error = %error,
+                            "project access binding failed; serving an unavailable observation"
+                        );
+                        Err(error)
+                    }
+                },
+                None => {
+                    tracing::error!(
+                        surface = "api",
+                        route = %route.name,
+                        resource = %route.public_resource(),
+                        project_id,
+                        "project access binding unavailable: gateway manager is not mounted"
+                    );
+                    Err(crate::mcp::bound_access::BoundAccessContextError::Unavailable)
+                }
+            };
+            crate::mcp::bound_access::attach_project_access_observation(
+                request.extensions_mut(),
+                binding,
+            );
+        }
         let Some(router) = state
             .protected_mcp_routers
             .as_ref()
@@ -2078,19 +2216,9 @@ pub(crate) fn build_router_with_external_auth(
         router = router.fallback(crate::api::web::serve_web_request);
     }
 
-    // Read before `with_state` consumes it. Derived from config so the
-    // transport backstop can never fire before the upstream deadlines it wraps.
-    //
-    // Captured once at router-build time: a gateway reload that raises
-    // `upstream_request_timeout_ms` / `upstream_relay_timeout_ms` does not move
-    // this until the process restarts. Small increases stay under the margin,
-    // but a large one — raising the relay deadline toward its 30 minute
-    // ceiling, say — would once again put the transport cap below the upstream
-    // deadline and reintroduce the bare-504 bug this derivation exists to fix.
-    // Restart after widening a timeout, or make this re-read on reload.
-    let http_timeout = state.config.http_request_timeout();
     #[cfg(feature = "gateway")]
     let protected_proxy_state = state.clone();
+    let request_timeout_state = state.clone();
     let router = router.with_state(state);
     #[cfg(feature = "gateway")]
     let router = router.layer(axum::middleware::from_fn_with_state(
@@ -2100,9 +2228,9 @@ pub(crate) fn build_router_with_external_auth(
     router
         .layer(build_cors_layer(config_cors_origins))
         .layer(CompressionLayer::new())
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::GATEWAY_TIMEOUT,
-            http_timeout,
+        .layer(axum::middleware::from_fn_with_state(
+            request_timeout_state,
+            request_timeout,
         ))
         // PropagateRequestId echoes the id back in the response header.
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
@@ -2260,10 +2388,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_requests_use_the_long_running_budget() {
-        assert_eq!(http_request_timeout("/mcp"), Duration::from_mins(5));
-        assert_eq!(http_request_timeout("/mcp/"), Duration::from_mins(5));
-        assert_eq!(http_request_timeout("/v1/setup"), Duration::from_secs(30));
+    fn every_route_backstop_is_derived_from_configured_deadlines() {
+        // The backstop must never fire before the deadline it wraps, on ANY
+        // route. A fixed cap for non-`/mcp` paths previously returned a bare
+        // 504 for calls that had already succeeded and blinded the upstream
+        // circuit breaker.
+        // Assert against the upstream deadlines themselves, not against
+        // `config.http_request_timeout()` — comparing the backstop to the very
+        // call it delegates to restates the function body and cannot fail.
+        for config in [
+            crate::config::LabConfig::default(),
+            crate::config::LabConfig {
+                upstream_request_timeout_ms: Some(1_000),
+                upstream_relay_timeout_ms: Some(1_000),
+                ..crate::config::LabConfig::default()
+            },
+            crate::config::LabConfig {
+                upstream_relay_timeout_ms: Some(900_000),
+                ..crate::config::LabConfig::default()
+            },
+        ] {
+            let backstop = http_request_timeout(&config);
+            let relay = config.upstream_relay_timeout();
+            let request = config.upstream_request_timeout();
+            assert!(
+                backstop > relay && backstop > request,
+                "backstop {backstop:?} must exceed the relay ({relay:?}) and request \
+                 ({request:?}) deadlines it wraps, so a call that already succeeded \
+                 upstream is never reported as a bare 504"
+            );
+        }
+    }
+
+    #[test]
+    fn the_backstop_scales_with_a_widened_relay_deadline() {
+        // Pins the derivation itself: a fixed cap would leave the backstop
+        // unchanged when an operator widens the relay budget, which is exactly
+        // the regression this middleware replaced.
+        let narrow = crate::config::LabConfig {
+            upstream_relay_timeout_ms: Some(60_000),
+            ..crate::config::LabConfig::default()
+        };
+        let wide = crate::config::LabConfig {
+            upstream_relay_timeout_ms: Some(600_000),
+            ..crate::config::LabConfig::default()
+        };
+        assert!(
+            http_request_timeout(&wide) > http_request_timeout(&narrow),
+            "the transport backstop must track a widened relay deadline"
+        );
     }
 
     async fn actor_key_probe(

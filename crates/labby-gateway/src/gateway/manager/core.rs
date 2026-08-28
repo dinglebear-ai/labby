@@ -49,6 +49,8 @@ pub enum PublishedPromptCallError {
     Upstream,
     #[error("published prompt call timed out")]
     Timeout,
+    #[error("published prompt call was cancelled")]
+    Cancelled,
 }
 
 /// Redacted outcome of exact Resource publication freshness validation/read.
@@ -62,6 +64,8 @@ pub enum PublishedResourceReadError {
     Upstream,
     #[error("published resource read timed out")]
     Timeout,
+    #[error("published resource read was cancelled")]
+    Cancelled,
     #[error("published resource response is too large")]
     TooLarge,
 }
@@ -506,6 +510,7 @@ impl GatewayManager {
             ExactPromptCallError::QueueUnavailable => PublishedPromptCallError::QueueUnavailable,
             ExactPromptCallError::Upstream => PublishedPromptCallError::Upstream,
             ExactPromptCallError::Timeout => PublishedPromptCallError::Timeout,
+            ExactPromptCallError::Cancelled => PublishedPromptCallError::Cancelled,
         })
     }
 
@@ -604,6 +609,7 @@ impl GatewayManager {
             }
             ExactResourceReadError::Upstream => PublishedResourceReadError::Upstream,
             ExactResourceReadError::Timeout => PublishedResourceReadError::Timeout,
+            ExactResourceReadError::Cancelled => PublishedResourceReadError::Cancelled,
             ExactResourceReadError::TooLarge => PublishedResourceReadError::TooLarge,
         })
     }

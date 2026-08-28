@@ -52,6 +52,8 @@ pub(crate) enum PromptExecutionResolutionError {
     Upstream,
     #[error("prompt execution timed out")]
     Timeout,
+    #[error("prompt execution was cancelled")]
+    Cancelled,
 }
 
 struct ExactPromptTarget<'a> {
@@ -133,14 +135,32 @@ pub(crate) async fn execute_exact_project_prompt(
     if !first.same_publication_as(&second) || resolve_exact_target(&second, &wire_name).is_none() {
         return Err(PromptExecutionResolutionError::Unavailable);
     }
-    result.map_err(|error| match error {
+    result.map_err(map_published_prompt_error)
+}
+
+fn map_published_prompt_error(error: PublishedPromptCallError) -> PromptExecutionResolutionError {
+    match error {
         PublishedPromptCallError::Unavailable => PromptExecutionResolutionError::Unavailable,
         PublishedPromptCallError::QueueUnavailable => {
             PromptExecutionResolutionError::QueueUnavailable
         }
         PublishedPromptCallError::Upstream => PromptExecutionResolutionError::Upstream,
         PublishedPromptCallError::Timeout => PromptExecutionResolutionError::Timeout,
-    })
+        PublishedPromptCallError::Cancelled => PromptExecutionResolutionError::Cancelled,
+    }
+}
+
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn published_cancellation_remains_cancelled() {
+        assert_eq!(
+            map_published_prompt_error(PublishedPromptCallError::Cancelled),
+            PromptExecutionResolutionError::Cancelled
+        );
+    }
 }
 
 /// Execute from one middleware-owned protected-transport binding.

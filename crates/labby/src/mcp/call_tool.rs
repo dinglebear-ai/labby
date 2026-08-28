@@ -842,7 +842,7 @@ impl LabMcpServer {
                 }
 
                 let previous_config = match self.gateway_manager.as_ref() {
-                    Some(manager) => Some(manager.current_config().await),
+                    Some(manager) => Some(Box::new(manager.current_config().await)),
                     None => None,
                 };
                 let previous_code_mode = previous_config.as_ref().map_or_else(
@@ -864,7 +864,7 @@ impl LabMcpServer {
                             )
                             .await
                         {
-                            Ok(current) => Some(current),
+                            Ok(current) => Some(Box::new(current)),
                             Err(error) => {
                                 let envelope =
                                     tool_error_envelope(&service, synthetic_action, &error);
@@ -1155,12 +1155,12 @@ impl LabMcpServer {
                             )
                             .map(|subject| subject.into_owned()),
                         };
-                        crate::dispatch::gateway::dispatch_with_manager_scoped(
+                        Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
                             gateway_action,
                             params,
                             enrichment_scope,
-                        )
+                        ))
                         .await
                     }
                     _ => Err(ToolError::UnknownAction {
@@ -1221,12 +1221,12 @@ impl LabMcpServer {
                                 .refresh_gateway_status_catalog(&enrichment_scope, None)
                                 .await;
                         }
-                        crate::dispatch::gateway::dispatch_with_manager_scoped(
+                        Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
                             "gateway.list",
                             serde_json::json!({}),
                             enrichment_scope,
-                        )
+                        ))
                         .await
                         .map(|mut value| {
                             retain_route_visible_gateway_status_rows(&mut value, &self.route_scope);
@@ -1282,7 +1282,7 @@ impl LabMcpServer {
                     _ => None,
                 };
                 let result = if let Some(setup_action) = setup_action {
-                    crate::dispatch::setup::dispatch(setup_action, params).await
+                    Box::pin(crate::dispatch::setup::dispatch(setup_action, params)).await
                 } else {
                     Err(ToolError::UnknownAction {
                         message: format!("unknown Settings action `{synthetic_action}`"),
@@ -1567,12 +1567,12 @@ impl LabMcpServer {
                         )
                         .map(|subject| subject.into_owned()),
                     };
-                    crate::dispatch::gateway::dispatch_with_manager_scoped(
+                    Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                         manager,
                         &action,
                         params,
                         enrichment_scope,
-                    )
+                    ))
                     .await
                 }
                 #[cfg(not(feature = "gateway"))]

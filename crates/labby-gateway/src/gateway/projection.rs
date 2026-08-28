@@ -10,7 +10,7 @@ use crate::gateway::view_models::{
 };
 use crate::gateway::virtual_servers::{VirtualServerRecord, VirtualServerSource};
 use crate::upstream::pool::{UpstreamCachedSummary, UpstreamPool};
-use crate::upstream::types::UpstreamHealth;
+use crate::upstream::types::{UpstreamCapability, UpstreamHealth};
 use labby_runtime::gateway_config::{CodeModeConfig, UpstreamConfig, normalize_code_mode_hint};
 use labby_runtime::redact::{
     redact_secret_like_segments, redact_stdio_args, redact_stdio_value, redact_url,
@@ -369,6 +369,11 @@ async fn optional_capability_warnings(
         if indicates_capability_absent(&message) {
             continue;
         }
+        // Upstream listing failures routinely carry the request URL, and a URL
+        // can carry an api key in its query string. This message is operator-
+        // visible, so it goes through the same redaction as every other
+        // upstream-derived string in this projection.
+        let message = redact_secret_like_segments(&message);
         warnings.push(super::view_models::ServerWarningView {
             code: code.to_string(),
             message: format!(
@@ -614,6 +619,7 @@ pub(super) async fn server_view_from_upstream(
         }
         _ => Vec::new(),
     };
+    warnings.extend(optional_capability_warnings(pool, upstream).await);
     if catalog_warming {
         warnings.push(super::view_models::ServerWarningView {
             code: "catalog_warming".to_string(),
@@ -928,9 +934,11 @@ mod tests {
     #[test]
     fn healthy_catalog_race_prefers_materialized_second_summary() {
         let first = UpstreamCachedSummary::default();
-        let mut refreshed = UpstreamCachedSummary::default();
-        refreshed.discovered_tool_count = 30;
-        refreshed.exposed_tool_count = 30;
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            exposed_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
 
         let settled =
             settle_summary_after_health(first, Some(UpstreamHealth::Healthy), Some(refreshed));
@@ -952,8 +960,10 @@ mod tests {
 
     #[test]
     fn unhealthy_catalog_does_not_adopt_concurrent_summary() {
-        let mut refreshed = UpstreamCachedSummary::default();
-        refreshed.discovered_tool_count = 30;
+        let refreshed = UpstreamCachedSummary {
+            discovered_tool_count: 30,
+            ..UpstreamCachedSummary::default()
+        };
         let settled = settle_summary_after_health(
             UpstreamCachedSummary::default(),
             Some(UpstreamHealth::Unhealthy {
@@ -987,8 +997,10 @@ mod tests {
 
     #[test]
     fn materialized_catalog_is_never_reported_as_warming() {
-        let mut summary = UpstreamCachedSummary::default();
-        summary.discovered_tool_count = 1;
+        let summary = UpstreamCachedSummary {
+            discovered_tool_count: 1,
+            ..UpstreamCachedSummary::default()
+        };
 
         assert!(!catalog_is_warming(
             &summary,

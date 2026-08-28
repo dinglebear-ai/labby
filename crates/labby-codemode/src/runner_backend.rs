@@ -4,16 +4,16 @@
 //! Microsandbox microVM; only the runner crosses that boundary. MCP discovery,
 //! authorization, dispatch, and credentials remain in the Labby host process.
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
 use crate::error::ToolError;
 use crate::pool::{MicrosandboxSpawn, RunnerSpawn};
 
 const BACKEND_ENV: &str = "LABBY_CODE_MODE_RUNNER_BACKEND";
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(target_os = "linux")]
 const MSB_EXE_ENV: &str = "LABBY_CODE_MODE_MICROSANDBOX_EXE";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const MSB_IMAGE_ENV: &str = "LABBY_CODE_MODE_MICROSANDBOX_IMAGE";
 
 pub(super) fn resolve_runner_spawn() -> Result<(RunnerSpawn, Option<MicrosandboxSpawn>), ToolError>
@@ -74,7 +74,7 @@ fn required_nonempty(name: &str) -> Result<String, ToolError> {
     validate_image_reference(name, &value)
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn validate_image_reference(name: &str, value: &str) -> Result<String, ToolError> {
     let value = value.trim();
     let Some((image_name, digest)) = value.split_once('@') else {
@@ -115,7 +115,7 @@ fn required_absolute_executable(name: &str) -> Result<PathBuf, ToolError> {
     validate_absolute_executable(name, &path)
 }
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(target_os = "linux")]
 fn validate_absolute_executable(name: &str, path: &Path) -> Result<PathBuf, ToolError> {
     if !path.is_absolute() {
         return Err(invalid_param(format!("{name} must be an absolute path")));
@@ -144,7 +144,7 @@ fn validate_absolute_executable(name: &str, path: &Path) -> Result<PathBuf, Tool
     Ok(canonical)
 }
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(target_os = "linux")]
 fn reject_untrusted_executable(
     path: &Path,
     name: &str,
@@ -178,7 +178,7 @@ fn reject_untrusted_executable(
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", all(test, unix)))]
+#[cfg(target_os = "linux")]
 fn is_executable(meta: &std::fs::Metadata) -> bool {
     if !meta.is_file() {
         return false;

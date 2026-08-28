@@ -323,7 +323,7 @@ async fn reconcile_stale_sandboxes(config: &super::MicrosandboxSpawn) -> Result<
         let Some(pid) = sandbox_owner_pid(name) else {
             continue;
         };
-        if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+        if owner_process_is_alive(pid) {
             continue;
         }
         let mut remove = Command::new(&config.executable);
@@ -362,6 +362,36 @@ async fn reconcile_stale_sandboxes(config: &super::MicrosandboxSpawn) -> Result<
         None,
     );
     Ok(())
+}
+
+/// Whether the process that owns a sandbox is still running.
+///
+/// This gates deletion during reconciliation, so it must fail *closed*: a pid
+/// we cannot prove is dead is treated as alive and its sandbox is left alone.
+/// The previous `/proc/{pid}` probe was Linux-only, so on every other platform
+/// each owner read as dead and reconciliation deleted sandboxes belonging to
+/// live processes — including the running one.
+#[cfg(unix)]
+fn owner_process_is_alive(pid: u32) -> bool {
+    // A pid outside the platform's pid range cannot name a live process, so
+    // this is proof of death rather than an unknown.
+    let Ok(raw) = i32::try_from(pid) else {
+        return false;
+    };
+    // Signal 0 runs the existence and permission checks without delivering
+    // anything. `EPERM` means the process exists but belongs to another user,
+    // which is still alive for our purposes.
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::ESRCH) => false,
+        Err(_) => true,
+    }
+}
+
+#[cfg(not(unix))]
+fn owner_process_is_alive(_pid: u32) -> bool {
+    // No portable probe here; never delete what we cannot prove is dead.
+    true
 }
 
 fn sandbox_owner_pid(name: &str) -> Option<u32> {
@@ -734,26 +764,35 @@ fn helper_diagnostic(output: &HelperOutput) -> String {
     }
 }
 
-async fn sandbox_absent(identity: &CleanupIdentity) -> bool {
-    let mut list = Command::new(&identity.executable);
-    list.args(["list", "--quiet", "--label", "labby.owner=codemode"])
-        .env_clear()
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    matches!(
-        run_helper(list, Duration::from_secs(2)).await,
-        Ok(output)
-            if output.status.success()
-                && !String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .any(|name| name.trim() == identity.name)
-    )
-}
-
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn the_running_process_reads_as_alive() {
+        // The regression this pins is data destruction: when this returned
+        // false for a live owner, reconciliation deleted sandboxes belonging to
+        // running processes — this one included.
+        assert!(owner_process_is_alive(std::process::id()));
+    }
+
+    #[test]
+    fn a_pid_outside_the_platform_range_is_proof_of_death() {
+        // The one arm that returns `false` without an `ESRCH` from the kernel.
+        // A pid that cannot be represented cannot name a live process, so
+        // treating it as dead is proof rather than a guess.
+        assert!(!owner_process_is_alive(
+            u32::try_from(i32::MAX).expect("i32::MAX fits in u32") + 1
+        ));
+        assert!(!owner_process_is_alive(u32::MAX));
+    }
+
+    #[test]
+    fn an_unprovable_pid_fails_closed_as_alive() {
+        // pid 1 always exists and, unprivileged, `kill(1, 0)` answers EPERM
+        // rather than ESRCH. An owner we cannot prove dead must keep its
+        // sandbox, so EPERM must read as alive.
+        assert!(owner_process_is_alive(1));
+    }
+
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;

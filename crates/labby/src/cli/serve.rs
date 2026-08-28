@@ -2713,6 +2713,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gateway")]
     #[tokio::test]
     async fn stateless_http_fresh_tools_list_observes_code_mode_app_state_changes() {
         async fn listed_tool_names(app: axum::Router) -> Vec<String> {
@@ -2781,10 +2782,13 @@ mod tests {
                 .to_gateway_config(),
             )
             .await;
-        let state = AppState::new().with_gateway_manager(manager);
+        let state = AppState::new().with_gateway_manager(std::sync::Arc::clone(&manager));
 
+        // `mcp_ui_enabled` defaults to false (Labby-owned apps are opt-in), and
+        // a manager-backed server reads the published config rather than the
+        // mirrored session atomic, so the config is what a fresh listing must
+        // observe.
         let notifier = PeerNotifier::default();
-        notifier.code_mode_app_state.set_enabled(false);
         let app = build_http_router(
             state,
             None,
@@ -2802,7 +2806,21 @@ mod tests {
         assert!(disabled.iter().any(|name| name == "mcp_app"));
         assert!(!disabled.iter().any(|name| name == "codemode_ui"));
 
-        notifier.code_mode_app_state.set_enabled(true);
+        // A stateless HTTP server rebuilds per request, so the next listing
+        // must observe the change rather than serve a cached catalog.
+        manager
+            .seed_config_unchecked_for_tests(
+                LabConfig {
+                    code_mode: crate::config::CodeModeConfig {
+                        enabled: true,
+                        mcp_ui_enabled: true,
+                        ..crate::config::CodeModeConfig::default()
+                    },
+                    ..LabConfig::default()
+                }
+                .to_gateway_config(),
+            )
+            .await;
         let enabled = listed_tool_names(app).await;
         assert!(enabled.iter().any(|name| name == "codemode_ui"));
     }

@@ -461,14 +461,28 @@ impl LabMcpServer {
                         use crate::mcp::prompt_execution::PromptExecutionResolutionError;
                         let unavailable =
                             matches!(&error, PromptExecutionResolutionError::Unavailable);
+                        // Map each cause to its stable kind rather than folding
+                        // them into `internal_error`. `cancelled` and `timeout`
+                        // are documented kinds with different recovery advice
+                        // (docs/dev/ERRORS.md) — `cancelled` is explicitly not
+                        // automatically retryable, so an agent told only
+                        // "could not be fetched" retries work the pool already
+                        // classified as withdrawn. Cancellation is also
+                        // caller-driven, so it must not log at ERROR and page an
+                        // operator for a healthy upstream.
                         let (level, error_kind) = match &error {
                             PromptExecutionResolutionError::Unavailable => {
                                 (LoggingLevel::Warning, "upstream_error")
                             }
+                            PromptExecutionResolutionError::Cancelled => {
+                                (LoggingLevel::Warning, "cancelled")
+                            }
+                            PromptExecutionResolutionError::Timeout => {
+                                (LoggingLevel::Error, "timeout")
+                            }
                             PromptExecutionResolutionError::QueueUnavailable
-                            | PromptExecutionResolutionError::Upstream
-                            | PromptExecutionResolutionError::Timeout => {
-                                (LoggingLevel::Error, "internal_error")
+                            | PromptExecutionResolutionError::Upstream => {
+                                (LoggingLevel::Error, "upstream_error")
                             }
                         };
                         self.emit_dispatch_notification(
@@ -491,9 +505,18 @@ impl LabMcpServer {
                                 &error_context,
                             ))
                         } else {
+                            let message = match &error {
+                                PromptExecutionResolutionError::Cancelled => {
+                                    format!("Prompt `{prompt_name}` was cancelled.")
+                                }
+                                PromptExecutionResolutionError::Timeout => {
+                                    format!("Prompt `{prompt_name}` timed out.")
+                                }
+                                _ => format!("Prompt `{prompt_name}` could not be fetched."),
+                            };
                             Err(internal_agent_error(
-                                "upstream_error",
-                                format!("Prompt `{prompt_name}` could not be fetched."),
+                                error_kind,
+                                message,
                                 None,
                                 &error_context,
                             ))

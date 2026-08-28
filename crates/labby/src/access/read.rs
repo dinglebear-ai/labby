@@ -27,6 +27,15 @@ pub(crate) struct ProjectAccessSnapshot {
     pub(crate) global_revision: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProjectMembershipSnapshot {
+    pub(crate) principal_id: String,
+    pub(crate) organization_id: String,
+    pub(crate) project_id: String,
+    pub(crate) role: ProjectRole,
+    pub(crate) global_revision: u64,
+}
+
 pub(super) struct ResolvedPrincipal {
     pub(super) id: String,
     pub(super) organization_id: String,
@@ -165,6 +174,52 @@ pub(super) fn select_project_in_transaction(
         global_revision: revision,
     };
     Ok(snapshot)
+}
+
+pub(super) fn select_project_membership_in_transaction(
+    transaction: &Transaction<'_>,
+    identity: &VerifiedIdentity,
+    project_id: &str,
+) -> AccessStoreResult<ProjectMembershipSnapshot> {
+    if project_id.is_empty() {
+        return Err(AccessStoreError::ProjectAccessUnavailable);
+    }
+    let revision = global_revision(transaction)?;
+    let principal = resolve_principal(transaction, identity)?;
+    let row = transaction
+        .query_row(
+            "SELECT m.role, m.status, p.status, o.status
+             FROM project_memberships m
+             JOIN projects p
+               ON p.organization_id=m.organization_id AND p.project_id=m.project_id
+             JOIN organizations o ON o.organization_id=m.organization_id
+             WHERE m.organization_id=?1 AND m.principal_id=?2 AND m.project_id=?3",
+            params![principal.organization_id, principal.id, project_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or(AccessStoreError::ProjectAccessUnavailable)?;
+    if !known_status(&row.1) || !known_status(&row.2) || !known_status(&row.3) {
+        return Err(AccessStoreError::MalformedVocabulary);
+    }
+    if row.1 != "active" || row.2 != "active" || row.3 != "active" {
+        return Err(AccessStoreError::ProjectAccessUnavailable);
+    }
+    Ok(ProjectMembershipSnapshot {
+        principal_id: principal.id,
+        organization_id: principal.organization_id,
+        project_id: project_id.to_owned(),
+        role: ProjectRole::from_persisted(&row.0).ok_or(AccessStoreError::MalformedVocabulary)?,
+        global_revision: revision,
+    })
 }
 
 fn global_revision(transaction: &Transaction<'_>) -> AccessStoreResult<u64> {

@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+#[cfg(test)]
+mod module_reachability;
 mod proxy_verify;
 
 const DEFAULT_CASES: &[&str] = &["cold_return", "warm_return", "tool_fanout", "large_result"];

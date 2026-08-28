@@ -1422,8 +1422,20 @@ mod tests {
         assert!(matches!(saturated, Err(ArtifactError::Busy)));
         task.abort();
         let _cancelled = task.await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
+        // Staging cleanup runs as the aborted acquisition unwinds. Poll for it
+        // rather than assuming a fixed delay suffices: under parallel test load
+        // 5ms is not reliably enough, which made this assertion flaky.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::fs::read_dir(staging.path()).unwrap().count() == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled acquisition left private staging behind"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

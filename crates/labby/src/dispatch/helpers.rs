@@ -24,7 +24,37 @@ static TEST_LABBY_HOME: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::
 #[cfg(test)]
 pub(crate) fn set_test_lab_home(path: Option<std::path::PathBuf>) {
     let slot = TEST_LABBY_HOME.get_or_init(|| Mutex::new(None));
-    *slot.lock().expect("test lab home lock") = path;
+    *slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+}
+
+/// RAII pin for [`set_test_lab_home`].
+///
+/// The override is process-global and tests in one binary run concurrently, so
+/// clearing it with a trailing call at the end of a test body leaks the pin to
+/// unrelated tests whenever the body panics or returns early.
+#[cfg(test)]
+pub(crate) struct TestLabHomeGuard(Option<std::path::PathBuf>);
+
+#[cfg(test)]
+impl TestLabHomeGuard {
+    pub(crate) fn set(path: std::path::PathBuf) -> Self {
+        let slot = TEST_LABBY_HOME.get_or_init(|| Mutex::new(None));
+        let previous = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        set_test_lab_home(Some(path));
+        Self(previous)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestLabHomeGuard {
+    fn drop(&mut self) {
+        set_test_lab_home(self.0.take());
+    }
 }
 
 /// Resolve the lab home directory: `$LABBY_HOME` if set, else `$HOME/.labby/`.

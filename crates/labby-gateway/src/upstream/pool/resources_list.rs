@@ -65,8 +65,8 @@ pub struct ListedUpstreamResourceTemplate {
     pub template: ResourceTemplate,
 }
 
-fn resource_catalog_timeout(request_timeout: Duration) -> Duration {
-    request_timeout.min(RESOURCE_CATALOG_TIMEOUT)
+pub(super) fn catalog_listing_timeout(request_timeout: Duration) -> Duration {
+    request_timeout.min(CATALOG_LISTING_TIMEOUT)
 }
 
 fn rewrite_resource_template(template: &mut ResourceTemplate, upstream_name: &str) {
@@ -373,7 +373,7 @@ impl UpstreamPool {
         for observed in observed_peers {
             let name = observed.upstream().to_string();
             let peer = observed.peer.clone();
-            let request_timeout = resource_catalog_timeout(self.request_timeout);
+            let request_timeout = catalog_listing_timeout(self.request_timeout);
             futures.push(async move {
                 let started = Instant::now();
                 let event = UpstreamRequestLog::resources_list(&name, false);

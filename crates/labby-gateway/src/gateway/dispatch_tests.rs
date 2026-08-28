@@ -40,6 +40,52 @@ fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
     );
 }
 
+#[cfg(feature = "skills")]
+#[test]
+fn skills_operator_projection_reports_identity_and_the_exposure_decision() {
+    use labby_runtime::skills::{SkillDescriptor, SkillId, SkillProviderId, SkillProviderKind};
+
+    // `identity` and `exposure` are a documented contract
+    // (docs/guides/SKILLS_AND_LOADOUTS.md). An operator needs the reason to
+    // tell "no pattern matched" from "the upstream never advertised it".
+    let provider = SkillProviderId::new(SkillProviderKind::McpUpstream, "github");
+    let descriptor = SkillDescriptor {
+        id: SkillId::new(provider, "skill://github/review/SKILL.md"),
+        name: "review".into(),
+        description: "review a diff".into(),
+        source_uri: Some("skill://github/review/SKILL.md".into()),
+        resource_count: 1,
+        availability: labby_runtime::skills::SkillAvailabilitySummary::available(),
+        requirements: labby_runtime::skills::SkillRequirementsSummary::default(),
+        provider_metadata: serde_json::Map::new(),
+    };
+    let operator = OperatorSkills {
+        discovered_count: 1,
+        skills: vec![crate::upstream::pool::OperatorSkill {
+            descriptor,
+            exposure: crate::upstream::pool::SkillExposureDecision {
+                exposed: true,
+                reason: crate::upstream::pool::SkillExposureReason::MatchedPattern,
+                matched_pattern: Some("review-*".into()),
+            },
+        }],
+        ..OperatorSkills::default()
+    };
+
+    let projection = project_operator_skills(&operator);
+    let row = &projection.skills[0];
+
+    assert_eq!(row["exposed"], true);
+    assert_eq!(row["exposure"]["status"], "exposed");
+    assert_eq!(row["exposure"]["reason"], "matched_pattern");
+    assert_eq!(row["exposure"]["matched_pattern"], "review-*");
+    assert_eq!(
+        row["identity"]["source_id"],
+        "skill://github/review/SKILL.md"
+    );
+    assert_eq!(row["identity"]["provider"]["instance"], "github");
+}
+
 #[derive(Clone)]
 struct DashboardCatalogResponder {
     discover_requests: std::sync::Arc<AtomicUsize>,
@@ -695,6 +741,254 @@ async fn gateway_status_rejects_route_hidden_explicit_upstream() {
     .expect_err("route-hidden upstream must fail");
 
     assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn gateway_list_only_returns_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "gateway-alpha",
+                Some("https://example2.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+
+    let result = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.list",
+        json!({}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect("scoped list succeeds");
+
+    let rows = result.as_array().expect("gateway rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], json!("github"));
+}
+
+#[tokio::test]
+async fn gateway_get_rejects_route_hidden_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.get",
+        json!({"name": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from([
+                "gateway-alpha".to_string()
+            ])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("route-hidden upstream must fail");
+
+    assert_eq!(error.kind(), "unknown_upstream");
+}
+
+#[tokio::test]
+async fn named_gateway_actions_reject_route_hidden_upstreams_before_dispatch() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+    let scope = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::collections::BTreeSet::from([
+            "gateway-alpha".to_string()
+        ])),
+        oauth_subject: None,
+    };
+
+    for (action, params) in [
+        ("gateway.server.get", json!({"id": "github"})),
+        ("gateway.test", json!({"name": "github"})),
+        ("gateway.update", json!({"name": "github", "patch": {}})),
+        ("gateway.remove", json!({"name": "github"})),
+        ("gateway.client_config.get", json!({"name": "github"})),
+        ("gateway.discovered_tools", json!({"name": "github"})),
+        ("gateway.discovered_resources", json!({"name": "github"})),
+        ("gateway.discovered_prompts", json!({"name": "github"})),
+        ("gateway.mcp.enable", json!({"name": "github"})),
+        ("gateway.mcp.disable", json!({"name": "github"})),
+        ("gateway.mcp.restart", json!({"name": "github"})),
+        ("gateway.mcp.cleanup", json!({"name": "github"})),
+        ("gateway.oauth.start", json!({"upstream": "github"})),
+        ("gateway.oauth.status", json!({"upstream": "github"})),
+        ("gateway.oauth.clear", json!({"upstream": "github"})),
+        (
+            "gateway.oauth.google_revoke",
+            json!({"upstream": "github", "confirm": true}),
+        ),
+        ("gateway.oauth.wait", json!({"upstream": "github"})),
+        ("gateway.import_pending.reject", json!({"name": "github"})),
+        ("gateway.import_tombstones.clear", json!({"name": "github"})),
+        (
+            "gateway.import_tombstones.restore",
+            json!({"name": "github"}),
+        ),
+    ] {
+        let error = dispatch_with_manager_scoped(&manager, action, params, scope.clone())
+            .await
+            .expect_err("route-hidden upstream must fail before action dispatch");
+        assert_eq!(error.kind(), "unknown_upstream", "action: {action}");
+    }
+}
+
+#[tokio::test]
+async fn gateway_skills_list_is_restricted_to_route_visible_upstreams() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "secret",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+        ])
+        .await;
+    let scope = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+        oauth_subject: None,
+    };
+
+    // A hidden upstream must be indistinguishable from an absent one: the
+    // `not_found` probe would otherwise confirm that `secret` is configured.
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.skills.list",
+        json!({"upstream": "secret"}),
+        scope.clone(),
+    )
+    .await
+    .expect_err("route-hidden upstream must not be listable");
+    assert_eq!(error.kind(), "unknown_upstream");
+
+    let absent = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.skills.list",
+        json!({"upstream": "does-not-exist"}),
+        scope,
+    )
+    .await
+    .expect_err("absent upstream must not be listable either");
+    assert_eq!(
+        absent.kind(),
+        "unknown_upstream",
+        "hidden and absent upstreams must report the same kind"
+    );
+}
+
+#[tokio::test]
+async fn protected_route_rejects_unsaved_gateway_test_spec() {
+    let manager = test_manager();
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.test",
+        json!({"spec": {"name": "candidate", "url": "https://example.invalid/mcp"}}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("protected subset must not execute an unsaved gateway spec");
+
+    assert_eq!(error.kind(), "forbidden");
+}
+
+#[tokio::test]
+async fn import_admin_lists_filter_to_route_visible_names_without_affecting_root() {
+    let manager = test_manager();
+    let source = |name: &str| {
+        labby_runtime::gateway_config::ImportSource::new(
+            "test-client",
+            format!("/tmp/{name}.json"),
+            "2026-08-27T00:00:00Z",
+        )
+        .with_server_name(name)
+    };
+    let mut visible_pending = upstream_fixture(
+        "visible",
+        Some("https://visible.invalid/mcp".to_string()),
+        None,
+    );
+    visible_pending.imported_from = Some(source("visible"));
+    let mut hidden_pending = upstream_fixture(
+        "hidden",
+        Some("https://hidden.invalid/mcp".to_string()),
+        None,
+    );
+    hidden_pending.imported_from = Some(source("hidden"));
+    manager
+        .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+            upstream_pending: vec![visible_pending, hidden_pending],
+            upstream_import_tombstones: vec![
+                labby_runtime::gateway_config::UpstreamImportTombstone::now(
+                    "visible",
+                    source("visible"),
+                ),
+                labby_runtime::gateway_config::UpstreamImportTombstone::now(
+                    "hidden",
+                    source("hidden"),
+                ),
+            ],
+            ..labby_runtime::gateway_config::GatewayConfig::default()
+        })
+        .await;
+    let scoped = GatewayEnrichmentScope {
+        route_visible_upstreams: Some(std::collections::BTreeSet::from(["visible".to_string()])),
+        oauth_subject: None,
+    };
+
+    for action in [
+        "gateway.import_pending.list",
+        "gateway.import_tombstones.list",
+    ] {
+        let filtered = dispatch_with_manager_scoped(&manager, action, json!({}), scoped.clone())
+            .await
+            .expect("scoped import administration list succeeds");
+        let rows = filtered.as_array().expect("filtered import rows");
+        assert_eq!(rows.len(), 1, "action: {action}");
+        assert_eq!(rows[0]["name"], json!("visible"), "action: {action}");
+
+        let unscoped = dispatch_with_manager(&manager, action, json!({}))
+            .await
+            .expect("root import administration list succeeds");
+        assert_eq!(
+            unscoped.as_array().expect("unscoped import rows").len(),
+            2,
+            "action: {action}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3779,6 +4073,10 @@ async fn gateway_import_result_has_correct_shape() {
     // Verify the ImportResultView shape: all=true on empty discovery
     // returns ImportResultView with empty imported/skipped/errors
     let manager = test_manager();
+    // Pin discovery at an empty home. Otherwise this walks the developer's real
+    // editor configs, and `all=true` tries to import whatever it finds there.
+    let home = tempfile::tempdir().expect("tempdir");
+    let _home_guard = crate::gateway::discovery::TestHomeDirGuard::set(home.path().to_path_buf());
     let result = dispatch_with_manager(&manager, "gateway.import", json!({"all": true}))
         .await
         .expect("all=true should succeed even with no discovered servers");

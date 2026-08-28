@@ -358,6 +358,14 @@ impl GatewayManager {
         let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
         let mut rows = Vec::with_capacity(cfg.upstream.len());
         for upstream in &cfg.upstream {
+            if name.is_some_and(|name| name != upstream.name)
+                || scope
+                    .route_visible_upstreams
+                    .as_ref()
+                    .is_some_and(|visible| !visible.contains(&upstream.name))
+            {
+                continue;
+            }
             let (summary, health) =
                 upstream_summary_with_health(pool.as_deref(), &upstream.name).await;
             let runtime = match pool.as_deref() {

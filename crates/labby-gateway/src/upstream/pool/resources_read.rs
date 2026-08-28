@@ -40,6 +40,8 @@ pub(crate) enum ExactResourceReadError {
     Upstream,
     #[error("upstream resource read timed out")]
     Timeout,
+    #[error("upstream resource read was cancelled")]
+    Cancelled,
     #[error("upstream resource response is too large")]
     TooLarge,
 }
@@ -200,6 +202,7 @@ impl UpstreamPool {
                     Err(ExactResourceReadError::Unavailable)
                 }
             }
+            RawCallOutcome::Cancelled => Err(ExactResourceReadError::Cancelled),
         }
     }
 

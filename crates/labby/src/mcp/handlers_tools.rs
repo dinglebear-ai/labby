@@ -124,22 +124,22 @@ impl LabMcpServer {
             "dispatch start"
         );
         #[cfg(feature = "gateway")]
-        let project_listing =
-            match project_execution_binding(&context.extensions, SystemTime::now()) {
-                ProjectExecutionBinding::Legacy => ProjectDiscoveryShadow::Legacy,
-                ProjectExecutionBinding::Unavailable => {
-                    return Ok(self.unavailable_project_tool_list(&context, start).await);
-                }
-                ProjectExecutionBinding::Bound { transport, .. } => {
-                    ProjectDiscoveryShadow::Bound(transport)
-                }
-            };
+        let project_shadow = match project_execution_binding(&context.extensions, SystemTime::now())
+        {
+            ProjectExecutionBinding::Legacy => ProjectDiscoveryShadow::Legacy,
+            ProjectExecutionBinding::Unavailable => {
+                return Ok(self.unavailable_project_tool_list(&context, start).await);
+            }
+            ProjectExecutionBinding::Bound { transport, .. } => {
+                ProjectDiscoveryShadow::Bound(transport)
+            }
+        };
         #[cfg(feature = "gateway")]
-        let project_cursor_binding = match &project_listing {
+        let project_cursor_binding = match &project_shadow {
             ProjectDiscoveryShadow::Legacy => None,
             ProjectDiscoveryShadow::Unavailable => unreachable!("unavailable returned above"),
             ProjectDiscoveryShadow::Bound(_) => {
-                let Some(binding) = project_listing.cursor_binding_fingerprint(SystemTime::now())
+                let Some(binding) = project_shadow.cursor_binding_fingerprint(SystemTime::now())
                 else {
                     return Ok(self.unavailable_project_tool_list(&context, start).await);
                 };
@@ -1122,6 +1122,11 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
     Arc::clone(&TRACE_OUTPUT_SCHEMA)
 }
 
+// These tests drive the live upstream pool through labby-gateway's `testkit`
+// helpers. `proxy-testkit` is the documented switch that enables that feature,
+// so gating here keeps labby-gateway out of the ordinary slice builds the
+// feature contract exists to isolate. `--all-features` (what `just test` runs)
+// turns it on.
 #[cfg(test)]
-#[cfg(feature = "gateway")]
+#[cfg(all(feature = "gateway", feature = "proxy-testkit"))]
 mod tests;

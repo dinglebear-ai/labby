@@ -878,6 +878,33 @@ visibility requires `lab:admin`. Its own manager UI is opt-in like every other
 Labby-owned app surface. The control tool is omitted from protected subset routes
 so a subset-scoped token cannot mutate gateway-global UI visibility.
 
+Gateway management actions on a protected `gateway_subset` route are bounded
+to that route's configured upstream allowlist. Every aggregate listing —
+`gateway.list`, `gateway.status`, `gateway.mcp.list`, `gateway.import_pending.list`,
+`gateway.import_tombstones.list`, and `gateway.skills.list` — contains only
+route-visible upstreams. Every operation that names a single upstream rejects
+one outside the subset as unknown: configuration, status, discovery,
+client-config, test, update, and remove, plus the MCP lifecycle operations
+(`enable`, `disable`, `restart`, `cleanup`), the `gateway.oauth.*` family, and
+the import and tombstone operations. A subset route additionally refuses two
+operation rather than scoping it: `gateway.test` with an unsaved inline `spec`,
+which would otherwise execute an arbitrary stdio command outside the mounted
+subset. These restrictions apply even when the token has an admin scope; the
+route remains an authority boundary, not merely a catalog filter.
+
+Creation is the deliberate exception. `gateway.add` and
+`gateway.import_pending.approve` are not bounded by the route's allowlist — the
+upstream they create does not exist yet, so there is nothing to check a name
+against — and they may create an upstream the route does not expose. Alongside
+them the gateway-global mutation surface — `gateway.reload`,
+`gateway.protected_route.*`,
+`gateway.loadout.*`, `gateway.virtual_server.*`, `gateway.service_config.set`,
+`gateway.code_mode.set`, `gateway.discover`, and `gateway.import` with
+`all: true` — is gated by scope alone, not by the route's upstream allowlist. A
+subset route whose token carries an admin scope can still reach those. Do not
+issue admin-scoped tokens for subset routes and treat the allowlist as the only
+boundary.
+
 Synthetic Code Mode keeps ordinary raw upstream tools out of the approval-facing
 catalog. Upstream MCP App owners and callbacks pass through only when the same
 allowed upstream exposes a real native `ui://` app binding and proxies that

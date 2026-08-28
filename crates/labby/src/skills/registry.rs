@@ -390,10 +390,12 @@ impl FirstPartyGenerationManager {
         let swap_started = Instant::now();
         let published = if changed {
             self.current.store(Arc::clone(&candidate));
-            self.live_generations
+            let mut live_generations = self
+                .live_generations
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(Arc::downgrade(&candidate));
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            live_generations.retain(|generation| generation.strong_count() > 0);
+            live_generations.push(Arc::downgrade(&candidate));
             candidate
         } else {
             old
@@ -452,6 +454,20 @@ impl FirstPartyGenerationManager {
     }
 
     #[allow(dead_code, reason = "observability seam is consumed by product wiring")]
+    /// Raw length of the weak-generation vec, without the reaping pass that
+    /// `generation_observability` performs. A test asserting the vec stays
+    /// bounded must not read it through an accessor that does the reaping.
+    #[cfg(test)]
+    pub(crate) fn tracked_generation_slots(&self) -> usize {
+        self.live_generations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Test-only for now: no production surface reports generation liveness yet.
+    /// Un-gate this the moment one does.
+    #[cfg(test)]
     pub(crate) fn generation_observability(&self) -> GenerationObservability {
         let current = self.generation();
         let mut tracked = self
@@ -875,6 +891,40 @@ mod tests {
         let generation = manager.get().unwrap().generation();
         assert_eq!(generation.id, 42);
         assert_eq!(generation.active_digest, "blake3:stable");
+    }
+
+    #[test]
+    fn refreshing_without_a_live_reader_does_not_grow_the_generation_vec() {
+        // `live_generations` is a `Vec<Weak<_>>` appended to on every changed
+        // refresh. Without the `retain`, a long-running server that reloads
+        // skills repeatedly accumulates one dead `Weak` per reload forever.
+        let temp = tempfile::tempdir().unwrap();
+        let manager = FirstPartyGenerationManager::new(
+            temp.path().to_path_buf(),
+            GenerationLimits::default(),
+        );
+        for revision in 0..8 {
+            write_skill(temp.path(), "churn", &format!("v{revision}"));
+            let report = manager
+                .refresh(Some(manager.generation().id))
+                .expect("refresh succeeds");
+            assert!(report.changed, "revision {revision} must change the digest");
+        }
+
+        // Read the raw vec: `generation_observability` reaps on the way out, so
+        // it would report a healthy number whether or not the refresh path reaps.
+        //
+        // Steady state is 2, not 1: the reaping pass runs before the new
+        // generation is pushed, and at that moment the outgoing generation is
+        // still strongly held by the swap itself. The property that matters is
+        // that the count does not track the number of refreshes — without the
+        // reap this would be 9 after eight reloads, and unbounded after a day.
+        let slots = manager.tracked_generation_slots();
+        assert!(
+            slots <= 2,
+            "dead generations must be reaped on refresh rather than accumulated; \
+             8 refreshes left {slots} tracked slots"
+        );
     }
 
     #[test]

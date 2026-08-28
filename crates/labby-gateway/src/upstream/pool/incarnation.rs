@@ -61,7 +61,7 @@ impl UpstreamPool {
         native_name: &str,
         generation: super::ToolCatalogGeneration,
     ) -> Option<ObservedConnectionCatalogEntry> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let connections = self.connections.read().await;
         let catalog = self.catalog.read().await;
         if !catalog.contains_tool_route(generation, upstream, native_name) {
@@ -84,7 +84,7 @@ impl UpstreamPool {
         generation: super::ToolCatalogGeneration,
         native_name: &str,
     ) -> bool {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let connections = self.connections.read().await;
         let Some(connection) = connections.get(observed.upstream()) else {
             return false;
@@ -104,7 +104,7 @@ impl UpstreamPool {
         native_name: &str,
         generation: super::PromptCatalogGeneration,
     ) -> Option<ObservedConnectionCatalogEntry> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let connections = self.connections.read().await;
         let catalog = self.catalog.read().await;
         let entry = catalog.get(upstream)?;
@@ -127,7 +127,7 @@ impl UpstreamPool {
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<ObservedConnectionCatalogEntry> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let connections = self.connections.read().await;
         let catalog = self.catalog.read().await;
         let mut observed = catalog
@@ -158,7 +158,7 @@ impl UpstreamPool {
         &self,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<ObservedConnectionCatalogEntry> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let connections = self.connections.read().await;
         let catalog = self.catalog.read().await;
         // Match the existing catalog -> resource-routing lock order used by
@@ -193,7 +193,7 @@ impl UpstreamPool {
         &self,
         observed: &ObservedConnectionCatalogEntry,
     ) -> bool {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let connections = self.connections.read().await;
         let Some(connection) = connections.get(&observed.upstream) else {
             return false;
@@ -211,7 +211,7 @@ impl UpstreamPool {
         &self,
         upstreams: impl IntoIterator<Item = &'a String>,
     ) -> (Vec<(String, UpstreamConnection)>, usize) {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let mut connections = self.connections.write().await;
         let mut catalog = self.catalog_write().await;
         let mut drained = Vec::new();
@@ -229,7 +229,7 @@ impl UpstreamPool {
     pub(super) async fn drain_connection_catalog_bindings(
         &self,
     ) -> (Vec<(String, UpstreamConnection)>, usize) {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let mut connections = self.connections.write().await;
         let mut catalog = self.catalog_write().await;
         let drained = connections.drain().collect::<Vec<_>>();
@@ -240,7 +240,7 @@ impl UpstreamPool {
     }
 
     /// Lock order for every structural binding mutation is the stable pool-wide
-    /// binding mutex, then generic connections, then the catalog. All guards
+    /// binding write lock, then generic connections, then the catalog. All guards
     /// are acquired before mutation, so cancellation cannot publish half a pair.
     pub(super) async fn install_connection_and_apply_entry(
         &self,
@@ -248,7 +248,7 @@ impl UpstreamPool {
         mut connection: UpstreamConnection,
         apply: impl FnOnce(&mut UpstreamEntry),
     ) -> Result<Option<UpstreamConnection>, ConnectionCatalogBindingError> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let incarnation = next_connection_incarnation()?;
         connection.incarnation = Some(incarnation);
         let mut connections = self.connections.write().await;
@@ -266,7 +266,7 @@ impl UpstreamPool {
         &self,
         upstream: &str,
     ) -> Option<UpstreamConnection> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let mut connections = self.connections.write().await;
         let mut catalog = self.catalog_write().await;
         let connection = connections.remove(upstream);
@@ -279,7 +279,7 @@ impl UpstreamPool {
         upstream: String,
         entry: UpstreamEntry,
     ) -> Option<UpstreamConnection> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let mut connections = self.connections.write().await;
         let mut catalog = self.catalog_write().await;
         let connection = connections.remove(&upstream);
@@ -293,7 +293,7 @@ impl UpstreamPool {
         upstream: String,
         replace: impl FnOnce(Option<UpstreamEntry>) -> UpstreamEntry,
     ) -> Option<UpstreamConnection> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let mut connections = self.connections.write().await;
         let mut catalog = self.catalog_write().await;
         let connection = connections.remove(&upstream);
@@ -309,7 +309,7 @@ impl UpstreamPool {
         mut connection: UpstreamConnection,
         entry: UpstreamEntry,
     ) -> Result<Option<UpstreamConnection>, ConnectionIncarnationExhausted> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let incarnation = next_connection_incarnation()?;
         connection.incarnation = Some(incarnation);
         let mut connections = self.connections.write().await;
@@ -324,7 +324,7 @@ impl UpstreamPool {
         &self,
         upstream: &str,
     ) -> (Option<UpstreamConnection>, Option<UpstreamEntry>) {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let mut connections = self.connections.write().await;
         let mut catalog = self.catalog_write().await;
         let connection = connections.remove(upstream);
@@ -337,7 +337,7 @@ impl UpstreamPool {
         &self,
         upstream: &str,
     ) -> Option<ObservedConnectionCatalogEntry> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let (peer, incarnation) = {
             let connections = self.connections.read().await;
             let connection = connections.get(upstream)?;
@@ -405,7 +405,7 @@ impl UpstreamPool {
         native_uri: &str,
         generation: super::ResourceCatalogGeneration,
     ) -> Option<ObservedConnectionCatalogEntry> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.read().await;
         let (peer, incarnation) = {
             let connections = self.connections.read().await;
             let connection = connections.get(upstream)?;
@@ -431,7 +431,7 @@ impl UpstreamPool {
         native_uri: &str,
         apply: impl FnOnce(&mut UpstreamEntry) -> R,
     ) -> Option<R> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let connections = self.connections.read().await;
         let connection = connections.get(observed.upstream())?;
         if connection.incarnation != Some(observed.incarnation) {
@@ -452,7 +452,7 @@ impl UpstreamPool {
         observed: &ObservedConnectionCatalogEntry,
         apply: impl FnOnce(&mut super::catalog_publication::CatalogState) -> R,
     ) -> Option<R> {
-        let _binding = self.connection_catalog_binding.lock().await;
+        let _binding = self.connection_catalog_binding.write().await;
         let connections = self.connections.read().await;
         let connection = connections.get(&observed.upstream)?;
         if connection.incarnation != Some(observed.incarnation) {

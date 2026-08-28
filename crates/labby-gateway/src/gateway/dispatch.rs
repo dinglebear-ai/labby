@@ -74,7 +74,7 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
-        "gateway.skills.list" => handle_skills_list(manager, params_value).await,
+        "gateway.skills.list" => handle_skills_list(manager, params_value, enrichment_scope).await,
         "gateway.code_mode.get" | "gateway.code_mode.set" => {
             handle_tool_actions(manager, action, params_value).await
         }
@@ -108,9 +108,28 @@ pub async fn dispatch_with_manager_scoped(
             to_json(manager.usage_calls_scoped(params, enrichment_scope).await?)
         }
         "gateway.import" => handle_import(manager, params_value, enrichment_scope).await,
-        "gateway.import_pending.list" => to_json(manager.list_pending_imports().await),
+        "gateway.import_pending.list" => {
+            let mut pending = manager.list_pending_imports().await;
+            if let Some(visible) = enrichment_scope.route_visible_upstreams.as_ref() {
+                pending.retain(|candidate| visible.contains(&candidate.name));
+            }
+            to_json(pending)
+        }
         "gateway.import_pending.approve" => {
             let name = require_str(&params_value, "name")?;
+            // Deliberately NOT `ensure_visible`. Approving is a *creation*
+            // operation and is unscoped for the same reason `gateway.add` is: the
+            // upstream it creates does not exist yet, so a visibility check has
+            // nothing to check against. Note this means a pending name that *is*
+            // route-visible (`import_pending.list` filters on exactly that) is
+            // still approved without a visibility check — the carve-out is on the
+            // operation, not on the name. `reject` stays scoped because it only
+            // tombstones a row the route can already see.
+            //
+            // Creation from a subset route is therefore an accepted gap, not an
+            // enforced boundary; `docs/runtime/OAUTH.md` says so explicitly. The
+            // scope is still threaded through so `approve_pending_import_scoped`
+            // suppresses an enrichment suggestion naming a route-hidden upstream.
             to_json(
                 manager
                     .approve_pending_import_scoped(name, enrichment_scope)
@@ -119,12 +138,13 @@ pub async fn dispatch_with_manager_scoped(
         }
         "gateway.import_pending.reject" => {
             let name = require_str(&params_value, "name")?;
+            enrichment_scope.ensure_visible(name)?;
             to_json(manager.reject_pending_import(name).await?)
         }
         "gateway.import_tombstones.list"
         | "gateway.import_tombstones.clear"
         | "gateway.import_tombstones.restore" => {
-            handle_import_tombstone_actions(manager, action, params_value).await
+            handle_import_tombstone_actions(manager, action, params_value, enrichment_scope).await
         }
         "gateway.servers" => to_json(
             manager
@@ -173,7 +193,7 @@ pub async fn dispatch_with_manager_scoped(
             handle_service_actions(manager, action, params_value).await
         }
         action if action.starts_with("gateway.oauth.") => {
-            handle_oauth_actions(manager, action, params_value).await
+            handle_oauth_actions(manager, action, params_value, enrichment_scope).await
         }
         action if action.starts_with("gateway.mcp.") => {
             handle_mcp_actions(manager, action, params_value, enrichment_scope).await
@@ -372,15 +392,24 @@ async fn handle_import_tombstone_actions(
     manager: &GatewayManager,
     action: &str,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
-        "gateway.import_tombstones.list" => to_json(manager.list_import_tombstones().await),
+        "gateway.import_tombstones.list" => {
+            let mut tombstones = manager.list_import_tombstones().await;
+            if let Some(visible) = enrichment_scope.route_visible_upstreams.as_ref() {
+                tombstones.retain(|tombstone| visible.contains(&tombstone.name));
+            }
+            to_json(tombstones)
+        }
         "gateway.import_tombstones.clear" => {
             let params: GatewayImportTombstoneParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.clear_import_tombstone(params.into()).await?)
         }
         "gateway.import_tombstones.restore" => {
             let params: GatewayImportTombstoneParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             let origin = params.origin.clone();
             let owner = params.owner.clone();
             to_json(
@@ -434,7 +463,24 @@ async fn handle_tool_actions(
                 next.enabled = enabled;
             }
             if let Some(trusted_read_only_tools) = params.trusted_read_only_tools {
-                next.trusted_read_only_tools = trusted_read_only_tools;
+                // The read-only gate reads the live MCP `readOnlyHint` on each
+                // tool descriptor; this allowlist has no production caller.
+                // Persisting it would let an operator believe a security control
+                // is active when it is inert, so drop the value rather than
+                // storing it. The param is still accepted so a get/set round trip
+                // from an existing client does not start failing.
+                if !trusted_read_only_tools.is_empty() {
+                    tracing::warn!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.code_mode.set",
+                        entries = trusted_read_only_tools.len(),
+                        "`trusted_read_only_tools` is retired and was discarded; \
+                         Code Mode admits read-only tools from the upstream's own \
+                         `readOnlyHint` annotation. Remove the setting."
+                    );
+                }
+                next.trusted_read_only_tools.clear();
             }
             if let Some(mcp_ui_enabled) = params.mcp_ui_enabled {
                 next.mcp_ui_enabled = mcp_ui_enabled;
@@ -672,9 +718,10 @@ async fn handle_gateway_actions(
     enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
-        "gateway.list" => to_json(manager.list().await?),
+        "gateway.list" => to_json(manager.list_scoped(&enrichment_scope).await?),
         "gateway.server.get" => {
             let params: VirtualServerNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.id)?;
             to_json(manager.get_server(&params.id).await?)
         }
         "gateway.supported_services" => {
@@ -685,7 +732,7 @@ async fn handle_gateway_actions(
         }
         "gateway.get" => {
             let params: GatewayNameParams = parse_params(params_value)?;
-            to_json(manager.get(&params.name).await?)
+            to_json(manager.get_scoped(&params.name, &enrichment_scope).await?)
         }
         "gateway.test" => {
             // SECURITY NOTE: When called with a `spec` (unsaved config) for a
@@ -701,8 +748,19 @@ async fn handle_gateway_actions(
             // and probes it exactly as the gateway would during live operation.
             let params: GatewayTestParams = parse_params(params_value)?;
             match (params.name.as_deref(), params.spec.as_ref()) {
-                (Some(name), None) => to_json(manager.test(Err(name)).await?),
-                (None, Some(spec)) => to_json(manager.test(Ok(spec)).await?),
+                (Some(name), None) => {
+                    enrichment_scope.ensure_visible(name)?;
+                    to_json(manager.test(Err(name)).await?)
+                }
+                (None, Some(spec)) => {
+                    if enrichment_scope.route_visible_upstreams.is_some() {
+                        return Err(ToolError::Sdk {
+                            sdk_kind: "forbidden".to_string(),
+                            message: "testing an unsaved gateway spec is unavailable on a protected subset route".to_string(),
+                        });
+                    }
+                    to_json(manager.test(Ok(spec)).await?)
+                }
                 (Some(_), Some(_)) => Err(ToolError::InvalidParam {
                     message: "gateway.test accepts either `name` or `spec`, not both".to_string(),
                     param: "name".to_string(),
@@ -729,6 +787,7 @@ async fn handle_gateway_actions(
         }
         "gateway.update" => {
             let params: GatewayUpdateParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .update(
@@ -743,6 +802,7 @@ async fn handle_gateway_actions(
         }
         "gateway.remove" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .remove(
@@ -755,7 +815,7 @@ async fn handle_gateway_actions(
         }
         "gateway.reload" => {
             let params: GatewayReloadParams = parse_params(params_value)?;
-            // Bounded below the API router's 30s TimeoutLayer so a slow full
+            // Bounded below the API router's transport backstop so a slow full
             // rebuild reports "still reconciling" instead of the middleware
             // cancelling the reload mid-flight and discarding the config.
             to_json(
@@ -773,10 +833,15 @@ async fn handle_gateway_actions(
             manager
                 .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
                 .await;
-            to_json(manager.status(params.name.as_deref()).await?)
+            to_json(
+                manager
+                    .status_scoped(params.name.as_deref(), &enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.client_config.get" => {
             let params: GatewayClientConfigParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.client_config(&params.name).await?)
         }
         "gateway.public_urls.get" => {
@@ -790,14 +855,17 @@ async fn handle_gateway_actions(
         }
         "gateway.discovered_tools" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.discovered_tools(&params.name).await?)
         }
         "gateway.discovered_resources" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.discovered_resources(&params.name).await?)
         }
         "gateway.discovered_prompts" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(manager.discovered_prompts(&params.name).await?)
         }
         unknown => unknown_action(unknown),
@@ -808,6 +876,7 @@ async fn handle_oauth_actions(
     manager: &GatewayManager,
     action: &str,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     match action {
         "gateway.oauth.resource_lease.create" => {
@@ -845,6 +914,7 @@ async fn handle_oauth_actions(
         "gateway.oauth.start" => {
             reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             to_json(
                 crate::gateway::oauth::begin_authorization(
                     manager,
@@ -857,6 +927,7 @@ async fn handle_oauth_actions(
         "gateway.oauth.status" => {
             reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             to_json(
                 crate::gateway::oauth::status(
                     manager,
@@ -869,6 +940,7 @@ async fn handle_oauth_actions(
         "gateway.oauth.clear" => {
             reject_shared_oauth_subject_override(&params_value)?;
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             crate::gateway::oauth::clear(manager, &params.upstream, SHARED_GATEWAY_OAUTH_SUBJECT)
                 .await?;
             to_json(serde_json::json!({ "ok": true }))
@@ -886,6 +958,7 @@ async fn handle_oauth_actions(
                 });
             }
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             to_json(crate::gateway::oauth::revoke_google(manager, &params.upstream).await?)
         }
         // Q-H3: poll loop moved from cli/gateway.rs into shared dispatch so all
@@ -898,6 +971,7 @@ async fn handle_oauth_actions(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120);
             let params: GatewayOauthNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.upstream)?;
             let timeout = std::time::Duration::from_secs(timeout_secs);
             let authenticated = manager
                 .await_upstream_authorization(
@@ -956,6 +1030,7 @@ async fn handle_mcp_actions(
     match action {
         "gateway.mcp.enable" => {
             let params: GatewayNameParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .update(
@@ -982,6 +1057,7 @@ async fn handle_mcp_actions(
         "gateway.clients.list" => to_json(manager.clients().await?),
         "gateway.mcp.disable" => {
             let params: GatewayMcpToggleParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             let gateway = manager
                 .update(
                     &params.name,
@@ -1010,6 +1086,7 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.restart" => {
             let params: GatewayMcpRestartParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             let upstream =
                 manager
                     .upstream_config(&params.name)
@@ -1067,6 +1144,7 @@ async fn handle_mcp_actions(
         }
         "gateway.mcp.cleanup" => {
             let params: GatewayMcpCleanupParams = parse_params(params_value)?;
+            enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
                     .cleanup_upstream_processes(&params.name, params.aggressive, params.dry_run)
@@ -1145,6 +1223,7 @@ mod tests;
 async fn handle_skills_list(
     manager: &GatewayManager,
     params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     #[derive(serde::Deserialize, Default)]
     #[serde(deny_unknown_fields)]
@@ -1160,6 +1239,12 @@ async fn handle_skills_list(
     };
 
     let started = std::time::Instant::now();
+    // Enforce route scope BEFORE the existence probe below: that probe reports
+    // `not_found` with discovery advice, which would otherwise confirm to a
+    // subset-route caller whether an out-of-scope upstream name exists.
+    if let Some(filter) = params.upstream.as_deref() {
+        enrichment_scope.ensure_visible(filter)?;
+    }
     let cfg = manager.current_config().await;
     if let Some(filter) = params.upstream.as_deref()
         && !cfg.upstream.iter().any(|config| config.name == filter)
@@ -1188,6 +1273,12 @@ async fn handle_skills_list(
     let configs = cfg
         .upstream
         .into_iter()
+        .filter(|config| {
+            enrichment_scope
+                .route_visible_upstreams
+                .as_ref()
+                .is_none_or(|visible| visible.contains(&config.name))
+        })
         .filter(|config| {
             params
                 .upstream
@@ -1297,13 +1388,23 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         .skills
         .iter()
         .map(|item| {
-            let skill = &item.skill;
+            let skill = &item.descriptor;
             serde_json::json!({
                 "name": skill.name,
-                "uri": skill.entry.uri,
-                "description": skill.entry.frontmatter.get("description").and_then(|value| value.as_str()),
-                "resource_count": skill.entry.resources.as_ref().map_or(0, Vec::len),
-                "exposed": item.exposed,
+                "identity": skill.id,
+                "uri": skill.source_uri,
+                "description": skill.description,
+                "resource_count": skill.resource_count,
+                // `exposed` is the legacy boolean; `exposure` is the structured
+                // decision. Both are a documented contract
+                // (docs/guides/SKILLS_AND_LOADOUTS.md) — operators need the
+                // reason to tell "no pattern matched" from "not advertised".
+                "exposed": item.exposure.exposed,
+                "exposure": {
+                    "status": item.exposure.status(),
+                    "reason": item.exposure.reason.as_str(),
+                    "matched_pattern": item.exposure.matched_pattern,
+                },
             })
         })
         .collect();
@@ -1322,7 +1423,11 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
         skills,
         rejected,
         discovered_count: operator.discovered_count,
-        exposed_count: operator.skills.iter().filter(|item| item.exposed).count(),
+        exposed_count: operator
+            .skills
+            .iter()
+            .filter(|item| item.exposure.exposed)
+            .count(),
     }
 }
 
@@ -1357,6 +1462,7 @@ fn skills_operator_row(
 async fn handle_skills_list(
     _manager: &GatewayManager,
     _params_value: Value,
+    _enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
     // Not `unknown_action`: that kind's recovery advice is "rediscover", and
     // rediscovery re-advertises this same action, so an agent would loop. The

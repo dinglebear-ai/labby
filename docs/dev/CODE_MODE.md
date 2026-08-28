@@ -29,9 +29,20 @@ Code Mode has two text MCP entry points with the same input shape:
 
 The catalog checks the standard MCP annotations during discovery. The call path
 checks the current live descriptor again immediately before dispatch. A changed
-descriptor is rejected and must be rediscovered. The old
-`trusted_read_only_tools` configuration field remains accepted for compatibility,
-but it no longer controls catalog admission.
+descriptor is rejected and must be rediscovered.
+
+The old `trusted_read_only_tools` configuration field is retired. It remains
+accepted so an existing config file still parses, but it has no effect anywhere:
+neither catalog admission nor the execution gate reads it. `gateway.code_mode.set`
+warns and discards a non-empty value, and the field is never serialized back out,
+so no surface presents it as a live control.
+
+Read-only Code Mode admission therefore rests entirely on the upstream's own
+`readOnlyHint` annotation, re-checked against the live descriptor immediately
+before dispatch. There is no second, operator-held allowlist. An upstream that
+mis-annotates a mutating tool as read-only exposes it to a `lab:read`-scoped
+Code Mode caller, so trust in an upstream's annotations is part of the decision
+to configure it.
 
 The optional `codemode_ui` MCP App entry point has the same full execution
 authority as `codemode`; it is not a read-only inspector shortcut. The full
@@ -349,8 +360,9 @@ name and in a route's `target.upstreams`, so the exclusion is enforced,
 not merely conventional.
 Authorization matches ordinary upstream tools: builtin peers carry no
 annotations, so they fail closed as destructive (Code Mode execute
-permission required) and are excluded from read-only Code Mode unless
-operator-trusted. Each peer serves exactly its own service, pinned to Raw
+permission required) and are always excluded from read-only Code Mode. The
+legacy `trusted_read_only_tools` setting does not override missing live MCP
+safety annotations. Each peer serves exactly its own service, pinned to Raw
 mode regardless of the process-wide Code Mode flag.
 
 The peer transport carries no `AuthContext` — there is no HTTP layer to

@@ -84,22 +84,22 @@ pub(crate) struct OperatorSkill {
 
 /// Operator-only reason a skill entry was rejected during ingest.
 #[derive(Debug, Clone)]
-pub struct OperatorSkillRejection {
-    pub reason: String,
-    pub uri: String,
-    pub detail: String,
+pub(crate) struct OperatorSkillRejection {
+    pub(crate) reason: String,
+    pub(crate) uri: String,
+    pub(crate) detail: String,
 }
 
 /// Operator-only skills snapshot. Unlike the downstream view, this retains
 /// validated-but-hidden skills so the admin UI can manage exposure safely.
 #[derive(Debug, Clone, Default)]
-pub struct OperatorSkills {
-    pub supports_skills: Option<bool>,
-    pub discovered_count: usize,
-    pub skills: Vec<OperatorSkill>,
-    pub rejected: Vec<OperatorSkillRejection>,
-    pub truncated: bool,
-    pub age_secs: u64,
+pub(crate) struct OperatorSkills {
+    pub(crate) supports_skills: Option<bool>,
+    pub(crate) discovered_count: usize,
+    pub(crate) skills: Vec<OperatorSkill>,
+    pub(crate) rejected: Vec<OperatorSkillRejection>,
+    pub(crate) truncated: bool,
+    pub(crate) age_secs: u64,
 }
 
 impl UpstreamPool {

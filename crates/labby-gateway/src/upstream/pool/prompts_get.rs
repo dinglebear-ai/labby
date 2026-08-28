@@ -44,6 +44,8 @@ pub(crate) enum ExactPromptCallError {
     Upstream,
     #[error("upstream prompt call timed out")]
     Timeout,
+    #[error("upstream prompt call was cancelled")]
+    Cancelled,
 }
 
 pub(crate) struct PreparedExactPromptCall {
@@ -193,6 +195,7 @@ impl UpstreamPool {
                     Err(ExactPromptCallError::Timeout)
                 }
             }
+            RawCallOutcome::Cancelled => Err(ExactPromptCallError::Cancelled),
         }
     }
     /// Discover prompts from all OAuth upstreams visible to `subject`.
