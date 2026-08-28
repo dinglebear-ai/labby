@@ -1,7 +1,7 @@
 ---
 title: "Upstream MCP Proxy"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-08-28"
 ---
 
 # Upstream MCP Proxy
@@ -22,7 +22,15 @@ proxy the whole Streamable HTTP MCP route to a backend. Use
 [GATEWAY.md — Gateway-Managed Protected MCP Routes](./GATEWAY.md#gateway-managed-protected-mcp-routes)
 for that setup instead of `[[upstream]]` tool merging.
 
-The reusable upstream pool lives in `crates/labby-gateway/src/upstream/`; `crates/labby/src/dispatch/upstream.rs` is the Labby product compatibility and adaptation boundary. The runtime proxy path described in this document is wired into the MCP surface. The HTTP API now exposes `/v1/gateway` for gateway management, but it still does not proxy arbitrary upstream MCP tools.
+The reusable upstream pool lives in `crates/labby-gateway/src/upstream/`; `crates/labby/src/dispatch/upstream.rs` is the Labby product compatibility and adaptation boundary. The runtime proxy path described in this document is wired into the MCP surface. The HTTP API exposes `/v1/gateway` for gateway management and a separate authenticated `/v1/palette` projection for bounded discovery and exact upstream calls.
+
+## Palette exact-call HTTP contract
+
+Palette and other form-driven clients use the authenticated `/v1/palette/catalog`, `/search`, `/schema`, and `/descriptor` reads to discover compact entries and lazily hydrate bounded schemas. They execute a reviewed MCP entry with `POST /v1/palette/execute`, passing the provider-qualified `mcp:<upstream>::<tool>` ID, arguments, and the exact `expectedContractHash` returned by discovery. Destructive tools also require an authenticated administrator and `confirmDestructive: true`.
+
+Execution does not evaluate JavaScript or invoke an LLM. It re-resolves the current OAuth-subject-scoped, exposure-filtered tool and atomically checks the executable schema, Labby-owned destructive classification, caller scopes, allowed upstreams, catalog generation, and contract hash before using the same bounded exact-call kernel as Code Mode and MCP. A removed or changed tool fails closed; calls are not automatically retried.
+
+Successful receipts report `executionMode: "exact"`, `llmInvocations: 0`, the catalog revision and contract hash actually checked, and an `auditId` correlated with the request. MCP content and structured errors are preserved in the response. Upstream descriptions and schema display text are sanitized as untrusted data; schema depth is capped at 64, each schema at 64 KiB, descriptors at 160 KiB, search results at 100 entries, and upstream request/result bytes, queueing, timeout, cancellation, and concurrency retain the canonical gateway bounds.
 
 ## What Operators Configure
 

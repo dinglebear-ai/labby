@@ -7,7 +7,8 @@ use axum::{
 };
 use labby_gateway::gateway::palette::{
     CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
-    PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionReceipt,
+    PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
+    PaletteExecutionReceipt,
 };
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
@@ -584,12 +585,16 @@ async fn execute_labby_action(
     }
     validate_labby_action_params(action, &request.params)?;
     let result = (service.dispatch)(action_name.to_string(), request.params).await?;
+    let request_id = request_id.unwrap_or("unavailable").to_string();
     Ok(Json(PaletteExecuteResponse {
         receipt: PaletteExecutionReceipt {
-            request_id: request_id.unwrap_or("unavailable").to_string(),
+            audit_id: request_id.clone(),
+            request_id,
             tool_id: request.id.clone(),
             contract_hash: contract_hash.clone(),
             catalog_revision: contract_hash,
+            execution_mode: PaletteExecutionMode::LabbyAction,
+            llm_invocations: 0,
             truncated: false,
         },
         id: request.id,
@@ -1631,6 +1636,14 @@ mod tests {
         assert_eq!(value["id"], "labby:demo::echo.run");
         assert_eq!(value["result"]["name"], "labby");
         assert_eq!(value["receipt"]["contractHash"], contract_hash);
+        assert_eq!(value["receipt"]["executionMode"], "labby_action");
+        assert_eq!(value["receipt"]["llmInvocations"], 0);
+        assert_eq!(value["receipt"]["auditId"], value["receipt"]["requestId"]);
+        assert!(
+            value["receipt"]["auditId"]
+                .as_str()
+                .is_some_and(|audit_id| !audit_id.is_empty())
+        );
     }
 
     #[tokio::test]
