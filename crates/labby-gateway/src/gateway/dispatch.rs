@@ -1367,10 +1367,20 @@ fn project_operator_skills(operator: &OperatorSkills) -> OperatorSkillsProjectio
             let skill = &item.descriptor;
             serde_json::json!({
                 "name": skill.name,
+                "identity": skill.id,
                 "uri": skill.source_uri,
                 "description": skill.description,
                 "resource_count": skill.resource_count,
+                // `exposed` is the legacy boolean; `exposure` is the structured
+                // decision. Both are a documented contract
+                // (docs/guides/SKILLS_AND_LOADOUTS.md) — operators need the
+                // reason to tell "no pattern matched" from "not advertised".
                 "exposed": item.exposure.exposed,
+                "exposure": {
+                    "status": item.exposure.status(),
+                    "reason": item.exposure.reason.as_str(),
+                    "matched_pattern": item.exposure.matched_pattern,
+                },
             })
         })
         .collect();

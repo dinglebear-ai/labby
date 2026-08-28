@@ -40,6 +40,52 @@ fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
     );
 }
 
+#[cfg(feature = "skills")]
+#[test]
+fn skills_operator_projection_reports_identity_and_the_exposure_decision() {
+    use labby_runtime::skills::{SkillDescriptor, SkillId, SkillProviderId, SkillProviderKind};
+
+    // `identity` and `exposure` are a documented contract
+    // (docs/guides/SKILLS_AND_LOADOUTS.md). An operator needs the reason to
+    // tell "no pattern matched" from "the upstream never advertised it".
+    let provider = SkillProviderId::new(SkillProviderKind::McpUpstream, "github");
+    let descriptor = SkillDescriptor {
+        id: SkillId::new(provider, "skill://github/review/SKILL.md"),
+        name: "review".into(),
+        description: "review a diff".into(),
+        source_uri: Some("skill://github/review/SKILL.md".into()),
+        resource_count: 1,
+        availability: labby_runtime::skills::SkillAvailabilitySummary::available(),
+        requirements: labby_runtime::skills::SkillRequirementsSummary::default(),
+        provider_metadata: serde_json::Map::new(),
+    };
+    let operator = OperatorSkills {
+        discovered_count: 1,
+        skills: vec![crate::upstream::pool::OperatorSkill {
+            descriptor,
+            exposure: crate::upstream::pool::SkillExposureDecision {
+                exposed: true,
+                reason: crate::upstream::pool::SkillExposureReason::MatchedPattern,
+                matched_pattern: Some("review-*".into()),
+            },
+        }],
+        ..OperatorSkills::default()
+    };
+
+    let projection = project_operator_skills(&operator);
+    let row = &projection.skills[0];
+
+    assert_eq!(row["exposed"], true);
+    assert_eq!(row["exposure"]["status"], "exposed");
+    assert_eq!(row["exposure"]["reason"], "matched_pattern");
+    assert_eq!(row["exposure"]["matched_pattern"], "review-*");
+    assert_eq!(
+        row["identity"]["source_id"],
+        "skill://github/review/SKILL.md"
+    );
+    assert_eq!(row["identity"]["provider"]["instance"], "github");
+}
+
 #[derive(Clone)]
 struct DashboardCatalogResponder {
     discover_requests: std::sync::Arc<AtomicUsize>,
