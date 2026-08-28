@@ -846,8 +846,16 @@ async fn gateway_skills_list_is_restricted_to_route_visible_upstreams() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![
-            upstream_fixture("github", Some("https://example.invalid/mcp".to_string()), None),
-            upstream_fixture("secret", Some("https://example.invalid/mcp".to_string()), None),
+            upstream_fixture(
+                "github",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
+            upstream_fixture(
+                "secret",
+                Some("https://example.invalid/mcp".to_string()),
+                None,
+            ),
         ])
         .await;
     let scope = GatewayEnrichmentScope {

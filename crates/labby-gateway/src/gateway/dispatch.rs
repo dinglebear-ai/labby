@@ -74,9 +74,7 @@ pub async fn dispatch_with_manager_scoped(
         return result;
     }
     match action {
-        "gateway.skills.list" => {
-            handle_skills_list(manager, params_value, enrichment_scope).await
-        }
+        "gateway.skills.list" => handle_skills_list(manager, params_value, enrichment_scope).await,
         "gateway.code_mode.get" | "gateway.code_mode.set" => {
             handle_tool_actions(manager, action, params_value).await
         }

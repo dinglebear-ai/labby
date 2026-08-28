@@ -55,12 +55,19 @@ test-integration:
     cargo nextest run --workspace --all-features --run-ignored ignored-only
 
 # Lint
-lint: skill-drift rust-toolchain-sync
+lint: skill-drift rust-toolchain-sync module-reachability
     # --all-targets so tests/examples/benches are linted too. Without it the
     # `disallowed_methods` bans (Tool::new, Peer::list_all_*) do not cover test
     # code, which is exactly where fixtures reach for them.
     cargo clippy --workspace --all-features --all-targets -- -D warnings
     cargo fmt --all -- --check
+
+# Fail when a source file exists on disk that no parent module declares.
+# rustc never sees such a file, so it produces no warning and any tests inside
+# it silently stop running — the failure mode that orphaned `paginate.rs` and
+# two test modules for months.
+module-reachability:
+    cargo test -p xtask module_reachability
 
 # Verify Cargo, rust-toolchain, CI, container, and active docs agree on the MSRV.
 rust-toolchain-sync:

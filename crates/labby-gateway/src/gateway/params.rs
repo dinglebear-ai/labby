@@ -315,9 +315,7 @@ impl GatewayEnrichmentScope {
         if self.route_visible_upstreams.is_some() {
             return Err(labby_runtime::error::ToolError::Sdk {
                 sdk_kind: "forbidden".to_string(),
-                message: format!(
-                    "`{action}` is unavailable on a protected subset route"
-                ),
+                message: format!("`{action}` is unavailable on a protected subset route"),
             });
         }
         Ok(())

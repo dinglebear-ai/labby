@@ -54,6 +54,8 @@ mod incarnation;
 mod legacy_client;
 mod lifecycle;
 mod lifecycle_compat;
+#[cfg(test)]
+mod listing_timeout_tests;
 mod logging;
 mod notifications;
 #[cfg(test)]
