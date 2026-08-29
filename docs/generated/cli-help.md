@@ -4205,6 +4205,7 @@ Usage: oauth [OPTIONS] <COMMAND>
 Commands:
   relay-local     Run a local OAuth callback relay that forwards to a machine or explicit target
   relay-registry  Manage the public OAuth callback relay sidecar registry
+  signing-key     Rotate, roll back, or emergency-revoke inbound JWT signing keys
   help            Print this message or the help of the given subcommand(s)
 
 Options:
@@ -4442,6 +4443,126 @@ Options:
 ```
 
 ## `labby oauth relay-registry help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
+## `labby oauth signing-key`
+
+```text
+Rotate, roll back, or emergency-revoke inbound JWT signing keys
+
+Usage: signing-key [OPTIONS] <COMMAND>
+
+Commands:
+  rotate            Promote a new active key while retaining the prior key for verification
+  rollback          Restore the newest retired key and retain the displaced active key
+  emergency-revoke  Stage replacement of the active key and discard all verification overlap. A running Labby server must be restarted before revocation is live
+  help              Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth signing-key rotate`
+
+```text
+Promote a new active key while retaining the prior key for verification
+
+Usage: rotate [OPTIONS] --key-path <KEY_PATH>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --key-path <KEY_PATH>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --overlap-secs <OVERLAP_SECS>
+          [default: 3600]
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth signing-key rollback`
+
+```text
+Restore the newest retired key and retain the displaced active key
+
+Usage: rollback [OPTIONS] --key-path <KEY_PATH>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --key-path <KEY_PATH>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --overlap-secs <OVERLAP_SECS>
+          [default: 3600]
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth signing-key emergency-revoke`
+
+```text
+Stage replacement of the active key and discard all verification overlap. A running Labby server must be restarted before revocation is live
+
+Usage: emergency-revoke [OPTIONS] --key-path <KEY_PATH>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --key-path <KEY_PATH>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --yes
+
+
+  -h, --help
+          Print help
+```
+
+## `labby oauth signing-key help`
 
 ```text
 Print this message or the help of the given subcommand(s)

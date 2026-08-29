@@ -4,6 +4,8 @@
 //! helpers so the top-level orchestrator (`run`) stays under ~80 lines and the
 //! two near-identical URL-conflict checks are deduplicated (Q-M4).
 
+use std::sync::Arc;
+
 use url::Url;
 
 use crate::gateway::manager::GatewayManager;
@@ -18,6 +20,25 @@ use labby_runtime::gateway_config::{
 use labby_runtime::redact::redact_url;
 
 use super::{OauthRuntime, should_use_dynamic_registration};
+
+#[cfg(test)]
+static TEST_PROBE_METADATA: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, rmcp::transport::auth::AuthorizationMetadata>,
+    >,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(super) fn install_test_probe_metadata(
+    url: &str,
+    metadata: rmcp::transport::auth::AuthorizationMetadata,
+) {
+    TEST_PROBE_METADATA
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .insert(url.to_string(), metadata);
+}
 
 // ── public validators (also used by tests in the parent module) ──────────────
 
@@ -212,7 +233,109 @@ async fn resolve_prefer_cimd(manager: &GatewayManager, name: &str) -> Option<boo
 /// Deduplicates the URL-conflict check for the manager-map path (matches the
 /// same guard already performed on the persisted config in `resolve_probe_identity`,
 /// but applied to the in-memory manager map which may have a stale entry).
-fn register_transient_manager(
+pub(super) const TRANSIENT_MANAGER_TTL: std::time::Duration = std::time::Duration::from_mins(15);
+pub(super) const TRANSIENT_MANAGER_MAX: usize = 64;
+
+pub(super) fn transient_manager_evictions(
+    leases: &mut std::collections::HashMap<String, tokio::time::Instant>,
+    now: tokio::time::Instant,
+    incoming: &str,
+) -> Vec<String> {
+    let mut evicted: Vec<String> = leases
+        .iter()
+        .filter(|(_, created)| now.duration_since(**created) >= TRANSIENT_MANAGER_TTL)
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in &evicted {
+        leases.remove(name);
+    }
+    while leases.len() >= TRANSIENT_MANAGER_MAX && !leases.contains_key(incoming) {
+        let Some(oldest) = leases
+            .iter()
+            .min_by_key(|(_, created)| **created)
+            .map(|(name, _)| name.clone())
+        else {
+            break;
+        };
+        leases.remove(&oldest);
+        evicted.push(oldest);
+    }
+    evicted
+}
+
+#[cfg(test)]
+pub(super) fn schedule_transient_manager_expiry(
+    leases: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio::time::Instant>>>,
+    managers: Arc<dashmap::DashMap<String, UpstreamOauthManager>>,
+    client_cache: Option<labby_auth::upstream::cache::OauthClientCache>,
+    name: String,
+    lease_started: tokio::time::Instant,
+    ttl: std::time::Duration,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(ttl).await;
+        let mut leases = leases.lock().await;
+        if leases.get(&name) != Some(&lease_started) {
+            return;
+        }
+        leases.remove(&name);
+        managers.remove(&name);
+        if let Some(cache) = client_cache {
+            cache.evict_upstream(&name);
+        }
+    });
+}
+
+fn ensure_transient_manager_sweeper(gm: &GatewayManager) {
+    use std::sync::atomic::Ordering;
+
+    if gm
+        .transient_oauth_sweeper_started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let leases = gm.transient_oauth_managers.clone();
+    let managers = gm
+        .upstream_oauth_managers
+        .as_ref()
+        .expect("OAuth runtime manager map was required above")
+        .clone();
+    let client_cache = gm.oauth_client_cache.clone();
+    let owner = Arc::downgrade(&gm.transient_oauth_sweeper_owner);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if owner.upgrade().is_none() {
+                break;
+            }
+            let now = tokio::time::Instant::now();
+            let expired: Vec<String> = {
+                let mut leases = leases.lock().await;
+                let expired = leases
+                    .iter()
+                    .filter(|(_, started)| now.duration_since(**started) >= TRANSIENT_MANAGER_TTL)
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>();
+                for name in &expired {
+                    leases.remove(name);
+                }
+                expired
+            };
+            for name in expired {
+                managers.remove(&name);
+                if let Some(cache) = &client_cache {
+                    cache.evict_upstream(&name);
+                }
+            }
+        }
+    });
+}
+
+async fn register_transient_manager(
     gm: &GatewayManager,
     runtime: &OauthRuntime<'_>,
     name: &str,
@@ -224,6 +347,17 @@ fn register_transient_manager(
     strategy: &str,
     started: std::time::Instant,
 ) -> Result<(), ToolError> {
+    // Expire abandoned probe leases and enforce a hard cardinality bound
+    // before publishing another callback-visible manager. Managers already
+    // reconciled from durable config are reused above and never enter this
+    // lease table, so exploratory traffic cannot evict them.
+    let mut leases = gm.transient_oauth_managers.lock().await;
+    let now = tokio::time::Instant::now();
+    for evicted in transient_manager_evictions(&mut leases, now, name) {
+        runtime.managers.remove(&evicted);
+        gm.evict_upstream_clients(&evicted);
+    }
+
     if let Some(existing) = runtime.managers.get(name) {
         let existing_url = existing.upstream_config().url.clone();
         drop(existing);
@@ -235,6 +369,7 @@ fn register_transient_manager(
                 });
             }
             runtime.managers.remove(name);
+            leases.remove(name);
             gm.evict_upstream_clients(name);
             tracing::info!(
                 service = "upstream_oauth",
@@ -243,6 +378,9 @@ fn register_transient_manager(
                 "upstream oauth probe: replaced stale transient manager"
             );
         } else {
+            if let Some(lease) = leases.get_mut(name) {
+                *lease = now;
+            }
             tracing::info!(
                 service = "upstream_oauth",
                 action = "probe",
@@ -314,6 +452,10 @@ fn register_transient_manager(
         runtime.redirect_uri.as_ref().clone(),
     );
     runtime.managers.insert(name.to_string(), new_manager);
+    // Every manager created by this path is transient, including a configured
+    // upstream that does not acquire its durable OAuth config until callback.
+    leases.insert(name.to_string(), now);
+    ensure_transient_manager_sweeper(gm);
     tracing::info!(
         service = "upstream_oauth",
         action = "probe",
@@ -366,65 +508,79 @@ pub(crate) async fn run(
             }
         })?;
 
-    let metadata = match auth_manager.resolve_metadata().await {
-        Ok(resolution) if resolution.source.is_discovered() => {
-            let m = resolution.metadata;
-            tracing::info!(
-                service = "upstream_oauth",
-                action = "probe",
-                upstream = %name,
-                url = %redacted_url,
-                issuer = m.issuer.as_deref().unwrap_or("<none>"),
-                supports_dynamic_registration = m.registration_endpoint.is_some(),
-                scopes = ?m.scopes_supported,
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream oauth probe: OAuth metadata discovered"
-            );
-            m
-        }
-        resolution => {
-            let fallback =
-                labby_auth::upstream::manager::discover_published_metadata(&canonical_url)
-                    .await
-                    .map_err(|error| ToolError::Sdk {
-                        sdk_kind: error.kind().to_string(),
-                        message: format!("OAuth metadata discovery failed: {error}"),
-                    })?;
-            if let Some(metadata) = fallback {
+    #[cfg(test)]
+    let injected_metadata = TEST_PROBE_METADATA
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .get(&canonical_url)
+        .cloned();
+    #[cfg(not(test))]
+    let injected_metadata: Option<rmcp::transport::auth::AuthorizationMetadata> = None;
+
+    let metadata = if let Some(metadata) = injected_metadata {
+        metadata
+    } else {
+        match auth_manager.resolve_metadata().await {
+            Ok(resolution) if resolution.source.is_discovered() => {
+                let m = resolution.metadata;
                 tracing::info!(
                     service = "upstream_oauth",
                     action = "probe",
                     upstream = %name,
                     url = %redacted_url,
-                    issuer = metadata.issuer.as_deref().unwrap_or("<none>"),
+                    issuer = m.issuer.as_deref().unwrap_or("<none>"),
+                    supports_dynamic_registration = m.registration_endpoint.is_some(),
+                    scopes = ?m.scopes_supported,
                     elapsed_ms = started.elapsed().as_millis(),
-                    "upstream oauth probe: OAuth metadata discovered with Labby issuer policy"
+                    "upstream oauth probe: OAuth metadata discovered"
                 );
-                metadata
-            } else {
-                let reason = resolution
-                    .err()
-                    .map(|error| error.to_string())
-                    .unwrap_or_else(|| "no published OAuth metadata".to_string());
-                tracing::info!(
-                    service = "upstream_oauth",
-                    action = "probe",
-                    upstream = %name,
-                    url = %redacted_url,
-                    reason,
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "upstream oauth probe: no OAuth metadata found"
-                );
-                return Ok(ProbeResult {
-                    upstream: name,
-                    url: redacted_url.clone(),
-                    transient: false,
-                    durability: "not_registered_no_oauth_metadata".to_string(),
-                    oauth_discovered: false,
-                    issuer: None,
-                    scopes: None,
-                    registration_strategy: None,
-                });
+                m
+            }
+            resolution => {
+                let fallback =
+                    labby_auth::upstream::manager::discover_published_metadata(&canonical_url)
+                        .await
+                        .map_err(|error| ToolError::Sdk {
+                            sdk_kind: error.kind().to_string(),
+                            message: format!("OAuth metadata discovery failed: {error}"),
+                        })?;
+                if let Some(metadata) = fallback {
+                    tracing::info!(
+                        service = "upstream_oauth",
+                        action = "probe",
+                        upstream = %name,
+                        url = %redacted_url,
+                        issuer = metadata.issuer.as_deref().unwrap_or("<none>"),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "upstream oauth probe: OAuth metadata discovered with Labby issuer policy"
+                    );
+                    metadata
+                } else {
+                    let reason = resolution
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "no published OAuth metadata".to_string());
+                    tracing::info!(
+                        service = "upstream_oauth",
+                        action = "probe",
+                        upstream = %name,
+                        url = %redacted_url,
+                        reason,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "upstream oauth probe: no OAuth metadata found"
+                    );
+                    return Ok(ProbeResult {
+                        upstream: name,
+                        url: redacted_url.clone(),
+                        transient: false,
+                        durability: "not_registered_no_oauth_metadata".to_string(),
+                        oauth_discovered: false,
+                        issuer: None,
+                        scopes: None,
+                        registration_strategy: None,
+                    });
+                }
             }
         }
     };
@@ -452,7 +608,8 @@ pub(crate) async fn run(
         &metadata,
         strategy,
         started,
-    )?;
+    )
+    .await?;
 
     Ok(ProbeResult {
         upstream: name,

@@ -404,6 +404,11 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             .send()
             .await
             .map_err(StreamableHttpError::Client)?;
+        if response.status().is_redirection() {
+            return Err(StreamableHttpError::UnexpectedServerResponse(Cow::from(
+                "MCP transport redirects are not allowed",
+            )));
+        }
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);
         }
@@ -444,6 +449,11 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         }
         request = apply_custom_headers(request, custom_headers)?;
         let response = request.send().await.map_err(StreamableHttpError::Client)?;
+        if response.status().is_redirection() {
+            return Err(StreamableHttpError::UnexpectedServerResponse(Cow::from(
+                "MCP transport redirects are not allowed",
+            )));
+        }
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Ok(());
         }
@@ -492,6 +502,11 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             .send()
             .await
             .map_err(StreamableHttpError::Client)?;
+        if response.status().is_redirection() {
+            return Err(StreamableHttpError::UnexpectedServerResponse(Cow::from(
+                "MCP transport redirects are not allowed",
+            )));
+        }
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
             && let Some(header) = response.headers().get(WWW_AUTHENTICATE)
         {
@@ -614,9 +629,58 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
         let inner = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("client");
         BodyCappedHttpClient::new(inner, max_bytes)
+    }
+
+    async fn tls_redirect_origin(
+        status: u16,
+        location: String,
+    ) -> (String, reqwest::Certificate, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::rustls::pki_types::PrivateKeyDer;
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(["localhost".to_string()]).unwrap();
+        let root = reqwest::Certificate::from_der(cert.der()).unwrap();
+        let tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.der().clone()],
+                PrivateKeyDer::Pkcs8(signing_key.serialize_der().into()),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = acceptor.accept(socket).await.unwrap();
+                let mut request = vec![0; 16 * 1024];
+                let _ = socket.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("https://localhost:{}", address.port()), root, task)
+    }
+
+    async fn redirect_capture(host: &str) -> (String, tokio::task::JoinHandle<bool>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{host}:{}", address.port());
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
+                .await
+                .is_ok()
+        });
+        (url, task)
     }
 
     fn jsonrpc_request() -> ClientJsonRpcMessage {
@@ -631,6 +695,126 @@ mod tests {
             "params": {}
         }))
         .expect("valid jsonrpc")
+    }
+
+    #[tokio::test]
+    async fn bearer_transport_never_follows_307_or_308_for_any_mcp_method() {
+        for status in [307, 308] {
+            let target = MockServer::start().await;
+            let origin = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).insert_header("Location", target.uri()))
+                .mount(&origin)
+                .await;
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(status).insert_header("Location", target.uri()))
+                .mount(&origin)
+                .await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(status).insert_header("Location", target.uri()))
+                .mount(&origin)
+                .await;
+
+            let client = build(1024 * 1024);
+            let uri: Arc<str> = format!("{}/mcp", origin.uri()).into();
+            let token = Some("sentinel-bearer-secret".to_string());
+            let errors = [
+                format!(
+                    "{:?}",
+                    client
+                        .post_message(
+                            uri.clone(),
+                            jsonrpc_request(),
+                            None,
+                            token.clone(),
+                            HashMap::new(),
+                        )
+                        .await
+                        .unwrap_err()
+                ),
+                format!(
+                    "{:?}",
+                    client
+                        .delete_session(
+                            uri.clone(),
+                            "session".into(),
+                            token.clone(),
+                            HashMap::new(),
+                        )
+                        .await
+                        .unwrap_err()
+                ),
+                format!(
+                    "{:?}",
+                    client
+                        .get_stream(uri, None, None, token, HashMap::new())
+                        .await
+                        .err()
+                        .expect("redirecting stream GET must fail")
+                ),
+            ];
+            for error in errors {
+                assert!(error.contains("MCP transport redirects are not allowed"));
+                assert!(!error.contains("sentinel-bearer-secret"));
+                assert!(!error.contains(&target.uri()));
+            }
+            assert!(
+                target.received_requests().await.unwrap().is_empty(),
+                "redirect target received bearer/body for HTTP {status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tls_bearer_transport_rejects_cross_origin_and_same_host_downgrade_redirects() {
+        for status in [307, 308] {
+            for target_host in ["127.0.0.1", "localhost"] {
+                let (target, target_received) = redirect_capture(target_host).await;
+                let (origin, root, origin_task) = tls_redirect_origin(status, target.clone()).await;
+                let inner = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .add_root_certificate(root)
+                    .build()
+                    .unwrap();
+                let client = BodyCappedHttpClient::new(inner, 1024 * 1024);
+                let uri: Arc<str> = format!("{origin}/mcp").into();
+                let token = Some("sentinel-bearer-secret".to_string());
+                let post = client
+                    .post_message(
+                        uri.clone(),
+                        jsonrpc_request(),
+                        None,
+                        token.clone(),
+                        HashMap::new(),
+                    )
+                    .await
+                    .unwrap_err();
+                let delete = client
+                    .delete_session(uri.clone(), "session".into(), token.clone(), HashMap::new())
+                    .await
+                    .unwrap_err();
+                let stream = client
+                    .get_stream(uri, None, None, token, HashMap::new())
+                    .await
+                    .err()
+                    .unwrap();
+                for error in [
+                    format!("{post:?}"),
+                    format!("{delete:?}"),
+                    format!("{stream:?}"),
+                ] {
+                    assert!(error.contains("MCP transport redirects are not allowed"));
+                    assert!(!error.contains("sentinel-bearer-secret"));
+                    assert!(!error.contains(&target));
+                }
+                origin_task.await.unwrap();
+                assert!(
+                    !target_received.await.unwrap(),
+                    "redirect target received a request"
+                );
+            }
+        }
     }
 
     #[tokio::test]

@@ -14,6 +14,38 @@ const OAUTH_STATUS_DISCOVERY_FRESHNESS: std::time::Duration = std::time::Duratio
 const OAUTH_STATUS_DISCOVERY_FAILURE_COOLDOWN: std::time::Duration =
     std::time::Duration::from_mins(5);
 const OAUTH_STATUS_DISCOVERY_CACHE_MAX: usize = 256;
+const OAUTH_STATUS_EPOCH_MAX: usize = 4_096;
+
+#[cfg(test)]
+static STATUS_DISCOVERY_BARRIER: std::sync::OnceLock<
+    std::sync::Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn install_status_discovery_barrier() -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let barrier = (
+        Arc::new(tokio::sync::Notify::new()),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    *STATUS_DISCOVERY_BARRIER
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("status barrier lock") = Some(barrier.clone());
+    barrier
+}
+
+#[cfg(test)]
+async fn wait_on_status_discovery_barrier() {
+    let barrier = STATUS_DISCOVERY_BARRIER
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("status barrier lock")
+        .take();
+    if let Some((entered, release)) = barrier {
+        entered.notify_one();
+        release.notified().await;
+    }
+}
 
 fn oauth_status_discovery_is_fresh(snapshot: &OauthStatusDiscoverySnapshot) -> bool {
     snapshot.completed_at.elapsed()
@@ -63,13 +95,123 @@ pub(super) fn should_use_dynamic_registration(
 }
 
 impl GatewayManager {
+    async fn promote_probe_oauth_config(
+        &self,
+        upstream: &str,
+        oauth_config: labby_runtime::gateway_config::UpstreamOauthConfig,
+    ) -> Result<bool, ToolError> {
+        // Hold lease ownership through persistence and runtime reconciliation.
+        // The sweeper cannot observe an expired transient lease between those
+        // two state transitions and delete the newly durable manager.
+        let mut leases = self.transient_oauth_managers.lock().await;
+        let mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
+        let Some(existing) = cfg.upstream.iter_mut().find(|entry| entry.name == upstream) else {
+            return Ok(false);
+        };
+        if existing.oauth.is_none() {
+            existing.oauth = Some(oauth_config);
+            let promoted = cfg.clone();
+            self.persist_config_owned(mutation_guard, cfg).await?;
+            leases.remove(upstream);
+            self.reconcile_upstream_oauth_managers(&promoted);
+        } else {
+            leases.remove(upstream);
+            self.reconcile_upstream_oauth_managers(&cfg);
+        }
+        Ok(true)
+    }
+
+    async fn discard_transient_oauth_manager(&self, upstream: &str) {
+        let removed = self
+            .transient_oauth_managers
+            .lock()
+            .await
+            .remove(upstream)
+            .is_some();
+        if removed {
+            if let Some(managers) = &self.upstream_oauth_managers {
+                managers.remove(upstream);
+            }
+            if let Some(cache) = &self.oauth_client_cache {
+                cache.evict_upstream(upstream);
+            }
+        }
+    }
+
+    fn oauth_status_pool(
+        &self,
+        request_timeout: std::time::Duration,
+        relay_timeout: std::time::Duration,
+    ) -> (Arc<crate::upstream::pool::UpstreamPool>, bool) {
+        match self.current_pool_sync() {
+            Some(pool) => (pool, false),
+            None => (
+                Arc::new(self.new_base_pool(request_timeout, relay_timeout)),
+                true,
+            ),
+        }
+    }
+
     async fn invalidate_oauth_status_discovery(&self, upstream: &str, subject: Option<&str>) {
+        use std::sync::atomic::Ordering;
+
+        // Wait for already-published single-flight discoveries, while the
+        // generation fences discoveries that race lock publication. This
+        // prevents clear/revoke/callback invalidation from being followed by a
+        // stale status snapshot inserted by older work.
+        let locks: Vec<_> = self
+            .oauth_status_discovery_locks
+            .iter()
+            .filter(|entry| {
+                entry.key().0 == upstream && subject.is_none_or(|subject| entry.key().1 == subject)
+            })
+            .map(|entry| entry.value().clone())
+            .collect();
+        let mut _guards = Vec::with_capacity(locks.len());
+        for lock in locks {
+            _guards.push(lock.lock_owned().await);
+        }
+        let epoch = self.oauth_status_next_epoch.fetch_add(1, Ordering::AcqRel);
+        match subject {
+            Some(subject) => {
+                self.oauth_status_subject_epochs
+                    .insert((upstream.to_string(), subject.to_string()), epoch);
+            }
+            None => {
+                self.oauth_status_upstream_epochs
+                    .insert(upstream.to_string(), epoch);
+                self.oauth_status_subject_epochs
+                    .retain(|(name, _), _| name != upstream);
+            }
+        }
+        while self.oauth_status_subject_epochs.len() > OAUTH_STATUS_EPOCH_MAX {
+            let oldest = self
+                .oauth_status_subject_epochs
+                .iter()
+                .min_by_key(|entry| *entry.value())
+                .map(|entry| entry.key().clone());
+            let Some(oldest) = oldest else { break };
+            self.oauth_status_subject_epochs.remove(&oldest);
+        }
         self.oauth_status_discovery_cache.lock().await.retain(
             |(cached_upstream, cached_subject), _| {
                 cached_upstream != upstream
                     || subject.is_some_and(|subject| cached_subject != subject)
             },
         );
+        drop(_guards);
+    }
+
+    async fn invalidate_shared_oauth_status_discovery(&self) {
+        let upstreams = {
+            let config = self.config.read().await;
+            Self::google_provider_upstream_names(&config)
+        };
+        for upstream in upstreams {
+            self.invalidate_oauth_status_discovery(&upstream, None)
+                .await;
+        }
     }
 
     async fn oauth_status_discovery(
@@ -106,18 +248,49 @@ impl GatewayManager {
         }
 
         let started = std::time::Instant::now();
+        let discovery_epoch = self.oauth_status_epoch(upstream, subject);
         let (request_timeout, relay_timeout) = {
             let cfg = self.config.read().await;
             (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
         };
-        let pool = self.new_base_pool(request_timeout, relay_timeout);
-        pool.discover_all_for_subject(&[config], subject).await;
-        let snapshot = OauthStatusDiscoverySnapshot {
-            completed_at: tokio::time::Instant::now(),
-            summary: pool.cached_upstream_summary(upstream).await,
-            tool_error: pool.upstream_tool_last_error(upstream).await,
-            error: pool.upstream_last_error(upstream).await,
+        // Status participates in the manager-owned connection lifecycle. When
+        // a live pool is published, refresh that exact pool so status observes
+        // the same connection incarnation as routed traffic. A cold manager
+        // uses an explicitly ephemeral probe pool and drains it before return.
+        let (pool, ephemeral_pool) = self.oauth_status_pool(request_timeout, relay_timeout);
+        let permit = tokio::time::timeout(
+            request_timeout,
+            self.oauth_status_connect_bulkhead.clone().acquire_owned(),
+        )
+        .await;
+        let discovery = match permit {
+            Ok(Ok(_permit)) => pool.subject_scoped_upstream_summary(&config, subject).await,
+            Ok(Err(_)) => Err("OAuth status connection bulkhead is closed".to_string()),
+            Err(_) => Err("OAuth status connection queue timed out".to_string()),
         };
+        #[cfg(test)]
+        wait_on_status_discovery_barrier().await;
+        let mut snapshot = OauthStatusDiscoverySnapshot {
+            completed_at: tokio::time::Instant::now(),
+            summary: discovery.as_ref().ok().copied(),
+            tool_error: discovery.err(),
+            error: None,
+        };
+        if ephemeral_pool {
+            pool.drain_for_swap("oauth.status.ephemeral").await;
+        }
+        if self.oauth_status_epoch(upstream, subject) != discovery_epoch {
+            snapshot.summary = None;
+            snapshot.tool_error = Some(
+                "OAuth credentials changed while status discovery was running; retry status"
+                    .to_string(),
+            );
+            snapshot.error = None;
+            if Arc::strong_count(&lock) <= 2 {
+                self.oauth_status_discovery_locks.remove(&key);
+            }
+            return snapshot;
+        }
         let mut cache = self.oauth_status_discovery_cache.lock().await;
         if cache.len() >= OAUTH_STATUS_DISCOVERY_CACHE_MAX && !cache.contains_key(&key) {
             if let Some(oldest) = cache
@@ -143,6 +316,18 @@ impl GatewayManager {
             "upstream oauth status discovery completed"
         );
         snapshot
+    }
+
+    fn oauth_status_epoch(&self, upstream: &str, subject: &str) -> (u64, u64) {
+        let upstream_epoch = self
+            .oauth_status_upstream_epochs
+            .get(upstream)
+            .map_or(0, |entry| *entry);
+        let subject_epoch = self
+            .oauth_status_subject_epochs
+            .get(&(upstream.to_string(), subject.to_string()))
+            .map_or(0, |entry| *entry);
+        (upstream_epoch, subject_epoch)
     }
 
     fn is_routable_oauth_upstream(upstream: &UpstreamConfig) -> bool {
@@ -368,16 +553,25 @@ impl GatewayManager {
         action: &'static str,
     ) -> Result<UpstreamOauthManager, ToolError> {
         self.upstream_oauth_manager(upstream).ok_or_else(|| {
+            let kind = if action == "callback" {
+                "oauth_probe_expired"
+            } else {
+                "not_found"
+            };
             tracing::warn!(
                 service = "upstream_oauth",
                 action,
                 upstream,
-                kind = "not_found",
+                kind,
                 "upstream oauth {action}: upstream not found or has no oauth config"
             );
             ToolError::Sdk {
-                sdk_kind: "not_found".to_string(),
-                message: format!("upstream '{upstream}' not found or has no oauth config"),
+                sdk_kind: kind.to_string(),
+                message: if action == "callback" {
+                    format!("OAuth probe for upstream '{upstream}' expired; probe again and retry authorization")
+                } else {
+                    format!("upstream '{upstream}' not found or has no oauth config")
+                },
             }
         })
     }
@@ -422,26 +616,21 @@ impl GatewayManager {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "callback")?;
 
-        manager
+        if let Err(e) = manager
             .complete_authorization_callback(subject, code, state)
             .await
-            .map_err(|e| {
-                tracing::warn!(
-                    service = "upstream_oauth",
-                    action = "callback",
-                    upstream,
-                    kind = e.kind(),
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "upstream oauth callback: token exchange failed"
-                );
-                tool_error_from_oauth(e)
-            })?;
-        self.invalidate_oauth_status_discovery(
-            upstream,
-            (manager.credential_source_label() != "google_provider").then_some(subject),
-        )
-        .await;
-
+        {
+            self.discard_transient_oauth_manager(upstream).await;
+            tracing::warn!(
+                service = "upstream_oauth",
+                action = "callback",
+                upstream,
+                kind = e.kind(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "upstream oauth callback: token exchange failed"
+            );
+            return Err(tool_error_from_oauth(e));
+        }
         tracing::info!(
             service = "upstream_oauth",
             action = "callback",
@@ -453,32 +642,32 @@ impl GatewayManager {
         if manager.credential_source_label() == "google_provider" {
             self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace")
                 .await;
+            self.invalidate_shared_oauth_status_discovery().await;
         } else {
             self.invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.replace")
+                .await;
+            self.invalidate_oauth_status_discovery(upstream, Some(subject))
                 .await;
         }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
-            let _mutation_guard = self.acquire_config_mutation().await?;
-            let mut cfg = self.load_config_for_mutation().await?;
-            let Some(existing) = cfg.upstream.iter_mut().find(|u| u.name == upstream) else {
+            if !self
+                .promote_probe_oauth_config(upstream, oauth_config)
+                .await?
+            {
                 tracing::debug!(
                     service = "upstream_oauth",
                     action = "callback",
                     upstream = %upstream,
                     "upstream oauth callback: no matching gateway in config; skipping oauth persistence"
                 );
-                return Ok(());
-            };
-            if existing.oauth.is_none() {
+            } else {
                 tracing::info!(
                     service = "upstream_oauth",
                     action = "callback",
                     upstream = %upstream,
                     "upstream oauth callback: persisting oauth config for probe-created manager"
                 );
-                existing.oauth = Some(oauth_config);
-                self.persist_config_owned(_mutation_guard, cfg).await?;
             }
         }
 
@@ -729,10 +918,10 @@ impl GatewayManager {
                 );
                 tool_error_from_oauth(error)
             })?;
-        self.invalidate_oauth_status_discovery(upstream, None).await;
         let sessions = self
             .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke")
             .await;
+        self.invalidate_shared_oauth_status_discovery().await;
         tracing::info!(
             service = "upstream_oauth",
             action = "google_revoke",
@@ -770,11 +959,10 @@ impl GatewayManager {
             );
             tool_error_from_oauth(e)
         })?;
-        self.invalidate_oauth_status_discovery(upstream, Some(subject))
-            .await;
-
         let sessions = self
             .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear")
+            .await;
+        self.invalidate_oauth_status_discovery(upstream, Some(subject))
             .await;
         tracing::info!(
             service = "upstream_oauth",

@@ -348,6 +348,28 @@ impl UpstreamPool {
             .await
     }
 
+    /// Discover one OAuth upstream through the same subject-scoped connection
+    /// cache used by routed traffic and return its status summary.
+    pub async fn subject_scoped_upstream_summary(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> Result<UpstreamCachedSummary, String> {
+        let (_peer, tools) = self
+            .acquire_or_connect_subject(config, subject)
+            .await
+            .map_err(|error| error.to_string())?;
+        let exposure = resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+        Ok(UpstreamCachedSummary {
+            discovered_tool_count: tools.len(),
+            exposed_tool_count: tools
+                .iter()
+                .filter(|tool| exposure.matches(tool.name.as_ref()))
+                .count(),
+            ..UpstreamCachedSummary::default()
+        })
+    }
+
     /// Return at most `limit` OAuth subject-scoped tools in deterministic
     /// global tool-name/upstream-name order.
     ///

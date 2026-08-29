@@ -30,6 +30,40 @@ pub enum OauthCommand {
     RelayLocal(RelayLocalArgs),
     /// Manage the public OAuth callback relay sidecar registry.
     RelayRegistry(RelayRegistryArgs),
+    /// Rotate, roll back, or emergency-revoke inbound JWT signing keys.
+    SigningKey(SigningKeyArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SigningKeyArgs {
+    #[command(subcommand)]
+    pub command: SigningKeyCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SigningKeyCommand {
+    /// Promote a new active key while retaining the prior key for verification.
+    Rotate {
+        #[arg(long)]
+        key_path: PathBuf,
+        #[arg(long, default_value_t = 3600)]
+        overlap_secs: u64,
+    },
+    /// Restore the newest retired key and retain the displaced active key.
+    Rollback {
+        #[arg(long)]
+        key_path: PathBuf,
+        #[arg(long, default_value_t = 3600)]
+        overlap_secs: u64,
+    },
+    /// Stage replacement of the active key and discard all verification overlap.
+    /// A running Labby server must be restarted before revocation is live.
+    EmergencyRevoke {
+        #[arg(long)]
+        key_path: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -107,7 +141,73 @@ pub async fn run(args: OauthArgs, format: OutputFormat, config: &LabConfig) -> R
     match args.command {
         OauthCommand::RelayLocal(args) => run_relay_local(args, config).await,
         OauthCommand::RelayRegistry(args) => run_relay_registry(args, format).await,
+        OauthCommand::SigningKey(args) => run_signing_key(args, format, config),
     }
+}
+
+fn run_signing_key(
+    args: SigningKeyArgs,
+    format: OutputFormat,
+    config: &LabConfig,
+) -> Result<ExitCode> {
+    let maximum_ttl = config
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.access_token_ttl_secs)
+        .unwrap_or(3600);
+    let mode;
+    let keys = match args.command {
+        SigningKeyCommand::Rotate {
+            key_path,
+            overlap_secs,
+        } => {
+            mode = "rotate";
+            labby_auth::jwt::SigningKeys::rotate_with_minimum(
+                &key_path,
+                Duration::from_secs(overlap_secs),
+                Duration::from_secs(maximum_ttl),
+            )?
+        }
+        SigningKeyCommand::Rollback {
+            key_path,
+            overlap_secs,
+        } => {
+            mode = "rollback";
+            labby_auth::jwt::SigningKeys::rollback_with_minimum(
+                &key_path,
+                Duration::from_secs(overlap_secs),
+                Duration::from_secs(maximum_ttl),
+            )?
+        }
+        SigningKeyCommand::EmergencyRevoke { key_path, yes } => {
+            if !yes {
+                anyhow::bail!(
+                    "emergency revocation requires --yes because it stages invalidation of every outstanding access token and requires an immediate Labby restart"
+                );
+            }
+            mode = "emergency_revoke";
+            labby_auth::jwt::SigningKeys::emergency_revoke(&key_path)?
+        }
+    };
+    if format.is_json() {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "mode": mode,
+                "active_kid": keys.key_id,
+                "published_keys": keys.jwks().keys.len(),
+                "restart_required": true,
+                "live_revocation_complete": false
+            }))?
+        );
+    } else {
+        println!(
+            "signing-key operation {mode} staged on disk: active key {} ({} JWKS keys published); restart Labby immediately before treating the operation as live",
+            keys.key_id,
+            keys.jwks().keys.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn run_relay_local(args: RelayLocalArgs, config: &LabConfig) -> Result<ExitCode> {
@@ -538,5 +638,121 @@ mod tests {
             message.contains("3 entries"),
             "expected message to mention the detail, got: {message}"
         );
+    }
+
+    #[test]
+    fn signing_key_lifecycle_commands_parse_explicit_safety_arguments() {
+        for args in [
+            vec![
+                "labby",
+                "oauth",
+                "signing-key",
+                "rotate",
+                "--key-path",
+                "/tmp/key",
+                "--overlap-secs",
+                "7200",
+            ],
+            vec![
+                "labby",
+                "oauth",
+                "signing-key",
+                "rollback",
+                "--key-path",
+                "/tmp/key",
+                "--overlap-secs",
+                "7200",
+            ],
+            vec![
+                "labby",
+                "oauth",
+                "signing-key",
+                "emergency-revoke",
+                "--key-path",
+                "/tmp/key",
+                "--yes",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(args).expect("signing-key command should parse");
+            assert!(matches!(cli.command, crate::cli::Command::Oauth(_)));
+        }
+    }
+
+    #[test]
+    fn signing_key_cli_executes_rotate_rejects_short_overlap_rolls_back_and_revokes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        let mut config = LabConfig {
+            auth: Some(Default::default()),
+            ..Default::default()
+        };
+        config.auth.as_mut().unwrap().access_token_ttl_secs = Some(3600);
+        let format = OutputFormat::from_json_flag(
+            false,
+            crate::output::ColorPolicy::Plain,
+            crate::output::RenderEnv::stdout(),
+        );
+
+        run_signing_key(
+            SigningKeyArgs {
+                command: SigningKeyCommand::Rotate {
+                    key_path: path.clone(),
+                    overlap_secs: 3600,
+                },
+            },
+            format,
+            &config,
+        )
+        .unwrap();
+        let rotated = std::fs::read(&path).unwrap();
+        assert!(
+            run_signing_key(
+                SigningKeyArgs {
+                    command: SigningKeyCommand::Rotate {
+                        key_path: path.clone(),
+                        overlap_secs: 3599
+                    }
+                },
+                format,
+                &config
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), rotated);
+        run_signing_key(
+            SigningKeyArgs {
+                command: SigningKeyCommand::Rollback {
+                    key_path: path.clone(),
+                    overlap_secs: 3600,
+                },
+            },
+            format,
+            &config,
+        )
+        .unwrap();
+        assert!(
+            run_signing_key(
+                SigningKeyArgs {
+                    command: SigningKeyCommand::EmergencyRevoke {
+                        key_path: path,
+                        yes: false
+                    }
+                },
+                format,
+                &config
+            )
+            .is_err()
+        );
+        run_signing_key(
+            SigningKeyArgs {
+                command: SigningKeyCommand::EmergencyRevoke {
+                    key_path: dir.path().join("auth-jwt.pem"),
+                    yes: true,
+                },
+            },
+            format,
+            &config,
+        )
+        .unwrap();
     }
 }

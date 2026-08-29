@@ -7,6 +7,52 @@ use serde::Deserialize;
 use std::time::Duration;
 
 use crate::oauth::secret::Secret;
+pub(crate) use labby_oauth_wire::{
+    ClientAuthorizationServerMetadata as AuthServerMetadata, NativeAuthorizationStartResponse,
+};
+use labby_oauth_wire::{
+    ClientRegistrationRequest, ClientRegistrationResponse, NativePollRequest, NativePollResponse,
+    TokenSuccessResponse,
+};
+
+const OAUTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const OAUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_OAUTH_JSON_BYTES: u64 = 1024 * 1024;
+
+/// Build the client used for OAuth protocol requests. Redirects are disabled so
+/// reqwest can never replay an authorization code, PKCE verifier, refresh
+/// token, polling credential, or revocation token to a server-selected URL.
+fn oauth_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(OAUTH_CONNECT_TIMEOUT)
+        .timeout(OAUTH_REQUEST_TIMEOUT)
+        .user_agent(concat!("Labby Palette OAuth/", env!("CARGO_PKG_VERSION")))
+}
+
+pub(crate) fn oauth_client() -> Result<reqwest::Client, reqwest::Error> {
+    oauth_client_builder().build()
+}
+
+pub(crate) async fn bounded_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    invalid_message: &'static str,
+) -> Result<T, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_OAUTH_JSON_BYTES)
+    {
+        return Err(invalid_message.to_string());
+    }
+    let body = response
+        .bytes()
+        .await
+        .map_err(|_| invalid_message.to_string())?;
+    if body.len() as u64 > MAX_OAUTH_JSON_BYTES {
+        return Err(invalid_message.to_string());
+    }
+    serde_json::from_slice(&body).map_err(|_| invalid_message.to_string())
+}
 
 /// Subset of the RFC 8414 authorization-server metadata the client needs.
 /// Extra fields in the document are ignored. `registration_endpoint` is
@@ -16,33 +62,6 @@ use crate::oauth::secret::Secret;
 /// client-run loopback listener, sidestepping browser HTTP↔HTTPS loopback
 /// quirks entirely (see `crates/labby-auth`'s `native_callback`/`native_poll`
 /// handlers). Falls back to the loopback flow when a server doesn't support it.
-#[derive(Clone, Debug, Deserialize)]
-pub(crate) struct AuthServerMetadata {
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    #[serde(default)]
-    pub revocation_endpoint: Option<String>,
-    #[serde(default)]
-    pub registration_endpoint: Option<String>,
-    #[serde(default)]
-    pub native_callback_endpoint: Option<String>,
-    #[serde(default)]
-    pub native_poll_endpoint_v2: Option<String>,
-    #[serde(default)]
-    pub native_authorization_start_media_type: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct NativePollResponse {
-    code: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct NativeAuthorizationStartResponse {
-    pub authorization_url: String,
-    pub poll_token: String,
-}
-
 /// The `/token` success response (labby-auth omits `refresh_token` when the
 /// upstream IdP did not return one). Token fields use `Secret`, which redacts
 /// itself in `Debug`, so the derived `Debug` is safe.
@@ -60,9 +79,16 @@ pub(crate) struct TokenResponse {
     pub scope: String,
 }
 
-#[derive(Deserialize)]
-struct ClientRegistrationResponse {
-    client_id: String,
+impl From<TokenSuccessResponse> for TokenResponse {
+    fn from(response: TokenSuccessResponse) -> Self {
+        Self {
+            access_token: response.access_token.into(),
+            token_type: response.token_type,
+            expires_in: response.expires_in,
+            refresh_token: response.refresh_token.map(Into::into),
+            scope: response.scope,
+        }
+    }
 }
 
 /// Why a `/token` request failed. `rejected` means a definitive grant rejection
@@ -100,22 +126,7 @@ pub(crate) fn discovery_url(base_url: &str) -> String {
 /// secrets (auth code, PKCE verifier, refresh token) must never traverse
 /// cleartext to a non-loopback host.
 pub(crate) fn require_secure_url(raw: &str) -> Result<url::Url, String> {
-    let url = url::Url::parse(raw).map_err(|err| format!("invalid OAuth URL `{raw}`: {err}"))?;
-    match url.scheme() {
-        "https" => Ok(url),
-        // `host_str()` returns the bracketed form `[::1]` for IPv6 literals.
-        "http"
-            if matches!(
-                url.host_str(),
-                Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-            ) =>
-        {
-            Ok(url)
-        }
-        _ => Err(format!(
-            "refusing OAuth over an insecure URL `{raw}` — https is required for non-loopback hosts"
-        )),
-    }
+    labby_oauth_wire::require_secure_endpoint(raw)
 }
 
 pub(crate) fn build_authorize_url(
@@ -140,7 +151,10 @@ pub(crate) fn build_authorize_url(
 }
 
 pub(crate) fn registration_body(redirect_uri: &str) -> serde_json::Value {
-    serde_json::json!({ "redirect_uris": [redirect_uri] })
+    serde_json::to_value(ClientRegistrationRequest {
+        redirect_uris: vec![redirect_uri.to_string()],
+    })
+    .expect("client registration request is structurally serializable")
 }
 
 pub(crate) fn authorization_code_form(
@@ -213,10 +227,7 @@ pub(crate) async fn discover(
             response.status()
         ));
     }
-    response
-        .json()
-        .await
-        .map_err(|err| format!("OAuth discovery returned an invalid document: {err}"))
+    bounded_json(response, "OAuth discovery returned an invalid document").await
 }
 
 pub(crate) async fn register_client(
@@ -224,8 +235,9 @@ pub(crate) async fn register_client(
     registration_endpoint: &str,
     redirect_uri: &str,
 ) -> Result<String, String> {
+    let endpoint = require_secure_url(registration_endpoint)?;
     let response = client
-        .post(registration_endpoint)
+        .post(endpoint)
         .json(&registration_body(redirect_uri))
         .send()
         .await
@@ -236,10 +248,8 @@ pub(crate) async fn register_client(
             response.status()
         ));
     }
-    let registered: ClientRegistrationResponse = response
-        .json()
-        .await
-        .map_err(|err| format!("client registration returned an invalid response: {err}"))?;
+    let registered: ClientRegistrationResponse =
+        bounded_json(response, "client registration returned an invalid response").await?;
     Ok(registered.client_id)
 }
 
@@ -270,6 +280,7 @@ pub(crate) async fn poll_native_code(
     poll_token: &str,
     timeout: Duration,
 ) -> Result<String, String> {
+    let endpoint = require_secure_url(poll_endpoint)?;
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let now = tokio::time::Instant::now();
@@ -280,8 +291,10 @@ pub(crate) async fn poll_native_code(
         let response = tokio::time::timeout(
             remaining,
             client
-                .post(poll_endpoint)
-                .json(&serde_json::json!({ "poll_token": poll_token }))
+                .post(endpoint.clone())
+                .json(&NativePollRequest {
+                    poll_token: poll_token.to_string(),
+                })
                 .header(reqwest::header::ACCEPT, "application/json")
                 .send(),
         )
@@ -299,10 +312,12 @@ pub(crate) async fn poll_native_code(
             ));
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let body: NativePollResponse = tokio::time::timeout(remaining, response.json())
-            .await
-            .map_err(|_| "timed out waiting for sign-in to complete".to_string())?
-            .map_err(|err| format!("native OAuth poll returned an invalid response: {err}"))?;
+        let body: NativePollResponse = tokio::time::timeout(
+            remaining,
+            bounded_json(response, "native OAuth poll returned an invalid response"),
+        )
+        .await
+        .map_err(|_| "timed out waiting for sign-in to complete".to_string())??;
         if let Some(code) = body.code {
             return Ok(code);
         }
@@ -330,8 +345,12 @@ async fn post_token_form(
     token_endpoint: &str,
     form: &[(&'static str, String)],
 ) -> Result<TokenResponse, TokenError> {
+    let endpoint = require_secure_url(token_endpoint).map_err(|message| TokenError {
+        rejected: false,
+        message,
+    })?;
     let response = client
-        .post(token_endpoint)
+        .post(endpoint)
         .form(form)
         .send()
         .await
@@ -348,14 +367,13 @@ async fn post_token_form(
             message: format!("token endpoint returned HTTP {status}"),
         });
     }
-    let text = response.text().await.map_err(|err| TokenError {
-        rejected: false,
-        message: err.to_string(),
-    })?;
-    serde_json::from_str(&text).map_err(|_| TokenError {
-        rejected: false,
-        message: "token endpoint returned an invalid response".to_string(),
-    })
+    bounded_json::<TokenSuccessResponse>(response, "token endpoint returned an invalid response")
+        .await
+        .map(Into::into)
+        .map_err(|message| TokenError {
+            rejected: false,
+            message,
+        })
 }
 
 #[cfg(test)]

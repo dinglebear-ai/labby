@@ -74,6 +74,8 @@ wiremock.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["process", "test-util"] }
 proptest = "1"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 labby-auth = { path = "../labby-auth", features = ["upstream-oauth-rmcp"] }
 
 [lints]

@@ -36,6 +36,26 @@ loopback, link-local, or non-Tailscale IPs are rejected.
 
 ## Preflight
 
+Every transition uses the run-owned end-to-end canary. Export the admin bearer
+without placing it on the command line, and substitute this host's concrete
+Tailscale address for `--target-host`:
+
+```bash
+export LABBY_ADMIN_BEARER_TOKEN='...'
+run_canary() {
+  python3 scripts/oauth_relay_cutover_canary.py \
+    --public-base https://callback.tootie.tv \
+    --admin-base https://labby.example.com \
+    --target-host 100.99.0.1 "$@"
+}
+```
+
+The canary owns a unique registry identity, listener, code, and state. It
+requires exact callback delivery and response propagation, then removes the
+identity and confirms it is absent. Any failure, timeout, skipped check, or
+cleanup residue exits nonzero and blocks the transition. The bearer value is
+never printed.
+
 Verify Labby is reachable through SWAG:
 
 ```bash
@@ -61,6 +81,15 @@ active registry.
 Restart Labby after CLI-side registry import so the running server refreshes
 its in-memory snapshot.
 
+Prove the currently serving relay before changing SWAG:
+
+```bash
+run_canary --phase pre-cutover
+```
+
+Do not continue unless the JSON result is `status=passed`,
+`machine_removed=true`, `exact_delivery=true`, and `exact_response=true`.
+
 ## Cutover
 
 Update the SWAG `callback.tootie.tv` upstream from `callback-relay:39001` to the
@@ -73,7 +102,7 @@ ssh edgehost 'docker exec swag nginx -t'
 ssh edgehost 'docker exec swag nginx -s reload'
 ```
 
-Verify the public shallow health endpoint:
+Use shallow health only as an initial diagnostic:
 
 ```bash
 curl -fsS --max-time 5 https://callback.tootie.tv/healthz
@@ -85,12 +114,18 @@ Expected shape:
 {"status":"ok","relay":"enabled","registry":"loaded","machines":7}
 ```
 
-Run an explicit deep check from an operator shell when target reachability
-matters:
+Run the registry/target doctor, then require the end-to-end post-cutover canary:
 
 ```bash
 labby doctor oauth-relay --probe-targets --json
+run_canary --phase post-cutover
 ```
+
+If either command fails, immediately restore the old SWAG upstream. A shallow
+`/healthz` success never authorizes completion. Before production cutover,
+exercise staging failures at SWAG routing, registry lookup, target reachability,
+and response forwarding; each injected failure must make the canary fail and
+trigger this rollback decision.
 
 ## Rollback
 
@@ -111,7 +146,9 @@ Recheck the public endpoint after rollback:
 
 ```bash
 curl -fsS --max-time 5 https://callback.tootie.tv/healthz
+run_canary --phase post-rollback
 ```
 
 If rollback points back to the Python relay, use the standalone relay's own
-health behavior as the authority for that check.
+health behavior only as an initial diagnostic. Rollback is complete only after
+the same end-to-end canary passes and its run-owned registry entry is absent.

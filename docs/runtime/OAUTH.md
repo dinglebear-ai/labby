@@ -28,7 +28,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
 | `LABBY_TOKEN_ENCRYPTION_KEY` | OAuth mode | 32-byte key encoded as 64 hex digits or 43 base64url characters; encrypts reusable Google provider credentials in `auth.db`. |
-| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. Must use HTTPS, except for explicit loopback HTTP hosts (`localhost`, `127.0.0.0/8`, or `::1`). |
 | `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
@@ -36,7 +36,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email address of the bootstrap admin permitted to log in. Normalized to lowercase at startup. **Required** when `LABBY_AUTH_MODE=oauth`: startup fails if unset so no Google account can authenticate unless explicitly permitted. The `email_verified` claim in Google's id_token is enforced — accounts with unverified email addresses are rejected even if the address matches. Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
 | `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated Google Workspace domains whose members may log in, in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. Matching is against the ID token's `hd` (hosted domain) claim rather than the email address suffix: Google asserts `hd` only for accounts genuinely hosted in that Workspace domain, so suffix lookalikes such as `user@evil-example.com` are not accepted. `email_verified` is enforced first, and a token refresh that returns no fresh `id_token` carries no `hd`, so domain access is never re-established from a reused identity. Empty (the default) disables domain-based access. |
-| `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL. Use this when the browser webapp host differs from the OAuth issuer; when unset, Labby derives the callback from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`. |
+| `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL. Use this when the browser webapp host differs from the OAuth issuer; when unset, Labby derives the callback from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`. It has the same HTTPS-or-explicit-loopback-HTTP requirement as `LABBY_PUBLIC_URL`. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
 | `LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE` | no | Process-local rate limit for `POST /register`. Defaults to `20`. |
@@ -55,6 +55,15 @@ When OAuth mode is configured, `labby serve` performs these steps at startup:
    and a valid `LABBY_TOKEN_ENCRYPTION_KEY` are present. OAuth startup fails
    closed before the database can persist a reusable Google credential if the
    encryption key is absent or invalid.
+   `LABBY_PUBLIC_URL` and an explicit `LABBY_GOOGLE_CALLBACK_URL` must use
+   HTTPS. Plain HTTP is accepted only when the URL host is exactly `localhost`,
+   an address in `127.0.0.0/8`, or `::1`; hostname lookalikes and URLs carrying
+   credentials are rejected. Configuration errors name the rejected key.
+   TLS termination does not relax this rule: a reverse proxy may forward to
+   Labby over a private cleartext hop, but the configured public and callback
+   URLs must describe the browser-visible HTTPS origin. If proxy or environment
+   generation advertises public `http://`, fix that deployment configuration;
+   loopback HTTP examples are for single-host development only.
 2. Open the SQLite auth store in WAL mode with a non-zero busy timeout. Legacy
    plaintext Google provider rows are atomically encrypted before they can be
    served.
@@ -130,7 +139,7 @@ Flow summary:
 2. The client sends the user to `/authorize` with `response_type=code`.
 3. Labby stores the request state, generates PKCE data, and redirects to Google.
 4. Google redirects back to `/auth/google/callback`.
-5. Labby enforces the email allowlist (currently `LABBY_AUTH_ADMIN_EMAIL`; expanding to a SQLite-backed user list managed via the web UI). The id_token's `email_verified` claim is required — unverified accounts are rejected even when the address matches. Browser-login callers receive a 401; OAuth-client callers receive an RFC 6749 §4.1.2.1 redirect with `error=access_denied`.
+5. Labby enforces the merged email allowlist: `LABBY_AUTH_ADMIN_EMAIL`, current SQLite-backed allowlist entries, and configured Workspace domains. The id_token's `email_verified` claim is required — unverified accounts are rejected even when the address matches. Browser-login callers receive a 401; OAuth-client callers receive an RFC 6749 §4.1.2.1 redirect with `error=access_denied`.
 6. Labby exchanges the Google code server-side, stores a local authorization code, and redirects the client back to its registered redirect URI with the local code.
 7. The client exchanges that local code at `/token` for a Labby access token and, when Google granted offline access, a Labby refresh token.
 
@@ -506,6 +515,28 @@ gateway-subset protected route opts into Project authorization context with
 `target.project_id`. Route add/test accept `--project-id`; update preserves the
 current binding unless `--project-id` replaces it or `--clear-project-id`
 explicitly removes it.
+
+### Email allowlist administration
+
+The SQLite-backed allowlist is active authorization state, not a future-facing
+preference. Its API is mounted only in OAuth mode:
+
+| Method and path | Success | Contract |
+|---|---|---|
+| `GET /v1/auth/allowed-emails` | `200` with `{"entries":[{"email","added_by","created_at"}]}` | Lists normalized allowlist entries. |
+| `POST /v1/auth/allowed-emails` | `201` with `{"entry":{"email","added_by","created_at"}}` | Adds the JSON body `{"email":"user@example.com"}`. Input is trimmed, lowercased, and validated; adding an existing address is safe. |
+| `DELETE /v1/auth/allowed-emails/{email}` | `204` with no body | Removes the normalized address. Deletion is idempotent, including when the entry is absent. |
+
+All three operations require an OAuth browser session whose authenticated email
+matches `LABBY_AUTH_ADMIN_EMAIL`. A JWT or static bearer token is insufficient,
+even if it carries `lab:admin`. `POST` and `DELETE` also require the browser
+session's `X-CSRF-Token`; the shared `/v1` middleware rejects a missing or
+mismatched token before the handler runs. Responses use `Cache-Control:
+private, no-store`; failures use the shared structured API error contract.
+
+Allowlist rows are merged with the bootstrap admin and configured Workspace
+domains during browser-login and OAuth-client callback authorization. Therefore,
+an added user can authenticate immediately without restart.
 
 Allowlist removal is an immediate revocation boundary for renewable browser
 and upstream credentials. `DELETE /v1/auth/allowed-emails/{email}` resolves
@@ -1031,6 +1062,29 @@ Key rotation is an offline migration, not an environment-only edit:
 There is currently no supported online key-rotation command. Never rotate by
 editing only `LABBY_TOKEN_ENCRYPTION_KEY`; that makes existing ciphertext
 undecryptable and OAuth startup/use will fail closed.
+
+### JWT signing-key rotation
+
+Inbound access-token signing keys use a bounded key ring: one active Ed25519
+key at `LABBY_AUTH_KEY_PATH` and up to four unexpired verification keys in the
+sibling `.retired` directory. Retired public keys remain in JWKS and tokens
+remain valid during the overlap; only the active key signs new tokens. The
+default overlap is 3600 seconds and must be at least the configured maximum
+access-token lifetime.
+
+Back up the active key and retired directory, stop writers using the key path,
+then run `labby oauth signing-key rotate --key-path "$LABBY_AUTH_KEY_PATH"
+--overlap-secs 3600` and restart Labby. Verify that JWKS publishes both key IDs,
+old tokens still validate, and new tokens carry the new `kid`. Roll back with
+`labby oauth signing-key rollback` using the same arguments; this atomically
+promotes the newest retired key and retains the displaced key for verification.
+
+If a key is compromised, use `labby oauth signing-key emergency-revoke
+--key-path "$LABBY_AUTH_KEY_PATH" --yes`, restart immediately, and require all
+clients to authenticate again. This intentionally deletes every retired
+verification key and invalidates all outstanding access tokens; it is not a
+zero-downtime rotation. Record the operator event and revoke any copied backup
+containing the compromised key.
 
 Current verification is owned by Labby's built-in health/doctor surfaces and focused integration tests; there is no checked-in `scripts/check-oauth.sh` product contract.
 

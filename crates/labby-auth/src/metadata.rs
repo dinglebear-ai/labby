@@ -39,7 +39,7 @@ pub async fn authorization_server_metadata(
         native_poll_endpoint: None,
         native_poll_endpoint_v2: Some(native_poll_endpoint(&state)),
         native_authorization_start_media_type: Some(
-            "application/vnd.labby.native-oauth-start+json".to_string(),
+            labby_oauth_wire::NATIVE_AUTHORIZATION_START_MEDIA_TYPE.to_string(),
         ),
         jwks_uri: format!("{base}/jwks"),
         response_types_supported: vec!["code".to_string()],
@@ -144,6 +144,12 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let client_contract: labby_oauth_wire::ClientAuthorizationServerMetadata =
+            serde_json::from_slice(&body).expect("Palette wire contract accepts server metadata");
+        assert_eq!(
+            client_contract.registration_endpoint.as_deref(),
+            Some("https://lab.example.com/register")
+        );
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
         assert_eq!(
             json["authorization_response_iss_parameter_supported"], true,

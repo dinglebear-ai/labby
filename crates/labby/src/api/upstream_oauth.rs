@@ -137,7 +137,6 @@ async fn upstreams(
     State(state): State<AppState>,
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
 ) -> Result<Json<Vec<UpstreamEntry>>, ApiError> {
-    require_master(&state)?;
     require_admin_scope(&auth, "upstreams")?;
     let manager = state
         .gateway_manager
@@ -150,10 +149,6 @@ async fn upstreams(
             .map(|c| UpstreamEntry { name: c.name })
             .collect(),
     ))
-}
-
-fn require_master(_state: &AppState) -> Result<(), ToolError> {
-    Ok(())
 }
 
 fn require_admin_scope(
@@ -249,7 +244,6 @@ async fn probe(
     Json(body): Json<ProbeRequest>,
 ) -> Result<Json<crate::dispatch::gateway::oauth::ProbeResult>, ApiError> {
     let started = std::time::Instant::now();
-    require_master(&state)?;
     require_admin_scope(&auth, "probe")?;
     if body.confirm != Some(true) {
         return Err(ApiError::new(ToolError::Sdk {
@@ -297,7 +291,6 @@ async fn start(
     Json(body): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let started = std::time::Instant::now();
-    require_master(&state)?;
     require_admin_scope(&auth, "start")?;
     let manager = state
         .gateway_manager
@@ -351,7 +344,6 @@ async fn status(
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
 ) -> Result<Json<crate::dispatch::gateway::oauth::UpstreamOauthStatusView>, ApiError> {
     let started = std::time::Instant::now();
-    require_master(&state)?;
     require_admin_scope(&auth, "status")?;
     let manager = state
         .gateway_manager
@@ -394,9 +386,6 @@ async fn clear(
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
 ) -> impl IntoResponse {
     let started = std::time::Instant::now();
-    if let Err(error) = require_master(&state) {
-        return ApiError::new(error).into_response();
-    }
     if let Err(error) = require_admin_scope(&auth, "clear") {
         return ApiError::new(error).into_response();
     }
@@ -445,7 +434,6 @@ async fn revoke_google(
     Json(body): Json<GoogleRevokeRequest>,
 ) -> Result<Json<labby_auth::types::GoogleProviderInvalidation>, ApiError> {
     let started = std::time::Instant::now();
-    require_master(&state)?;
     require_admin_scope(&auth, "google_revoke")?;
     if body.confirm != Some(true) {
         return Err(ApiError::new(ToolError::Sdk {
@@ -511,10 +499,6 @@ async fn callback(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let started = std::time::Instant::now();
-    if let Err(error) = require_master(&state) {
-        return ApiError::new(error).into_response();
-    }
-
     let manager = match state.gateway_manager.clone() {
         Some(manager) => manager,
         None => {

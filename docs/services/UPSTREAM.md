@@ -183,6 +183,11 @@ Validation runs before discovery. Invalid entries are skipped with a warning dur
 
 The `bearer_token_env` field names an environment variable; it does not contain the token directly. At connection time, the pool reads the env var and sends the token as a bearer header for HTTP and Unix-socket upstreams. For stdio upstreams, the same named variable is injected into the child process after Labby clears the ambient environment and applies its allowlist.
 
+HTTP and Unix-socket MCP transports never follow redirects. This applies to
+JSON-RPC POSTs, streaming GETs, and session DELETEs, whether or not a bearer is
+configured. A 3xx response fails with a redacted transport error; update the
+configured upstream URL explicitly instead of relying on a redirect.
+
 If the named env var is not set, HTTP and Unix-socket connections proceed without bearer auth and log a warning; stdio skips the optional injection. Stdio still rejects OAuth and custom HTTP headers because those require an HTTP transport.
 
 Changing a bearer-token env var does not hot-apply by itself. Use `gateway.reload` when you want the live pool to re-read `bearer_token_env`.

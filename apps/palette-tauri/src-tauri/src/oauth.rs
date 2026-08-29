@@ -27,7 +27,6 @@ use std::{
 
 use tauri::AppHandle;
 
-use crate::labby_bridge::BridgeClient;
 use crate::oauth::status::{OauthStatus, status_for};
 use crate::oauth::store::StoredCredentials;
 use crate::{merged_settings, validate_saved_server_url};
@@ -52,6 +51,7 @@ enum CredCache {
 /// Tauri-managed OAuth state with short-lived cache locking and independent
 /// single-flight guards for refresh, login, and durable persistence.
 pub(crate) struct OauthState {
+    client: reqwest::Client,
     creds: tokio::sync::Mutex<CredCache>,
     login: tokio::sync::Mutex<()>,
     refresh: tokio::sync::Mutex<()>,
@@ -60,27 +60,27 @@ pub(crate) struct OauthState {
 }
 
 impl OauthState {
-    pub(crate) fn new() -> Self {
-        OauthState {
+    pub(crate) fn new() -> Result<Self, reqwest::Error> {
+        Ok(OauthState {
+            client: flow::oauth_client()?,
             creds: tokio::sync::Mutex::new(CredCache::Unloaded),
             login: tokio::sync::Mutex::new(()),
             refresh: tokio::sync::Mutex::new(()),
             persist: tokio::sync::Mutex::new(()),
             revision: AtomicU64::new(0),
-        }
+        })
     }
 }
 
 impl Default for OauthState {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("the Palette OAuth HTTP client should build")
     }
 }
 
 #[tauri::command]
 pub(crate) async fn labby_oauth_login(
     app: AppHandle,
-    bridge: tauri::State<'_, BridgeClient>,
     oauth_state: tauri::State<'_, OauthState>,
 ) -> Result<OauthStatus, String> {
     // Serialize interactive logins — a second concurrent click is rejected.
@@ -91,9 +91,7 @@ pub(crate) async fn labby_oauth_login(
 
     let settings = merged_settings(&app).await?;
     let server_url = validate_saved_server_url(&settings.server_url)?;
-    let client = bridge.client().clone();
-
-    let creds = run_login(&client, &server_url).await?;
+    let creds = run_login(&oauth_state.client, &server_url).await?;
     replace_and_persist(&app, &oauth_state, Some(creds.clone())).await?;
     Ok(status_for(Some(&creds), &server_url))
 }
@@ -101,7 +99,6 @@ pub(crate) async fn labby_oauth_login(
 #[tauri::command]
 pub(crate) async fn labby_oauth_logout(
     app: AppHandle,
-    bridge: tauri::State<'_, BridgeClient>,
     oauth_state: tauri::State<'_, OauthState>,
 ) -> Result<OauthStatus, String> {
     // Serialize logout against both interactive login and token rotation. The
@@ -111,7 +108,7 @@ pub(crate) async fn labby_oauth_logout(
     let _refresh_guard = oauth_state.refresh.lock().await;
     ensure_loaded(&app, &oauth_state).await;
     if let Some(credentials) = credential_snapshot(&oauth_state).await {
-        revoke_stored_credentials(bridge.client(), &credentials).await?;
+        revoke_stored_credentials(&oauth_state.client, &credentials).await?;
     }
     replace_and_persist(&app, &oauth_state, None).await?;
     emit_oauth_changed(&app);
@@ -160,7 +157,6 @@ pub(crate) async fn labby_oauth_status(
 /// the cache lock across any refresh so concurrent callers single-flight.
 async fn effective_access_token(
     app: &AppHandle,
-    client: &reqwest::Client,
     server_url: &str,
     state: &OauthState,
 ) -> Option<String> {
@@ -193,7 +189,16 @@ async fn effective_access_token(
     {
         return Some(creds.access_token.expose().to_string());
     }
-    match refresh_snapshot(app, client, server_url, state, snapshot_revision, snapshot).await {
+    match refresh_snapshot(
+        app,
+        &state.client,
+        server_url,
+        state,
+        snapshot_revision,
+        snapshot,
+    )
+    .await
+    {
         RefreshResult::Refreshed(token) => Some(token),
         RefreshResult::Cleared | RefreshResult::Kept | RefreshResult::PersistenceFailed => None,
     }
@@ -382,7 +387,6 @@ fn emit_oauth_changed(app: &AppHandle) {
 /// (proactive expiry can miss clock skew or a server-side revocation).
 async fn force_refresh(
     app: &AppHandle,
-    client: &reqwest::Client,
     server_url: &str,
     state: &OauthState,
     failed_access_token: Option<&str>,
@@ -399,7 +403,15 @@ async fn force_refresh(
         }
     }
     let (snapshot_revision, snapshot) = credential_snapshot_with_revision(state).await;
-    refresh_snapshot(app, client, server_url, state, snapshot_revision, snapshot).await
+    refresh_snapshot(
+        app,
+        &state.client,
+        server_url,
+        state,
+        snapshot_revision,
+        snapshot,
+    )
+    .await
 }
 
 /// Send a bridge request with the resolved auth token; if the server answers
@@ -408,7 +420,7 @@ async fn force_refresh(
 /// attach, so the request can be rebuilt for the retry.
 pub(crate) async fn send_with_reauth<F>(
     app: &AppHandle,
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     server_url: &str,
     static_token: Option<&str>,
     state: &OauthState,
@@ -417,14 +429,14 @@ pub(crate) async fn send_with_reauth<F>(
 where
     F: Fn(Option<&str>) -> reqwest::RequestBuilder,
 {
-    let oauth = effective_access_token(app, client, server_url, state).await;
+    let oauth = effective_access_token(app, server_url, state).await;
     let token = pick_token(oauth.clone(), static_token.map(str::to_string));
     let response = make(token.as_deref())
         .send()
         .await
         .map_err(|err| err.to_string())?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        match force_refresh(app, client, server_url, state, oauth.as_deref()).await {
+        match force_refresh(app, server_url, state, oauth.as_deref()).await {
             RefreshResult::Refreshed(fresh) => {
                 return make(Some(&fresh))
                     .send()
@@ -492,7 +504,7 @@ async fn run_login(
         &meta.native_authorization_start_media_type,
     ) {
         (Some(native_callback_endpoint), Some(native_poll_endpoint), Some(start_media_type))
-            if start_media_type == "application/vnd.labby.native-oauth-start+json" =>
+            if start_media_type == labby_oauth_wire::NATIVE_AUTHORIZATION_START_MEDIA_TYPE =>
         {
             flow::require_secure_url(native_callback_endpoint)?;
             flow::require_secure_url(native_poll_endpoint)?;
@@ -548,10 +560,11 @@ async fn run_login_via_native_poll(
             start.status()
         ));
     }
-    let start: flow::NativeAuthorizationStartResponse = start
-        .json()
-        .await
-        .map_err(|err| format!("native OAuth start returned an invalid response: {err}"))?;
+    let start: flow::NativeAuthorizationStartResponse = flow::bounded_json(
+        start,
+        "native OAuth start returned an invalid or oversized response",
+    )
+    .await?;
 
     if let Err(err) = open::that(&start.authorization_url) {
         return Err(format!(

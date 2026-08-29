@@ -101,21 +101,63 @@ async fn await_code_returns_error_for_matching_state_denial() {
 async fn slow_partial_client_cannot_hold_callback_listener_for_flow_timeout() {
     let listener = bind().await.unwrap();
     let port = listener.listener.local_addr().unwrap().port();
-    let slow = tokio::spawn(async move {
-        let mut stream = TcpStream::connect(("localhost", port)).await.unwrap();
-        stream.write_all(b"GET /callback?").await.unwrap();
-        tokio::time::sleep(CONNECTION_READ_TIMEOUT + Duration::from_millis(100)).await;
-    });
+    let mut slow = Vec::new();
+    for _ in 0..4 {
+        slow.push(tokio::spawn(async move {
+            let mut stream = TcpStream::connect(("localhost", port)).await.unwrap();
+            stream.write_all(b"GET /callback?").await.unwrap();
+            tokio::time::sleep(CONNECTION_READ_TIMEOUT + Duration::from_millis(100)).await;
+        }));
+    }
     let legitimate = tokio::spawn(async move {
-        tokio::time::sleep(CONNECTION_READ_TIMEOUT + Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
         send_request(port, "GET /callback?code=real&state=expected HTTP/1.1").await;
     });
 
-    let code = listener
-        .await_code("expected", Duration::from_secs(5))
-        .await
-        .unwrap();
+    let code = tokio::time::timeout(
+        Duration::from_millis(750),
+        listener.await_code("expected", Duration::from_secs(5)),
+    )
+    .await
+    .expect("valid callback must not wait for slow sockets")
+    .unwrap();
     assert_eq!(code, "real");
-    slow.await.unwrap();
+    for task in slow {
+        task.await.unwrap();
+    }
+    legitimate.await.unwrap();
+}
+
+#[tokio::test]
+async fn saturated_handlers_queue_instead_of_dropping_the_real_callback() {
+    let listener = bind().await.unwrap();
+    let port = listener.listener.local_addr().unwrap().port();
+    let mut slow = Vec::new();
+    for _ in 0..MAX_CONCURRENT_CONNECTIONS {
+        slow.push(tokio::spawn(async move {
+            let mut stream = TcpStream::connect(("localhost", port)).await.unwrap();
+            stream.write_all(b"GET /callback?").await.unwrap();
+            tokio::time::sleep(CONNECTION_READ_TIMEOUT + Duration::from_millis(100)).await;
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let legitimate = tokio::spawn(async move {
+        send_request(
+            port,
+            "GET /callback?code=queued-real&state=expected HTTP/1.1",
+        )
+        .await;
+    });
+    let code = tokio::time::timeout(
+        CONNECTION_READ_TIMEOUT + Duration::from_secs(2),
+        listener.await_code("expected", Duration::from_secs(5)),
+    )
+    .await
+    .expect("valid callback must remain queued while handlers are saturated")
+    .unwrap();
+    assert_eq!(code, "queued-real");
+    for task in slow {
+        task.await.unwrap();
+    }
     legitimate.await.unwrap();
 }

@@ -448,7 +448,7 @@ Markdown link checker, live health check, or onboarding policy audit.
 
 ## Architecture
 
-The workspace has 11 members and uses Rust 2024, resolver 3, a single
+The workspace has 12 members and uses Rust 2024, resolver 3, a single
 `[workspace.package]` version, shared `[workspace.dependencies]`, and shared
 `[workspace.lints]` (`unsafe_code = "forbid"`, `mod_module_files = "deny"`,
 `disallowed_macros = "deny"`). The MCP SDK is pinned exactly as
@@ -462,6 +462,7 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 | [crates/labby-runtime](./crates/labby-runtime) | Surface-neutral contracts and helpers: `ToolError`, gateway config DTOs, dispatch helpers, redaction, path safety, and security helpers. |
 | [crates/labby-codemode](./crates/labby-codemode) | Client-neutral Code Mode runner kernel, broker, result shaping, snippets, and TypeScript descriptor generation. |
 | [crates/labby-gateway](./crates/labby-gateway) | Gateway manager, upstream MCP proxy pool, Code Mode host adapter, discovery/imports, virtual servers, protected routes, and OAuth lifecycle. |
+| [crates/labby-oauth-wire](./crates/labby-oauth-wire) | Host-neutral OAuth provider/client wire DTOs, extension media types, and endpoint transport policy. |
 | [crates/labby-openapi](./crates/labby-openapi) | OpenAPI 3.1 schema assembly for the HTTP surface. |
 | [crates/labby-web](./crates/labby-web) | Embedded/filesystem web asset serving with symlink escape defense. |
 | [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, gateway dispatch, logs, setup, snippets, filesystem access, and output rendering. |

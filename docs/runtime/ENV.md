@@ -99,7 +99,8 @@ Rules:
 - `LABBY_AUTH_MODE` defaults to `bearer`
 - bearer mode keeps using `LABBY_MCP_HTTP_TOKEN`
 - oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and `LABBY_AUTH_ADMIN_EMAIL`
-- `LABBY_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Future SQLite-backed allowlist (web-UI managed) will grant access to additional users.
+- `LABBY_PUBLIC_URL` and an explicit `LABBY_GOOGLE_CALLBACK_URL` must use HTTPS. HTTP is allowed only for the exact loopback hosts `localhost`, `127.0.0.0/8`, and `::1`; hostname lookalikes and URL credentials are rejected at startup
+- `LABBY_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Additional users are authorized immediately through the current SQLite-backed [`/v1/auth/allowed-emails` administration API](OAUTH.md#email-allowlist-administration).
 - `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` grants access to every member of one or more Google
   Workspace domains, in addition to the admin email and the SQLite-backed allowlist. It is
   matched against the ID token's `hd` (hosted domain) claim, never the address suffix, so a
