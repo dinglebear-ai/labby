@@ -1,3 +1,9 @@
+---
+title: "Browser Bridge"
+created: "2026-08-29"
+updated: "2026-08-29"
+---
+
 # Browser Bridge
 
 The `browser` service is Labby's Rust-native bridge to browser WebMCP tools. Labby owns durable browser identities, operator-approved pairing, authenticated live connections, sanitized catalog persistence, explicit per-document enablement, bounded invocation routing, cancellation, and stale-document protection. It does not run a separate Webby, Phoenix, LiveView, or Next.js application.
