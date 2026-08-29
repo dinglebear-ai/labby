@@ -297,7 +297,7 @@ impl PaletteCaller {
         }
     }
 
-    fn allowed_upstreams(&self) -> Option<&BTreeSet<String>> {
+    pub(crate) fn allowed_upstreams(&self) -> Option<&BTreeSet<String>> {
         self.scope.allowed_namespaces()
     }
 }
@@ -492,6 +492,16 @@ impl GatewayManager {
         caller: &PaletteCaller,
         request: PaletteExecuteRequest,
     ) -> Result<PaletteExecuteResponse, ToolError> {
+        self.palette_execute_with_consumed_approval(caller, request, false)
+            .await
+    }
+
+    pub(crate) async fn palette_execute_with_consumed_approval(
+        &self,
+        caller: &PaletteCaller,
+        request: PaletteExecuteRequest,
+        consumed_server_approval: bool,
+    ) -> Result<PaletteExecuteResponse, ToolError> {
         let start = Instant::now();
         let tool_id = request.id.clone();
         let (upstream, tool) = parse_mcp_launcher_id(&tool_id)?;
@@ -514,8 +524,9 @@ impl GatewayManager {
                 });
             }
 
-            let destructive_allowed = caller.caller.is_admin() && request.confirm_destructive;
-            let destructive_denial_kind = if caller.caller.is_admin() {
+            let destructive_allowed = consumed_server_approval
+                || (caller.caller.is_admin() && request.confirm_destructive);
+            let destructive_denial_kind = if caller.caller.is_admin() || consumed_server_approval {
                 "confirmation_required"
             } else {
                 "forbidden"

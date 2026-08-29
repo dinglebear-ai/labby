@@ -14,6 +14,12 @@ use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::GatewayManager;
+
+fn upstream_revision(upstream: &UpstreamConfig) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(upstream).expect("upstream config serializes");
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
 use super::virtual_servers::find_virtual_server;
 
 const WARNING_UNKNOWN_SERVICE: &str = "unknown_service";
@@ -187,6 +193,7 @@ impl GatewayManager {
             })?
             .clone();
         Ok(GatewayView {
+            revision: upstream_revision(&upstream),
             config: config_view(&upstream, &code_mode),
             runtime: runtime_view(pool.as_deref(), &upstream.name, None).await,
             enrichment_suggestion: None,

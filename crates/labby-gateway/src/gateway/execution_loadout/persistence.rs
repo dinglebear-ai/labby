@@ -9,7 +9,17 @@ impl ExecutionLoadoutStore {
         let path = store_path(config_path);
         match fs::read(&path) {
             Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|error| storage_error(&path, error))
+                let mut store: Self =
+                    serde_json::from_slice(&bytes).map_err(|error| storage_error(&path, error))?;
+                store.records = store
+                    .records
+                    .into_values()
+                    .map(|record| {
+                        let key = format!("{}\0{}", record.draft.owner_principal, record.draft.id);
+                        (key, record)
+                    })
+                    .collect();
+                Ok(store)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(storage_error(&path, error)),

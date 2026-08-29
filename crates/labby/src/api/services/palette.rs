@@ -193,10 +193,10 @@ async fn execution_loadout_list(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
 ) -> Result<Json<Value>, ApiError> {
-    palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     Ok(Json(
-        json!({ "items": manager.execution_loadout_list().await }),
+        json!({ "items": manager.execution_loadout_list(&caller).await }),
     ))
 }
 
@@ -205,10 +205,10 @@ async fn execution_loadout_get(
     auth: Option<Extension<AuthContext>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
-        .execution_loadout_get(&id)
+        .execution_loadout_get(&caller, &id)
         .await
         .map_err(ToolError::from)?;
     Ok(Json(
@@ -225,7 +225,7 @@ async fn execution_loadout_create(
     require_execution_loadout_write(&caller)?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
-        .execution_loadout_create(input)
+        .execution_loadout_create(&caller, input)
         .await
         .map_err(ToolError::from)?;
     Ok(Json(
@@ -243,7 +243,7 @@ async fn execution_loadout_patch(
     require_execution_loadout_write(&caller)?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
-        .execution_loadout_patch(&id, input)
+        .execution_loadout_patch(&caller, &id, input)
         .await
         .map_err(ToolError::from)?;
     Ok(Json(
@@ -322,7 +322,7 @@ async fn execution_loadout_rollback(
     })?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
-        .execution_loadout_rollback(&id, expected, revision)
+        .execution_loadout_rollback(&caller, &id, expected, revision)
         .await
         .map_err(ToolError::from)?;
     Ok(Json(

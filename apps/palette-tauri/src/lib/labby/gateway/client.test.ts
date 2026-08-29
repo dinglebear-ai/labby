@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchAction } from "@/lib/labbyClient";
 import { gatewayClient, StaleGatewayError } from "./client";
-import { emptyGatewayDraft, gatewayFingerprint, type GatewayView } from "./model";
+import { emptyGatewayDraft, type GatewayView, gatewayFingerprint } from "./model";
 
 vi.mock("@/lib/labbyClient", async (original) => ({
   ...(await original()),
@@ -9,6 +9,7 @@ vi.mock("@/lib/labbyClient", async (original) => ({
 }));
 const dispatch = vi.mocked(dispatchAction);
 const view: GatewayView = {
+  revision: "sha256:fixture",
   config: {
     name: "docs",
     enabled: true,
@@ -67,7 +68,11 @@ describe("gateway client", () => {
       status: 200,
       path: "/v1/gateway",
       method: "POST",
-      payload: { ...view, config: { ...view.config, enabled: false } },
+      payload: {
+        ...view,
+        revision: "sha256:changed",
+        config: { ...view.config, enabled: false },
+      },
     });
     await expect(
       gatewayClient.update("docs", emptyGatewayDraft(), gatewayFingerprint(view)),

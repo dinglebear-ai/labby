@@ -41,6 +41,8 @@ impl From<GatewayRuntimeOwnerParams> for UpstreamRuntimeOwner {
 pub(crate) struct GatewayNameParams {
     pub name: String,
     #[serde(default)]
+    pub expected_revision: Option<String>,
+    #[serde(default)]
     pub origin: Option<String>,
     #[serde(default)]
     pub owner: Option<GatewayRuntimeOwnerParams>,
@@ -374,6 +376,8 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct GatewayUpdateParams {
     pub name: String,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
     pub patch: GatewayUpdatePatch,
     #[serde(default)]
     pub bearer_token_value: Option<String>,
@@ -385,6 +389,10 @@ pub(crate) struct GatewayUpdateParams {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct GatewayReloadParams {
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub origin: Option<String>,
     #[serde(default)]

@@ -1,12 +1,12 @@
-import { dispatchAction, resultErrorMessage, type PaletteResult } from "@/lib/labbyClient";
+import { dispatchAction, type PaletteResult, resultErrorMessage } from "@/lib/labbyClient";
 import {
   boundedGatewayRows,
-  gatewayFingerprint,
-  MAX_GATEWAY_ARGS,
-  MAX_GATEWAY_PATTERNS,
   type GatewayDraft,
   type GatewayRuntime,
   type GatewayView,
+  gatewayFingerprint,
+  MAX_GATEWAY_ARGS,
+  MAX_GATEWAY_PATTERNS,
 } from "./model";
 
 export class GatewayClientError extends Error {
@@ -114,17 +114,21 @@ export const gatewayClient = {
     expectedFingerprint: string,
   ): Promise<GatewayView> {
     await assertCurrent(name, expectedFingerprint);
-    return action("gateway.update", { name, patch: specFromDraft(draft) });
+    return action("gateway.update", {
+      name,
+      expected_revision: expectedFingerprint,
+      patch: specFromDraft(draft),
+    });
   },
 
   async remove(name: string, expectedFingerprint: string): Promise<void> {
     await assertCurrent(name, expectedFingerprint);
-    await action("gateway.remove", { name });
+    await action("gateway.remove", { name, expected_revision: expectedFingerprint });
   },
 
   async reload(name: string, expectedFingerprint: string): Promise<GatewayView> {
     await assertCurrent(name, expectedFingerprint);
-    await action("gateway.reload", {});
+    await action("gateway.reload", { name, expected_revision: expectedFingerprint });
     return gatewayClient.get(name);
   },
 };

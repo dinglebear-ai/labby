@@ -18,6 +18,10 @@ mod manager;
 
 const DELEGATION_TTL_MS: i64 = 5 * 60 * 1000;
 const APPROVAL_TTL_MS: i64 = 2 * 60 * 1000;
+const MAX_CONTEXT_TTL_MS: i64 = 5 * 60 * 1000;
+const MAX_RESULT_BYTES: usize = 1024 * 1024;
+const REPLAY_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
+const PRUNE_BATCH_SIZE: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +173,10 @@ impl AgentExecutionStore {
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(storage_error)?;
         connection.execute_batch(SCHEMA).map_err(storage_error)?;
+        drop(connection.execute(
+            "ALTER TABLE agent_contexts ADD COLUMN auth_snapshot TEXT NOT NULL DEFAULT ''",
+            [],
+        ));
         connection.execute(
             "UPDATE agent_requests SET status='interrupted', error_kind='interrupted' WHERE status='running'",
             [],
@@ -193,6 +201,7 @@ impl AgentExecutionStore {
         audience: &str,
         scopes: &[String],
     ) -> Result<DelegationReceipt, ToolError> {
+        self.prune_expired()?;
         validate_identity(actor)?;
         validate_identity(audience)?;
         let token = opaque_token("dlg");
@@ -223,23 +232,31 @@ impl AgentExecutionStore {
         if expires_at <= now {
             return Err(policy("execution context is already expired"));
         }
+        if expires_at > now.saturating_add(MAX_CONTEXT_TTL_MS) {
+            return Err(policy("execution context exceeds the server maximum TTL"));
+        }
         let context_id = opaque_token("ctx");
-        let conn = self.conn()?;
-        let (actor, scopes_json): (String, String) = conn.query_row(
-            "SELECT actor,scopes_json FROM agent_delegations WHERE token_hash=?1 AND audience=?2 AND used_at IS NULL AND expires_at>?3",
-            params![digest(delegation), service, now], |row| Ok((row.get(0)?, row.get(1)?)),
+        let mut conn = self.conn()?;
+        let tx = conn.transaction().map_err(storage_error)?;
+        let (actor, scopes_json, delegation_expires): (String, String, i64) = tx.query_row(
+            "SELECT actor,scopes_json,expires_at FROM agent_delegations WHERE token_hash=?1 AND audience=?2 AND used_at IS NULL AND expires_at>?3",
+            params![digest(delegation), service, now], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).optional().map_err(storage_error)?.ok_or_else(|| policy("delegation is invalid, stale, forged, used, or audience-mismatched"))?;
-        let changed = conn.execute(
+        if expires_at > delegation_expires {
+            return Err(policy("execution context cannot outlive its delegation"));
+        }
+        let changed = tx.execute(
             "UPDATE agent_delegations SET used_at=?1 WHERE token_hash=?2 AND used_at IS NULL AND expires_at>?1",
             params![now, digest(delegation)],
         ).map_err(storage_error)?;
         if changed != 1 {
             return Err(policy("delegation was already consumed"));
         }
-        conn.execute(
-            "INSERT INTO agent_contexts(id_hash,actor,service,scopes_json,loadout_id,loadout_revision,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![digest(&context_id), actor, service, scopes_json, loadout_id, loadout_revision as i64, expires_at],
+        tx.execute(
+            "INSERT INTO agent_contexts(id_hash,actor,service,scopes_json,loadout_id,loadout_revision,expires_at,auth_snapshot) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![digest(&context_id), actor, service, scopes_json, loadout_id, loadout_revision as i64, expires_at, digest(&format!("{actor}\0{service}\0{scopes_json}"))],
         ).map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
         Ok(ExecutionContextReceipt {
             execution_context_id: context_id,
             actor,
@@ -248,6 +265,22 @@ impl AgentExecutionStore {
             loadout_revision,
             expires_at_unix_ms: expires_at,
         })
+    }
+
+    pub(crate) fn delegation_actor(
+        &self,
+        service: &str,
+        delegation: &str,
+    ) -> Result<String, ToolError> {
+        self.conn()?
+            .query_row(
+                "SELECT actor FROM agent_delegations WHERE token_hash=?1 AND audience=?2 AND used_at IS NULL AND expires_at>?3",
+                params![digest(delegation), service, now_ms()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| policy("delegation is invalid, stale, forged, used, or audience-mismatched"))
     }
 
     pub(crate) fn bound_context(
@@ -359,16 +392,48 @@ impl AgentExecutionStore {
         result: Option<&serde_json::Value>,
         error_kind: Option<&str>,
     ) -> Result<AgentExecutionReceipt, ToolError> {
-        let result_json = result
+        let mut result_json = result
             .map(serde_json::to_string)
             .transpose()
             .map_err(storage_error)?;
+        let (status, error_kind) = if result_json
+            .as_ref()
+            .is_some_and(|encoded| encoded.len() > MAX_RESULT_BYTES)
+        {
+            result_json = None;
+            (AgentExecutionStatus::Failed, Some("result_too_large"))
+        } else {
+            (status, error_kind)
+        };
         self.conn()?.execute(
             "UPDATE agent_requests SET status=?1,result_json=?2,error_kind=?3,updated_at=?4 WHERE idempotency_key=?5 AND status='running'",
             params![status.as_str(), result_json, error_kind, now_ms(), key],
         ).map_err(storage_error)?;
         self.status(key)?
             .ok_or_else(|| storage_error("execution receipt disappeared"))
+    }
+
+    pub fn prune_expired(&self) -> Result<usize, ToolError> {
+        let now = now_ms();
+        let replay_cutoff = now.saturating_sub(REPLAY_RETENTION_MS);
+        let conn = self.conn()?;
+        let mut removed = 0;
+        for sql in [
+            "DELETE FROM agent_delegations WHERE token_hash IN (SELECT token_hash FROM agent_delegations WHERE expires_at<?1 LIMIT ?2)",
+            "DELETE FROM agent_contexts WHERE id_hash IN (SELECT id_hash FROM agent_contexts WHERE expires_at<?1 LIMIT ?2)",
+            "DELETE FROM agent_approvals WHERE id IN (SELECT id FROM agent_approvals WHERE expires_at<?1 LIMIT ?2)",
+        ] {
+            removed += conn
+                .execute(sql, params![now, PRUNE_BATCH_SIZE as i64])
+                .map_err(storage_error)?;
+        }
+        removed += conn
+            .execute(
+                "DELETE FROM agent_requests WHERE idempotency_key IN (SELECT idempotency_key FROM agent_requests WHERE status!='running' AND updated_at<?1 LIMIT ?2)",
+                params![replay_cutoff, PRUNE_BATCH_SIZE as i64],
+            )
+            .map_err(storage_error)?;
+        Ok(removed)
     }
 
     pub fn status(&self, key: &str) -> Result<Option<AgentExecutionReceipt>, ToolError> {
@@ -416,9 +481,24 @@ fn request_fingerprint(context: &BoundContext, tool: &str, args: &str, contract:
     ))
 }
 pub(crate) fn canonical_args_hash(value: &serde_json::Value) -> Result<String, ToolError> {
-    serde_json::to_vec(value)
+    serde_json::to_vec(&canonicalize_json(value))
         .map(|v| digest_bytes(&v))
         .map_err(storage_error)
+}
+fn canonicalize_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(object) => {
+            let sorted = object
+                .iter()
+                .map(|(key, value)| (key.clone(), canonicalize_json(value)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            serde_json::to_value(sorted).expect("JSON values always serialize")
+        }
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(canonicalize_json).collect())
+        }
+        other => other.clone(),
+    }
 }
 fn opaque_token(prefix: &str) -> String {
     format!(
@@ -465,9 +545,13 @@ fn storage_error(error: impl std::fmt::Display) -> ToolError {
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS agent_delegations(token_hash TEXT PRIMARY KEY,actor TEXT NOT NULL,audience TEXT NOT NULL,scopes_json TEXT NOT NULL,expires_at INTEGER NOT NULL,used_at INTEGER);
-CREATE TABLE IF NOT EXISTS agent_contexts(id_hash TEXT PRIMARY KEY,actor TEXT NOT NULL,service TEXT NOT NULL,scopes_json TEXT NOT NULL,loadout_id TEXT NOT NULL,loadout_revision INTEGER NOT NULL,expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS agent_contexts(id_hash TEXT PRIMARY KEY,actor TEXT NOT NULL,service TEXT NOT NULL,scopes_json TEXT NOT NULL,loadout_id TEXT NOT NULL,loadout_revision INTEGER NOT NULL,expires_at INTEGER NOT NULL,auth_snapshot TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS agent_approvals(id TEXT PRIMARY KEY,token_hash TEXT UNIQUE NOT NULL,context_hash TEXT NOT NULL,actor TEXT NOT NULL,service TEXT NOT NULL,loadout_id TEXT NOT NULL,loadout_revision INTEGER NOT NULL,tool_id TEXT NOT NULL,args_hash TEXT NOT NULL,contract_hash TEXT NOT NULL,expires_at INTEGER NOT NULL,used_at INTEGER);
 CREATE TABLE IF NOT EXISTS agent_requests(idempotency_key TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,receipt_id TEXT UNIQUE NOT NULL,audit_id TEXT UNIQUE NOT NULL,status TEXT NOT NULL,actor TEXT NOT NULL,service TEXT NOT NULL,loadout_id TEXT NOT NULL,loadout_revision INTEGER NOT NULL,tool_id TEXT NOT NULL,args_hash TEXT NOT NULL,contract_hash TEXT NOT NULL,result_json TEXT,error_kind TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_agent_delegations_expiry ON agent_delegations(expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_contexts_expiry ON agent_contexts(expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_approvals_expiry ON agent_approvals(expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_requests_retention ON agent_requests(status,updated_at);
 ";
 
 #[cfg(test)]
