@@ -43,7 +43,7 @@ impl GatewayManager {
         }
     }
 
-    pub(super) fn reconcile_upstream_oauth_managers(&self, cfg: &GatewayConfig) {
+    pub(crate) fn reconcile_upstream_oauth_managers(&self, cfg: &GatewayConfig) {
         let oauth_upstreams: BTreeMap<&str, &UpstreamConfig> = cfg
             .upstream
             .iter()

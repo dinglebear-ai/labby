@@ -32,6 +32,7 @@ getrandom = "0.4"
 # pulling RustCrypto RSA's timing-side-channel advisory into consumers.
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 labby-runtime = { path = "../labby-runtime", optional = true }
+labby-oauth-wire = { path = "../labby-oauth-wire" }
 labby-primitives = { path = "../labby-primitives" }
 reqwest.workspace = true
 rustls.workspace = true

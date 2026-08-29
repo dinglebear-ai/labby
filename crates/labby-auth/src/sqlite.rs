@@ -1,11 +1,11 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
 use tracing::warn;
 
 mod assertions;
@@ -37,10 +37,21 @@ const SQLITE_POOL_SIZE: usize = 4;
 #[derive(Clone)]
 pub struct SqliteStore {
     conns: Arc<Vec<Mutex<Connection>>>,
-    next_conn: Arc<AtomicUsize>,
+    available_conn_tx: mpsc::Sender<usize>,
+    available_conn_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<usize>>>,
     path: Arc<PathBuf>,
     /// Optional at-rest encryption key for upstream provider refresh tokens.
     enc_key: Option<Arc<TokenEncryptionKey>>,
+    #[cfg(test)]
+    blocking_work: Arc<TestBlockingWork>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestBlockingWork {
+    active: std::sync::atomic::AtomicUsize,
+    maximum: std::sync::atomic::AtomicUsize,
+    delay_ms: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for SqliteStore {
@@ -72,11 +83,22 @@ impl SqliteStore {
                 "sqlite open task failed: {error}"
             ))),
         }
-        .map(|conns| Self {
-            conns: Arc::new(conns.into_iter().map(Mutex::new).collect()),
-            next_conn: Arc::new(AtomicUsize::new(0)),
-            path: Arc::new(path),
-            enc_key: enc_key.map(Arc::new),
+        .map(|conns| {
+            let (available_conn_tx, available_conn_rx) = mpsc::channel(SQLITE_POOL_SIZE);
+            for index in 0..SQLITE_POOL_SIZE {
+                available_conn_tx
+                    .try_send(index)
+                    .expect("fresh SQLite availability queue has exact capacity");
+            }
+            Self {
+                conns: Arc::new(conns.into_iter().map(Mutex::new).collect()),
+                available_conn_tx,
+                available_conn_rx: Arc::new(tokio::sync::Mutex::new(available_conn_rx)),
+                path: Arc::new(path),
+                enc_key: enc_key.map(Arc::new),
+                #[cfg(test)]
+                blocking_work: Arc::new(TestBlockingWork::default()),
+            }
         })?;
 
         store.cleanup_expired_bounded(256).await?;
@@ -1143,14 +1165,30 @@ impl SqliteStore {
     {
         let conns = Arc::clone(&self.conns);
         let path = Arc::clone(&self.path);
-        let len = conns.len();
-        let idx = self.next_conn.fetch_add(1, Ordering::Relaxed) % len;
+        #[cfg(test)]
+        let blocking_work = Arc::clone(&self.blocking_work);
+        let index = self
+            .available_conn_rx
+            .lock()
+            .await
+            .recv()
+            .await
+            .ok_or_else(|| AuthError::Storage("sqlite connection pool closed".to_string()))?;
+        let checkout = AvailableConnection {
+            index,
+            sender: self.available_conn_tx.clone(),
+        };
         tokio::task::spawn_blocking(move || {
-            let mut guard = conns[idx]
+            #[cfg(test)]
+            let _work = TestBlockingWorkGuard::enter(&blocking_work);
+            let mut guard = conns[checkout.index]
                 .lock()
                 .map_err(|_| AuthError::Storage("sqlite mutex poisoned".to_string()))?;
             validate_or_reopen_connection(&mut guard, path.as_ref())?;
-            op(&mut guard)
+            let result = op(&mut guard);
+            drop(guard);
+            drop(checkout);
+            result
         })
         .await
         .map_err(|error| AuthError::Storage(format!("sqlite task failed: {error}")))?
@@ -1159,6 +1197,76 @@ impl SqliteStore {
     #[cfg(test)]
     fn connection_count(&self) -> usize {
         self.conns.len()
+    }
+
+    #[cfg(test)]
+    async fn checkout_for_test(&self) -> AvailableConnection {
+        let index = self
+            .available_conn_rx
+            .lock()
+            .await
+            .recv()
+            .await
+            .expect("test SQLite pool remains open");
+        AvailableConnection {
+            index,
+            sender: self.available_conn_tx.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn set_test_blocking_delay(&self, delay: std::time::Duration) {
+        self.blocking_work.delay_ms.store(
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    #[cfg(test)]
+    fn maximum_blocking_work(&self) -> usize {
+        self.blocking_work
+            .maximum
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+struct AvailableConnection {
+    index: usize,
+    sender: mpsc::Sender<usize>,
+}
+
+impl Drop for AvailableConnection {
+    fn drop(&mut self) {
+        let _ = self.sender.try_send(self.index);
+    }
+}
+
+#[cfg(test)]
+struct TestBlockingWorkGuard<'a>(&'a TestBlockingWork);
+
+#[cfg(test)]
+impl<'a> TestBlockingWorkGuard<'a> {
+    fn enter(work: &'a TestBlockingWork) -> Self {
+        let active = work
+            .active
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        work.maximum
+            .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+        let delay = work.delay_ms.load(std::sync::atomic::Ordering::Relaxed);
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay));
+        }
+        Self(work)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestBlockingWorkGuard<'_> {
+    fn drop(&mut self) {
+        self.0
+            .active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1459,6 +1567,118 @@ mod tests {
         assert_eq!(store.connection_count(), SQLITE_POOL_SIZE);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn busy_first_connection_does_not_block_public_store_operations() {
+        let store = temp_store().await;
+        register_test_client(&store, "available-client").await;
+        let held = store.checkout_for_test().await;
+        let mut operations = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            operations.spawn(async move {
+                store
+                    .find_client("available-client")
+                    .await
+                    .unwrap()
+                    .is_some()
+            });
+        }
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(2), async move {
+            let mut completed = 0;
+            while let Some(result) = operations.join_next().await {
+                assert!(result.unwrap());
+                completed += 1;
+            }
+            completed
+        })
+        .await
+        .expect("idle pool connections must serve operations while connection 0 is held");
+        assert_eq!(completed, 8);
+        drop(held);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelling_waiting_checkout_releases_capacity_and_keeps_pool_usable() {
+        let store = temp_store().await;
+        let mut held = Vec::new();
+        for _ in 0..SQLITE_POOL_SIZE {
+            held.push(store.checkout_for_test().await);
+        }
+        let waiting_store = store.clone();
+        let waiting = tokio::spawn(async move { waiting_store.pragma("journal_mode").await });
+        for _ in 0..10_000 {
+            if store.available_conn_tx.capacity() == SQLITE_POOL_SIZE {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            store.available_conn_tx.capacity(),
+            SQLITE_POOL_SIZE,
+            "the cancelled operation must be queued behind held checkouts"
+        );
+        waiting.abort();
+        drop(held);
+        assert!(waiting.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while store.available_conn_tx.capacity() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("detached blocking checkout must release its semaphore permit");
+        assert_eq!(store.pragma("journal_mode").await.unwrap(), "wal");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mixed_public_store_load_records_tail_latency_and_parallel_blocking_work() {
+        let store = temp_store().await;
+        register_test_client(&store, "load-client").await;
+        store.set_test_blocking_delay(std::time::Duration::from_millis(5));
+        let mut operations = tokio::task::JoinSet::new();
+        for index in 0..64 {
+            let store = store.clone();
+            operations.spawn(async move {
+                let started = std::time::Instant::now();
+                if index % 4 == 0 {
+                    store
+                        .register_client(RegisteredClient {
+                            client_id: format!("load-client-{index}"),
+                            redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
+                            created_at: now_unix(),
+                            token_endpoint_auth_method: "none".to_string(),
+                            token_endpoint_auth_methods: Vec::new(),
+                            jwks: None,
+                            jwks_uri: None,
+                        })
+                        .await
+                        .unwrap();
+                } else {
+                    assert!(store.find_client("load-client").await.unwrap().is_some());
+                }
+                started.elapsed()
+            });
+        }
+        let mut latencies = Vec::with_capacity(64);
+        while let Some(result) = operations.join_next().await {
+            latencies.push(result.unwrap());
+        }
+        latencies.sort_unstable();
+        let p95 = latencies[60];
+        let p99 = latencies[63];
+        assert_eq!(latencies.len(), 64);
+        assert!(p95 <= p99);
+        assert!(p95 > std::time::Duration::ZERO);
+        assert!(
+            store.maximum_blocking_work() >= 2,
+            "mixed load must exercise parallel blocking workers; p95={p95:?} p99={p99:?}"
+        );
+        eprintln!(
+            "sqlite mixed-load samples=64 p95={p95:?} p99={p99:?} max_blocking_workers={}",
+            store.maximum_blocking_work()
+        );
+    }
+
     #[tokio::test]
     async fn sqlite_store_redeems_auth_code_only_once_under_race() {
         let store = temp_store().await;
@@ -1587,6 +1807,111 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn google_granted_scopes_corruption_matrix_fails_closed() {
+        for (label, value) in [
+            ("syntax", "'{not-json'"),
+            ("wrong-schema", "'{\"scope\":\"openid\"}'"),
+            ("null", "NULL"),
+            ("blob", "x'80'"),
+            ("integer", "42"),
+            ("real", "1.5"),
+        ] {
+            let path = temp_db_path();
+            let store = keyed_store(path.clone()).await;
+            drop(store);
+            relax_column_not_null(&path, "google_provider_credentials", "granted_scopes_json");
+            let store = keyed_store(path).await;
+            store
+                .execute_test_statement(&format!(
+                    "INSERT INTO google_provider_credentials \
+                     (subject, client_id, granted_scopes_json, access_token, refresh_token, \
+                      generation, created_at, updated_at) \
+                     VALUES ('corrupt-scopes', 'client', {value}, 'access', 'refresh', 1, 1, 1)"
+                ))
+                .await
+                .unwrap();
+
+            let error = store
+                .find_google_provider_credential("corrupt-scopes")
+                .await
+                .unwrap_err();
+            assert_storage_decode_error(&error, label);
+            assert!(
+                !error.to_string().contains("{not-json"),
+                "storage errors must not echo corrupt persisted values"
+            );
+
+            store
+                .upsert_google_provider_token_bundle(sample_google_update("valid-scopes"))
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .find_google_provider_credential("valid-scopes")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .granted_scopes,
+                vec!["openid"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_token_resource_corruption_matrix_fails_closed() {
+        for (label, value, expected) in [
+            ("null", "NULL", None),
+            ("blob", "x'80'", None),
+            ("integer", "42", Some("42")),
+            ("real", "1.5", Some("1.5")),
+        ] {
+            let path = temp_db_path();
+            let store = keyed_store(path.clone()).await;
+            drop(store);
+            relax_column_not_null(&path, "refresh_tokens", "resource");
+            let store = keyed_store(path).await;
+            register_test_client(&store, "corrupt-client").await;
+            store
+                .upsert_refresh_token(sample_refresh_token("corrupt-client", "corrupt-resource"))
+                .await
+                .unwrap();
+            store
+                .execute_test_statement(&format!(
+                    "UPDATE refresh_tokens SET resource = {value} \
+                     WHERE refresh_token_hash = '{}'",
+                    hash_token("corrupt-resource")
+                ))
+                .await
+                .unwrap();
+
+            let result = store.find_refresh_token("corrupt-resource").await;
+            if let Some(expected) = expected {
+                assert_eq!(
+                    result.unwrap().unwrap().resource,
+                    expected,
+                    "case {label} must have explicit, non-empty SQLite coercion behavior"
+                );
+            } else {
+                assert_storage_decode_error(&result.unwrap_err(), label);
+            }
+
+            store
+                .upsert_refresh_token(sample_refresh_token("corrupt-client", "valid-resource"))
+                .await
+                .unwrap();
+            assert_eq!(
+                store
+                    .find_refresh_token("valid-resource")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .resource,
+                "https://lab.example.com/mcp"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2955,14 +3280,80 @@ mod tests {
     }
 
     async fn temp_store() -> SqliteStore {
+        keyed_store(temp_db_path()).await
+    }
+
+    async fn keyed_store(path: PathBuf) -> SqliteStore {
         SqliteStore::open_with_key(
-            temp_db_path(),
+            path,
             Some(TokenEncryptionKey::from_passphrase(
                 "sqlite-test-provider-key",
             )),
         )
         .await
         .unwrap()
+    }
+
+    fn relax_column_not_null(path: &PathBuf, table: &str, column: &str) {
+        let conn = Connection::open(path).unwrap();
+        let schema: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let needle = format!("{column} TEXT NOT NULL");
+        assert!(schema.contains(&needle), "unexpected test schema: {schema}");
+        let relaxed = schema.replacen(&needle, &format!("{column} TEXT"), 1);
+        conn.pragma_update(None, "writable_schema", true).unwrap();
+        conn.execute(
+            "UPDATE sqlite_schema SET sql = ?1 WHERE type = 'table' AND name = ?2",
+            params![relaxed, table],
+        )
+        .unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .unwrap();
+        conn.pragma_update(None, "schema_version", version + 1)
+            .unwrap();
+        conn.pragma_update(None, "writable_schema", false).unwrap();
+    }
+
+    fn assert_storage_decode_error(error: &crate::error::AuthError, case: &str) {
+        assert_eq!(error.kind(), "internal_error", "case {case}: {error}");
+        assert!(
+            matches!(error, crate::error::AuthError::Storage(_)),
+            "case {case} returned non-storage error: {error}"
+        );
+        let crate::error::AuthError::Storage(message) = error else {
+            return;
+        };
+        assert!(
+            message.starts_with("sqlite error:"),
+            "case {case} lacked stable storage context: {message}"
+        );
+        assert!(
+            message.contains("column") || message.contains("Conversion error"),
+            "case {case} lacked typed SQLite decode context: {message}"
+        );
+    }
+
+    fn sample_google_update(subject: &str) -> GoogleProviderCredentialUpdate {
+        let now = now_unix();
+        GoogleProviderCredentialUpdate {
+            subject: subject.to_string(),
+            email: Some(format!("{subject}@example.com")),
+            client_id: "google-client".to_string(),
+            granted_scopes: vec!["openid".to_string()],
+            access_token: "valid-access".to_string(),
+            refresh_token: "valid-refresh".to_string(),
+            token_received_at: now,
+            access_token_expires_at: now + 3600,
+            issuer: Some("https://accounts.google.com".to_string()),
+            refreshed: false,
+            scope_upgraded: false,
+        }
     }
 
     async fn pragma(store: &SqliteStore, name: &str) -> String {

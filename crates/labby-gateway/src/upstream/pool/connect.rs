@@ -469,6 +469,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     drop(rustls::crypto::ring::default_provider().install_default());
     let client = reqwest::Client::builder()
         .timeout(DEFAULT_REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .http1_only()
         .unix_socket(unix_socket_connect_path(socket_path))
         .build()
@@ -729,6 +730,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         drop(rustls::crypto::ring::default_provider().install_default());
         reqwest::Client::builder()
             .timeout(DEFAULT_REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .build()?
     };
 
@@ -751,8 +753,8 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             )
         })?;
 
-        let auth_client = cache
-            .get_or_build_capped(config, subject, capped)
+        let (auth_client, credential_generation) = cache
+            .get_or_build_capped_with_generation(config, subject, capped)
             .await
             .map_err(|e| anyhow::anyhow!("oauth_required: {e}"))?;
 
@@ -787,7 +789,10 @@ async fn connect_http_upstream_once<H: ClientHandler>(
                 _client_service: service,
                 _server_task: None,
                 peer,
-                runtime: UpstreamRuntimeMetadata::default(),
+                runtime: UpstreamRuntimeMetadata {
+                    oauth_credential_generation: Some(credential_generation),
+                    ..UpstreamRuntimeMetadata::default()
+                },
                 incarnation: None,
             },
             tools,

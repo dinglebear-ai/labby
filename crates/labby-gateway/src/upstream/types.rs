@@ -99,6 +99,8 @@ pub struct UpstreamRuntimeMetadata {
     /// receives a new value so exit logs and invalidated requests can be tied
     /// to the exact child instance.
     pub generation: Option<u64>,
+    /// Credential/client generation used to authenticate an OAuth connection.
+    pub oauth_credential_generation: Option<u64>,
     pub pgid: Option<u32>,
     /// Opaque RAII owner for a Windows Job Object.
     #[cfg(windows)]
@@ -113,6 +115,7 @@ impl Clone for UpstreamRuntimeMetadata {
         Self {
             pid: self.pid,
             generation: self.generation,
+            oauth_credential_generation: self.oauth_credential_generation,
             pgid: self.pgid,
             #[cfg(windows)]
             job: None,

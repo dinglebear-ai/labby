@@ -28,17 +28,22 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
 
   async function handleConnect() {
     setError(null)
+    const popup = openIsolatedOauthPopup()
+    if (!popup) {
+      setError('Popup blocked — please allow popups for this site and try again')
+      return
+    }
     setConnecting(true)
     try {
       const { authorization_url } = await upstreamOauthApi.start(name)
-      const popup = openIsolatedOauthPopup()
-      if (!popup) {
+      if (popup.closed) {
         setConnecting(false)
-        setError('Popup blocked — please allow popups for this site and try again')
+        setError('Authorization tab was closed — try connecting again')
       } else {
         popup.location.href = authorization_url
       }
     } catch (err: unknown) {
+      popup.close()
       setConnecting(false)
       setError(err instanceof Error ? err.message : 'Failed to start authorization')
     }

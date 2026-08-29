@@ -280,6 +280,29 @@ impl UpstreamPool {
         self.connections.read().await.len()
     }
 
+    /// Observe the exact OAuth connection identity without influencing routing.
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn subject_connection_identity_for_tests(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> Option<(u64, u64)> {
+        let connections = self.subject_connections.read().await;
+        let connection = connections.get(&(upstream.to_string(), subject.to_string()))?;
+        Some((
+            connection._connection.incarnation?.get(),
+            connection._connection.runtime.oauth_credential_generation?,
+        ))
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub async fn oauth_runtime_counts_for_tests(&self) -> (usize, usize) {
+        (
+            self.subject_connections.read().await.len(),
+            self.task_routes.read().await.len(),
+        )
+    }
+
     /// Get names of all registered upstreams with their tool health status.
     pub async fn upstream_status(&self) -> Vec<(String, UpstreamHealth)> {
         let catalog = self.catalog.read().await;

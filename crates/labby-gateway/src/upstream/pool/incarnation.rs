@@ -14,6 +14,13 @@ static NEXT_CONNECTION_INCARNATION: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ConnectionIncarnation(NonZeroU64);
 
+impl ConnectionIncarnation {
+    #[cfg(any(test, feature = "testkit"))]
+    pub(super) fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 #[error("upstream connection identity is unavailable")]
 pub(super) struct ConnectionIncarnationExhausted;

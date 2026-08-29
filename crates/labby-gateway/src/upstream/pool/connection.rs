@@ -386,7 +386,7 @@ impl UpstreamPool {
             }
 
             // Open a new connection, reusing the pool-level shared HTTP client.
-            let (conn, tools) = connect_upstream_with_client(
+            let (mut conn, tools) = connect_upstream_with_client(
                 config,
                 Some(subject),
                 self.oauth_client_cache.as_ref(),
@@ -395,6 +395,7 @@ impl UpstreamPool {
                 Some(&self.shared_http_client),
             )
             .await?;
+            conn.incarnation = Some(super::incarnation::next_connection_incarnation()?);
 
             let peer = conn.peer.clone();
             let cached_tools = tools.clone();
