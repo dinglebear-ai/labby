@@ -595,6 +595,11 @@ jobs:
     name: MSRV
     runs-on: ci-pool-rust
     timeout-minutes: 30
+    env:
+      # `--all-targets` builds the two largest test libraries concurrently by
+      # default, which can exhaust a single fleet runner before rustc emits a
+      # diagnostic. Keep this compile gate within the runner memory envelope.
+      CARGO_BUILD_JOBS: "1"
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     steps:
