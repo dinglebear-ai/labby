@@ -11,6 +11,7 @@ pub mod lifecycle;
 mod local_io;
 pub mod materialize_skill;
 pub mod model;
+pub mod prompt;
 pub mod provider;
 pub mod skill;
 pub mod store;
@@ -39,6 +40,7 @@ pub use model::{
     ArtifactRevision, Distribution, ExecutionRisk, JsonMap, PublicationState, Redistribution,
     ReviewState, TakedownState, Visibility,
 };
+pub use prompt::{LogicalPromptFile, MaterializedPrompt, materialize_logical_prompt};
 pub use provider::{
     ArtifactAcquisition, ArtifactPayloadFile, ArtifactProvider, ArtifactProviderFuture,
     ArtifactProviderRequest, LocalArtifactProvider,
