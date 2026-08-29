@@ -1111,6 +1111,12 @@ impl ToolScope {
         self.namespaces.as_ref()
     }
 
+    /// Return whether this scope explicitly grants no upstream tools.
+    #[must_use]
+    pub fn denies_all_tools(&self) -> bool {
+        self.namespaces.as_ref().is_some_and(BTreeSet::is_empty) && self.tools.is_empty()
+    }
+
     /// Return a stable serialized fingerprint of this scope for ownership checks and caches.
     #[must_use]
     pub fn fingerprint(&self) -> String {

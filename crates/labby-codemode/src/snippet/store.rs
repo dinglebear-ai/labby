@@ -45,6 +45,9 @@ pub struct SnippetInfo {
     /// Named input specifications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Exact upstream tool ids this snippet may discover and call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
     /// Snippet origin.
     pub source: SnippetSource,
     /// Source file path.
@@ -65,6 +68,9 @@ pub struct ResolvedSnippet {
     /// Named input specifications.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Exact upstream tool ids this snippet may discover and call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
     /// Snippet origin.
     pub source: SnippetSource,
     /// Source file path.
@@ -84,6 +90,8 @@ pub struct SnippetFrontmatter {
     pub tags: Vec<String>,
     /// Declared named inputs.
     pub inputs: BTreeMap<String, SnippetInputSpec>,
+    /// Exact upstream tool ids declared by the snippet.
+    pub tools: Vec<String>,
 }
 
 /// Validation/default specification for one snippet input.
@@ -248,12 +256,14 @@ pub fn create_user_snippet(
     }
     let body = render_user_snippet_body(name, body, description)?;
     atomic_write_snippet(&path, &body, force)?;
-    let (description, tags, inputs) = snippet_metadata_fields(frontmatter(&body).ok().flatten());
+    let (description, tags, inputs, tools) =
+        snippet_metadata_fields(frontmatter(&body).ok().flatten());
     Ok(SnippetInfo {
         name: name.to_string(),
         description,
         tags,
         inputs,
+        tools,
         source: SnippetSource::User,
         path,
         shadowed: false,
@@ -387,13 +397,14 @@ fn collect_snippets(
         if validate_snippet_body(stem, &body).is_err() {
             continue;
         }
-        let (description, tags, inputs) =
+        let (description, tags, inputs, tools) =
             snippet_metadata_fields(frontmatter(&body).ok().flatten());
         out.push(SnippetInfo {
             name: stem.to_string(),
             description,
             tags,
             inputs,
+            tools,
             source,
             path,
             shadowed: false,
@@ -422,13 +433,14 @@ fn read_resolved(
 ) -> Result<ResolvedSnippet, ToolError> {
     let body = fs::read_to_string(&path).map_err(|e| io_error("read snippet", &path, e))?;
     validate_snippet_body(name, &body)?;
-    let (description, tags, inputs) =
+    let (description, tags, inputs, tools) =
         snippet_metadata_fields(frontmatter(&body)?.filter(|m| m.name == name));
     Ok(ResolvedSnippet {
         name: name.to_string(),
         description,
         tags,
         inputs,
+        tools,
         source,
         path,
         body,
@@ -455,9 +467,17 @@ fn snippet_metadata_fields(
     Option<String>,
     Vec<String>,
     BTreeMap<String, SnippetInputSpec>,
+    Vec<String>,
 ) {
     metadata
-        .map(|metadata| (Some(metadata.description), metadata.tags, metadata.inputs))
+        .map(|metadata| {
+            (
+                Some(metadata.description),
+                metadata.tags,
+                metadata.inputs,
+                metadata.tools,
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -539,6 +559,7 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
     let mut tags = Vec::new();
     let lines: Vec<&str> = raw.lines().collect();
     let mut inputs = BTreeMap::new();
+    let mut tools = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         let raw_line = lines[i];
@@ -550,6 +571,12 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
         if line == "inputs:" {
             let (parsed, next) = parse_inputs_block(&lines, i + 1)?;
             inputs = parsed;
+            i = next;
+            continue;
+        }
+        if line == "tools:" {
+            let (parsed, next) = parse_string_list_block(&lines, i + 1, "tools")?;
+            tools = parsed;
             i = next;
             continue;
         }
@@ -580,7 +607,34 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
         description,
         tags,
         inputs,
+        tools,
     }))
+}
+
+fn parse_string_list_block(
+    lines: &[&str],
+    mut i: usize,
+    field: &str,
+) -> Result<(Vec<String>, usize), ToolError> {
+    let mut values = Vec::new();
+    while i < lines.len() {
+        let line = lines[i];
+        if !line.starts_with("  ") {
+            break;
+        }
+        let value = line
+            .trim()
+            .strip_prefix("- ")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ToolError::InvalidParam {
+                message: format!("frontmatter `{field}` must be a list of non-empty strings"),
+                param: "body".to_string(),
+            })?;
+        values.push(value.trim_matches('"').to_string());
+        i += 1;
+    }
+    Ok((values, i))
 }
 
 fn frontmatter_block(rest: &str) -> Option<String> {
@@ -1132,6 +1186,7 @@ mod tests {
             description: Some(metadata.description),
             tags: metadata.tags,
             inputs: metadata.inputs,
+            tools: metadata.tools,
             source: SnippetSource::User,
             path: PathBuf::from("demo.md"),
             body: body.to_string(),
@@ -1140,5 +1195,16 @@ mod tests {
         let error = merge_snippet_input(&snippet, json!({"bogus": true}))
             .expect_err("unknown input should be rejected");
         assert!(format!("{error}").contains("unknown snippet input"));
+    }
+
+    #[test]
+    fn frontmatter_preserves_declared_tool_ids() {
+        let body = "---\nname: demo\ndescription: Demo snippet\ntools:\n  - axon::axon\n  - github::search_issues\n---\n\n```js\nasync () => ({ ok: true })\n```\n";
+
+        let metadata = frontmatter(body)
+            .expect("frontmatter parsed")
+            .expect("metadata");
+
+        assert_eq!(metadata.tools, vec!["axon::axon", "github::search_issues"]);
     }
 }

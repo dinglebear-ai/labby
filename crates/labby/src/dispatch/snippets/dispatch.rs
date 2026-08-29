@@ -316,13 +316,14 @@ async fn execute_snippet_outcome(
     let code = code_for_snippet(&snippet)?;
     let input = merge_snippet_input(&snippet, input)?;
     let code = wrap_snippet_with_input(&code, &input)?;
+    let scope = snippet_tool_scope(&snippet)?;
     let outcome = broker
         .execute_with_raw_response(
             &code,
             CodeModeCaller::TrustedLocal,
             CodeModeSurface::Cli,
             config,
-            ToolScope::default(),
+            scope,
             // Snippet execution is a local trusted-CLI path with no durable-run
             // execution id; `None` keeps `record_step` write-free here.
             None,
@@ -340,6 +341,30 @@ async fn execute_snippet_outcome(
         raw_response: outcome.raw_response,
         display_response: outcome.display_response,
     })
+}
+
+fn snippet_tool_scope(snippet: &super::store::ResolvedSnippet) -> Result<ToolScope, ToolError> {
+    let mut namespaces = Vec::with_capacity(snippet.tools.len());
+    for id in &snippet.tools {
+        let Some((namespace, tool)) = id.split_once("::") else {
+            return Err(invalid_snippet_tool(id));
+        };
+        if namespace.trim().is_empty() || tool.trim().is_empty() {
+            return Err(invalid_snippet_tool(id));
+        }
+        namespaces.push(namespace.to_string());
+    }
+    Ok(ToolScope::scoped_namespaces(
+        namespaces,
+        snippet.tools.clone(),
+    ))
+}
+
+fn invalid_snippet_tool(id: &str) -> ToolError {
+    ToolError::InvalidParam {
+        message: format!("snippet tool `{id}` must use `<upstream>::<tool>`"),
+        param: "body".to_string(),
+    }
 }
 
 fn wrap_snippet_with_input(code: &str, input: &Value) -> Result<String, ToolError> {
@@ -434,5 +459,34 @@ mod tests {
             fail["response"],
             serde_json::to_value(shaped_display_response()).expect("display response serializes")
         );
+    }
+
+    #[test]
+    fn snippet_tool_scope_is_empty_without_declarations_and_exact_with_tools() {
+        let no_tools = labby_codemode::snippet::store::ResolvedSnippet {
+            name: "plain".to_string(),
+            description: None,
+            tags: Vec::new(),
+            inputs: Default::default(),
+            tools: Vec::new(),
+            source: labby_codemode::snippet::store::SnippetSource::User,
+            path: "plain.md".into(),
+            body: "async () => ({ ok: true })".to_string(),
+        };
+        let no_tool_scope = snippet_tool_scope(&no_tools).expect("empty scope");
+        assert!(no_tool_scope.denies_all_tools());
+
+        let selected = labby_codemode::snippet::store::ResolvedSnippet {
+            tools: vec![
+                "axon::axon".to_string(),
+                "github::search_issues".to_string(),
+            ],
+            ..no_tools
+        };
+        let selected_scope = snippet_tool_scope(&selected).expect("selected scope");
+        assert!(selected_scope.allows("axon", "axon"));
+        assert!(selected_scope.allows("github", "search_issues"));
+        assert!(!selected_scope.allows("github", "create_issue"));
+        assert!(!selected_scope.allows("unrelated", "anything"));
     }
 }

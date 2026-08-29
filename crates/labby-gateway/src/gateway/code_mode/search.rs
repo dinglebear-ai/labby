@@ -537,6 +537,7 @@ mod tests {
             description: Some("Summarize results".to_string()),
             tags: vec![],
             inputs: Default::default(),
+            tools: Vec::new(),
             source: SnippetSource::User,
             path: "summarize.md".into(),
             shadowed: false,
