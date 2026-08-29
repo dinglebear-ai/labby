@@ -93,7 +93,7 @@ export function MostActivePanel({
 
   return (
     <DashboardPanel
-      title={actorKindsCollected ? 'Most active' : 'Most active subjects'}
+      title={actorKindsCollected ? 'Most Active Agents' : 'Most active subjects'}
       icon={<Bot className="size-4" />}
       meta={actorKindsCollected
         ? `${current.active} ${meta.unit}${current.active === 1 ? '' : 's'}`
@@ -207,7 +207,7 @@ export function LeastUsedPanel({
   onSelect?: (tool: string) => void
 }) {
   return (
-    <DashboardPanel title="Least used" icon={<TrendingDown className="size-4" />}>
+    <DashboardPanel title="Least Used Tools" icon={<TrendingDown className="size-4" />}>
       {tools.length === 0 ? (
         <p className="text-sm text-aurora-text-muted">No upstream calls in this window.</p>
       ) : (

@@ -6,11 +6,14 @@ export type AppCommandKind = 'destination' | 'action'
 export type AppCommandGroupKey = 'best-match' | 'actions' | 'destinations'
 
 export type AppCommandIconKey =
+  | 'agents'
   | 'docs'
   | 'gateway'
+  | 'logs'
   | 'overview'
   | 'settings'
   | 'snippets'
+  | 'tasks'
   | 'usage'
 
 export type AppCommandItem = {
@@ -92,6 +95,123 @@ export const appCommandItems: AppCommandItem[] = [
     href: '/usage',
     actionHint: 'Open',
     priority: 86,
+  },
+  {
+    id: 'destination-sessions',
+    kind: 'destination',
+    title: 'Sessions · Mock',
+    description: 'Open the visual-only agent sessions surface. All rows are explicitly marked as mock data.',
+    keywords: ['sessions', 'agents', 'workspaces', 'mock'],
+    group: 'destinations',
+    icon: 'agents',
+    href: '/sessions',
+    actionHint: 'Open mock',
+    priority: 84,
+  },
+  {
+    id: 'destination-tasks',
+    kind: 'destination',
+    title: 'Tasks · Mock',
+    description: 'Open the visual-only recurring tasks surface. All rows are explicitly marked as mock data.',
+    keywords: ['tasks', 'schedules', 'recurring', 'agents', 'mock'],
+    group: 'destinations',
+    icon: 'tasks',
+    href: '/tasks',
+    actionHint: 'Open mock',
+    priority: 83,
+  },
+  {
+    id: 'destination-logs',
+    kind: 'destination',
+    title: 'Logs · Mock',
+    description: 'Open the visual-only unified log stream. Every event is explicitly marked as mock data.',
+    keywords: ['logs', 'events', 'observability', 'stream', 'mock'],
+    group: 'destinations',
+    icon: 'logs',
+    href: '/logs',
+    actionHint: 'Open mock',
+    priority: 82,
+  },
+  {
+    id: 'destination-discovery',
+    kind: 'destination',
+    title: 'Discovery · Mock',
+    description: 'Open the visual-only Depot discovery surface. All artifacts are explicitly marked as mock data.',
+    keywords: ['discovery', 'depot', 'bazaar', 'artifacts', 'mock'],
+    group: 'destinations', icon: 'gateway', href: '/discovery', actionHint: 'Open mock', priority: 81,
+  },
+  {
+    id: 'destination-create',
+    kind: 'destination',
+    title: 'Create · Mock',
+    description: 'Open the visual-only artifact authoring surface. All workflow state is explicitly marked as mock data.',
+    keywords: ['create', 'author', 'artifact', 'bundle', 'mock'],
+    group: 'destinations', icon: 'snippets', href: '/create', actionHint: 'Open mock', priority: 80,
+  },
+  {
+    id: 'destination-library',
+    kind: 'destination',
+    title: 'Library · Mock',
+    description: 'Open the visual-only personal artifact library. All inventory is explicitly marked as mock data.',
+    keywords: ['library', 'artifacts', 'loadouts', 'snippets', 'mock'],
+    group: 'destinations', icon: 'docs', href: '/library', actionHint: 'Open mock', priority: 79,
+  },
+  {
+    id: 'destination-agents',
+    kind: 'destination',
+    title: 'Agents · Mock',
+    description: 'Open the visual-only agent launcher. All sessions are explicitly marked as mock data.',
+    keywords: ['agents', 'sessions', 'workspace', 'mock'],
+    group: 'destinations', icon: 'agents', href: '/agents', actionHint: 'Open mock', priority: 78,
+  },
+  {
+    id: 'destination-stash',
+    kind: 'destination',
+    title: 'Stash · Mock',
+    description: 'Open the visual-only agent file stash. Every file is explicitly marked as mock data.',
+    keywords: ['stash', 'files', 'workspace', 'mock'],
+    group: 'destinations', icon: 'docs', href: '/stash', actionHint: 'Open mock', priority: 77,
+  },
+  {
+    id: 'destination-containers',
+    kind: 'destination',
+    title: 'Dev Containers · Mock',
+    description: 'Open the visual-only development container inventory. All images are explicitly marked as mock data.',
+    keywords: ['containers', 'incus', 'images', 'workspace', 'mock'],
+    group: 'destinations', icon: 'logs', href: '/containers', actionHint: 'Open mock', priority: 76,
+  },
+  {
+    id: 'destination-instance',
+    kind: 'destination',
+    title: 'Labby Instance · Mock',
+    description: 'Open the visual-only hosted instance surface. All service state is explicitly marked as mock data.',
+    keywords: ['labby', 'instance', 'hosted', 'region', 'mock'],
+    group: 'destinations', icon: 'gateway', href: '/instance', actionHint: 'Open mock', priority: 75,
+  },
+  {
+    id: 'destination-team-overview', kind: 'destination', title: 'Team Overview · Mock',
+    description: 'Open the visual-only tootie.tv workspace overview. All team state is explicitly marked as mock data.',
+    keywords: ['team', 'overview', 'tootie.tv', 'members', 'mock'], group: 'destinations', icon: 'agents', href: '/team', actionHint: 'Open mock', priority: 74,
+  },
+  {
+    id: 'destination-team-library', kind: 'destination', title: 'Team Library · Mock',
+    description: 'Open the visual-only shared artifact library. All submissions are explicitly marked as mock data.',
+    keywords: ['team', 'library', 'artifacts', 'submissions', 'mock'], group: 'destinations', icon: 'docs', href: '/team/library', actionHint: 'Open mock', priority: 73,
+  },
+  {
+    id: 'destination-team-projects', kind: 'destination', title: 'Projects · Mock',
+    description: 'Open the visual-only team projects surface. All bindings are explicitly marked as mock data.',
+    keywords: ['team', 'projects', 'repositories', 'loadouts', 'mock'], group: 'destinations', icon: 'gateway', href: '/team/projects', actionHint: 'Open mock', priority: 72,
+  },
+  {
+    id: 'destination-team-activity', kind: 'destination', title: 'Activity · Mock',
+    description: 'Open the visual-only team activity feed. Every event is explicitly marked as mock data.',
+    keywords: ['team', 'activity', 'feed', 'announcements', 'mock'], group: 'destinations', icon: 'usage', href: '/team/activity', actionHint: 'Open mock', priority: 71,
+  },
+  {
+    id: 'destination-team-stash', kind: 'destination', title: 'Team Stash · Mock',
+    description: 'Open the visual-only shared working-file stash. Every file is explicitly marked as mock data.',
+    keywords: ['team', 'stash', 'files', 'shared', 'mock'], group: 'destinations', icon: 'docs', href: '/team/stash', actionHint: 'Open mock', priority: 70,
   },
   {
     id: 'destination-settings',

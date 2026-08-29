@@ -138,31 +138,33 @@ pub(crate) fn harden_secret_directory(_path: &Path) -> io::Result<()> {
 pub(crate) fn harden_secret_directory(path: &Path) -> io::Result<()> {
     use std::process::Command;
 
-    let whoami = Command::new("whoami").output()?;
-    if !whoami.status.success() {
-        return Err(io::Error::other(
-            "whoami failed while hardening secret directory",
-        ));
-    }
-    let principal = String::from_utf8(whoami.stdout)
-        .map_err(|_| io::Error::other("whoami returned non-UTF-8 output"))?;
-    let principal = principal.trim();
-    if principal.is_empty() {
-        return Err(io::Error::other("whoami returned an empty principal"));
-    }
+    // GUI processes can start without PSModulePath. PowerShell then finds
+    // Set-Acl by name but cannot autoload Microsoft.PowerShell.Security.
+    let powershell_module_path = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("Modules");
+
     // Build a new protected DACL rather than editing the inherited/existing
     // one. `icacls /grant:r` only replaces ACEs for that principal and would
     // leave an explicit Everyone/Users (or arbitrary third-party) grant alive.
     const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
-$path = $args[0]
-$user = $args[1]
+$path = $env:LABBY_SECRET_DIR
 $acl = [System.Security.AccessControl.DirectorySecurity]::new()
 $acl.SetAccessRuleProtection($true, $false)
 $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
 $propagate = [System.Security.AccessControl.PropagationFlags]::None
 $allow = [System.Security.AccessControl.AccessControlType]::Allow
-foreach ($identity in @($user, 'S-1-5-18', 'S-1-5-32-544')) {
+$identities = @(
+  [System.Security.Principal.WindowsIdentity]::GetCurrent().User,
+  [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+  [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+)
+foreach ($identity in $identities) {
   $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
     $identity, [System.Security.AccessControl.FileSystemRights]::FullControl,
     $inherit, $propagate, $allow)
@@ -172,8 +174,8 @@ Set-Acl -LiteralPath $path -AclObject $acl
 "#;
     let status = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-        .arg(path)
-        .arg(principal)
+        .env("LABBY_SECRET_DIR", path)
+        .env("PSModulePath", powershell_module_path)
         .status()?;
     if !status.success() {
         return Err(io::Error::other(
