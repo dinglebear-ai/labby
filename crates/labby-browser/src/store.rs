@@ -468,6 +468,15 @@ impl Store {
         Ok(())
     }
 
+    /// Mark a runtime-dropped invocation abandoned.
+    pub(crate) fn abandon_invocation(&self, id: &str, duration_ms: i64) -> Result<()> {
+        self.lock()?.execute(
+            "UPDATE invocation_audits SET outcome='abandoned',error_kind='caller_cancelled',duration_ms=?1 WHERE id=?2 AND outcome='started'",
+            params![duration_ms, id],
+        )?;
+        Ok(())
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Connection>> {
         self.connection
             .lock()

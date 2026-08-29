@@ -21,6 +21,8 @@ const pendingClosures = new Map();
 const pendingCalls = new Map();
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let pairingPollTimer;
+/** @type {number | undefined} */
+let pairingPollExpiresAt;
 
 /**
  * The channel is created by `initialize()`, which runs at worker start and
@@ -157,9 +159,14 @@ async function resumeAndScan() {
 /** @param {number | undefined} expiresAt */
 function schedulePairingPoll(expiresAt) {
   clearTimeout(pairingPollTimer);
-  if (expiresAt && expiresAt * 1000 <= Date.now()) return;
+  pairingPollExpiresAt = expiresAt ?? pairingPollExpiresAt;
+  if (pairingPollExpiresAt && pairingPollExpiresAt * 1000 <= Date.now()) return;
   pairingPollTimer = setTimeout(() => {
-    void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed"}));
+    void resumeAndScan().catch(async (error) => {
+      await reportBridgeFailure(error, {kind: "pairing_poll_failed"});
+      const {pairingId} = await chrome.storage.local.get("pairingId");
+      if (pairingId) schedulePairingPoll(pairingPollExpiresAt);
+    });
   }, 2_000);
 }
 

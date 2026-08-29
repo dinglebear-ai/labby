@@ -33,6 +33,8 @@ chrome.storage.onChanged.addListener((changes) => {
   const bridgeStatus = /** @type {{state?: string, message?: string} | undefined} */ (changes.bridgeStatus?.newValue);
   if (bridgeStatus?.state === "error") {
     status.textContent = `Bridge error: ${bridgeStatus.message || "connection failed"}`;
+  } else if (bridgeStatus?.state === "connected") {
+    status.textContent = "Connected to Labby.";
   }
 });
 

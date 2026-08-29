@@ -41,6 +41,46 @@ struct PendingCall {
     reply: oneshot::Sender<Result<Value>>,
 }
 
+struct CallGuard {
+    bridge: BrowserBridge,
+    call_id: String,
+    generation: Uuid,
+    audit_id: String,
+    started: Instant,
+    armed: bool,
+}
+
+impl CallGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Err(error) = self.bridge.remove_pending(&self.call_id, self.generation) {
+            tracing::warn!(
+                call_id = self.call_id,
+                error_kind = error.kind(),
+                "cancelled browser call cleanup failed"
+            );
+        }
+        if let Err(error) = self.bridge.store.abandon_invocation(
+            &self.audit_id,
+            i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX),
+        ) {
+            tracing::warn!(
+                audit_id = self.audit_id,
+                error_kind = error.kind(),
+                "cancelled browser call audit cleanup failed"
+            );
+        }
+    }
+}
+
 #[derive(Default)]
 struct HubState {
     connections: HashMap<String, LiveConnection>,
@@ -296,13 +336,29 @@ impl BrowserBridge {
                 &tool_name,
                 catalog_revision,
             )
-            .inspect_err(|_error| {
-                self.remove_pending(&call_id, generation).ok();
+            .inspect_err(|error| {
+                if let Err(cleanup) = self.remove_pending(&call_id, generation) {
+                    tracing::warn!(
+                        call_id,
+                        audit_error_kind = error.kind(),
+                        cleanup_error_kind = cleanup.kind(),
+                        "browser pending-call cleanup failed after audit start failure"
+                    );
+                }
             })?;
+        let mut guard = CallGuard {
+            bridge: self.clone(),
+            call_id: call_id.clone(),
+            generation,
+            audit_id: audit_id.clone(),
+            started,
+            armed: true,
+        };
         if sender.send(event).await.is_err() {
             self.remove_pending(&call_id, generation)?;
             let result = Err(BrowserError::BrowserOffline);
             self.finish_audit(&audit_id, &result, started);
+            guard.disarm();
             return result;
         }
         let result = match tokio::time::timeout(timeout.unwrap_or(DEFAULT_TOOL_TIMEOUT), wait).await
@@ -331,6 +387,7 @@ impl BrowserBridge {
             }
         };
         self.finish_audit(&audit_id, &result, started);
+        guard.disarm();
         result
     }
 
