@@ -1,3 +1,9 @@
+---
+title: "HTTP API Surface"
+created: "2026-08-27"
+updated: "2026-08-28"
+---
+
 # HTTP API
 
 The generated route inventory is in [`../generated/api-routes.md`](../generated/api-routes.md). This document records hand-authored transport contracts that are not evident from the route list.

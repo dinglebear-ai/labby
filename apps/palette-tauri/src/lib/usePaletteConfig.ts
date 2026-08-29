@@ -21,6 +21,7 @@ export function usePaletteConfig() {
           .then((fallbackConfig) => {
             setConfig(fallbackConfig);
             setDraftConfig(fallbackConfig);
+            setConfigError(null);
           })
           .catch((fallbackError) => {
             setConfig(null);
