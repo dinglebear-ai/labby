@@ -17,3 +17,8 @@ Authenticated callers browse compact entries through `GET /v1/palette/catalog` o
 `POST /v1/palette/execute` requires `expectedContractHash`. Labby re-resolves and checks the exact subject-bound peer before validation and dispatch. Contract drift returns HTTP 409 with `contract_changed` and no expected side effects. Successful responses include a redacted receipt containing only request ID, tool ID, authoritative hash, catalog revision, and truncation state.
 
 OAuth callers require `mcp:read` to browse. Execution requires `mcp:write` and an exact `gateway:<upstream>` grant. `gateway:*` is not accepted. `lab:admin` remains an operator shortcut. Non-admin callers cannot execute destructive tools or Labby administrative actions.
+---
+title: HTTP API
+created: 2026-08-29
+updated: 2026-08-29
+---
