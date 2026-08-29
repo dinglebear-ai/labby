@@ -81,6 +81,7 @@ HTTP route, not a registered multi-surface service.
 Normative cross-surface contracts live under [contracts/](./contracts/):
 
 - [Agent error contract](./contracts/agent-error-contract.md)
+- [Delegated exact execution](./contracts/delegated-exact-execution.md)
 - [Code Mode tool errors](./contracts/code-mode-tool-errors.md)
 - [MCP tool output](./contracts/mcp-tool-output.md)
 - [Gateway schema resources](./contracts/gateway-schema-resources.md)

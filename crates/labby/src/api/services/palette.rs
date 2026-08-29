@@ -5,6 +5,10 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use labby_gateway::gateway::agent_execution::{
+    AgentApprovalRequest, AgentExecuteRequest, AgentExecutionReceipt, ApprovalChallenge,
+    DelegationReceipt, ExecutionContextCreateRequest, ExecutionContextReceipt,
+};
 use labby_gateway::gateway::palette::{
     CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
     PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
@@ -43,39 +47,21 @@ pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
         .route(descriptors.next().expect("catalog descriptor"), get(catalog))
         .route(descriptors.next().expect("search descriptor"), get(search))
         .route(descriptors.next().expect("schema descriptor"), get(schema))
-        .route(
-            descriptors.next().expect("descriptor route descriptor"),
-            get(descriptor),
-        )
+        .route(descriptors.next().expect("descriptor descriptor"), get(descriptor))
         .route(descriptors.next().expect("execute descriptor"), post(execute))
-        .route(
-            descriptors.next().expect("execution-loadouts list descriptor"),
-            get(execution_loadout_list),
-        )
-        .route(
-            descriptors.next().expect("execution-loadouts create descriptor"),
-            post(execution_loadout_create),
-        )
-        .route(
-            descriptors.next().expect("execution-loadout get descriptor"),
-            get(execution_loadout_get),
-        )
-        .route(
-            descriptors.next().expect("execution-loadout patch descriptor"),
-            axum::routing::patch(execution_loadout_patch),
-        )
-        .route(
-            descriptors.next().expect("preview descriptor"),
-            post(execution_loadout_preview),
-        )
-        .route(
-            descriptors.next().expect("activate descriptor"),
-            post(execution_loadout_activate),
-        )
-        .route(
-            descriptors.next().expect("rollback descriptor"),
-            post(execution_loadout_rollback),
-        )
+        .route(descriptors.next().expect("delegation descriptor"), post(agent_delegation))
+        .route(descriptors.next().expect("context descriptor"), post(agent_context))
+        .route(descriptors.next().expect("approval descriptor"), post(agent_approval))
+        .route(descriptors.next().expect("agent execute descriptor"), post(agent_execute))
+        .route(descriptors.next().expect("agent status descriptor"), get(agent_status))
+        .route(descriptors.next().expect("agent cancel descriptor"), post(agent_cancel))
+        .route(descriptors.next().expect("loadout list descriptor"), get(execution_loadout_list))
+        .route(descriptors.next().expect("loadout create descriptor"), post(execution_loadout_create))
+        .route(descriptors.next().expect("loadout get descriptor"), get(execution_loadout_get))
+        .route(descriptors.next().expect("loadout patch descriptor"), axum::routing::patch(execution_loadout_patch))
+        .route(descriptors.next().expect("loadout preview descriptor"), post(execution_loadout_preview))
+        .route(descriptors.next().expect("loadout activate descriptor"), post(execution_loadout_activate))
+        .route(descriptors.next().expect("loadout rollback descriptor"), post(execution_loadout_rollback))
 }
 
 pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
@@ -86,6 +72,12 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
         ("GET", "/schema", "schema"),
         ("GET", "/descriptor", "descriptor"),
         ("POST", "/execute", "execute"),
+        ("POST", "/agent/delegations", "agent_delegation"),
+        ("POST", "/agent/contexts", "agent_context"),
+        ("POST", "/agent/approvals", "agent_approval"),
+        ("POST", "/agent/executions", "agent_execute"),
+        ("GET", "/agent/executions/{id}", "agent_status"),
+        ("POST", "/agent/executions/{id}/cancel", "agent_cancel"),
         ("GET", "/execution-loadouts", "execution_loadout_list"),
         ("POST", "/execution-loadouts", "execution_loadout_create"),
         ("GET", "/execution-loadouts/{id}", "execution_loadout_get"),
@@ -101,6 +93,100 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
             .when("mounted only when API authentication and the gateway manager are configured")
     })
     .collect()
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DelegationRequest {
+    audience: String,
+}
+
+async fn agent_delegation(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<DelegationRequest>,
+) -> Result<Json<DelegationReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent delegation requires authenticated actor context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.issue_actor_delegation(
+        &auth.sub,
+        &request.audience,
+        &auth.scopes,
+    )?))
+}
+
+async fn agent_context(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<ExecutionContextCreateRequest>,
+) -> Result<Json<ExecutionContextReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent context requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(
+        manager
+            .create_agent_execution_context(&auth.sub, request)
+            .await?,
+    ))
+}
+
+async fn agent_approval(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<AgentApprovalRequest>,
+) -> Result<Json<ApprovalChallenge>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent approval requires authenticated actor context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(
+        manager.issue_agent_approval(&auth.sub, request).await?,
+    ))
+}
+
+async fn agent_execute(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<AgentExecuteRequest>,
+) -> Result<Json<AgentExecutionReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent execution requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.execute_agent_tool(&auth.sub, request).await?))
+}
+
+async fn agent_status(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<AgentExecutionReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent status requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.agent_execution_status(&auth.sub, &id)?))
+}
+
+async fn agent_cancel(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<AgentExecutionReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent cancellation requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.cancel_agent_execution(&auth.sub, &id)?))
 }
 
 async fn execution_loadout_list(

@@ -36,6 +36,7 @@ use labby_runtime::gateway_config::GatewayConfig;
 
 use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
+use super::agent_execution::AgentExecutionStore;
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
 use super::execution_loadout::ExecutionLoadoutStore;
@@ -131,6 +132,9 @@ pub struct GatewayManager {
     /// Per-turn capability selections. This is deliberately separate from
     /// `GatewayConfig::loadouts`, which configures mounted gateway routes.
     pub(super) execution_loadouts: Arc<RwLock<ExecutionLoadoutStore>>,
+    pub(super) agent_executions: Arc<AgentExecutionStore>,
+    pub(super) agent_execution_cancellations:
+        Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,
