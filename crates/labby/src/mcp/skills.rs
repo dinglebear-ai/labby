@@ -346,6 +346,7 @@ impl LabMcpServer {
             if action.starts_with("skill_library.")
                 || action.starts_with("prompt_library.")
                 || action.starts_with("agent_library.")
+                || action.starts_with("hook_library.")
             {
                 return self
                     .dispatch_skill_library_management(context, action, params)

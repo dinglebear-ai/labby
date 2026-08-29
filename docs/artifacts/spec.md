@@ -74,7 +74,7 @@ creates or reuses an immutable content-addressed revision.
 instruction-bearing text are never interpreted or injected into a command, HTML, or another
 prompt. Create and save remain inactive until an exact revision is explicitly activated. Archive
 deactivates the Prompt while retaining its workspace and all immutable revisions, so pinned
-references remain readable; restore returns it as inactive. Hook authoring is outside this slice.
+references remain readable; restore returns it as inactive.
 
 ## Public Agent authoring lifecycle
 
@@ -92,6 +92,28 @@ immutable revision is explicitly activated. Agent identities use `{kind: "agent"
 "labby", name}`, making exact revisions addressable by ExecutionLoadout Agent references. Existing
 principal isolation, optimistic library-version CAS, idempotency, immutable revisions,
 reference-safe archive, and inactive restore semantics apply.
+
+## Public Hook authoring lifecycle
+
+Hooks reuse the shared authenticated Artifact library, immutable revisions, optimistic library
+version and head-revision preconditions, ownership checks, durable idempotency receipts, history,
+diff, archive, and restore semantics. They are exposed through `hook_library.*` on the existing
+REST/MCP skills service; clients never access `LABBY_HOME` or a process/filesystem API.
+
+A Hook package contains exactly one bounded UTF-8 `HOOK.json` declaration. It requires a matching
+lower-case `name`, bounded non-empty `description`, a supported host event, a bare executable name,
+and a bounded argument array. Unknown fields, unsupported events, executable paths, control
+characters, shell substitutions/backticks, response-file arguments, extra files, and malformed
+JSON are rejected before persistence. Supported events are `session_start`, `session_end`,
+`pre_tool_use`, `post_tool_use`, `permission_request`, `notification`, `user_prompt_submit`, `stop`,
+`subagent_stop`, `pre_compact`, and `config_change`.
+
+`hook_library.preview` runs the exact family validator and returns only normalized JSON as
+`text/plain; charset=utf-8` with `renderMode = inert_text`. Preview never registers, activates,
+spawns, resolves, or executes the declared command. Create and save remain inactive until an exact
+validated revision is explicitly activated. Archive deactivates while retaining immutable bytes;
+restore returns the Hook as inactive. Hook execution is a separate runtime concern and is not part
+of artifact authoring.
 
 ## Non-goals for the first slice
 

@@ -159,7 +159,7 @@ fn callback_action_catalog_has_no_app_only_or_stale_aliases() {
         .iter()
         .map(|spec| spec.name)
         .collect::<Vec<_>>();
-    assert_eq!(actions.len(), 13);
+    assert_eq!(actions.len(), 16);
     assert!(actions.contains(&"skill_library.list"));
     assert!(!actions.contains(&"open"));
     assert!(!actions.contains(&"skill_library.open"));

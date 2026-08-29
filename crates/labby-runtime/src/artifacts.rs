@@ -7,6 +7,7 @@
 
 pub mod agent;
 pub mod canonical_json;
+pub mod hook;
 pub mod library;
 pub mod lifecycle;
 mod local_io;
@@ -26,6 +27,7 @@ pub use materialize_skill::{
 };
 
 pub use agent::{LogicalAgentFile, MaterializedAgent, materialize_logical_agent};
+pub use hook::{LogicalHookFile, MaterializedHook, materialize_logical_hook};
 pub use library::{
     LibraryActorId, LibraryAuditIntent, LibraryAuthorization, LibraryDurableAudit, LibraryGrant,
     LibraryIdempotency, LibraryMutation, LibraryMutationOutcome, LibraryMutationReceiptFacts,
