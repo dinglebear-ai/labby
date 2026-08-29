@@ -9,6 +9,7 @@
 //! cannot own — config persistence ([`config_store::GatewayConfigStore`]) and
 //! the service registry ([`service_registry::GatewayServiceRegistry`]).
 
+pub mod agent_execution;
 mod catalog;
 mod client;
 pub mod code_mode;

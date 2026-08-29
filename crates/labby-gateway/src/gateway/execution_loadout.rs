@@ -182,6 +182,44 @@ pub(super) struct ExecutionLoadoutStore {
 }
 
 impl GatewayManager {
+    pub(crate) async fn execution_loadout_revision_contains(
+        &self,
+        id: &str,
+        revision: u64,
+        tool_id: Option<&str>,
+        contract_hash: Option<&str>,
+    ) -> Result<(), ToolError> {
+        let store = self.execution_loadouts.read().await;
+        let record = store
+            .records
+            .get(id)
+            .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
+        if record.draft.effective_runtime_revision != Some(revision) {
+            return Err(ExecutionLoadoutError::StaleRevision {
+                expected: revision,
+                current: record.draft.effective_runtime_revision.unwrap_or(0),
+                changed_fields: vec!["effectiveRuntimeRevision".into()],
+            }
+            .into());
+        }
+        if let Some(tool_id) = tool_id {
+            let allowed = record.revisions.get(&revision).is_some_and(|value| {
+                value.members.iter().any(|member| {
+                    member.family == CapabilityFamily::Tool
+                        && member.member_id == tool_id
+                        && contract_hash.is_none_or(|hash| member.expected_revision == hash)
+                })
+            });
+            if !allowed {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "forbidden".into(),
+                    message: "tool is not bound to the immutable execution loadout revision".into(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub async fn execution_loadout_list(&self) -> Vec<ExecutionLoadoutSummary> {
         let store = self.execution_loadouts.read().await;
         let mut rows = store

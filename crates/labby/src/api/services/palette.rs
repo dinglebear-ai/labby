@@ -5,6 +5,10 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use labby_gateway::gateway::agent_execution::{
+    AgentApprovalRequest, AgentExecuteRequest, AgentExecutionReceipt, ApprovalChallenge,
+    DelegationReceipt, ExecutionContextCreateRequest, ExecutionContextReceipt,
+};
 use labby_gateway::gateway::palette::{
     CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
     PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
@@ -43,6 +47,12 @@ pub fn routes(_state: AppState) -> Router<AppState> {
         .route("/schema", get(schema))
         .route("/descriptor", get(descriptor))
         .route("/execute", post(execute))
+        .route("/agent/delegations", post(agent_delegation))
+        .route("/agent/contexts", post(agent_context))
+        .route("/agent/approvals", post(agent_approval))
+        .route("/agent/executions", post(agent_execute))
+        .route("/agent/executions/{id}", get(agent_status))
+        .route("/agent/executions/{id}/cancel", post(agent_cancel))
         .route(
             "/execution-loadouts",
             get(execution_loadout_list).post(execution_loadout_create),
@@ -63,6 +73,100 @@ pub fn routes(_state: AppState) -> Router<AppState> {
             "/execution-loadouts/{id}/rollback",
             post(execution_loadout_rollback),
         )
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DelegationRequest {
+    audience: String,
+}
+
+async fn agent_delegation(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<DelegationRequest>,
+) -> Result<Json<DelegationReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent delegation requires authenticated actor context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.issue_actor_delegation(
+        &auth.sub,
+        &request.audience,
+        &auth.scopes,
+    )?))
+}
+
+async fn agent_context(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<ExecutionContextCreateRequest>,
+) -> Result<Json<ExecutionContextReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent context requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(
+        manager
+            .create_agent_execution_context(&auth.sub, request)
+            .await?,
+    ))
+}
+
+async fn agent_approval(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<AgentApprovalRequest>,
+) -> Result<Json<ApprovalChallenge>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent approval requires authenticated actor context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(
+        manager.issue_agent_approval(&auth.sub, request).await?,
+    ))
+}
+
+async fn agent_execute(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(request): Json<AgentExecuteRequest>,
+) -> Result<Json<AgentExecutionReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent execution requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.execute_agent_tool(&auth.sub, request).await?))
+}
+
+async fn agent_status(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<AgentExecutionReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent status requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.agent_execution_status(&auth.sub, &id)?))
+}
+
+async fn agent_cancel(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<AgentExecutionReceipt>, ApiError> {
+    let auth = auth.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "agent cancellation requires authenticated service context".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(manager.cancel_agent_execution(&auth.sub, &id)?))
 }
 
 async fn execution_loadout_list(
