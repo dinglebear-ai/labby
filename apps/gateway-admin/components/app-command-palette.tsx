@@ -6,8 +6,10 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import {
   Activity,
   ArrowLeft,
+  Bot,
   BookOpen,
   Cable,
+  CalendarClock,
   Check,
   Copy,
   ExternalLink,
@@ -18,6 +20,7 @@ import {
   Plus,
   Power,
   RefreshCw,
+  ScrollText,
   Search,
   Settings,
   SlidersHorizontal,
@@ -95,16 +98,22 @@ import {
   type ServiceActionError,
 } from '@/lib/api/service-action-client'
 import type { CreateGatewayInput, Gateway } from '@/lib/types/gateway'
-import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
+import {
+  OPEN_ADD_SERVER_PALETTE_EVENT,
+  OPEN_COMMAND_PALETTE_EVENT,
+} from '@/lib/command-palette-events'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const ICONS: Record<AppCommandIconKey, LucideIcon> = {
+  agents: Bot,
   docs: BookOpen,
   gateway: Cable,
+  logs: ScrollText,
   overview: LayoutDashboard,
   settings: Settings,
   snippets: FileCode2,
+  tasks: CalendarClock,
   usage: Activity,
 }
 
@@ -423,12 +432,18 @@ export function AppCommandPalette() {
     function onOpenPalette() {
       openPalette()
     }
+    function onOpenAddServer() {
+      openPalette()
+      dispatch({ type: 'ADD_SERVER' })
+    }
 
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, onOpenPalette)
+    window.addEventListener(OPEN_ADD_SERVER_PALETTE_EVENT, onOpenAddServer)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, onOpenPalette)
+      window.removeEventListener(OPEN_ADD_SERVER_PALETTE_EVENT, onOpenAddServer)
     }
   }, [open, openPalette, closePalette])
 
@@ -825,7 +840,14 @@ export function AppCommandPalette() {
 
             {/* Inline add-server flow */}
             {showAddForm ? (
-              <PaletteAddServer isSubmitting={isDispatching} onSubmit={submitAddServer} />
+              <PaletteAddServer
+                isSubmitting={isDispatching}
+                onOpenFullDialog={() => {
+                  closePalette()
+                  router.push('/gateways/?add=1')
+                }}
+                onSubmit={submitAddServer}
+              />
             ) : null}
 
             {/* Param form — rendered OUTSIDE CommandList to avoid cmdk arrow-key interception.

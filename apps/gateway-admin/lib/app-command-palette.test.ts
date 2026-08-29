@@ -37,6 +37,21 @@ test('app command palette includes core admin destinations', () => {
     '/',
     '/gateways',
     '/snippets',
+    '/sessions',
+    '/tasks',
+    '/logs',
+    '/discovery',
+    '/create',
+    '/library',
+    '/agents',
+    '/stash',
+    '/containers',
+    '/instance',
+    '/team',
+    '/team/library',
+    '/team/projects',
+    '/team/activity',
+    '/team/stash',
     '/usage',
     '/settings',
     '/docs',
@@ -45,7 +60,7 @@ test('app command palette includes core admin destinations', () => {
   }
 
   // Removed surfaces (no backing service): must not be advertised as destinations.
-  for (const href of ['/marketplace', '/chat', '/setup', '/activity', '/logs', '/registry']) {
+  for (const href of ['/marketplace', '/chat', '/setup', '/activity', '/registry']) {
     assert.equal(hrefs.has(href), false, `${href} should not be searchable — surface was removed`)
   }
 })
@@ -63,6 +78,22 @@ test('findAppCommandItemById returns matching command item', () => {
 
   assert.equal(item?.title, 'Usage')
   assert.equal(item?.href, '/usage')
+})
+
+test('mock-only destinations identify themselves in palette copy', () => {
+  for (const id of [
+    'destination-sessions', 'destination-tasks', 'destination-logs',
+    'destination-discovery', 'destination-create', 'destination-library',
+    'destination-agents', 'destination-stash', 'destination-containers', 'destination-instance',
+    'destination-team-overview', 'destination-team-library', 'destination-team-projects',
+    'destination-team-activity', 'destination-team-stash',
+  ]) {
+    const item = findAppCommandItemById(id, appCommandItems)
+    assert.ok(item)
+    assert.match(item.title, /Mock/)
+    assert.match(item.description, /mock data/i)
+    assert.equal(item.actionHint, 'Open mock')
+  }
 })
 
 test('parsePaletteScope strips recognised prefixes', () => {

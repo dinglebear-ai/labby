@@ -4,8 +4,9 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
-import { ArrowRight, Cable, Clock3 } from 'lucide-react'
+import { ArrowRight, Cable, Clock3, Cpu, HardDrive, Network, Server, Users } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
+import { MockSurfaceBadge } from '@/components/console/mock-surface-badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/gateway/status-badge'
@@ -64,6 +65,57 @@ function MetricsUnavailable({ message }: { message: string }) {
     <div className="flex h-[200px] items-center justify-center rounded-aurora-2 border border-dashed border-aurora-border-strong px-6 text-center text-sm text-aurora-text-muted">
       {message}
     </div>
+  )
+}
+
+function MockOverviewReferencePanels() {
+  return (
+    <>
+      <div data-mock-region="overview-connected-clients" aria-label="Connected Clients mock data">
+        <DashboardPanel
+          title="Connected Clients"
+          icon={<Users className="size-4" />}
+          meta="live sessions"
+          action={<MockSurfaceBadge />}
+        >
+          {[
+            ['Claude Code', 'v2.0.14 · http', '2h 14m'],
+            ['Claude Desktop', 'v0.11.6 · http', '46m'],
+            ['Codex', 'v0.48.0 · stdio', '3h 02m'],
+            ['Gemini CLI', 'v0.9.2 · http', '11m'],
+          ].map(([name, detail, age]) => (
+            <div key={name} className="flex items-center gap-3 border-t border-aurora-border-default/40 py-1.5 first:border-t-0">
+              <span className="grid size-7 place-items-center rounded-full bg-aurora-control-surface text-[8px] font-bold text-aurora-accent-strong">{name.split(' ').map((part) => part[0]).join('')}</span>
+              <div className="min-w-0 flex-1"><div className="text-[11px] font-semibold text-aurora-text-primary">{name}</div><div className="mt-0.5 text-[9.5px] text-aurora-text-muted">{detail}</div></div>
+              <span className="text-[9.5px] text-aurora-text-muted">{age}</span>
+            </div>
+          ))}
+        </DashboardPanel>
+      </div>
+      <div data-mock-region="overview-gateway-host" aria-label="Gateway Host mock data">
+        <DashboardPanel
+          title="Gateway Host"
+          icon={<Server className="size-4" />}
+          meta="tootie · linux/amd64"
+          action={<MockSurfaceBadge />}
+        >
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              [Cpu, 'CPU', '15% · 8 cores'],
+              [HardDrive, 'Mem', '1.2 / 3.0 GB'],
+              [HardDrive, 'Disk', '14.6 / 24 GB'],
+              [Network, 'Network', '↓ 1.4 MB/s · ↑ 320 KB/s'],
+            ].map(([Icon, label, value]) => (
+              <div key={label as string} className="rounded-[8px] border border-aurora-border-default/45 bg-[var(--gw0-0_42)] p-2.5">
+                <div className="flex items-center gap-1.5 text-[8.5px] font-bold uppercase tracking-[0.12em] text-aurora-text-muted"><Icon className="size-3" />{label as string}</div>
+                <div className="mt-1.5 font-display text-[11px] font-bold text-aurora-text-primary">{value as string}</div>
+              </div>
+            ))}
+          </div>
+          <div className="text-[9.5px] leading-5 text-aurora-text-muted">9 live connections · 5 stdio processes · 412 MB child RSS</div>
+        </DashboardPanel>
+      </div>
+    </>
   )
 }
 
@@ -147,7 +199,7 @@ export default function OverviewPage() {
           >
             <DashboardPanel
               className="[grid-column:1/-1]"
-              title="Upstream call volume"
+              title="Calls by Server"
               meta={WINDOW_LABELS[activeWindow]}
             >
               {metrics ? (
@@ -163,7 +215,7 @@ export default function OverviewPage() {
               )}
             </DashboardPanel>
 
-            <DashboardPanel className="[grid-column:1/-1]" title="Top targets">
+            <DashboardPanel className="[grid-column:1/-1]" title="Top Tools">
               {metrics ? (
                 <TopToolsChart
                   tools={metrics.tools.top}
@@ -214,6 +266,7 @@ export default function OverviewPage() {
                   onSelectOutcome={(outcome) => router.push(`/usage/?window=${activeWindow}&outcome=${outcome}`)}
                   onSelectError={(kind) => router.push(`/usage/?window=${activeWindow}&outcome=failed&error=${encodeURIComponent(kind)}`)}
                 />
+                <MockOverviewReferencePanels />
               </>
             ) : metricsLoading ? (
               [1, 2, 3].map((i) => (

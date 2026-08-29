@@ -1,10 +1,15 @@
 'use client'
 
 import * as React from 'react'
-import { Bell, Search } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { Bell, MoreHorizontal, Plus, Search } from 'lucide-react'
 
 import { useConsoleShell } from '@/components/console/console-shell-context'
-import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
+import { AccountCard } from '@/components/console/console-sidebar'
+import {
+  OPEN_ADD_SERVER_PALETTE_EVENT,
+  OPEN_COMMAND_PALETTE_EVENT,
+} from '@/lib/command-palette-events'
 
 // Measured off the rendered mock, not inferred.
 const SEARCH_WIDTH_IDLE = 'clamp(120px, 22vw, 300px)'
@@ -22,6 +27,7 @@ function isMacOS() {
  * into the slots registered here.
  */
 export function ConsoleTopbar() {
+  const router = useRouter()
   const { setCrumbSlot, setActionSlot } = useConsoleShell()
   const [searchHovered, setSearchHovered] = React.useState(false)
   const [modKey, setModKey] = React.useState('⌘')
@@ -155,6 +161,28 @@ export function ConsoleTopbar() {
           gap: 5,
         }}
       />
+
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={() => router.push('/gateways/?add=1')}
+          className="inline-flex h-8 items-center gap-1.5 rounded-l-[9px] border border-aurora-accent-primary/35 bg-aurora-accent-primary/10 px-3 text-[11px] font-semibold text-aurora-accent-strong transition-colors hover:bg-aurora-accent-primary/16 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/35"
+        >
+          <Plus className="size-3.5" />
+          <span className="hidden sm:inline">Add Server</span>
+        </button>
+        <button
+          type="button"
+          aria-label="More add options"
+          title="Open inline Add Server options"
+          onClick={() => window.dispatchEvent(new Event(OPEN_ADD_SERVER_PALETTE_EVENT))}
+          className="grid size-8 place-items-center rounded-r-[9px] border border-l-0 border-aurora-accent-primary/35 bg-aurora-accent-primary/10 text-aurora-accent-strong transition-colors hover:bg-aurora-accent-primary/16 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary/35"
+        >
+          <MoreHorizontal className="size-3.5" />
+        </button>
+      </div>
+
+      <AccountCard placement="topbar" />
     </header>
   )
 }

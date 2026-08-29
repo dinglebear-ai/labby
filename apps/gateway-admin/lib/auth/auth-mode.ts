@@ -17,7 +17,8 @@ export function hasMockDataAuthMode(mockData = process.env.NEXT_PUBLIC_MOCK_DATA
 export function shouldBypassBrowserSessionAuth(
   _token?: string,
   mockData = process.env.NEXT_PUBLIC_MOCK_DATA,
+  nodeEnv = process.env.NODE_ENV,
 ) {
   void _token
-  return hasMockDataAuthMode(mockData)
+  return nodeEnv === 'development' || hasMockDataAuthMode(mockData)
 }

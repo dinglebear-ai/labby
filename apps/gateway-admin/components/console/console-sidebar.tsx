@@ -8,6 +8,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
+  Check,
   LogOut,
   Moon,
   Palette,
@@ -22,8 +23,10 @@ import { LabbyIcon } from '@/components/labby-icon'
 import { useConsoleShell } from '@/components/console/console-shell-context'
 import {
   consoleNavSections,
+  consoleNavSectionsForScope,
   isNavItemActive,
   type ConsoleNavItem,
+  type ConsoleWorkspaceScope,
 } from '@/components/console/nav-model'
 import {
   sessionAvatarFallback,
@@ -34,6 +37,8 @@ import { logoutBrowserSession, useBrowserSession } from '@/lib/auth/session'
 const PINNED_KEY = 'labby-nav-pinned'
 const FOLDED_KEY = 'labby-nav-folded'
 const ORDER_KEY = 'labby-nav-order-v2'
+const WORKSPACE_SCOPE_KEY = 'labby-workspace-scope'
+const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 
 // Measured off the rendered mock (`Gateway Console.dc.html`), not inferred.
 const SIDEBAR_WIDTH_EXPANDED = '224px'
@@ -109,7 +114,7 @@ function NavItem({
         alignItems: 'center',
         gap: 10,
         width: '100%',
-        minHeight: 34,
+        minHeight: active && item.contextLine ? 42 : 34,
         padding: '3px 10px',
         borderRadius: 10,
         borderWidth: 1,
@@ -185,6 +190,19 @@ function NavItem({
                 }}
               >
                 {item.contextLine}
+                {item.contextIsMock ? (
+                  <span
+                    style={{
+                      marginLeft: 5,
+                      fontSize: 7.5,
+                      fontWeight: 750,
+                      letterSpacing: '0.06em',
+                      color: 'var(--aurora-accent-strong)',
+                    }}
+                  >
+                    MOCK
+                  </span>
+                ) : null}
               </span>
             ) : null}
           </span>
@@ -230,7 +248,7 @@ function NavItem({
             />
           </span>
 
-          <span
+          {item.kbd ? <span
             data-kbd="1"
             style={{
               flexShrink: 0,
@@ -240,7 +258,7 @@ function NavItem({
             }}
           >
             {item.kbd}
-          </span>
+          </span> : null}
         </>
       )}
     </Link>
@@ -249,7 +267,14 @@ function NavItem({
 
 // ── Account card ──────────────────────────────────────────────────────────────
 
-function AccountCard({ collapsed }: { collapsed: boolean }) {
+export function AccountCard({
+  collapsed = false,
+  placement = 'sidebar',
+}: {
+  collapsed?: boolean
+  placement?: 'sidebar' | 'topbar'
+}) {
+  const compact = collapsed || placement === 'topbar'
   const session = useBrowserSession()
   const [open, setOpen] = React.useState(false)
   const [hovered, setHovered] = React.useState(false)
@@ -277,9 +302,14 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
   }, [open])
 
   const user = session.status === 'authenticated' ? session.user : null
-  const email = user ? sessionPrimaryEmail(user) : 'Not signed in'
-  const initial = user ? sessionAvatarFallback(user) : '?'
-  const name = user ? email.split('@')[0] : 'Anonymous'
+  const email = user
+    ? sessionPrimaryEmail(user)
+    : USE_MOCK_DATA
+      ? 'Mock account · auth bypass'
+      : 'Not signed in'
+  const initial = user ? sessionAvatarFallback(user) : USE_MOCK_DATA ? 'JM' : '?'
+  const name = user ? email.split('@')[0] : USE_MOCK_DATA ? 'jmagar' : 'Anonymous'
+  const environmentLabel = USE_MOCK_DATA ? 'MOCK' : 'PROD'
   const isDark = !mounted || resolvedTheme !== 'light'
 
   const signOut = async () => {
@@ -313,15 +343,21 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
     <div
       ref={rootRef}
       data-accountmenu="1"
-      style={{ padding: '10px 10px 12px', minWidth: 0, position: 'relative' }}
+      style={{
+        padding: placement === 'topbar' ? 0 : '10px 10px 12px',
+        minWidth: 0,
+        position: 'relative',
+      }}
     >
       {open ? (
         <div
           data-anim="menu"
           style={{
             position: 'fixed',
-            bottom: 64,
-            left: 10,
+            bottom: placement === 'topbar' ? undefined : 64,
+            left: placement === 'topbar' ? undefined : 10,
+            top: placement === 'topbar' ? 50 : undefined,
+            right: placement === 'topbar' ? 12 : undefined,
             width: 236,
             zIndex: 70,
             borderRadius: 'var(--radius-2)',
@@ -491,8 +527,9 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
           display: 'flex',
           alignItems: 'center',
           gap: 9,
-          width: '100%',
-          padding: '7px 8px',
+          width: placement === 'topbar' ? 34 : '100%',
+          height: placement === 'topbar' ? 34 : undefined,
+          padding: placement === 'topbar' ? 1 : '7px 8px',
           borderRadius: 'var(--radius-1)',
           border: `1px solid ${
             hovered
@@ -506,13 +543,15 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
           fontFamily: 'inherit',
           cursor: 'pointer',
           minWidth: 0,
-          justifyContent: collapsed ? 'center' : undefined,
+          justifyContent: compact ? 'center' : undefined,
           transition: 'border-color 150ms, background 150ms',
         }}
       >
         <div
           title={
-            session.status === 'authenticated'
+            USE_MOCK_DATA
+              ? 'Mock development identity — auth bypassed'
+              : session.status === 'authenticated'
               ? 'Session active'
               : 'No active browser session'
           }
@@ -547,7 +586,7 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
           />
         </div>
 
-        {collapsed ? null : (
+        {compact ? null : (
           <>
             <div style={{ minWidth: 0, flex: 1, lineHeight: 1.3, textAlign: 'left' }}>
               <div
@@ -601,7 +640,7 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
                   boxShadow: '0 0 4px currentColor',
                 }}
               />
-              PROD
+              {environmentLabel}
             </span>
             <ChevronsUpDown
               size={13}
@@ -626,13 +665,32 @@ export function ConsoleSidebar() {
   const [folded, setFolded] = React.useState<Record<string, boolean>>({})
   const [order, setOrder] = React.useState<Record<string, string[]>>({})
   const [toggleHovered, setToggleHovered] = React.useState(false)
+  const [scopeMenuOpen, setScopeMenuOpen] = React.useState(false)
+  const [workspaceScope, setWorkspaceScope] = React.useState<ConsoleWorkspaceScope>(
+    pathname.startsWith('/team') ? 'team' : 'personal',
+  )
   const dragRef = React.useRef<{ section: string; id: string } | null>(null)
 
   React.useEffect(() => {
     setPinned(readJson<string[]>(PINNED_KEY, []))
     setFolded(readJson<Record<string, boolean>>(FOLDED_KEY, {}))
     setOrder(readJson<Record<string, string[]>>(ORDER_KEY, {}))
-  }, [])
+    const savedScope = readJson<ConsoleWorkspaceScope | null>(WORKSPACE_SCOPE_KEY, null)
+    if (pathname.startsWith('/team')) setWorkspaceScope('team')
+    else if (savedScope === 'personal' || savedScope === 'team') setWorkspaceScope(savedScope)
+  }, [pathname])
+
+  const visibleNavSections = React.useMemo(
+    () => consoleNavSectionsForScope(workspaceScope),
+    [workspaceScope],
+  )
+
+  const selectWorkspaceScope = React.useCallback((next: ConsoleWorkspaceScope) => {
+    writeJson(WORKSPACE_SCOPE_KEY, next)
+    setWorkspaceScope(next)
+    setScopeMenuOpen(false)
+    router.push(next === 'team' ? '/team' : '/')
+  }, [router])
 
   // ⌘/Ctrl + N jumps to the Nth nav item, matching the mock's accelerators.
   React.useEffect(() => {
@@ -641,15 +699,16 @@ export function ConsoleSidebar() {
       if (event.altKey || event.shiftKey) return
       const index = Number.parseInt(event.key, 10)
       if (Number.isNaN(index) || index < 1) return
-      const flat = consoleNavSections.flatMap((section) => section.items)
-      const target = flat[index - 1]
+      const target = visibleNavSections
+        .flatMap((section) => section.items)
+        .find((item) => item.kbd === `⌘${index}`)
       if (!target) return
       event.preventDefault()
       router.push(target.href)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [router])
+  }, [router, visibleNavSections])
 
   const togglePin = React.useCallback((id: string) => {
     setPinned((current) => {
@@ -708,6 +767,11 @@ export function ConsoleSidebar() {
   )
 
   const settingsActive = isNavItemActive('/settings', pathname)
+  const brandRealm = pathname.startsWith('/team')
+    ? 'TEAM'
+    : ['/discovery', '/create', '/library'].some((href) => isNavItemActive(href, pathname))
+      ? 'DEPOT'
+      : 'LABBY'
 
   return (
     <aside
@@ -783,9 +847,9 @@ export function ConsoleSidebar() {
       >
         {/* Brand */}
         <Link
-          href="/"
-          aria-label="Go to Overview"
-          title="Labby — gateway control plane"
+          href="/discovery"
+          aria-label="Go to Discovery"
+          title="Depot — artifact discovery and Labby control plane"
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -825,7 +889,7 @@ export function ConsoleSidebar() {
                   whiteSpace: 'nowrap',
                 }}
               >
-                Lab<span style={{ color: 'var(--aurora-accent-strong)' }}>by</span>
+                De<span style={{ color: 'var(--aurora-accent-strong)' }}>pot</span>
               </div>
               <span
                 style={{
@@ -843,11 +907,74 @@ export function ConsoleSidebar() {
                   color: 'var(--aurora-accent-strong)',
                 }}
               >
-                LAB
+                {brandRealm}
               </span>
             </div>
           )}
         </Link>
+
+        <div style={{ position: 'relative', flexShrink: 0, padding: '8px 8px 4px' }}>
+          <button
+            type="button"
+            data-workspace-switcher="1"
+            onClick={() => setScopeMenuOpen((current) => !current)}
+            aria-expanded={scopeMenuOpen}
+            aria-label="Switch workspace"
+            title={collapsed ? (workspaceScope === 'personal' ? 'Personal' : 'tootie.tv · Mock') : undefined}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start',
+              gap: 9, width: '100%', height: 38, padding: collapsed ? 0 : '0 10px 0 6px',
+              borderRadius: 11, border: '1px solid color-mix(in srgb, var(--aurora-border-default) 60%, transparent)',
+              background: 'var(--gw0-0_36)', color: 'var(--aurora-text-primary)', cursor: 'pointer',
+              fontFamily: 'inherit', textAlign: 'left',
+            }}
+          >
+            <span style={{
+              width: 24, height: 24, flexShrink: 0, display: 'grid', placeItems: 'center',
+              overflow: 'hidden', borderRadius: 8,
+              border: `1px solid ${workspaceScope === 'personal' ? 'color-mix(in srgb, var(--aurora-accent-primary) 34%, transparent)' : 'color-mix(in srgb, var(--aurora-success) 34%, transparent)'}`,
+              background: workspaceScope === 'personal' ? 'transparent' : 'color-mix(in srgb, var(--aurora-success) 14%, transparent)',
+              color: workspaceScope === 'personal' ? 'var(--aurora-accent-strong)' : 'var(--aurora-success)',
+              fontSize: 9, fontWeight: 700,
+            }}>
+              {workspaceScope === 'personal' ? 'JM' : 'TO'}
+            </span>
+            {collapsed ? null : <>
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ display: 'block', fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--aurora-text-muted) 75%, transparent)' }}>Workspace</span>
+                <span style={{ display: 'block', marginTop: 1, fontSize: 12, fontWeight: 650 }}>{workspaceScope === 'personal' ? 'Personal' : 'tootie.tv'}</span>
+              </span>
+              <ChevronsUpDown size={12} strokeWidth={1.8} style={{ color: 'var(--aurora-text-muted)' }} />
+            </>}
+          </button>
+          {scopeMenuOpen ? <div
+            data-workspace-menu="1"
+            style={{
+              position: 'absolute', top: 'calc(100% + 4px)', left: 8, minWidth: 210, zIndex: 60,
+              padding: 5, overflow: 'hidden', borderRadius: 12,
+              border: '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
+              background: 'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
+              boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,0.05)',
+            }}
+          >
+            {([
+              ['personal', 'JM', 'Personal', 'your artifacts, agents and stash'],
+              ['team', 'TO', 'tootie.tv', '9 members · hosted Labby · Mock'],
+            ] as const).map(([scope, mark, label, sub]) => <button
+              key={scope}
+              type="button"
+              onClick={() => selectWorkspaceScope(scope)}
+              style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', padding: '7px 9px', borderRadius: 8, border: 'none', background: 'none', color: 'var(--aurora-text-primary)', fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left' }}
+            >
+              <span style={{ width: 24, height: 24, flexShrink: 0, display: 'grid', placeItems: 'center', borderRadius: 8, border: `1px solid ${scope === 'team' ? 'color-mix(in srgb, var(--aurora-success) 34%, transparent)' : 'color-mix(in srgb, var(--aurora-accent-primary) 34%, transparent)'}`, color: scope === 'team' ? 'var(--aurora-success)' : 'var(--aurora-accent-strong)', fontSize: 9, fontWeight: 700 }}>{mark}</span>
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ display: 'block', fontSize: 12, fontWeight: 650 }}>{label}</span>
+                <span style={{ display: 'block', marginTop: 1, fontSize: 9.5, color: 'var(--aurora-text-muted)' }}>{sub}</span>
+              </span>
+              {workspaceScope === scope ? <Check size={12} strokeWidth={2.4} style={{ color: 'var(--aurora-accent-strong)' }} /> : null}
+            </button>)}
+          </div> : null}
+        </div>
 
         {/* Nav */}
         <nav
@@ -864,7 +991,7 @@ export function ConsoleSidebar() {
             overflowX: 'visible',
           }}
         >
-          {consoleNavSections.map((section) => {
+          {visibleNavSections.map((section) => {
             const isFolded = Boolean(folded[section.id])
             const items = orderedItems(section)
 
@@ -1000,7 +1127,6 @@ export function ConsoleSidebar() {
           </Link>
         </nav>
 
-        <AccountCard collapsed={collapsed} />
       </div>
     </aside>
   )

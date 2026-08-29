@@ -5,8 +5,20 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
   DETAIL_CAPABILITIES,
+  GATEWAY_DETAIL_TAB_LABELS,
   DetailCapabilityCluster,
 } from './gateway-detail-tabs'
+
+test('gateway detail preserves the reference tab order', () => {
+  assert.deepEqual(Object.values(GATEWAY_DETAIL_TAB_LABELS), [
+    'Overview',
+    'Variables',
+    'Catalog',
+    'Activity',
+    'Routes',
+    'Logs',
+  ])
+})
 
 test('DetailCapabilityCluster renders all capabilities as unknown by default', () => {
   const markup = renderToStaticMarkup(<DetailCapabilityCluster />)

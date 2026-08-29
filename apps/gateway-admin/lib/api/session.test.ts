@@ -209,8 +209,9 @@ test('isStandaloneBearerAuthMode activates whenever a token is set', () => {
   assert.equal(isStandaloneBearerAuthMode('dev-token'), false)
 })
 
-test('shouldBypassBrowserSessionAuth bypasses hosted auth when a token is set or in mock mode', () => {
-  assert.equal(shouldBypassBrowserSessionAuth(undefined, 'false'), false)
-  assert.equal(shouldBypassBrowserSessionAuth('dev-token', 'false'), false)
-  assert.equal(shouldBypassBrowserSessionAuth(undefined, 'true'), true)
+test('shouldBypassBrowserSessionAuth bypasses hosted auth in development or mock mode', () => {
+  assert.equal(shouldBypassBrowserSessionAuth(undefined, 'false', 'production'), false)
+  assert.equal(shouldBypassBrowserSessionAuth('dev-token', 'false', 'production'), false)
+  assert.equal(shouldBypassBrowserSessionAuth(undefined, 'true', 'production'), true)
+  assert.equal(shouldBypassBrowserSessionAuth(undefined, 'false', 'development'), true)
 })
