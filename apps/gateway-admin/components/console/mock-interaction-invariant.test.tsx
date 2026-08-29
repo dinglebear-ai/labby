@@ -11,6 +11,7 @@ import { MockDiscoveryPage } from './mock-discovery-page'
 import { MockContainersPage, MockInstancePage, MockStashPage } from './mock-infrastructure-pages'
 import { MockLibraryPage } from './mock-library-page'
 import { MockLogsPage } from './mock-logs-page'
+import { MockConsolePage } from './mock-console-page'
 import { MockTeamPage, type MockTeamPageKind } from './mock-team-page'
 
 const teamKinds: MockTeamPageKind[] = ['overview', 'library', 'projects', 'activity', 'stash']
@@ -24,6 +25,7 @@ const pages: ReadonlyArray<readonly [string, React.ReactNode]> = [
   ['containers', <MockContainersPage />],
   ['instance', <MockInstancePage />],
   ['logs', <MockLogsPage />],
+  ['sessions', <MockConsolePage kind="sessions" />],
   ...teamKinds.map((kind) => [`team-${kind}`, <MockTeamPage kind={kind} />] as const),
 ]
 
