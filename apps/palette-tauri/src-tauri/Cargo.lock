@@ -1742,6 +1742,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
