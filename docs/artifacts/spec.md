@@ -1,7 +1,7 @@
 ---
 title: Labby Personal Artifacts Specification
 created: 2026-08-19
-updated: 2026-08-19
+updated: 2026-08-28
 ---
 
 # Labby Personal Artifacts Specification
@@ -33,6 +33,27 @@ The first W19 vertical slice provides:
 - basic fork lineage and explicit upstream observation;
 - Agent Skills projection that reuses existing SEP-2640 verification;
 - exact `dinglebear.artifact-interchange/v1` parity with Depot's frozen fixture.
+
+## Public Skill authoring lifecycle
+
+The authenticated `skills` service is the first public Artifact authoring family. Its
+`skill_library.*` actions expose bounded list/get/read/history/diff, validation and inert preview,
+create/save, exact-revision activate/rollback, deactivate, archive/restore, and server-selected
+import/refresh operations. REST, MCP, CLI, and app callers use the same dispatch and authorization
+boundary; clients never read or write `LABBY_HOME` directly.
+
+Every mutation compares the expected committed library version. Save additionally compares the
+expected immutable head revision. Ownership and tenant authorization are re-evaluated at the commit
+boundary, and private or cross-tenant IDs are not treated as secrets or authority. Archive is the
+ordinary removal operation: it deactivates the Skill but retains its workspace and immutable
+revision history. Restore returns it as inactive. Neither operation performs revision garbage
+collection, so loadout or catalog references cannot silently lose their pinned bytes.
+
+Preview runs the same Agent Skills parser, frontmatter checks, path limits, UTF-8 limits, manifest
+construction, and digest verification as save. It performs no persistence or activation and labels
+every returned body `text/plain; charset=utf-8` with `renderMode = inert_text`; consumers must not
+inject those bodies into HTML, prompts, commands, or executable contexts. Revision diff is likewise
+read-only and returns only bounded component metadata, never file bodies.
 
 ## Non-goals for the first slice
 

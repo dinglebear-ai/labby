@@ -641,6 +641,7 @@ pub(crate) fn project_artifact_generation(
             LibraryMutation::Create { .. }
             | LibraryMutation::Save { .. }
             | LibraryMutation::SetVisibility { .. }
+            | LibraryMutation::Restore { .. }
             | LibraryMutation::Refresh { .. } => {}
         }
     }

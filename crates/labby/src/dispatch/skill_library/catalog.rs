@@ -6,12 +6,15 @@ pub(crate) const ACTION_NAMES: &[&str] = &[
     "skill_library.get",
     "skill_library.read",
     "skill_library.history",
+    "skill_library.diff",
     "skill_library.validate",
+    "skill_library.preview",
     "skill_library.create",
     "skill_library.save",
     "skill_library.activate",
     "skill_library.deactivate",
     "skill_library.archive",
+    "skill_library.restore",
     "skill_library.rollback",
     "skill_library.import",
     "skill_library.refresh",
@@ -83,7 +86,7 @@ const HISTORY_PARAMS: &[ParamSpec] = &[
     },
 ];
 
-pub(crate) const ACTIONS: [ActionSpec; 13] = [
+pub(crate) const ACTIONS: [ActionSpec; 16] = [
     spec(
         "skill_library.list",
         "List caller-visible stored Skill summaries",
@@ -131,11 +134,49 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         HISTORY_PARAMS,
     ),
     spec(
+        "skill_library.diff",
+        "Compare two exact immutable Skill revisions without executing content",
+        false,
+        false,
+        "ArtifactRevisionDiff",
+        &[
+            ARTIFACT,
+            ParamSpec {
+                name: "from_revision_id",
+                ty: "string",
+                required: true,
+                description: "Base immutable revision id",
+            },
+            ParamSpec {
+                name: "to_revision_id",
+                ty: "string",
+                required: true,
+                description: "Target immutable revision id",
+            },
+        ],
+    ),
+    spec(
         "skill_library.validate",
         "Validate logical Skill files without storing or activating",
         false,
         false,
         "SkillValidation",
+        &[
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Skill name",
+            },
+            FILES,
+        ],
+    ),
+    spec(
+        "skill_library.preview",
+        "Validate and return an inert bounded text preview without storing or activating",
+        false,
+        false,
+        "SkillPreview",
         &[
             ParamSpec {
                 name: "name",
@@ -193,6 +234,14 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         "skill_library.archive",
         "Archive a Skill while retaining immutable revision storage",
         true,
+        false,
+        "SkillMutationReceipt",
+        &[ARTIFACT, VERSION, IDEM],
+    ),
+    spec(
+        "skill_library.restore",
+        "Restore an archived Skill as inactive while retaining immutable revisions",
+        false,
         false,
         "SkillMutationReceipt",
         &[ARTIFACT, VERSION, IDEM],

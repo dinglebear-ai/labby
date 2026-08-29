@@ -92,8 +92,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     },
 ];
 
-const fn api_actions() -> [ActionSpec; 19] {
-    let mut result = [ACTIONS[0]; 19];
+const fn api_actions() -> [ActionSpec; 22] {
+    let mut result = [ACTIONS[0]; 22];
     let mut index = 0;
     while index < ACTIONS.len() {
         result[index] = ACTIONS[index];
@@ -108,7 +108,7 @@ const fn api_actions() -> [ActionSpec; 19] {
     result
 }
 
-const ALL_MANAGEMENT_ACTIONS: [ActionSpec; 19] = api_actions();
+const ALL_MANAGEMENT_ACTIONS: [ActionSpec; 22] = api_actions();
 /// Authenticated HTTP MCP/App contract: compatibility reads plus the bounded
 /// Skill Library management vocabulary. Stdio and private in-process callers
 /// intentionally retain [`ACTIONS`].

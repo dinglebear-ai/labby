@@ -993,6 +993,10 @@ pub enum LibraryMutation {
         artifact_id: String,
         updated_at: LibraryTimestamp,
     },
+    Restore {
+        artifact_id: String,
+        updated_at: LibraryTimestamp,
+    },
     Refresh {
         artifact_id: String,
     },
@@ -1008,6 +1012,7 @@ impl LibraryMutation {
             Self::Rollback { .. } => "rollback",
             Self::Deactivate { .. } => "deactivate",
             Self::Archive { .. } => "archive",
+            Self::Restore { .. } => "restore",
             Self::Refresh { .. } => "refresh",
         }
     }
@@ -1019,7 +1024,8 @@ impl LibraryMutation {
             | Self::Save { artifact_id, .. }
             | Self::Rollback { artifact_id, .. }
             | Self::Deactivate { artifact_id, .. }
-            | Self::Archive { artifact_id, .. } => artifact_id,
+            | Self::Archive { artifact_id, .. }
+            | Self::Restore { artifact_id, .. } => artifact_id,
             Self::Refresh { artifact_id } => artifact_id,
         }
     }
@@ -1746,7 +1752,7 @@ fn receipt_facts(state: &LibrarySnapshot, receipt: &LibraryReceipt) -> LibraryMu
         library_digest: state.active_generation_digest.clone(),
         relist_required: matches!(
             receipt.action.as_str(),
-            "activate" | "deactivate" | "archive" | "rollback" | "refresh"
+            "activate" | "deactivate" | "archive" | "restore" | "rollback" | "refresh"
         ),
     }
 }
@@ -1861,6 +1867,17 @@ fn apply_mutation(
             record.archived = true;
             record.updated_at = updated_at;
         }
+        LibraryMutation::Restore {
+            artifact_id,
+            updated_at,
+        } => {
+            let record = authorized_record(state, authorization, target_ownership, &artifact_id)?;
+            if !record.archived {
+                return Err(ArtifactError::Conflict("skill_not_archived"));
+            }
+            record.archived = false;
+            record.updated_at = updated_at;
+        }
         LibraryMutation::Refresh { .. } => {}
     }
     Ok(())
@@ -1890,6 +1907,7 @@ fn prevalidate_mutation(
         LibraryMutation::SetVisibility { .. }
         | LibraryMutation::Deactivate { .. }
         | LibraryMutation::Archive { .. }
+        | LibraryMutation::Restore { .. }
         | LibraryMutation::Refresh { .. } => Ok(()),
     }
 }
@@ -1952,6 +1970,7 @@ fn validate_action(action: &str) -> Result<(), ArtifactError> {
             | "activate"
             | "deactivate"
             | "archive"
+            | "restore"
             | "rollback"
             | "refresh"
     ) {
@@ -2792,6 +2811,10 @@ mod tests {
                 artifact_id: artifact.clone(),
                 updated_at: ts("2026-08-26T00:05:00Z"),
             },
+            LibraryMutation::Restore {
+                artifact_id: artifact.clone(),
+                updated_at: ts("2026-08-26T00:06:00Z"),
+            },
         ];
         for (index, mutation) in operations.into_iter().enumerate() {
             store
@@ -2806,9 +2829,12 @@ mod tests {
                 .unwrap();
         }
         let snapshot = store.library_snapshot().unwrap();
-        assert_eq!(snapshot.version, 6);
-        assert!(snapshot.records[&artifact].archived);
+        assert_eq!(snapshot.version, 7);
+        assert!(!snapshot.records[&artifact].archived);
         assert!(snapshot.records[&artifact].active_revision_id.is_none());
+        store
+            .revision(&artifact, &first_revision)
+            .expect("restore must retain immutable history");
         store.revision(&artifact, &first_revision).unwrap();
         store.revision(&artifact, &second_revision).unwrap();
     }
