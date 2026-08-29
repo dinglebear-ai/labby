@@ -1,5 +1,7 @@
 use super::*;
 use crate::gateway::manager::GatewayRuntimeHandle;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn manager() -> GatewayManager {
     let path =
@@ -28,6 +30,146 @@ fn publish(manager: &GatewayManager, principal: &str, members: Vec<CapabilityRef
             members,
         }])
         .expect("publish authoritative catalog");
+}
+
+struct CountingCatalogProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+struct RecordingCatalogProvider {
+    allowed: Arc<Mutex<Vec<Option<BTreeSet<String>>>>>,
+    requested: Arc<Mutex<Vec<Option<Vec<CapabilityRef>>>>>,
+    member: CapabilityRef,
+}
+
+impl ExecutionCapabilityCatalogProvider for RecordingCatalogProvider {
+    fn snapshot<'a>(
+        &'a self,
+        _manager: &'a GatewayManager,
+        principal: &'a str,
+        _tenant: &'a str,
+        allowed_upstreams: Option<&'a BTreeSet<String>>,
+        requested_members: Option<&'a [CapabilityRef]>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CapabilityCatalogSnapshot, ExecutionLoadoutError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.allowed
+            .lock()
+            .unwrap()
+            .push(allowed_upstreams.cloned());
+        self.requested
+            .lock()
+            .unwrap()
+            .push(requested_members.map(<[CapabilityRef]>::to_vec));
+        Box::pin(async move {
+            Ok(CapabilityCatalogSnapshot {
+                generation: "selected-generation".into(),
+                principal: principal.into(),
+                members: vec![self.member.clone()],
+            })
+        })
+    }
+}
+
+impl ExecutionCapabilityCatalogProvider for CountingCatalogProvider {
+    fn snapshot<'a>(
+        &'a self,
+        _manager: &'a GatewayManager,
+        _principal: &'a str,
+        _tenant: &'a str,
+        _allowed_upstreams: Option<&'a BTreeSet<String>>,
+        _requested_members: Option<&'a [CapabilityRef]>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CapabilityCatalogSnapshot, ExecutionLoadoutError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(ExecutionLoadoutError::Storage {
+                message: "discovery must not run".into(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn empty_preview_and_activation_never_discover_capabilities() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let manager = manager().with_execution_capability_provider(Arc::new(CountingCatalogProvider {
+        calls: Arc::clone(&calls),
+    }));
+    manager
+        .execution_loadout_create(
+            &caller(),
+            ExecutionLoadoutCreate {
+                id: "empty".into(),
+                name: "Empty".into(),
+                description: None,
+                members: Vec::new(),
+            },
+        )
+        .await
+        .expect("create empty loadout");
+
+    let preview = manager
+        .execution_loadout_preview(&caller(), "empty", "runtime-1")
+        .await
+        .expect("empty preview must not wait for discovery");
+    assert!(preview.resolved.is_empty());
+    assert!(preview.effective.is_empty());
+
+    let activation = manager
+        .execution_loadout_activate(&caller(), "empty", 1, "runtime-1")
+        .await
+        .expect("empty activation must not wait for discovery");
+    assert!(activation.preview.resolved.is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn nonempty_preview_constrains_discovery_to_selected_providers() {
+    let selected = member(CapabilityFamily::Prompt);
+    let allowed = Arc::new(Mutex::new(Vec::new()));
+    let requested = Arc::new(Mutex::new(Vec::new()));
+    let manager =
+        manager().with_execution_capability_provider(Arc::new(RecordingCatalogProvider {
+            allowed: Arc::clone(&allowed),
+            requested: Arc::clone(&requested),
+            member: selected.clone(),
+        }));
+    manager
+        .execution_loadout_create(
+            &caller(),
+            ExecutionLoadoutCreate {
+                id: "selected".into(),
+                name: "Selected".into(),
+                description: None,
+                members: vec![selected],
+            },
+        )
+        .await
+        .expect("create selected loadout");
+
+    manager
+        .execution_loadout_preview(&caller(), "selected", "runtime-1")
+        .await
+        .expect("resolve selected provider");
+
+    assert_eq!(
+        allowed.lock().unwrap().as_slice(),
+        &[Some(BTreeSet::from(["provider-1".to_string()]))]
+    );
+    assert_eq!(
+        requested.lock().unwrap().as_slice(),
+        &[Some(vec![member(CapabilityFamily::Prompt)])]
+    );
 }
 
 #[tokio::test]

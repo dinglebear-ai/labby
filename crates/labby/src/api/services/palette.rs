@@ -384,11 +384,32 @@ async fn search(
     auth: Option<Extension<AuthContext>>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Response<axum::body::Body>, ApiError> {
+    if query.q.trim().starts_with("labby:") {
+        let catalog =
+            exact_labby_action_catalog(&state, auth.as_ref().map(|auth| &auth.0), query.q.trim());
+        return Ok(catalog_response(headers, catalog));
+    }
     let mut catalog =
         compact_palette_catalog(&state, &headers, auth.as_ref().map(|auth| &auth.0)).await?;
     catalog.entries = search_entries(catalog.entries, &query.q, query.limit.min(100));
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
     Ok(catalog_response(headers, catalog))
+}
+
+fn exact_labby_action_catalog(
+    state: &AppState,
+    auth: Option<&AuthContext>,
+    id: &str,
+) -> LauncherCatalogView {
+    let mut catalog = LauncherCatalogView {
+        fingerprint: String::new(),
+        entries: Vec::new(),
+    };
+    append_labby_actions(&mut catalog, state, auth);
+    catalog.entries.retain(|entry| entry_id(entry) == id);
+    compact_catalog_schemas(&mut catalog);
+    catalog.fingerprint = catalog_fingerprint(&catalog.entries);
+    catalog
 }
 
 async fn compact_palette_catalog(
@@ -1841,7 +1862,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/v1/palette/search?q=echo.run&limit=5")
+                    .uri("/v1/palette/search?q=labby:demo::echo.run&limit=5")
                     .header(header::AUTHORIZATION, "Bearer test-token")
                     .body(Body::empty())
                     .unwrap(),
@@ -1856,6 +1877,7 @@ mod tests {
         let value: Value = serde_json::from_slice(&body).unwrap();
         let entries = value["entries"].as_array().unwrap();
         assert_eq!(entries[0]["id"], "labby:demo::echo.run");
+        assert_eq!(entries.len(), 1);
         assert!(
             !entries
                 .iter()

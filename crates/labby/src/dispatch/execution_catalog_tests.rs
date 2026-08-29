@@ -185,7 +185,7 @@ async fn production_provider_activates_authorized_mixed_families_and_rejects_mis
         .await
         .unwrap();
     let snapshot = provider
-        .snapshot(&manager, "principal-1", "tenant-1", None)
+        .snapshot(&manager, "principal-1", "tenant-1", None, None)
         .await
         .unwrap();
     members = snapshot.members.clone();
