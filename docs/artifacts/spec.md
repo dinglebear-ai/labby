@@ -74,8 +74,24 @@ creates or reuses an immutable content-addressed revision.
 instruction-bearing text are never interpreted or injected into a command, HTML, or another
 prompt. Create and save remain inactive until an exact revision is explicitly activated. Archive
 deactivates the Prompt while retaining its workspace and all immutable revisions, so pinned
-references remain readable; restore returns it as inactive. Agent and Hook authoring are outside
-this slice.
+references remain readable; restore returns it as inactive. Hook authoring is outside this slice.
+
+## Public Agent authoring lifecycle
+
+Agents reuse the authenticated Artifact library and expose revisioned list, get, read, history,
+diff, validate, preview, create, save, activate, deactivate, archive, restore, and rollback actions
+as `agent_library.*`. An Agent package contains exactly one bounded UTF-8 `AGENT.md`. Its strict
+frontmatter names the `labby` runtime, requires `activation: explicit`, and carries at most 256
+provider-qualified capability references (`server_id`, supported `family`, `member_id`, and
+`expected_revision`). Unknown fields, unsupported families, duplicate or malformed references,
+implicit activation, empty instructions, and over-limit content are rejected.
+
+Preview returns validated instructions only as `inert_text`; hostile markup, template syntax, and
+command-looking text are never rendered or executed. Create and save remain inactive until an exact
+immutable revision is explicitly activated. Agent identities use `{kind: "agent", namespace:
+"labby", name}`, making exact revisions addressable by ExecutionLoadout Agent references. Existing
+principal isolation, optimistic library-version CAS, idempotency, immutable revisions,
+reference-safe archive, and inactive restore semantics apply.
 
 ## Non-goals for the first slice
 

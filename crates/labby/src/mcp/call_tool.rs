@@ -283,7 +283,9 @@ impl LabMcpServer {
         registered: bool,
     ) -> Option<CallToolResponse> {
         let action_allowed = if service == "skills"
-            && (action.starts_with("skill_library.") || action.starts_with("prompt_library."))
+            && (action.starts_with("skill_library.")
+                || action.starts_with("prompt_library.")
+                || action.starts_with("agent_library."))
         {
             #[cfg(feature = "skills")]
             {
@@ -310,7 +312,9 @@ impl LabMcpServer {
         }
         #[cfg(feature = "skills")]
         if service == "skills"
-            && (action.starts_with("skill_library.") || action.starts_with("prompt_library."))
+            && (action.starts_with("skill_library.")
+                || action.starts_with("prompt_library.")
+                || action.starts_with("agent_library."))
         {
             extra.insert(
                 "correlation_id".to_owned(),
