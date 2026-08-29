@@ -15,7 +15,7 @@ use labby_runtime::gateway_config::UpstreamConfig;
 
 use super::GatewayManager;
 
-fn upstream_revision(upstream: &UpstreamConfig) -> String {
+pub(super) fn upstream_revision(upstream: &UpstreamConfig) -> String {
     use sha2::{Digest, Sha256};
     let bytes = serde_json::to_vec(upstream).expect("upstream config serializes");
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))

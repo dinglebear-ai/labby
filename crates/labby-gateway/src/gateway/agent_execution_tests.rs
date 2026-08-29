@@ -519,3 +519,63 @@ fn result_cap_and_bounded_pruning_preserve_replay_window() {
     assert_eq!(store.prune_expired().unwrap(), 1);
     assert!(store.status("large").unwrap().is_none());
 }
+
+#[test]
+fn operational_reads_prune_expired_rows_without_new_delegation() {
+    let (_dir, store) = store();
+    store.issue_delegation("actor", "service", &[]).unwrap();
+    store
+        .conn()
+        .unwrap()
+        .execute("UPDATE agent_delegations SET expires_at=?1", [now_ms() - 1])
+        .unwrap();
+    store.last_prune_at.store(0, Ordering::Release);
+
+    assert!(store.status("unrelated-status-poll").unwrap().is_none());
+    let remaining: i64 = store
+        .conn()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM agent_delegations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[test]
+fn migration_is_versioned_transactional_and_accepts_only_duplicate_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sqlite3");
+    {
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    let migrated = AgentExecutionStore::open(path.clone()).unwrap();
+    let version: i64 = migrated
+        .conn()
+        .unwrap()
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, AGENT_SCHEMA_VERSION);
+    drop(migrated);
+
+    let broken_path = dir.path().join("broken.sqlite3");
+    let connection = Connection::open(&broken_path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE agent_contexts(wrong TEXT); PRAGMA user_version=0;")
+        .unwrap();
+    drop(connection);
+    let error = AgentExecutionStore::open(broken_path).err().unwrap();
+    assert!(error.to_string().contains("agent execution storage failed"));
+    let connection = Connection::open(dir.path().join("broken.sqlite3")).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 0, "failed migration must roll back its version");
+}

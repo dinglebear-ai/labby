@@ -12,14 +12,22 @@ fn caller() -> PaletteCaller {
 }
 
 fn member(family: CapabilityFamily) -> CapabilityRef {
-    let mut capability = CapabilityRef {
+    CapabilityRef {
         provider: "provider-1".into(),
         family,
         member_id: format!("member-{family:?}"),
-        expected_revision: String::new(),
-    };
-    capability.expected_revision = capability_revision(&capability);
-    capability
+        expected_revision: format!("revision-{family:?}"),
+    }
+}
+
+fn publish(manager: &GatewayManager, principal: &str, members: Vec<CapabilityRef>) {
+    manager
+        .publish_execution_capability_snapshots(vec![CapabilityCatalogSnapshot {
+            generation: "catalog-generation-1".into(),
+            principal: principal.into(),
+            members,
+        }])
+        .expect("publish authoritative catalog");
 }
 
 #[tokio::test]
@@ -124,6 +132,11 @@ async fn stale_patch_returns_current_revision_and_mergeable_fields() {
 #[tokio::test]
 async fn preview_is_principal_runtime_bound_and_all_families_are_effective() {
     let manager = manager();
+    publish(
+        &manager,
+        "principal-1",
+        vec![member(CapabilityFamily::Agent)],
+    );
     manager
         .execution_loadout_create(
             &caller(),
@@ -160,6 +173,8 @@ async fn mixed_family_activation_is_atomic_and_cross_principal_access_is_private
         CapabilityFamily::McpServer,
         CapabilityFamily::Plugin,
     ];
+    let members = families.into_iter().map(member).collect::<Vec<_>>();
+    publish(&manager, "principal-1", members.clone());
     manager
         .execution_loadout_create(
             &owner,
@@ -167,7 +182,7 @@ async fn mixed_family_activation_is_atomic_and_cross_principal_access_is_private
                 id: "mixed".into(),
                 name: "Mixed".into(),
                 description: None,
-                members: families.into_iter().map(member).collect(),
+                members,
             },
         )
         .await
@@ -184,6 +199,71 @@ async fn mixed_family_activation_is_atomic_and_cross_principal_access_is_private
         Err(ExecutionLoadoutError::NotFound { .. })
     ));
     assert!(manager.execution_loadout_list(&other).await.is_empty());
+}
+
+#[tokio::test]
+async fn non_tool_activation_rejects_missing_stale_and_unpublished_principal_members() {
+    let manager = manager();
+    let owner = caller();
+    let authoritative = member(CapabilityFamily::Skill);
+    publish(&manager, "principal-1", vec![authoritative.clone()]);
+    for (id, selected) in [
+        (
+            "missing",
+            CapabilityRef {
+                member_id: "forged-skill".into(),
+                ..authoritative.clone()
+            },
+        ),
+        (
+            "stale",
+            CapabilityRef {
+                expected_revision: "attacker-self-attested-revision".into(),
+                ..authoritative.clone()
+            },
+        ),
+    ] {
+        manager
+            .execution_loadout_create(
+                &owner,
+                ExecutionLoadoutCreate {
+                    id: id.into(),
+                    name: id.into(),
+                    description: None,
+                    members: vec![selected],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .execution_loadout_activate(&owner, id, 1, "runtime")
+                .await
+                .is_err()
+        );
+    }
+
+    manager
+        .publish_execution_capability_snapshots(Vec::new())
+        .unwrap();
+    manager
+        .execution_loadout_create(
+            &owner,
+            ExecutionLoadoutCreate {
+                id: "unpublished".into(),
+                name: "unpublished".into(),
+                description: None,
+                members: vec![authoritative],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        manager
+            .execution_loadout_activate(&owner, "unpublished", 1, "runtime")
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

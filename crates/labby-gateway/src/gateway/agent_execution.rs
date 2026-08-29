@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -22,6 +23,8 @@ const MAX_CONTEXT_TTL_MS: i64 = 5 * 60 * 1000;
 const MAX_RESULT_BYTES: usize = 1024 * 1024;
 const REPLAY_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 const PRUNE_BATCH_SIZE: usize = 256;
+const PRUNE_INTERVAL_MS: i64 = 60_000;
+const AGENT_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -149,6 +152,7 @@ pub(crate) enum Reservation {
 
 pub struct AgentExecutionStore {
     connection: Mutex<Connection>,
+    last_prune_at: AtomicI64,
 }
 
 impl AgentExecutionStore {
@@ -156,7 +160,7 @@ impl AgentExecutionStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(storage_error)?;
         }
-        let connection = Connection::open(path).map_err(storage_error)?;
+        let mut connection = Connection::open(path).map_err(storage_error)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -172,26 +176,25 @@ impl AgentExecutionStore {
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(storage_error)?;
-        connection.execute_batch(SCHEMA).map_err(storage_error)?;
-        drop(connection.execute(
-            "ALTER TABLE agent_contexts ADD COLUMN auth_snapshot TEXT NOT NULL DEFAULT ''",
-            [],
-        ));
+        migrate_schema(&mut connection)?;
         connection.execute(
             "UPDATE agent_requests SET status='interrupted', error_kind='interrupted' WHERE status='running'",
             [],
         ).map_err(storage_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            last_prune_at: AtomicI64::new(0),
         })
     }
 
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn open_in_memory() -> Result<Self, ToolError> {
         let connection = Connection::open_in_memory().map_err(storage_error)?;
-        connection.execute_batch(SCHEMA).map_err(storage_error)?;
+        let mut connection = connection;
+        migrate_schema(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            last_prune_at: AtomicI64::new(0),
         })
     }
 
@@ -201,7 +204,7 @@ impl AgentExecutionStore {
         audience: &str,
         scopes: &[String],
     ) -> Result<DelegationReceipt, ToolError> {
-        self.prune_expired()?;
+        self.prune_if_due()?;
         validate_identity(actor)?;
         validate_identity(audience)?;
         let token = opaque_token("dlg");
@@ -288,6 +291,7 @@ impl AgentExecutionStore {
         context_id: &str,
         service: &str,
     ) -> Result<BoundContext, ToolError> {
+        self.prune_if_due()?;
         self.conn()?.query_row(
             "SELECT actor,service,loadout_id,loadout_revision,scopes_json FROM agent_contexts WHERE id_hash=?1 AND service=?2 AND expires_at>?3",
             params![digest(context_id), service, now_ms()],
@@ -300,6 +304,7 @@ impl AgentExecutionStore {
         context_id: &str,
         actor: &str,
     ) -> Result<BoundContext, ToolError> {
+        self.prune_if_due()?;
         let context = self.conn()?.query_row(
             "SELECT actor,service,loadout_id,loadout_revision,scopes_json FROM agent_contexts WHERE id_hash=?1 AND actor=?2 AND expires_at>?3",
             params![digest(context_id), actor, now_ms()],
@@ -437,6 +442,7 @@ impl AgentExecutionStore {
     }
 
     pub fn status(&self, key: &str) -> Result<Option<AgentExecutionReceipt>, ToolError> {
+        self.prune_if_due()?;
         let conn = self.conn()?;
         Ok(load_receipt(&conn, key)?.map(|(_, receipt)| receipt))
     }
@@ -446,6 +452,84 @@ impl AgentExecutionStore {
             .lock()
             .map_err(|_| storage_error("agent execution store lock poisoned"))
     }
+
+    fn prune_if_due(&self) -> Result<(), ToolError> {
+        let now = now_ms();
+        let previous = self.last_prune_at.load(Ordering::Relaxed);
+        if now.saturating_sub(previous) < PRUNE_INTERVAL_MS {
+            return Ok(());
+        }
+        if self
+            .last_prune_at
+            .compare_exchange(previous, now, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.prune_expired()?;
+        }
+        Ok(())
+    }
+}
+
+fn migrate_schema(connection: &mut Connection) -> Result<(), ToolError> {
+    let tx = connection.transaction().map_err(storage_error)?;
+    tx.execute_batch(SCHEMA).map_err(storage_error)?;
+    let version: i64 = tx
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(storage_error)?;
+    if version > AGENT_SCHEMA_VERSION {
+        return Err(storage_error(format!(
+            "unsupported agent execution schema version {version}"
+        )));
+    }
+    if version < 1 {
+        if let Err(error) = tx.execute(
+            "ALTER TABLE agent_contexts ADD COLUMN auth_snapshot TEXT NOT NULL DEFAULT ''",
+            [],
+        ) && !is_duplicate_column(&error)
+        {
+            return Err(storage_error(error));
+        }
+        tx.pragma_update(None, "user_version", 1_i64)
+            .map_err(storage_error)?;
+    }
+    assert_schema(&tx)?;
+    tx.commit().map_err(storage_error)
+}
+
+fn is_duplicate_column(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::SqliteFailure(_, Some(message)) if message.to_ascii_lowercase().contains("duplicate column name"))
+}
+
+fn assert_schema(connection: &Connection) -> Result<(), ToolError> {
+    for (table, required) in [
+        ("agent_delegations", &["token_hash", "expires_at"][..]),
+        (
+            "agent_contexts",
+            &["id_hash", "auth_snapshot", "expires_at"][..],
+        ),
+        ("agent_approvals", &["id", "expires_at", "used_at"][..]),
+        (
+            "agent_requests",
+            &["idempotency_key", "status", "updated_at"][..],
+        ),
+    ] {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(storage_error)?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage_error)?
+            .collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(storage_error)?;
+        for column in required {
+            if !columns.contains(*column) {
+                return Err(storage_error(format!(
+                    "schema assertion failed: {table}.{column} is missing"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn load_receipt(

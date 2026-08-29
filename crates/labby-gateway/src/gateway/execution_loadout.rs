@@ -4,6 +4,7 @@
 //! authorized subset of one immutable catalog snapshot for a caller/runtime.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use labby_runtime::error::ToolError;
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,24 @@ pub struct CapabilityRef {
     pub family: CapabilityFamily,
     pub member_id: String,
     pub expected_revision: String,
+}
+
+/// One host-authoritative, principal-filtered catalog publication.
+///
+/// The product host builds this from canonical stores while applying the
+/// caller's authorization policy. Callers can select entries from this
+/// snapshot, but can never manufacture an entry or its revision.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityCatalogSnapshot {
+    pub generation: String,
+    pub principal: String,
+    pub members: Vec<CapabilityRef>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct PublishedCapabilityCatalog {
+    snapshots: HashMap<String, CapabilityCatalogSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,6 +205,32 @@ pub(super) struct ExecutionLoadoutStore {
 }
 
 impl GatewayManager {
+    /// Atomically publish complete principal-filtered snapshots prepared by the
+    /// authoritative product host. A single swap prevents mixed generations.
+    pub fn publish_execution_capability_snapshots(
+        &self,
+        snapshots: Vec<CapabilityCatalogSnapshot>,
+    ) -> Result<(), ExecutionLoadoutError> {
+        let mut published = PublishedCapabilityCatalog::default();
+        for snapshot in snapshots {
+            validate_text("generation", &snapshot.generation)?;
+            validate_text("principal", &snapshot.principal)?;
+            let principal = snapshot.principal.clone();
+            let snapshot = CapabilityCatalogSnapshot {
+                members: normalize_members(snapshot.members)?,
+                ..snapshot
+            };
+            if published.snapshots.insert(principal, snapshot).is_some() {
+                return Err(ExecutionLoadoutError::Invalid {
+                    field: "principal".into(),
+                    message: "duplicate principal capability snapshot".into(),
+                });
+            }
+        }
+        self.execution_capabilities.store(Arc::new(published));
+        Ok(())
+    }
+
     pub(crate) async fn execution_loadout_revision_contains(
         &self,
         principal: &str,
@@ -481,6 +526,9 @@ impl GatewayManager {
         runtime_identity: &str,
     ) -> Result<ExecutionLoadoutPreview, ToolError> {
         let catalog = self.palette_catalog_snapshot(caller).await?;
+        let published = self.execution_capabilities.load_full();
+        let principal = caller_principal(caller);
+        let non_tool_catalog = published.snapshots.get(&principal);
         let mut available = BTreeMap::new();
         for entry in catalog.entries {
             if let LauncherEntryView::McpTool(tool) = entry {
@@ -494,7 +542,20 @@ impl GatewayManager {
                 );
             }
         }
-        let principal = caller_principal(caller);
+        if let Some(snapshot) = non_tool_catalog {
+            for member in &snapshot.members {
+                if member.family != CapabilityFamily::Tool {
+                    available.insert(
+                        (
+                            member.provider.clone(),
+                            member.family,
+                            member.member_id.clone(),
+                        ),
+                        member.expected_revision.clone(),
+                    );
+                }
+            }
+        }
         let mut resolved = Vec::with_capacity(draft.members.len());
         let mut effective = Vec::new();
         let mut missing = Vec::new();
@@ -515,9 +576,7 @@ impl GatewayManager {
                     None,
                     Some("provider is outside the principal authorization snapshot".into()),
                 )
-            } else if capability.family == CapabilityFamily::Tool
-                && let Some(current) = available.get(&key)
-            {
+            } else if let Some(current) = available.get(&key) {
                 if current == &capability.expected_revision {
                     (ResolutionStatus::Effective, Some(current.clone()), None)
                 } else {
@@ -527,26 +586,12 @@ impl GatewayManager {
                         Some("expected revision does not match live catalog".into()),
                     )
                 }
-            } else if capability.family == CapabilityFamily::Tool {
+            } else {
                 (
                     ResolutionStatus::Missing,
                     None,
                     Some("provider-qualified member is not visible to this principal".into()),
                 )
-            } else {
-                let current = capability_revision(capability);
-                if current == capability.expected_revision {
-                    (ResolutionStatus::Effective, Some(current), None)
-                } else {
-                    (
-                        ResolutionStatus::Stale,
-                        Some(current),
-                        Some(
-                            "expected revision does not match the atomic capability snapshot"
-                                .into(),
-                        ),
-                    )
-                }
             };
             if status == ResolutionStatus::Effective {
                 effective.push(capability.clone());
@@ -566,7 +611,9 @@ impl GatewayManager {
         Ok(ExecutionLoadoutPreview {
             loadout_id: draft.id.clone(),
             draft_revision: draft.draft_revision,
-            catalog_generation: catalog.fingerprint,
+            catalog_generation: non_tool_catalog
+                .map(|snapshot| format!("{}:{}", catalog.fingerprint, snapshot.generation))
+                .unwrap_or(catalog.fingerprint),
             principal,
             runtime_identity: runtime_identity.into(),
             resolved,
@@ -591,13 +638,4 @@ fn record_key(principal: &str, id: &str) -> String {
 
 fn shared_principal() -> String {
     "shared".into()
-}
-
-fn capability_revision(capability: &CapabilityRef) -> String {
-    use sha2::{Digest, Sha256};
-    let seed = format!(
-        "{}\0{:?}\0{}",
-        capability.provider, capability.family, capability.member_id
-    );
-    format!("sha256:{}", hex::encode(Sha256::digest(seed.as_bytes())))
 }

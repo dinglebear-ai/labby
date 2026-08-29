@@ -40,6 +40,7 @@ use super::agent_execution::AgentExecutionStore;
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
 use super::execution_loadout::ExecutionLoadoutStore;
+use super::execution_loadout::PublishedCapabilityCatalog;
 use super::protected_routes::ProtectedRouteIndex;
 pub use super::runtime::GatewayRuntimeHandle;
 use super::service_registry::PublishedServiceRegistryState;
@@ -132,6 +133,7 @@ pub struct GatewayManager {
     /// Per-turn capability selections. This is deliberately separate from
     /// `GatewayConfig::loadouts`, which configures mounted gateway routes.
     pub(super) execution_loadouts: Arc<RwLock<ExecutionLoadoutStore>>,
+    pub(super) execution_capabilities: Arc<ArcSwap<PublishedCapabilityCatalog>>,
     pub(super) agent_executions: Arc<AgentExecutionStore>,
     pub(super) agent_execution_cancellations:
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,

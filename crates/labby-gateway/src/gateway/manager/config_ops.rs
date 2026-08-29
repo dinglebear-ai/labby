@@ -623,7 +623,7 @@ fn upstream_revision(upstream: &UpstreamConfig) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
-fn ensure_upstream_revision(
+pub(super) fn ensure_upstream_revision(
     config: &GatewayConfig,
     name: &str,
     expected: Option<&str>,
