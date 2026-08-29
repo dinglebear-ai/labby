@@ -123,6 +123,22 @@ pub(crate) struct ValidationRejection {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct SkillPreview {
+    pub(crate) artifact_id: String,
+    pub(crate) revision_id: String,
+    /// Explicitly tells clients that all bodies are inert text, never rendered markup.
+    pub(crate) render_mode: &'static str,
+    pub(crate) files: Vec<SkillPreviewFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SkillPreviewFile {
+    pub(crate) path: String,
+    pub(crate) media_type: &'static str,
+    pub(crate) text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct MutationReceipt {
     pub(crate) outcome: String,
     pub(crate) artifact_id: String,

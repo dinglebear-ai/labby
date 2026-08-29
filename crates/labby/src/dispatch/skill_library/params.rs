@@ -8,6 +8,7 @@ pub(crate) const DEFAULT_PAGE_LIMIT: usize = 50;
 pub(crate) const MAX_PAGE_LIMIT: usize = 100;
 pub(crate) const MAX_CURSOR_BYTES: usize = 512;
 pub(crate) const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+pub(crate) const MAX_PREVIEW_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +29,14 @@ pub(crate) struct ReadRevisionParams {
     pub(crate) artifact_id: String,
     pub(crate) revision_id: String,
     pub(crate) path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DiffRevisionParams {
+    pub(crate) artifact_id: String,
+    pub(crate) from_revision_id: String,
+    pub(crate) to_revision_id: String,
 }
 
 #[derive(Debug, Deserialize)]

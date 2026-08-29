@@ -27,29 +27,35 @@ pub(crate) enum SkillLibraryAction {
     Get,
     Read,
     History,
+    Diff,
     Validate,
+    Preview,
     Create,
     Save,
     Activate,
     Deactivate,
     Archive,
+    Restore,
     Rollback,
     Import,
     Refresh,
 }
 
 impl SkillLibraryAction {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 16] = [
         Self::List,
         Self::Get,
         Self::Read,
         Self::History,
+        Self::Diff,
         Self::Validate,
+        Self::Preview,
         Self::Create,
         Self::Save,
         Self::Activate,
         Self::Deactivate,
         Self::Archive,
+        Self::Restore,
         Self::Rollback,
         Self::Import,
         Self::Refresh,
@@ -61,12 +67,15 @@ impl SkillLibraryAction {
             Self::Get => "skill_library.get",
             Self::Read => "skill_library.read",
             Self::History => "skill_library.history",
+            Self::Diff => "skill_library.diff",
             Self::Validate => "skill_library.validate",
+            Self::Preview => "skill_library.preview",
             Self::Create => "skill_library.create",
             Self::Save => "skill_library.save",
             Self::Activate => "skill_library.activate",
             Self::Deactivate => "skill_library.deactivate",
             Self::Archive => "skill_library.archive",
+            Self::Restore => "skill_library.restore",
             Self::Rollback => "skill_library.rollback",
             Self::Import => "skill_library.import",
             Self::Refresh => "skill_library.refresh",
@@ -81,6 +90,7 @@ impl SkillLibraryAction {
                 | Self::Activate
                 | Self::Deactivate
                 | Self::Archive
+                | Self::Restore
                 | Self::Rollback
                 | Self::Import
                 | Self::Refresh
