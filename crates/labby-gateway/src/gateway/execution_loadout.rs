@@ -4,10 +4,13 @@
 //! authorized subset of one immutable catalog snapshot for a caller/runtime.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use labby_runtime::error::ToolError;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use self::validation::{normalize_members, validate_text};
 use super::manager::GatewayManager;
@@ -57,6 +60,26 @@ pub struct CapabilityCatalogSnapshot {
     pub generation: String,
     pub principal: String,
     pub members: Vec<CapabilityRef>,
+}
+
+/// Host-owned canonical catalog source.
+///
+/// Implementations must read the real owning stores and apply the supplied
+/// principal/upstream authorization. The gateway never invents catalog rows or
+/// revisions.
+pub trait ExecutionCapabilityCatalogProvider: Send + Sync {
+    fn snapshot<'a>(
+        &'a self,
+        manager: &'a GatewayManager,
+        principal: &'a str,
+        allowed_upstreams: Option<&'a BTreeMap<String, ()>>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<CapabilityCatalogSnapshot, ExecutionLoadoutError>>
+                + Send
+                + 'a,
+        >,
+    >;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -205,6 +228,116 @@ pub(super) struct ExecutionLoadoutStore {
 }
 
 impl GatewayManager {
+    /// Refresh one principal from the canonical production owner.
+    pub async fn refresh_execution_capability_snapshot_for(
+        &self,
+        principal: &str,
+        allowed_upstreams: Option<&BTreeMap<String, ()>>,
+    ) -> Result<(), ExecutionLoadoutError> {
+        let provider = self.execution_capability_provider.as_ref().ok_or_else(|| {
+            ExecutionLoadoutError::Storage {
+                message: "canonical execution capability catalog is unavailable".into(),
+            }
+        })?;
+        let snapshot = provider
+            .snapshot(self, principal, allowed_upstreams)
+            .await?;
+        let current = self.execution_capabilities.load_full();
+        let mut snapshots = current.snapshots.clone();
+        snapshots.insert(principal.to_string(), snapshot);
+        self.publish_execution_capability_snapshots(snapshots.into_values().collect())
+    }
+
+    /// Canonical upstream-owned non-tool rows for a host catalog provider.
+    pub async fn canonical_upstream_execution_capabilities(
+        &self,
+        allowed_upstreams: Option<&BTreeMap<String, ()>>,
+    ) -> Result<Vec<CapabilityRef>, ExecutionLoadoutError> {
+        let allowed = |name: &str| allowed_upstreams.is_none_or(|set| set.contains_key(name));
+        let mut members = Vec::new();
+        if let Some(pool) = self.runtime.published_pool_snapshot().pool() {
+            let prompts = pool.published_prompt_catalog().await.map_err(|_| {
+                ExecutionLoadoutError::Storage {
+                    message: "published prompt catalog is unavailable".into(),
+                }
+            })?;
+            for route in prompts
+                .routes()
+                .iter()
+                .filter(|route| allowed(&route.upstream_name))
+            {
+                members.push(CapabilityRef {
+                    provider: route.upstream_name.to_string(),
+                    family: CapabilityFamily::Prompt,
+                    member_id: route.native_name.to_string(),
+                    expected_revision: canonical_revision(&route.prompt)?,
+                });
+            }
+            let resources = pool.published_resource_catalog().await.map_err(|_| {
+                ExecutionLoadoutError::Storage {
+                    message: "published resource catalog is unavailable".into(),
+                }
+            })?;
+            for route in resources
+                .routes()
+                .iter()
+                .filter(|route| allowed(&route.upstream_name))
+            {
+                members.push(CapabilityRef {
+                    provider: route.upstream_name.to_string(),
+                    family: CapabilityFamily::Resource,
+                    member_id: route.native_uri.to_string(),
+                    expected_revision: canonical_revision(&route.resource)?,
+                });
+            }
+        }
+        let config = self.current_config().await;
+        for upstream in config
+            .upstream
+            .iter()
+            .filter(|item| item.enabled && allowed(&item.name))
+        {
+            members.push(CapabilityRef {
+                provider: "labby".into(),
+                family: CapabilityFamily::McpServer,
+                member_id: upstream.name.clone(),
+                expected_revision: canonical_revision(upstream)?,
+            });
+        }
+        Ok(members)
+    }
+
+    pub fn with_execution_capability_provider(
+        mut self,
+        provider: Arc<dyn ExecutionCapabilityCatalogProvider>,
+    ) -> Self {
+        self.execution_capability_provider = Some(provider);
+        self
+    }
+
+    async fn refresh_execution_capability_snapshot(
+        &self,
+        caller: &PaletteCaller,
+    ) -> Result<(), ToolError> {
+        // Explicit constructors are retained for embedders and focused gateway
+        // tests that publish snapshots directly. Production `from_config`
+        // always injects the canonical host provider.
+        if self.execution_capability_provider.is_none() {
+            return Ok(());
+        }
+        let principal = caller_principal(caller);
+        let allowed = caller.allowed_upstreams().map(|names| {
+            names
+                .iter()
+                .cloned()
+                .map(|name| (name, ()))
+                .collect::<BTreeMap<_, _>>()
+        });
+        self.refresh_execution_capability_snapshot_for(&principal, allowed.as_ref())
+            .await
+            .map_err(Into::into)
+    }
+
     /// Atomically publish complete principal-filtered snapshots prepared by the
     /// authoritative product host. A single swap prevents mixed generations.
     pub fn publish_execution_capability_snapshots(
@@ -525,6 +658,7 @@ impl GatewayManager {
         draft: &ExecutionLoadoutDraft,
         runtime_identity: &str,
     ) -> Result<ExecutionLoadoutPreview, ToolError> {
+        self.refresh_execution_capability_snapshot(caller).await?;
         let catalog = self.palette_catalog_snapshot(caller).await?;
         let published = self.execution_capabilities.load_full();
         let principal = caller_principal(caller);
@@ -625,11 +759,7 @@ impl GatewayManager {
 }
 
 fn caller_principal(caller: &PaletteCaller) -> String {
-    caller
-        .caller_auth
-        .sub
-        .clone()
-        .unwrap_or_else(|| "shared".into())
+    caller.catalog_principal.clone()
 }
 
 fn record_key(principal: &str, id: &str) -> String {
@@ -638,4 +768,14 @@ fn record_key(principal: &str, id: &str) -> String {
 
 fn shared_principal() -> String {
     "shared".into()
+}
+
+fn canonical_revision(value: &impl Serialize) -> Result<String, ExecutionLoadoutError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| ExecutionLoadoutError::Storage {
+        message: "canonical catalog row is not serializable".into(),
+    })?;
+    Ok(format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(bytes))
+    ))
 }

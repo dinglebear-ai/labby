@@ -1,6 +1,8 @@
 pub mod clients;
 pub mod doctor;
 pub mod error;
+#[cfg(feature = "gateway")]
+pub(crate) mod execution_catalog;
 pub mod fs;
 pub mod fs_atomic;
 #[cfg(feature = "gateway")]

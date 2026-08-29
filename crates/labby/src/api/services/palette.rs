@@ -5,6 +5,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::agent_execution::{
     AgentApprovalRequest, AgentExecuteRequest, AgentExecutionReceipt, ApprovalChallenge,
     DelegationReceipt, ExecutionContextCreateRequest, ExecutionContextReceipt,
@@ -172,8 +173,9 @@ async fn agent_cancel(
 async fn execution_loadout_list(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, ApiError> {
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let caller = execution_loadout_caller(&state, auth.as_ref(), identity.as_ref(), None).await?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     Ok(Json(
         json!({ "items": manager.execution_loadout_list(&caller).await }),
@@ -183,9 +185,10 @@ async fn execution_loadout_list(
 async fn execution_loadout_get(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let caller = execution_loadout_caller(&state, auth.as_ref(), identity.as_ref(), None).await?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
         .execution_loadout_get(&caller, &id)
@@ -199,9 +202,10 @@ async fn execution_loadout_get(
 async fn execution_loadout_create(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(input): Json<ExecutionLoadoutCreate>,
 ) -> Result<Json<Value>, ApiError> {
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let caller = execution_loadout_caller(&state, auth.as_ref(), identity.as_ref(), None).await?;
     require_execution_loadout_write(&caller)?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
@@ -216,10 +220,11 @@ async fn execution_loadout_create(
 async fn execution_loadout_patch(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Path(id): Path<String>,
     Json(input): Json<ExecutionLoadoutPatch>,
 ) -> Result<Json<Value>, ApiError> {
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let caller = execution_loadout_caller(&state, auth.as_ref(), identity.as_ref(), None).await?;
     require_execution_loadout_write(&caller)?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
@@ -245,10 +250,17 @@ async fn execution_loadout_preview(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Path(id): Path<String>,
     Json(input): Json<ExecutionLoadoutRuntimeRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    let caller = execution_loadout_caller(
+        &state,
+        auth.as_ref(),
+        identity.as_ref(),
+        request_id(&headers),
+    )
+    .await?;
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let value = manager
         .execution_loadout_preview(&caller, &id, &input.runtime_identity)
@@ -262,10 +274,17 @@ async fn execution_loadout_activate(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Path(id): Path<String>,
     Json(input): Json<ExecutionLoadoutRuntimeRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    let caller = execution_loadout_caller(
+        &state,
+        auth.as_ref(),
+        identity.as_ref(),
+        request_id(&headers),
+    )
+    .await?;
     require_execution_loadout_write(&caller)?;
     let expected = input
         .expected_draft_revision
@@ -285,10 +304,11 @@ async fn execution_loadout_activate(
 async fn execution_loadout_rollback(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Path(id): Path<String>,
     Json(input): Json<ExecutionLoadoutRuntimeRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let caller = execution_loadout_caller(&state, auth.as_ref(), identity.as_ref(), None).await?;
     require_execution_loadout_write(&caller)?;
     let expected = input
         .expected_draft_revision
@@ -522,6 +542,52 @@ fn palette_caller(
         auth.scopes.clone(),
         allowed_upstreams,
     ))
+}
+
+async fn execution_loadout_caller(
+    state: &AppState,
+    auth: Option<&Extension<AuthContext>>,
+    identity: Option<&Extension<VerifiedIdentity>>,
+    request_id: Option<&str>,
+) -> Result<PaletteCaller, ToolError> {
+    let mut caller = palette_caller(auth.map(|auth| &auth.0), request_id)?;
+    let identity = identity.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "auth_failed".into(),
+        message: "execution loadouts require verified identity context".into(),
+    })?;
+    let store = state
+        .access_runtime
+        .store()
+        .await
+        .map_err(|_| ToolError::Sdk {
+            sdk_kind: "service_unavailable".into(),
+            message: "execution loadout authorization is unavailable".into(),
+        })?;
+    let projects = store
+        .list_accessible_projects(identity.0.clone())
+        .await
+        .map_err(|_| ToolError::Sdk {
+            sdk_kind: "forbidden".into(),
+            message: "execution loadout principal is unavailable".into(),
+        })?;
+    let principal = projects
+        .first()
+        .map(|project| project.principal_id.clone())
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "forbidden".into(),
+            message: "execution loadout principal is unavailable".into(),
+        })?;
+    if projects
+        .iter()
+        .any(|project| project.principal_id != principal)
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "internal".into(),
+            message: "execution loadout principal projection is inconsistent".into(),
+        });
+    }
+    caller = caller.with_catalog_principal(principal);
+    Ok(caller)
 }
 
 fn request_id(headers: &HeaderMap) -> Option<&str> {

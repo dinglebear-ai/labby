@@ -621,6 +621,41 @@ fn mcp_apps_app() -> OwnedAppRegistration {
     }
 }
 
+/// Canonical enabled Labby-owned MCP App identities and content revisions.
+pub(crate) fn execution_loadout_mcp_app_catalog(
+    code_mode_enabled: bool,
+    config: labby_runtime::gateway_config::McpAppsConfig,
+) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    let mut add = |id: &str, app: OwnedAppRegistration| {
+        rows.push((id.to_string(), app.version.to_string()));
+    };
+    if code_mode_enabled {
+        add("code-mode", code_mode_app());
+    }
+    if config.server_logs {
+        add("server-logs", server_logs_app());
+    }
+    #[cfg(feature = "skills")]
+    add("skill-library", skill_library_app());
+    #[cfg(feature = "gateway")]
+    {
+        if config.add_server {
+            add("add-server", add_server_app());
+        }
+        if config.gateway_status {
+            add("gateway-status", gateway_status_app());
+        }
+        if config.settings {
+            add("settings", settings_app());
+        }
+        if config.manager {
+            add("mcp-apps", mcp_apps_app());
+        }
+    }
+    rows
+}
+
 /// Strip the `?v=<hash>` cache-bust suffix so a versioned URI matches its base
 /// descriptor. A base URI (no query) is returned unchanged.
 fn strip_app_version(uri: &str) -> &str {

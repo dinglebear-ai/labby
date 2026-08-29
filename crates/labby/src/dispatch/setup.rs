@@ -8,7 +8,7 @@
 
 mod bootstrap;
 mod catalog;
-mod claude_plugins;
+pub(crate) mod claude_plugins;
 mod client;
 mod dispatch;
 mod draft;

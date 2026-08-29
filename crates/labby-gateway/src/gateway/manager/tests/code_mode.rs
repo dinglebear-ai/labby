@@ -1253,6 +1253,7 @@ async fn palette_execute_rejects_cross_upstream_scope_and_destructive_reclassifi
         scope: ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new()),
         owner: crate::gateway::shared::make_api_runtime_owner(Some("alice"), Some("req-scope")),
         oauth_subject: "alice".to_string(),
+        catalog_principal: "alice".to_string(),
     };
 
     let error = manager

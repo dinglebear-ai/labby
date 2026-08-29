@@ -1539,6 +1539,10 @@ async fn build_gateway_runtime(
             resource_registry,
             usage_store: usage_store.clone(),
             code_mode_app_state: notifier.code_mode_app_state.clone(),
+            execution_capability_provider: Some(
+                crate::dispatch::execution_catalog::CanonicalExecutionCatalogProvider::production()
+                    .context("open canonical ExecutionLoadout catalogs")?,
+            ),
         },
         gateway_runtime,
     )?;
@@ -1581,6 +1585,10 @@ async fn build_gateway_runtime(
         .try_seed_config(config.to_gateway_config())
         .await
         .context("loaded gateway config failed validation")?;
+    gateway_manager
+        .refresh_execution_capability_snapshot_for("shared", None)
+        .await
+        .context("publish canonical ExecutionLoadout catalogs")?;
     install_gateway_manager(Arc::clone(&gateway_manager));
     if !suppress_upstream_runtime {
         match config.gateway_import_mode {
