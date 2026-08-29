@@ -63,6 +63,7 @@ enum ArtifactFamily {
     Skill,
     Prompt,
     Agent,
+    Hook,
 }
 
 impl ArtifactFamily {
@@ -71,6 +72,7 @@ impl ArtifactFamily {
             Self::Skill => "skill",
             Self::Prompt => "prompt",
             Self::Agent => "agent",
+            Self::Hook => "hook",
         }
     }
 
@@ -79,6 +81,8 @@ impl ArtifactFamily {
             Self::Prompt
         } else if action.starts_with("agent_") {
             Self::Agent
+        } else if action.starts_with("hook_") {
+            Self::Hook
         } else {
             Self::Skill
         }
@@ -574,6 +578,20 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         Default::default(),
                     )?
                     .into(),
+                    ArtifactFamily::Hook => labby_runtime::artifacts::materialize_logical_hook(
+                        &name,
+                        files
+                            .into_iter()
+                            .map(|file| {
+                                labby_runtime::artifacts::LogicalHookFile::new(
+                                    file.path,
+                                    file.content,
+                                )
+                            })
+                            .collect(),
+                        Default::default(),
+                    )?
+                    .into(),
                 };
                 let ownership = requested_artifact_id
                     .as_ref()
@@ -725,7 +743,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, SkillLibraryDispatchError> {
         match action {
-            "skill_library.list" | "prompt_library.list" | "agent_library.list" => {
+            "skill_library.list"
+            | "prompt_library.list"
+            | "agent_library.list"
+            | "hook_library.list" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: PageParams = parse(params)?;
                 let decision = authorize_at_boundary(
@@ -758,7 +779,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.get" | "prompt_library.get" | "agent_library.get" => {
+            "skill_library.get" | "prompt_library.get" | "agent_library.get"
+            | "hook_library.get" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: ArtifactParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
@@ -823,7 +845,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(item).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.read" | "prompt_library.read" | "agent_library.read" => {
+            "skill_library.read"
+            | "prompt_library.read"
+            | "agent_library.read"
+            | "hook_library.read" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: ReadRevisionParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
@@ -900,7 +925,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 })
                 .map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.history" | "prompt_library.history" | "agent_library.history" => {
+            "skill_library.history"
+            | "prompt_library.history"
+            | "agent_library.history"
+            | "hook_library.history" => {
                 let family = ArtifactFamily::from_action(action);
                 #[derive(serde::Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -964,7 +992,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.diff" | "prompt_library.diff" | "agent_library.diff" => {
+            "skill_library.diff"
+            | "prompt_library.diff"
+            | "agent_library.diff"
+            | "hook_library.diff" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: DiffRevisionParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
@@ -1091,6 +1122,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             ArtifactFamily::Skill => {
                                 unreachable!("skill validation has a separate path")
                             }
+                            ArtifactFamily::Hook => {
+                                unreachable!("hook validation has a separate path")
+                            }
                         }
                     })
                     .await;
@@ -1110,6 +1144,77 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         valid: true,
                         artifact_id: Some(candidate.0.descriptor.id),
                         revision_id: Some(candidate.0.revision.id),
+                        rejections: Vec::new(),
+                    })
+                    .map_err(|_| SkillLibraryDispatchError::Serialization),
+                    Err(BlockingError::Operation(error)) => {
+                        serde_json::to_value(ValidationResponse {
+                            valid: false,
+                            artifact_id: None,
+                            revision_id: None,
+                            rejections: vec![validation_rejection(error)?],
+                        })
+                        .map_err(|_| SkillLibraryDispatchError::Serialization)
+                    }
+                    Err(error) => Err(map_blocking(error)),
+                }
+            }
+            "hook_library.validate" | "hook_library.preview" => {
+                let preview_requested = action.ends_with("preview");
+                let params: ValidateParams = parse(params)?;
+                authorize_at_boundary(
+                    runtime,
+                    caller,
+                    project_id,
+                    if preview_requested {
+                        SkillLibraryAction::Preview
+                    } else {
+                        SkillLibraryAction::Validate
+                    },
+                    &CanonicalArtifactId::parse(if preview_requested {
+                        "preview"
+                    } else {
+                        "validation"
+                    })?,
+                    SkillLibraryTarget::SharedActive,
+                    correlation_id,
+                )
+                .await?;
+                let candidate = self
+                    .blocking
+                    .run("hook_library_validate", move || {
+                        labby_runtime::artifacts::materialize_logical_hook(
+                            &params.name,
+                            params
+                                .files
+                                .into_iter()
+                                .map(|file| {
+                                    labby_runtime::artifacts::LogicalHookFile::new(
+                                        file.path,
+                                        file.content,
+                                    )
+                                })
+                                .collect(),
+                            Default::default(),
+                        )
+                    })
+                    .await;
+                match candidate {
+                    Ok(candidate) if preview_requested => serde_json::to_value(SkillPreview {
+                        artifact_id: candidate.interchange.descriptor.id.clone(),
+                        revision_id: candidate.interchange.revision.id.clone(),
+                        render_mode: "inert_text",
+                        files: vec![SkillPreviewFile {
+                            path: "HOOK.json".to_owned(),
+                            media_type: "text/plain; charset=utf-8",
+                            text: candidate.preview_text().to_owned(),
+                        }],
+                    })
+                    .map_err(|_| SkillLibraryDispatchError::Serialization),
+                    Ok(candidate) => serde_json::to_value(ValidationResponse {
+                        valid: true,
+                        artifact_id: Some(candidate.interchange.descriptor.id),
+                        revision_id: Some(candidate.interchange.revision.id),
                         rejections: Vec::new(),
                     })
                     .map_err(|_| SkillLibraryDispatchError::Serialization),
@@ -1261,7 +1366,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             | "prompt_library.activate"
             | "prompt_library.rollback"
             | "agent_library.activate"
-            | "agent_library.rollback" => {
+            | "agent_library.rollback"
+            | "hook_library.activate"
+            | "hook_library.rollback" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: super::params::RevisionMutationParams = parse(params)?;
                 let action = if action.ends_with("activate") {
@@ -1283,7 +1390,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.create" | "prompt_library.create" | "agent_library.create" => {
+            "skill_library.create"
+            | "prompt_library.create"
+            | "agent_library.create"
+            | "hook_library.create" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: super::params::CreateParams = parse(params)?;
                 self.create_or_save(
@@ -1302,7 +1412,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.save" | "prompt_library.save" | "agent_library.save" => {
+            "skill_library.save"
+            | "prompt_library.save"
+            | "agent_library.save"
+            | "hook_library.save" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: super::params::SaveParams = parse(params)?;
                 let store = Arc::clone(&self.store);
@@ -1347,19 +1460,25 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             | "prompt_library.restore"
             | "agent_library.deactivate"
             | "agent_library.archive"
-            | "agent_library.restore" => {
+            | "agent_library.restore"
+            | "hook_library.deactivate"
+            | "hook_library.archive"
+            | "hook_library.restore" => {
                 let family = ArtifactFamily::from_action(action);
                 let params: super::params::LibraryMutationParams = parse(params)?;
                 let action = match action {
                     "skill_library.deactivate"
                     | "prompt_library.deactivate"
-                    | "agent_library.deactivate" => SkillLibraryAction::Deactivate,
+                    | "agent_library.deactivate"
+                    | "hook_library.deactivate" => SkillLibraryAction::Deactivate,
                     "skill_library.archive"
                     | "prompt_library.archive"
-                    | "agent_library.archive" => SkillLibraryAction::Archive,
+                    | "agent_library.archive"
+                    | "hook_library.archive" => SkillLibraryAction::Archive,
                     "skill_library.restore"
                     | "prompt_library.restore"
-                    | "agent_library.restore" => SkillLibraryAction::Restore,
+                    | "agent_library.restore"
+                    | "hook_library.restore" => SkillLibraryAction::Restore,
                     _ => unreachable!("matched lifecycle action"),
                 };
                 self.mutate_existing(
@@ -1514,6 +1633,8 @@ fn summary(
         materialized,
         canonical_uri: active.then(|| match kind.as_str() {
             "prompt" => format!("prompt://labby/{}/PROMPT.md", record.name),
+            "agent" => format!("agent://labby/{}/AGENT.md", record.name),
+            "hook" => format!("hook://labby/{}/HOOK.json", record.name),
             _ => format!("skill://labby/{}/SKILL.md", record.name),
         }),
         current_generation,
@@ -1569,6 +1690,17 @@ fn item_allowed_actions(
             "agent_library.deactivate",
             "agent_library.activate",
             "agent_library.rollback",
+        ],
+        "hook" => [
+            "hook_library.get",
+            "hook_library.read",
+            "hook_library.history",
+            "hook_library.save",
+            "hook_library.restore",
+            "hook_library.archive",
+            "hook_library.deactivate",
+            "hook_library.activate",
+            "hook_library.rollback",
         ],
         _ => [
             "skill_library.get",
@@ -1683,6 +1815,7 @@ fn list_page_visible(
         allowed_actions: match family {
             ArtifactFamily::Prompt => vec!["prompt_library.validate", "prompt_library.create"],
             ArtifactFamily::Agent => vec!["agent_library.validate", "agent_library.create"],
+            ArtifactFamily::Hook => vec!["hook_library.validate", "hook_library.create"],
             ArtifactFamily::Skill => vec![
                 "skill_library.validate",
                 "skill_library.create",

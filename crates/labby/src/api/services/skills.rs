@@ -209,6 +209,7 @@ async fn handle(
             if action.starts_with("skill_library.")
                 || action.starts_with("prompt_library.")
                 || action.starts_with("agent_library.")
+                || action.starts_with("hook_library.")
             {
                 let service = skill_library.ok_or_else(|| ToolError::Sdk {
                     sdk_kind: "skill_library_unavailable".to_owned(),

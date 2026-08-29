@@ -21,7 +21,8 @@ use super::local_io::{
 use super::model::{ArtifactRecord, ArtifactRevision};
 use super::validation::{validate_id, validate_reference_id};
 use super::{
-    ArtifactError, ArtifactStore, MaterializedAgent, MaterializedPrompt, MaterializedSkill, invalid,
+    ArtifactError, ArtifactStore, MaterializedAgent, MaterializedHook, MaterializedPrompt,
+    MaterializedSkill, invalid,
 };
 
 /// One family-validated payload admitted to the shared atomic Artifact transaction.
@@ -29,6 +30,7 @@ pub enum MaterializedLibraryArtifact {
     Skill(Box<MaterializedSkill>),
     Prompt(Box<MaterializedPrompt>),
     Agent(Box<MaterializedAgent>),
+    Hook(Box<MaterializedHook>),
 }
 
 impl From<MaterializedSkill> for MaterializedLibraryArtifact {
@@ -49,12 +51,19 @@ impl From<MaterializedAgent> for MaterializedLibraryArtifact {
     }
 }
 
+impl From<MaterializedHook> for MaterializedLibraryArtifact {
+    fn from(value: MaterializedHook) -> Self {
+        Self::Hook(Box::new(value))
+    }
+}
+
 impl MaterializedLibraryArtifact {
     pub fn interchange(&self) -> &super::model::ArtifactInterchange {
         match self {
             Self::Skill(value) => &value.interchange,
             Self::Prompt(value) => &value.interchange,
             Self::Agent(value) => &value.interchange,
+            Self::Hook(value) => &value.interchange,
         }
     }
 
@@ -63,6 +72,7 @@ impl MaterializedLibraryArtifact {
             Self::Skill(value) => &mut value.interchange,
             Self::Prompt(value) => &mut value.interchange,
             Self::Agent(value) => &mut value.interchange,
+            Self::Hook(value) => &mut value.interchange,
         }
     }
 }
@@ -1686,6 +1696,19 @@ fn materialized_library_files(
     }
     if let MaterializedLibraryArtifact::Agent(agent) = materialized {
         return agent
+            .files
+            .iter()
+            .map(|(path, bytes)| {
+                Ok(SnapshotFile {
+                    path: path.clone(),
+                    bytes: bytes.clone(),
+                    unix_mode: None,
+                })
+            })
+            .collect();
+    }
+    if let MaterializedLibraryArtifact::Hook(hook) = materialized {
+        return hook
             .files
             .iter()
             .map(|(path, bytes)| {
