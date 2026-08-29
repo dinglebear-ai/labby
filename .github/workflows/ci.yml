@@ -790,8 +790,11 @@ jobs:
           cargo clippy --workspace --exclude labby --all-features
           --all-targets --locked -- -D warnings
       - name: Lint all Labby targets
+        # The native dependencies are warm by this point. Serialize only the
+        # final Labby harness pass so clippy-driver instances cannot overlap
+        # at the runner memory ceiling; do not set job-wide CARGO_BUILD_JOBS.
         run: >-
-          cargo clippy -p labby --all-features --all-targets --locked
+          cargo clippy -p labby --all-features --all-targets --locked --jobs 1
           -- -D warnings
 
   mcp-regressions:
