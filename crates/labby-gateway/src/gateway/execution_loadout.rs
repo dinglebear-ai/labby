@@ -74,6 +74,7 @@ pub trait ExecutionCapabilityCatalogProvider: Send + Sync {
         principal: &'a str,
         tenant: &'a str,
         allowed_upstreams: Option<&'a BTreeSet<String>>,
+        requested_members: Option<&'a [CapabilityRef]>,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<CapabilityCatalogSnapshot, ExecutionLoadoutError>>
@@ -236,13 +237,35 @@ impl GatewayManager {
         tenant: &str,
         allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<(), ExecutionLoadoutError> {
+        self.refresh_execution_capability_snapshot_for_selection(
+            principal,
+            tenant,
+            allowed_upstreams,
+            None,
+        )
+        .await
+    }
+
+    async fn refresh_execution_capability_snapshot_for_selection(
+        &self,
+        principal: &str,
+        tenant: &str,
+        allowed_upstreams: Option<&BTreeSet<String>>,
+        requested_members: Option<&[CapabilityRef]>,
+    ) -> Result<(), ExecutionLoadoutError> {
         let provider = self.execution_capability_provider.as_ref().ok_or_else(|| {
             ExecutionLoadoutError::Storage {
                 message: "canonical execution capability catalog is unavailable".into(),
             }
         })?;
         let snapshot = provider
-            .snapshot(self, principal, tenant, allowed_upstreams)
+            .snapshot(
+                self,
+                principal,
+                tenant,
+                allowed_upstreams,
+                requested_members,
+            )
             .await?;
         let current = self.execution_capabilities.load_full();
         let mut snapshots = current.snapshots.clone();
@@ -254,57 +277,82 @@ impl GatewayManager {
     pub async fn canonical_upstream_execution_capabilities(
         &self,
         allowed_upstreams: Option<&BTreeSet<String>>,
+        requested_members: Option<&[CapabilityRef]>,
     ) -> Result<Vec<CapabilityRef>, ExecutionLoadoutError> {
         let allowed = |name: &str| allowed_upstreams.is_none_or(|set| set.contains(name));
+        let requested = |provider: &str, family: CapabilityFamily, member_id: &str| {
+            requested_members.is_none_or(|members| {
+                members.iter().any(|member| {
+                    member.provider == provider
+                        && member.family == family
+                        && member.member_id == member_id
+                })
+            })
+        };
+        let wants_family = |family: CapabilityFamily| {
+            requested_members.is_none_or(|members| members.iter().any(|item| item.family == family))
+        };
         let mut members = Vec::new();
         if let Some(pool) = self.runtime.published_pool_snapshot().pool() {
-            let prompts = pool.published_prompt_catalog().await.map_err(|_| {
-                ExecutionLoadoutError::Storage {
-                    message: "published prompt catalog is unavailable".into(),
+            if wants_family(CapabilityFamily::Prompt) {
+                let prompts = pool.published_prompt_catalog().await.map_err(|_| {
+                    ExecutionLoadoutError::Storage {
+                        message: "published prompt catalog is unavailable".into(),
+                    }
+                })?;
+                for route in prompts.routes().iter().filter(|route| {
+                    allowed(&route.upstream_name)
+                        && requested(
+                            &route.upstream_name,
+                            CapabilityFamily::Prompt,
+                            &route.native_name,
+                        )
+                }) {
+                    members.push(CapabilityRef {
+                        provider: route.upstream_name.to_string(),
+                        family: CapabilityFamily::Prompt,
+                        member_id: route.native_name.to_string(),
+                        expected_revision: canonical_revision(&route.prompt)?,
+                    });
                 }
-            })?;
-            for route in prompts
-                .routes()
-                .iter()
-                .filter(|route| allowed(&route.upstream_name))
-            {
-                members.push(CapabilityRef {
-                    provider: route.upstream_name.to_string(),
-                    family: CapabilityFamily::Prompt,
-                    member_id: route.native_name.to_string(),
-                    expected_revision: canonical_revision(&route.prompt)?,
-                });
             }
-            let resources = pool.published_resource_catalog().await.map_err(|_| {
-                ExecutionLoadoutError::Storage {
-                    message: "published resource catalog is unavailable".into(),
+            if wants_family(CapabilityFamily::Resource) {
+                let resources = pool.published_resource_catalog().await.map_err(|_| {
+                    ExecutionLoadoutError::Storage {
+                        message: "published resource catalog is unavailable".into(),
+                    }
+                })?;
+                for route in resources.routes().iter().filter(|route| {
+                    allowed(&route.upstream_name)
+                        && requested(
+                            &route.upstream_name,
+                            CapabilityFamily::Resource,
+                            &route.native_uri,
+                        )
+                }) {
+                    members.push(CapabilityRef {
+                        provider: route.upstream_name.to_string(),
+                        family: CapabilityFamily::Resource,
+                        member_id: route.native_uri.to_string(),
+                        expected_revision: canonical_revision(&route.resource)?,
+                    });
                 }
-            })?;
-            for route in resources
-                .routes()
-                .iter()
-                .filter(|route| allowed(&route.upstream_name))
-            {
-                members.push(CapabilityRef {
-                    provider: route.upstream_name.to_string(),
-                    family: CapabilityFamily::Resource,
-                    member_id: route.native_uri.to_string(),
-                    expected_revision: canonical_revision(&route.resource)?,
-                });
             }
         }
-        let config = self.current_config().await;
-        for upstream in config
-            .upstream
-            .iter()
-            .filter(|item| item.enabled && allowed(&item.name))
-        {
-            members.push(CapabilityRef {
-                provider: "labby".into(),
-                family: CapabilityFamily::McpServer,
-                member_id: upstream.name.clone(),
-                expected_revision: canonical_revision(upstream)?,
-            });
+        if wants_family(CapabilityFamily::McpServer) {
+            let config = self.current_config().await;
+            for upstream in config.upstream.iter().filter(|item| {
+                item.enabled
+                    && allowed(&item.name)
+                    && requested("labby", CapabilityFamily::McpServer, &item.name)
+            }) {
+                members.push(CapabilityRef {
+                    provider: "labby".into(),
+                    family: CapabilityFamily::McpServer,
+                    member_id: upstream.name.clone(),
+                    expected_revision: canonical_revision(upstream)?,
+                });
+            }
         }
         Ok(members)
     }
@@ -321,6 +369,7 @@ impl GatewayManager {
     async fn refresh_execution_capability_snapshot(
         &self,
         caller: &PaletteCaller,
+        members: &[CapabilityRef],
     ) -> Result<(), ToolError> {
         // Explicit constructors are retained for embedders and focused gateway
         // tests that publish snapshots directly. Production `from_config`
@@ -330,12 +379,29 @@ impl GatewayManager {
         }
         let principal = caller_principal(caller);
         let tenant = caller.catalog_tenant.clone();
-        let allowed = caller
-            .allowed_upstreams()
-            .map(|names| names.iter().cloned().collect::<BTreeSet<_>>());
-        self.refresh_execution_capability_snapshot_for(&principal, &tenant, allowed.as_ref())
-            .await
-            .map_err(Into::into)
+        let selected = members
+            .iter()
+            .filter(|member| member.provider != "labby" && member.provider != "claude-code")
+            .map(|member| member.provider.clone())
+            .collect::<BTreeSet<_>>();
+        let mut allowed = caller.allowed_upstreams().map_or_else(
+            || selected.clone(),
+            |names| names.intersection(&selected).cloned().collect(),
+        );
+        for member in members
+            .iter()
+            .filter(|member| member.family == CapabilityFamily::McpServer)
+        {
+            allowed.insert(member.member_id.clone());
+        }
+        self.refresh_execution_capability_snapshot_for_selection(
+            &principal,
+            &tenant,
+            Some(&allowed),
+            Some(members),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Atomically publish complete principal-filtered snapshots prepared by the
@@ -658,8 +724,32 @@ impl GatewayManager {
         draft: &ExecutionLoadoutDraft,
         runtime_identity: &str,
     ) -> Result<ExecutionLoadoutPreview, ToolError> {
-        self.refresh_execution_capability_snapshot(caller).await?;
-        let catalog = self.palette_catalog_snapshot(caller).await?;
+        if draft.members.is_empty() {
+            return Ok(empty_preview(caller, draft, runtime_identity));
+        }
+        let tool_upstreams = draft
+            .members
+            .iter()
+            .filter(|member| member.family == CapabilityFamily::Tool)
+            .map(|member| member.provider.clone())
+            .collect::<BTreeSet<_>>();
+        if draft
+            .members
+            .iter()
+            .any(|member| member.family != CapabilityFamily::Tool)
+        {
+            self.refresh_execution_capability_snapshot(caller, &draft.members)
+                .await?;
+        }
+        let catalog = if tool_upstreams.is_empty() {
+            super::palette::LauncherCatalogView {
+                fingerprint: "selection:no-tools".into(),
+                entries: Vec::new(),
+            }
+        } else {
+            self.palette_catalog_snapshot_for_upstreams(caller, &tool_upstreams)
+                .await?
+        };
         let published = self.execution_capabilities.load_full();
         let principal = caller_principal(caller);
         let non_tool_catalog = published.snapshots.get(&principal);
@@ -755,6 +845,24 @@ impl GatewayManager {
             missing,
             conflicts,
         })
+    }
+}
+
+fn empty_preview(
+    caller: &PaletteCaller,
+    draft: &ExecutionLoadoutDraft,
+    runtime_identity: &str,
+) -> ExecutionLoadoutPreview {
+    ExecutionLoadoutPreview {
+        loadout_id: draft.id.clone(),
+        draft_revision: draft.draft_revision,
+        catalog_generation: "selection:empty".into(),
+        principal: caller_principal(caller),
+        runtime_identity: runtime_identity.into(),
+        resolved: Vec::new(),
+        effective: Vec::new(),
+        missing: Vec::new(),
+        conflicts: Vec::new(),
     }
 }
 

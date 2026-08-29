@@ -435,10 +435,29 @@ impl GatewayManager {
         self.palette_catalog_inner(caller, false).await
     }
 
+    pub(crate) async fn palette_catalog_snapshot_for_upstreams(
+        &self,
+        caller: &PaletteCaller,
+        upstreams: &BTreeSet<String>,
+    ) -> Result<LauncherCatalogView, ToolError> {
+        self.palette_catalog_inner_for_upstreams(caller, false, Some(upstreams))
+            .await
+    }
+
     async fn palette_catalog_inner(
         &self,
         caller: &PaletteCaller,
         refresh: bool,
+    ) -> Result<LauncherCatalogView, ToolError> {
+        self.palette_catalog_inner_for_upstreams(caller, refresh, None)
+            .await
+    }
+
+    async fn palette_catalog_inner_for_upstreams(
+        &self,
+        caller: &PaletteCaller,
+        refresh: bool,
+        selected_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<LauncherCatalogView, ToolError> {
         if !caller.caller.can_read() {
             return Err(ToolError::Sdk {
@@ -466,6 +485,7 @@ impl GatewayManager {
                     && caller
                         .allowed_upstreams()
                         .is_none_or(|allowed| allowed.contains(&upstream.name))
+                    && selected_upstreams.is_none_or(|selected| selected.contains(&upstream.name))
             }) {
                 let mut tools = if upstream.oauth.is_some() {
                     pool.subject_scoped_upstream_tools_allowed(
