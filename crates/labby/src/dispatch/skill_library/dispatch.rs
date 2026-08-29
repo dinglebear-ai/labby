@@ -62,6 +62,7 @@ pub(crate) struct ArtifactFirstPartyProjection;
 enum ArtifactFamily {
     Skill,
     Prompt,
+    Hook,
 }
 
 impl ArtifactFamily {
@@ -69,6 +70,17 @@ impl ArtifactFamily {
         match self {
             Self::Skill => "skill",
             Self::Prompt => "prompt",
+            Self::Hook => "hook",
+        }
+    }
+
+    fn from_action(action: &str) -> Self {
+        if action.starts_with("prompt_") {
+            Self::Prompt
+        } else if action.starts_with("hook_") {
+            Self::Hook
+        } else {
+            Self::Skill
         }
     }
 }
@@ -548,6 +560,20 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         Default::default(),
                     )?
                     .into(),
+                    ArtifactFamily::Hook => labby_runtime::artifacts::materialize_logical_hook(
+                        &name,
+                        files
+                            .into_iter()
+                            .map(|file| {
+                                labby_runtime::artifacts::LogicalHookFile::new(
+                                    file.path,
+                                    file.content,
+                                )
+                            })
+                            .collect(),
+                        Default::default(),
+                    )?
+                    .into(),
                 };
                 let ownership = requested_artifact_id
                     .as_ref()
@@ -699,12 +725,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, SkillLibraryDispatchError> {
         match action {
-            "skill_library.list" | "prompt_library.list" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            "skill_library.list" | "prompt_library.list" | "hook_library.list" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: PageParams = parse(params)?;
                 let decision = authorize_at_boundary(
                     runtime,
@@ -736,12 +758,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.get" | "prompt_library.get" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            "skill_library.get" | "prompt_library.get" | "hook_library.get" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: ArtifactParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
                 let store = Arc::clone(&self.store);
@@ -805,12 +823,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(item).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.read" | "prompt_library.read" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            "skill_library.read" | "prompt_library.read" | "hook_library.read" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: ReadRevisionParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
                 let target_store = Arc::clone(&self.store);
@@ -886,12 +900,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 })
                 .map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.history" | "prompt_library.history" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            "skill_library.history" | "prompt_library.history" | "hook_library.history" => {
+                let family = ArtifactFamily::from_action(action);
                 #[derive(serde::Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct History {
@@ -954,12 +964,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.diff" | "prompt_library.diff" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            "skill_library.diff" | "prompt_library.diff" | "hook_library.diff" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: DiffRevisionParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
                 let target_store = Arc::clone(&self.store);
@@ -1061,6 +1067,77 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         render_mode: "inert_text",
                         files: vec![SkillPreviewFile {
                             path: "PROMPT.md".to_owned(),
+                            media_type: "text/plain; charset=utf-8",
+                            text: candidate.preview_text().to_owned(),
+                        }],
+                    })
+                    .map_err(|_| SkillLibraryDispatchError::Serialization),
+                    Ok(candidate) => serde_json::to_value(ValidationResponse {
+                        valid: true,
+                        artifact_id: Some(candidate.interchange.descriptor.id),
+                        revision_id: Some(candidate.interchange.revision.id),
+                        rejections: Vec::new(),
+                    })
+                    .map_err(|_| SkillLibraryDispatchError::Serialization),
+                    Err(BlockingError::Operation(error)) => {
+                        serde_json::to_value(ValidationResponse {
+                            valid: false,
+                            artifact_id: None,
+                            revision_id: None,
+                            rejections: vec![validation_rejection(error)?],
+                        })
+                        .map_err(|_| SkillLibraryDispatchError::Serialization)
+                    }
+                    Err(error) => Err(map_blocking(error)),
+                }
+            }
+            "hook_library.validate" | "hook_library.preview" => {
+                let preview_requested = action.ends_with("preview");
+                let params: ValidateParams = parse(params)?;
+                authorize_at_boundary(
+                    runtime,
+                    caller,
+                    project_id,
+                    if preview_requested {
+                        SkillLibraryAction::Preview
+                    } else {
+                        SkillLibraryAction::Validate
+                    },
+                    &CanonicalArtifactId::parse(if preview_requested {
+                        "preview"
+                    } else {
+                        "validation"
+                    })?,
+                    SkillLibraryTarget::SharedActive,
+                    correlation_id,
+                )
+                .await?;
+                let candidate = self
+                    .blocking
+                    .run("hook_library_validate", move || {
+                        labby_runtime::artifacts::materialize_logical_hook(
+                            &params.name,
+                            params
+                                .files
+                                .into_iter()
+                                .map(|file| {
+                                    labby_runtime::artifacts::LogicalHookFile::new(
+                                        file.path,
+                                        file.content,
+                                    )
+                                })
+                                .collect(),
+                            Default::default(),
+                        )
+                    })
+                    .await;
+                match candidate {
+                    Ok(candidate) if preview_requested => serde_json::to_value(SkillPreview {
+                        artifact_id: candidate.interchange.descriptor.id.clone(),
+                        revision_id: candidate.interchange.revision.id.clone(),
+                        render_mode: "inert_text",
+                        files: vec![SkillPreviewFile {
+                            path: "HOOK.json".to_owned(),
                             media_type: "text/plain; charset=utf-8",
                             text: candidate.preview_text().to_owned(),
                         }],
@@ -1219,12 +1296,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             "skill_library.activate"
             | "skill_library.rollback"
             | "prompt_library.activate"
-            | "prompt_library.rollback" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            | "prompt_library.rollback"
+            | "hook_library.activate"
+            | "hook_library.rollback" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: super::params::RevisionMutationParams = parse(params)?;
                 let action = if action.ends_with("activate") {
                     SkillLibraryAction::Activate
@@ -1245,12 +1320,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.create" | "prompt_library.create" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            "skill_library.create" | "prompt_library.create" | "hook_library.create" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: super::params::CreateParams = parse(params)?;
                 self.create_or_save(
                     runtime,
@@ -1268,12 +1339,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.save" | "prompt_library.save" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            "skill_library.save" | "prompt_library.save" | "hook_library.save" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: super::params::SaveParams = parse(params)?;
                 let store = Arc::clone(&self.store);
                 let artifact_id = params.artifact_id.clone();
@@ -1314,21 +1381,20 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             | "skill_library.restore"
             | "prompt_library.deactivate"
             | "prompt_library.archive"
-            | "prompt_library.restore" => {
-                let family = if action.starts_with("prompt_") {
-                    ArtifactFamily::Prompt
-                } else {
-                    ArtifactFamily::Skill
-                };
+            | "prompt_library.restore"
+            | "hook_library.deactivate"
+            | "hook_library.archive"
+            | "hook_library.restore" => {
+                let family = ArtifactFamily::from_action(action);
                 let params: super::params::LibraryMutationParams = parse(params)?;
                 let action = match action {
-                    "skill_library.deactivate" | "prompt_library.deactivate" => {
-                        SkillLibraryAction::Deactivate
-                    }
-                    "skill_library.archive" | "prompt_library.archive" => {
+                    "skill_library.deactivate"
+                    | "prompt_library.deactivate"
+                    | "hook_library.deactivate" => SkillLibraryAction::Deactivate,
+                    "skill_library.archive" | "prompt_library.archive" | "hook_library.archive" => {
                         SkillLibraryAction::Archive
                     }
-                    "skill_library.restore" | "prompt_library.restore" => {
+                    "skill_library.restore" | "prompt_library.restore" | "hook_library.restore" => {
                         SkillLibraryAction::Restore
                     }
                     _ => unreachable!("matched lifecycle action"),
@@ -1518,65 +1584,51 @@ fn item_allowed_actions(
     archived: bool,
     kind: &str,
 ) -> Vec<&'static str> {
-    let prefix = if kind == "prompt" {
-        "prompt_library"
-    } else {
-        "skill_library"
+    let family = match kind {
+        "prompt" => ArtifactFamily::Prompt,
+        "hook" => ArtifactFamily::Hook,
+        _ => ArtifactFamily::Skill,
+    };
+    let actions_for = |suffix| match (family, suffix) {
+        (ArtifactFamily::Skill, "get") => "skill_library.get",
+        (ArtifactFamily::Skill, "read") => "skill_library.read",
+        (ArtifactFamily::Skill, "history") => "skill_library.history",
+        (ArtifactFamily::Skill, "save") => "skill_library.save",
+        (ArtifactFamily::Skill, "restore") => "skill_library.restore",
+        (ArtifactFamily::Skill, "archive") => "skill_library.archive",
+        (ArtifactFamily::Skill, "deactivate") => "skill_library.deactivate",
+        (ArtifactFamily::Skill, "activate") => "skill_library.activate",
+        (ArtifactFamily::Skill, "rollback") => "skill_library.rollback",
+        (ArtifactFamily::Prompt, "get") => "prompt_library.get",
+        (ArtifactFamily::Prompt, "read") => "prompt_library.read",
+        (ArtifactFamily::Prompt, "history") => "prompt_library.history",
+        (ArtifactFamily::Prompt, "save") => "prompt_library.save",
+        (ArtifactFamily::Prompt, "restore") => "prompt_library.restore",
+        (ArtifactFamily::Prompt, "archive") => "prompt_library.archive",
+        (ArtifactFamily::Prompt, "deactivate") => "prompt_library.deactivate",
+        (ArtifactFamily::Prompt, "activate") => "prompt_library.activate",
+        (ArtifactFamily::Prompt, "rollback") => "prompt_library.rollback",
+        (ArtifactFamily::Hook, "get") => "hook_library.get",
+        (ArtifactFamily::Hook, "read") => "hook_library.read",
+        (ArtifactFamily::Hook, "history") => "hook_library.history",
+        (ArtifactFamily::Hook, "save") => "hook_library.save",
+        (ArtifactFamily::Hook, "restore") => "hook_library.restore",
+        (ArtifactFamily::Hook, "archive") => "hook_library.archive",
+        (ArtifactFamily::Hook, "deactivate") => "hook_library.deactivate",
+        (ArtifactFamily::Hook, "activate") => "hook_library.activate",
+        (ArtifactFamily::Hook, "rollback") => "hook_library.rollback",
+        _ => unreachable!("known family lifecycle suffix"),
     };
     let mut actions = vec![
-        if prefix == "prompt_library" {
-            "prompt_library.get"
-        } else {
-            "skill_library.get"
-        },
-        if prefix == "prompt_library" {
-            "prompt_library.read"
-        } else {
-            "skill_library.read"
-        },
-        if prefix == "prompt_library" {
-            "prompt_library.history"
-        } else {
-            "skill_library.history"
-        },
+        actions_for("get"),
+        actions_for("read"),
+        actions_for("history"),
     ];
     if personal {
-        actions.push(if prefix == "prompt_library" {
-            "prompt_library.save"
-        } else {
-            "skill_library.save"
-        });
-        actions.push(if archived {
-            if prefix == "prompt_library" {
-                "prompt_library.restore"
-            } else {
-                "skill_library.restore"
-            }
-        } else {
-            if prefix == "prompt_library" {
-                "prompt_library.archive"
-            } else {
-                "skill_library.archive"
-            }
-        });
-        actions.push(if active {
-            if prefix == "prompt_library" {
-                "prompt_library.deactivate"
-            } else {
-                "skill_library.deactivate"
-            }
-        } else {
-            if prefix == "prompt_library" {
-                "prompt_library.activate"
-            } else {
-                "skill_library.activate"
-            }
-        });
-        actions.push(if prefix == "prompt_library" {
-            "prompt_library.rollback"
-        } else {
-            "skill_library.rollback"
-        });
+        actions.push(actions_for("save"));
+        actions.push(actions_for(if archived { "restore" } else { "archive" }));
+        actions.push(actions_for(if active { "deactivate" } else { "activate" }));
+        actions.push(actions_for("rollback"));
     }
     actions
 }
@@ -1661,14 +1713,14 @@ fn list_page_visible(
         published_library_version,
         can_create: true,
         create_visibilities: vec!["private", "shared"],
-        allowed_actions: if family == ArtifactFamily::Prompt {
-            vec!["prompt_library.validate", "prompt_library.create"]
-        } else {
-            vec![
+        allowed_actions: match family {
+            ArtifactFamily::Prompt => vec!["prompt_library.validate", "prompt_library.create"],
+            ArtifactFamily::Hook => vec!["hook_library.validate", "hook_library.create"],
+            ArtifactFamily::Skill => vec![
                 "skill_library.validate",
                 "skill_library.create",
                 "skill_library.import",
-            ]
+            ],
         },
         items,
         next_cursor,

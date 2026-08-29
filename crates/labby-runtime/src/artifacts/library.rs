@@ -20,12 +20,15 @@ use super::local_io::{
 };
 use super::model::{ArtifactRecord, ArtifactRevision};
 use super::validation::{validate_id, validate_reference_id};
-use super::{ArtifactError, ArtifactStore, MaterializedPrompt, MaterializedSkill, invalid};
+use super::{
+    ArtifactError, ArtifactStore, MaterializedHook, MaterializedPrompt, MaterializedSkill, invalid,
+};
 
 /// One family-validated payload admitted to the shared atomic Artifact transaction.
 pub enum MaterializedLibraryArtifact {
     Skill(Box<MaterializedSkill>),
     Prompt(Box<MaterializedPrompt>),
+    Hook(Box<MaterializedHook>),
 }
 
 impl From<MaterializedSkill> for MaterializedLibraryArtifact {
@@ -40,11 +43,18 @@ impl From<MaterializedPrompt> for MaterializedLibraryArtifact {
     }
 }
 
+impl From<MaterializedHook> for MaterializedLibraryArtifact {
+    fn from(value: MaterializedHook) -> Self {
+        Self::Hook(Box::new(value))
+    }
+}
+
 impl MaterializedLibraryArtifact {
     pub fn interchange(&self) -> &super::model::ArtifactInterchange {
         match self {
             Self::Skill(value) => &value.interchange,
             Self::Prompt(value) => &value.interchange,
+            Self::Hook(value) => &value.interchange,
         }
     }
 
@@ -52,6 +62,7 @@ impl MaterializedLibraryArtifact {
         match self {
             Self::Skill(value) => &mut value.interchange,
             Self::Prompt(value) => &mut value.interchange,
+            Self::Hook(value) => &mut value.interchange,
         }
     }
 }
@@ -1660,9 +1671,13 @@ impl ArtifactStore {
 fn materialized_library_files(
     materialized: &MaterializedLibraryArtifact,
 ) -> Result<Vec<SnapshotFile>, ArtifactError> {
-    if let MaterializedLibraryArtifact::Prompt(prompt) = materialized {
-        return prompt
-            .files
+    let simple_files = match materialized {
+        MaterializedLibraryArtifact::Prompt(value) => Some(&value.files),
+        MaterializedLibraryArtifact::Hook(value) => Some(&value.files),
+        MaterializedLibraryArtifact::Skill(_) => None,
+    };
+    if let Some(files) = simple_files {
+        return files
             .iter()
             .map(|(path, bytes)| {
                 Ok(SnapshotFile {
@@ -1674,7 +1689,7 @@ fn materialized_library_files(
             .collect();
     }
     let MaterializedLibraryArtifact::Skill(materialized) = materialized else {
-        unreachable!("prompt returned above")
+        unreachable!("non-skill families returned above")
     };
     let total_bytes = materialized
         .resources
