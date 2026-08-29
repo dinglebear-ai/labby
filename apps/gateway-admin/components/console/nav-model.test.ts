@@ -36,7 +36,6 @@ test('consoleNavItems is the flattened consoleNavSections in section order', () 
     flat.map((item) => item.id),
   )
 })
-
 test('Depot and Workspace navigation match the unified product information architecture', () => {
   const depot = consoleNavSections.find((section) => section.id === 'Depot')
   const workspace = consoleNavSections.find((section) => section.id === 'Workspace')
@@ -50,4 +49,10 @@ test('Depot and Workspace navigation match the unified product information archi
   ])
   assert.equal(consoleNavItems.some((item) => item.label === 'Loadouts'), false)
   assert.equal(consoleNavItems.some((item) => item.label === 'Snippets'), false)
+})
+
+test('browser bridge is a real control-plane destination', () => {
+  const browsers = consoleNavItems.find((item) => item.id === 'Browsers')
+  assert.ok(browsers)
+  assert.equal(browsers.href, '/browsers')
 })

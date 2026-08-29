@@ -1907,6 +1907,7 @@ fn build_v1_router(
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
     v1 = v1.nest("/depot", services::depot::routes(state.clone()));
     if api_auth_configured && !integrated_trusted_host {
+        v1 = v1.nest("/browser", services::browser::routes(state.clone()));
         v1 = v1.nest(
             "/oauth/relay",
             services::oauth_relay::admin_routes(state.clone()),
@@ -2363,6 +2364,18 @@ pub(crate) fn build_router_with_external_auth(
             get(labby_discovery),
         );
     let mut route_group = public_core.merge(v1_protected);
+    route_group = route_group.merge_runtime_router(
+        services::browser::public_routes().layer(axum::middleware::from_fn(
+            crate::api::host_validation::host_validation_layer,
+        )),
+        [RouteDescriptor::new(
+            "GET",
+            "/browser/socket",
+            "browser_socket",
+            "browser",
+            RouteAuth::Public,
+        )],
+    );
     if !integrated_trusted_host {
         route_group = route_group.merge(services::oauth_relay::public_routes(state.clone()));
     }

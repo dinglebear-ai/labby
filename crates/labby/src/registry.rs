@@ -325,6 +325,7 @@ impl labby_gateway::gateway::service_registry::GatewayServiceRegistry for ToolRe
 }
 
 const ALWAYS_VISIBLE_SERVICES: &[&str] = &[
+    "browser",
     "setup",
     "doctor",
     "gateway",
@@ -447,6 +448,14 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
     #[cfg(not(feature = "lab-admin"))]
     let _ = apply_runtime_conditions;
     let mut reg = ToolRegistry::new();
+
+    reg.register(RegisteredService::bootstrap_operator(
+        "browser",
+        "Bridge browser-native WebMCP tools into Labby",
+        "bootstrap",
+        crate::dispatch::browser::ACTIONS,
+        dispatch_fn!(crate::dispatch::browser::dispatch),
+    ));
 
     #[cfg(feature = "gateway")]
     reg.register(RegisteredService {

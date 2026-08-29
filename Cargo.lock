@@ -2019,6 +2019,7 @@ dependencies = [
  "jsonschema",
  "labby-apis",
  "labby-auth",
+ "labby-browser",
  "labby-codemode",
  "labby-gateway",
  "labby-openapi",
@@ -2127,6 +2128,23 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "labby-browser"
+version = "1.14.1"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "jiff",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

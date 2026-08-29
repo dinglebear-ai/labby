@@ -9,6 +9,7 @@ import {
   Logs,
   Warehouse,
   LayoutDashboard,
+  MonitorSmartphone,
   SearchCode,
   GitBranch,
   type LucideIcon,
@@ -73,6 +74,26 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         href: '/gateway/?id=labby',
         icon: Cable,
         tooltipDetail: 'Labby gateway server',
+      },
+      {
+        id: 'Browsers',
+        label: 'Browsers',
+        href: '/browsers',
+        icon: MonitorSmartphone,
+        tooltipDetail: 'paired WebMCP browser bridges',
+      },
+    ],
+  },
+  {
+    id: 'Catalog',
+    label: 'Catalog',
+    items: [
+      {
+        id: 'Tools',
+        label: 'Tools',
+        href: '/tools',
+        icon: SearchCode,
+        tooltipDetail: 'live Code Mode catalog',
       },
       {
         id: 'Activity',

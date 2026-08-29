@@ -3,6 +3,7 @@ pub(crate) mod access_bootstrap;
 pub(crate) mod artifact_control;
 #[cfg(feature = "skills")]
 pub mod artifacts;
+pub mod browser;
 pub mod clients;
 pub mod depot;
 pub mod doctor;

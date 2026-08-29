@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="popup.css"><title>Labby Browser Bridge</title></head>
+  <body>
+    <main>
+      <h1>Labby Browser Bridge</h1>
+      <p id="disclosure" hidden><strong>Broad tab scanning is enabled.</strong> Labby can inspect every eligible tab.</p>
+      <label>Local service <input id="base-url" type="url" value="http://127.0.0.1:8765"></label>
+      <label>Scanning mode
+        <select id="mode"><option value="granted_sites">Granted sites only</option><option value="all_tabs">All eligible tabs</option></select>
+      </label>
+      <label class="check"><input id="paused" type="checkbox"> Pause scanning</label>
+      <div class="actions"><button id="save">Save</button><button id="scan">Scan now</button><button id="pair">Pair</button></div>
+      <p id="status" role="status"></p>
+      <p class="note">The extension sends only sanitized page identity and WebMCP tool metadata to your local Labby service. It never sends page contents, cookies, form values, or tool results during discovery.</p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

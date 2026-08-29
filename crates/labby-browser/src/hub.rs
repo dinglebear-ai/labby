@@ -1,0 +1,466 @@
+//! Live browser connection registry and bounded invocation routing.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use base64::Engine as _;
+use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
+use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
+use uuid::Uuid;
+
+use crate::error::{BrowserError, Result};
+use crate::protocol::{BrowserEnvelope, BrowserMessage, CatalogObservation};
+use crate::store::{PairingRequest, Store, decode_public_key};
+
+const MAX_PENDING_CALLS: usize = 100;
+const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Outbound event delivered to an authenticated extension connection.
+#[derive(Clone, Debug)]
+pub struct BrowserEvent(pub BrowserEnvelope);
+
+/// Connection handle owned by an HTTP/WebSocket adapter.
+pub struct BrowserConnection {
+    pub browser_id: String,
+    /// Opaque identity used to avoid an old socket disconnecting its replacement.
+    pub connection_id: String,
+    pub receiver: mpsc::Receiver<BrowserEvent>,
+}
+
+struct LiveConnection {
+    generation: Uuid,
+    sender: mpsc::Sender<BrowserEvent>,
+}
+
+struct PendingCall {
+    browser_id: String,
+    generation: Uuid,
+    reply: oneshot::Sender<Result<Value>>,
+}
+
+#[derive(Default)]
+struct HubState {
+    connections: HashMap<String, LiveConnection>,
+    pending: HashMap<String, PendingCall>,
+}
+
+/// Shared Rust browser bridge runtime.
+#[derive(Clone)]
+pub struct BrowserBridge {
+    store: Store,
+    state: Arc<Mutex<HubState>>,
+}
+
+impl BrowserBridge {
+    /// Open a durable browser bridge.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self {
+            store: Store::open(path)?,
+            state: Arc::new(Mutex::new(HubState::default())),
+        })
+    }
+
+    /// Build an in-memory bridge for tests.
+    pub fn memory() -> Result<Self> {
+        Ok(Self {
+            store: Store::memory()?,
+            state: Arc::new(Mutex::new(HubState::default())),
+        })
+    }
+
+    /// Durable store used by dispatch adapters.
+    #[must_use]
+    pub const fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// Accept an unauthenticated pairing request from a loopback-gated adapter.
+    pub fn request_pairing(
+        &self,
+        display_name: &str,
+        extension_id: &str,
+        public_key: &str,
+    ) -> Result<PairingRequest> {
+        self.store
+            .request_pairing(display_name, extension_id, decode_public_key(public_key)?)
+    }
+
+    /// Issue a one-time challenge.
+    pub fn issue_challenge(&self, browser_id: &str) -> Result<BrowserEnvelope> {
+        let challenge = self.store.create_challenge(browser_id)?;
+        Ok(BrowserEnvelope::new(
+            None,
+            BrowserMessage::AuthNonce {
+                challenge_id: challenge.id,
+                nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge.nonce),
+                expires_at: challenge.expires_at,
+            },
+        ))
+    }
+
+    /// Verify and consume a challenge, then install this connection as current.
+    pub fn authenticate(&self, challenge_id: &str, signature: &str) -> Result<BrowserConnection> {
+        let challenge = self.store.take_challenge(challenge_id)?;
+        let browser = self
+            .store
+            .browser(&challenge.browser_id)?
+            .ok_or(BrowserError::AuthenticationFailed)?;
+        let public_key: [u8; 32] = browser
+            .public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| BrowserError::AuthenticationFailed)?;
+        let signature_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(signature)
+            .map_err(|_| BrowserError::AuthenticationFailed)?;
+        let signature = Signature::from_slice(&signature_bytes)
+            .map_err(|_| BrowserError::AuthenticationFailed)?;
+        VerifyingKey::from_bytes(&public_key)
+            .map_err(|_| BrowserError::AuthenticationFailed)?
+            .verify(&challenge.nonce, &signature)
+            .map_err(|_| BrowserError::AuthenticationFailed)?;
+        self.store.touch_browser(&browser.id)?;
+        let (sender, receiver) = mpsc::channel(128);
+        let generation = Uuid::new_v4();
+        let mut state = self.lock_state()?;
+        if let Some(replaced) = state
+            .connections
+            .insert(browser.id.clone(), LiveConnection { generation, sender })
+        {
+            finish_generation(&mut state, replaced.generation);
+        }
+        Ok(BrowserConnection {
+            browser_id: browser.id,
+            connection_id: generation.to_string(),
+            receiver,
+        })
+    }
+
+    /// Remove exactly the connection generation owned by an adapter.
+    pub fn disconnect(&self, browser_id: &str, connection_id: &str) -> Result<()> {
+        let mut state = self.lock_state()?;
+        let owns_current = state
+            .connections
+            .get(browser_id)
+            .is_some_and(|connection| connection.generation.to_string() == connection_id);
+        if owns_current && let Some(connection) = state.connections.remove(browser_id) {
+            finish_generation(&mut state, connection.generation);
+        }
+        Ok(())
+    }
+
+    /// Persist an authenticated catalog observation.
+    pub fn observe(&self, browser_id: &str, observation: &CatalogObservation) -> Result<()> {
+        if !self.lock_state()?.connections.contains_key(browser_id) {
+            return Err(BrowserError::AuthenticationFailed);
+        }
+        self.store.observe(browser_id, observation)
+    }
+
+    /// Close one exact document owned by an authenticated browser.
+    pub fn close_document(&self, browser_id: &str, tab_id: i64, document_id: &str) -> Result<()> {
+        if !self.lock_state()?.connections.contains_key(browser_id) {
+            return Err(BrowserError::AuthenticationFailed);
+        }
+        self.store.close_document(browser_id, tab_id, document_id)
+    }
+
+    /// Complete a call only from its owning browser and current generation.
+    pub fn complete(&self, browser_id: &str, message: BrowserMessage) -> Result<bool> {
+        let (call_id, outcome) = match message {
+            BrowserMessage::ToolResult { call_id, result } => (call_id, Ok(result)),
+            BrowserMessage::ToolError {
+                call_id,
+                kind,
+                message,
+            } => (
+                call_id,
+                Err(BrowserError::InvalidRequest(format!("{kind}: {message}"))),
+            ),
+            _ => {
+                return Err(BrowserError::InvalidRequest(
+                    "expected tool completion".to_string(),
+                ));
+            }
+        };
+        let mut state = self.lock_state()?;
+        let Some(pending) = state.pending.get(&call_id) else {
+            return Ok(false);
+        };
+        let Some(connection) = state.connections.get(browser_id) else {
+            return Ok(false);
+        };
+        if pending.browser_id != browser_id || pending.generation != connection.generation {
+            return Ok(false);
+        }
+        let pending = state.pending.remove(&call_id).expect("pending call exists");
+        drop(pending.reply.send(outcome));
+        Ok(true)
+    }
+
+    /// Invoke one exact document/catalog tuple with bounded capacity and time.
+    pub async fn call(
+        &self,
+        browser_id: &str,
+        tab_id: i64,
+        document_id: String,
+        catalog_revision: i64,
+        tool_name: String,
+        arguments: Value,
+        timeout: Option<Duration>,
+    ) -> Result<Value> {
+        self.store.validate_call(
+            browser_id,
+            tab_id,
+            &document_id,
+            catalog_revision,
+            &tool_name,
+        )?;
+        let call_id = Uuid::new_v4().to_string();
+        let (reply, wait) = oneshot::channel();
+        let (sender, generation) = {
+            let mut state = self.lock_state()?;
+            if state.pending.len() >= MAX_PENDING_CALLS {
+                return Err(BrowserError::ServerBusy);
+            }
+            let connection = state
+                .connections
+                .get(browser_id)
+                .ok_or(BrowserError::BrowserOffline)?;
+            let sender = connection.sender.clone();
+            let generation = connection.generation;
+            state.pending.insert(
+                call_id.clone(),
+                PendingCall {
+                    browser_id: browser_id.to_string(),
+                    generation,
+                    reply,
+                },
+            );
+            (sender, generation)
+        };
+        let event = BrowserEvent(BrowserEnvelope::new(
+            None,
+            BrowserMessage::ToolCall {
+                call_id: call_id.clone(),
+                tab_id,
+                document_id,
+                catalog_revision,
+                tool_name,
+                arguments,
+            },
+        ));
+        if sender.send(event).await.is_err() {
+            self.remove_pending(&call_id, generation)?;
+            return Err(BrowserError::BrowserOffline);
+        }
+        match tokio::time::timeout(timeout.unwrap_or(DEFAULT_TOOL_TIMEOUT), wait).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(BrowserError::ConnectionClosed),
+            Err(_) => {
+                self.remove_pending(&call_id, generation)?;
+                drop(
+                    sender
+                        .send(BrowserEvent(BrowserEnvelope::new(
+                            None,
+                            BrowserMessage::ToolCancel { call_id },
+                        )))
+                        .await,
+                );
+                Err(BrowserError::ToolTimeout)
+            }
+        }
+    }
+
+    /// Current connected browser ids.
+    pub fn connected_browser_ids(&self) -> Result<Vec<String>> {
+        let mut ids: Vec<_> = self.lock_state()?.connections.keys().cloned().collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// Revoke a browser, close its live connection, and fail its pending calls.
+    pub fn revoke_browser(&self, browser_id: &str) -> Result<crate::store::BrowserRecord> {
+        let browser = self.store.revoke_browser(browser_id)?;
+        let mut state = self.lock_state()?;
+        if let Some(connection) = state.connections.remove(browser_id) {
+            finish_generation(&mut state, connection.generation);
+        }
+        Ok(browser)
+    }
+
+    fn remove_pending(&self, call_id: &str, generation: Uuid) -> Result<()> {
+        let mut state = self.lock_state()?;
+        if state
+            .pending
+            .get(call_id)
+            .is_some_and(|pending| pending.generation == generation)
+        {
+            state.pending.remove(call_id);
+        }
+        Ok(())
+    }
+
+    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, HubState>> {
+        self.state
+            .lock()
+            .map_err(|_| BrowserError::InvalidRequest("browser hub lock poisoned".to_string()))
+    }
+}
+
+fn finish_generation(state: &mut HubState, generation: Uuid) {
+    let call_ids: Vec<_> = state
+        .pending
+        .iter()
+        .filter_map(|(id, pending)| (pending.generation == generation).then(|| id.clone()))
+        .collect();
+    for call_id in call_ids {
+        if let Some(pending) = state.pending.remove(&call_id) {
+            drop(pending.reply.send(Err(BrowserError::BrowserOffline)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+
+    fn pair_and_authenticate(bridge: &BrowserBridge) -> BrowserConnection {
+        let signing = SigningKey::from_bytes(&[9; 32]);
+        let public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signing.verifying_key().as_bytes());
+        let pairing = bridge
+            .request_pairing("Chrome", EXTENSION_ID, &public_key)
+            .unwrap();
+        let browser = bridge.store().approve_pairing(&pairing.id).unwrap();
+        let challenge = bridge.issue_challenge(&browser.id).unwrap();
+        assert!(matches!(
+            challenge.message,
+            BrowserMessage::AuthNonce { .. }
+        ));
+        let BrowserMessage::AuthNonce {
+            challenge_id,
+            nonce,
+            ..
+        } = challenge.message
+        else {
+            return bridge.authenticate("invalid", "invalid").unwrap();
+        };
+        let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(nonce)
+            .unwrap();
+        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(signing.sign(&nonce).to_bytes());
+        bridge.authenticate(&challenge_id, &signature).unwrap()
+    }
+
+    fn enable_tool(
+        bridge: &BrowserBridge,
+        browser_id: &str,
+        tab_id: i64,
+        revision: i64,
+        name: &str,
+    ) {
+        bridge
+            .observe(
+                browser_id,
+                &CatalogObservation {
+                    tab_id,
+                    document_id: "doc".into(),
+                    origin: "https://example.com".into(),
+                    sanitized_path: "/".into(),
+                    page_title: "Example".into(),
+                    catalog_revision: revision,
+                    catalog_fingerprint: "fingerprint".into(),
+                    tools: vec![crate::protocol::ToolDescriptor {
+                        name: name.into(),
+                        description: String::new(),
+                        input_schema: serde_json::json!({"type":"object"}),
+                        annotations: Value::Null,
+                    }],
+                },
+            )
+            .unwrap();
+        let session = bridge.store().sessions().unwrap().remove(0);
+        bridge
+            .store()
+            .set_session_enabled(&session.id, true)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn routes_call_and_accepts_only_current_browser_completion() {
+        let bridge = BrowserBridge::memory().unwrap();
+        let mut connection = pair_and_authenticate(&bridge);
+        let browser_id = connection.browser_id.clone();
+        enable_tool(&bridge, &browser_id, 7, 3, "search");
+        let task_bridge = bridge.clone();
+        let task_browser = browser_id.clone();
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &task_browser,
+                    7,
+                    "doc".into(),
+                    3,
+                    "search".into(),
+                    serde_json::json!({"q":"rust"}),
+                    Some(Duration::from_secs(1)),
+                )
+                .await
+        });
+        let event = connection.receiver.recv().await.unwrap().0;
+        assert!(matches!(event.message, BrowserMessage::ToolCall { .. }));
+        let BrowserMessage::ToolCall { call_id, .. } = event.message else {
+            return;
+        };
+        assert!(
+            bridge
+                .complete(
+                    &browser_id,
+                    BrowserMessage::ToolResult {
+                        call_id,
+                        result: serde_json::json!({"ok":true}),
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(task.await.unwrap().unwrap(), serde_json::json!({"ok":true}));
+    }
+
+    #[tokio::test]
+    async fn timeout_sends_exact_cancellation() {
+        let bridge = BrowserBridge::memory().unwrap();
+        let mut connection = pair_and_authenticate(&bridge);
+        let task_bridge = bridge.clone();
+        let browser_id = connection.browser_id.clone();
+        enable_tool(&bridge, &browser_id, 1, 1, "slow");
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &browser_id,
+                    1,
+                    "doc".into(),
+                    1,
+                    "slow".into(),
+                    Value::Null,
+                    Some(Duration::from_millis(10)),
+                )
+                .await
+        });
+        let first = connection.receiver.recv().await.unwrap().0;
+        assert!(matches!(first.message, BrowserMessage::ToolCall { .. }));
+        let BrowserMessage::ToolCall { call_id, .. } = first.message else {
+            return;
+        };
+        let cancellation = connection.receiver.recv().await.unwrap().0;
+        assert_eq!(cancellation.message, BrowserMessage::ToolCancel { call_id });
+        assert_eq!(task.await.unwrap().unwrap_err().kind(), "tool_timeout");
+    }
+}

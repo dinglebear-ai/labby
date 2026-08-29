@@ -36,6 +36,7 @@ pub(crate) fn require_session_csrf(
 
 /// Admin-only allowlist management (`/v1/auth/allowed-emails`).
 pub mod auth_admin;
+pub mod browser;
 
 /// Browser-session-only owner bootstrap (`/v1/access/bootstrap-owner`).
 pub mod access_bootstrap;

@@ -1,0 +1,26 @@
+{
+  "$comment": "Type-checks the whole extension: the WebMCP surface against the published upstream definitions, and the Chrome extension APIs against @types/chrome. This is a correctness check, not a build step -- nothing is emitted. Tests are excluded on purpose: they construct deliberately partial mocks, and forcing full shapes on those is noise. See docs/upstream-contracts.md.",
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "types": [
+      "webmcp-types",
+      "chrome"
+    ],
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/*.js",
+    "src/globals.d.ts"
+  ]
+}

@@ -1373,6 +1373,22 @@
     "notes": "status"
   },
   {
+    "method": "POST",
+    "path": "/v1/browser",
+    "surface": "api",
+    "handler_group": "services",
+    "feature": null,
+    "runtime_condition": null,
+    "auth_required": true,
+    "bearer_only": false,
+    "session_cookie_allowed": true,
+    "csrf_required": true,
+    "host_validation": false,
+    "master_only": true,
+    "cache_posture": "not cacheable",
+    "notes": "service action dispatch"
+  },
+  {
     "method": "GET",
     "path": "/v1/docs",
     "aliases": [],
