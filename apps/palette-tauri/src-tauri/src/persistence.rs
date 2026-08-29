@@ -93,6 +93,25 @@ pub(crate) fn value_for(key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+#[cfg(any(windows, test))]
+fn bounded_subprocess_diagnostic(stderr: &[u8]) -> String {
+    const MAX_CHARS: usize = 2_048;
+    let normalized = String::from_utf8_lossy(stderr)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut chars = normalized.chars();
+    let mut bounded = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        bounded.push('…');
+    }
+    if bounded.is_empty() {
+        "no diagnostic output".to_string()
+    } else {
+        bounded
+    }
+}
+
 /// Write `data` to `path` atomically, replacing an existing destination.
 ///
 /// The temp name carries a UUID so two concurrent writers of the same `path`
@@ -172,15 +191,17 @@ foreach ($identity in $identities) {
 }
 Set-Acl -LiteralPath $path -AclObject $acl
 "#;
-    let status = Command::new("powershell.exe")
+    let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
         .env("LABBY_SECRET_DIR", path)
         .env("PSModulePath", powershell_module_path)
-        .status()?;
-    if !status.success() {
-        return Err(io::Error::other(
-            "PowerShell failed while installing the authoritative secret-directory ACL",
-        ));
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "PowerShell failed while installing the authoritative secret-directory ACL ({}): {}",
+            output.status,
+            bounded_subprocess_diagnostic(&output.stderr)
+        )));
     }
     Ok(())
 }
@@ -203,6 +224,20 @@ mod async_tests {
         assert!(write_result.is_ok());
         assert!(timer_result.is_ok(), "disk work stalled the async executor");
     }
+
+    #[test]
+    fn subprocess_diagnostics_are_normalized_and_bounded() {
+        let diagnostic = format!("  access denied\r\n{}  ", "x".repeat(3_000));
+        let bounded = bounded_subprocess_diagnostic(diagnostic.as_bytes());
+
+        assert!(bounded.starts_with("access denied "));
+        assert!(bounded.ends_with('…'));
+        assert_eq!(bounded.chars().count(), 2_049);
+        assert_eq!(
+            bounded_subprocess_diagnostic(b" \r\n "),
+            "no diagnostic output"
+        );
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -212,7 +247,7 @@ mod windows_acl_tests {
 
     #[test]
     fn hardening_removes_preexisting_everyone_grant() {
-        let dir = std::env::temp_dir().join(format!("labby-acl-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("labby acl [{}]'s", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         let status = Command::new("icacls")
             .arg(&dir)

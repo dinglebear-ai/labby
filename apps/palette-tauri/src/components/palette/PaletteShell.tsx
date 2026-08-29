@@ -7,6 +7,7 @@ import { PaletteFooter } from "@/components/palette/PaletteFooter";
 import { ResultView } from "@/components/palette/ResultView";
 import { SchemaForm } from "@/components/palette/SchemaForm";
 import { SettingsPanel } from "@/components/palette/SettingsPanel";
+import type { EndpointTone } from "@/lib/endpointStatus";
 import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
 import { invoke } from "@/lib/invoke";
@@ -21,7 +22,7 @@ interface PaletteShellProps {
   copied: boolean;
   draftConfig: PaletteConfig | null;
   endpointLabel: string;
-  endpointTone: string;
+  endpointTone: EndpointTone;
   filtered: LauncherEntry[];
   hasQuery: boolean;
   listboxOpen: boolean;

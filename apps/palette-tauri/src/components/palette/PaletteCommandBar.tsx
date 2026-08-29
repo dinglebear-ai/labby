@@ -3,6 +3,7 @@ import { ArrowLeft, CircleHelp, Search, Send, Settings } from "lucide-react";
 import { actionIcon } from "@/components/palette/ActionIcon";
 import { Button } from "@/components/ui/aurora/button";
 import { Input } from "@/components/ui/aurora/input";
+import type { EndpointTone } from "@/lib/endpointStatus";
 import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
 import { argumentPlaceholder, focusInput } from "@/lib/paletteView";
@@ -12,7 +13,7 @@ interface PaletteCommandBarProps {
   activeDescendantId?: string;
   config: PaletteConfig | null;
   endpointLabel: string;
-  endpointTone: string;
+  endpointTone: EndpointTone;
   hasQuery: boolean;
   listboxOpen: boolean;
   modeAction: LauncherEntry | null;
@@ -31,8 +32,8 @@ interface PaletteCommandBarProps {
   onToggleSettings: () => void;
 }
 
-function endpointStatusLabel(endpointLabel: string): string {
-  return `Server: ${endpointLabel}`;
+function endpointStatusLabel(endpointLabel: string, endpointTone: EndpointTone): string {
+  return `Server: ${endpointLabel}; status: ${endpointTone}`;
 }
 
 export function PaletteCommandBar({
@@ -94,7 +95,7 @@ export function PaletteCommandBar({
       >
         <span className="axon-word">Labby</span>
         <span className={`axon-status-dot axon-status-${endpointTone}`}>
-          <span className="sr-only">{endpointStatusLabel(endpointLabel)}</span>
+          <span className="sr-only">{endpointStatusLabel(endpointLabel, endpointTone)}</span>
         </span>
       </Button>
       <span className="axon-divider" aria-hidden="true" />

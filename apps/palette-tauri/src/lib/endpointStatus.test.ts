@@ -26,4 +26,13 @@ describe("endpointStatus", () => {
       endpointStatus({ configured: true, catalogLoading: false, configError: null, catalogError: "offline" }),
     ).toBe("error");
   });
+
+  it("keeps errors visible while the catalog is also loading", () => {
+    expect(
+      endpointStatus({ configured: true, catalogLoading: true, configError: "bad config", catalogError: null }),
+    ).toBe("error");
+    expect(
+      endpointStatus({ configured: true, catalogLoading: true, configError: null, catalogError: "offline" }),
+    ).toBe("error");
+  });
 });

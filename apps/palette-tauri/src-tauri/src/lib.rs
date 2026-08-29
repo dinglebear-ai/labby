@@ -529,8 +529,13 @@ mod tests {
     fn macos_transparent_window_enables_private_api_support() {
         let config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+        let manifest = include_str!("../Cargo.toml");
 
         assert_eq!(config["app"]["macOSPrivateApi"], true);
+        assert!(
+            manifest.contains(r#""macos-private-api""#),
+            "transparent macOS windows require Tauri's macos-private-api feature"
+        );
     }
 
     #[test]
