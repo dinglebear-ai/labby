@@ -55,6 +55,28 @@ every returned body `text/plain; charset=utf-8` with `renderMode = inert_text`; 
 inject those bodies into HTML, prompts, commands, or executable contexts. Revision diff is likewise
 read-only and returns only bounded component metadata, never file bodies.
 
+## Public Prompt authoring lifecycle
+
+Prompts reuse the same authenticated Artifact library, ownership projection, optimistic library
+version, immutable head revision precondition, idempotency receipts, atomic byte/metadata commit,
+history, diff, activation, archive, and restore semantics as Skills. The REST `skills` service
+exposes these operations as `prompt_library.*`; callers never access `LABBY_HOME` directly.
+
+A Prompt package contains exactly one UTF-8 `PROMPT.md` file, bounded to 256 KiB. Its YAML
+frontmatter requires a matching lower-case `name`, a non-empty bounded `description`, and an
+optional unique list of bounded argument names. Unknown fields, extra files, NUL content, malformed
+frontmatter, empty bodies, and over-limit content are rejected before persistence. Prompt IDs use
+the canonical `{kind: "prompt", namespace: "labby", name}` Artifact identity and every saved body
+creates or reuses an immutable content-addressed revision.
+
+`prompt_library.preview` validates the exact candidate but returns only the body as
+`text/plain; charset=utf-8` with `renderMode = inert_text`; markup, template syntax, and other
+instruction-bearing text are never interpreted or injected into a command, HTML, or another
+prompt. Create and save remain inactive until an exact revision is explicitly activated. Archive
+deactivates the Prompt while retaining its workspace and all immutable revisions, so pinned
+references remain readable; restore returns it as inactive. Agent and Hook authoring are outside
+this slice.
+
 ## Non-goals for the first slice
 
 The first slice does not add hosted registry authority, crawling/enrichment, trust scoring, compatibility aliases for retired products, a new Skills protocol, remote deployment execution, or transport-specific business logic. It does not silently update a fork when an upstream changes.

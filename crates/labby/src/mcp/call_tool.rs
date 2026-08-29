@@ -282,7 +282,9 @@ impl LabMcpServer {
         action: &str,
         registered: bool,
     ) -> Option<CallToolResponse> {
-        let action_allowed = if service == "skills" && action.starts_with("skill_library.") {
+        let action_allowed = if service == "skills"
+            && (action.starts_with("skill_library.") || action.starts_with("prompt_library."))
+        {
             #[cfg(feature = "skills")]
             {
                 self.skill_library_http_action_allowed(context, action)
@@ -307,7 +309,9 @@ impl LabMcpServer {
             );
         }
         #[cfg(feature = "skills")]
-        if service == "skills" && action.starts_with("skill_library.") {
+        if service == "skills"
+            && (action.starts_with("skill_library.") || action.starts_with("prompt_library."))
+        {
             extra.insert(
                 "correlation_id".to_owned(),
                 Value::String(skill_library_safe_callback_correlation(context)),
