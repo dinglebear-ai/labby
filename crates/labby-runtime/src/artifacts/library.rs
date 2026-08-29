@@ -590,7 +590,10 @@ impl SkillLibraryRecord {
     fn validate(&self, store: &ArtifactStore) -> Result<(), ArtifactError> {
         self.validate_metadata()?;
         let artifact = store.get(&self.artifact_id)?;
-        if !matches!(artifact.descriptor.kind.as_str(), "skill" | "prompt") {
+        if !matches!(
+            artifact.descriptor.kind.as_str(),
+            "skill" | "prompt" | "agent" | "hook"
+        ) {
             return Err(ArtifactError::Conflict("library_artifact_kind"));
         }
         if artifact.descriptor.name != self.name {

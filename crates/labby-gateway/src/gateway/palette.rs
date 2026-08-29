@@ -196,6 +196,7 @@ pub struct PaletteCaller {
     pub scope: ToolScope,
     pub owner: UpstreamRuntimeOwner,
     pub oauth_subject: String,
+    pub catalog_principal: String,
 }
 
 impl PaletteCaller {
@@ -225,6 +226,7 @@ impl PaletteCaller {
             scope: ToolScope::default(),
             owner,
             oauth_subject,
+            catalog_principal: subject.unwrap_or_else(|| "shared".into()),
         }
     }
 
@@ -261,7 +263,10 @@ impl PaletteCaller {
             },
             scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()).read_only(),
             owner,
-            oauth_subject: subject.unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
+            oauth_subject: subject
+                .clone()
+                .unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
+            catalog_principal: subject.unwrap_or_else(|| "shared".into()),
         }
     }
 
@@ -294,7 +299,14 @@ impl PaletteCaller {
             scope: ToolScope::scoped_namespaces(allowed_upstreams, Vec::new()),
             owner: crate::gateway::shared::make_api_runtime_owner(Some(subject), request_id),
             oauth_subject: subject.to_string(),
+            catalog_principal: subject.to_string(),
         }
+    }
+
+    #[must_use]
+    pub fn with_catalog_principal(mut self, principal: impl Into<String>) -> Self {
+        self.catalog_principal = principal.into();
+        self
     }
 
     pub(crate) fn allowed_upstreams(&self) -> Option<&BTreeSet<String>> {
