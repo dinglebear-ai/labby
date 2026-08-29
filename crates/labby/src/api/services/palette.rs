@@ -1,6 +1,6 @@
 use axum::{
     Extension, Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
@@ -10,6 +10,7 @@ use labby_gateway::gateway::palette::{
     PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
     PaletteExecutionReceipt,
 };
+use labby_gateway::gateway::{ExecutionLoadoutCreate, ExecutionLoadoutPatch};
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -39,11 +40,42 @@ pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::RouteGroup;
     let mut descriptors = descriptors().into_iter();
     RouteGroup::empty()
-        .route(descriptors.next().unwrap(), get(catalog))
-        .route(descriptors.next().unwrap(), get(search))
-        .route(descriptors.next().unwrap(), get(schema))
-        .route(descriptors.next().unwrap(), get(descriptor))
-        .route(descriptors.next().unwrap(), post(execute))
+        .route(descriptors.next().expect("catalog descriptor"), get(catalog))
+        .route(descriptors.next().expect("search descriptor"), get(search))
+        .route(descriptors.next().expect("schema descriptor"), get(schema))
+        .route(
+            descriptors.next().expect("descriptor route descriptor"),
+            get(descriptor),
+        )
+        .route(descriptors.next().expect("execute descriptor"), post(execute))
+        .route(
+            descriptors.next().expect("execution-loadouts list descriptor"),
+            get(execution_loadout_list),
+        )
+        .route(
+            descriptors.next().expect("execution-loadouts create descriptor"),
+            post(execution_loadout_create),
+        )
+        .route(
+            descriptors.next().expect("execution-loadout get descriptor"),
+            get(execution_loadout_get),
+        )
+        .route(
+            descriptors.next().expect("execution-loadout patch descriptor"),
+            axum::routing::patch(execution_loadout_patch),
+        )
+        .route(
+            descriptors.next().expect("preview descriptor"),
+            post(execution_loadout_preview),
+        )
+        .route(
+            descriptors.next().expect("activate descriptor"),
+            post(execution_loadout_activate),
+        )
+        .route(
+            descriptors.next().expect("rollback descriptor"),
+            post(execution_loadout_rollback),
+        )
 }
 
 pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
@@ -54,6 +86,13 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
         ("GET", "/schema", "schema"),
         ("GET", "/descriptor", "descriptor"),
         ("POST", "/execute", "execute"),
+        ("GET", "/execution-loadouts", "execution_loadout_list"),
+        ("POST", "/execution-loadouts", "execution_loadout_create"),
+        ("GET", "/execution-loadouts/{id}", "execution_loadout_get"),
+        ("PATCH", "/execution-loadouts/{id}", "execution_loadout_patch"),
+        ("POST", "/execution-loadouts/{id}/preview", "execution_loadout_preview"),
+        ("POST", "/execution-loadouts/{id}/activate", "execution_loadout_activate"),
+        ("POST", "/execution-loadouts/{id}/rollback", "execution_loadout_rollback"),
     ]
     .into_iter()
     .map(|(method, path, handler)| {
@@ -62,6 +101,164 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
             .when("mounted only when API authentication and the gateway manager are configured")
     })
     .collect()
+}
+
+async fn execution_loadout_list(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+) -> Result<Json<Value>, ApiError> {
+    palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(
+        json!({ "items": manager.execution_loadout_list().await }),
+    ))
+}
+
+async fn execution_loadout_get(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_get(&id)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_create(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(input): Json<ExecutionLoadoutCreate>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    require_execution_loadout_write(&caller)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_create(input)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_patch(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutPatch>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    require_execution_loadout_write(&caller)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_patch(&id, input)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionLoadoutRuntimeRequest {
+    runtime_identity: String,
+    #[serde(default)]
+    expected_draft_revision: Option<u64>,
+    #[serde(default)]
+    revision: Option<u64>,
+}
+
+async fn execution_loadout_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutRuntimeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_preview(&caller, &id, &input.runtime_identity)
+        .await?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_activate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutRuntimeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    require_execution_loadout_write(&caller)?;
+    let expected = input
+        .expected_draft_revision
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "invalid_params".into(),
+            message: "expectedDraftRevision is required".into(),
+        })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_activate(&caller, &id, expected, &input.runtime_identity)
+        .await?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_rollback(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutRuntimeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    require_execution_loadout_write(&caller)?;
+    let expected = input
+        .expected_draft_revision
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "invalid_params".into(),
+            message: "expectedDraftRevision is required".into(),
+        })?;
+    let revision = input.revision.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "invalid_params".into(),
+        message: "revision is required".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_rollback(&id, expected, revision)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+fn require_execution_loadout_write(caller: &PaletteCaller) -> Result<(), ToolError> {
+    if caller.caller.can_execute() || caller.caller.is_admin() {
+        return Ok(());
+    }
+    Err(ToolError::Sdk {
+        sdk_kind: "forbidden".into(),
+        message: "execution loadout mutation requires mcp:write permission".into(),
+    })
+}
+
+fn serialization_error(error: serde_json::Error) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "internal".into(),
+        message: format!("failed to serialize execution loadout response: {error}"),
+    }
 }
 
 async fn catalog(

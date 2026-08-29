@@ -38,6 +38,7 @@ use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
+use super::execution_loadout::ExecutionLoadoutStore;
 use super::protected_routes::ProtectedRouteIndex;
 pub use super::runtime::GatewayRuntimeHandle;
 use super::service_registry::PublishedServiceRegistryState;
@@ -127,6 +128,9 @@ pub struct GatewayManager {
     /// live config publication, including rollback and ABA.
     pub(super) runtime_config_generation: Arc<AtomicU64>,
     pub(super) config_mutation: Arc<Mutex<()>>,
+    /// Per-turn capability selections. This is deliberately separate from
+    /// `GatewayConfig::loadouts`, which configures mounted gateway routes.
+    pub(super) execution_loadouts: Arc<RwLock<ExecutionLoadoutStore>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,
