@@ -39,7 +39,13 @@ describe("endpointStatusMessage", () => {
 
   it("explains catalog failures and provides recovery", () => {
     expect(endpointStatusMessage({ ...input, catalogError: "401 from catalog" })).toBe(
-      "Catalog unavailable: 401 from catalog. Retry or open Settings.",
+      "Catalog unavailable: 401 from catalog. Check the server connection in Settings.",
+    );
+  });
+
+  it("does not recommend an unavailable settings panel when configuration cannot load", () => {
+    expect(endpointStatusMessage({ ...input, configured: false, configError: "defaults failed" })).toBe(
+      "Configuration unavailable: defaults failed. Restart Labby Palette or inspect the application logs.",
     );
   });
 

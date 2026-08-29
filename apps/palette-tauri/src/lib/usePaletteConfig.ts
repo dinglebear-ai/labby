@@ -22,9 +22,12 @@ export function usePaletteConfig() {
             setConfig(fallbackConfig);
             setDraftConfig(fallbackConfig);
           })
-          .catch(() => {
+          .catch((fallbackError) => {
             setConfig(null);
             setDraftConfig(null);
+            setConfigError(
+              `${String(err)}; loading built-in defaults also failed: ${String(fallbackError)}`,
+            );
           });
       });
   }, []);
