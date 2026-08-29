@@ -132,6 +132,9 @@ fn access_db_path_from_roots(lab_home: Option<PathBuf>, home: Option<PathBuf>) -
 pub fn usage_db_path() -> PathBuf {
     labby_db("usage.db")
 }
+pub(crate) fn integration_server_id_path() -> PathBuf {
+    labby_db("server-id")
+}
 pub fn codemode_journal_db_path() -> PathBuf {
     labby_db("codemode_journal.db")
 }

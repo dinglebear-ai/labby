@@ -1889,6 +1889,7 @@ fn build_v1_router(
     );
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
     if api_auth_configured {
+        v1 = v1.nest("/integration", services::integration_identity::routes());
         v1 = v1.nest(
             "/oauth/relay",
             services::oauth_relay::admin_routes(state.clone()),
