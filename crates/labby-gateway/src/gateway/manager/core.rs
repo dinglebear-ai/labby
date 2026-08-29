@@ -197,6 +197,22 @@ impl GatewayManager {
         let execution_loadouts =
             super::super::execution_loadout::ExecutionLoadoutStore::load(&path)
                 .map_err(ToolError::from)?;
+        #[cfg(not(any(test, feature = "testkit")))]
+        let agent_executions = super::super::agent_execution::AgentExecutionStore::open(
+            path.with_file_name("agent-executions.sqlite3"),
+        )?;
+        #[cfg(any(test, feature = "testkit"))]
+        let agent_executions = if path
+            .parent()
+            .is_none_or(|parent| parent.as_os_str().is_empty())
+        {
+            super::super::agent_execution::AgentExecutionStore::open_in_memory()?
+        } else {
+            super::super::agent_execution::AgentExecutionStore::open(
+                path.with_file_name("agent-executions.sqlite3"),
+            )
+            .or_else(|_| super::super::agent_execution::AgentExecutionStore::open_in_memory())?
+        };
         Ok(Self {
             path,
             store,
@@ -218,6 +234,8 @@ impl GatewayManager {
                 super::super::execution_loadout::PublishedCapabilityCatalog::default(),
             )),
             execution_capability_publication: Arc::new(std::sync::RwLock::new(())),
+            agent_executions: Arc::new(agent_executions),
+            agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
             notifier: None,
