@@ -45,7 +45,7 @@ describe("endpointStatusMessage", () => {
 
   it("does not recommend an unavailable settings panel when configuration cannot load", () => {
     expect(endpointStatusMessage({ ...input, configured: false, configError: "defaults failed" })).toBe(
-      "Configuration unavailable: defaults failed. Restart Labby Palette or inspect the application logs.",
+      "Configuration unavailable: defaults failed. Restart Labby Palette and try again.",
     );
   });
 

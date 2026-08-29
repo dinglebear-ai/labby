@@ -34,7 +34,7 @@ export function endpointStatusMessage({
   catalogError,
 }: EndpointStatusMessageInput): string {
   if (configError)
-    return `Configuration unavailable: ${compactError(configError)}. Restart Labby Palette or inspect the application logs.`;
+    return `Configuration unavailable: ${compactError(configError)}. Restart Labby Palette and try again.`;
   if (catalogError)
     return `Catalog unavailable: ${compactError(catalogError)}. Check the server connection in Settings.`;
   if (!configured) return "Loading server configuration.";
