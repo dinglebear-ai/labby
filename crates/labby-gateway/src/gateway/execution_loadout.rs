@@ -3,7 +3,7 @@
 //! Execution loadouts are not gateway route configuration. They select an
 //! authorized subset of one immutable catalog snapshot for a caller/runtime.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -73,7 +73,7 @@ pub trait ExecutionCapabilityCatalogProvider: Send + Sync {
         manager: &'a GatewayManager,
         principal: &'a str,
         tenant: &'a str,
-        allowed_upstreams: Option<&'a BTreeMap<String, ()>>,
+        allowed_upstreams: Option<&'a BTreeSet<String>>,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<CapabilityCatalogSnapshot, ExecutionLoadoutError>>
@@ -234,7 +234,7 @@ impl GatewayManager {
         &self,
         principal: &str,
         tenant: &str,
-        allowed_upstreams: Option<&BTreeMap<String, ()>>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<(), ExecutionLoadoutError> {
         let provider = self.execution_capability_provider.as_ref().ok_or_else(|| {
             ExecutionLoadoutError::Storage {
@@ -253,9 +253,9 @@ impl GatewayManager {
     /// Canonical upstream-owned non-tool rows for a host catalog provider.
     pub async fn canonical_upstream_execution_capabilities(
         &self,
-        allowed_upstreams: Option<&BTreeMap<String, ()>>,
+        allowed_upstreams: Option<&BTreeSet<String>>,
     ) -> Result<Vec<CapabilityRef>, ExecutionLoadoutError> {
-        let allowed = |name: &str| allowed_upstreams.is_none_or(|set| set.contains_key(name));
+        let allowed = |name: &str| allowed_upstreams.is_none_or(|set| set.contains(name));
         let mut members = Vec::new();
         if let Some(pool) = self.runtime.published_pool_snapshot().pool() {
             let prompts = pool.published_prompt_catalog().await.map_err(|_| {
@@ -309,6 +309,7 @@ impl GatewayManager {
         Ok(members)
     }
 
+    #[must_use]
     pub fn with_execution_capability_provider(
         mut self,
         provider: Arc<dyn ExecutionCapabilityCatalogProvider>,
@@ -329,13 +330,9 @@ impl GatewayManager {
         }
         let principal = caller_principal(caller);
         let tenant = caller.catalog_tenant.clone();
-        let allowed = caller.allowed_upstreams().map(|names| {
-            names
-                .iter()
-                .cloned()
-                .map(|name| (name, ()))
-                .collect::<BTreeMap<_, _>>()
-        });
+        let allowed = caller
+            .allowed_upstreams()
+            .map(|names| names.iter().cloned().collect::<BTreeSet<_>>());
         self.refresh_execution_capability_snapshot_for(&principal, &tenant, allowed.as_ref())
             .await
             .map_err(Into::into)
