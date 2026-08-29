@@ -723,7 +723,7 @@ jobs:
             # feature-gated testkit. Keep the product-only warm compile above,
             # then enable test support only while compiling test targets.
             cargo check -p labby --no-default-features \
-              --features gateway,proxy-testkit --all-targets --locked
+              --features gateway,proxy-testkit --all-targets --locked --jobs 1
           else
             cargo check -p labby --no-default-features \
               --features ${{ matrix.slice }} --all-targets --locked
@@ -734,6 +734,9 @@ jobs:
           install_args: cargo:cargo-nextest
       - name: Run gateway-slice test suite
         if: matrix.slice == 'gateway'
+        env:
+          # Native dependencies are warm; bound only remaining Rust harnesses.
+          CARGO_BUILD_JOBS: 1
         run: >-
           cargo nextest run -p labby --no-default-features
           --features gateway,proxy-testkit --locked
@@ -894,21 +897,21 @@ jobs:
         run: cargo build -p labby --all-features --lib --bins --locked
       - name: MCP route-scope resources/tools and list pagination
         run: |
-          cargo test -p labby --all-features --locked mcp::handlers_resources::tests
-          cargo test -p labby --all-features --locked mcp::handlers_tools::tests
+          cargo test -p labby --all-features --locked --jobs 1 mcp::handlers_resources::tests
+          cargo test -p labby --all-features --locked --jobs 1 mcp::handlers_tools::tests
       - name: Upstream ui resource route scope
         run: |
-          cargo test -p labby-gateway --features testkit --locked read_upstream_ui_resource
-          cargo test -p labby-gateway --lib --features testkit --locked healthy_tool_names_allowed_matches_route_and_exposure_filters
+          cargo test -p labby-gateway --features testkit --locked --jobs 1 read_upstream_ui_resource
+          cargo test -p labby-gateway --lib --features testkit --locked --jobs 1 healthy_tool_names_allowed_matches_route_and_exposure_filters
       - name: Elicitation and relay controls
         run: |
-          cargo test -p labby --all-features --locked destructive_builtin_uses_stateless_mrtr_elicitation
-          cargo test -p labby-gateway --lib --locked upstream_input_required_is_preserved_for_downstream
-          cargo test -p labby-gateway --lib --locked stateless_adapter_ignores_legacy_session_ids_in_both_directions
+          cargo test -p labby --all-features --locked --jobs 1 destructive_builtin_uses_stateless_mrtr_elicitation
+          cargo test -p labby-gateway --lib --locked --jobs 1 upstream_input_required_is_preserved_for_downstream
+          cargo test -p labby-gateway --lib --locked --jobs 1 stateless_adapter_ignores_legacy_session_ids_in_both_directions
       - name: Lifecycle, SEP-2243 headers, caching, and subscriptions
         run: |
-          cargo test -p labby --all-features --locked cli::serve::tests::http_mcp_
-          cargo test -p labby --all-features --locked stateless_subscription_receives_catalog_notifications
+          cargo test -p labby --all-features --locked --jobs 1 cli::serve::tests::http_mcp_
+          cargo test -p labby --all-features --locked --jobs 1 stateless_subscription_receives_catalog_notifications
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
@@ -1010,8 +1013,9 @@ jobs:
       - name: Warm gateway lib-test harness
         # Keep this large harness from linking concurrently with Labby's test
         # targets during nextest discovery; that overlap exceeds the runner's
-        # memory ceiling even though either harness fits on its own.
-        run: cargo test -p labby-gateway --all-features --lib --no-run --locked
+        # memory ceiling. Serialize this post-warm Rust harness build because
+        # default rustc parallelism can also cross the ceiling on a cold host.
+        run: cargo test -p labby-gateway --all-features --lib --no-run --locked --jobs 1
       - name: Run workspace tests
         # Default concurrency can link the labby and labby-gateway harnesses
         # together and exceed the runner's memory ceiling. One job is too
