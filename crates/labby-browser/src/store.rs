@@ -149,15 +149,17 @@ impl Store {
         let now = now_seconds()?;
         let expires_at = now + PAIRING_TTL_SECONDS;
         let id = Uuid::new_v4().to_string();
-        let connection = self.lock()?;
-        connection.execute(
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "UPDATE browser_pairing_requests SET status='expired', resolved_at=?1 WHERE extension_id=?2 AND status='pending'",
             params![now, extension_id],
         )?;
-        connection.execute(
+        transaction.execute(
             "INSERT INTO browser_pairing_requests(id,display_name,extension_id,public_key,status,expires_at,created_at) VALUES(?1,?2,?3,?4,'pending',?5,?6)",
             params![id, display_name, extension_id, public_key, expires_at, now],
         )?;
+        transaction.commit()?;
         drop(connection);
         self.pairing(&id)?.ok_or(BrowserError::NotFound)
     }
@@ -201,6 +203,14 @@ impl Store {
                 "pairing request is not pending".to_string(),
             ));
         }
+        transaction.execute(
+            "UPDATE document_sessions SET enabled=0,status='closed',last_seen_at=?1 WHERE browser_id IN (SELECT id FROM browsers WHERE extension_id=?2 AND revoked_at IS NULL) AND status='active'",
+            params![now, pairing.extension_id],
+        )?;
+        transaction.execute(
+            "UPDATE browser_auth_challenges SET used_at=?1 WHERE browser_id IN (SELECT id FROM browsers WHERE extension_id=?2 AND revoked_at IS NULL) AND used_at IS NULL",
+            params![now, pairing.extension_id],
+        )?;
         transaction.execute(
             "UPDATE browsers SET revoked_at=?1 WHERE extension_id=?2 AND revoked_at IS NULL",
             params![now, pairing.extension_id],
@@ -259,6 +269,10 @@ impl Store {
             "UPDATE document_sessions SET enabled=0,status='closed',last_seen_at=?1 WHERE browser_id=?2 AND status='active'",
             params![now, id],
         )?;
+        transaction.execute(
+            "UPDATE browser_auth_challenges SET used_at=?1 WHERE browser_id=?2 AND used_at IS NULL",
+            params![now, id],
+        )?;
         transaction.commit()?;
         drop(connection);
         self.browser(id)?.ok_or(BrowserError::NotFound)
@@ -313,11 +327,15 @@ impl Store {
 
     /// Mark one browser as recently authenticated.
     pub(crate) fn touch_browser(&self, id: &str) -> Result<()> {
-        self.lock()?.execute(
+        let updated = self.lock()?.execute(
             "UPDATE browsers SET last_seen_at=?1 WHERE id=?2 AND revoked_at IS NULL",
             params![now_seconds()?, id],
         )?;
-        Ok(())
+        if updated == 1 {
+            Ok(())
+        } else {
+            Err(BrowserError::AuthenticationFailed)
+        }
     }
 
     /// Persist a sanitized document/catalog observation.
@@ -326,7 +344,7 @@ impl Store {
         let now = now_seconds()?;
         let catalog = serde_json::to_string(&observation.tools)?;
         self.lock()?.execute(
-            "INSERT INTO document_sessions(id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,status,connected_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'active',?11,?11) ON CONFLICT(browser_id,tab_id,document_id) DO UPDATE SET origin=excluded.origin,sanitized_path=excluded.sanitized_path,page_title=excluded.page_title,catalog_revision=excluded.catalog_revision,catalog_fingerprint=excluded.catalog_fingerprint,catalog_json=excluded.catalog_json,status='active',last_seen_at=excluded.last_seen_at",
+            "INSERT INTO document_sessions(id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,status,connected_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'active',?11,?11) ON CONFLICT(browser_id,tab_id,document_id) DO UPDATE SET origin=excluded.origin,sanitized_path=excluded.sanitized_path,page_title=excluded.page_title,enabled=CASE WHEN document_sessions.catalog_revision=excluded.catalog_revision AND document_sessions.catalog_fingerprint=excluded.catalog_fingerprint THEN document_sessions.enabled ELSE 0 END,catalog_revision=excluded.catalog_revision,catalog_fingerprint=excluded.catalog_fingerprint,catalog_json=excluded.catalog_json,status='active',last_seen_at=excluded.last_seen_at",
             params![Uuid::new_v4().to_string(), browser_id, observation.tab_id, observation.document_id, observation.origin, observation.sanitized_path, observation.page_title, observation.catalog_revision, observation.catalog_fingerprint, catalog, now],
         )?;
         Ok(())
@@ -382,7 +400,7 @@ impl Store {
         tool_name: &str,
     ) -> Result<()> {
         let session = self.lock()?.query_row(
-            "SELECT id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,enabled,status,last_seen_at FROM document_sessions WHERE browser_id=?1 AND tab_id=?2 AND document_id=?3",
+            "SELECT ds.id,ds.browser_id,ds.tab_id,ds.document_id,ds.origin,ds.sanitized_path,ds.page_title,ds.catalog_revision,ds.catalog_fingerprint,ds.catalog_json,ds.enabled,ds.status,ds.last_seen_at FROM document_sessions ds JOIN browsers b ON b.id=ds.browser_id WHERE ds.browser_id=?1 AND ds.tab_id=?2 AND ds.document_id=?3 AND b.revoked_at IS NULL",
             params![browser_id, tab_id, document_id],
             map_session,
         ).optional()?.ok_or(BrowserError::StaleDocument)?;
@@ -397,6 +415,36 @@ impl Store {
                 "tool is not present in the enabled observed catalog".to_string(),
             ));
         }
+        Ok(())
+    }
+
+    /// Persist a redacted terminal audit for one invocation attempt.
+    pub(crate) fn record_invocation(
+        &self,
+        browser_id: &str,
+        tab_id: i64,
+        document_id: &str,
+        tool_name: &str,
+        catalog_revision: i64,
+        result: &Result<serde_json::Value>,
+        duration_ms: i64,
+    ) -> Result<()> {
+        let connection = self.lock()?;
+        let session_id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM document_sessions WHERE browser_id=?1 AND tab_id=?2 AND document_id=?3",
+                params![browser_id, tab_id, document_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let (outcome, error_kind) = match result {
+            Ok(_) => ("succeeded", None),
+            Err(error) => ("failed", Some(error.kind())),
+        };
+        connection.execute(
+            "INSERT INTO invocation_audits(id,browser_id,session_id,tool_name,catalog_revision,outcome,error_kind,duration_ms,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![Uuid::new_v4().to_string(), browser_id, session_id, tool_name, catalog_revision, outcome, error_kind, duration_ms, now_seconds()?],
+        )?;
         Ok(())
     }
 
@@ -648,5 +696,44 @@ mod tests {
         let session = store.sessions().unwrap().remove(0);
         assert!(!session.enabled);
         assert_eq!(session.status, "closed");
+    }
+
+    #[test]
+    fn catalog_change_revokes_exact_session_consent() {
+        let store = Store::memory().unwrap();
+        let request = store
+            .request_pairing("Chrome", extension_id(), vec![7; 32])
+            .unwrap();
+        let browser = store.approve_pairing(&request.id).unwrap();
+        let mut observation = CatalogObservation {
+            tab_id: 1,
+            document_id: "doc".into(),
+            origin: "https://example.com".into(),
+            sanitized_path: "/".into(),
+            page_title: "Example".into(),
+            catalog_revision: 1,
+            catalog_fingerprint: "one".into(),
+            tools: vec![crate::protocol::ToolDescriptor {
+                name: "search".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type":"object"}),
+                annotations: serde_json::Value::Null,
+            }],
+        };
+        store.observe(&browser.id, &observation).unwrap();
+        let session = store.sessions().unwrap().remove(0);
+        store.set_session_enabled(&session.id, true).unwrap();
+        observation.catalog_revision = 2;
+        observation.catalog_fingerprint = "two".into();
+        store.observe(&browser.id, &observation).unwrap();
+        let changed = store.sessions().unwrap().remove(0);
+        assert!(!changed.enabled);
+        assert_eq!(
+            store
+                .validate_call(&browser.id, 1, "doc", 2, "search")
+                .unwrap_err()
+                .kind(),
+            "stale_document"
+        );
     }
 }

@@ -42,20 +42,26 @@ export function BrowserBridgePage() {
   const [error, setError] = React.useState<string>()
   const [busyKey, setBusyKey] = React.useState<string>()
   const [revokeTarget, setRevokeTarget] = React.useState<BrowserIdentity>()
+  const loadGeneration = React.useRef(0)
 
   const load = React.useCallback(async (signal?: AbortSignal, announce = false) => {
+    const generation = ++loadGeneration.current
     if (announce) setRefreshing(true)
     try {
       const [browsers, pairings, sessions] = await Promise.all([
         browserApi.list(signal), browserApi.pairings(signal), browserApi.sessions(signal),
       ])
-      setData({ browsers, pairings, sessions })
-      setError(undefined)
+      if (generation === loadGeneration.current) {
+        setData({ browsers, pairings, sessions })
+        setError(undefined)
+      }
+      return true
     } catch (cause) {
-      if (signal?.aborted) return
+      if (signal?.aborted || generation !== loadGeneration.current) return false
       setError(cause instanceof Error ? cause.message : 'Browser bridge state could not be loaded.')
+      return false
     } finally {
-      if (!signal?.aborted) {
+      if (!signal?.aborted && generation === loadGeneration.current) {
         setLoading(false)
         setRefreshing(false)
       }
@@ -64,9 +70,13 @@ export function BrowserBridgePage() {
 
   React.useEffect(() => {
     const controller = new AbortController()
-    void load(controller.signal)
-    const timer = window.setInterval(() => void load(controller.signal), POLL_INTERVAL_MS)
-    return () => { controller.abort(); window.clearInterval(timer) }
+    let timer: number | undefined
+    const poll = async () => {
+      await load(controller.signal)
+      if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), POLL_INTERVAL_MS)
+    }
+    void poll()
+    return () => { controller.abort(); if (timer) window.clearTimeout(timer) }
   }, [load])
 
   async function mutate(key: string, operation: () => Promise<unknown>, success: string) {
@@ -74,7 +84,8 @@ export function BrowserBridgePage() {
     try {
       await operation()
       toast.success(success)
-      await load()
+      const refreshed = await load()
+      if (!refreshed) toast.warning('The operation succeeded, but refreshed browser state could not be loaded.')
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : 'The browser operation failed.')
     } finally {

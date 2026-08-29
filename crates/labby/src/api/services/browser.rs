@@ -11,7 +11,7 @@ use axum::{
     routing::{get, post},
 };
 use futures::{SinkExt as _, StreamExt as _};
-use labby_browser::{BrowserEnvelope, BrowserMessage};
+use labby_browser::{BrowserEnvelope, BrowserMessage, PairingStatus};
 use serde_json::Value;
 
 use crate::api::error::ApiError;
@@ -72,24 +72,26 @@ async fn upgrade(
     let loopback = peer
         .as_ref()
         .is_some_and(|Extension(ConnectInfo(address))| address.ip().is_loopback());
-    let extension_origin = headers
+    let extension_id = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| {
-            origin.starts_with("chrome-extension://") || origin.starts_with("moz-extension://")
-        });
-    if !loopback || !extension_origin {
+        .and_then(|origin| origin.strip_prefix("chrome-extension://"))
+        .filter(|id| id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte)))
+        .map(str::to_string);
+    if !loopback || extension_id.is_none() {
         return Err(ApiError::new(ToolError::Forbidden {
             message: "browser bridge accepts only loopback extension connections".to_string(),
             required_scopes: Vec::new(),
         }));
     }
     browser_bridge()?;
-    Ok(upgrade.on_upgrade(handle_socket))
+    Ok(upgrade.on_upgrade(move |socket| {
+        handle_socket(socket, extension_id.expect("validated extension id"))
+    }))
 }
 
-async fn handle_socket(socket: WebSocket) {
-    if let Err(error) = run_socket(socket).await {
+async fn handle_socket(socket: WebSocket, extension_id: String) {
+    if let Err(error) = run_socket(socket, &extension_id).await {
         tracing::warn!(
             surface = "api",
             service = "browser",
@@ -99,7 +101,10 @@ async fn handle_socket(socket: WebSocket) {
     }
 }
 
-async fn run_socket(socket: WebSocket) -> Result<(), labby_browser::BrowserError> {
+async fn run_socket(
+    socket: WebSocket,
+    extension_id: &str,
+) -> Result<(), labby_browser::BrowserError> {
     let bridge = browser_bridge()
         .map_err(|error| labby_browser::BrowserError::InvalidRequest(error.to_string()))?;
     let (mut sink, mut source) = socket.split();
@@ -120,10 +125,13 @@ async fn run_socket(socket: WebSocket) -> Result<(), labby_browser::BrowserError
         let reply = match envelope.message {
             BrowserMessage::PairingRequest {
                 display_name,
-                extension_id,
+                extension_id: claimed_extension_id,
                 public_key,
             } => {
-                let pairing = bridge.request_pairing(&display_name, &extension_id, &public_key)?;
+                if claimed_extension_id != extension_id {
+                    return Err(labby_browser::BrowserError::AuthenticationFailed);
+                }
+                let pairing = bridge.request_pairing(&display_name, extension_id, &public_key)?;
                 BrowserEnvelope::new(
                     request_id,
                     BrowserMessage::PairingPending {
@@ -137,21 +145,35 @@ async fn run_socket(socket: WebSocket) -> Result<(), labby_browser::BrowserError
                     .store()
                     .pairing(&pairing_id)?
                     .ok_or(labby_browser::BrowserError::NotFound)?;
-                match pairing.browser_id {
-                    Some(browser_id) => BrowserEnvelope::new(
+                match (pairing.status, pairing.browser_id) {
+                    (PairingStatus::Approved, Some(browser_id)) => BrowserEnvelope::new(
                         request_id,
                         BrowserMessage::PairingApproved { browser_id },
                     ),
-                    None => BrowserEnvelope::new(
+                    (PairingStatus::Pending, None) => BrowserEnvelope::new(
                         request_id,
                         BrowserMessage::PairingPending {
                             pairing_id: pairing.id,
                             expires_at: pairing.expires_at,
                         },
                     ),
+                    (status, _) => BrowserEnvelope::new(
+                        request_id,
+                        BrowserMessage::Error {
+                            kind: "pairing_not_pending".to_string(),
+                            message: format!("pairing request is {status:?}").to_lowercase(),
+                        },
+                    ),
                 }
             }
             BrowserMessage::AuthChallenge { browser_id } => {
+                let browser = bridge
+                    .store()
+                    .browser(&browser_id)?
+                    .ok_or(labby_browser::BrowserError::AuthenticationFailed)?;
+                if browser.extension_id != extension_id || browser.revoked_at.is_some() {
+                    return Err(labby_browser::BrowserError::AuthenticationFailed);
+                }
                 let mut challenge = bridge.issue_challenge(&browser_id)?;
                 challenge.request_id = request_id;
                 challenge
@@ -179,7 +201,8 @@ async fn run_socket(socket: WebSocket) -> Result<(), labby_browser::BrowserError
     let mut connection = authenticated.expect("authenticated connection set");
     let browser_id = connection.browser_id.clone();
     let connection_id = connection.connection_id.clone();
-    loop {
+    let loop_result: Result<(), labby_browser::BrowserError> = async {
+      loop {
         tokio::select! {
             outbound = connection.receiver.recv() => {
                 let Some(event) = outbound else { break; };
@@ -193,22 +216,27 @@ async fn run_socket(socket: WebSocket) -> Result<(), labby_browser::BrowserError
                 envelope.validate_version()?;
                 let request_id = envelope.request_id.clone();
                 let received = match envelope.message {
-                    BrowserMessage::Observe(observation) => { bridge.observe(&browser_id, &observation)?; "observe" }
-                    BrowserMessage::DocumentClosed { tab_id, document_id } => { bridge.close_document(&browser_id, tab_id, &document_id)?; "document_closed" }
+                    BrowserMessage::Observe(observation) => { bridge.observe(&browser_id, &connection_id, &observation)?; "observe" }
+                    BrowserMessage::DocumentClosed { tab_id, document_id } => { bridge.close_document(&browser_id, &connection_id, tab_id, &document_id)?; "document_closed" }
                     completion @ (BrowserMessage::ToolResult { .. } | BrowserMessage::ToolError { .. }) => {
-                        let _matched = bridge.complete(&browser_id, completion)?;
+                        let _matched = bridge.complete(&browser_id, &connection_id, completion)?;
                         "tool_completion"
                     }
-                    _ => continue,
+                    _ => {
+                        send_envelope(&mut sink, &BrowserEnvelope::new(request_id, BrowserMessage::Error { kind: "invalid_message_for_state".to_string(), message: "message is not valid after authentication".to_string() })).await?;
+                        continue;
+                    },
                 };
                 if request_id.is_some() {
                     send_envelope(&mut sink, &BrowserEnvelope::new(request_id, BrowserMessage::Acknowledged { received: received.to_string() })).await?;
                 }
             }
         }
-    }
-    bridge.disconnect(&browser_id, &connection_id)?;
-    Ok(())
+      }
+      Ok(())
+    }.await;
+    let cleanup_result = bridge.disconnect(&browser_id, &connection_id);
+    loop_result.and(cleanup_result)
 }
 
 async fn send_envelope(

@@ -48,8 +48,20 @@ required("#save").addEventListener("click", async () => {
   renderDisclosure();
   status.textContent = "Saved.";
 });
-required("#scan").addEventListener("click", async () => { await chrome.runtime.sendMessage({type: "scan-now"}); status.textContent = "Scan requested."; });
-required("#pair").addEventListener("click", async () => { await chrome.runtime.sendMessage({type: "pair", displayName: "Chrome"}); status.textContent = "Pairing request sent. Approve it in Labby."; });
+required("#scan").addEventListener("click", async () => {
+  try {
+    const reply = await chrome.runtime.sendMessage({type: "scan-now"});
+    if (!reply?.ok) throw new Error(reply?.error || reply?.kind || "Scan request failed");
+    status.textContent = "Scan requested.";
+  } catch (error) { status.textContent = error instanceof Error ? error.message : "Scan request failed."; }
+});
+required("#pair").addEventListener("click", async () => {
+  try {
+    const reply = await chrome.runtime.sendMessage({type: "pair", displayName: "Chrome"});
+    if (!reply?.ok) throw new Error(reply?.error || reply?.kind || "Pairing request failed");
+    status.textContent = "Pairing request sent. Approve it in Labby.";
+  } catch (error) { status.textContent = error instanceof Error ? error.message : "Pairing request failed."; }
+});
 mode.addEventListener("change", renderDisclosure);
 
 async function renderDisclosure() {

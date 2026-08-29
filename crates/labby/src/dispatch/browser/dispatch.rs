@@ -13,6 +13,8 @@ use crate::dispatch::helpers::{action_schema, help_payload, require_str, to_json
 use super::catalog::ACTIONS;
 use super::runtime::browser_bridge;
 
+const MAX_TOOL_TIMEOUT_MS: u64 = 120_000;
+
 #[derive(Deserialize)]
 struct CallParams {
     browser_id: String,
@@ -66,7 +68,7 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
         })),
         "browser.pairing.approve" => {
             let id = require_str(&params, "pairing_id")?;
-            to_json(bridge.store().approve_pairing(&id).map_err(map_error)?)
+            to_json(bridge.approve_pairing(&id).map_err(map_error)?)
         }
         "browser.sessions" => to_json(json!({
             "sessions": bridge.store().sessions().map_err(map_error)?
@@ -93,6 +95,15 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
                     message: format!("invalid browser.call params: {error}"),
                     param: "params".to_string(),
                 })?;
+            if call
+                .timeout_ms
+                .is_some_and(|timeout| timeout == 0 || timeout > MAX_TOOL_TIMEOUT_MS)
+            {
+                return Err(ToolError::InvalidParam {
+                    message: format!("`timeout_ms` must be between 1 and {MAX_TOOL_TIMEOUT_MS}"),
+                    param: "timeout_ms".to_string(),
+                });
+            }
             bridge
                 .call(
                     &call.browser_id,

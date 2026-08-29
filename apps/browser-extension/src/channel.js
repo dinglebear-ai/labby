@@ -13,11 +13,12 @@ export class LabbyBrowserChannel {
     /** @type {(value?: void) => void} */ this.resolveReady;
     /** @type {(reason?: any) => void} */ this.rejectReady;
     /** @type {ReturnType<typeof setTimeout> | undefined} */ this.reconnectTimer = undefined;
+    this.reconnectAttempt = 0;
   }
 
   connect() {
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
-    this.ready.catch(() => {});
+    this.ready.catch((error) => this.onError(error, {kind: "connection_setup_failed"}));
     const url = new URL("/browser/socket", this.baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(url);
@@ -35,13 +36,16 @@ export class LabbyBrowserChannel {
         }
         this.resolveReady();
         await this.onReady?.();
-      } catch (error) { this.rejectReady(error); socket.close(); }
+        this.reconnectAttempt = 0;
+      } catch (error) { this.onError(error, {kind: "authentication_or_resync_failed"}); this.rejectReady(error); socket.close(); }
     };
     socket.onclose = () => {
       if (this.socket !== socket) return;
       this.rejectReady(new Error("channel_disconnected"));
       this.rejectPending(new Error("channel_disconnected"));
-      this.reconnectTimer = setTimeout(() => this.connect(), 2000);
+      const delay = Math.min(30_000, 1_000 * (2 ** this.reconnectAttempt)) + Math.floor(Math.random() * 250);
+      this.reconnectAttempt += 1;
+      this.reconnectTimer = setTimeout(() => this.connect(), delay);
     };
   }
 

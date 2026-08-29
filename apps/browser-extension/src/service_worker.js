@@ -42,7 +42,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   await closeObservation(tabId);
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "webby-periodic-scan") scanAll();
+  if (alarm.name === "labby-periodic-scan") scanAll();
 });
 chrome.permissions.onAdded.addListener(() => scanAll());
 chrome.permissions.onRemoved.addListener(async () => {
@@ -67,7 +67,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function initialize() {
-  await chrome.alarms.create("webby-periodic-scan", {periodInMinutes: 1});
+  await chrome.alarms.create("labby-periodic-scan", {periodInMinutes: 1});
   const settings = {...DEFAULTS, ...await chrome.storage.local.get(Object.keys(DEFAULTS))};
   try { settings.baseUrl = parseLoopbackBaseUrl(settings.baseUrl); } catch {
     settings.baseUrl = DEFAULTS.baseUrl;
@@ -81,12 +81,19 @@ async function initialize() {
       browserId: identity.browserId,
       onChallenge: authenticate,
       onReady: resumeAndScan,
-      onEvent: handleServerEvent
+      onEvent: handleServerEvent,
+      onError: reportBridgeFailure
     });
     channel.connect();
   }
   if (settings.scanningPaused) await closeAllObservations();
   else if (identity.browserId) await scanAll();
+}
+
+async function reportBridgeFailure(error, context) {
+  const message = error instanceof Error ? error.message : "bridge_connection_failed";
+  console.error("Labby browser bridge connection failed", {message, context});
+  await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
 }
 
 /**
@@ -193,13 +200,20 @@ async function executeToolCall(payload) {
     const result = boundary.value;
     if (encodedSize(result) > 131_072 || jsonDepth(result) > 32) throw new Error("result_too_large");
     await requireChannel().message("tool.result", {call_id: payload.call_id, result});
-    pendingCalls.delete(payload.call_id);
   } catch (error) {
     const message = error instanceof Error ? error.message : undefined;
     const kind = classifyToolError(error, message);
     const log = ["renderer_crashed", "worker_crashed"].includes(kind) ? console.error : console.info;
     log("Labby browser tool call failed", {callId: payload.call_id, kind, error});
-    await sendToolError(payload.call_id, kind, "The page tool could not be completed");
+    try {
+      await sendToolError(payload.call_id, kind, "The page tool could not be completed");
+    } catch (deliveryError) {
+      console.error("Labby browser tool error delivery failed", {callId: payload.call_id, kind, error, deliveryError});
+      channel?.close();
+      channel = undefined;
+      void initialize().catch((reconnectError) => console.error("Labby browser reconnect failed", reconnectError));
+    }
+  } finally {
     pendingCalls.delete(payload.call_id);
   }
 }
@@ -224,6 +238,8 @@ async function cancelToolCall(payload) {
       error
     });
     throw error;
+  } finally {
+    pendingCalls.delete(payload.call_id);
   }
 }
 
