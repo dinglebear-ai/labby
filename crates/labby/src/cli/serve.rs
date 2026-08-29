@@ -529,10 +529,16 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         web_assets_dir.is_none() && crate::api::web::embedded_web_assets_available();
 
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
+    let integration_server_id =
+        crate::api::services::integration_identity::load_or_create_server_id(
+            &crate::config::integration_server_id_path(),
+        )
+        .context("initialize stable Labby integration server identity")?;
 
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
         .with_access_runtime(Arc::clone(&access_runtime))
+        .with_integration_server_id(integration_server_id)
         .with_http_bind_host(host.clone());
     #[cfg(feature = "skills")]
     if let Some(skill_library_runtime) = skill_library_runtime {

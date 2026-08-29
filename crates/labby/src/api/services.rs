@@ -21,6 +21,7 @@ pub mod catalog;
 pub mod doctor;
 #[cfg(feature = "gateway")]
 pub mod gateway;
+pub mod integration_identity;
 pub mod oauth_relay;
 #[cfg(feature = "gateway")]
 pub mod palette;

@@ -69,6 +69,8 @@ pub struct AppState {
     pub embedded_web_assets: bool,
     /// Instant at which the server became ready (used by `/health` uptime_s).
     pub server_start: std::time::Instant,
+    /// Stable, non-secret deployment identity exposed to authenticated integrations.
+    pub(crate) integration_server_id: Arc<str>,
     /// Canonical absolute path of the configured workspace root, or
     /// `None` when `workspace.root` is invalid at startup.
     /// Backs the `dispatch/fs/` service (workspace filesystem browser).
@@ -163,6 +165,7 @@ impl AppState {
             #[cfg(feature = "skills")]
             skill_library_imports: None,
             server_start: std::time::Instant::now(),
+            integration_server_id: Arc::from("labby_0000000000000000"),
         }
     }
 
@@ -304,6 +307,12 @@ impl AppState {
     #[must_use]
     pub fn with_http_bind_host(mut self, host: impl Into<String>) -> Self {
         self.http_bind_host = Some(Arc::new(host.into()));
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_integration_server_id(mut self, server_id: impl Into<Arc<str>>) -> Self {
+        self.integration_server_id = server_id.into();
         self
     }
 }
