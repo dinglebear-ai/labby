@@ -46,6 +46,19 @@ exact source bytes, and records the `labby.prompt/v1` adapter when no adapter wa
 Prompt transport and authoring operations use the shared `artifacts` control plane. Prompt
 materialization does not introduce a parallel `prompt_library.*` service namespace.
 
+## Agent artifact materialization
+
+The surface-neutral Artifact runtime can materialize a bounded, inert Agent definition from
+exactly one `AGENT.md` file. Agent frontmatter declares a matching lowercase identifier, a bounded
+description, the `labby` runtime, explicit-only activation, and at most 256 unique capability
+references pinned to expected revisions. The remaining Markdown body must be non-empty and is
+retained as inert text; materialization does not execute or interpret its instructions.
+
+The resulting Artifact uses `kind = "agent"`, content-addresses the exact source bytes, and records
+the `labby.agent/v1` adapter when no adapter was supplied. Agent transport and authoring operations
+use the shared `artifacts` control plane; materialization does not introduce a parallel Agent
+service namespace or automatic activation behavior.
+
 ## Non-goals for the first slice
 
 The first slice does not add hosted registry authority, crawling/enrichment, trust scoring, compatibility aliases for retired products, a new Skills protocol, remote deployment execution, or transport-specific business logic. It does not silently update a fork when an upstream changes.

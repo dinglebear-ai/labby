@@ -5,6 +5,7 @@
 //! validation, Agent Skills projection, and the local immutable-revision store.
 //! Product transports remain adapters over this layer.
 
+pub mod agent;
 pub mod canonical_json;
 pub mod library;
 pub mod lifecycle;
@@ -18,6 +19,7 @@ pub mod store;
 mod store_ops;
 pub mod validation;
 
+pub use agent::{LogicalAgentFile, MaterializedAgent, materialize_logical_agent};
 pub use materialize_skill::{
     LogicalSkillFile, MaterializedSkill, materialize_acquired_skill,
     materialize_acquired_skill_owned, materialize_logical_skill,
