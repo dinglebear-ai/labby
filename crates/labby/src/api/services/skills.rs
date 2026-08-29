@@ -223,10 +223,39 @@ async fn handle(
                     message: "Skill Library authentication is required".to_owned(),
                     required_scopes: vec![],
                 })?;
-                let project_id = project_id.ok_or_else(|| ToolError::Forbidden {
-                    message: "Skill Library project context is required".to_owned(),
-                    required_scopes: vec![],
-                })?;
+                let project_id = match project_id {
+                    Some(project_id) => project_id,
+                    None => {
+                        let store = access_runtime.store().await.map_err(|_| ToolError::Sdk {
+                            sdk_kind: "service_unavailable".to_owned(),
+                            message: "Skill Library authorization is unavailable".to_owned(),
+                        })?;
+                        let projects = store
+                            .list_accessible_projects(identity.clone())
+                            .await
+                            .map_err(|_| ToolError::Forbidden {
+                                message: "Skill Library access denied".to_owned(),
+                                required_scopes: vec![],
+                            })?;
+                        match projects.as_slice() {
+                            [project] => project.project_id.clone(),
+                            [] => {
+                                return Err(ToolError::Forbidden {
+                                    message: "Skill Library access denied".to_owned(),
+                                    required_scopes: vec![],
+                                });
+                            }
+                            _ => {
+                                return Err(ToolError::InvalidParam {
+                                    message:
+                                        "multiple projects are available; send x-labby-project-id"
+                                            .to_owned(),
+                                    param: "x-labby-project-id".to_owned(),
+                                });
+                            }
+                        }
+                    }
+                };
                 static REQUESTS: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(1);
                 let correlation = correlation.unwrap_or_else(|| {
