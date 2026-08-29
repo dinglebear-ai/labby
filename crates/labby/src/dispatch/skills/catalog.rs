@@ -92,8 +92,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     },
 ];
 
-const fn api_actions() -> [ActionSpec; 22] {
-    let mut result = [ACTIONS[0]; 22];
+const fn api_actions() -> [ActionSpec; 36] {
+    let mut result = [ACTIONS[0]; 36];
     let mut index = 0;
     while index < ACTIONS.len() {
         result[index] = ACTIONS[index];
@@ -105,10 +105,16 @@ const fn api_actions() -> [ActionSpec; 22] {
         index += 1;
         management += 1;
     }
+    let mut prompts = 0;
+    while prompts < crate::dispatch::skill_library::catalog::PROMPT_ACTIONS.len() {
+        result[index] = crate::dispatch::skill_library::catalog::PROMPT_ACTIONS[prompts];
+        index += 1;
+        prompts += 1;
+    }
     result
 }
 
-const ALL_MANAGEMENT_ACTIONS: [ActionSpec; 22] = api_actions();
+const ALL_MANAGEMENT_ACTIONS: [ActionSpec; 36] = api_actions();
 /// Authenticated HTTP MCP/App contract: compatibility reads plus the bounded
 /// Skill Library management vocabulary. Stdio and private in-process callers
 /// intentionally retain [`ACTIONS`].
@@ -127,13 +133,14 @@ mod tests {
             .iter()
             .map(|action| action.name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 19);
+        assert_eq!(names.len(), 36);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()
         );
         assert!(names.contains(&"skills.list"));
         assert!(names.contains(&"skill_library.activate"));
+        assert!(names.contains(&"prompt_library.activate"));
         assert!(!names.iter().any(|name| name.contains("list_changed")));
         for action in API_ACTIONS.iter().filter(|action| {
             matches!(

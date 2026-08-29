@@ -343,7 +343,7 @@ impl LabMcpServer {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>>
     {
         Box::pin(async move {
-            if action.starts_with("skill_library.") {
+            if action.starts_with("skill_library.") || action.starts_with("prompt_library.") {
                 return self
                     .dispatch_skill_library_management(context, action, params)
                     .await;

@@ -206,7 +206,7 @@ async fn handle(
             let visibility_auth = auth_for_library.clone();
             let visibility_project = project_id.clone();
             let visibility_correlation = correlation.clone();
-            if action.starts_with("skill_library.") {
+            if action.starts_with("skill_library.") || action.starts_with("prompt_library.") {
                 let service = skill_library.ok_or_else(|| ToolError::Sdk {
                     sdk_kind: "skill_library_unavailable".to_owned(),
                     message: "Skill Library is unavailable".to_owned(),

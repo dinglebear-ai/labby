@@ -20,7 +20,41 @@ use super::local_io::{
 };
 use super::model::{ArtifactRecord, ArtifactRevision};
 use super::validation::{validate_id, validate_reference_id};
-use super::{ArtifactError, ArtifactStore, MaterializedSkill, invalid};
+use super::{ArtifactError, ArtifactStore, MaterializedPrompt, MaterializedSkill, invalid};
+
+/// One family-validated payload admitted to the shared atomic Artifact transaction.
+pub enum MaterializedLibraryArtifact {
+    Skill(Box<MaterializedSkill>),
+    Prompt(Box<MaterializedPrompt>),
+}
+
+impl From<MaterializedSkill> for MaterializedLibraryArtifact {
+    fn from(value: MaterializedSkill) -> Self {
+        Self::Skill(Box::new(value))
+    }
+}
+
+impl From<MaterializedPrompt> for MaterializedLibraryArtifact {
+    fn from(value: MaterializedPrompt) -> Self {
+        Self::Prompt(Box::new(value))
+    }
+}
+
+impl MaterializedLibraryArtifact {
+    pub fn interchange(&self) -> &super::model::ArtifactInterchange {
+        match self {
+            Self::Skill(value) => &value.interchange,
+            Self::Prompt(value) => &value.interchange,
+        }
+    }
+
+    fn interchange_mut(&mut self) -> &mut super::model::ArtifactInterchange {
+        match self {
+            Self::Skill(value) => &mut value.interchange,
+            Self::Prompt(value) => &mut value.interchange,
+        }
+    }
+}
 
 pub const LIBRARY_SCHEMA_VERSION: u8 = 1;
 pub const OWNERSHIP_PROJECTION_SCHEMA_VERSION: u8 = 1;
@@ -535,8 +569,8 @@ impl SkillLibraryRecord {
     fn validate(&self, store: &ArtifactStore) -> Result<(), ArtifactError> {
         self.validate_metadata()?;
         let artifact = store.get(&self.artifact_id)?;
-        if artifact.descriptor.kind != "skill" {
-            return Err(ArtifactError::Conflict("library_artifact_not_skill"));
+        if !matches!(artifact.descriptor.kind.as_str(), "skill" | "prompt") {
+            return Err(ArtifactError::Conflict("library_artifact_kind"));
         }
         if artifact.descriptor.name != self.name {
             return Err(ArtifactError::Conflict("library_name_mismatch"));
@@ -1090,19 +1124,20 @@ impl ArtifactStore {
         idempotency: LibraryIdempotency,
         mutation: LibraryMutation,
         committed_at: LibraryTimestamp,
-        mut materialized: MaterializedSkill,
+        materialized: impl Into<MaterializedLibraryArtifact>,
         expected_revision_id: Option<&str>,
         mut fault: impl FnMut(SkillTransactionBoundary) -> Result<(), ArtifactError>,
     ) -> Result<LibraryMutationOutcome, ArtifactError> {
+        let mut materialized = materialized.into();
         target_ownership.validate()?;
         authorization.validate_for(target_ownership)?;
         validate_idempotency(&idempotency)?;
         let artifact_id = mutation.artifact_id().to_owned();
         validate_id(&artifact_id, "artifact_id")?;
-        if materialized.interchange.descriptor.id != artifact_id {
+        if materialized.interchange().descriptor.id != artifact_id {
             return Err(ArtifactError::Conflict("library_artifact_identity_changed"));
         }
-        let revision_id = materialized.interchange.revision.id.clone();
+        let revision_id = materialized.interchange().revision.id.clone();
         match &mutation {
             LibraryMutation::Create { .. } => {}
             LibraryMutation::Save {
@@ -1154,11 +1189,11 @@ impl ArtifactStore {
             (Some(_), Some(_)) => return Err(ArtifactError::Conflict("revision_changed")),
         }
         if let Some(record) = &prior_record {
-            materialized.interchange.revision.parent_revision_id =
+            materialized.interchange_mut().revision.parent_revision_id =
                 Some(record.current_revision_id.clone());
         }
-        let files = materialized_skill_files(&materialized)?;
-        let next_record = materialized_skill_record(&materialized, prior_record.as_ref())?;
+        let files = materialized_library_files(&materialized)?;
+        let next_record = materialized_library_record(&materialized, prior_record.as_ref())?;
         let mut pending = PendingSkillTransaction {
             schema_version: 2,
             scope_digest: scope_digest.clone(),
@@ -1169,7 +1204,7 @@ impl ArtifactStore {
             idempotency_key: idempotency.key.clone(),
             artifact_id: artifact_id.clone(),
             revision_id,
-            revision: materialized.interchange.revision.clone(),
+            revision: materialized.interchange().revision.clone(),
             prior_record,
             next_record,
             files: files
@@ -1190,9 +1225,9 @@ impl ArtifactStore {
                 .records
                 .get_mut(&artifact_id)
                 .ok_or(ArtifactError::NotFound("library_record"))?;
-            library_record.latest_revision_id = materialized.interchange.revision.id.clone();
+            library_record.latest_revision_id = materialized.interchange().revision.id.clone();
             library_record.latest_revision_files = materialized
-                .interchange
+                .interchange()
                 .revision
                 .components
                 .iter()
@@ -1204,7 +1239,7 @@ impl ArtifactStore {
                 })
                 .collect();
             library_record.provenance_provider =
-                materialized.interchange.provenance.provider.clone();
+                materialized.interchange().provenance.provider.clone();
             library_record.materialized = true;
         }
         apply_mutation(
@@ -1622,9 +1657,25 @@ impl ArtifactStore {
     }
 }
 
-fn materialized_skill_files(
-    materialized: &MaterializedSkill,
+fn materialized_library_files(
+    materialized: &MaterializedLibraryArtifact,
 ) -> Result<Vec<SnapshotFile>, ArtifactError> {
+    if let MaterializedLibraryArtifact::Prompt(prompt) = materialized {
+        return prompt
+            .files
+            .iter()
+            .map(|(path, bytes)| {
+                Ok(SnapshotFile {
+                    path: path.clone(),
+                    bytes: bytes.clone(),
+                    unix_mode: None,
+                })
+            })
+            .collect();
+    }
+    let MaterializedLibraryArtifact::Skill(materialized) = materialized else {
+        unreachable!("prompt returned above")
+    };
     let total_bytes = materialized
         .resources
         .values()
@@ -1666,28 +1717,29 @@ fn materialized_skill_files(
         .collect()
 }
 
-fn materialized_skill_record(
-    materialized: &MaterializedSkill,
+fn materialized_library_record(
+    materialized: &MaterializedLibraryArtifact,
     prior: Option<&ArtifactRecord>,
 ) -> Result<ArtifactRecord, ArtifactError> {
-    let revision_id = materialized.interchange.revision.id.clone();
+    let interchange = materialized.interchange();
+    let revision_id = interchange.revision.id.clone();
     let mut revision_ids = prior.map_or_else(Vec::new, |record| record.revision_ids.clone());
     if !revision_ids.contains(&revision_id) {
         revision_ids.push(revision_id.clone());
     }
     let record = ArtifactRecord {
         schema_version: 1,
-        descriptor: materialized.interchange.descriptor.clone(),
+        descriptor: interchange.descriptor.clone(),
         current_revision_id: revision_id,
         revision_ids,
-        provenance: materialized.interchange.provenance.clone(),
-        license: materialized.interchange.license.clone(),
+        provenance: interchange.provenance.clone(),
+        license: interchange.license.clone(),
         lineage: prior.map_or_else(
-            || materialized.interchange.lineage.clone(),
+            || interchange.lineage.clone(),
             |record| record.lineage.clone(),
         ),
         publication: prior.map_or_else(
-            || materialized.interchange.publication.clone(),
+            || interchange.publication.clone(),
             |record| record.publication.clone(),
         ),
     };

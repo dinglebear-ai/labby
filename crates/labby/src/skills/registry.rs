@@ -605,6 +605,12 @@ pub(crate) fn project_artifact_generation(
         .records
         .values()
         .filter_map(|record| {
+            if store
+                .get(&record.artifact_id)
+                .map_or(true, |artifact| artifact.descriptor.kind != "skill")
+            {
+                return None;
+            }
             record.active_revision_id.as_ref().map(|revision| {
                 (
                     record.artifact_id.clone(),
@@ -629,10 +635,12 @@ pub(crate) fn project_artifact_generation(
                     .records
                     .get(artifact_id)
                     .ok_or(ArtifactError::NotFound("library_record"))?;
-                active.insert(
-                    artifact_id.clone(),
-                    (record.name.clone(), revision_id.clone()),
-                );
+                if store.get(artifact_id)?.descriptor.kind == "skill" {
+                    active.insert(
+                        artifact_id.clone(),
+                        (record.name.clone(), revision_id.clone()),
+                    );
+                }
             }
             LibraryMutation::Deactivate { artifact_id, .. }
             | LibraryMutation::Archive { artifact_id, .. } => {
