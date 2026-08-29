@@ -131,6 +131,17 @@ async fn empty_preview_and_activation_never_discover_capabilities() {
         .expect("empty activation must not wait for discovery");
     assert!(activation.preview.resolved.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let active_preview = manager
+        .execution_loadout_preview(&caller(), "empty", "runtime-1")
+        .await
+        .expect("active preview");
+    assert_eq!(active_preview.active_revision, 1);
+    assert_eq!(
+        serde_json::to_value(&active_preview).expect("serialize preview")["activeRevision"],
+        1
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
