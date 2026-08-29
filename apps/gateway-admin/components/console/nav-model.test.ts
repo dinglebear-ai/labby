@@ -5,6 +5,7 @@ import {
   consoleNavItems,
   consoleNavSections,
   consoleNavSectionsForScope,
+  isNavItemActive,
 } from './nav-model'
 
 // bead lab-vl9q6
@@ -86,4 +87,13 @@ test('consoleNavItems is the flattened consoleNavSections in section order', () 
     consoleNavItems.map((item) => item.id),
     flat.map((item) => item.id),
   )
+})
+
+test('team subroutes activate only their specific destination', () => {
+  const teamItems = consoleNavSectionsForScope('team').flatMap((section) => section.items)
+  for (const pathname of ['/team', '/team/library', '/team/projects', '/team/activity']) {
+    const active = teamItems.filter((item) => isNavItemActive(item.href, pathname))
+    assert.equal(active.length, 1, `${pathname} should have exactly one active item`)
+    assert.equal(active[0]?.href, pathname)
+  }
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { endpointStatus } from "@/lib/endpointStatus";
+import { endpointStatus, endpointStatusMessage } from "@/lib/endpointStatus";
 
 describe("endpointStatus", () => {
   it("is online after config and catalog load successfully", () => {
@@ -25,5 +25,29 @@ describe("endpointStatus", () => {
     expect(
       endpointStatus({ configured: true, catalogLoading: false, configError: null, catalogError: "offline" }),
     ).toBe("error");
+  });
+});
+
+describe("endpointStatusMessage", () => {
+  const input = {
+    configured: true,
+    catalogLoading: false,
+    configError: null,
+    catalogError: null,
+    endpointLabel: "labby.local",
+  };
+
+  it("explains catalog failures and provides recovery", () => {
+    expect(endpointStatusMessage({ ...input, catalogError: "401 from catalog" })).toBe(
+      "Catalog unavailable: 401 from catalog. Retry or open Settings.",
+    );
+  });
+
+  it("reports loading, syncing, and connected states", () => {
+    expect(endpointStatusMessage({ ...input, configured: false })).toBe("Loading server configuration.");
+    expect(endpointStatusMessage({ ...input, catalogLoading: true })).toBe(
+      "Syncing the catalog from labby.local.",
+    );
+    expect(endpointStatusMessage(input)).toBe("Connected to labby.local.");
   });
 });

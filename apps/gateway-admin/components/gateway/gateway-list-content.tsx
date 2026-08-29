@@ -1,6 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity,
@@ -149,6 +150,9 @@ export interface GatewayListViewProps {
 }
 
 export function GatewayListContent() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const addServerRequested = searchParams.get('add') === '1'
   const { data: gateways, isLoading, error } = useGateways()
   const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, enableGateway, disableGateway } =
     useGatewayMutations()
@@ -182,14 +186,14 @@ export function GatewayListContent() {
   >({})
 
   useEffect(() => {
-    const url = new URL(window.location.href)
-    if (url.searchParams.get('add') !== '1') return
+    if (!addServerRequested) return
 
     setEditingGateway(null)
     setFormOpen(true)
+    const url = new URL(window.location.href)
     url.searchParams.delete('add')
-    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
-  }, [])
+    router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false })
+  }, [addServerRequested, router])
 
   const items = useMemo(() => gateways ?? [], [gateways])
 

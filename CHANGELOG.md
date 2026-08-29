@@ -7,8 +7,6 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ## Unreleased
 
-## [1.15.0] - 2026-08-28
-
 ### Added
 
 - **auth/gateway:** add a central Google credential broker that reuses one

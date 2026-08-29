@@ -9,6 +9,7 @@ import { SchemaForm } from "@/components/palette/SchemaForm";
 import { SettingsPanel } from "@/components/palette/SettingsPanel";
 import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
+import type { EndpointTone } from "@/lib/endpointStatus";
 import { invoke } from "@/lib/invoke";
 import type { RunState } from "@/lib/runState";
 
@@ -20,8 +21,8 @@ interface PaletteShellProps {
   configError: string | null;
   copied: boolean;
   draftConfig: PaletteConfig | null;
-  endpointLabel: string;
-  endpointTone: string;
+  endpointMessage: string;
+  endpointTone: EndpointTone;
   filtered: LauncherEntry[];
   hasQuery: boolean;
   listboxOpen: boolean;
@@ -64,8 +65,7 @@ export function PaletteShell(props: PaletteShellProps) {
       <PaletteCommandBar
         active={props.active}
         activeDescendantId={props.activeDescendantId}
-        config={props.config}
-        endpointLabel={props.endpointLabel}
+        endpointMessage={props.endpointMessage}
         endpointTone={props.endpointTone}
         hasQuery={props.hasQuery}
         listboxOpen={props.listboxOpen}
