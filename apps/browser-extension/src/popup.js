@@ -27,16 +27,18 @@ baseUrl.value = saved.baseUrl || "http://127.0.0.1:8765";
 mode.value = saved.scanningMode || "granted_sites";
 paused.checked = saved.scanningPaused || false;
 await renderDisclosure();
-if (saved.bridgeStatus?.state === "error") status.textContent = `Bridge error: ${saved.bridgeStatus.message || "connection failed"}`;
+renderBridgeStatus(saved.bridgeStatus);
 
 chrome.storage.onChanged.addListener((changes) => {
   const bridgeStatus = /** @type {{state?: string, message?: string} | undefined} */ (changes.bridgeStatus?.newValue);
-  if (bridgeStatus?.state === "error") {
-    status.textContent = `Bridge error: ${bridgeStatus.message || "connection failed"}`;
-  } else if (bridgeStatus?.state === "connected") {
-    status.textContent = "Connected to Labby.";
-  }
+  renderBridgeStatus(bridgeStatus);
 });
+
+/** @param {{state?: string, message?: string} | undefined} bridgeStatus */
+function renderBridgeStatus(bridgeStatus) {
+  if (bridgeStatus?.state === "error") status.textContent = `Bridge error: ${bridgeStatus.message || "connection failed"}`;
+  else if (bridgeStatus?.state === "connected") status.textContent = "Connected to Labby.";
+}
 
 required("#save").addEventListener("click", async () => {
   let normalizedBaseUrl;

@@ -160,7 +160,13 @@ async function resumeAndScan() {
 function schedulePairingPoll(expiresAt) {
   clearTimeout(pairingPollTimer);
   pairingPollExpiresAt = expiresAt ?? pairingPollExpiresAt;
-  if (pairingPollExpiresAt && pairingPollExpiresAt * 1000 <= Date.now()) return;
+  if (pairingPollExpiresAt && pairingPollExpiresAt * 1000 <= Date.now()) {
+    pairingPollTimer = undefined;
+    pairingPollExpiresAt = undefined;
+    void chrome.storage.local.remove("pairingId");
+    void chrome.storage.local.set({bridgeStatus: {state: "error", message: "pairing_expired", updatedAt: Date.now()}});
+    return;
+  }
   pairingPollTimer = setTimeout(() => {
     void resumeAndScan().catch(async (error) => {
       await reportBridgeFailure(error, {kind: "pairing_poll_failed"});
