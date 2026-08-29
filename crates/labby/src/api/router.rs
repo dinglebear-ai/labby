@@ -2072,7 +2072,7 @@ pub(crate) fn build_router_with_external_auth(
             .with_allow_session_cookie(allow_session_cookie);
         layer
     };
-    let v1_protected = if credential_auth_configured {
+    let v1_protected = if credential_auth_configured && !state.web_ui_auth_disabled {
         v1_router.route_layer(make_auth_layer(true))
     } else {
         v1_router
@@ -2934,7 +2934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_ui_auth_disabled_does_not_bypass_v1_auth() {
+    async fn web_ui_auth_disabled_bypasses_v1_auth_but_not_mcp_auth() {
         let state = AppState::new().with_web_ui_auth_disabled(true);
         let mcp_router: Router<AppState> =
             Router::new().route("/mcp", get(|| async { StatusCode::OK }));
@@ -2951,12 +2951,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(v1_response.status(), StatusCode::UNAUTHORIZED);
-        let body = axum::body::to_bytes(v1_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["kind"], "auth_failed");
+        assert_eq!(v1_response.status(), StatusCode::OK);
 
         let mcp_response = app
             .oneshot(
