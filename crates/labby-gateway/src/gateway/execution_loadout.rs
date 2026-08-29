@@ -72,6 +72,7 @@ pub trait ExecutionCapabilityCatalogProvider: Send + Sync {
         &'a self,
         manager: &'a GatewayManager,
         principal: &'a str,
+        tenant: &'a str,
         allowed_upstreams: Option<&'a BTreeMap<String, ()>>,
     ) -> Pin<
         Box<
@@ -232,6 +233,7 @@ impl GatewayManager {
     pub async fn refresh_execution_capability_snapshot_for(
         &self,
         principal: &str,
+        tenant: &str,
         allowed_upstreams: Option<&BTreeMap<String, ()>>,
     ) -> Result<(), ExecutionLoadoutError> {
         let provider = self.execution_capability_provider.as_ref().ok_or_else(|| {
@@ -240,7 +242,7 @@ impl GatewayManager {
             }
         })?;
         let snapshot = provider
-            .snapshot(self, principal, allowed_upstreams)
+            .snapshot(self, principal, tenant, allowed_upstreams)
             .await?;
         let current = self.execution_capabilities.load_full();
         let mut snapshots = current.snapshots.clone();
@@ -326,6 +328,7 @@ impl GatewayManager {
             return Ok(());
         }
         let principal = caller_principal(caller);
+        let tenant = caller.catalog_tenant.clone();
         let allowed = caller.allowed_upstreams().map(|names| {
             names
                 .iter()
@@ -333,7 +336,7 @@ impl GatewayManager {
                 .map(|name| (name, ()))
                 .collect::<BTreeMap<_, _>>()
         });
-        self.refresh_execution_capability_snapshot_for(&principal, allowed.as_ref())
+        self.refresh_execution_capability_snapshot_for(&principal, &tenant, allowed.as_ref())
             .await
             .map_err(Into::into)
     }

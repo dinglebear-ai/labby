@@ -1635,7 +1635,7 @@ async fn build_gateway_runtime(
         .await
         .context("loaded gateway config failed validation")?;
     gateway_manager
-        .refresh_execution_capability_snapshot_for("shared", None)
+        .refresh_execution_capability_snapshot_for("shared", "bootstrap-local", None)
         .await
         .context("publish canonical ExecutionLoadout catalogs")?;
     install_gateway_manager(Arc::clone(&gateway_manager));

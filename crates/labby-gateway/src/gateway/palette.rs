@@ -197,6 +197,7 @@ pub struct PaletteCaller {
     pub owner: UpstreamRuntimeOwner,
     pub oauth_subject: String,
     pub catalog_principal: String,
+    pub catalog_tenant: String,
 }
 
 impl PaletteCaller {
@@ -227,6 +228,7 @@ impl PaletteCaller {
             owner,
             oauth_subject,
             catalog_principal: subject.unwrap_or_else(|| "shared".into()),
+            catalog_tenant: "shared".into(),
         }
     }
 
@@ -267,6 +269,7 @@ impl PaletteCaller {
                 .clone()
                 .unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
             catalog_principal: subject.unwrap_or_else(|| "shared".into()),
+            catalog_tenant: "shared".into(),
         }
     }
 
@@ -300,12 +303,19 @@ impl PaletteCaller {
             owner: crate::gateway::shared::make_api_runtime_owner(Some(subject), request_id),
             oauth_subject: subject.to_string(),
             catalog_principal: subject.to_string(),
+            catalog_tenant: "shared".into(),
         }
     }
 
     #[must_use]
     pub fn with_catalog_principal(mut self, principal: impl Into<String>) -> Self {
         self.catalog_principal = principal.into();
+        self
+    }
+
+    #[must_use]
+    pub fn with_catalog_tenant(mut self, tenant: impl Into<String>) -> Self {
+        self.catalog_tenant = tenant.into();
         self
     }
 

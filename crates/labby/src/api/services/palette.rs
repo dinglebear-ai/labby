@@ -606,7 +606,25 @@ async fn execution_loadout_caller(
             message: "execution loadout principal projection is inconsistent".into(),
         });
     }
-    caller = caller.with_catalog_principal(principal);
+    let tenant = projects
+        .first()
+        .map(|project| project.organization_id.clone())
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "forbidden".into(),
+            message: "execution loadout tenant is unavailable".into(),
+        })?;
+    if projects
+        .iter()
+        .any(|project| project.organization_id != tenant)
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "internal".into(),
+            message: "execution loadout tenant projection is inconsistent".into(),
+        });
+    }
+    caller = caller
+        .with_catalog_principal(principal)
+        .with_catalog_tenant(tenant);
     Ok(caller)
 }
 
