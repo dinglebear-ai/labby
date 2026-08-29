@@ -27,6 +27,7 @@ export interface GatewayRuntime {
 }
 
 export interface GatewayView {
+  revision: string;
   config: GatewayConfig;
   runtime: GatewayRuntime;
 }
@@ -90,9 +91,7 @@ export function draftFromGateway(view: GatewayView): GatewayDraft {
 }
 
 export function gatewayFingerprint(view: GatewayView): string {
-  // Runtime health/counts may legitimately change between reads. Only the
-  // persisted configuration participates in the optimistic concurrency guard.
-  return JSON.stringify(view.config);
+  return view.revision;
 }
 
 export function gatewayChallenge(draft: GatewayDraft): GatewayChallenge {

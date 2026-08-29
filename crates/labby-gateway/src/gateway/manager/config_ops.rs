@@ -315,6 +315,19 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayView, ToolError> {
+        self.update_checked(name, patch, bearer_token_value, origin, owner, None)
+            .await
+    }
+
+    pub(crate) async fn update_checked(
+        &self,
+        name: &str,
+        patch: GatewayUpdatePatch,
+        bearer_token_value: Option<String>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        expected_revision: Option<&str>,
+    ) -> Result<GatewayView, ToolError> {
         let started = Instant::now();
         let mut patch = patch;
         let updated_name = patch.name.clone().unwrap_or_else(|| name.to_string());
@@ -330,6 +343,7 @@ impl GatewayManager {
         );
         let _mutation_guard = self.acquire_config_mutation().await?;
         let previous = self.load_config_for_mutation().await?;
+        ensure_upstream_revision(&previous, name, expected_revision)?;
         let mut cfg = previous.clone();
 
         // Trim and validate bearer_token_env unconditionally so whitespace typos
@@ -401,6 +415,16 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayView, ToolError> {
+        self.remove_checked(name, origin, owner, None).await
+    }
+
+    pub(crate) async fn remove_checked(
+        &self,
+        name: &str,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        expected_revision: Option<&str>,
+    ) -> Result<GatewayView, ToolError> {
         let started = Instant::now();
         tracing::info!(
             surface = "dispatch",
@@ -413,6 +437,7 @@ impl GatewayManager {
         );
         let _mutation_guard = self.acquire_config_mutation().await?;
         let previous = self.load_config_for_mutation().await?;
+        ensure_upstream_revision(&previous, name, expected_revision)?;
         let mut cfg = previous.clone();
         let code_mode = cfg.code_mode.clone();
         let removed = remove_upstream(&mut cfg, name)?;
@@ -435,6 +460,7 @@ impl GatewayManager {
             "gateway reconcile"
         );
         Ok(GatewayView {
+            revision: upstream_revision(&removed),
             config: config_view(&removed, &code_mode),
             runtime: GatewayRuntimeView {
                 name: removed.name,
@@ -589,6 +615,38 @@ impl GatewayManager {
         );
         Ok(current)
     }
+}
+
+fn upstream_revision(upstream: &UpstreamConfig) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(upstream).expect("upstream config serializes");
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+fn ensure_upstream_revision(
+    config: &GatewayConfig,
+    name: &str,
+    expected: Option<&str>,
+) -> Result<(), ToolError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current = config
+        .upstream
+        .iter()
+        .find(|upstream| upstream.name == name)
+        .map(upstream_revision)
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: "gateway was not found".into(),
+        })?;
+    if current != expected {
+        return Err(ToolError::Sdk {
+            sdk_kind: "stale_state".into(),
+            message: format!("gateway revision conflict; current revision is {current}"),
+        });
+    }
+    Ok(())
 }
 
 fn resolve_gateway_bearer_env_name(

@@ -265,6 +265,9 @@ pub struct DependencyHintView {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayView {
+    /// Server-issued revision for optimistic mutation checks.
+    #[serde(default)]
+    pub revision: String,
     pub config: GatewayConfigView,
     pub runtime: GatewayRuntimeView,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -25,7 +25,12 @@ impl GatewayManager {
         service: &str,
         request: ExecutionContextCreateRequest,
     ) -> Result<ExecutionContextReceipt, ToolError> {
+        let actor = self
+            .agent_executions
+            .delegation_actor(service, &request.delegation_token)?;
         self.execution_loadout_revision_contains(
+            &actor,
+            service,
             &request.loadout_id,
             request.loadout_revision,
             None,
@@ -50,6 +55,8 @@ impl GatewayManager {
             .agent_executions
             .bound_context_for_actor(&request.execution_context_id, actor)?;
         self.execution_loadout_revision_contains(
+            &context.actor,
+            &context.service,
             &context.loadout_id,
             context.loadout_revision,
             Some(&request.id),
@@ -86,6 +93,8 @@ impl GatewayManager {
             .agent_executions
             .bound_context(&request.execution_context_id, service)?;
         self.execution_loadout_revision_contains(
+            &context.actor,
+            &context.service,
             &context.loadout_id,
             context.loadout_revision,
             Some(&request.id),
@@ -96,6 +105,13 @@ impl GatewayManager {
         let descriptor = self.palette_descriptor(&caller, &request.id).await?;
         if descriptor.contract_hash != request.expected_contract_hash {
             return Err(contract_changed());
+        }
+        let remaining_ms = request.deadline_at_unix_ms.saturating_sub(now_ms());
+        if remaining_ms <= 0 {
+            return Err(ToolError::Sdk {
+                sdk_kind: "deadline_exceeded".into(),
+                message: "delegated execution deadline has elapsed".into(),
+            });
         }
         let args_hash = canonical_args_hash(&request.params)?;
         match self.agent_executions.reserve(
@@ -116,19 +132,10 @@ impl GatewayManager {
                 tracing::info!(surface="api", service="agent_execution", action="execute", request_id=%request.idempotency_key, receipt_id, audit_id, actor=%context.actor, delegated_service=service, loadout_id=%context.loadout_id, loadout_revision=context.loadout_revision, tool_id=%request.id, contract_hash=%request.expected_contract_hash, "delegated exact execution reserved")
             }
         }
-        let remaining_ms = request.deadline_at_unix_ms.saturating_sub(now_ms());
-        if remaining_ms <= 0 {
-            return self.agent_executions.finish(
-                &request.idempotency_key,
-                AgentExecutionStatus::TimedOut,
-                None,
-                Some("deadline_exceeded"),
-            );
-        }
         let cancellation = CancellationToken::new();
         self.agent_execution_cancellations
             .insert(request.idempotency_key.clone(), cancellation.clone());
-        let call = self.palette_execute(
+        let call = self.palette_execute_with_consumed_approval(
             &caller,
             PaletteExecuteRequest {
                 id: request.id.clone(),
@@ -136,6 +143,7 @@ impl GatewayManager {
                 expected_contract_hash: request.expected_contract_hash,
                 confirm_destructive: descriptor.destructive,
             },
+            descriptor.destructive,
         );
         let outcome = tokio::select! {
             biased;

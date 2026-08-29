@@ -109,6 +109,42 @@ fn stale_delegation_and_context_fail_closed() {
 }
 
 #[test]
+fn context_cannot_outlive_delegation_or_server_maximum() {
+    let (_dir, store) = store();
+    let delegation = store.issue_delegation("actor", "svc", &[]).unwrap();
+    assert!(
+        store
+            .create_context(
+                "svc",
+                &delegation.delegation_token,
+                "l",
+                1,
+                delegation.expires_at_unix_ms + 1,
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .delegation_actor("svc", &delegation.delegation_token)
+            .is_ok()
+    );
+}
+
+#[test]
+fn canonical_digest_sorts_top_level_and_nested_object_keys() {
+    let first: serde_json::Value =
+        serde_json::from_str(r#"{"owner":"a","nested":{"repo":"b","labels":[{"z":1,"a":2}]}}"#)
+            .unwrap();
+    let reordered: serde_json::Value =
+        serde_json::from_str(r#"{"nested":{"labels":[{"a":2,"z":1}],"repo":"b"},"owner":"a"}"#)
+            .unwrap();
+    assert_eq!(
+        canonical_args_hash(&first).unwrap(),
+        canonical_args_hash(&reordered).unwrap()
+    );
+}
+
+#[test]
 fn approval_is_fully_bound_and_single_use() {
     let (_dir, store) = store();
     let context = context(&store);
@@ -437,4 +473,49 @@ fn persisted_audit_is_correlated_and_redacted() {
         .unwrap();
     assert!(tokens.starts_with("sha256:"));
     assert!(!tokens.contains("dlg_"));
+}
+
+#[test]
+fn result_cap_and_bounded_pruning_preserve_replay_window() {
+    let (_dir, store) = store();
+    let context = context(&store);
+    store
+        .reserve(
+            &context.execution_context_id,
+            "axon-service",
+            "large",
+            "mcp:github::create",
+            "args",
+            "contract",
+            None,
+            false,
+        )
+        .unwrap();
+    let oversized = serde_json::json!({"data": "x".repeat(MAX_RESULT_BYTES + 1)});
+    let receipt = store
+        .finish(
+            "large",
+            AgentExecutionStatus::Succeeded,
+            Some(&oversized),
+            None,
+        )
+        .unwrap();
+    assert_eq!(receipt.status, AgentExecutionStatus::Failed);
+    assert_eq!(receipt.error_kind.as_deref(), Some("result_too_large"));
+    assert!(receipt.result.is_none());
+    assert_eq!(
+        store.prune_expired().unwrap(),
+        0,
+        "fresh replay is retained"
+    );
+    store
+        .conn()
+        .unwrap()
+        .execute(
+            "UPDATE agent_requests SET updated_at=?1 WHERE idempotency_key='large'",
+            [now_ms() - REPLAY_RETENTION_MS - 1],
+        )
+        .unwrap();
+    assert_eq!(store.prune_expired().unwrap(), 1);
+    assert!(store.status("large").unwrap().is_none());
 }
