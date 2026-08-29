@@ -425,17 +425,15 @@ impl Store {
         Ok(session.catalog_fingerprint)
     }
 
-    /// Persist a redacted terminal audit for one invocation attempt.
-    pub(crate) fn record_invocation(
+    /// Persist the redacted start of an accepted invocation.
+    pub(crate) fn begin_invocation(
         &self,
         browser_id: &str,
         tab_id: i64,
         document_id: &str,
         tool_name: &str,
         catalog_revision: i64,
-        result: &Result<serde_json::Value>,
-        duration_ms: i64,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let connection = self.lock()?;
         let session_id: Option<String> = connection
             .query_row(
@@ -444,13 +442,28 @@ impl Store {
                 |row| row.get(0),
             )
             .optional()?;
+        let id = Uuid::new_v4().to_string();
+        connection.execute(
+            "INSERT INTO invocation_audits(id,browser_id,session_id,tool_name,catalog_revision,outcome,error_kind,duration_ms,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![id, browser_id, session_id, tool_name, catalog_revision, "started", Option::<String>::None, 0, now_seconds()?],
+        )?;
+        Ok(id)
+    }
+
+    /// Finish a previously accepted invocation without persisting arguments or results.
+    pub(crate) fn finish_invocation(
+        &self,
+        id: &str,
+        result: &Result<serde_json::Value>,
+        duration_ms: i64,
+    ) -> Result<()> {
         let (outcome, error_kind) = match result {
             Ok(_) => ("succeeded", None),
             Err(error) => ("failed", Some(error.kind())),
         };
-        connection.execute(
-            "INSERT INTO invocation_audits(id,browser_id,session_id,tool_name,catalog_revision,outcome,error_kind,duration_ms,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![Uuid::new_v4().to_string(), browser_id, session_id, tool_name, catalog_revision, outcome, error_kind, duration_ms, now_seconds()?],
+        self.lock()?.execute(
+            "UPDATE invocation_audits SET outcome=?1,error_kind=?2,duration_ms=?3 WHERE id=?4 AND outcome='started'",
+            params![outcome, error_kind, duration_ms, id],
         )?;
         Ok(())
     }
@@ -633,6 +646,10 @@ fn migrate(connection: &Connection) -> Result<()> {
           error_kind TEXT,duration_ms INTEGER NOT NULL,created_at INTEGER NOT NULL
         );
         ",
+    )?;
+    connection.execute(
+        "UPDATE invocation_audits SET outcome='abandoned',error_kind='process_restarted' WHERE outcome='started'",
+        [],
     )?;
     Ok(())
 }

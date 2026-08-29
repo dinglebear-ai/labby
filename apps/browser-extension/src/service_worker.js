@@ -19,6 +19,8 @@ const SCAN_CONCURRENCY = 8;
 const pendingClosures = new Map();
 /** @type {Map<string, {tab_id: number, document_id: string}>} */
 const pendingCalls = new Map();
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let pairingPollTimer;
 
 /**
  * The channel is created by `initialize()`, which runs at worker start and
@@ -101,6 +103,11 @@ async function reportBridgeFailure(error, context) {
     await chrome.storage.local.remove(["browserId", "pairingId"]);
     if (channel) channel.browserId = undefined;
   }
+  if (message === "pairing_not_pending") {
+    await chrome.storage.local.remove("pairingId");
+    clearTimeout(pairingPollTimer);
+    pairingPollTimer = undefined;
+  }
 }
 
 /**
@@ -138,11 +145,22 @@ async function resumeAndScan() {
       await handleServerEvent({type: "pairing.approved", payload: reply.payload});
       return;
     }
+    schedulePairingPoll(reply?.payload?.expires_at);
   }
   if (browserId) {
     await syncBrowserSettings();
     await resync();
+    await chrome.storage.local.set({bridgeStatus: {state: "connected", updatedAt: Date.now()}});
   }
+}
+
+/** @param {number | undefined} expiresAt */
+function schedulePairingPoll(expiresAt) {
+  clearTimeout(pairingPollTimer);
+  if (expiresAt && expiresAt * 1000 <= Date.now()) return;
+  pairingPollTimer = setTimeout(() => {
+    void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed"}));
+  }, 2_000);
 }
 
 async function syncBrowserSettings() {
@@ -416,6 +434,7 @@ async function handleUiMessage(message) {
     const identity = await ensureIdentity();
     const reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
     if (reply?.payload?.pairing_id) await chrome.storage.local.set({pairingId: reply.payload.pairing_id});
+    schedulePairingPoll(reply?.payload?.expires_at);
     void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed"}));
     return {ok: true, ...reply};
   }

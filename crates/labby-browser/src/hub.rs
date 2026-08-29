@@ -186,6 +186,7 @@ impl BrowserBridge {
         tab_id: i64,
         document_id: &str,
     ) -> Result<()> {
+        let _authority = self.lock_authority()?;
         self.ensure_current(browser_id, connection_id)?;
         self.store.close_document(browser_id, tab_id, document_id)
     }
@@ -286,9 +287,23 @@ impl BrowserBridge {
                 arguments,
             },
         ));
+        let audit_id = self
+            .store
+            .begin_invocation(
+                browser_id,
+                tab_id,
+                &document_id,
+                &tool_name,
+                catalog_revision,
+            )
+            .inspect_err(|_error| {
+                self.remove_pending(&call_id, generation).ok();
+            })?;
         if sender.send(event).await.is_err() {
             self.remove_pending(&call_id, generation)?;
-            return Err(BrowserError::BrowserOffline);
+            let result = Err(BrowserError::BrowserOffline);
+            self.finish_audit(&audit_id, &result, started);
+            return result;
         }
         let result = match tokio::time::timeout(timeout.unwrap_or(DEFAULT_TOOL_TIMEOUT), wait).await
         {
@@ -315,23 +330,7 @@ impl BrowserBridge {
                 Err(BrowserError::ToolTimeout)
             }
         };
-        if let Err(error) = self.store.record_invocation(
-            browser_id,
-            tab_id,
-            &document_id,
-            &tool_name,
-            catalog_revision,
-            &result,
-            i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
-        ) {
-            tracing::warn!(
-                browser_id,
-                tab_id,
-                tool_name,
-                error_kind = error.kind(),
-                "browser invocation audit write failed"
-            );
-        }
+        self.finish_audit(&audit_id, &result, started);
         result
     }
 
@@ -413,6 +412,20 @@ impl BrowserBridge {
         self.authority.lock().map_err(|_| {
             BrowserError::InvalidRequest("browser authority lock poisoned".to_string())
         })
+    }
+
+    fn finish_audit(&self, audit_id: &str, result: &Result<Value>, started: Instant) {
+        if let Err(error) = self.store.finish_invocation(
+            audit_id,
+            result,
+            i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+        ) {
+            tracing::warn!(
+                audit_id,
+                error_kind = error.kind(),
+                "browser invocation audit write failed"
+            );
+        }
     }
 }
 

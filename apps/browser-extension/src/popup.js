@@ -20,13 +20,21 @@ const paused = /** @type {HTMLInputElement} */ (required("#paused"));
 const disclosure = /** @type {HTMLElement} */ (required("#disclosure"));
 const status = /** @type {HTMLElement} */ (required("#status"));
 
-const saved = /** @type {{baseUrl?: string, scanningMode?: string, scanningPaused?: boolean}} */ (
-  await chrome.storage.local.get(["baseUrl", "scanningMode", "scanningPaused"])
+const saved = /** @type {{baseUrl?: string, scanningMode?: string, scanningPaused?: boolean, bridgeStatus?: {state?: string, message?: string}}} */ (
+  await chrome.storage.local.get(["baseUrl", "scanningMode", "scanningPaused", "bridgeStatus"])
 );
 baseUrl.value = saved.baseUrl || "http://127.0.0.1:8765";
 mode.value = saved.scanningMode || "granted_sites";
 paused.checked = saved.scanningPaused || false;
 await renderDisclosure();
+if (saved.bridgeStatus?.state === "error") status.textContent = `Bridge error: ${saved.bridgeStatus.message || "connection failed"}`;
+
+chrome.storage.onChanged.addListener((changes) => {
+  const bridgeStatus = /** @type {{state?: string, message?: string} | undefined} */ (changes.bridgeStatus?.newValue);
+  if (bridgeStatus?.state === "error") {
+    status.textContent = `Bridge error: ${bridgeStatus.message || "connection failed"}`;
+  }
+});
 
 required("#save").addEventListener("click", async () => {
   let normalizedBaseUrl;
