@@ -361,8 +361,7 @@ jobs:
               libxfixes3 \
               libxkbcommon0 \
               libxrandr2
-
-          else
+          elif sudo -n true >/dev/null 2>&1; then
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
               libasound2t64 \
@@ -386,6 +385,8 @@ jobs:
               libxfixes3 \
               libxkbcommon0 \
               libxrandr2
+          else
+            echo "Runner cannot elevate; using its pre-provisioned Playwright runtime libraries"
           fi
       # The self-hosted runner image carries the matching Playwright browser, and
       # Playwright's installer rejects Ubuntu 26.04 even when that browser is
