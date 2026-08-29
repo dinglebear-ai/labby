@@ -162,6 +162,9 @@ pub struct ResolvedCapability {
 pub struct ExecutionLoadoutPreview {
     pub loadout_id: String,
     pub draft_revision: u64,
+    /// Immutable revision currently effective for this runtime. Zero means the
+    /// draft has not been activated yet.
+    pub active_revision: u64,
     pub catalog_generation: String,
     pub principal: String,
     pub runtime_identity: String,
@@ -835,6 +838,7 @@ impl GatewayManager {
         Ok(ExecutionLoadoutPreview {
             loadout_id: draft.id.clone(),
             draft_revision: draft.draft_revision,
+            active_revision: draft.effective_runtime_revision.unwrap_or(0),
             catalog_generation: non_tool_catalog
                 .map(|snapshot| format!("{}:{}", catalog.fingerprint, snapshot.generation))
                 .unwrap_or(catalog.fingerprint),
@@ -856,6 +860,7 @@ fn empty_preview(
     ExecutionLoadoutPreview {
         loadout_id: draft.id.clone(),
         draft_revision: draft.draft_revision,
+        active_revision: draft.effective_runtime_revision.unwrap_or(0),
         catalog_generation: "selection:empty".into(),
         principal: caller_principal(caller),
         runtime_identity: runtime_identity.into(),
