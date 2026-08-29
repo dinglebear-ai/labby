@@ -232,25 +232,31 @@ mod windows_acl_tests {
 
     #[test]
     fn hardening_removes_preexisting_everyone_grant() {
-        let dir =
-            std::env::temp_dir().join(format!("labby acl ' special {}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("labby acl ' special ")
+            .tempdir()
+            .unwrap();
         let status = Command::new("icacls")
-            .arg(&dir)
+            .arg(dir.path())
             .args(["/grant", "*S-1-1-0:(OI)(CI)F"])
             .status()
             .unwrap();
         assert!(status.success());
 
-        harden_secret_directory(&dir).unwrap();
-        let script = r#"$acl=Get-Acl -LiteralPath $args[0]; $sids=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }); $current=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($sids -contains 'S-1-1-0') { exit 2 }; if (-not $acl.AreAccessRulesProtected) { exit 3 }; if ($sids.Count -ne 3) { exit 4 }; foreach ($expected in @($current, 'S-1-5-18', 'S-1-5-32-544')) { if ($sids -notcontains $expected) { exit 5 } }"#;
+        harden_secret_directory(dir.path()).unwrap();
+        let script = r#"$acl=Get-Acl -LiteralPath $env:LABBY_TEST_SECRET_DIR; $sids=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }); $current=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($sids -contains 'S-1-1-0') { exit 2 }; if (-not $acl.AreAccessRulesProtected) { exit 3 }; if ($sids.Count -ne 3) { exit 4 }; foreach ($expected in @($current, 'S-1-5-18', 'S-1-5-32-544')) { if ($sids -notcontains $expected) { exit 5 } }"#;
         let checked = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .arg(&dir)
-            .status()
+            .env("LABBY_TEST_SECRET_DIR", dir.path())
+            .output()
             .unwrap();
-        assert!(checked.success(), "broad ACE survived authoritative ACL");
-        fs::remove_dir_all(dir).ok();
+        assert!(
+            checked.status.success(),
+            "ACL verification failed with {}; stdout: {}; stderr: {}",
+            checked.status,
+            String::from_utf8_lossy(&checked.stdout),
+            String::from_utf8_lossy(&checked.stderr)
+        );
     }
 
     #[test]
