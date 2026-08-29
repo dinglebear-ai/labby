@@ -592,7 +592,7 @@ impl SkillLibraryRecord {
         let artifact = store.get(&self.artifact_id)?;
         if !matches!(
             artifact.descriptor.kind.as_str(),
-            "skill" | "prompt" | "agent" | "hook"
+            "skill" | "prompt" | "agent" | "resource" | "plugin" | "hook"
         ) {
             return Err(ArtifactError::Conflict("library_artifact_kind"));
         }
