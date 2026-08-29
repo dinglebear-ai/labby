@@ -84,7 +84,7 @@ const SURFACES: Record<MissingMockSurfaceKind, SurfaceSpec> = {
     description: 'Hosted Labby capacity, access, deployment, and workspace health.', action: 'Manage',
     stats: [['Region', 'eu-west', 'hosted'], ['Seats', '9/25', 'active'], ['Uptime', '99.98%', '30 days'], ['Version', '1.14.1', 'current']],
     columns: ['Service', 'Region', 'Replicas', 'Version', 'Status'],
-    rows: [['Gateway', 'eu-west', '2', '1.14.1', 'Healthy'], ['Runner pool', 'eu-west', '4', '1.14.1', 'Healthy'], ['Artifact cache', 'eu-west', '2', '1.14.1', 'Healthy'], ['Web console', 'global', '3', '0.30.0', 'Healthy']],
+    rows: [['Gateway', 'eu-west', '2', '1.14.1', 'Healthy'], ['Runner pool', 'eu-west', '4', '1.14.1', 'Healthy'], ['Artifact cache', 'eu-west', '2', '1.14.1', 'Healthy'], ['Web console', 'global', '3', '0.31.0', 'Healthy']],
   },
 }
 
