@@ -4,6 +4,7 @@ import { actionOptionId } from "@/components/palette/ActionList";
 import { PaletteShell } from "@/components/palette/PaletteShell";
 import { launcherEntryMatches, type LauncherEntry, useLauncherCatalog } from "@/lib/launcherCatalog";
 import { executeLauncherEntry, fetchLauncherSchema, resultErrorMessage } from "@/lib/labbyClient";
+import { endpointStatus } from "@/lib/endpointStatus";
 import { exampleLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
 import { recordPaletteLaunch } from "@/lib/paletteAudit";
 import { hostLabel } from "@/lib/url";
@@ -40,7 +41,12 @@ export default function App() {
   const settingsFocusRef = useRef<HTMLDivElement | null>(null);
   const schemaCacheRef = useRef(new Map<string, unknown>());
 
-  const { actions: catalogActions, error: catalogError, refresh: refreshCatalog } = useLauncherCatalog();
+  const {
+    actions: catalogActions,
+    loading: catalogLoading,
+    error: catalogError,
+    refresh: refreshCatalog,
+  } = useLauncherCatalog();
   const { config, draftConfig, setDraftConfig, configError, saveSettings } = usePaletteConfig();
 
   usePaletteLifecycle(
@@ -334,7 +340,12 @@ export default function App() {
   }
 
   const endpointLabel = config ? hostLabel(config.serverUrl) : configError ? "Config error" : "Loading";
-  const endpointTone = configError || catalogError ? "error" : "syncing";
+  const endpointTone = endpointStatus({
+    configured: Boolean(config),
+    catalogLoading,
+    configError,
+    catalogError,
+  });
   const submitDisabled = !active || running || Boolean(mode === "argument" && !argumentJson.ok);
 
   return (
