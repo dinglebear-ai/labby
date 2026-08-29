@@ -21,10 +21,14 @@ export function usePaletteConfig() {
           .then((fallbackConfig) => {
             setConfig(fallbackConfig);
             setDraftConfig(fallbackConfig);
+            setConfigError(null);
           })
-          .catch(() => {
+          .catch((fallbackError) => {
             setConfig(null);
             setDraftConfig(null);
+            setConfigError(
+              `${String(err)}; loading built-in defaults also failed: ${String(fallbackError)}`,
+            );
           });
       });
   }, []);

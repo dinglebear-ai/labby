@@ -16,7 +16,7 @@ The current CLI surface is generated in `docs/generated/cli-help.md`. Do not han
 
 ## Workspace Boundaries
 
-The workspace has 11 members:
+The workspace has 12 members:
 
 | Crate | Responsibility |
 | --- | --- |
@@ -25,6 +25,7 @@ The workspace has 11 members:
 | `labby-auth` | inbound auth plus reusable upstream OAuth/JWT/session behavior |
 | `labby-codemode` | host-neutral bounded Javy/QuickJS Code Mode runtime |
 | `labby-gateway` | surface-neutral upstream MCP gateway runtime |
+| `labby-oauth-wire` | host-neutral provider/client OAuth wire DTOs and endpoint policy |
 | `labby-openapi` | OpenAPI ingestion/projection helpers |
 | `labby-runtime` | surface-neutral shared runtime contracts/helpers |
 | `labby-web` | static web asset embedding/resolution/header helpers |

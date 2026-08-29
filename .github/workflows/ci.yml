@@ -1251,9 +1251,9 @@ jobs:
     name: Palette Tauri (Windows advisory)
     runs-on: windows-latest
     needs: changes
-    # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
-    # only (see test-windows).
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.palette == 'true' }}
+    # Advisory and excluded from ci-gate, but still compile and execute the
+    # Windows-only security boundary whenever Palette changes in a PR.
+    if: ${{ needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.

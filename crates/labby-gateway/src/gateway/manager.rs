@@ -143,10 +143,20 @@ pub struct GatewayManager {
     notifier: Option<CatalogChangeNotifier>,
     pub(super) oauth_client_cache: Option<OauthClientCache>,
     pub(super) upstream_oauth_managers: Option<Arc<dashmap::DashMap<String, UpstreamOauthManager>>>,
+    /// Probe-created managers awaiting callback/config promotion. Kept
+    /// separately so exploratory probes cannot grow the durable manager map
+    /// without bound.
+    pub(super) transient_oauth_managers: Arc<Mutex<std::collections::HashMap<String, Instant>>>,
+    pub(super) transient_oauth_sweeper_started: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) transient_oauth_sweeper_owner: Arc<()>,
     pub(super) oauth_status_discovery_cache:
         Arc<Mutex<std::collections::HashMap<(String, String), OauthStatusDiscoverySnapshot>>>,
     pub(super) oauth_status_discovery_locks:
         Arc<dashmap::DashMap<(String, String), Arc<Mutex<()>>>>,
+    pub(super) oauth_status_subject_epochs: Arc<dashmap::DashMap<(String, String), u64>>,
+    pub(super) oauth_status_upstream_epochs: Arc<dashmap::DashMap<String, u64>>,
+    pub(super) oauth_status_next_epoch: Arc<AtomicU64>,
+    pub(super) oauth_status_connect_bulkhead: Arc<tokio::sync::Semaphore>,
     builtin_service_registry: Arc<ArcSwap<PublishedServiceRegistryState>>,
     /// Serializes synchronous registry projection and publication so concurrent
     /// setters cannot install generations out of allocation order.

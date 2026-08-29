@@ -475,7 +475,7 @@ impl SqliteStore {
                             provider_refresh_token: row.get(3)?,
                             created_at: row.get(4)?,
                             expires_at: row.get(5)?,
-                            resource: row.get(6).unwrap_or_default(),
+                            resource: row.get(6)?,
                         })
                     },
                 )

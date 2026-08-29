@@ -459,6 +459,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let bridge_client = BridgeClient::new()
         .map_err(|err| format!("failed to build HTTP client for Labby bridge: {err}"))?;
+    let oauth_state = oauth::OauthState::new()
+        .map_err(|err| format!("failed to build HTTP client for Palette OAuth: {err}"))?;
 
     tauri::Builder::default()
         .plugin(
@@ -492,7 +494,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .manage(ActiveShortcut(Mutex::new(None)))
         .manage(SettingsState::default())
         .manage(bridge_client)
-        .manage(oauth::OauthState::new())
+        .manage(oauth_state)
         .setup(|app| {
             if let Err(err) = install_tray(app) {
                 log_palette_warning("failed to install tray icon", err);
@@ -524,6 +526,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::default_server_url;
+
+    #[test]
+    fn macos_transparent_window_enables_private_api_support() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+
+        assert_eq!(config["app"]["macOSPrivateApi"], true);
+    }
 
     #[test]
     fn default_server_url_prefers_dedicated_api_url() {

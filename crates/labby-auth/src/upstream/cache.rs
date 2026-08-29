@@ -17,6 +17,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamOauthRegistration};
@@ -27,6 +28,9 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::upstream::manager::UpstreamOauthManager;
 use crate::upstream::types::OauthError;
+
+const MAX_BUILD_LOCKS: usize = 4_096;
+const MAX_CREDENTIAL_GENERATIONS: usize = 4_096;
 
 /// Callback used by a host surface that can drive an interactive OAuth flow.
 ///
@@ -61,6 +65,8 @@ pub struct OauthClientCache {
     /// Per-`(upstream, subject)` build lock so concurrent first-request
     /// tasks don't issue duplicate token exchanges against the AS.
     build_locks: Arc<DashMap<(String, String), Arc<Mutex<()>>>>,
+    credential_generations: Arc<DashMap<(String, String), u64>>,
+    next_credential_generation: Arc<AtomicU64>,
     /// Process-wide credential lifecycle barrier shared with every upstream
     /// pool built from this cache. Connection builders take a read guard for
     /// their complete build-and-publish path; revocation takes the write guard.
@@ -70,6 +76,12 @@ pub struct OauthClientCache {
 }
 
 impl OauthClientCache {
+    fn prune_idle_build_locks(&self) {
+        if self.build_locks.len() >= MAX_BUILD_LOCKS {
+            self.build_locks
+                .retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
+    }
     /// Create a new cache backed by the gateway's OAuth manager map.
     #[must_use]
     pub fn new(managers: Arc<DashMap<String, UpstreamOauthManager>>) -> Self {
@@ -77,6 +89,8 @@ impl OauthClientCache {
             clients: Arc::new(DashMap::new()),
             managers,
             build_locks: Arc::new(DashMap::new()),
+            credential_generations: Arc::new(DashMap::new()),
+            next_credential_generation: Arc::new(AtomicU64::new(1)),
             invalidation_barrier: Arc::new(RwLock::new(())),
             reauth_handler: None,
         }
@@ -197,11 +211,27 @@ impl OauthClientCache {
     where
         C: StreamableHttpClient + Clone,
     {
+        self.get_or_build_capped_with_generation(config, subject, http_client)
+            .await
+            .map(|(client, _)| client)
+    }
+
+    /// Build a capped client and bind it to the current credential generation.
+    pub async fn get_or_build_capped_with_generation<C>(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        http_client: C,
+    ) -> Result<(AuthClient<C>, u64), OauthError>
+    where
+        C: StreamableHttpClient + Clone,
+    {
         // The capped path does not retain the resulting AuthClient, but it
         // still shares this single-flight gate with `get_or_build`. Without
         // the gate, two cold connections could both observe a revoked refresh
         // token and open duplicate interactive browser flows.
         let key = (config.name.clone(), subject.to_string());
+        self.prune_idle_build_locks();
         let lock = self
             .build_locks
             .entry(key)
@@ -220,16 +250,49 @@ impl OauthClientCache {
                 ))
             })?;
         let Some(handler) = self.reauth_handler.clone() else {
-            return manager.build_auth_client_with(subject, http_client).await;
+            let client = manager.build_auth_client_with(subject, http_client).await?;
+            return Ok((client, self.credential_generation(&config.name, subject)));
         };
 
         let retry_client = http_client.clone();
         match manager.build_auth_client_with(subject, http_client).await {
             Err(OauthError::NeedsReauth(_)) => {
                 handler(config.name.clone(), subject.to_string()).await?;
-                manager.build_auth_client_with(subject, retry_client).await
+                let client = manager
+                    .build_auth_client_with(subject, retry_client)
+                    .await?;
+                Ok((client, self.credential_generation(&config.name, subject)))
             }
-            result => result,
+            result => {
+                let client = result?;
+                Ok((client, self.credential_generation(&config.name, subject)))
+            }
+        }
+    }
+
+    /// Current monotonic credential generation for one authorization context.
+    #[must_use]
+    pub fn credential_generation(&self, upstream: &str, subject: &str) -> u64 {
+        let generation = *self
+            .credential_generations
+            .entry((upstream.to_string(), subject.to_string()))
+            .or_insert_with(|| {
+                self.next_credential_generation
+                    .fetch_add(1, Ordering::AcqRel)
+            });
+        self.prune_credential_generations();
+        generation
+    }
+
+    fn prune_credential_generations(&self) {
+        while self.credential_generations.len() > MAX_CREDENTIAL_GENERATIONS {
+            let oldest = self
+                .credential_generations
+                .iter()
+                .min_by_key(|entry| *entry.value())
+                .map(|entry| entry.key().clone());
+            let Some(oldest) = oldest else { break };
+            self.credential_generations.remove(&oldest);
         }
     }
 
@@ -256,6 +319,7 @@ impl OauthClientCache {
             return Ok(Arc::clone(&entry.client));
         }
 
+        self.prune_idle_build_locks();
         let lock = self
             .build_locks
             .entry(key.clone())
@@ -290,11 +354,10 @@ impl OauthClientCache {
     /// fails terminally and the next request must reauthenticate.
     pub fn evict_subject(&self, upstream: &str, subject: &str) {
         let key = (upstream.to_string(), subject.to_string());
+        self.credential_generations.remove(&key);
         self.clients.remove(&key);
-        // build_locks is intentionally NOT evicted: it serializes concurrent
-        // builders for the same (upstream, subject) key. Removing it creates a
-        // race window where two concurrent callers both see no cached client,
-        // both drop the lock guard, and then both start building in parallel.
+        self.build_locks
+            .remove_if(&key, |_, lock| Arc::strong_count(lock) == 1);
     }
 
     /// Evict every entry for `upstream`.
@@ -303,8 +366,11 @@ impl OauthClientCache {
     /// registration changes, and when the whole server shuts down the
     /// upstream's sessions.
     pub fn evict_upstream(&self, upstream: &str) {
+        self.credential_generations
+            .retain(|(name, _), _| name != upstream);
         self.clients.retain(|(name, _), _| name != upstream);
-        // build_locks intentionally preserved — see comment in evict_subject.
+        self.build_locks
+            .retain(|(name, _), lock| name != upstream || Arc::strong_count(lock) > 1);
     }
 
     /// Evict all cached OAuth clients.
@@ -312,7 +378,10 @@ impl OauthClientCache {
     /// Used when a shared provider credential is explicitly revoked because the
     /// credential may back several upstream names. Build locks are preserved.
     pub fn evict_all(&self) {
+        self.credential_generations.clear();
         self.clients.clear();
+        self.build_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
     }
 
     /// Evict every entry whose upstream is not in `known`.
@@ -320,8 +389,12 @@ impl OauthClientCache {
     /// Used at config reload to drop cached clients for upstreams that no
     /// longer exist in config.
     pub fn evict_upstreams_not_in(&self, known: &std::collections::HashSet<&str>) {
+        self.credential_generations
+            .retain(|(name, _), _| known.contains(name.as_str()));
         self.clients
             .retain(|(name, _), _| known.contains(name.as_str()));
+        self.build_locks
+            .retain(|(name, _), lock| known.contains(name.as_str()) || Arc::strong_count(lock) > 1);
     }
 
     /// Number of cached clients. Intended for tests and observability.
@@ -336,6 +409,16 @@ impl OauthClientCache {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.clients.is_empty()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn build_lock_count_for_tests(&self) -> usize {
+        self.build_locks.len()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn credential_generation_count_for_tests(&self) -> usize {
+        self.credential_generations.len()
     }
 
     /// Insert a pre-built `AuthClient` directly into the cache.
@@ -457,6 +540,40 @@ mod tests {
         let cache = OauthClientCache::new(Arc::new(DashMap::new()));
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn idle_build_locks_are_bounded_but_active_locks_are_preserved() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        let active = Arc::new(Mutex::new(()));
+        cache.build_locks.insert(
+            ("hot".to_string(), "subject".to_string()),
+            Arc::clone(&active),
+        );
+        for index in 0..100_000 {
+            cache.build_locks.insert(
+                ("upstream".to_string(), format!("subject-{index}")),
+                Arc::new(Mutex::new(())),
+            );
+            cache.prune_idle_build_locks();
+        }
+        assert!(cache.build_lock_count_for_tests() <= MAX_BUILD_LOCKS + 1);
+        assert!(
+            cache
+                .build_locks
+                .contains_key(&("hot".to_string(), "subject".to_string()))
+        );
+    }
+
+    #[test]
+    fn lifecycle_eviction_removes_idle_build_locks_after_barrier() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        cache.build_locks.insert(
+            ("removed".to_string(), "subject".to_string()),
+            Arc::new(Mutex::new(())),
+        );
+        cache.evict_upstream("removed");
+        assert_eq!(cache.build_lock_count_for_tests(), 0);
     }
 
     async fn dummy_auth_client() -> Arc<AuthClient<reqwest::Client>> {
@@ -628,6 +745,41 @@ mod tests {
             registration_fingerprint(&new, None).unwrap()
         );
         assert!(Arc::ptr_eq(&stored.client, &client));
+    }
+
+    #[test]
+    fn credential_generations_advance_on_scoped_and_broad_eviction() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        let alice_1 = cache.credential_generation("acme", "alice");
+        let bob_1 = cache.credential_generation("acme", "bob");
+        cache.evict_subject("acme", "alice");
+        let alice_2 = cache.credential_generation("acme", "alice");
+        assert!(alice_2 > alice_1);
+        assert_eq!(cache.credential_generation("acme", "bob"), bob_1);
+        cache.evict_upstream("acme");
+        let alice_3 = cache.credential_generation("acme", "alice");
+        let bob_2 = cache.credential_generation("acme", "bob");
+        assert!(alice_3 > alice_2);
+        assert!(bob_2 > bob_1);
+        cache.evict_all();
+        assert!(cache.credential_generation("acme", "alice") > alice_3);
+        assert!(cache.credential_generation("acme", "bob") > bob_2);
+    }
+
+    #[test]
+    fn credential_generations_are_bounded_and_removed_with_unknown_upstreams() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        for index in 0..100_000 {
+            let _ = cache.credential_generation("acme", &format!("subject-{index}"));
+        }
+        assert!(cache.credential_generation_count_for_tests() <= MAX_CREDENTIAL_GENERATIONS);
+        let _ = cache.credential_generation("removed", "subject");
+        cache.evict_upstreams_not_in(&std::collections::HashSet::from(["acme"]));
+        assert!(
+            !cache
+                .credential_generations
+                .contains_key(&("removed".to_string(), "subject".to_string()))
+        );
     }
 
     // End-to-end eviction tests live in the Task 4 Step 7 suite where a real

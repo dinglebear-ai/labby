@@ -177,6 +177,37 @@ def validate_instruction_symlinks(failures: list[str]) -> None:
                 )
 
 
+def validate_auth_allowlist_contract(failures: list[str]) -> None:
+    """Keep the canonical OAuth guide aligned with the mounted admin routes."""
+    guide = (ROOT / "docs/runtime/OAUTH.md").read_text(encoding="utf-8")
+    route_docs = (ROOT / "crates/labby/src/docs/routes.rs").read_text(encoding="utf-8")
+    handler = (ROOT / "crates/labby/src/api/services/auth_admin.rs").read_text(
+        encoding="utf-8"
+    )
+    obligations = (
+        ("GET", "/v1/auth/allowed-emails", "`200`"),
+        ("POST", "/v1/auth/allowed-emails", "`201`"),
+        ("DELETE", "/v1/auth/allowed-emails/{email}", "`204`"),
+    )
+    for method, path, status in obligations:
+        if f'"{method}",\n            "{path}"' not in route_docs:
+            failures.append(f"auth allowlist route catalog is missing {method} {path}")
+        if f"`{method} {path}`" not in guide or status not in guide:
+            failures.append(
+                f"docs/runtime/OAUTH.md must document {method} {path} success {status}"
+            )
+    for phrase in (
+        "browser-session-only",
+        "CSRF for mutations",
+        "idempotent",
+    ):
+        if phrase not in handler:
+            failures.append(f"auth allowlist handler contract is missing {phrase!r}")
+    for phrase in ("OAuth browser session", "X-CSRF-Token", "idempotent"):
+        if phrase not in guide:
+            failures.append(f"docs/runtime/OAUTH.md must describe {phrase!r}")
+
+
 def main() -> int:
     failures: list[str] = []
     paths = canonical_docs()
@@ -191,6 +222,7 @@ def main() -> int:
 
     validate_duplicates(paths, failures)
     validate_instruction_symlinks(failures)
+    validate_auth_allowlist_contract(failures)
 
     if failures:
         print(f"product docs check failed ({len(failures)} issue(s)):", file=sys.stderr)

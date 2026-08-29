@@ -441,6 +441,7 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
         None,
         peer,
         UpstreamRuntimeMetadata {
+            oauth_credential_generation: None,
             pid,
             generation: Some(generation),
             pgid: pgid_for_runtime,

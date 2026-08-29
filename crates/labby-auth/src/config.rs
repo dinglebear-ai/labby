@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use url::Url;
+use url::{Host, Url};
 
 use crate::at_rest::TokenEncryptionKey;
 use crate::error::AuthError;
@@ -349,10 +349,17 @@ impl AuthConfig {
         }
 
         if matches!(self.mode, AuthMode::OAuth) {
-            if self.public_url.is_none() {
-                return Err(AuthError::Config(format!(
+            let public_url = self.public_url.as_ref().ok_or_else(|| {
+                AuthError::Config(format!(
                     "{prefix}_PUBLIC_URL is required when {prefix}_AUTH_MODE=oauth"
-                )));
+                ))
+            })?;
+            validate_oauth_transport_url(public_url, &format!("{prefix}_PUBLIC_URL"))?;
+            if let Some(callback_url) = &self.google.callback_url {
+                validate_oauth_transport_url(
+                    callback_url,
+                    &format!("{prefix}_GOOGLE_CALLBACK_URL"),
+                )?;
             }
             if self.google.client_id.is_empty() {
                 return Err(AuthError::Config(format!(
@@ -380,6 +387,34 @@ impl AuthConfig {
         }
 
         Ok(())
+    }
+}
+
+pub(crate) fn validate_oauth_transport_url(url: &Url, key: &str) -> Result<(), AuthError> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AuthError::Config(format!(
+            "{key} must not contain URL credentials"
+        )));
+    }
+
+    match url.scheme() {
+        "https" if url.host().is_some() => Ok(()),
+        "http" if is_explicit_loopback_host(url.host()) => Ok(()),
+        "http" | "https" => Err(AuthError::Config(format!(
+            "{key} must use HTTPS unless its host is explicit loopback (`localhost`, `127.0.0.0/8`, or `::1`)"
+        ))),
+        _ => Err(AuthError::Config(format!(
+            "{key} must use HTTPS unless its host is explicit loopback (`localhost`, `127.0.0.0/8`, or `::1`)"
+        ))),
+    }
+}
+
+fn is_explicit_loopback_host(host: Option<Host<&str>>) -> bool {
+    match host {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
     }
 }
 
@@ -782,6 +817,90 @@ mod tests {
     }
 
     #[test]
+    fn oauth_transport_urls_allow_https_and_explicit_loopback_http() {
+        for public_url in [
+            "https://lab.example.com",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://127.42.7.9:8080",
+            "http://[::1]:8080",
+        ] {
+            let result = AuthConfig::from_sources(oauth_env_with("LAB_PUBLIC_URL", public_url));
+            assert!(
+                result.is_ok(),
+                "expected {public_url} to be accepted: {result:?}"
+            );
+            assert!(result.ok().and_then(|cfg| cfg.public_url).is_some());
+        }
+    }
+
+    #[test]
+    fn oauth_transport_urls_reject_insecure_public_and_loopback_lookalikes() {
+        for public_url in [
+            "http://lab.example.com",
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil.example",
+            "http://128.0.0.1",
+        ] {
+            let error =
+                AuthConfig::from_sources(oauth_env_with("LAB_PUBLIC_URL", public_url)).unwrap_err();
+            assert!(
+                error.to_string().contains("LAB_PUBLIC_URL must use HTTPS"),
+                "unexpected error for {public_url}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn oauth_transport_urls_reject_malformed_scheme_relative_and_credentials() {
+        for public_url in [
+            "//lab.example.com",
+            "not a URL",
+            "https://user:secret@lab.example.com",
+        ] {
+            let error =
+                AuthConfig::from_sources(oauth_env_with("LAB_PUBLIC_URL", public_url)).unwrap_err();
+            assert!(
+                error.to_string().contains("LAB_PUBLIC_URL"),
+                "error must name the exact key for {public_url}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn oauth_transport_rejects_insecure_explicit_google_callback() {
+        let error = AuthConfig::from_sources(oauth_env_with(
+            "LAB_GOOGLE_CALLBACK_URL",
+            "http://callback.example.com/auth/google/callback",
+        ))
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("LAB_GOOGLE_CALLBACK_URL must use HTTPS"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn oauth_transport_allows_secure_and_loopback_google_callbacks() {
+        for callback_url in [
+            "https://callback.example.com/auth/google/callback",
+            "http://localhost:8080/auth/google/callback",
+            "http://127.0.0.1:8080/auth/google/callback",
+            "http://[::1]:8080/auth/google/callback",
+        ] {
+            let result =
+                AuthConfig::from_sources(oauth_env_with("LAB_GOOGLE_CALLBACK_URL", callback_url));
+            assert!(
+                result.is_ok(),
+                "expected callback {callback_url} to be accepted: {result:?}"
+            );
+        }
+    }
+
+    #[test]
     fn codex_issuer_compatibility_is_explicit_and_validated() {
         let cfg = AuthConfig::from_sources(fake_env_with_many([(
             "LAB_AUTH_CODEX_ISSUER_COMPATIBILITY",
@@ -1051,6 +1170,23 @@ mod tests {
 
     const TEST_ENCRYPTION_KEY: &str =
         "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+    fn oauth_env_with(key: &str, value: &str) -> Vec<(String, String)> {
+        let mut vars = fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "https://lab.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+        ]);
+        if let Some((_, existing_value)) = vars.iter_mut().find(|(existing, _)| existing == key) {
+            *existing_value = value.to_string();
+        } else {
+            vars.push((key.to_string(), value.to_string()));
+        }
+        vars
+    }
 
     fn fake_env_with_many<const N: usize>(
         pairs: [(&'static str, &'static str); N],

@@ -2859,9 +2859,11 @@ mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
+        let wire: labby_oauth_wire::OAuthErrorResponse =
+            serde_json::from_slice(&body).expect("provider error matches shared OAuth contract");
+        assert_eq!(wire.error, "invalid_grant");
+        assert_eq!(wire.error_description, "unknown refresh_token");
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"], "invalid_grant");
-        assert_eq!(json["error_description"], "unknown refresh_token");
         assert!(json.get("kind").is_none());
         assert!(json.get("message").is_none());
     }

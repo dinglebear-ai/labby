@@ -21,11 +21,12 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use tokio::sync::Mutex;
 
+const MAX_COORDINATION_ENTRIES: usize = 4_096;
+
 /// Per-`(upstream_name, subject)` mutex pool.
 ///
-/// Entries are created lazily on first access and are never removed (the number of
-/// distinct `(upstream, subject)` pairs is bounded by the number of configured upstreams
-/// times the number of users, which is small in a homelab context).
+/// Idle entries are pruned at a bounded cardinality. Entries with another live
+/// `Arc` are never removed, preserving single-flight for active callers.
 #[derive(Default)]
 pub struct RefreshLocks(DashMap<(String, String), Arc<Mutex<()>>>);
 
@@ -37,10 +38,18 @@ impl RefreshLocks {
     /// Return the mutex for `(upstream_name, subject)`, creating it if absent.
     pub fn acquire(&self, upstream_name: &str, subject: &str) -> Arc<Mutex<()>> {
         let key = (upstream_name.to_string(), subject.to_string());
+        if self.0.len() >= MAX_COORDINATION_ENTRIES {
+            self.0.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
         self.0
             .entry(key)
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -72,6 +81,15 @@ impl RefreshFailureCache {
 
     /// Record that a refresh just failed for `(upstream_name, subject)`.
     pub fn record_failure(&self, upstream_name: &str, subject: &str) {
+        self.prune_expired();
+        let eviction = if self.0.len() >= MAX_COORDINATION_ENTRIES {
+            self.0.iter().next().map(|entry| entry.key().clone())
+        } else {
+            None
+        };
+        if let Some(oldest) = eviction {
+            self.0.remove(&oldest);
+        }
         self.0.insert(
             (upstream_name.to_string(), subject.to_string()),
             Instant::now(),
@@ -90,15 +108,35 @@ impl RefreshFailureCache {
     /// Whether `(upstream_name, subject)` failed recently enough that a live
     /// retry should be skipped.
     pub fn recently_failed(&self, upstream_name: &str, subject: &str) -> bool {
-        self.0
-            .get(&(upstream_name.to_string(), subject.to_string()))
-            .is_some_and(|entry| entry.elapsed() < REFRESH_FAILURE_COOLDOWN)
+        let key = (upstream_name.to_string(), subject.to_string());
+        let recent = self
+            .0
+            .get(&key)
+            .is_some_and(|entry| entry.elapsed() < REFRESH_FAILURE_COOLDOWN);
+        if !recent {
+            self.0.remove(&key);
+        }
+        recent
+    }
+
+    fn prune_expired(&self) {
+        if self.0.len() >= MAX_COORDINATION_ENTRIES {
+            self.0
+                .retain(|_, failed_at| failed_at.elapsed() < REFRESH_FAILURE_COOLDOWN);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::RefreshFailureCache;
+    use super::{
+        MAX_COORDINATION_ENTRIES, REFRESH_FAILURE_COOLDOWN, RefreshFailureCache, RefreshLocks,
+    };
 
     #[test]
     fn fresh_cache_has_no_recent_failures() {
@@ -123,5 +161,42 @@ mod tests {
 
         assert!(!cache.recently_failed("google-gmail", "gateway"));
         assert!(!cache.recently_failed("google-drive", "alice"));
+    }
+
+    #[test]
+    fn coordination_maps_remain_bounded_under_high_cardinality() {
+        let locks = RefreshLocks::new();
+        let failures = RefreshFailureCache::new();
+        for index in 0..100_000 {
+            drop(locks.acquire("upstream", &format!("subject-{index}")));
+            failures.record_failure("upstream", &format!("subject-{index}"));
+        }
+        assert!(locks.len() <= MAX_COORDINATION_ENTRIES);
+        assert!(failures.len() <= MAX_COORDINATION_ENTRIES);
+    }
+
+    #[test]
+    fn pruning_preserves_singleflight_for_a_live_hot_key() {
+        let locks = RefreshLocks::new();
+        let hot = locks.acquire("upstream", "hot-subject");
+        for index in 0..100_000 {
+            drop(locks.acquire("upstream", &format!("cold-{index}")));
+        }
+        let reacquired = locks.acquire("upstream", "hot-subject");
+        assert!(std::sync::Arc::ptr_eq(&hot, &reacquired));
+    }
+
+    #[test]
+    fn stale_failure_is_drained_on_access() {
+        let cache = RefreshFailureCache::new();
+        let key = ("upstream".to_string(), "subject".to_string());
+        cache.0.insert(
+            key,
+            std::time::Instant::now()
+                .checked_sub(REFRESH_FAILURE_COOLDOWN + std::time::Duration::from_secs(1))
+                .expect("test duration fits Instant range"),
+        );
+        assert!(!cache.recently_failed("upstream", "subject"));
+        assert_eq!(cache.len(), 0);
     }
 }

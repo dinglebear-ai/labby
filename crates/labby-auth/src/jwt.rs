@@ -5,11 +5,30 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use tracing::warn;
+
+#[cfg(test)]
+thread_local! { static FS_FAILPOINT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+fn failpoint(point: u8) -> Result<(), AuthError> {
+    if FS_FAILPOINT.with(|cell| cell.get()) == point {
+        Err(AuthError::Storage(format!(
+            "injected signing-key filesystem failure {point}"
+        )))
+    } else {
+        Ok(())
+    }
+}
+#[cfg(not(test))]
+const fn failpoint(_: u8) -> Result<(), AuthError> {
+    Ok(())
+}
 
 use crate::error::AuthError;
 use crate::util::{
@@ -64,7 +83,7 @@ pub struct JwkKey {
 pub struct SigningKeys {
     pub key_id: String,
     encoding_key: EncodingKey,
-    decoding_key: DecodingKey,
+    decoding_keys: Vec<(String, DecodingKey)>,
     jwks: JwksDocument,
 }
 
@@ -120,7 +139,62 @@ impl SigningKeys {
         };
 
         ensure_restrictive_permissions(path)?;
-        Self::from_private_key(&private_key)
+        let mut keys = vec![private_key];
+        let retired_dir = retired_dir(path);
+        if retired_dir.is_dir() {
+            let now = crate::util::now_unix();
+            let entries = std::fs::read_dir(&retired_dir)
+                .map_err(|error| AuthError::Storage(format!("read retired signing keys: {error}")))?
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+            let mut retired = Vec::new();
+            for entry in entries {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let Some(expires) = name
+                    .rsplit_once('.')
+                    .and_then(|(_, value)| value.parse::<i64>().ok())
+                else {
+                    return Err(AuthError::Storage(format!(
+                        "invalid retired signing-key filename `{name}`"
+                    )));
+                };
+                if expires > now {
+                    retired.push((expires, entry.path()));
+                } else {
+                    std::fs::remove_file(entry.path()).map_err(|error| {
+                        AuthError::Storage(format!("drain expired retired signing key: {error}"))
+                    })?;
+                }
+            }
+            retired.sort_by(|(left_expiry, left_path), (right_expiry, right_path)| {
+                right_expiry
+                    .cmp(left_expiry)
+                    .then_with(|| right_path.cmp(left_path))
+            });
+            if retired.len() > 4 {
+                for (_, excess_path) in retired.drain(4..) {
+                    std::fs::remove_file(excess_path).map_err(|error| {
+                        AuthError::Storage(format!("prune excess retired signing key: {error}"))
+                    })?;
+                }
+            }
+            for (_, retired_path) in retired {
+                ensure_restrictive_permissions(&retired_path)?;
+                let bytes = std::fs::read(&retired_path).map_err(|error| {
+                    AuthError::Storage(format!(
+                        "read retired signing key `{}`: {error}",
+                        retired_path.display()
+                    ))
+                })?;
+                keys.push(SigningKey::from_pkcs8_der(&bytes).map_err(|error| {
+                    AuthError::Storage(format!(
+                        "decode retired signing key `{}`: {error}",
+                        retired_path.display()
+                    ))
+                })?);
+            }
+        }
+        Self::from_private_keys(&keys)
     }
 
     pub fn issue_access_token(&self, claims: &AccessClaims) -> Result<String, AuthError> {
@@ -147,21 +221,19 @@ impl SigningKeys {
         let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_audience(&[expected_audience]);
         validation.validate_nbf = true;
-        decode::<AccessClaims>(token, &self.decoding_key, &validation)
-            .map(|data| data.claims)
-            .map_err(|error| {
-                // `AuthError::InvalidAccessToken` renders as a single opaque
-                // string, so without this the reason a token was refused —
-                // expired, bad signature, wrong audience — is unrecoverable
-                // from the logs. The jsonwebtoken error names the kind and
-                // never embeds the token itself.
-                warn!(
-                    kind = "auth_failed",
-                    reason = ?error.kind(),
-                    "access token rejected"
-                );
-                AuthError::InvalidAccessToken
-            })
+        self.decode_with_ring(token, &validation).map_err(|error| {
+            // `AuthError::InvalidAccessToken` renders as a single opaque
+            // string, so without this the reason a token was refused —
+            // expired, bad signature, wrong audience — is unrecoverable
+            // from the logs. The jsonwebtoken error names the kind and
+            // never embeds the token itself.
+            warn!(
+                kind = "auth_failed",
+                reason = ?error.kind(),
+                "access token rejected"
+            );
+            AuthError::InvalidAccessToken
+        })
     }
 
     /// Validate signature, algorithm, audience, AND issuer in a single
@@ -178,23 +250,24 @@ impl SigningKeys {
         validation.set_audience(&[expected_audience]);
         validation.set_issuer(&[expected_issuer]);
         validation.validate_nbf = true;
-        decode::<AccessClaims>(token, &self.decoding_key, &validation)
-            .map(|data| data.claims)
-            .map_err(|error| {
-                warn!(
-                    kind = "auth_failed",
-                    reason = ?error.kind(),
-                    "access token rejected"
-                );
-                AuthError::InvalidAccessToken
-            })
+        self.decode_with_ring(token, &validation).map_err(|error| {
+            warn!(
+                kind = "auth_failed",
+                reason = ?error.kind(),
+                "access token rejected"
+            );
+            AuthError::InvalidAccessToken
+        })
     }
 
     pub const fn jwks(&self) -> &JwksDocument {
         &self.jwks
     }
 
-    fn from_private_key(private_key: &SigningKey) -> Result<Self, AuthError> {
+    fn from_private_keys(private_keys: &[SigningKey]) -> Result<Self, AuthError> {
+        let private_key = private_keys
+            .first()
+            .ok_or_else(|| AuthError::Storage("empty signing key ring".to_string()))?;
         let private_der = private_key
             .to_pkcs8_der()
             .map_err(|error| AuthError::Storage(format!("encode signing key DER: {error}")))?;
@@ -205,26 +278,212 @@ impl SigningKeys {
         let digest = Sha256::digest(public_der.as_bytes());
         let key_id = URL_SAFE_NO_PAD.encode(&digest[..12]);
 
-        let jwks = JwksDocument {
-            keys: vec![JwkKey {
+        let mut jwks_keys = Vec::with_capacity(private_keys.len());
+        let mut decoding_keys = Vec::with_capacity(private_keys.len());
+        for key in private_keys {
+            let public = key.verifying_key();
+            let public_der = public
+                .to_public_key_der()
+                .map_err(|error| AuthError::Storage(format!("encode public key DER: {error}")))?;
+            let kid = URL_SAFE_NO_PAD.encode(&Sha256::digest(public_der.as_bytes())[..12]);
+            if decoding_keys.iter().any(|(existing, _)| existing == &kid) {
+                continue;
+            }
+            jwks_keys.push(JwkKey {
                 kty: "OKP".to_string(),
                 use_: "sig".to_string(),
                 alg: "EdDSA".to_string(),
-                kid: key_id.clone(),
+                kid: kid.clone(),
                 crv: "Ed25519".to_string(),
-                x: URL_SAFE_NO_PAD.encode(public_key.as_bytes()),
-            }],
-        };
+                x: URL_SAFE_NO_PAD.encode(public.as_bytes()),
+            });
+            decoding_keys.push((kid, DecodingKey::from_ed_der(public.as_bytes())));
+        }
+        let jwks = JwksDocument { keys: jwks_keys };
 
         Ok(Self {
             key_id,
             encoding_key: EncodingKey::from_ed_der(private_der.as_bytes()),
             // jsonwebtoken's RustCrypto verifier consumes the raw 32-byte
             // Ed25519 public point here (its from_ed_der name is historical).
-            decoding_key: DecodingKey::from_ed_der(public_key.as_bytes()),
+            decoding_keys,
             jwks,
         })
     }
+
+    fn decode_with_ring(
+        &self,
+        token: &str,
+        validation: &Validation,
+    ) -> jsonwebtoken::errors::Result<AccessClaims> {
+        let kid = decode_header(token)?.kid.ok_or_else(|| {
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken)
+        })?;
+        let key = self
+            .decoding_keys
+            .iter()
+            .find(|(candidate, _)| candidate == &kid)
+            .map(|(_, key)| key)
+            .ok_or_else(|| {
+                jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidSignature)
+            })?;
+        decode::<AccessClaims>(token, key, validation).map(|data| data.claims)
+    }
+
+    pub fn rotate(path: &Path, overlap: std::time::Duration) -> Result<Self, AuthError> {
+        Self::rotate_with_minimum(path, overlap, std::time::Duration::from_hours(1))
+    }
+
+    pub fn rotate_with_minimum(
+        path: &Path,
+        overlap: std::time::Duration,
+        maximum_access_token_ttl: std::time::Duration,
+    ) -> Result<Self, AuthError> {
+        validate_overlap(overlap, maximum_access_token_ttl)?;
+        let current = Self::load_or_create(path)?;
+        let dir = retired_dir(path);
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            AuthError::Storage(format!("create retired signing-key directory: {e}"))
+        })?;
+        set_restrictive_directory_permissions(&dir)?;
+        let retired_at = crate::util::now_unix();
+        let expires =
+            retired_at.saturating_add(i64::try_from(overlap.as_secs()).unwrap_or(i64::MAX));
+        let retired = dir.join(format!("{}.{}.{}", current.key_id, retired_at, expires));
+        std::fs::copy(path, &retired)
+            .map_err(|e| AuthError::Storage(format!("stage retired signing key: {e}")))?;
+        set_restrictive_permissions(&retired)?;
+        if let Err(error) = failpoint(1) {
+            drop(std::fs::remove_file(&retired));
+            return Err(error);
+        }
+        if let Err(error) = generate_signing_key(path) {
+            drop(std::fs::remove_file(&retired));
+            return Err(error);
+        }
+        Self::load_or_create(path)
+    }
+
+    pub fn emergency_revoke(path: &Path) -> Result<Self, AuthError> {
+        warn!(kind = "auth_signing_key_emergency_revoked", key_path = %path.display(), "emergency signing-key revocation invalidates all outstanding access tokens");
+        let dir = retired_dir(path);
+        let quarantine = path.with_extension("retired-revoking");
+        if quarantine.exists() {
+            return Err(AuthError::Storage(
+                "stale signing-key revocation quarantine exists".to_string(),
+            ));
+        }
+        let quarantined = dir.is_dir();
+        if quarantined {
+            std::fs::rename(&dir, &quarantine)
+                .map_err(|e| AuthError::Storage(format!("quarantine retired signing keys: {e}")))?;
+        }
+        if let Err(error) = failpoint(2) {
+            if quarantined {
+                std::fs::rename(&quarantine, &dir).map_err(|restore| {
+                    AuthError::Storage(format!("{error}; restore retired signing keys: {restore}"))
+                })?;
+            }
+            return Err(error);
+        }
+        if let Err(error) = generate_signing_key(path) {
+            if quarantined {
+                std::fs::rename(&quarantine, &dir).map_err(|restore| {
+                    AuthError::Storage(format!("{error}; restore retired signing keys: {restore}"))
+                })?;
+            }
+            return Err(error);
+        }
+        if quarantined && let Err(error) = std::fs::remove_dir_all(&quarantine) {
+            warn!(kind = "auth_signing_key_quarantine_cleanup_failed", %error, "active key revoked successfully; manual quarantine cleanup required");
+        }
+        Self::load_or_create(path)
+    }
+
+    pub fn rollback(path: &Path, overlap: std::time::Duration) -> Result<Self, AuthError> {
+        Self::rollback_with_minimum(path, overlap, std::time::Duration::from_hours(1))
+    }
+
+    pub fn rollback_with_minimum(
+        path: &Path,
+        overlap: std::time::Duration,
+        maximum_access_token_ttl: std::time::Duration,
+    ) -> Result<Self, AuthError> {
+        validate_overlap(overlap, maximum_access_token_ttl)?;
+        // Load first: this validates the active ring and physically drains
+        // expired or excess retired entries before any rollback candidate is
+        // selected or buffered.
+        let current = Self::load_or_create(path)?;
+        let dir = retired_dir(path);
+        let now = crate::util::now_unix();
+        let candidate = std::fs::read_dir(&dir)
+            .map_err(|e| AuthError::Storage(format!("read retired signing keys: {e}")))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let (retired_at, expires) = retired_key_times(&name)?;
+                (expires > now).then_some((retired_at, name, entry))
+            })
+            .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+            .map(|(_, _, entry)| entry)
+            .ok_or_else(|| {
+                AuthError::Config("no retired signing key is available for rollback".to_string())
+            })?;
+        let candidate_bytes = std::fs::read(candidate.path())
+            .map_err(|e| AuthError::Storage(format!("read rollback signing key: {e}")))?;
+        SigningKey::from_pkcs8_der(&candidate_bytes)
+            .map_err(|error| AuthError::Storage(format!("decode rollback signing key: {error}")))?;
+        let retired_at = crate::util::now_unix();
+        let expires =
+            retired_at.saturating_add(i64::try_from(overlap.as_secs()).unwrap_or(i64::MAX));
+        let current_retired = dir.join(format!("{}.{}.{}", current.key_id, retired_at, expires));
+        std::fs::copy(path, &current_retired)
+            .map_err(|e| AuthError::Storage(format!("stage current key for rollback: {e}")))?;
+        set_restrictive_permissions(&current_retired)?;
+        if let Err(error) = failpoint(3) {
+            drop(std::fs::remove_file(&current_retired));
+            return Err(error);
+        }
+        write_secret_file_atomically(path, &candidate_bytes)?;
+        if let Err(error) = std::fs::remove_file(candidate.path()) {
+            warn!(kind = "auth_signing_key_rollback_cleanup_failed", %error, "rollback promoted successfully; duplicate retired file requires cleanup");
+        }
+        Self::load_or_create(path)
+    }
+}
+
+fn validate_overlap(
+    overlap: std::time::Duration,
+    maximum_access_token_ttl: std::time::Duration,
+) -> Result<(), AuthError> {
+    if overlap < maximum_access_token_ttl {
+        return Err(AuthError::Config(
+            "signing-key overlap must be at least the maximum access-token lifetime".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn retired_key_times(name: &str) -> Option<(i64, i64)> {
+    let mut parts = name.rsplit('.');
+    let expires = parts.next()?.parse::<i64>().ok()?;
+    let previous = parts.next()?;
+    let retired_at = previous.parse::<i64>().unwrap_or_default();
+    Some((retired_at, expires))
+}
+
+fn retired_dir(path: &Path) -> std::path::PathBuf {
+    path.with_extension("retired")
+}
+
+fn set_restrictive_directory_permissions(path: &Path) -> Result<(), AuthError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| AuthError::Storage(format!("protect signing-key directory: {e}")))?;
+    }
+    Ok(())
 }
 
 fn generate_signing_key(path: &Path) -> Result<SigningKey, AuthError> {
@@ -246,6 +505,22 @@ mod tests {
 
     use super::{AccessClaims, SigningKeys};
 
+    fn ring_snapshot(path: &std::path::Path) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+        let mut retired = Vec::new();
+        let dir = super::retired_dir(path);
+        if dir.is_dir() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                retired.push((
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(entry.path()).unwrap(),
+                ));
+            }
+            retired.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        (std::fs::read(path).unwrap(), retired)
+    }
+
     #[test]
     fn generated_key_is_reused_on_second_load() {
         let dir = tempfile::tempdir().unwrap();
@@ -253,6 +528,151 @@ mod tests {
         let first = SigningKeys::load_or_create(&path).unwrap();
         let second = SigningKeys::load_or_create(&path).unwrap();
         assert_eq!(first.key_id, second.key_id);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn rotation_overlaps_then_rollback_and_emergency_revoke_are_fail_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        let original = SigningKeys::load_or_create(&path).unwrap();
+        let old_token = original.issue_access_token(&sample_claims()).unwrap();
+
+        let rotated = SigningKeys::rotate(&path, std::time::Duration::from_hours(1)).unwrap();
+        assert_ne!(rotated.key_id, original.key_id);
+        assert_eq!(rotated.jwks().keys.len(), 2);
+        rotated
+            .validate_access_token(&old_token, "https://lab.example.com")
+            .unwrap();
+        let new_token = rotated.issue_access_token(&sample_claims()).unwrap();
+
+        let rolled_back = SigningKeys::rollback(&path, std::time::Duration::from_hours(1)).unwrap();
+        assert_eq!(rolled_back.key_id, original.key_id);
+        rolled_back
+            .validate_access_token(&new_token, "https://lab.example.com")
+            .unwrap();
+
+        let emergency = SigningKeys::emergency_revoke(&path).unwrap();
+        assert_eq!(emergency.jwks().keys.len(), 1);
+        assert!(
+            emergency
+                .validate_access_token(&old_token, "https://lab.example.com")
+                .is_err()
+        );
+        assert!(
+            emergency
+                .validate_access_token(&new_token, "https://lab.example.com")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn rotation_rejects_overlap_shorter_than_maximum_token_lifetime_before_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        let original = SigningKeys::load_or_create(&path).unwrap();
+        let error = SigningKeys::rotate_with_minimum(
+            &path,
+            std::time::Duration::from_secs(3599),
+            std::time::Duration::from_hours(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("maximum access-token lifetime"));
+        assert_eq!(
+            SigningKeys::load_or_create(&path).unwrap().key_id,
+            original.key_id
+        );
+    }
+
+    #[test]
+    fn rollback_rejects_short_overlap_and_expired_candidates_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        SigningKeys::load_or_create(&path).unwrap();
+        SigningKeys::rotate(&path, std::time::Duration::from_hours(1)).unwrap();
+        let rotated = ring_snapshot(&path);
+        let error = SigningKeys::rollback_with_minimum(
+            &path,
+            std::time::Duration::from_secs(3599),
+            std::time::Duration::from_hours(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("maximum access-token lifetime"));
+        assert_eq!(ring_snapshot(&path), rotated);
+
+        let retired = super::retired_dir(&path);
+        for entry in std::fs::read_dir(&retired).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let kid = name.split('.').next().unwrap();
+            std::fs::rename(entry.path(), retired.join(format!("{kid}.0.0"))).unwrap();
+        }
+        let active_before = std::fs::read(&path).unwrap();
+        let error = SigningKeys::rollback(&path, std::time::Duration::from_hours(1)).unwrap_err();
+        assert!(error.to_string().contains("no retired signing key"));
+        assert_eq!(std::fs::read(&path).unwrap(), active_before);
+        assert_eq!(std::fs::read_dir(&retired).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn loading_key_ring_physically_drains_expired_retired_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        let active = SigningKeys::load_or_create(&path).unwrap();
+        let retired = super::retired_dir(&path);
+        std::fs::create_dir_all(&retired).unwrap();
+        super::set_restrictive_directory_permissions(&retired).unwrap();
+        let expired = retired.join(format!("{}.0", active.key_id));
+        std::fs::copy(&path, &expired).unwrap();
+        crate::util::set_restrictive_permissions(&expired).unwrap();
+
+        let loaded = SigningKeys::load_or_create(&path).unwrap();
+        assert_eq!(loaded.jwks().keys.len(), 1);
+        assert!(!expired.exists());
+    }
+
+    #[test]
+    fn repeated_rotations_physically_bound_retired_key_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        SigningKeys::load_or_create(&path).unwrap();
+        for _ in 0..8 {
+            SigningKeys::rotate(&path, std::time::Duration::from_hours(1)).unwrap();
+        }
+        let loaded = SigningKeys::load_or_create(&path).unwrap();
+        assert_eq!(loaded.jwks().keys.len(), 5);
+        assert_eq!(
+            std::fs::read_dir(super::retired_dir(&path))
+                .unwrap()
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn precommit_filesystem_failures_restore_exact_key_ring() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        SigningKeys::load_or_create(&path).unwrap();
+        let initial = ring_snapshot(&path);
+        super::FS_FAILPOINT.with(|cell| cell.set(1));
+        assert!(SigningKeys::rotate(&path, std::time::Duration::from_hours(1)).is_err());
+        super::FS_FAILPOINT.with(|cell| cell.set(0));
+        assert_eq!(ring_snapshot(&path), initial);
+
+        SigningKeys::rotate(&path, std::time::Duration::from_hours(1)).unwrap();
+        let rotated = ring_snapshot(&path);
+        for point in [2_u8, 3_u8] {
+            super::FS_FAILPOINT.with(|cell| cell.set(point));
+            let result = if point == 2 {
+                SigningKeys::emergency_revoke(&path)
+            } else {
+                SigningKeys::rollback(&path, std::time::Duration::from_hours(1))
+            };
+            assert!(result.is_err());
+            super::FS_FAILPOINT.with(|cell| cell.set(0));
+            assert_eq!(ring_snapshot(&path), rotated);
+        }
     }
 
     #[cfg(unix)]

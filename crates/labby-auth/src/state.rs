@@ -299,6 +299,20 @@ impl AuthState {
                 prefix = config.env_prefix
             ))
         })?;
+        // AuthConfig is public and can be assembled directly by an embedding
+        // crate. Recheck the security-critical transport fields at the state
+        // boundary so invalid origins cannot reach metadata or cookie output
+        // even when the environment/config builder was bypassed.
+        crate::config::validate_oauth_transport_url(
+            &public_url,
+            &format!("{}_PUBLIC_URL", config.env_prefix),
+        )?;
+        if let Some(callback_url) = &config.google.callback_url {
+            crate::config::validate_oauth_transport_url(
+                callback_url,
+                &format!("{}_GOOGLE_CALLBACK_URL", config.env_prefix),
+            )?;
+        }
         let redirect_uri = config.google.callback_url.clone().unwrap_or_else(|| {
             build_google_redirect_uri(&public_url, &config.google.callback_path)
         });
@@ -841,5 +855,29 @@ mod tests {
             state.google.redirect_uri.as_str(),
             "https://app.example.com/auth/google/callback"
         );
+    }
+
+    #[tokio::test]
+    async fn auth_state_rejects_cleartext_public_origin_before_surfaces_exist() {
+        let config = AuthConfig {
+            mode: AuthMode::OAuth,
+            public_url: Some(Url::parse("http://lab.example.com").unwrap()),
+            google: GoogleConfig {
+                client_id: "client-id".into(),
+                client_secret: "client-secret".into(),
+                ..GoogleConfig::default()
+            },
+            admin_email: "admin@example.com".into(),
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "test-key",
+            )),
+            ..AuthConfig::default()
+        };
+
+        let error = AuthState::new(config)
+            .await
+            .err()
+            .expect("state must be rejected");
+        assert!(error.to_string().contains("LAB_PUBLIC_URL must use HTTPS"));
     }
 }

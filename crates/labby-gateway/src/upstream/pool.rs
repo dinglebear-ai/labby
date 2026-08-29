@@ -550,6 +550,10 @@ impl UpstreamPool {
         let shared_http_client = Arc::new(
             reqwest::Client::builder()
                 .timeout(DEFAULT_REQUEST_TIMEOUT)
+                // MCP transport requests can carry long-lived bearer tokens and
+                // JSON-RPC bodies. Redirects require an explicit operator URL
+                // change; never replay authenticated POST/DELETE/SSE requests.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
         );

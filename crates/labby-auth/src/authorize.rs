@@ -35,7 +35,7 @@ use crate::types::{
 use crate::util::{expires_at, fingerprint, now_unix, random_token};
 
 const AUTH_REQUEST_TTL_SECS: i64 = 300;
-const NATIVE_START_MEDIA_TYPE: &str = "application/vnd.labby.native-oauth-start+json";
+const NATIVE_START_MEDIA_TYPE: &str = labby_oauth_wire::NATIVE_AUTHORIZATION_START_MEDIA_TYPE;
 const NATIVE_SUCCESS_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Signed in to Labby</h2><p>You can close this tab and return to the app.</p></body></html>"#;
 const NATIVE_CALLBACK_EXPIRED_PAGE: &str = r#"<!doctype html><html><body style="font-family:sans-serif;background:#07131c;color:#e6f4fb;text-align:center;padding-top:4rem"><h2>Sign-in link expired</h2><p>Return to the app and start sign-in again.</p></body></html>"#;
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { appWindow } from "@/lib/invoke";
 import {
@@ -37,19 +37,19 @@ export function useOauthSession(): OauthSession {
   const [status, setStatus] = useState<OauthStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const operationEpoch = useRef(0);
 
   useEffect(() => {
-    let active = true;
-
     const load = async () => {
+      const epoch = ++operationEpoch.current;
       try {
         const next = await oauthStatus();
-        if (!active) return;
+        if (epoch !== operationEpoch.current) return;
         setStatus(next);
         // A successful read supersedes any stale error from a prior failure.
         setError(null);
       } catch (err) {
-        if (!active) return;
+        if (epoch !== operationEpoch.current) return;
         setStatus({ signedIn: false, scope: null, expiresAtUnix: null, serverUrl: null });
         setError(err instanceof Error ? err.message : "Could not read sign-in status.");
       }
@@ -60,7 +60,7 @@ export function useOauthSession(): OauthSession {
       void load();
     });
     return () => {
-      active = false;
+      operationEpoch.current += 1;
       void unlisten.then((u) => u());
     };
   }, []);
@@ -68,14 +68,22 @@ export function useOauthSession(): OauthSession {
   // Run an action that returns a fresh status (sign-in/sign-out), reflecting it
   // into state while toggling `busy` and clearing/setting `error`.
   const run = useCallback(async (action: () => Promise<OauthStatus>) => {
+    const epoch = ++operationEpoch.current;
     setBusy(true);
     setError(null);
     try {
-      setStatus(await action());
+      const next = await action();
+      if (epoch === operationEpoch.current) {
+        setStatus(next);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "OAuth request failed.");
+      if (epoch === operationEpoch.current) {
+        setError(err instanceof Error ? err.message : "OAuth request failed.");
+      }
     } finally {
-      setBusy(false);
+      if (epoch === operationEpoch.current) {
+        setBusy(false);
+      }
     }
   }, []);
 

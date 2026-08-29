@@ -90,10 +90,11 @@ impl IntoResponse for TokenEndpointError {
         let status = self.status();
         let log_kind = self.log_kind();
         let retry_after_ms = self.retry_after_ms();
-        let body = Json(serde_json::json!({
-            "error": self.oauth_error(),
-            "error_description": self.description(),
-        }));
+        let body = Json(labby_oauth_wire::OAuthErrorResponse {
+            error: self.oauth_error().to_string(),
+            error_description: self.description(),
+            error_uri: None,
+        });
         let mut response = (status, body).into_response();
         response.extensions_mut().insert(AuthErrorKind(log_kind));
         if let Some(retry_after_ms) = retry_after_ms

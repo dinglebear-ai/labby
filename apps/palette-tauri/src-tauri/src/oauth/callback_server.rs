@@ -10,10 +10,13 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinSet;
 
 const MAX_REQUEST_BYTES: usize = 8192;
 const MAX_REQUEST_TARGET_BYTES: usize = 4096;
 const CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_CONCURRENT_CONNECTIONS: usize = 8;
 
 const SUCCESS_PAGE: &str = "<!doctype html><html><body style=\"font-family:sans-serif;background:#07131c;color:#e6f4fb;\
      text-align:center;padding-top:4rem\"><h2>Signed in to Labby</h2>\
@@ -67,41 +70,73 @@ impl CallbackListener {
     }
 
     async fn accept_loop(&self, expected_state: &str) -> Result<String, String> {
+        let permits = std::sync::Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+        let (result_tx, mut result_rx) = mpsc::channel(1);
+        let mut handlers = JoinSet::new();
         loop {
-            let (mut socket, _) = self
-                .listener
-                .accept()
-                .await
-                .map_err(|err| err.to_string())?;
-            let Some(target) = read_request_target(&mut socket).await else {
-                respond(&mut socket, "400 Bad Request", "Bad Request").await;
-                continue;
-            };
-            // Only requests to the registered callback path bearing OUR state
-            // are the real callback. Anything else (favicon, a racing process
-            // with a wrong/absent state) is answered and ignored so it cannot
-            // abort the flow.
-            let path = target.split('?').next().unwrap_or(&target);
-            if path != "/callback" {
-                respond(&mut socket, "404 Not Found", "Not Found").await;
-                continue;
+            tokio::select! {
+                result = result_rx.recv() => {
+                    handlers.abort_all();
+                    while handlers.join_next().await.is_some() {}
+                    return result.expect("callback result sender remains alive");
+                }
+                accepted = async {
+                    let permit = permits.clone().acquire_owned().await;
+                    let accepted = self.listener.accept().await;
+                    (accepted, permit)
+                } => {
+                    let (accepted, permit) = accepted;
+                    let permit = permit.map_err(|_| "OAuth callback handler pool closed".to_string())?;
+                    let (socket, _) = accepted.map_err(|err| err.to_string())?;
+                    let expected_state = expected_state.to_string();
+                    let result_tx = result_tx.clone();
+                    handlers.spawn(async move {
+                        let _permit = permit;
+                        handle_connection(socket, &expected_state, result_tx).await;
+                    });
+                }
+                Some(_) = handlers.join_next(), if !handlers.is_empty() => {}
             }
-            let params = parse_callback_params(&target);
-            if params.state.as_deref() != Some(expected_state) {
-                respond(&mut socket, "404 Not Found", "Not Found").await;
-                continue;
-            }
-            if let Some(error) = params.error {
-                respond(&mut socket, "400 Bad Request", ERROR_PAGE).await;
-                return Err(format!("authorization was denied ({error})"));
-            }
-            if let Some(code) = params.code {
-                respond(&mut socket, "200 OK", SUCCESS_PAGE).await;
-                return Ok(code);
-            }
-            respond(&mut socket, "400 Bad Request", "Missing code").await;
         }
     }
+}
+
+async fn handle_connection(
+    mut socket: TcpStream,
+    expected_state: &str,
+    result_tx: mpsc::Sender<Result<String, String>>,
+) {
+    let Some(target) = read_request_target(&mut socket).await else {
+        respond(&mut socket, "400 Bad Request", "Bad Request").await;
+        return;
+    };
+    // Only requests to the registered callback path bearing OUR state
+    // are the real callback. Anything else (favicon, a racing process
+    // with a wrong/absent state) is answered and ignored so it cannot
+    // abort the flow.
+    let path = target.split('?').next().unwrap_or(&target);
+    if path != "/callback" {
+        respond(&mut socket, "404 Not Found", "Not Found").await;
+        return;
+    }
+    let params = parse_callback_params(&target);
+    if params.state.as_deref() != Some(expected_state) {
+        respond(&mut socket, "404 Not Found", "Not Found").await;
+        return;
+    }
+    if let Some(error) = params.error {
+        respond(&mut socket, "400 Bad Request", ERROR_PAGE).await;
+        let _ = result_tx
+            .send(Err(format!("authorization was denied ({error})")))
+            .await;
+        return;
+    }
+    if let Some(code) = params.code {
+        respond(&mut socket, "200 OK", SUCCESS_PAGE).await;
+        let _ = result_tx.send(Ok(code)).await;
+        return;
+    }
+    respond(&mut socket, "400 Bad Request", "Missing code").await;
 }
 
 async fn read_request_target(socket: &mut TcpStream) -> Option<String> {
