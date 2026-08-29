@@ -1,3 +1,9 @@
+---
+title: Delegated exact execution
+created: 2026-08-29
+updated: 2026-08-29
+---
+
 # Delegated Exact Execution Contract
 
 Labby owns authorization and execution for durable agent tool calls. Axon may
@@ -63,8 +69,3 @@ receipt needed for exact replay and status recovery.
 
 The existing `/v1/palette/execute` request and response are unchanged. Both
 paths report `executionMode: "exact"` and `llmInvocations: 0`.
----
-title: Delegated exact execution
-created: 2026-08-29
-updated: 2026-08-29
----
