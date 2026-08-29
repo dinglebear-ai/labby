@@ -20,12 +20,15 @@ use super::local_io::{
 };
 use super::model::{ArtifactRecord, ArtifactRevision};
 use super::validation::{validate_id, validate_reference_id};
-use super::{ArtifactError, ArtifactStore, MaterializedPrompt, MaterializedSkill, invalid};
+use super::{
+    ArtifactError, ArtifactStore, MaterializedAgent, MaterializedPrompt, MaterializedSkill, invalid,
+};
 
 /// One family-validated payload admitted to the shared atomic Artifact transaction.
 pub enum MaterializedLibraryArtifact {
     Skill(Box<MaterializedSkill>),
     Prompt(Box<MaterializedPrompt>),
+    Agent(Box<MaterializedAgent>),
 }
 
 impl From<MaterializedSkill> for MaterializedLibraryArtifact {
@@ -40,11 +43,18 @@ impl From<MaterializedPrompt> for MaterializedLibraryArtifact {
     }
 }
 
+impl From<MaterializedAgent> for MaterializedLibraryArtifact {
+    fn from(value: MaterializedAgent) -> Self {
+        Self::Agent(Box::new(value))
+    }
+}
+
 impl MaterializedLibraryArtifact {
     pub fn interchange(&self) -> &super::model::ArtifactInterchange {
         match self {
             Self::Skill(value) => &value.interchange,
             Self::Prompt(value) => &value.interchange,
+            Self::Agent(value) => &value.interchange,
         }
     }
 
@@ -52,6 +62,7 @@ impl MaterializedLibraryArtifact {
         match self {
             Self::Skill(value) => &mut value.interchange,
             Self::Prompt(value) => &mut value.interchange,
+            Self::Agent(value) => &mut value.interchange,
         }
     }
 }
@@ -1673,8 +1684,21 @@ fn materialized_library_files(
             })
             .collect();
     }
+    if let MaterializedLibraryArtifact::Agent(agent) = materialized {
+        return agent
+            .files
+            .iter()
+            .map(|(path, bytes)| {
+                Ok(SnapshotFile {
+                    path: path.clone(),
+                    bytes: bytes.clone(),
+                    unix_mode: None,
+                })
+            })
+            .collect();
+    }
     let MaterializedLibraryArtifact::Skill(materialized) = materialized else {
-        unreachable!("prompt returned above")
+        unreachable!("single-file families returned above")
     };
     let total_bytes = materialized
         .resources
