@@ -194,6 +194,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         surface: CodeModeSurface,
         scope: &ToolScope,
     ) -> Result<String, ToolError> {
+        if scope.denies_all_tools() {
+            return Ok(String::new());
+        }
         let Some(host) = self.host else {
             return Ok(if local_providers_allowed(caller, scope) {
                 super::preamble::generate_local_provider_js()
@@ -721,9 +724,86 @@ fn ui_resource_uri(ui_meta: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::NoopHost;
+    use crate::RunnerPool;
+    use crate::host::{NoopHost, ResolvedSnippet, ToolCallOutcome, ToolsRender};
     use crate::types::{CodeModeCallerCapabilities, UiLink};
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct DiscoveryForbiddenHost {
+        pool: RunnerPool,
+        discovery_calls: AtomicUsize,
+    }
+
+    impl CodeModeHost for DiscoveryForbiddenHost {
+        async fn list_tools(
+            &self,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+            _include_snippets: bool,
+            _use_cache: bool,
+        ) -> Result<ToolsRender, ToolError> {
+            self.discovery_calls.fetch_add(1, Ordering::SeqCst);
+            Err(ToolError::internal_message(
+                "no-tool execution must not discover tools",
+            ))
+        }
+
+        async fn call_tool(
+            &self,
+            _id: &str,
+            _params: Value,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+            _ctx: ExecCtx,
+        ) -> Result<ToolCallOutcome, CodeModeCallError> {
+            Err(CodeModeCallError::new(
+                "unknown_tool",
+                "no-tool execution exposes no tools",
+            ))
+        }
+
+        async fn resolve_snippet(
+            &self,
+            _name: &str,
+            _input: Value,
+        ) -> Result<ResolvedSnippet, ToolError> {
+            Err(ToolError::internal_message(
+                "no-tool execution exposes no nested snippets",
+            ))
+        }
+
+        async fn semantic_rank(
+            &self,
+            _query: String,
+            _top_k: usize,
+            _caller: &CodeModeCaller,
+            _surface: CodeModeSurface,
+            _scope: &ToolScope,
+        ) -> Result<Vec<(String, f32)>, ToolError> {
+            Err(ToolError::internal_message(
+                "no-tool execution must not rank tools",
+            ))
+        }
+
+        async fn config(&self) -> CodeModeConfig {
+            CodeModeConfig::default()
+        }
+
+        fn runner_pool(&self) -> &RunnerPool {
+            &self.pool
+        }
+
+        fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
+            labby_openapi::OpenApiRegistry::default()
+        }
+
+        fn openapi_http_client(&self) -> reqwest::Client {
+            labby_openapi::http::build_dispatch_client().expect("test dispatch client")
+        }
+    }
 
     fn response_with_result(result: Value) -> CodeModeExecutionResponse {
         CodeModeExecutionResponse {
@@ -761,6 +841,24 @@ mod tests {
             &ToolScope::default().read_only()
         ));
         assert!(!read_caller.can_execute());
+    }
+
+    #[tokio::test]
+    async fn explicit_no_tool_scope_builds_empty_proxy_without_discovery() {
+        let host = DiscoveryForbiddenHost {
+            pool: RunnerPool::from_env().expect("test process exposes current executable"),
+            discovery_calls: AtomicUsize::new(0),
+        };
+        let broker = CodeModeBroker::new(Some(&host));
+        let scope = ToolScope::scoped_namespaces(vec![], vec![]);
+
+        let proxy = broker
+            .build_code_mode_proxy(&CodeModeCaller::TrustedLocal, CodeModeSurface::Cli, &scope)
+            .await
+            .expect("no-tool proxy should be available locally");
+
+        assert!(proxy.trim().is_empty());
+        assert_eq!(host.discovery_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -969,7 +1067,7 @@ mod tests {
     /// (`discovery_entry_visible`); a fixture that also filtered by tool would
     /// hide exactly the class of bug this is meant to catch.
     struct FixtureHost {
-        pool: crate::pool::RunnerPool,
+        pool: RunnerPool,
         entries: Arc<[ToolDescriptor]>,
         catalog_json: Arc<str>,
         fail_list_tools: bool,
@@ -979,8 +1077,7 @@ mod tests {
         fn new(entries: Vec<ToolDescriptor>) -> Self {
             let catalog_json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
             Self {
-                pool: crate::pool::RunnerPool::from_env()
-                    .expect("test process must expose current executable"),
+                pool: RunnerPool::from_env().expect("test process must expose current executable"),
                 entries: Arc::from(entries),
                 catalog_json: Arc::from(catalog_json),
                 fail_list_tools: false,
@@ -1061,7 +1158,7 @@ mod tests {
             &self,
             _name: &str,
             _input: Value,
-        ) -> Result<crate::host::ResolvedSnippet, ToolError> {
+        ) -> Result<ResolvedSnippet, ToolError> {
             Err(ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: "FixtureHost exposes no snippets".to_string(),
@@ -1083,7 +1180,7 @@ mod tests {
             CodeModeConfig::default()
         }
 
-        fn runner_pool(&self) -> &crate::pool::RunnerPool {
+        fn runner_pool(&self) -> &RunnerPool {
             &self.pool
         }
 
