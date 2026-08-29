@@ -52,6 +52,7 @@ struct HubState {
 pub struct BrowserBridge {
     store: Store,
     state: Arc<Mutex<HubState>>,
+    authority: Arc<Mutex<()>>,
 }
 
 impl BrowserBridge {
@@ -60,6 +61,7 @@ impl BrowserBridge {
         Ok(Self {
             store: Store::open(path)?,
             state: Arc::new(Mutex::new(HubState::default())),
+            authority: Arc::new(Mutex::new(())),
         })
     }
 
@@ -68,6 +70,7 @@ impl BrowserBridge {
         Ok(Self {
             store: Store::memory()?,
             state: Arc::new(Mutex::new(HubState::default())),
+            authority: Arc::new(Mutex::new(())),
         })
     }
 
@@ -103,6 +106,7 @@ impl BrowserBridge {
 
     /// Verify and consume a challenge, then install this connection as current.
     pub fn authenticate(&self, challenge_id: &str, signature: &str) -> Result<BrowserConnection> {
+        let _authority = self.lock_authority()?;
         let challenge = self.store.take_challenge(challenge_id)?;
         let browser = self
             .store
@@ -169,6 +173,7 @@ impl BrowserBridge {
         connection_id: &str,
         observation: &CatalogObservation,
     ) -> Result<()> {
+        let _authority = self.lock_authority()?;
         self.ensure_current(browser_id, connection_id)?;
         self.store.observe(browser_id, observation)
     }
@@ -238,16 +243,17 @@ impl BrowserBridge {
         timeout: Option<Duration>,
     ) -> Result<Value> {
         let started = Instant::now();
-        self.store.validate_call(
-            browser_id,
-            tab_id,
-            &document_id,
-            catalog_revision,
-            &tool_name,
-        )?;
         let call_id = Uuid::new_v4().to_string();
         let (reply, wait) = oneshot::channel();
-        let (sender, generation) = {
+        let (sender, generation, catalog_fingerprint) = {
+            let _authority = self.lock_authority()?;
+            let catalog_fingerprint = self.store.validate_call(
+                browser_id,
+                tab_id,
+                &document_id,
+                catalog_revision,
+                &tool_name,
+            )?;
             let mut state = self.lock_state()?;
             if state.pending.len() >= MAX_PENDING_CALLS {
                 return Err(BrowserError::ServerBusy);
@@ -266,7 +272,7 @@ impl BrowserBridge {
                     reply,
                 },
             );
-            (sender, generation)
+            (sender, generation, catalog_fingerprint)
         };
         let event = BrowserEvent(BrowserEnvelope::new(
             None,
@@ -275,6 +281,7 @@ impl BrowserBridge {
                 tab_id,
                 document_id: document_id.clone(),
                 catalog_revision,
+                catalog_fingerprint,
                 tool_name: tool_name.clone(),
                 arguments,
             },
@@ -289,14 +296,22 @@ impl BrowserBridge {
             Ok(Err(_)) => Err(BrowserError::ConnectionClosed),
             Err(_) => {
                 self.remove_pending(&call_id, generation)?;
-                drop(
-                    sender
-                        .send(BrowserEvent(BrowserEnvelope::new(
-                            None,
-                            BrowserMessage::ToolCancel { call_id },
-                        )))
-                        .await,
-                );
+                if sender
+                    .send(BrowserEvent(BrowserEnvelope::new(
+                        None,
+                        BrowserMessage::ToolCancel {
+                            call_id: call_id.clone(),
+                        },
+                    )))
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!(
+                        browser_id,
+                        call_id,
+                        "browser timeout cancellation delivery failed"
+                    );
+                }
                 Err(BrowserError::ToolTimeout)
             }
         };
@@ -329,6 +344,7 @@ impl BrowserBridge {
 
     /// Revoke a browser, close its live connection, and fail its pending calls.
     pub fn revoke_browser(&self, browser_id: &str) -> Result<crate::store::BrowserRecord> {
+        let _authority = self.lock_authority()?;
         let browser = self.store.revoke_browser(browser_id)?;
         let mut state = self.lock_state()?;
         if let Some(connection) = state.connections.remove(browser_id) {
@@ -339,6 +355,7 @@ impl BrowserBridge {
 
     /// Approve pairing and evict every superseded identity for its extension.
     pub fn approve_pairing(&self, pairing_id: &str) -> Result<crate::store::BrowserRecord> {
+        let _authority = self.lock_authority()?;
         let extension_id = self
             .store
             .pairing(pairing_id)?
@@ -390,6 +407,12 @@ impl BrowserBridge {
         self.state
             .lock()
             .map_err(|_| BrowserError::InvalidRequest("browser hub lock poisoned".to_string()))
+    }
+
+    fn lock_authority(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
+        self.authority.lock().map_err(|_| {
+            BrowserError::InvalidRequest("browser authority lock poisoned".to_string())
+        })
     }
 }
 
@@ -592,6 +615,74 @@ mod tests {
                 .connected_browser_ids()
                 .unwrap()
                 .contains(&current.browser_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_cannot_complete_current_call_or_disconnect_it() {
+        let bridge = BrowserBridge::memory().unwrap();
+        let old = pair_and_authenticate(&bridge);
+        let signing = SigningKey::from_bytes(&[9; 32]);
+        let mut current = authenticate_browser(&bridge, &old.browser_id, &signing);
+        enable_tool(
+            &bridge,
+            &current.browser_id,
+            &current.connection_id,
+            4,
+            1,
+            "search",
+        );
+        let task_bridge = bridge.clone();
+        let browser_id = current.browser_id.clone();
+        let task_browser_id = browser_id.clone();
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &task_browser_id,
+                    4,
+                    "doc".into(),
+                    1,
+                    "search".into(),
+                    Value::Null,
+                    Some(Duration::from_secs(1)),
+                )
+                .await
+        });
+        let event = current.receiver.recv().await.unwrap().0;
+        let BrowserMessage::ToolCall { call_id, .. } = event.message else {
+            unreachable!()
+        };
+        assert!(
+            !bridge
+                .complete(
+                    &browser_id,
+                    &old.connection_id,
+                    BrowserMessage::ToolResult {
+                        call_id: call_id.clone(),
+                        result: Value::Null
+                    }
+                )
+                .unwrap()
+        );
+        bridge.disconnect(&browser_id, &old.connection_id).unwrap();
+        assert!(
+            bridge
+                .complete(
+                    &browser_id,
+                    &current.connection_id,
+                    BrowserMessage::ToolResult {
+                        call_id,
+                        result: serde_json::json!({"ok": true})
+                    }
+                )
+                .unwrap()
+        );
+        assert!(task.await.unwrap().is_ok());
+        assert!(
+            bridge
+                .connected_browser_ids()
+                .unwrap()
+                .contains(&browser_id)
         );
     }
 

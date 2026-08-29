@@ -42,7 +42,9 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   await closeObservation(tabId);
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "labby-periodic-scan") scanAll();
+  if (alarm.name === "labby-periodic-scan") {
+    void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "periodic_resync_failed"}));
+  }
 });
 chrome.permissions.onAdded.addListener(() => scanAll());
 chrome.permissions.onRemoved.addListener(async () => {
@@ -90,10 +92,15 @@ async function initialize() {
   else if (identity.browserId) await scanAll();
 }
 
+/** @param {unknown} error @param {unknown} context */
 async function reportBridgeFailure(error, context) {
   const message = error instanceof Error ? error.message : "bridge_connection_failed";
   console.error("Labby browser bridge connection failed", {message, context});
   await chrome.storage.local.set({bridgeStatus: {state: "error", message, updatedAt: Date.now()}});
+  if (message === "auth_failed") {
+    await chrome.storage.local.remove(["browserId", "pairingId"]);
+    if (channel) channel.browserId = undefined;
+  }
 }
 
 /**
@@ -126,7 +133,7 @@ async function authenticate(challenge) {
 async function resumeAndScan() {
   const {browserId, pairingId} = await chrome.storage.local.get(["browserId", "pairingId"]);
   if (!browserId && pairingId) {
-    const reply = await requireChannel().message("pairing.status", {pairing_id: pairingId}).catch(() => null);
+    const reply = await requireChannel().message("pairing.status", {pairing_id: pairingId});
     if (reply?.payload?.status === "approved" && reply.payload.browser_id) {
       await handleServerEvent({type: "pairing.approved", payload: reply.payload});
       return;
@@ -163,6 +170,10 @@ async function handleServerEvent(envelope) {
     if (channel?.browserId !== envelope.payload.browser_id) {
       await chrome.storage.local.set({browserId: envelope.payload.browser_id});
     }
+    await chrome.storage.local.remove("pairingId");
+    channel?.close();
+    channel = undefined;
+    await initialize();
     return;
   }
   if (envelope?.type === "tool.call") return executeToolCall(envelope.payload);
@@ -170,12 +181,12 @@ async function handleServerEvent(envelope) {
 }
 
 /**
- * @param {{tab_id: number, document_id: string, call_id: string, tool_name: string, arguments?: unknown}} payload
+ * @param {{tab_id: number, document_id: string, catalog_fingerprint: string, call_id: string, tool_name: string, arguments?: unknown}} payload
  */
 async function executeToolCall(payload) {
   try {
     const observation = observations.get(payload.tab_id);
-    if (!observation || observation.document_id !== payload.document_id) {
+    if (!observation || observation.document_id !== payload.document_id || stableStringify(observation.tools) !== payload.catalog_fingerprint) {
       return await sendToolError(payload.call_id, "stale_document", "The requested document is no longer active");
     }
     pendingCalls.set(payload.call_id, {tab_id: observation.tab_id, document_id: observation.document_id});
@@ -405,11 +416,13 @@ async function handleUiMessage(message) {
     const identity = await ensureIdentity();
     const reply = await requireChannel().message("pairing.request", {display_name: message.displayName || "Chrome", public_key: identity.publicKey, scanning_mode: "granted_sites"});
     if (reply?.payload?.pairing_id) await chrome.storage.local.set({pairingId: reply.payload.pairing_id});
-    return reply;
+    void resumeAndScan().catch((error) => reportBridgeFailure(error, {kind: "pairing_poll_failed"}));
+    return {ok: true, ...reply};
   }
   if (message.type === "scan-now") {
     const [activeTab] = await chrome.tabs.query({active: true, currentWindow: true});
-    return scanTab(activeTab, true);
+    await scanTab(activeTab, true);
+    return {ok: true};
   }
   return {ok: true};
 }

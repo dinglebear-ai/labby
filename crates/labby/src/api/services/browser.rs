@@ -85,9 +85,12 @@ async fn upgrade(
         }));
     }
     browser_bridge()?;
-    Ok(upgrade.on_upgrade(move |socket| {
-        handle_socket(socket, extension_id.expect("validated extension id"))
-    }))
+    Ok(upgrade
+        .max_message_size(512 * 1024)
+        .max_frame_size(512 * 1024)
+        .on_upgrade(move |socket| {
+            handle_socket(socket, extension_id.expect("validated extension id"))
+        }))
 }
 
 async fn handle_socket(socket: WebSocket, extension_id: String) {
@@ -195,7 +198,12 @@ async fn run_socket(
                 },
             ),
         };
-        send_envelope(&mut sink, &reply).await?;
+        if let Err(error) = send_envelope(&mut sink, &reply).await {
+            if let Some(connection) = authenticated.as_ref() {
+                bridge.disconnect(&connection.browser_id, &connection.connection_id)?;
+            }
+            return Err(error);
+        }
     }
 
     let mut connection = authenticated.expect("authenticated connection set");
@@ -236,7 +244,19 @@ async fn run_socket(
       Ok(())
     }.await;
     let cleanup_result = bridge.disconnect(&browser_id, &connection_id);
-    loop_result.and(cleanup_result)
+    match (loop_result, cleanup_result) {
+        (Err(primary), Err(cleanup)) => {
+            tracing::warn!(
+                browser_id,
+                connection_id,
+                error_kind = cleanup.kind(),
+                "browser socket cleanup failed after connection error"
+            );
+            Err(primary)
+        }
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 async fn send_envelope(

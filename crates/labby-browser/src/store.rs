@@ -14,6 +14,9 @@ use crate::protocol::CatalogObservation;
 
 const PAIRING_TTL_SECONDS: i64 = 300;
 const CHALLENGE_TTL_SECONDS: i64 = 60;
+const MAX_CATALOG_BYTES: usize = 256 * 1024;
+const MAX_JSON_DEPTH: usize = 32;
+const MAX_SESSIONS_PER_BROWSER: i64 = 256;
 
 /// Durable paired browser.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -347,6 +350,10 @@ impl Store {
             "INSERT INTO document_sessions(id,browser_id,tab_id,document_id,origin,sanitized_path,page_title,catalog_revision,catalog_fingerprint,catalog_json,status,connected_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'active',?11,?11) ON CONFLICT(browser_id,tab_id,document_id) DO UPDATE SET origin=excluded.origin,sanitized_path=excluded.sanitized_path,page_title=excluded.page_title,enabled=CASE WHEN document_sessions.catalog_revision=excluded.catalog_revision AND document_sessions.catalog_fingerprint=excluded.catalog_fingerprint THEN document_sessions.enabled ELSE 0 END,catalog_revision=excluded.catalog_revision,catalog_fingerprint=excluded.catalog_fingerprint,catalog_json=excluded.catalog_json,status='active',last_seen_at=excluded.last_seen_at",
             params![Uuid::new_v4().to_string(), browser_id, observation.tab_id, observation.document_id, observation.origin, observation.sanitized_path, observation.page_title, observation.catalog_revision, observation.catalog_fingerprint, catalog, now],
         )?;
+        self.lock()?.execute(
+            "DELETE FROM document_sessions WHERE browser_id=?1 AND id IN (SELECT id FROM document_sessions WHERE browser_id=?1 ORDER BY last_seen_at DESC, id DESC LIMIT -1 OFFSET ?2)",
+            params![browser_id, MAX_SESSIONS_PER_BROWSER],
+        )?;
         Ok(())
     }
 
@@ -398,7 +405,7 @@ impl Store {
         document_id: &str,
         catalog_revision: i64,
         tool_name: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let session = self.lock()?.query_row(
             "SELECT ds.id,ds.browser_id,ds.tab_id,ds.document_id,ds.origin,ds.sanitized_path,ds.page_title,ds.catalog_revision,ds.catalog_fingerprint,ds.catalog_json,ds.enabled,ds.status,ds.last_seen_at FROM document_sessions ds JOIN browsers b ON b.id=ds.browser_id WHERE ds.browser_id=?1 AND ds.tab_id=?2 AND ds.document_id=?3 AND b.revoked_at IS NULL",
             params![browser_id, tab_id, document_id],
@@ -415,7 +422,7 @@ impl Store {
                 "tool is not present in the enabled observed catalog".to_string(),
             ));
         }
-        Ok(())
+        Ok(session.catalog_fingerprint)
     }
 
     /// Persist a redacted terminal audit for one invocation attempt.
@@ -496,12 +503,38 @@ fn validate_observation(observation: &CatalogObservation) -> Result<()> {
             "catalog exceeds 64 tools".to_string(),
         ));
     }
+    if observation.document_id.len() > 256
+        || observation.origin.len() > 2_048
+        || observation.sanitized_path.len() > 2_048
+        || observation.page_title.len() > 512
+        || observation.catalog_fingerprint.len() > MAX_CATALOG_BYTES
+        || observation.tools.iter().any(|tool| {
+            tool.name.is_empty()
+                || tool.name.len() > 256
+                || tool.description.len() > 8_192
+                || json_depth(&tool.input_schema) > MAX_JSON_DEPTH
+                || json_depth(&tool.annotations) > MAX_JSON_DEPTH
+        })
+        || serde_json::to_vec(observation).is_ok_and(|encoded| encoded.len() > MAX_CATALOG_BYTES)
+    {
+        return Err(BrowserError::InvalidRequest(
+            "catalog metadata exceeds protocol bounds".to_string(),
+        ));
+    }
     if !observation.origin.starts_with("http://") && !observation.origin.starts_with("https://") {
         return Err(BrowserError::InvalidRequest(
             "invalid observed origin".to_string(),
         ));
     }
     Ok(())
+}
+
+fn json_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(values) => 1 + values.iter().map(json_depth).max().unwrap_or(0),
+        serde_json::Value::Object(values) => 1 + values.values().map(json_depth).max().unwrap_or(0),
+        _ => 1,
+    }
 }
 
 fn pairing_row(connection: &Connection, id: &str) -> Result<Option<PairingRequest>> {
@@ -659,6 +692,13 @@ mod tests {
             store.observe(&browser.id, &observation).unwrap_err().kind(),
             "invalid_request"
         );
+        let mut oversized = observation;
+        oversized.tools.truncate(1);
+        oversized.tools[0].description = "x".repeat(8_193);
+        assert_eq!(
+            store.observe(&browser.id, &oversized).unwrap_err().kind(),
+            "invalid_request"
+        );
     }
 
     #[test]
@@ -735,5 +775,30 @@ mod tests {
                 .kind(),
             "stale_document"
         );
+    }
+
+    #[test]
+    fn durable_identity_and_revocation_survive_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("browser.sqlite3");
+        let browser_id = {
+            let store = Store::open(&path).unwrap();
+            let request = store
+                .request_pairing("Chrome", extension_id(), vec![7; 32])
+                .unwrap();
+            let browser = store.approve_pairing(&request.id).unwrap();
+            store.revoke_browser(&browser.id).unwrap();
+            browser.id
+        };
+        let reopened = Store::open(&path).unwrap();
+        assert!(
+            reopened
+                .browser(&browser_id)
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_some()
+        );
+        assert!(reopened.pending_pairings().unwrap().is_empty());
     }
 }

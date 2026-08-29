@@ -92,6 +92,7 @@ pub enum BrowserMessage {
         tab_id: i64,
         document_id: String,
         catalog_revision: i64,
+        catalog_fingerprint: String,
         tool_name: String,
         arguments: Value,
     },
