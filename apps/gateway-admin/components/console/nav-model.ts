@@ -283,6 +283,6 @@ export function sectionOf(itemId: string): string | undefined {
 }
 
 export function isNavItemActive(href: string, pathname: string): boolean {
-  if (href === '/') return pathname === '/'
+  if (href === '/' || href === '/team') return pathname === href
   return pathname === href || pathname.startsWith(`${href}/`)
 }

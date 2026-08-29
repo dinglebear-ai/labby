@@ -3,16 +3,15 @@ import { ArrowLeft, CircleHelp, Search, Send, Settings } from "lucide-react";
 import { actionIcon } from "@/components/palette/ActionIcon";
 import { Button } from "@/components/ui/aurora/button";
 import { Input } from "@/components/ui/aurora/input";
-import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
+import type { EndpointTone } from "@/lib/endpointStatus";
 import { argumentPlaceholder, focusInput } from "@/lib/paletteView";
 
 interface PaletteCommandBarProps {
   active?: LauncherEntry;
   activeDescendantId?: string;
-  config: PaletteConfig | null;
-  endpointLabel: string;
-  endpointTone: string;
+  endpointMessage: string;
+  endpointTone: EndpointTone;
   hasQuery: boolean;
   listboxOpen: boolean;
   modeAction: LauncherEntry | null;
@@ -31,15 +30,10 @@ interface PaletteCommandBarProps {
   onToggleSettings: () => void;
 }
 
-function endpointStatusLabel(endpointLabel: string): string {
-  return `Server: ${endpointLabel}`;
-}
-
 export function PaletteCommandBar({
   active,
   activeDescendantId,
-  config,
-  endpointLabel,
+  endpointMessage,
   endpointTone,
   hasQuery,
   listboxOpen,
@@ -89,14 +83,19 @@ export function PaletteCommandBar({
         className="axon-brand"
         type="button"
         onClick={onReset}
-        title={config?.serverUrl ?? endpointLabel}
-        aria-label="Reset Labby palette"
+        title={endpointMessage}
+        aria-label={`Reset Labby palette. ${endpointMessage}`}
       >
         <span className="axon-word">Labby</span>
         <span className={`axon-status-dot axon-status-${endpointTone}`}>
-          <span className="sr-only">{endpointStatusLabel(endpointLabel)}</span>
+          <span className="sr-only">{endpointMessage}</span>
         </span>
       </Button>
+      {endpointTone === "error" ? (
+        <span className="endpoint-status-message" role="status" title={endpointMessage}>
+          {endpointMessage}
+        </span>
+      ) : null}
       <span className="axon-divider" aria-hidden="true" />
       {/* biome-ignore lint/a11y/noStaticElementInteractions: click-to-focus convenience; the real control is the command input within */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users focus the input directly; this wrapper only expands the pointer target */}

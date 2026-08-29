@@ -4,7 +4,7 @@ import { actionOptionId } from "@/components/palette/ActionList";
 import { PaletteShell } from "@/components/palette/PaletteShell";
 import { launcherEntryMatches, type LauncherEntry, useLauncherCatalog } from "@/lib/launcherCatalog";
 import { executeLauncherEntry, fetchLauncherSchema, resultErrorMessage } from "@/lib/labbyClient";
-import { endpointStatus } from "@/lib/endpointStatus";
+import { endpointStatus, endpointStatusMessage } from "@/lib/endpointStatus";
 import { exampleLauncherParams, validateLauncherParams } from "@/lib/launcherValidation";
 import { recordPaletteLaunch } from "@/lib/paletteAudit";
 import { hostLabel } from "@/lib/url";
@@ -346,6 +346,13 @@ export default function App() {
     configError,
     catalogError,
   });
+  const endpointMessage = endpointStatusMessage({
+    endpointLabel,
+    configured: Boolean(config),
+    catalogLoading,
+    configError,
+    catalogError,
+  });
   const submitDisabled = !active || running || Boolean(mode === "argument" && !argumentJson.ok);
 
   return (
@@ -357,7 +364,7 @@ export default function App() {
       configError={configError}
       copied={copied}
       draftConfig={draftConfig}
-      endpointLabel={endpointLabel}
+      endpointMessage={endpointMessage}
       endpointTone={endpointTone}
       filtered={filtered}
       hasQuery={hasQuery}
