@@ -152,6 +152,24 @@ impl GatewayManager {
         self.reload_with_origin_unlocked(origin, owner).await
     }
 
+    /// Compare a requested upstream revision and reload while holding the same
+    /// mutation lease. The durable config is deliberately re-read after lock
+    /// acquisition so a queued reload cannot validate against stale state.
+    pub async fn reload_checked(
+        &self,
+        name: Option<&str>,
+        expected_revision: Option<&str>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+    ) -> Result<GatewayCatalogDiff, ToolError> {
+        let _mutation_guard = self.acquire_config_mutation().await?;
+        if let (Some(name), Some(expected)) = (name, expected_revision) {
+            let current = self.load_config_for_mutation().await?;
+            super::config_ops::ensure_upstream_revision(&current, name, Some(expected))?;
+        }
+        self.reload_with_origin_unlocked(origin, owner).await
+    }
+
     /// Reload in an owned task so the reconcile survives caller cancellation.
     ///
     /// Dispatch surfaces run inside request futures that the HTTP stack is
@@ -221,6 +239,45 @@ impl GatewayManager {
                     ),
                 })
             }
+        }
+    }
+
+    pub async fn reload_checked_detached(
+        &self,
+        name: Option<&str>,
+        expected_revision: Option<&str>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        wait: std::time::Duration,
+    ) -> Result<GatewayReloadOutcome, ToolError> {
+        let manager = self.clone();
+        let name = name.map(str::to_owned);
+        let expected_revision = expected_revision.map(str::to_owned);
+        let origin = origin.map(str::to_owned);
+        let task = tokio::spawn(async move {
+            manager
+                .reload_checked(
+                    name.as_deref(),
+                    expected_revision.as_deref(),
+                    origin.as_deref(),
+                    owner,
+                )
+                .await
+        });
+        match tokio::time::timeout(wait, task).await {
+            Ok(Ok(result)) => result.map(|diff| GatewayReloadOutcome {
+                completed: true,
+                diff: Some(diff),
+                note: None,
+            }),
+            Ok(Err(join_error)) => Err(ToolError::internal_message(format!(
+                "gateway reload task failed: {join_error}"
+            ))),
+            Err(_) => Ok(GatewayReloadOutcome {
+                completed: false,
+                diff: None,
+                note: Some("reload is still reconciling upstreams in the background".into()),
+            }),
         }
     }
 

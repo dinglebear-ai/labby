@@ -996,3 +996,37 @@ async fn bearer_token_credential_write_persists_through_store_seam() {
         "bearer credential must be persisted to the .env file through the store seam"
     );
 }
+
+#[tokio::test]
+async fn queued_reload_rechecks_expected_revision_inside_mutation_lock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let mut initial = GatewayConfig::default();
+    initial
+        .upstream
+        .push(fixture_stdio_upstream("gateway-alpha"));
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    let expected = crate::gateway::manager::views::upstream_revision(&initial.upstream[0]);
+
+    let guard = manager.acquire_config_mutation().await.unwrap();
+    let queued = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .reload_checked(Some("gateway-alpha"), Some(&expected), None, None)
+                .await
+        })
+    };
+    tokio::task::yield_now().await;
+    let mut changed = initial;
+    changed.upstream[0].enabled = false;
+    crate::gateway::config::write_gateway_config(&path, &changed).unwrap();
+    drop(guard);
+
+    let error = queued
+        .await
+        .unwrap()
+        .expect_err("queued reload must observe the newer durable revision");
+    assert_eq!(error.kind(), "stale_state");
+}

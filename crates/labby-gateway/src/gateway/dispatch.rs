@@ -817,26 +817,14 @@ async fn handle_gateway_actions(
         }
         "gateway.reload" => {
             let params: GatewayReloadParams = parse_params(params_value)?;
-            if let (Some(name), Some(expected)) =
-                (params.name.as_deref(), params.expected_revision.as_deref())
-            {
-                let current = manager.get(name).await?;
-                if current.revision != expected {
-                    return Err(ToolError::Sdk {
-                        sdk_kind: "stale_state".into(),
-                        message: format!(
-                            "gateway revision conflict; current revision is {}",
-                            current.revision
-                        ),
-                    });
-                }
-            }
             // Bounded below the API router's transport backstop so a slow full
             // rebuild reports "still reconciling" instead of the middleware
             // cancelling the reload mid-flight and discarding the config.
             to_json(
                 manager
-                    .reload_with_origin_detached(
+                    .reload_checked_detached(
+                        params.name.as_deref(),
+                        params.expected_revision.as_deref(),
                         params.origin.as_deref(),
                         params.owner.map(Into::into),
                         std::time::Duration::from_secs(20),

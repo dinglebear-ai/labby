@@ -222,6 +222,9 @@ impl GatewayManager {
             )),
             config_mutation: Arc::new(Mutex::new(())),
             execution_loadouts: Arc::new(RwLock::new(execution_loadouts)),
+            execution_capabilities: Arc::new(ArcSwap::from_pointee(
+                super::super::execution_loadout::PublishedCapabilityCatalog::default(),
+            )),
             agent_executions: Arc::new(agent_executions),
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
