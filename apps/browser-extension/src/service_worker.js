@@ -163,8 +163,7 @@ function schedulePairingPoll(expiresAt) {
   if (pairingPollExpiresAt && pairingPollExpiresAt * 1000 <= Date.now()) {
     pairingPollTimer = undefined;
     pairingPollExpiresAt = undefined;
-    void chrome.storage.local.remove("pairingId");
-    void chrome.storage.local.set({bridgeStatus: {state: "error", message: "pairing_expired", updatedAt: Date.now()}});
+    void finalizePairingExpiry().catch((error) => reportBridgeFailure(error, {kind: "pairing_expiry_cleanup_failed"}));
     return;
   }
   pairingPollTimer = setTimeout(() => {
@@ -174,6 +173,11 @@ function schedulePairingPoll(expiresAt) {
       if (pairingId) schedulePairingPoll(pairingPollExpiresAt);
     });
   }, 2_000);
+}
+
+async function finalizePairingExpiry() {
+  await chrome.storage.local.remove("pairingId");
+  await chrome.storage.local.set({bridgeStatus: {state: "error", message: "pairing_expired", updatedAt: Date.now()}});
 }
 
 async function syncBrowserSettings() {
