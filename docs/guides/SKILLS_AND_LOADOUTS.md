@@ -249,6 +249,34 @@ List operations degrade to empty catalogs where that is the least surprising MCP
 
 Gateway Admin exposes Loadouts as a first-class Control Plane route at /loadouts. The page uses the same Aurora page shell, ConsoleHero, DashboardPanel, Dialog, Switch, Checkbox, Badge, Button, and confirmation patterns used elsewhere in the console.
 
+## Execution loadouts
+
+Execution loadouts are a separate per-turn domain. They do not reuse or alter
+`GatewayLoadoutConfig`, which remains the mounted-route configuration and
+restart-debt contract described above. An execution loadout stores one bounded,
+deterministically normalized collection of provider-qualified references for
+tools, prompts, resources, skills, agents, MCP apps, MCP servers, and plugins.
+Each reference contains a stable provider identity, family, opaque member ID,
+and expected member revision; display names never grant access.
+
+Authenticated clients use the bounded Palette REST surface:
+
+- `GET|POST /v1/palette/execution-loadouts` lists or creates drafts;
+- `GET|PATCH /v1/palette/execution-loadouts/{id}` reads or CAS-revises a draft;
+- `POST .../{id}/preview` resolves a side-effect-free principal/runtime-bound
+  preview against one catalog generation;
+- `POST .../{id}/activate` re-resolves the live catalog and authorization before
+  atomically creating an immutable active revision; and
+- `POST .../{id}/rollback` copies an immutable revision into a new draft revision.
+
+Draft, desired active, and effective runtime revisions are distinct. Execution
+loadouts never create route restart debt. Preview and activation report missing,
+stale, unauthorized, and unsupported references explicitly. Families that do
+not yet have authoritative live catalog identities remain selectable but fail
+closed as `unsupported`; they are never silently discarded. Catalog search,
+lazy schema/descriptor hydration, and result sizes retain the Palette endpoint's
+existing server-side limits, so clients do not download or expand the catalog.
+
 The Loadout form provides upstream/service selection and category gates. It blocks invalid Skills-without-Resources combinations before submit while backend validation remains authoritative.
 
 Settings → Surfaces mounts the Protected MCP Routes editor. It can select a named Loadout; when selected, direct upstream/backend inputs are disabled and the route payload uses the gateway_subset Loadout target. Gateway-subset route changes are staged automatically and display Restart · add/update/remove until the process restarts. The Loadouts page similarly stages edits to mounted Loadouts and shows a restart banner/badge instead of presenting desired config as live.

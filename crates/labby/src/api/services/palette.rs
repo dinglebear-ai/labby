@@ -1,6 +1,6 @@
 use axum::{
     Extension, Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
@@ -10,6 +10,7 @@ use labby_gateway::gateway::palette::{
     PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
     PaletteExecutionReceipt,
 };
+use labby_gateway::gateway::{ExecutionLoadoutCreate, ExecutionLoadoutPatch};
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -42,6 +43,184 @@ pub fn routes(_state: AppState) -> Router<AppState> {
         .route("/schema", get(schema))
         .route("/descriptor", get(descriptor))
         .route("/execute", post(execute))
+        .route(
+            "/execution-loadouts",
+            get(execution_loadout_list).post(execution_loadout_create),
+        )
+        .route(
+            "/execution-loadouts/{id}",
+            get(execution_loadout_get).patch(execution_loadout_patch),
+        )
+        .route(
+            "/execution-loadouts/{id}/preview",
+            post(execution_loadout_preview),
+        )
+        .route(
+            "/execution-loadouts/{id}/activate",
+            post(execution_loadout_activate),
+        )
+        .route(
+            "/execution-loadouts/{id}/rollback",
+            post(execution_loadout_rollback),
+        )
+}
+
+async fn execution_loadout_list(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+) -> Result<Json<Value>, ApiError> {
+    palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    Ok(Json(
+        json!({ "items": manager.execution_loadout_list().await }),
+    ))
+}
+
+async fn execution_loadout_get(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_get(&id)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_create(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Json(input): Json<ExecutionLoadoutCreate>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    require_execution_loadout_write(&caller)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_create(input)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_patch(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutPatch>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    require_execution_loadout_write(&caller)?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_patch(&id, input)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecutionLoadoutRuntimeRequest {
+    runtime_identity: String,
+    #[serde(default)]
+    expected_draft_revision: Option<u64>,
+    #[serde(default)]
+    revision: Option<u64>,
+}
+
+async fn execution_loadout_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutRuntimeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_preview(&caller, &id, &input.runtime_identity)
+        .await?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_activate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutRuntimeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+    require_execution_loadout_write(&caller)?;
+    let expected = input
+        .expected_draft_revision
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "invalid_params".into(),
+            message: "expectedDraftRevision is required".into(),
+        })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_activate(&caller, &id, expected, &input.runtime_identity)
+        .await?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+async fn execution_loadout_rollback(
+    State(state): State<AppState>,
+    auth: Option<Extension<AuthContext>>,
+    Path(id): Path<String>,
+    Json(input): Json<ExecutionLoadoutRuntimeRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), None)?;
+    require_execution_loadout_write(&caller)?;
+    let expected = input
+        .expected_draft_revision
+        .ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "invalid_params".into(),
+            message: "expectedDraftRevision is required".into(),
+        })?;
+    let revision = input.revision.ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "invalid_params".into(),
+        message: "revision is required".into(),
+    })?;
+    let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+    let value = manager
+        .execution_loadout_rollback(&id, expected, revision)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(Json(
+        serde_json::to_value(value).map_err(serialization_error)?,
+    ))
+}
+
+fn require_execution_loadout_write(caller: &PaletteCaller) -> Result<(), ToolError> {
+    if caller.caller.can_execute() || caller.caller.is_admin() {
+        return Ok(());
+    }
+    Err(ToolError::Sdk {
+        sdk_kind: "forbidden".into(),
+        message: "execution loadout mutation requires mcp:write permission".into(),
+    })
+}
+
+fn serialization_error(error: serde_json::Error) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "internal".into(),
+        message: format!("failed to serialize execution loadout response: {error}"),
+    }
 }
 
 async fn catalog(

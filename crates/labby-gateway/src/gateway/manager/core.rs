@@ -192,6 +192,9 @@ impl GatewayManager {
         store: Arc<dyn GatewayConfigStore>,
     ) -> Result<Self, ToolError> {
         let registry: Arc<dyn GatewayServiceRegistry> = Arc::new(EmptyServiceRegistry);
+        let execution_loadouts =
+            super::super::execution_loadout::ExecutionLoadoutStore::load(&path)
+                .map_err(ToolError::from)?;
         Ok(Self {
             path,
             store,
@@ -202,6 +205,7 @@ impl GatewayManager {
                 super::publication::next_runtime_config_generation(),
             )),
             config_mutation: Arc::new(Mutex::new(())),
+            execution_loadouts: Arc::new(RwLock::new(execution_loadouts)),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
             notifier: None,
