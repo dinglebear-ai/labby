@@ -12,8 +12,8 @@ use labby_gateway::gateway::agent_execution::{
 };
 use labby_gateway::gateway::palette::{
     CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
-    PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
-    PaletteExecutionReceipt,
+    McpToolLauncherEntry, PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse,
+    PaletteExecutionMode, PaletteExecutionReceipt,
 };
 use labby_gateway::gateway::{ExecutionLoadoutCreate, ExecutionLoadoutPatch};
 use labby_primitives::action::{ActionSpec, ParamSpec};
@@ -387,6 +387,33 @@ async fn search(
     if query.q.trim().starts_with("labby:") {
         let catalog =
             exact_labby_action_catalog(&state, auth.as_ref().map(|auth| &auth.0), query.q.trim());
+        return Ok(catalog_response(headers, catalog));
+    }
+    if query.q.trim().starts_with("mcp:") && query.q.trim().matches("::").count() == 1 {
+        let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+        let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
+        let descriptor = manager.palette_descriptor(&caller, query.q.trim()).await?;
+        let schema_fingerprint = descriptor
+            .input_schema
+            .as_ref()
+            .map(stable_json_fingerprint);
+        let entry = McpToolLauncherEntry {
+            id: descriptor.id,
+            label: descriptor.tool.clone(),
+            description: descriptor.description,
+            source: descriptor.upstream.clone(),
+            destructive: descriptor.destructive,
+            input_schema: descriptor.input_schema,
+            schema_fingerprint,
+            contract_hash: descriptor.contract_hash,
+            upstream: descriptor.upstream,
+            tool: descriptor.tool,
+        };
+        let entries = vec![LauncherEntryView::McpTool(entry)];
+        let catalog = LauncherCatalogView {
+            fingerprint: catalog_fingerprint(&entries),
+            entries,
+        };
         return Ok(catalog_response(headers, catalog));
     }
     let mut catalog =
@@ -1884,6 +1911,63 @@ mod tests {
                 .any(|entry| entry["id"] == "labby:demo::admin.run")
         );
         assert!(entries.len() <= 5);
+    }
+
+    #[cfg(feature = "proxy-testkit")]
+    #[tokio::test]
+    async fn exact_mcp_search_resolves_only_the_named_upstream_tool() {
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = test_gateway_manager(
+            std::env::temp_dir().join("palette-exact-mcp-search.toml"),
+            runtime,
+        );
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                code_mode: CodeModeConfig {
+                    enabled: true,
+                    ..CodeModeConfig::default()
+                },
+                upstream: vec![test_upstream_config("github")],
+                ..GatewayConfig::default()
+            })
+            .await;
+        pool.insert_entry_for_test(
+            "github",
+            healthy_upstream_entry_with_schema(
+                "github",
+                "search_repos",
+                Some(json!({"type":"object","properties":{"q":{"type":"string"}}})),
+            ),
+        )
+        .await;
+
+        let state =
+            AppState::from_registry(test_registry()).with_gateway_manager(Arc::new(manager));
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/search?q=mcp:github::search_repos&limit=5")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(value["entries"][0]["id"], "mcp:github::search_repos");
+        assert_eq!(
+            value["entries"][0]["inputSchema"]["properties"]["q"]["type"],
+            "string"
+        );
     }
 
     #[test]
