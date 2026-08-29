@@ -43,12 +43,11 @@ deliberate `node = "lts"` pin documented in the global CLAUDE.md.
 
 ## Gateway table (implemented)
 
-Currently `Server · Transport · Tools · Resources · Prompts · Actions`, flat.
-The mock is `Server · Clients · Endpoint · Exposed · Uptime`, grouped by status.
-
-`Clients` and `Uptime` have no field on the `Gateway` type. **Render the
-columns and show `—`** — the mock does exactly this for `mcp.sh`, which has no
-client data. Do not invent values; do not omit the columns.
+The implemented table follows the mock's grouped
+`Server · Clients · Endpoint · Exposed · Uptime` layout. `Clients` and
+`Uptime` have no field on the `Gateway` type, so those cells render `—`, as the
+reference mock does for `mcp.sh`; the UI neither fabricates values nor drops
+the columns.
 
 ### Card
 

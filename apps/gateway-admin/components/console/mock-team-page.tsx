@@ -1,3 +1,4 @@
+import type { ComponentType } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Activity, Archive, Bot, Box, ChevronRight, Container, Copy, FileCode2,
@@ -94,8 +95,17 @@ function TeamStash() {
 
 const PAGE_META: Record<MockTeamPageKind, { title: string; label: string }> = { overview: { title: 'tootie.tv', label: 'Team Overview' }, library: { title: 'Team Library', label: 'Team Library' }, projects: { title: 'Projects', label: 'Projects' }, activity: { title: 'Activity', label: 'Activity' }, stash: { title: 'Stash', label: 'Team Stash' } }
 
+const TEAM_PAGES: Record<MockTeamPageKind, ComponentType> = {
+  overview: TeamOverview,
+  library: TeamLibrary,
+  projects: TeamProjects,
+  activity: TeamActivity,
+  stash: TeamStash,
+}
+
 export function MockTeamPage({ kind }: { kind: MockTeamPageKind }) {
   const meta = PAGE_META[kind]
+  const Page = TEAM_PAGES[kind]
   const breadcrumbs = kind === 'overview' ? [{ label: 'Team' }] : [{ label: 'Team', href: '/team/' }, { label: meta.title }]
-  return <><AppHeader breadcrumbs={breadcrumbs} /><section data-screen-label={meta.label} data-mock-surface="true" className="flex flex-col gap-[14px]">{kind === 'overview' ? <TeamOverview /> : kind === 'library' ? <TeamLibrary /> : kind === 'projects' ? <TeamProjects /> : kind === 'activity' ? <TeamActivity /> : <TeamStash />}</section></>
+  return <><AppHeader breadcrumbs={breadcrumbs} /><section data-screen-label={meta.label} data-mock-surface="true" className="flex flex-col gap-[14px]"><Page /></section></>
 }
