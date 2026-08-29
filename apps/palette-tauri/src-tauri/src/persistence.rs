@@ -244,10 +244,13 @@ mod windows_acl_tests {
         assert!(status.success());
 
         harden_secret_directory(dir.path()).unwrap();
+        let powershell_module_path =
+            powershell_module_path_from(std::env::var_os("SystemRoot")).unwrap();
         let script = r#"$acl=Get-Acl -LiteralPath $env:LABBY_TEST_SECRET_DIR; $sids=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }); $current=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($sids -contains 'S-1-1-0') { exit 2 }; if (-not $acl.AreAccessRulesProtected) { exit 3 }; if ($sids.Count -ne 3) { exit 4 }; foreach ($expected in @($current, 'S-1-5-18', 'S-1-5-32-544')) { if ($sids -notcontains $expected) { exit 5 } }"#;
         let checked = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("LABBY_TEST_SECRET_DIR", dir.path())
+            .env("PSModulePath", powershell_module_path)
             .output()
             .unwrap();
         assert!(
