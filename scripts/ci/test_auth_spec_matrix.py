@@ -127,6 +127,7 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
     def test_full_mcp_normative_denominator_is_preserved(self) -> None:
         data = json.loads(NORMATIVE.read_text())
         self.assertEqual(data["protocol_version"], "2026-07-28")
+        self.assertRegex(data["source_revision"], r"^[0-9a-f]{40}$")
         self.assertEqual(len(data["sources"]), 4)
         # Two keyword-parser artifacts ("SHOULD to" and "MUST.") were not
         # actor obligations and are deliberately excluded from the denominator.

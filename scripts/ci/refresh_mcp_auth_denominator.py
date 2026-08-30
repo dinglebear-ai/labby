@@ -10,6 +10,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/"
+SOURCE_REVISION = "db4bfcff3d60f5df01a21bdf6b78f7012cac4634"
+SOURCE_BASE = (
+    "https://raw.githubusercontent.com/modelcontextprotocol/modelcontextprotocol/"
+    f"{SOURCE_REVISION}/docs/specification/2026-07-28/basic/authorization/"
+)
 PAGES = ["index.md", "authorization-server-discovery.md", "client-registration.md", "security-considerations.md"]
 
 
@@ -18,7 +23,8 @@ def fetch_denominator() -> dict:
     source_digests = {}
     for page in PAGES:
         url = BASE + page
-        text = urllib.request.urlopen(url, timeout=20).read().decode()
+        source_page = page.removesuffix(".md") + ".mdx"
+        text = urllib.request.urlopen(SOURCE_BASE + source_page, timeout=20).read().decode()
         source_digests[url] = hashlib.sha256(text.encode()).hexdigest()
         paragraphs = re.split(r"\n\s*\n", text)
         ordinal = 0
@@ -30,6 +36,13 @@ def fetch_denominator() -> dict:
                 strengths = re.findall(r"\b(MUST NOT|SHOULD NOT|MUST|SHOULD)\b", clause)
                 for strength in strengths:
                     ordinal += 1
+                    # Markdown list continuations in the published representation can
+                    # split RFC 9207 comparison operators into bare "SHOULD to" and
+                    # "MUST." fragments. Keep their ordinals reserved so stable IDs do
+                    # not shift, but do not publish them as normative requirements.
+                    words = re.findall(r"[A-Za-z]+", re.sub(r"\*\*", "", clause))
+                    if words in (["SHOULD", "to"], ["MUST"]):
+                        continue
                     rows.append({
                         "id": f"MCP-2026-AUTH-{page.removesuffix('.md').upper()}-{ordinal:03d}",
                         "source_url": url,
@@ -41,13 +54,28 @@ def fetch_denominator() -> dict:
                         "test_id": f"normative-{page.removesuffix('.md')}-{ordinal:03d}",
                         "status": "partial",
                     })
-    return {"protocol_version": "2026-07-28", "sources": [BASE + page for page in PAGES], "source_sha256": source_digests, "requirements": rows}
+    # The published Markdown representation is not a stable normative-clause
+    # serialization: list continuations can lose their subject or punctuation.
+    # Preserve the reviewed, context-complete wording for stable row IDs while
+    # still refreshing and checking every upstream page digest. Newly extracted
+    # IDs remain visible and therefore require an explicit coverage disposition.
+    matrix = ROOT / "conformance/mcp-auth-normative.json"
+    if matrix.exists():
+        reviewed = {
+            row["id"]: row["requirement"]
+            for row in json.loads(matrix.read_text()).get("requirements", [])
+        }
+        for row in rows:
+            if row["id"] in reviewed:
+                row["requirement"] = reviewed[row["id"]]
+    return {"protocol_version": "2026-07-28", "source_revision": SOURCE_REVISION, "sources": [BASE + page for page in PAGES], "source_sha256": source_digests, "requirements": rows}
 
 
 def denominator_projection(data: dict) -> dict:
     fields = ("id", "source_url", "strength", "requirement")
     return {
         "protocol_version": data["protocol_version"],
+        "source_revision": data["source_revision"],
         "sources": data["sources"],
         "source_sha256": data["source_sha256"],
         "requirements": [{field: row[field] for field in fields} for row in data["requirements"]],

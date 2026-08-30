@@ -211,6 +211,7 @@ def main() -> None:
         row["assertion_evidence"] = entry["assertion_evidence"]
         row["subordinate_row_ids"] = subordinate_ids
         row["asserted_obligation"] = entry["asserted_obligation"]
+        row["source_requirement_sha256"] = entry["source_requirement_sha256"]
         row["verification_commands"] = [f"{HARNESS} {row['id']}"]
         row["applicability"] = entry["applicability"]
         row["status"] = entry["status"]
