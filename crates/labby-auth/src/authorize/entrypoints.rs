@@ -50,7 +50,7 @@ pub async fn browser_login(
         offline_access: false,
         force_consent: false,
     })?;
-    info!(oauth_state_id = %oauth_state_id, return_to = %return_to, "browser login redirected to upstream provider");
+    info!(oauth_state_id = %oauth_state_id, "browser login redirected to upstream provider");
     Ok((
         StatusCode::FOUND,
         [(header::LOCATION, location.to_string())],
@@ -75,7 +75,10 @@ pub async fn register_client(
         if redirect_uri != &native_callback_endpoint
             && !is_allowed_redirect_uri(redirect_uri, &state.config.allowed_client_redirect_uris)
         {
-            warn!(redirect_uri = %redirect_uri, native_callback_endpoint = %native_callback_endpoint, allowed_patterns = ?state.config.allowed_client_redirect_uris, "oauth register rejected: redirect URI is not in the allowlist, native callback, or loopback set");
+            warn!(
+                redirect_uri_id = %fingerprint(redirect_uri),
+                "oauth register rejected: redirect URI is not in the allowlist, native callback, or loopback set"
+            );
             return Err(AuthError::Validation(format!(
                 "redirect URI `{redirect_uri}` must target a loopback host, match the native callback endpoint, or match an allowed redirect pattern"
             )));
@@ -91,7 +94,11 @@ pub async fn register_client(
         jwks_uri: None,
     };
     state.store.register_client(client.clone()).await?;
-    info!(client_id = %client.client_id, redirect_uri_count = client.redirect_uris.len(), redirect_uris = ?client.redirect_uris, "oauth client registration accepted");
+    info!(
+        client_id = %client.client_id,
+        redirect_uri_count = client.redirect_uris.len(),
+        "oauth client registration accepted"
+    );
     Ok(Json(ClientRegistrationResponse {
         client_id: client.client_id,
         redirect_uris: client.redirect_uris,

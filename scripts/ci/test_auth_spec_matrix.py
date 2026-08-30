@@ -84,6 +84,10 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
                 cwd=ROOT, capture_output=True, text=True, check=True,
             ).stdout.splitlines()
         )
+        mcp_rows = {
+            row["id"]: row
+            for row in json.loads(NORMATIVE.read_text())["requirements"]
+        }
         for row in rows:
             with self.subTest(row=row["id"]):
                 self.assertTrue(row["source_excerpt"])
@@ -91,7 +95,13 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
                 self.assertIn(row["status"], {"pass", "not_applicable"})
                 if row["status"] == "pass":
                     self.assertEqual(row["applicability"], "applicable")
-                    self.assertIn(row["verification_id"], supported)
+                    verification_ids = row.get("verification_ids") or [row.get("verification_id")]
+                    self.assertTrue(all(verification_ids))
+                    for verification_id in verification_ids:
+                        if verification_id.startswith("MCP-2026-"):
+                            self.assertEqual(mcp_rows[verification_id]["status"], "pass")
+                        else:
+                            self.assertIn(verification_id, supported)
                 else:
                     self.assertEqual(row["applicability"], "not_applicable")
                     self.assertIsNone(row["verification_id"])
@@ -248,6 +258,14 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
         self.assertIn("python3 scripts/ci/refresh_mcp_auth_denominator.py --check", workflow)
         self.assertIn("python3 scripts/ci/check_vendor_rmcp_provenance.py", workflow)
         provenance = json.loads((ROOT / "conformance/vendor-rmcp-provenance.json").read_text())
+        provenance_checker = (ROOT / "scripts/ci/check_vendor_rmcp_provenance.py").read_text()
+        self.assertNotIn("upstream_repository", provenance)
+        self.assertNotIn("upstream_archive_url", provenance)
+        self.assertIn(
+            'TRUSTED_UPSTREAM_REPOSITORY = "https://github.com/dinglebear-ai/rust-sdk"',
+            provenance_checker,
+        )
+        self.assertIn('archive_url = f"{TRUSTED_ARCHIVE_PREFIX}{commit}.tar.gz"', provenance_checker)
         self.assertRegex(provenance["upstream_commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(provenance["upstream_archive_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(provenance["unified_diff_sha256"], r"^[0-9a-f]{64}$")

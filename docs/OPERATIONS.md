@@ -58,10 +58,13 @@ The snapshot must also preserve the provider-token encryption key configured by
 encrypted under the backup recovery key. Without it, persisted Google provider
 credentials are intentionally unrecoverable. CI runs
 `scripts/ci/auth_backup_restore_drill.py` on every auth conformance change to
-exercise SQLite's online backup API, `integrity_check`, isolated restore, row
-recovery, and byte-identical signing/provider key recovery. Production
-operations should run the same drill against a sanitized snapshot on a regular
-schedule and alert on any failed integrity or restore assertion.
+exercise the documented stopped-service recovery path against Labby's real auth
+schema: it copies one database/signing/provider-key recovery set, reopens the
+restored database with the restored provider key, decrypts persisted provider
+credentials, and validates a pre-backup JWT with the restored signing key.
+Production operations should separately automate encrypted snapshots, SQLite
+integrity checks, restoration into an isolated `LABBY_HOME`, login, refresh,
+revocation, and retention/destruction checks on a regular schedule.
 
 For subject containment, revoke that subject's browser/provider credentials and
 dependent Labby grants, drain its initialized upstream peers, and verify the

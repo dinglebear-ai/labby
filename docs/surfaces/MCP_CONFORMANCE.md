@@ -254,6 +254,12 @@ official pages and verifies their digests and extracted clauses. Vendored rmcp
 provenance is separately pinned in `conformance/vendor-rmcp-provenance.json`:
 CI verifies the immutable upstream archive checksum, every patched-file hash,
 the explicit changed-file manifest, and the normalized unified-diff checksum.
+The checker derives archives only from the repository-pinned approved upstream
+origin. Because any in-repository checker can otherwise be changed by the same
+pull request as its inputs, `.github/workflows/vendor-rmcp-policy.yml` runs from
+the protected base branch and requires the maintainer-applied
+`vendor-rmcp-approved` label for changes to the vendor tree, provenance
+manifest, checker, or policy workflow itself.
 
 ### Rollout and Inspector verification
 

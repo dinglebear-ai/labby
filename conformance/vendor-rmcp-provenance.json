@@ -1,10 +1,8 @@
 {
-  "upstream_repository": "https://github.com/dinglebear-ai/rust-sdk",
   "upstream_commit": "c9c3e518ce94b8d715519657c88195515978bda4",
-  "upstream_archive_url": "https://github.com/dinglebear-ai/rust-sdk/archive/c9c3e518ce94b8d715519657c88195515978bda4.tar.gz",
   "upstream_archive_sha256": "f29835a3b9124d72234c05b7f2ca331841c6303d9f7b5e094842191897d6da25",
   "crate_path": "crates/rmcp",
-  "unified_diff_sha256": "3e3745c107ac3627adbc85feaefce885da8c9d273f2577555d766aa9bfce3385",
+  "unified_diff_sha256": "0d77e18adecf2c8bb982bd6925e1918ebd7ba4b78620ec29469404d237c3c173",
   "patches": [
     {
       "path": "Cargo.toml",
@@ -23,7 +21,7 @@
     },
     {
       "path": "src/transport/auth.rs",
-      "patched_sha256": "3597c1d668ebae820525878394d53c2aa0410270aed399a5466a024bdcacf528",
+      "patched_sha256": "f7b8012a1a85c93c164b4589547e483d8c60021f6c66bae732335f1d550e384c",
       "obligation": "Compare authorization metadata issuer identifiers exactly as required by RFC 9207; reject untrusted callback error fields and issuer-unbound credentials; prove OAuth client requests use the Bearer header without query-token leakage; and cover scope-upgrade, resource-identifier, expired-token, and DCR-failure behavior."
     },
     {

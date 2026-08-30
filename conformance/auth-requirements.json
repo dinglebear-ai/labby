@@ -54,14 +54,15 @@
       "requirement": "Authorization servers provide OAuth or OIDC discovery.",
       "strength": "must",
       "applicability": "applicable",
-      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
       "evidence_paths": [
         "crates/labby-auth/src/upstream/manager.rs",
-        "crates/labby-auth/src/metadata.rs"
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
       ],
-      "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
+      "test_id": "metadata::tests::authorization_server_metadata_exposes_lab_endpoints",
       "verification_commands": [
-        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-005"
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-008"
       ],
       "status": "pass",
       "subordinate_row_ids": []
@@ -69,7 +70,7 @@
     {
       "id": "MCP-AUTH-004",
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#client-registration",
-      "requirement": "Clients obtain an identifier by CIMD, preregistration, or DCR, preferring CIMD.",
+      "requirement": "Clients obtain an identifier through preregistration when explicitly configured, otherwise CIMD when supported, with DCR as the compatibility fallback.",
       "strength": "must",
       "applicability": "applicable",
       "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
@@ -96,7 +97,7 @@
         "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
-      "test_id": "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
+      "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-012"
       ],
@@ -114,10 +115,10 @@
         "crates/labby-auth/src/upstream/store.rs",
         "crates/labby-auth/src/upstream/manager.rs"
       ],
-      "test_id": "upstream::store::tests::authorization_state_round_trips_issuer_requirement_and_requested_scopes",
+      "test_id": "transport::auth::tests::validate_authorization_response_issuer_rejects_invalid_cases",
       "status": "pass",
       "verification_commands": [
-        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-019"
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-025"
       ],
       "subordinate_row_ids": []
     },
@@ -218,18 +219,21 @@
       "requirement": "Refresh tokens remain confidential and clients do not assume issuance.",
       "strength": "must",
       "applicability": "applicable",
-      "implementation": "Refresh material is encrypted, confidential, optional, rotated on success, and never advertised as a resource scope.",
+      "implementation": "Refresh material is encrypted at rest and the client safely reauthorizes when no refresh token was issued.",
       "evidence_paths": [
-        "crates/labby-auth/src/token.rs",
-        "crates/labby-auth/src/at_rest.rs",
-        "crates/labby-auth/src/metadata.rs"
+        "crates/labby-auth/src/sqlite.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
-      "test_id": "sqlite::tests::opening_with_a_key_encrypts_legacy_plaintext_provider_tokens",
+      "test_id": null,
       "verification_commands": [
-        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-046"
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-046",
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-048"
       ],
       "status": "pass",
-      "subordinate_row_ids": []
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-046",
+        "MCP-2026-AUTH-INDEX-048"
+      ]
     },
     {
       "id": "MCP-AUTH-011",
@@ -255,12 +259,11 @@
       "requirement": "Insufficient scope should return a 403 Bearer challenge with error, scopes, and resource metadata.",
       "strength": "should",
       "applicability": "applicable",
-      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "implementation": "The resource server's insufficient-scope challenge contains the exact scopes required by the current operation.",
       "evidence_paths": [
-        "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "crates/labby-auth/src/middleware.rs"
       ],
-      "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
+      "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
       "status": "pass",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-052"

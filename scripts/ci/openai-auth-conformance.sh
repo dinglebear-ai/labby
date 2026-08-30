@@ -30,11 +30,15 @@ run_requirement() {
       run_test labby mcp::permanent_tools::tests::builtin_service_tool_mirrors_security_schemes_in_legacy_meta
       ;;
     OAI-AUTH-005)
+      run_test labby config::tests::resolve_auth_uses_curated_client_redirects_by_default
+      run_test labby-auth authorize::tests::https_redirects_still_require_the_allowlist
       run_test labby-auth metadata::tests::authorization_server_metadata_exposes_lab_endpoints
       run_test labby-auth metadata::tests::authorization_server_metadata_advertises_private_key_jwt_without_machine_clients
       run_test labby-auth metadata::tests::authorization_server_metadata_keeps_issuer_binding_in_compatibility_mode
       run_test labby-auth authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer
       run_test labby-auth authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer
+      run_test labby-auth authorize::tests::authorize_rejects_missing_or_invalid_response_type
+      run_test labby-auth authorize::tests::authorization_endpoint_requires_code_flow_and_pkce_s256
       run_test labby-auth cimd::tests::honours_every_auth_method_the_client_publishes
       run_test labby-auth cimd::tests::rejects_a_published_auth_method_we_do_not_implement
       ;;
@@ -48,6 +52,7 @@ run_requirement() {
       run_test labby-auth middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge
       run_test labby-auth authorize::tests::authorize_rejects_mismatched_resource_parameter
       run_test labby-auth token::tests::token_endpoint_rejects_mismatched_resource_parameter
+      run_test labby-auth token::tests::token_endpoint_refresh_grant_preserves_stored_resource_when_omitted
       ;;
     OAI-AUTH-007)
       run_test labby api::router::tests::protected_mcp_route_metadata_uses_host_and_path_resource
@@ -91,11 +96,15 @@ fi
 # CI runs one exact nextest expression so the product/auth graph is built once.
 # Individual requirement IDs above remain independently reproducible.
 readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri)
+| test(=config::tests::resolve_auth_uses_curated_client_redirects_by_default)
+| test(=authorize::tests::https_redirects_still_require_the_allowlist)
 | test(=metadata::tests::authorization_server_metadata_exposes_lab_endpoints)
 | test(=metadata::tests::authorization_server_metadata_advertises_private_key_jwt_without_machine_clients)
 | test(=metadata::tests::authorization_server_metadata_keeps_issuer_binding_in_compatibility_mode)
 | test(=authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer)
 | test(=authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer)
+| test(=authorize::tests::authorize_rejects_missing_or_invalid_response_type)
+| test(=authorize::tests::authorization_endpoint_requires_code_flow_and_pkce_s256)
 | test(=cimd::tests::honours_every_auth_method_the_client_publishes)
 | test(=cimd::tests::rejects_a_published_auth_method_we_do_not_implement)
 | test(=jwt::tests::minted_access_token_round_trips_and_contains_kid)
@@ -107,6 +116,7 @@ readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_ca
 | test(=middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge)
 | test(=authorize::tests::authorize_rejects_mismatched_resource_parameter)
 | test(=token::tests::token_endpoint_rejects_mismatched_resource_parameter)
+| test(=token::tests::token_endpoint_refresh_grant_preserves_stored_resource_when_omitted)
 | test(=token::tests::revocation_endpoint_invalidates_refresh_token_and_is_idempotent)
 | test(=token::tests::refresh_grant_does_not_elevate_legacy_scope)
 | test(=token::tests::refresh_grant_replay_rejects_a_revoked_replacement_token)

@@ -7,25 +7,141 @@
       "actor": "HTTP MCP implementation",
       "asserted_obligation": "conform to this specification.",
       "assertion_test_ids": [],
-      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "implementation": "Labby's HTTP MCP client, resource server, and authorization server resolve through every applicable actor-bound row in this denominator.",
       "assertion_evidence": [],
       "evidence_paths": [
-        "crates/labby-auth/src/upstream/manager.rs",
-        "crates/labby-auth/src/metadata.rs",
-        "crates/labby-auth/src/cimd.rs"
+        "conformance/mcp-auth-normative.json",
+        "scripts/ci/mcp_auth_normative_conformance.py"
       ],
       "applicability": "applicable",
       "status": "pass",
       "row_id": "MCP-2026-AUTH-INDEX-001",
       "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-004",
+        "MCP-2026-AUTH-INDEX-005",
         "MCP-2026-AUTH-INDEX-006",
+        "MCP-2026-AUTH-INDEX-007",
         "MCP-2026-AUTH-INDEX-008",
+        "MCP-2026-AUTH-INDEX-009",
+        "MCP-2026-AUTH-INDEX-010",
         "MCP-2026-AUTH-INDEX-011",
+        "MCP-2026-AUTH-INDEX-012",
+        "MCP-2026-AUTH-INDEX-013",
+        "MCP-2026-AUTH-INDEX-014",
+        "MCP-2026-AUTH-INDEX-015",
+        "MCP-2026-AUTH-INDEX-016",
+        "MCP-2026-AUTH-INDEX-017",
+        "MCP-2026-AUTH-INDEX-018",
+        "MCP-2026-AUTH-INDEX-019",
+        "MCP-2026-AUTH-INDEX-020",
+        "MCP-2026-AUTH-INDEX-021",
+        "MCP-2026-AUTH-INDEX-022",
+        "MCP-2026-AUTH-INDEX-025",
+        "MCP-2026-AUTH-INDEX-026",
         "MCP-2026-AUTH-INDEX-027",
+        "MCP-2026-AUTH-INDEX-028",
+        "MCP-2026-AUTH-INDEX-029",
+        "MCP-2026-AUTH-INDEX-030",
+        "MCP-2026-AUTH-INDEX-031",
+        "MCP-2026-AUTH-INDEX-032",
+        "MCP-2026-AUTH-INDEX-033",
+        "MCP-2026-AUTH-INDEX-034",
+        "MCP-2026-AUTH-INDEX-035",
+        "MCP-2026-AUTH-INDEX-036",
+        "MCP-2026-AUTH-INDEX-037",
+        "MCP-2026-AUTH-INDEX-038",
         "MCP-2026-AUTH-INDEX-039",
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-041",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-043",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-INDEX-045",
         "MCP-2026-AUTH-INDEX-046",
+        "MCP-2026-AUTH-INDEX-047",
+        "MCP-2026-AUTH-INDEX-048",
+        "MCP-2026-AUTH-INDEX-049",
         "MCP-2026-AUTH-INDEX-050",
-        "MCP-2026-AUTH-INDEX-061"
+        "MCP-2026-AUTH-INDEX-051",
+        "MCP-2026-AUTH-INDEX-052",
+        "MCP-2026-AUTH-INDEX-053",
+        "MCP-2026-AUTH-INDEX-054",
+        "MCP-2026-AUTH-INDEX-055",
+        "MCP-2026-AUTH-INDEX-056",
+        "MCP-2026-AUTH-INDEX-057",
+        "MCP-2026-AUTH-INDEX-058",
+        "MCP-2026-AUTH-INDEX-059",
+        "MCP-2026-AUTH-INDEX-060",
+        "MCP-2026-AUTH-INDEX-061",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-001",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-002",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-003",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-004",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-005",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-006",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-007",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-008",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-009",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-011",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-012",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-013",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-014",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-015",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-001",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-002",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-003",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-008",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-009",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-010",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-011",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-012",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-013",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-014",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-015",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-016",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-017",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-018",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-019",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-020",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-021",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-022",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-023",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-002",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-004",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-005",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-007",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-012",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-013",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-014",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-015",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-016",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-017",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-018",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-019",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-027",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-028",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
       ]
     },
     {
@@ -57,30 +173,23 @@
       "source_requirement_sha256": "d88344f9c4876946a51632f5e828fbbf532dd346a91433d847c78dc2e4477784",
       "actor": "alternative-transport MCP implementation",
       "asserted_obligation": "follow established security best practices for their protocol.",
-      "assertion_test_ids": [],
-      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
-      "assertion_evidence": [],
+      "assertion_test_ids": [
+        "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth"
+      ],
+      "implementation": "Labby's only non-HTTP transport is STDIO; it injects explicitly named environment credentials into the child instead of applying HTTP OAuth semantics.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth",
+          "behavior": "Exact test observes that stdio named environment credential reaches child environment without oauth."
+        }
+      ],
       "evidence_paths": [
-        "crates/labby-auth/src/upstream/manager.rs",
-        "crates/labby-auth/src/metadata.rs",
-        "crates/labby-auth/src/cimd.rs"
+        "crates/labby-gateway/src/upstream/pool/connect_stdio.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
       "row_id": "MCP-2026-AUTH-INDEX-003",
-      "subordinate_row_ids": [
-        "MCP-2026-AUTH-INDEX-002",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
-        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033"
-      ]
+      "subordinate_row_ids": []
     },
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
@@ -308,13 +417,13 @@
       "actor": "MCP server",
       "asserted_obligation": "include a `scope` parameter in the `WWW-Authenticate` header as defined in [RFC 6750 Section 3](https://datatracker.ietf.org/doc/html/rfc6750#section-3) to indicate the scopes required for accessing the resource.",
       "assertion_test_ids": [
-        "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate"
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
       ],
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "assertion_evidence": [
         {
-          "test_id": "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
-          "behavior": "Exact test observes that missing bearer token returns 401 with www authenticate."
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact HTTP test proves insufficient JWT and static scopes receive a challenge containing the operation-required scope."
         }
       ],
       "evidence_paths": [
@@ -332,13 +441,13 @@
       "actor": "MCP client",
       "asserted_obligation": "assume any particular set relationship between the challenged scope set and `scopes_supported`.",
       "assertion_test_ids": [
-        "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config"
+        "transport::auth::tests::select_scopes_prefers_exact_challenge_over_resource_metadata_catalog"
       ],
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config",
-          "behavior": "Exact test observes that authorization manager can attempt scope upgrade respects config."
+          "test_id": "transport::auth::tests::select_scopes_prefers_exact_challenge_over_resource_metadata_catalog",
+          "behavior": "Exact client test proves challenge scopes remain authoritative and are not inferred from the protected-resource scopes_supported catalog."
         }
       ],
       "evidence_paths": [
@@ -404,23 +513,17 @@
       "actor": "MCP server",
       "asserted_obligation": "strive for consistency in how they construct scope sets but they are not required to surface every dynamically issued scope through `scopes_supported`.",
       "assertion_test_ids": [
-        "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
-        "transport::auth::tests::select_scopes_deduplicates_challenge_already_requested"
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
       ],
-      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "implementation": "The resource server emits one deterministic challenge scope set derived from the current operation's required scopes.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
-          "behavior": "Exact test observes that select scopes unions challenge with previously requested."
-        },
-        {
-          "test_id": "transport::auth::tests::select_scopes_deduplicates_challenge_already_requested",
-          "behavior": "Exact test observes that select scopes deduplicates challenge already requested."
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
-        "crates/labby-gateway/src/upstream/http_client.rs"
+        "crates/labby-auth/src/middleware.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -430,21 +533,19 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "d6ea0e5df4066b25b9981d91c3fb764e22fd6b88a7c5ae7ad3167782ab6b5d12",
-      "actor": "MCP authorization server",
+      "actor": "MCP client",
       "asserted_obligation": "follow the principle of least privilege by requesting only the scopes necessary for their intended operations.",
       "assertion_test_ids": [
-        "authorize::tests::omitted_initial_scope_defaults_to_least_privilege_read_only_scope"
+        "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog"
       ],
-      "implementation": "Root discovery and omitted-scope authorization start with lab:read; execution/admin scopes require explicit selection or step-up, and the client unions only authoritative challenge scopes.",
+      "implementation": "The client preserves user-approved and operation-required scopes without expanding the request to the authorization server's complete scope catalog.",
       "assertion_evidence": [
         {
-          "test_id": "authorize::tests::omitted_initial_scope_defaults_to_least_privilege_read_only_scope",
-          "behavior": "Exact test observes that omitted initial scope defaults to least privilege read only scope."
+          "test_id": "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog",
+          "behavior": "Exact test observes that select scopes does not expand user request to entire server catalog."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/config.rs",
-        "crates/labby-auth/src/metadata.rs",
         "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
       "applicability": "applicable",
@@ -458,18 +559,17 @@
       "actor": "MCP client",
       "asserted_obligation": "During initial authorization, MCP clients SHOULD prefer challenge scopes, then protected-resource `scopes_supported`, and otherwise omit `scope`.",
       "assertion_test_ids": [
-        "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config"
+        "transport::auth::tests::initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission"
       ],
-      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "implementation": "Initial client scope selection prefers an exact challenge, then protected-resource metadata, and omits scope when neither supplies one.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config",
-          "behavior": "Exact test observes that authorization manager can attempt scope upgrade respects config."
+          "test_id": "transport::auth::tests::initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission",
+          "behavior": "Exact test observes that initial scope selection prefers challenge then resource metadata then omission."
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
-        "crates/labby-gateway/src/upstream/http_client.rs"
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -503,13 +603,13 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "de405b878db45877b72a4eaf597ed1e9b9b7c40a55be41498b4f18efdc423e64",
-      "actor": "MCP client",
+      "actor": "MCP authorization server",
       "asserted_obligation": "include the `iss` parameter in authorization responses, including error responses, as defined in [RFC9207 Section 2](https://datatracker.ietf.org/doc/html/rfc9207#section-2).",
       "assertion_test_ids": [
         "authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer",
         "authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer"
       ],
-      "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
+      "implementation": "The authorization server returns its exact metadata issuer in successful and trusted error authorization responses.",
       "assertion_evidence": [
         {
           "test_id": "authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer",
@@ -521,8 +621,7 @@
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/upstream/store.rs",
-        "crates/labby-auth/src/upstream/manager.rs"
+        "crates/labby-auth/src/authorize/response.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -659,13 +758,13 @@
       "actor": "MCP client",
       "asserted_obligation": "be included in both authorization requests and token requests.",
       "assertion_test_ids": [
-        "transport::auth::tests::authorization_url_uses_discovered_resource"
+        "transport::auth::tests::refresh_token_uses_discovered_protected_resource"
       ],
       "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::authorization_url_uses_discovered_resource",
-          "behavior": "Exact test observes that authorization url uses discovered resource."
+          "test_id": "transport::auth::tests::refresh_token_uses_discovered_protected_resource",
+          "behavior": "Integrated OAuth client test proves the discovered resource is sent in authorization, authorization-code token, and refresh-token requests."
         }
       ],
       "evidence_paths": [
@@ -728,21 +827,20 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "7394aa8f39daa3e1fe0d227fec1b5977014d11872718bfed576872c14eea6943",
-      "actor": "MCP authorization server",
+      "actor": "MCP client",
       "asserted_obligation": "provide the most specific URI that they can for the MCP server they intend to access, following the guidance in [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707).",
       "assertion_test_ids": [
-        "metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri"
+        "transport::auth::tests::authorization_url_uses_discovered_resource"
       ],
-      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "implementation": "The client uses the protected-resource document's canonical resource URI in its authorization request.",
       "assertion_evidence": [
         {
-          "test_id": "metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri",
-          "behavior": "Exact test observes that protected resource metadata uses canonical mcp resource uri."
+          "test_id": "transport::auth::tests::authorization_url_uses_discovered_resource",
+          "behavior": "Exact test observes that authorization url uses discovered resource."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/authorize.rs",
-        "crates/labby-auth/src/token.rs"
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -776,7 +874,7 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "7e8ec2c370ac8c6339d61fba3b4edce59a0d47d022e0686bffc45d77fc9bdd9a",
-      "actor": "MCP authorization server",
+      "actor": "MCP client and resource server",
       "asserted_obligation": "consistently use the form without the trailing slash for better interoperability unless the trailing slash is semantically significant for the specific resource.",
       "assertion_test_ids": [
         "metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri"
@@ -824,7 +922,7 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "d44e2aec0b6b5d37ed3c7e0a740339209705d32b01256c9e23564227227e0c03",
-      "actor": "MCP authorization server",
+      "actor": "MCP client and resource server",
       "asserted_obligation": "conform to the requirements defined in [OAuth 2.1 Section 5 \"Resource Requests\"](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-5).",
       "assertion_test_ids": [],
       "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
@@ -1004,13 +1102,13 @@
       "actor": "MCP server",
       "asserted_obligation": "Invalid or expired access tokens MUST receive HTTP 401 Unauthorized.",
       "assertion_test_ids": [
-        "jwt::tests::expired_access_token_is_rejected"
+        "middleware::tests::expired_access_token_receives_http_401"
       ],
       "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
       "assertion_evidence": [
         {
-          "test_id": "jwt::tests::expired_access_token_is_rejected",
-          "behavior": "Exact test observes that expired access token is rejected."
+          "test_id": "middleware::tests::expired_access_token_receives_http_401",
+          "behavior": "Exact middleware test sends an expired signed access token to a protected HTTP resource and observes 401 Unauthorized."
         }
       ],
       "evidence_paths": [
@@ -1127,22 +1225,20 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "6cdfec25f378924a22c8819fd7710ded58e4ddd1873e028371a80a3c46376cf2",
-      "actor": "MCP authorization server",
+      "actor": "MCP client",
       "asserted_obligation": "include `refresh_token` in their `grant_types` client metadata",
       "assertion_test_ids": [
-        "metadata::tests::authorization_server_metadata_exposes_lab_endpoints"
+        "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants"
       ],
-      "implementation": "Refresh material is encrypted, confidential, optional, rotated on success, and never advertised as a resource scope.",
+      "implementation": "The DCR client metadata declares authorization_code and refresh_token grants together.",
       "assertion_evidence": [
         {
-          "test_id": "metadata::tests::authorization_server_metadata_exposes_lab_endpoints",
-          "behavior": "Exact test observes that authorization server metadata exposes lab endpoints."
+          "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
+          "behavior": "Exact test observes that dcr registration declares application type and authorization code refresh grants."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/token.rs",
-        "crates/labby-auth/src/at_rest.rs",
-        "crates/labby-auth/src/metadata.rs"
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1152,12 +1248,12 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "2234e87d7d053639f82e44dd8f7986c8b0818dd1a4e97823d8f58baac60a5395",
-      "actor": "MCP authorization server",
+      "actor": "MCP client",
       "asserted_obligation": "assume refresh tokens will be issued; the AS retains discretion",
       "assertion_test_ids": [
         "transport::auth::tests::get_access_token_requires_reauth_when_expired_and_no_refresh_token"
       ],
-      "implementation": "Refresh material is encrypted, confidential, optional, rotated on success, and never advertised as a resource scope.",
+      "implementation": "An expired client access token without a refresh token triggers reauthorization instead of assuming refresh material exists.",
       "assertion_evidence": [
         {
           "test_id": "transport::auth::tests::get_access_token_requires_reauth_when_expired_and_no_refresh_token",
@@ -1165,9 +1261,7 @@
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/token.rs",
-        "crates/labby-auth/src/at_rest.rs",
-        "crates/labby-auth/src/metadata.rs"
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1177,21 +1271,19 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "8ac1bd931463032335b399cc7f98080b1c788f5453f53844b4c36fbc5c365e0f",
-      "actor": "MCP authorization server",
+      "actor": "MCP server",
       "asserted_obligation": "include `offline_access` in `WWW-Authenticate` scope or Protected Resource Metadata `scopes_supported`, as refresh tokens are not a resource requirement.",
       "assertion_test_ids": [
         "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path"
       ],
-      "implementation": "Refresh material is encrypted, confidential, optional, rotated on success, and never advertised as a resource scope.",
+      "implementation": "Protected-resource metadata advertises only resource scopes and explicitly excludes offline_access.",
       "assertion_evidence": [
         {
           "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
-          "behavior": "Exact test observes that protected resource metadata advertises configured scopes and resource path."
+          "behavior": "Exact production metadata test configures offline_access and proves the protected-resource response filters it while retaining resource scopes and path."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/token.rs",
-        "crates/labby-auth/src/at_rest.rs",
         "crates/labby-auth/src/metadata.rs"
       ],
       "applicability": "applicable",
@@ -1260,21 +1352,20 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "38fbf9b9f1937924078552437affb974fe7d3f56e350b532b51a6d439d7db638",
-      "actor": "MCP client",
+      "actor": "MCP server",
       "asserted_obligation": "include the scopes needed to satisfy the current operation in the `scope` parameter, consistent with [RFC 6750 Section 3.1](https://datatracker.ietf.org/doc/html/rfc6750#section-3.1).",
       "assertion_test_ids": [
-        "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested"
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
       ],
-      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "implementation": "The resource server's insufficient-scope challenge contains the exact scopes required by the current operation.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
-          "behavior": "Exact test observes that select scopes unions challenge with previously requested."
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "crates/labby-auth/src/middleware.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1284,21 +1375,20 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "334ed4f97b0385a553e9141c95970a6928044ad9e40bfe49f36527301f479d35",
-      "actor": "MCP client",
+      "actor": "MCP server",
       "asserted_obligation": "include all scopes required for the current operation in a single challenge.",
       "assertion_test_ids": [
-        "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested"
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
       ],
-      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "implementation": "All scopes required by the tested operation are emitted together in one Bearer challenge.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
-          "behavior": "Exact test observes that select scopes unions challenge with previously requested."
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "crates/labby-auth/src/middleware.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1308,21 +1398,20 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "019ebc0129316ef3b8de774760b20e2e41c31453245c64eaee38f91b6877984f",
-      "actor": "MCP client",
+      "actor": "MCP server",
       "asserted_obligation": "be consistent in their scope inclusion strategy to provide predictable behavior for clients.",
       "assertion_test_ids": [
-        "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config"
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
       ],
-      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "implementation": "JWT and static-token paths produce the same deterministic insufficient-scope challenge.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config",
-          "behavior": "Exact test observes that authorization manager can attempt scope upgrade respects config."
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "crates/labby-auth/src/middleware.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1332,21 +1421,20 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
       "source_requirement_sha256": "ba0bfc07603e42ae0ebbc455ad80be39bdca8d81fc72aafb5dfb335bb5eb7f09",
-      "actor": "MCP client",
+      "actor": "MCP server",
       "asserted_obligation": "consider the user experience impact when determining which scopes to include in the response, as misconfigured scopes may require frequent user interaction.",
       "assertion_test_ids": [
-        "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog"
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
       ],
-      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "implementation": "The challenge contains only the current operation's required scopes, avoiding unrelated authorization prompts.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog",
-          "behavior": "Exact test observes that select scopes does not expand user request to entire server catalog."
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
         }
       ],
       "evidence_paths": [
-        "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "crates/labby-auth/src/middleware.rs"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1359,13 +1447,18 @@
       "actor": "MCP client",
       "asserted_obligation": "respond to these errors by requesting a new access token with an increased set of scopes via a step-up authorization flow or handle the errors in other, appropriate ways.",
       "assertion_test_ids": [
-        "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config"
+        "transport::auth::tests::extract_www_authenticate_params_insufficient_scope",
+        "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it"
       ],
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config",
-          "behavior": "Exact test observes that authorization manager can attempt scope upgrade respects config."
+          "test_id": "transport::auth::tests::extract_www_authenticate_params_insufficient_scope",
+          "behavior": "Exact client test recognizes an insufficient_scope challenge and extracts its required scope."
+        },
+        {
+          "test_id": "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it",
+          "behavior": "Exact client test requests a new authorization URL with the existing and newly required scopes."
         }
       ],
       "evidence_paths": [
@@ -1383,13 +1476,13 @@
       "actor": "MCP client",
       "asserted_obligation": "attempt the step-up authorization flow.",
       "assertion_test_ids": [
-        "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config"
+        "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it"
       ],
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config",
-          "behavior": "Exact test observes that authorization manager can attempt scope upgrade respects config."
+          "test_id": "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it",
+          "behavior": "Exact client test initiates step-up authorization and returns a new authorization URL carrying the expanded scope set."
         }
       ],
       "evidence_paths": [
@@ -2103,13 +2196,13 @@
       "actor": "authorization server accepting CIMD",
       "asserted_obligation": "validate redirect URIs presented in an authorization request against those in the metadata document",
       "assertion_test_ids": [
-        "authorize::tests::dynamically_registered_client_requires_click_consent_showing_redirect_host"
+        "authorize::tests::authorize_validates_redirect_against_cimd_document_and_persists_reference"
       ],
       "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
       "assertion_evidence": [
         {
-          "test_id": "authorize::tests::dynamically_registered_client_requires_click_consent_showing_redirect_host",
-          "behavior": "Exact test observes that dynamically registered client requires click consent showing redirect host."
+          "test_id": "authorize::tests::authorize_validates_redirect_against_cimd_document_and_persists_reference",
+          "behavior": "Exact authorization-endpoint test rejects a redirect absent from the resolved CIMD document and accepts the exact declared redirect."
         }
       ],
       "evidence_paths": [
@@ -2126,13 +2219,13 @@
       "actor": "authorization server accepting CIMD",
       "asserted_obligation": "validate the document structure is valid JSON and contains required fields",
       "assertion_test_ids": [
-        "cimd::tests::accepts_the_real_chatgpt_connector_metadata_document"
+        "cimd::tests::rejects_malformed_or_incomplete_client_metadata_documents"
       ],
       "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
       "assertion_evidence": [
         {
-          "test_id": "cimd::tests::accepts_the_real_chatgpt_connector_metadata_document",
-          "behavior": "Exact test observes that accepts the real chatgpt connector metadata document."
+          "test_id": "cimd::tests::rejects_malformed_or_incomplete_client_metadata_documents",
+          "behavior": "Exact parser test rejects invalid JSON and documents missing required client_id or redirect_uris fields."
         }
       ],
       "evidence_paths": [
@@ -2218,12 +2311,12 @@
       "actor": "MCP client using DCR",
       "asserted_obligation": "specify an appropriate `application_type` during Dynamic Client Registration.",
       "assertion_test_ids": [
-        "transport::auth::tests::dcr_registration_uses_requested_application_type"
+        "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants"
       ],
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::dcr_registration_uses_requested_application_type",
+          "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
           "behavior": "Exact test observes that dcr registration uses requested application type."
         }
       ],
@@ -2241,12 +2334,12 @@
       "actor": "native MCP client using DCR",
       "asserted_obligation": "Native MCP clients using DCR SHOULD use `application_type: \"native\"`.",
       "assertion_test_ids": [
-        "transport::auth::tests::dcr_registration_uses_requested_application_type"
+        "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants"
       ],
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::dcr_registration_uses_requested_application_type",
+          "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
           "behavior": "Exact test observes that dcr registration uses requested application type."
         }
       ],
@@ -2264,12 +2357,12 @@
       "actor": "web MCP client using DCR",
       "asserted_obligation": "use `application_type: \"web\"`",
       "assertion_test_ids": [
-        "transport::auth::tests::dcr_registration_uses_requested_application_type"
+        "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants"
       ],
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "assertion_evidence": [
         {
-          "test_id": "transport::auth::tests::dcr_registration_uses_requested_application_type",
+          "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
           "behavior": "Exact test observes that dcr registration uses requested application type."
         }
       ],
@@ -2579,7 +2672,7 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
       "source_requirement_sha256": "65af2dc7ba21367b2c8b3450a06e9b5dd1fab9fca47ac9b9a74be2de4d3c19ef",
-      "actor": "MCP implementation",
+      "actor": "MCP client",
       "asserted_obligation": "implement secure token storage and follow OAuth best practices, as outlined in [OAuth 2.1, Section 7.1](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-7.1).",
       "assertion_test_ids": [
         "sqlite::tests::opening_with_a_key_encrypts_legacy_plaintext_provider_tokens"
@@ -2729,7 +2822,7 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
       "source_requirement_sha256": "c12502a50a4399f0adcf20815d65ebab5dd70b172851c21fa11d3568c5f1a058",
-      "actor": "MCP implementation",
+      "actor": "MCP client",
       "asserted_obligation": "MCP clients MUST implement PKCE according to OAuth 2.1 Section 7.5.2 and MUST verify PKCE support before proceeding with authorization.",
       "assertion_test_ids": [
         "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256",
@@ -2763,7 +2856,7 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
       "source_requirement_sha256": "80df3538ca7b38f8c21e5275e2f95452b4b0220113baccb9813aeb89cb0077fb",
-      "actor": "MCP implementation",
+      "actor": "MCP client",
       "asserted_obligation": "verify PKCE support before proceeding with authorization.",
       "assertion_test_ids": [
         "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256"
@@ -2790,13 +2883,13 @@
       "actor": "MCP implementation",
       "asserted_obligation": "use the `S256` code challenge method when technically capable, as required by [OAuth 2.1 Section 4.1.1](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-4.1.1).",
       "assertion_test_ids": [
-        "metadata::tests::authorization_server_metadata_exposes_lab_endpoints"
+        "authorize::tests::authorization_endpoint_requires_code_flow_and_pkce_s256"
       ],
       "implementation": "Authorization metadata and flows require OAuth 2.1 PKCE S256 and publish the required capability.",
       "assertion_evidence": [
         {
-          "test_id": "metadata::tests::authorization_server_metadata_exposes_lab_endpoints",
-          "behavior": "Exact test observes that authorization server metadata exposes lab endpoints."
+          "test_id": "authorize::tests::authorization_endpoint_requires_code_flow_and_pkce_s256",
+          "behavior": "Exact test observes that authorization endpoint requires code flow and pkce s256."
         }
       ],
       "evidence_paths": [
@@ -2811,16 +2904,16 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
       "source_requirement_sha256": "47700784459c385b562e8f8e8cf0f5d2f07c82b998e08e91b39d1b3542bd1161",
-      "actor": "MCP implementation",
+      "actor": "MCP client",
       "asserted_obligation": "MCP clients MUST rely on authorization-server metadata to verify PKCE capability.",
       "assertion_test_ids": [
-        "upstream::manager::url_tests::pkce_validation_rejects_advertised_non_s256_methods"
+        "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"
       ],
       "implementation": "Outbound authorization validates metadata before starting PKCE: S256 is accepted while absent or non-S256 capability is rejected.",
       "assertion_evidence": [
         {
-          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_advertised_non_s256_methods",
-          "behavior": "Exact test observes that pkce validation rejects advertised non s256 methods."
+          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata",
+          "behavior": "Exact OAuth client test refuses authorization when OIDC metadata omits code_challenge_methods_supported."
         }
       ],
       "evidence_paths": [
@@ -2835,7 +2928,7 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
       "source_requirement_sha256": "9df74522c5f3b3b61bc3dae77d8bff6f890ee432c5d5160243f1f251707a7acd",
-      "actor": "MCP implementation",
+      "actor": "MCP client",
       "asserted_obligation": "MCP clients MUST refuse authorization when OAuth metadata omits `code_challenge_methods_supported`.",
       "assertion_test_ids": [
         "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"
@@ -2859,7 +2952,7 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
       "source_requirement_sha256": "6b4d3c098e42b1657aaf19d09b276db144024097cf2560537cb26145db293e0f",
-      "actor": "MCP implementation",
+      "actor": "MCP client",
       "asserted_obligation": "verify the presence of `code_challenge_methods_supported` in the provider metadata response.",
       "assertion_test_ids": [
         "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256"
@@ -2883,16 +2976,16 @@
     {
       "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
       "source_requirement_sha256": "5db96f7e6f3dffb41853171f4c2d76bfb6a8a9ee30f743341607ebfb7048ccbc",
-      "actor": "MCP implementation",
+      "actor": "MCP client",
       "asserted_obligation": "MCP clients MUST refuse authorization when OIDC metadata omits `code_challenge_methods_supported`.",
       "assertion_test_ids": [
-        "upstream::manager::url_tests::pkce_validation_rejects_advertised_non_s256_methods"
+        "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"
       ],
       "implementation": "Outbound authorization validates metadata before starting PKCE: S256 is accepted while absent or non-S256 capability is rejected.",
       "assertion_evidence": [
         {
-          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_advertised_non_s256_methods",
-          "behavior": "Exact test observes that pkce validation rejects advertised non s256 methods."
+          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata",
+          "behavior": "Exact OAuth client test refuses authorization when OIDC metadata omits code_challenge_methods_supported."
         }
       ],
       "evidence_paths": [

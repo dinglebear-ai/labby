@@ -1,0 +1,35 @@
+name: Vendored rmcp policy
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  require-maintainer-approval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require approval for vendored rmcp trust changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          protected_change="$({
+            gh api --paginate \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+              --jq '.[].filename'
+          } | grep -E '^(vendor/rmcp-3\.1\.0-labby/|conformance/vendor-rmcp-provenance\.json$|scripts/ci/check_vendor_rmcp_provenance\.py$|\.github/workflows/vendor-rmcp-policy\.yml$)' || true)"
+          if [[ -z "$protected_change" ]]; then
+            exit 0
+          fi
+          if ! jq -e 'index("vendor-rmcp-approved") != null' <<<"$LABELS" >/dev/null; then
+            echo "Vendored rmcp trust-boundary changes require the maintainer-applied vendor-rmcp-approved label." >&2
+            echo "$protected_change" >&2
+            exit 1
+          fi

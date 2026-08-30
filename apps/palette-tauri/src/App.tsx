@@ -159,7 +159,7 @@ export default function App() {
         method: "POST",
         payload: { error: message },
       };
-      recordPaletteLaunch(action, params, result);
+      recordPaletteLaunch(action, result);
       setRun({
         kind: "error",
         title: action.label,

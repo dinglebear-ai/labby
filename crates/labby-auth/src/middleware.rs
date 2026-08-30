@@ -374,10 +374,13 @@ async fn authenticate(
                     layer,
                 ));
             };
-            let expected_aud = layer
+            let configured_aud = layer
                 .resource_url
                 .as_deref()
                 .map_or_else(|| canonical_resource_url(auth_state), str::to_string);
+            let expected_aud = url::Url::parse(&configured_aud).map_or(configured_aud, |url| {
+                url.as_str().trim_end_matches('/').to_string()
+            });
             match auth_state.signing_keys.validate_access_token_with_issuer(
                 &token,
                 &expected_aud,
@@ -1353,6 +1356,7 @@ mod tests {
 
         for (configured_resource, expected) in [
             (exact_resource, StatusCode::OK),
+            ("HTTPS://PROXY.EXAMPLE:53147/mcp", StatusCode::OK),
             ("https://proxy.example:53148/mcp", StatusCode::UNAUTHORIZED),
             (
                 "https://proxy.example:53147/other",
@@ -1380,6 +1384,52 @@ mod tests {
                 "resource {configured_resource}"
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn expired_access_token_receives_http_401() {
+        let state = Arc::new(test_auth_state().await);
+        let issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .trim_end_matches('/');
+        let resource = "https://proxy.example:53147/mcp";
+        let now = crate::util::now_unix();
+        let token = state
+            .signing_keys
+            .issue_access_token(&crate::jwt::AccessClaims {
+                iss: issuer.to_string(),
+                sub: "user@example.com".to_string(),
+                aud: resource.to_string(),
+                exp: usize::try_from(now - 3_600).unwrap(),
+                nbf: None,
+                iat: usize::try_from(now - 7_200).unwrap(),
+                jti: "expired-http-token".to_string(),
+                scope: "mcp:read".to_string(),
+                azp: String::new(),
+                identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                identity_credential_id: None,
+            })
+            .unwrap();
+        let app = echo_app(
+            AuthLayer::from_state(state)
+                .with_resource_url(Some(Arc::<str>::from(resource)))
+                .with_required_scopes(vec!["mcp:read".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test(flavor = "current_thread")]

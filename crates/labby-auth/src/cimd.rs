@@ -380,6 +380,9 @@ mod tests {
             "javascript:alert(1)",
             "data:text/html,boom",
             "http://example.com/callback",
+            "http://127.0.0.1:3000/callback#fragment",
+            "com.example.app:/oauth#fragment",
+            "https://client.example/callback#fragment",
         ] {
             let error = validate_document(
                 "https://client.example/client.json",
@@ -492,6 +495,44 @@ mod tests {
         assert_eq!(
             client.jwks_uri.as_deref(),
             Some("https://chatgpt.com/oauth/jwks.json")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_or_incomplete_client_metadata_documents() {
+        assert!(serde_json::from_str::<ClientMetadataDocument>("not-json").is_err());
+        for raw in [
+            r#"{"client_name":"Missing client id","redirect_uris":["https://client.example/callback"],"token_endpoint_auth_method":"none"}"#,
+            r#"{"client_id":"https://client.example/client.json","client_name":"Missing redirects","token_endpoint_auth_method":"none"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<ClientMetadataDocument>(raw).is_err(),
+                "required CIMD fields must be enforced: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_authorization_redirect_not_declared_by_cimd_client() {
+        let client = validate_document(
+            "https://client.example/client.json",
+            ClientMetadataDocument {
+                client_id: "https://client.example/client.json".to_string(),
+                client_name: "Client".to_string(),
+                redirect_uris: vec!["https://client.example/callback".to_string()],
+                token_endpoint_auth_method: "none".to_string(),
+                token_endpoint_auth_methods_supported: None,
+                jwks: None,
+                jwks_uri: None,
+            },
+            &["https://client.example/callback".to_string()],
+        )
+        .unwrap();
+        assert!(
+            !client
+                .redirect_uris
+                .iter()
+                .any(|uri| uri == "https://attacker.example/callback")
         );
     }
 

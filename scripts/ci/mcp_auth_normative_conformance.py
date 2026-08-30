@@ -22,8 +22,11 @@ PACKAGES = {
     "upstream::store::tests::authorization_state_round_trips_issuer_requirement_and_requested_scopes": "labby-auth",
     "cimd::tests::accepts_the_real_chatgpt_connector_metadata_document": "labby-auth",
     "authorize::tests::dynamically_registered_client_requires_click_consent_showing_redirect_host": "labby-auth",
+    "authorize::tests::authorize_validates_redirect_against_cimd_document_and_persists_reference": "labby-auth",
+    "cimd::tests::rejects_malformed_or_incomplete_client_metadata_documents": "labby-auth",
     "authorize::tests::authorize_accepts_configured_protected_resource_scopes": "labby-auth",
     "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced": "labby-auth",
+    "middleware::tests::expired_access_token_receives_http_401": "labby-auth",
     "metadata::tests::authorization_server_metadata_exposes_lab_endpoints": "labby-auth",
     "metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri": "labby-auth",
     "token::tests::refresh_grant_rotates_local_token_on_success": "labby-auth",
@@ -67,6 +70,7 @@ PACKAGES = {
     "authorize::tests::oauth_client_callback_succeeds_for_allowlisted_non_admin_email": "labby-auth",
     "authorize::tests::oauth_client_callback_redirects_with_access_denied_when_email_not_in_allowlist": "labby-auth",
     "authorize::tests::omitted_initial_scope_defaults_to_least_privilege_read_only_scope": "labby-auth",
+    "authorize::tests::authorization_endpoint_requires_code_flow_and_pkce_s256": "labby-auth",
     "authorize::tests::authorize_rejects_nonidentical_registered_redirect_without_redirecting": "labby-auth",
     "authorize::tests::localhost_redirect_consent_warns_with_exact_loopback_host": "labby-auth",
     "authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer": "labby-auth",
@@ -75,7 +79,8 @@ PACKAGES = {
 }
 VENDOR_TESTS = {
     "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
-    "transport::auth::tests::dcr_registration_uses_requested_application_type",
+    "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
+    "transport::auth::tests::initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission",
     "transport::auth::tests::authorization_metadata_issuer_comparison_is_exact",
     "transport::auth::tests::authorization_manager_can_attempt_scope_upgrade_respects_config",
     "transport::auth::tests::resolve_metadata_from_challenge_uses_challenge_pointer_and_scope",
@@ -104,6 +109,10 @@ VENDOR_TESTS = {
     "transport::auth::tests::authorization_callback_rejects_untrusted_error_fields_without_echoing_them",
     "transport::auth::tests::initialize_from_store_rejects_token_without_current_issuer_binding",
     "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog",
+    "transport::auth::tests::select_scopes_prefers_exact_challenge_over_resource_metadata_catalog",
+    "transport::auth::tests::refresh_token_uses_discovered_protected_resource",
+    "transport::auth::tests::extract_www_authenticate_params_insufficient_scope",
+    "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it",
 }
 
 NORMATIVE_ACTORS = {
@@ -112,6 +121,7 @@ NORMATIVE_ACTORS = {
     "alternative-transport MCP implementation",
     "MCP implementation",
     "MCP client",
+    "MCP client and resource server",
     "MCP client using CIMD",
     "MCP client using DCR",
     "MCP client hosting a Client ID Metadata Document",

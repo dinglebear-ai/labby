@@ -76,10 +76,17 @@ pub async fn protected_resource_metadata(
     State(state): State<AuthState>,
 ) -> Json<ProtectedResourceMetadata> {
     let base = public_base_url(&state);
+    let scopes_supported = state
+        .config
+        .scopes_supported
+        .iter()
+        .filter(|scope| scope.as_str() != "offline_access")
+        .cloned()
+        .collect();
     Json(ProtectedResourceMetadata {
         resource: canonical_resource_url(&state),
         authorization_servers: vec![base],
-        scopes_supported: state.config.scopes_supported.clone(),
+        scopes_supported,
         bearer_methods_supported: vec!["header".to_string()],
     })
 }
@@ -315,7 +322,11 @@ mod tests {
             token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
                 "metadata-test-provider-key",
             )),
-            scopes_supported: vec!["syslog:read".to_string(), "syslog:admin".to_string()],
+            scopes_supported: vec![
+                "syslog:read".to_string(),
+                "offline_access".to_string(),
+                "syslog:admin".to_string(),
+            ],
             resource_path: "/syslog/mcp".to_string(),
             ..AuthConfig::default()
         };

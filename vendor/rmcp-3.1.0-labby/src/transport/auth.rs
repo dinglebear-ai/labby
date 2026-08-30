@@ -1855,7 +1855,7 @@ impl AuthorizationManager {
     fn select_base_scopes(
         &self,
         www_authenticate_scope: Option<&str>,
-        default_scopes: &[&str],
+        _default_scopes: &[&str],
     ) -> Vec<String> {
         let mut accumulated: Vec<String> = Vec::new();
 
@@ -1864,15 +1864,24 @@ impl AuthorizationManager {
             accumulated.extend(guard.iter().cloned());
         }
 
-        // newly challenged scopes for the current operation (RFC 6750 §3.1)
+        // A challenge is authoritative for initial authorization. Preserve
+        // already-approved scopes during step-up, but do not silently add the
+        // broader protected-resource catalog when the server gave an exact
+        // operation-specific challenge.
+        let mut challenged = Vec::new();
         if let Some(scope) = www_authenticate_scope {
-            accumulated.extend(scope.split_whitespace().map(|s| s.to_string()));
+            challenged.extend(scope.split_whitespace().map(|s| s.to_string()));
         }
         if let Ok(guard) = self.www_auth_scopes.try_read() {
-            accumulated.extend(guard.iter().cloned());
+            challenged.extend(guard.iter().cloned());
+        }
+        if !challenged.is_empty() {
+            accumulated.extend(challenged);
+            return Self::dedup_scopes(accumulated);
         }
 
-        // scopes required for the current operation per protected resource metadata (RFC 9728)
+        // Without a challenge, protected-resource metadata is the initial
+        // scope source. If neither source supplies scopes, omit `scope`.
         if let Ok(guard) = self.resource_scopes.try_read() {
             accumulated.extend(guard.iter().cloned());
         }
@@ -1881,15 +1890,7 @@ impl AuthorizationManager {
             return Self::dedup_scopes(accumulated);
         }
 
-        // nothing requested or challenged yet: seed from AS metadata, then caller defaults
-        if let Some(metadata) = &self.metadata
-            && let Some(scopes_supported) = &metadata.scopes_supported
-            && !scopes_supported.is_empty()
-        {
-            return scopes_supported.clone();
-        }
-
-        default_scopes.iter().map(|s| s.to_string()).collect()
+        Vec::new()
     }
 
     /// SEP-2207: when the AS advertises `offline_access` in `scopes_supported`, append
@@ -4838,7 +4839,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorization_session_selects_default_scopes_when_none_provided() {
+    async fn authorization_session_omits_scope_when_challenge_and_prm_supply_none() {
         let client = RecordingOAuthHttpClient::with_responses(preregistered_discovery_responses());
         let mut manager = AuthorizationManager::new_with_oauth_http_client(
             "https://mcp.example.com/mcp",
@@ -4855,9 +4856,10 @@ mod tests {
             Err((_, error)) => panic!("authorization session creation failed: {error}"),
         };
 
-        // Empty request scopes fall back to the discovered scopes_supported.
+        // Authorization-server scopes are not a substitute for the challenge
+        // or protected-resource scope vocabulary.
         let query = auth_url_query(&session.auth_url);
-        assert_eq!(query.get("scope").unwrap(), "read write offline_access");
+        assert!(!query.contains_key("scope"));
     }
 
     #[tokio::test]
@@ -5099,7 +5101,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dcr_registration_uses_requested_application_type() {
+    async fn dcr_registration_declares_application_type_and_authorization_code_refresh_grants() {
         let mut responses = preregistered_discovery_responses();
         responses.push(http_response(
             201,
@@ -5130,6 +5132,11 @@ mod tests {
             .expect("registration endpoint should be called");
         let body: serde_json::Value = serde_json::from_slice(&registration.body).unwrap();
         assert_eq!(body.get("application_type").unwrap(), "web");
+        assert_eq!(
+            body.get("grant_types").unwrap(),
+            &serde_json::json!(["authorization_code", "refresh_token"]),
+            "refresh-capable clients declare both grants during DCR"
+        );
     }
 
     #[tokio::test]
@@ -6880,7 +6887,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_scopes_falls_back_to_defaults() {
+    async fn initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission() {
         let mgr = manager_with_metadata(Some(AuthorizationMetadata {
             authorization_endpoint: "http://localhost/authorize".to_string(),
             token_endpoint: "http://localhost/token".to_string(),
@@ -6889,8 +6896,22 @@ mod tests {
         }))
         .await;
 
-        let scopes = mgr.select_scopes(None, &["default_scope"]);
-        assert_eq!(scopes, vec!["default_scope".to_string()]);
+        *mgr.resource_scopes.write().await = vec!["resource-read".to_string()];
+        assert_eq!(
+            mgr.select_scopes(Some("operation-write"), &["caller-default"]),
+            vec!["operation-write".to_string()],
+            "an exact challenge takes priority over protected-resource metadata"
+        );
+        assert_eq!(
+            mgr.select_scopes(None, &["caller-default"]),
+            vec!["resource-read".to_string()],
+            "protected-resource scopes are the fallback when no challenge exists"
+        );
+        mgr.resource_scopes.write().await.clear();
+        assert!(
+            mgr.select_scopes(None, &["caller-default"]).is_empty(),
+            "without challenge or protected-resource scopes the client omits scope"
+        );
     }
 
     #[tokio::test]
@@ -6902,6 +6923,7 @@ mod tests {
             ..Default::default()
         }))
         .await;
+        *mgr.resource_scopes.write().await = vec!["profile".to_string()];
 
         // When AS metadata is the scope source and already contains offline_access,
         // it should appear exactly once.
@@ -6998,16 +7020,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_scopes_unions_resource_metadata_as_operational_requirement() {
+    async fn select_scopes_prefers_exact_challenge_over_resource_metadata_catalog() {
         let mgr = manager_with_metadata(None).await;
         *mgr.current_scopes.write().await = vec!["read".to_string()];
         *mgr.resource_scopes.write().await = vec!["profile".to_string()];
 
         let scopes = mgr.select_scopes(Some("write"), &[]);
 
-        assert!(scopes.contains(&"read".to_string()));
-        assert!(scopes.contains(&"write".to_string()));
-        assert!(scopes.contains(&"profile".to_string()));
+        assert_eq!(scopes, vec!["read".to_string(), "write".to_string()]);
     }
 
     #[tokio::test]

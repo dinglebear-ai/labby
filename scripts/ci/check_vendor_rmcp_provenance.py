@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "conformance/vendor-rmcp-provenance.json"
 VENDOR = ROOT / "vendor/rmcp-3.1.0-labby"
 ALLOWED_PACKAGING = {"Cargo.lock", "LICENSE", "README.labby.md"}
+TRUSTED_UPSTREAM_REPOSITORY = "https://github.com/dinglebear-ai/rust-sdk"
+TRUSTED_ARCHIVE_PREFIX = f"{TRUSTED_UPSTREAM_REPOSITORY}/archive/"
 
 
 def sha256(path: Path) -> str:
@@ -38,10 +40,14 @@ def diff_bytes(upstream: Path, patches: list[dict]) -> bytes:
 
 def main() -> None:
     manifest = json.loads(MANIFEST.read_text())
+    commit = manifest["upstream_commit"]
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise SystemExit("vendored rmcp upstream commit must be a full lowercase Git object ID")
+    archive_url = f"{TRUSTED_ARCHIVE_PREFIX}{commit}.tar.gz"
     with tempfile.TemporaryDirectory(prefix="labby-rmcp-provenance-") as directory:
         temporary = Path(directory)
         archive = temporary / "upstream.tar.gz"
-        archive.write_bytes(urllib.request.urlopen(manifest["upstream_archive_url"], timeout=30).read())
+        archive.write_bytes(urllib.request.urlopen(archive_url, timeout=30).read())
         if sha256(archive) != manifest["upstream_archive_sha256"]:
             raise SystemExit("vendored rmcp upstream archive checksum mismatch")
         with tarfile.open(archive) as source:

@@ -92,10 +92,7 @@ impl TokenEncryptionKey {
     #[cfg(test)]
     pub fn from_passphrase(passphrase: &str) -> Self {
         use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(passphrase.as_bytes());
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&hash);
-        Self(key)
+        Self(Sha256::digest(passphrase.as_bytes()).into())
     }
 }
 

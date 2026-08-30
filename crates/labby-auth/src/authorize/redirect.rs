@@ -1,16 +1,10 @@
 //! Redirect URI classification and configured-pattern matching.
 
-fn is_loopback_redirect(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
+fn is_loopback_redirect(url: &reqwest::Url) -> bool {
     url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
 }
 
-fn is_native_app_scheme_redirect(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
+fn is_native_app_scheme_redirect(url: &reqwest::Url) -> bool {
     !matches!(
         url.scheme(),
         "http" | "https" | "javascript" | "data" | "vbscript" | "file"
@@ -18,12 +12,18 @@ fn is_native_app_scheme_redirect(value: &str) -> bool {
 }
 
 pub(crate) fn is_allowed_redirect_uri(value: &str, patterns: &[String]) -> bool {
-    if is_loopback_redirect(value) || is_native_app_scheme_redirect(value) {
-        return true;
-    }
     let Ok(candidate) = reqwest::Url::parse(value) else {
         return false;
     };
+    // OAuth redirect endpoint URIs must not include a fragment. Fragments are
+    // never sent to the server and ignoring one during allowlist comparison can
+    // make two distinct registered values appear equivalent.
+    if candidate.fragment().is_some() {
+        return false;
+    }
+    if is_loopback_redirect(&candidate) || is_native_app_scheme_redirect(&candidate) {
+        return true;
+    }
     patterns
         .iter()
         .any(|pattern| redirect_pattern_matches(pattern, &candidate))

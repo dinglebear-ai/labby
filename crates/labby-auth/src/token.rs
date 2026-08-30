@@ -1005,7 +1005,7 @@ async fn authorization_code_grant(
         grant_type = "authorization_code",
         client_id = %client_id,
         auth_code_id = %auth_code_id,
-        redirect_uri = %redirect_uri,
+        redirect_uri_id = %fingerprint(&redirect_uri),
         requested_resource = requested_resource.as_deref().unwrap_or("<authorization-code-resource>"),
         "oauth authorization_code grant redeeming local code"
     );

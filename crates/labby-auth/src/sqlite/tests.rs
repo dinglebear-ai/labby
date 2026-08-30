@@ -5,6 +5,7 @@ use rusqlite::params;
 use rusqlite::Connection;
 
 use crate::at_rest::TokenEncryptionKey;
+use crate::jwt::{AccessClaims, SigningKeys};
 use crate::types::{
     AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, GoogleProviderCredentialUpdate,
     RefreshTokenRow, RegisteredClient, UpstreamOauthCredentialRow, UpstreamOauthStateRow,
@@ -467,6 +468,103 @@ async fn google_provider_bundle_is_encrypted_at_rest_and_readable_after_reopen()
         .unwrap();
     assert_eq!(row.access_token.as_deref(), Some("sensitive-access-token"));
     assert_eq!(row.refresh_token, "sensitive-refresh-token");
+}
+
+#[tokio::test]
+async fn offline_auth_recovery_set_restores_real_schema_ciphertext_and_signing_key() {
+    let root = tempfile::tempdir().unwrap();
+    let live = root.path().join("live");
+    let backup = root.path().join("backup");
+    let restored = root.path().join("restored");
+    std::fs::create_dir_all(&live).unwrap();
+    std::fs::create_dir_all(&backup).unwrap();
+    std::fs::create_dir_all(&restored).unwrap();
+
+    let database = live.join("auth.db");
+    let signing_key_path = live.join("auth-jwt.pem");
+    let encoded_encryption_key = "5c".repeat(32);
+    let encryption_key = TokenEncryptionKey::from_encoded(&encoded_encryption_key).unwrap();
+    let store = SqliteStore::open_with_key(database.clone(), Some(encryption_key))
+        .await
+        .unwrap();
+    let signer = SigningKeys::load_or_create(&signing_key_path).unwrap();
+    let now = now_unix();
+    store
+        .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+            subject: "backup-subject".to_string(),
+            email: Some("backup@example.com".to_string()),
+            client_id: "backup-google-client".to_string(),
+            granted_scopes: vec!["openid".to_string()],
+            access_token: "backup-sensitive-access".to_string(),
+            refresh_token: "backup-sensitive-refresh".to_string(),
+            token_received_at: now,
+            access_token_expires_at: now + 3600,
+            issuer: Some("https://accounts.google.com".to_string()),
+            refreshed: false,
+            scope_upgraded: false,
+        })
+        .await
+        .unwrap();
+    let token = signer
+        .issue_access_token(&AccessClaims {
+            iss: "https://lab.example.com".to_string(),
+            sub: "backup-subject".to_string(),
+            aud: "https://lab.example.com".to_string(),
+            exp: usize::try_from(now + 3600).unwrap(),
+            nbf: None,
+            iat: usize::try_from(now).unwrap(),
+            jti: "backup-jti".to_string(),
+            scope: "lab:read".to_string(),
+            azp: "backup-client".to_string(),
+            identity_issuer: Some("https://accounts.google.com".to_string()),
+            identity_credential_id: Some("backup-subject".to_string()),
+        })
+        .unwrap();
+
+    // The documented offline workflow stops all writers before copying the
+    // database and its matching key material as one recovery set.
+    drop(store);
+    std::fs::copy(&database, backup.join("auth.db")).unwrap();
+    std::fs::copy(&signing_key_path, backup.join("auth-jwt.pem")).unwrap();
+    std::fs::write(backup.join("token-encryption.key"), &encoded_encryption_key).unwrap();
+    for name in ["auth.db", "auth-jwt.pem", "token-encryption.key"] {
+        std::fs::copy(backup.join(name), restored.join(name)).unwrap();
+    }
+    crate::util::set_restrictive_permissions(&restored.join("auth.db")).unwrap();
+    crate::util::set_restrictive_permissions(&restored.join("auth-jwt.pem")).unwrap();
+    crate::util::set_restrictive_permissions(&restored.join("token-encryption.key")).unwrap();
+
+    let restored_key = std::fs::read_to_string(restored.join("token-encryption.key")).unwrap();
+    let restored_store = SqliteStore::open_with_key(
+        restored.join("auth.db"),
+        Some(TokenEncryptionKey::from_encoded(&restored_key).unwrap()),
+    )
+    .await
+    .unwrap();
+    let restored_credential = restored_store
+        .find_google_provider_credential("backup-subject")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        restored_credential.access_token.as_deref(),
+        Some("backup-sensitive-access")
+    );
+    assert_eq!(
+        restored_credential.refresh_token,
+        "backup-sensitive-refresh"
+    );
+
+    let restored_signer = SigningKeys::load_or_create(&restored.join("auth-jwt.pem")).unwrap();
+    assert_eq!(restored_signer.key_id, signer.key_id);
+    let restored_claims = restored_signer
+        .validate_access_token_with_issuer(
+            &token,
+            "https://lab.example.com",
+            "https://lab.example.com",
+        )
+        .unwrap();
+    assert_eq!(restored_claims.sub, "backup-subject");
 }
 
 #[tokio::test]

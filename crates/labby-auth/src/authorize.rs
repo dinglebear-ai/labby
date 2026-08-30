@@ -90,7 +90,7 @@ pub async fn authorize(
     {
         warn!(
             client_id = %query.client_id,
-            redirect_uri = %query.redirect_uri,
+            redirect_uri_id = %fingerprint(&query.redirect_uri),
             client_state_id = %client_state_id,
             "oauth authorize rejected: redirect URI does not match registered client"
         );
@@ -129,7 +129,7 @@ pub async fn authorize(
     };
     info!(
         client_id = %query.client_id,
-        redirect_uri = %query.redirect_uri,
+        redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
         resource = %resource,
         requested_scope = %query.scope,
@@ -227,7 +227,7 @@ pub async fn authorize(
     })?;
     info!(
         client_id = %query.client_id,
-        redirect_uri = %query.redirect_uri,
+        redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
         oauth_state_id = %oauth_state_id,
         resource = %resource,
@@ -334,7 +334,6 @@ pub async fn callback(
         );
         info!(
             oauth_state_id = %oauth_state_id,
-            return_to = %login.return_to,
             subject_id = %fingerprint(&session.subject),
             "browser login callback issued session cookie"
         );
@@ -354,7 +353,7 @@ pub async fn callback(
         })?;
     info!(
         client_id = %request.client_id,
-        redirect_uri = %request.redirect_uri,
+        redirect_uri_id = %fingerprint(&request.redirect_uri),
         oauth_state_id = %oauth_state_id,
         client_state_id = %fingerprint(&request.client_state),
         resource = %request.resource,
@@ -650,7 +649,7 @@ pub async fn callback(
         client_id = %request_client_id,
         resource = %request_resource,
         scope = %request_scope,
-        redirect_uri = %request.redirect_uri,
+        redirect_uri_id = %fingerprint(&request.redirect_uri),
         "oauth callback issued local authorization code"
     );
 
@@ -985,6 +984,75 @@ pub mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn register_rejects_redirect_uris_with_fragments() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        config.allowed_client_redirect_uris = vec!["https://client.example/callback".to_string()];
+        let app = router(test_auth_state_with_config(config).await);
+
+        for redirect_uri in [
+            "http://127.0.0.1:7777/callback#fragment",
+            "com.example.app:/oauth#fragment",
+            "https://client.example/callback#fragment",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({ "redirect_uris": [redirect_uri] }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn registration_logs_do_not_include_redirect_uri_query_values() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let app = router(test_auth_state_with_config(config).await);
+        let secret = "registration-query-secret";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "redirect_uris": [format!(
+                                "http://127.0.0.1:7777/callback?tenant={secret}"
+                            )]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(
+            !logs.contains(secret),
+            "redirect query leaked into logs: {logs}"
+        );
+        assert!(
+            !logs.contains("redirect_uris"),
+            "redirect URI list entered logs: {logs}"
+        );
+        assert!(logs.contains("\"redirect_uri_count\":1"), "{logs}");
     }
 
     #[tokio::test]
@@ -1520,6 +1588,20 @@ pub mod tests {
     }
 
     #[test]
+    fn redirect_uris_with_fragments_are_never_allowed() {
+        for redirect_uri in [
+            "http://127.0.0.1:7777/callback#fragment",
+            "com.raycast:/oauth#fragment",
+            "https://callback.tootie.tv/callback/node-a#fragment",
+        ] {
+            assert!(!is_allowed_redirect_uri(
+                redirect_uri,
+                &[String::from("https://callback.tootie.tv/callback/*")],
+            ));
+        }
+    }
+
+    #[test]
     fn script_executing_pseudo_schemes_are_never_auto_allowed() {
         assert!(!is_allowed_redirect_uri("javascript:alert(1)", &[]));
         assert!(!is_allowed_redirect_uri("data:text/html,evil", &[]));
@@ -1640,7 +1722,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn authorize_persists_a_cimd_client_reference_for_token_issuance() {
+    async fn authorize_validates_redirect_against_cimd_document_and_persists_reference() {
         let mut config = test_auth_config();
         config.allowed_client_redirect_uris =
             vec!["https://chatgpt.com/connector/oauth/*".to_string()];
@@ -1665,6 +1747,19 @@ pub mod tests {
         );
 
         let app = router(state.clone());
+        let rejected = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Ftest-client%2Fclient.json&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector%2Foauth%2Fother-client&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(rejected.headers().get(header::LOCATION).is_none());
+
         let response = app
             .oneshot(
                 Request::builder()
@@ -1879,14 +1974,19 @@ pub mod tests {
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn browser_login_starts_upstream_flow_and_persists_return_to_state() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
         let state = test_auth_state().await;
         let app = router(state.clone());
+        let return_to_secret = "return-to-query-secret";
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/auth/login?return_to=%2Fgateways%2F%3Ftab%3Dlab")
+                    .uri(format!(
+                        "/auth/login?return_to=%2Fgateways%2F%3Ftab%3Dlab%26token%3D{return_to_secret}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1918,7 +2018,15 @@ pub mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stored.return_to, "/gateways/?tab=lab");
+        assert_eq!(
+            stored.return_to,
+            format!("/gateways/?tab=lab&token={return_to_secret}")
+        );
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(
+            !logs.contains(return_to_secret),
+            "browser return_to query leaked into logs: {logs}"
+        );
     }
 
     #[tokio::test]
@@ -2400,6 +2508,63 @@ pub mod tests {
                 .await
                 .unwrap();
             assert_authorization_error(&response, "unsupported_response_type");
+        }
+    }
+
+    /// OpenAI auth clause OAI-CLAUSE-014: the production authorization
+    /// endpoint supports only the authorization-code flow and requires PKCE
+    /// with the S256 transformation. This exercises the HTTP adapter, not just
+    /// the policy helper.
+    #[tokio::test]
+    async fn authorization_endpoint_requires_code_flow_and_pkce_s256() {
+        let app = router(test_auth_state_with_registered_client().await);
+        let base = "/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=abc&scope=lab";
+
+        let accepted = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "{base}&code_challenge=pkce&code_challenge_method=S256"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::FOUND);
+
+        for method in ["plain", "s256", "S512"] {
+            let rejected = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "{base}&code_challenge=pkce&code_challenge_method={method}"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_authorization_error(&rejected, "invalid_request");
+        }
+
+        for missing_pkce_parameter in [
+            format!("{base}&code_challenge=pkce"),
+            format!("{base}&code_challenge_method=S256"),
+        ] {
+            let rejected = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(missing_pkce_parameter)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         }
     }
 
