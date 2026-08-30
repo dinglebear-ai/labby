@@ -201,7 +201,14 @@ impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient<'_> {
 const DEFAULT_EXCHANGE_URL: &str = "http://localhost";
 
 /// Default OIDC Dynamic Client Registration `application_type` (SEP-837)
-const DEFAULT_APPLICATION_TYPE: &str = "native";
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum ApplicationType {
+    #[default]
+    Native,
+    Web,
+}
 
 /// Stored credentials for OAuth2 authorization
 #[derive(Clone, Serialize, Deserialize)]
@@ -214,7 +221,13 @@ pub struct StoredCredentials {
     #[serde(default)]
     pub token_received_at: Option<u64>,
     #[serde(default)]
-    pub issuer: Option<String>,
+    issuer: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialIssuerBinding<'a> {
+    LegacyUnbound,
+    IssuerBound(&'a str),
 }
 
 impl std::fmt::Debug for StoredCredentials {
@@ -249,10 +262,28 @@ impl StoredCredentials {
         }
     }
 
-    pub fn with_issuer(mut self, issuer: Option<String>) -> Self {
+    pub fn with_issuer(mut self, issuer: Option<String>) -> Result<Self, AuthError> {
+        if let Some(value) = issuer.as_deref() {
+            let parsed = Url::parse(value).map_err(|error| AuthError::AuthorizationFailed(format!("invalid credential issuer: {error}")))?;
+            if parsed.fragment().is_some() {
+                return Err(AuthError::AuthorizationFailed("credential issuer must not contain a fragment".to_string()));
+            }
+        }
         self.issuer = issuer;
-        self
+        Ok(self)
     }
+
+
+    pub fn issuer_binding(&self) -> CredentialIssuerBinding<'_> {
+        match self.issuer.as_deref() {
+            Some(issuer) => CredentialIssuerBinding::IssuerBound(issuer),
+            None => CredentialIssuerBinding::LegacyUnbound,
+        }
+    }
+
+    pub fn issuer_owned(&self) -> Option<String> { self.issuer.clone() }
+
+    fn issuer(&self) -> Option<&str> { self.issuer.as_deref() }
 }
 
 /// Trait for storing and retrieving OAuth2 credentials
@@ -305,20 +336,77 @@ impl CredentialStore for InMemoryCredentialStore {
 }
 
 /// Stored authorization state for OAuth2 PKCE flow
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AuthorizationResponseIssuer {
+    Unavailable,
+    Optional(String),
+    Required(String),
+}
+
+impl AuthorizationResponseIssuer {
+    pub fn from_legacy(expected_issuer: Option<String>, require_issuer: bool) -> Result<Self, AuthError> {
+        match (expected_issuer, require_issuer) {
+            (None, false) => Ok(Self::Unavailable),
+            (Some(issuer), false) => Ok(Self::Optional(issuer)),
+            (Some(issuer), true) => Ok(Self::Required(issuer)),
+            (None, true) => Err(AuthError::AuthorizationFailed(
+                "authorization state requires an issuer but records no expected issuer".to_string(),
+            )),
+        }
+    }
+
+    pub fn expected(&self) -> Option<&str> {
+        match self { Self::Unavailable => None, Self::Optional(v) | Self::Required(v) => Some(v) }
+    }
+
+    pub fn is_required(&self) -> bool { matches!(self, Self::Required(_)) }
+}
+
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct StoredAuthorizationState {
     pub pkce_verifier: String,
     pub csrf_token: String,
-    #[serde(default)]
-    pub expected_issuer: Option<String>,
-    #[serde(default)]
-    pub require_issuer: bool,
+    issuer_binding: AuthorizationResponseIssuer,
     pub created_at: u64,
     /// scopes requested in this round, used to resolve the grant when the token response omits
     /// `scope` (RFC 6749 §5.1)
-    #[serde(default)]
     pub requested_scopes: Vec<String>,
+}
+
+impl Serialize for StoredAuthorizationState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        StoredAuthorizationStateWire {
+            pkce_verifier: self.pkce_verifier.clone(),
+            csrf_token: self.csrf_token.clone(),
+            expected_issuer: self.expected_issuer().map(str::to_owned),
+            require_issuer: self.requires_issuer(),
+            created_at: self.created_at,
+            requested_scopes: self.requested_scopes.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredAuthorizationStateWire {
+    pkce_verifier: String,
+    csrf_token: String,
+    #[serde(default)] expected_issuer: Option<String>,
+    #[serde(default)] require_issuer: bool,
+    created_at: u64,
+    #[serde(default)] requested_scopes: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for StoredAuthorizationState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = StoredAuthorizationStateWire::deserialize(deserializer)?;
+        let issuer_binding = AuthorizationResponseIssuer::from_legacy(wire.expected_issuer, wire.require_issuer)
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self { pkce_verifier: wire.pkce_verifier, csrf_token: wire.csrf_token,
+            issuer_binding, created_at: wire.created_at, requested_scopes: wire.requested_scopes })
+    }
 }
 
 impl std::fmt::Debug for StoredAuthorizationState {
@@ -326,8 +414,7 @@ impl std::fmt::Debug for StoredAuthorizationState {
         f.debug_struct("StoredAuthorizationState")
             .field("pkce_verifier", &"[REDACTED]")
             .field("csrf_token", &"[REDACTED]")
-            .field("expected_issuer", &self.expected_issuer)
-            .field("require_issuer", &self.require_issuer)
+            .field("issuer_binding", &self.issuer_binding)
             .field("created_at", &self.created_at)
             .field("requested_scopes", &self.requested_scopes)
             .finish()
@@ -372,18 +459,46 @@ impl StoredAuthorizationState {
         expected_issuer: Option<String>,
         require_issuer: bool,
     ) -> Self {
-        Self {
-            pkce_verifier: pkce_verifier.secret().to_string(),
-            csrf_token: csrf_token.secret().to_string(),
-            expected_issuer,
-            require_issuer,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            requested_scopes: Vec::new(),
-        }
+        Self::try_new_with_expected_issuer(pkce_verifier, csrf_token, expected_issuer, require_issuer)
+            .expect("issuer-required state must include an expected issuer")
     }
+
+
+    pub fn try_new_with_expected_issuer(
+        pkce_verifier: &PkceCodeVerifier, csrf_token: &CsrfToken,
+        expected_issuer: Option<String>, require_issuer: bool,
+    ) -> Result<Self, AuthError> {
+        let issuer_binding = AuthorizationResponseIssuer::from_legacy(expected_issuer, require_issuer)?;
+        Ok(Self { pkce_verifier: pkce_verifier.secret().to_string(), csrf_token: csrf_token.secret().to_string(),
+            issuer_binding, created_at: Self::now_secs(), requested_scopes: Vec::new() })
+    }
+
+    pub fn try_from_persisted(
+        pkce_verifier: String,
+        csrf_token: String,
+        expected_issuer: Option<String>,
+        require_issuer: bool,
+        created_at: u64,
+        requested_scopes: Vec<String>,
+    ) -> Result<Self, AuthError> {
+        Ok(Self {
+            pkce_verifier,
+            csrf_token,
+            issuer_binding: AuthorizationResponseIssuer::from_legacy(
+                expected_issuer,
+                require_issuer,
+            )?,
+            created_at,
+            requested_scopes,
+        })
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    }
+
+    pub fn expected_issuer(&self) -> Option<&str> { self.issuer_binding.expected() }
+    pub fn requires_issuer(&self) -> bool { self.issuer_binding.is_required() }
 
     /// record the scopes requested in this authorization round (SEP-2350)
     pub fn with_requested_scopes(mut self, scopes: Vec<String>) -> Self {
@@ -671,7 +786,7 @@ pub struct OAuthClientConfig {
     pub client_secret: Option<String>,
     pub scopes: Vec<String>,
     pub redirect_uri: String,
-    pub application_type: Option<String>,
+    pub application_type: Option<ApplicationType>,
 }
 
 impl OAuthClientConfig {
@@ -681,7 +796,7 @@ impl OAuthClientConfig {
             client_secret: None,
             scopes: Vec::new(),
             redirect_uri: redirect_uri.into(),
-            application_type: Some(DEFAULT_APPLICATION_TYPE.to_string()),
+            application_type: Some(ApplicationType::default()),
         }
     }
 
@@ -696,8 +811,8 @@ impl OAuthClientConfig {
     }
 
     /// Set the OIDC Dynamic Client Registration `application_type` (SEP-837), e.g. `"native"` or `"web"`
-    pub fn with_application_type(mut self, application_type: impl Into<String>) -> Self {
-        self.application_type = Some(application_type.into());
+    pub fn with_application_type(mut self, application_type: ApplicationType) -> Self {
+        self.application_type = Some(application_type);
         self
     }
 }
@@ -740,25 +855,31 @@ pub struct AuthorizationRequest {
     /// server's `WWW-Authenticate` challenge, Protected Resource Metadata,
     /// or authorization server metadata.
     pub scopes: Vec<String>,
-    /// Human-readable client name, used for Dynamic Client Registration.
-    pub client_name: Option<String>,
-    /// Pre-registered client ID obtained from the authorization server out of
-    /// band. When set, registration is skipped entirely.
-    pub client_id: Option<String>,
-    /// Client secret paired with the pre-registered [`client_id`](Self::client_id).
-    pub client_secret: Option<String>,
-    /// HTTPS URL of a Client ID Metadata Document (SEP-991). Used when the
-    /// authorization server advertises `client_id_metadata_document_supported`
-    /// and no pre-registered client is configured.
-    pub client_metadata_url: Option<String>,
-    /// OIDC Dynamic Client Registration `application_type` (SEP-837),
-    /// e.g. `"native"` or `"web"`.
-    pub application_type: Option<String>,
+    registration: ClientRegistrationSelection,
     /// `WWW-Authenticate` header value from a real request's 401 response.
     /// When set, discovery is seeded from the challenge (its
     /// `resource_metadata` URL and `scope` hint) instead of probing the
     /// server — the reactive discovery path.
     pub challenge: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum ClientRegistrationSelection {
+    Dynamic { client_name: Option<String>, application_type: Option<ApplicationType>, user_entered_client_id: Option<String> },
+    Cimd { metadata_url: String, fallback_client_name: Option<String>, application_type: Option<ApplicationType>, user_entered_client_id: Option<String> },
+    PreRegistered { client_id: String, client_secret: Option<String>, application_type: Option<ApplicationType> },
+    PendingSecret { client_secret: String, application_type: Option<ApplicationType> },
+}
+
+impl ClientRegistrationSelection {
+    fn application_type(&self) -> Option<ApplicationType> {
+        match self {
+            Self::Dynamic { application_type, .. }
+            | Self::Cimd { application_type, .. }
+            | Self::PreRegistered { application_type, .. } => *application_type,
+            Self::PendingSecret { application_type, .. } => *application_type,
+        }
+    }
 }
 
 impl AuthorizationRequest {
@@ -768,11 +889,7 @@ impl AuthorizationRequest {
         Self {
             redirect_uri: redirect_uri.into(),
             scopes: Vec::new(),
-            client_name: None,
-            client_id: None,
-            client_secret: None,
-            client_metadata_url: None,
-            application_type: None,
+            registration: ClientRegistrationSelection::Dynamic { client_name: None, application_type: None, user_entered_client_id: None },
             challenge: None,
         }
     }
@@ -790,7 +907,12 @@ impl AuthorizationRequest {
 
     /// Set the client name used for Dynamic Client Registration.
     pub fn with_client_name(mut self, client_name: impl Into<String>) -> Self {
-        self.client_name = Some(client_name.into());
+        let client_name = Some(client_name.into());
+        self.registration = match self.registration {
+            ClientRegistrationSelection::Dynamic { application_type, user_entered_client_id, .. } => ClientRegistrationSelection::Dynamic { client_name, application_type, user_entered_client_id },
+            ClientRegistrationSelection::Cimd { metadata_url, application_type, user_entered_client_id, .. } => ClientRegistrationSelection::Cimd { metadata_url, fallback_client_name: client_name, application_type, user_entered_client_id },
+            other => other,
+        };
         self
     }
 
@@ -800,7 +922,27 @@ impl AuthorizationRequest {
     /// Pair with [`with_client_secret`](Self::with_client_secret) for
     /// confidential clients.
     pub fn with_preregistered_client(mut self, client_id: impl Into<String>) -> Self {
-        self.client_id = Some(client_id.into());
+        let application_type = self.registration.application_type();
+        let client_secret = match self.registration {
+            ClientRegistrationSelection::PendingSecret { client_secret, .. } => Some(client_secret),
+            ClientRegistrationSelection::PreRegistered { client_secret, .. } => client_secret,
+            _ => None,
+        };
+        self.registration = ClientRegistrationSelection::PreRegistered { client_id: client_id.into(), client_secret, application_type };
+        self
+    }
+
+    /// Supply manually entered client information only as the final fallback
+    /// when the server supports neither CIMD nor Dynamic Client Registration.
+    pub fn with_user_entered_client(mut self, client_id: impl Into<String>) -> Self {
+        let client_id = Some(client_id.into());
+        self.registration = match self.registration {
+            ClientRegistrationSelection::Dynamic { client_name, application_type, .. } =>
+                ClientRegistrationSelection::Dynamic { client_name, application_type, user_entered_client_id: client_id },
+            ClientRegistrationSelection::Cimd { metadata_url, fallback_client_name, application_type, .. } =>
+                ClientRegistrationSelection::Cimd { metadata_url, fallback_client_name, application_type, user_entered_client_id: client_id },
+            other => other,
+        };
         self
     }
 
@@ -811,7 +953,13 @@ impl AuthorizationRequest {
     /// authorization fails with [`AuthError::RegistrationFailed`] if a secret
     /// is provided without a client ID.
     pub fn with_client_secret(mut self, client_secret: impl Into<String>) -> Self {
-        self.client_secret = Some(client_secret.into());
+        self.registration = match self.registration {
+            ClientRegistrationSelection::PreRegistered { client_id, application_type, .. } => ClientRegistrationSelection::PreRegistered { client_id, client_secret: Some(client_secret.into()), application_type },
+            other => ClientRegistrationSelection::PendingSecret {
+                client_secret: client_secret.into(),
+                application_type: other.application_type(),
+            },
+        };
         self
     }
 
@@ -819,14 +967,28 @@ impl AuthorizationRequest {
     /// the authorization server advertises support and no pre-registered
     /// client is configured.
     pub fn with_client_metadata_url(mut self, client_metadata_url: impl Into<String>) -> Self {
-        self.client_metadata_url = Some(client_metadata_url.into());
+        let (fallback_client_name, application_type, user_entered_client_id) = match self.registration {
+            ClientRegistrationSelection::Dynamic { client_name, application_type, user_entered_client_id } => (client_name, application_type, user_entered_client_id),
+            ClientRegistrationSelection::Cimd { fallback_client_name, application_type, user_entered_client_id, .. } => (fallback_client_name, application_type, user_entered_client_id),
+            ClientRegistrationSelection::PreRegistered { .. } => return self,
+            ClientRegistrationSelection::PendingSecret { client_secret, application_type } => {
+                self.registration = ClientRegistrationSelection::PendingSecret { client_secret, application_type };
+                return self;
+            }
+        };
+        self.registration = ClientRegistrationSelection::Cimd { metadata_url: client_metadata_url.into(), fallback_client_name, application_type, user_entered_client_id };
         self
     }
 
     /// Set the OIDC Dynamic Client Registration `application_type` (SEP-837),
     /// e.g. `"native"` or `"web"`.
-    pub fn with_application_type(mut self, application_type: impl Into<String>) -> Self {
-        self.application_type = Some(application_type.into());
+    pub fn with_application_type(mut self, application_type: ApplicationType) -> Self {
+        match &mut self.registration {
+            ClientRegistrationSelection::Dynamic { application_type: current, .. }
+            | ClientRegistrationSelection::Cimd { application_type: current, .. }
+            | ClientRegistrationSelection::PreRegistered { application_type: current, .. } => *current = Some(application_type),
+            ClientRegistrationSelection::PendingSecret { application_type: current, .. } => *current = Some(application_type),
+        }
         self
     }
 
@@ -1032,7 +1194,7 @@ pub struct AuthorizationManager {
     /// resource indicator from protected resource metadata, used for RFC 8707 `resource`
     discovered_resource: RwLock<Option<String>>,
     /// OIDC Dynamic Client Registration `application_type` (SEP-837)
-    application_type: Option<String>,
+    application_type: Option<ApplicationType>,
     allow_missing_issuer: bool,
 }
 
@@ -1046,7 +1208,7 @@ pub(crate) struct ClientRegistrationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub application_type: Option<String>,
+    pub application_type: Option<ApplicationType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1279,7 +1441,7 @@ impl AuthorizationManager {
             www_auth_scopes: RwLock::new(Vec::new()),
             resource_scopes: RwLock::new(Vec::new()),
             discovered_resource: RwLock::new(None),
-            application_type: Some(DEFAULT_APPLICATION_TYPE.to_string()),
+            application_type: Some(ApplicationType::default()),
             allow_missing_issuer: false,
         };
 
@@ -1343,10 +1505,10 @@ impl AuthorizationManager {
             }
 
             let current_issuer = self.metadata_issuer();
-            if stored.issuer.as_deref() != current_issuer.as_deref()
-                && (stored.issuer.is_some() || current_issuer.is_some())
+            if stored.issuer() != current_issuer.as_deref()
+                && (stored.issuer().is_some() || current_issuer.is_some())
             {
-                let stored_issuer = stored.issuer.as_deref().unwrap_or("<missing>");
+                let stored_issuer = stored.issuer().unwrap_or("<missing>");
                 let current_issuer = current_issuer.as_deref().unwrap_or("<missing>");
                 // A CIMD client ID is the client's metadata URL, so it is
                 // portable across authorization servers and exempt here.
@@ -1362,7 +1524,7 @@ impl AuthorizationManager {
                     self.credential_store
                         .save(
                             StoredCredentials::new(stored.client_id.clone(), None, vec![], None)
-                                .with_issuer(self.metadata_issuer()),
+                                .with_issuer(self.metadata_issuer())?,
                         )
                         .await?;
                     self.configure_client_id(&stored.client_id)?;
@@ -1375,7 +1537,10 @@ impl AuthorizationManager {
                     "authorization server issuer changed; clearing stored credentials bound to the previous issuer"
                 );
                 self.credential_store.clear().await?;
-                return Ok(false);
+                return Err(AuthError::AuthorizationServerMismatch {
+                    expected_issuer: current_issuer.to_string(),
+                    received_issuer: stored_issuer.to_string(),
+                });
             }
 
             self.configure_client_id(&stored.client_id)?;
@@ -1534,7 +1699,7 @@ impl AuthorizationManager {
 
         // SEP-837: only override application_type when the config sets one
         if let Some(application_type) = &config.application_type {
-            self.application_type = Some(application_type.clone());
+            self.application_type = Some(*application_type);
         }
 
         let metadata = self.metadata.as_ref().unwrap();
@@ -1954,8 +2119,8 @@ impl AuthorizationManager {
         stored_state: &StoredAuthorizationState,
         received_issuer: Option<&str>,
     ) -> Result<(), AuthError> {
-        let Some(expected_issuer) = stored_state.expected_issuer.as_deref() else {
-            if received_issuer.is_some() || stored_state.require_issuer {
+        let Some(expected_issuer) = stored_state.expected_issuer() else {
+            if received_issuer.is_some() || stored_state.requires_issuer() {
                 return Err(AuthError::AuthorizationFailed(
                     "Authorization callback issuer cannot be validated because expected issuer was not recorded"
                         .to_string(),
@@ -1967,7 +2132,7 @@ impl AuthorizationManager {
             return Ok(());
         };
         let Some(received_issuer) = received_issuer else {
-            if stored_state.require_issuer {
+            if stored_state.requires_issuer() {
                 return Err(AuthError::AuthorizationServerMissingIssuer {
                     expected_issuer: expected_issuer.to_string(),
                 });
@@ -3260,13 +3425,11 @@ impl AuthorizationSession {
         mut auth_manager: AuthorizationManager,
         mut request: AuthorizationRequest,
     ) -> Result<Self, (AuthorizationManager, AuthError)> {
-        if request.client_secret.is_some() && request.client_id.is_none() {
+        if matches!(request.registration, ClientRegistrationSelection::PendingSecret { .. }) {
             return Err((
                 auth_manager,
                 AuthError::RegistrationFailed(
-                    "client_secret was provided without a pre-registered client_id; \
-                     pair with_client_secret with with_preregistered_client"
-                        .to_string(),
+                    "client_secret requires a pre-registered client_id".to_string(),
                 ),
             ));
         }
@@ -3277,8 +3440,8 @@ impl AuthorizationSession {
             auth_manager.add_offline_access_if_supported(&mut request.scopes);
         }
 
-        if request.application_type.is_some() {
-            auth_manager.application_type = request.application_type.clone();
+        if let Some(application_type) = request.registration.application_type() {
+            auth_manager.application_type = Some(application_type);
         }
 
         let redirect_uri = request.redirect_uri.clone();
@@ -3296,16 +3459,16 @@ impl AuthorizationSession {
             .unwrap_or(false);
 
         // 1. pre-registered client information takes priority over everything else
-        let config = if let Some(client_id) = &request.client_id {
+        let config = if let ClientRegistrationSelection::PreRegistered { client_id, client_secret, application_type } = &request.registration {
             OAuthClientConfig {
                 client_id: client_id.clone(),
-                client_secret: request.client_secret.clone(),
+                client_secret: client_secret.clone(),
                 scopes: scopes.clone(),
                 redirect_uri: redirect_uri.clone(),
-                application_type: request.application_type.clone(),
+                application_type: *application_type,
             }
         // 2. CIMD (SEP-991), when the server advertises support and the client hosts a metadata document
-        } else if let Some(client_metadata_url) = request.client_metadata_url.as_deref()
+        } else if let ClientRegistrationSelection::Cimd { metadata_url: client_metadata_url, application_type, .. } = &request.registration
             && supports_url_based_client_id
         {
             if !is_https_url(client_metadata_url) {
@@ -3324,18 +3487,17 @@ impl AuthorizationSession {
                 client_secret: None,
                 scopes: scopes.clone(),
                 redirect_uri: redirect_uri.clone(),
-                application_type: Some(
-                    request
-                        .application_type
-                        .clone()
-                        .unwrap_or_else(|| DEFAULT_APPLICATION_TYPE.to_string()),
-                ),
+                application_type: Some(application_type.unwrap_or_default()),
             }
-        // 3. fall back to dynamic client registration
-        } else {
+        // 3. fall back to dynamic client registration when advertised
+        } else if auth_manager.metadata.as_ref().and_then(|m| m.registration_endpoint.as_ref()).is_some() {
             match auth_manager
                 .register_client(
-                    request.client_name.as_deref().unwrap_or("MCP Client"),
+                    match &request.registration {
+                        ClientRegistrationSelection::Dynamic { client_name, .. } => client_name.as_deref(),
+                        ClientRegistrationSelection::Cimd { fallback_client_name, .. } => fallback_client_name.as_deref(),
+                        _ => None,
+                    }.unwrap_or("MCP Client"),
                     &redirect_uri,
                     &scope_refs,
                 )
@@ -3352,6 +3514,20 @@ impl AuthorizationSession {
                     ));
                 }
             }
+        // 4. manually entered information is the final fallback only.
+        } else if let Some(client_id) = match &request.registration {
+            ClientRegistrationSelection::Dynamic { user_entered_client_id, .. }
+            | ClientRegistrationSelection::Cimd { user_entered_client_id, .. } => user_entered_client_id.as_ref(),
+            _ => None,
+        } {
+            OAuthClientConfig {
+                client_id: client_id.clone(), client_secret: None, scopes: scopes.clone(),
+                redirect_uri: redirect_uri.clone(), application_type: request.registration.application_type(),
+            }
+        } else {
+            return Err((auth_manager, AuthError::RegistrationFailed(
+                "no supported client registration mechanism or user-entered client information".to_string()
+            )));
         };
 
         // reset client config
@@ -3850,7 +4026,8 @@ mod tests {
 
     use super::{
         AuthError, AuthorizationCallback, AuthorizationManager, AuthorizationMetadata,
-        AuthorizationMetadataSource, AuthorizationRequest, AuthorizationSession, CredentialStore,
+        ApplicationType, AuthorizationMetadataSource, AuthorizationRequest, AuthorizationSession,
+        ClientRegistrationSelection, CredentialIssuerBinding, CredentialStore,
         InMemoryCredentialStore, InMemoryStateStore, OAuthClientConfig, OAuthHttpClient,
         OAuthHttpClientError, OAuthHttpClientFuture, OAuthHttpRedirectPolicy, OAuthHttpRequest,
         ScopeUpgradeConfig, StateStore, StoredAuthorizationState, is_https_url,
@@ -5101,6 +5278,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dcr_takes_priority_over_user_entered_client_information() {
+        let mut responses = preregistered_discovery_responses();
+        responses.push(http_response(201, serde_json::json!({
+            "client_id": "dcr-client", "redirect_uris": ["http://localhost:8080/callback"]
+        })));
+        let client = RecordingOAuthHttpClient::with_responses(responses);
+        let mut state = super::OAuthState::new_with_oauth_http_client(
+            "https://mcp.example.com/mcp", Arc::new(client.clone())
+        ).await.unwrap();
+        state.start_authorization(
+            AuthorizationRequest::new("http://localhost:8080/callback")
+                .with_client_name("test")
+                .with_user_entered_client("manual-client")
+                .with_scopes(["read"]),
+        ).await.unwrap();
+        let auth_url = state.get_authorization_url().await.unwrap();
+        assert_eq!(auth_url_query(&auth_url)["client_id"], "dcr-client");
+        assert!(client.requests().iter().any(|request| request.uri.contains("/register")));
+    }
+
+    #[tokio::test]
+    async fn user_entered_client_is_final_fallback_after_cimd_and_dcr_are_unavailable() {
+        let mut responses = preregistered_discovery_responses();
+        responses[2] = http_response(
+            200,
+            serde_json::json!({
+                "issuer": "https://auth.example.com/",
+                "authorization_endpoint": "https://auth.example.com/authorize",
+                "token_endpoint": "https://auth.example.com/token",
+                "scopes_supported": ["read"]
+            }),
+        );
+        let client = RecordingOAuthHttpClient::with_responses(responses);
+        let mut state = super::OAuthState::new_with_oauth_http_client(
+            "https://mcp.example.com/mcp",
+            Arc::new(client.clone()),
+        )
+        .await
+        .unwrap();
+
+        state
+            .start_authorization(
+                AuthorizationRequest::new("http://localhost:8080/callback")
+                    .with_client_metadata_url("https://client.example.com/client.json")
+                    .with_user_entered_client("manual-client")
+                    .with_scopes(["read"]),
+            )
+            .await
+            .unwrap();
+
+        let auth_url = state.get_authorization_url().await.unwrap();
+        assert_eq!(auth_url_query(&auth_url)["client_id"], "manual-client");
+        assert!(!client
+            .requests()
+            .iter()
+            .any(|request| request.uri.contains("/register")));
+    }
+
+    #[tokio::test]
     async fn dcr_registration_declares_application_type_and_authorization_code_refresh_grants() {
         let mut responses = preregistered_discovery_responses();
         responses.push(http_response(
@@ -5120,7 +5356,7 @@ mod tests {
 
         let request = AuthorizationRequest::new("http://localhost:8080/callback")
             .with_client_name("test-client")
-            .with_application_type("web")
+            .with_application_type(ApplicationType::Web)
             .with_scopes(["read"]);
         state.start_authorization(request).await.unwrap();
 
@@ -5137,6 +5373,29 @@ mod tests {
             &serde_json::json!(["authorization_code", "refresh_token"]),
             "refresh-capable clients declare both grants during DCR"
         );
+    }
+
+    #[tokio::test]
+    async fn native_dcr_registration_sends_native_application_type() {
+        let mut responses = preregistered_discovery_responses();
+        responses.push(http_response(201, serde_json::json!({
+            "client_id": "native-client",
+            "redirect_uris": ["http://localhost:8080/callback"]
+        })));
+        let client = RecordingOAuthHttpClient::with_responses(responses);
+        let mut state = super::OAuthState::new_with_oauth_http_client(
+            "https://mcp.example.com/mcp", Arc::new(client.clone())
+        ).await.unwrap();
+        state.start_authorization(
+            AuthorizationRequest::new("http://localhost:8080/callback")
+                .with_client_name("native-client")
+                .with_application_type(ApplicationType::Native)
+                .with_scopes(["read"]),
+        ).await.unwrap();
+        let registration = client.requests().into_iter()
+            .find(|request| request.uri.contains("/register")).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&registration.body).unwrap();
+        assert_eq!(body["application_type"], "native");
     }
 
     #[tokio::test]
@@ -5777,6 +6036,33 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn path_bearing_authorization_server_discovery_uses_required_order_and_stops() {
+        let client = RecordingOAuthHttpClient::with_responses(vec![
+            empty_response(404),
+            empty_response(404),
+            http_response(200, serde_json::json!({
+                "issuer": "https://auth.example.com/tenant",
+                "authorization_endpoint": "https://auth.example.com/tenant/authorize",
+                "token_endpoint": "https://auth.example.com/tenant/token"
+            })),
+            empty_response(500),
+        ]);
+        let manager = AuthorizationManager::new_with_oauth_http_client(
+            "https://mcp.example.com/mcp", Arc::new(client.clone())
+        ).await.unwrap();
+        let issuer = Url::parse("https://auth.example.com/tenant").unwrap();
+
+        let metadata = manager.try_discover_oauth_server(&issuer).await.unwrap().unwrap();
+        assert_eq!(metadata.issuer.as_deref(), Some("https://auth.example.com/tenant"));
+        let uris: Vec<_> = client.requests().into_iter().map(|request| request.uri).collect();
+        assert_eq!(uris, [
+            "https://auth.example.com/.well-known/oauth-authorization-server/tenant",
+            "https://auth.example.com/.well-known/openid-configuration/tenant",
+            "https://auth.example.com/tenant/.well-known/openid-configuration",
+        ]);
+    }
+
     // -- header value parsing --
 
     #[rstest]
@@ -5952,8 +6238,8 @@ mod tests {
         assert_eq!(deserialized.pkce_verifier, "my-verifier");
         assert_eq!(deserialized.csrf_token, "my-csrf");
         assert_eq!(deserialized.requested_scopes, vec!["read", "write"]);
-        assert_eq!(deserialized.expected_issuer, None);
-        assert!(!deserialized.require_issuer);
+        assert_eq!(deserialized.expected_issuer(), None);
+        assert!(!deserialized.requires_issuer());
     }
 
     #[test]
@@ -5962,6 +6248,15 @@ mod tests {
         let state: StoredAuthorizationState = serde_json::from_str(json).unwrap();
 
         assert!(state.requested_scopes.is_empty());
+        assert_eq!(state.expected_issuer(), None);
+        assert!(!state.requires_issuer());
+    }
+
+    #[test]
+    fn stored_authorization_state_rejects_required_issuer_without_expected_value() {
+        let json = r#"{"pkce_verifier":"v","csrf_token":"c","expected_issuer":null,"require_issuer":true,"created_at":1}"#;
+        let error = serde_json::from_str::<StoredAuthorizationState>(json).unwrap_err();
+        assert!(error.to_string().contains("requires an issuer"));
     }
 
     #[test]
@@ -5979,10 +6274,10 @@ mod tests {
         let deserialized: StoredAuthorizationState = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
-            deserialized.expected_issuer.as_deref(),
+            deserialized.expected_issuer(),
             Some("https://auth.example.com")
         );
-        assert!(!deserialized.require_issuer);
+        assert!(!deserialized.requires_issuer());
     }
 
     #[test]
@@ -5995,7 +6290,7 @@ mod tests {
         assert!(!debug_output.contains("super-secret-verifier"));
         assert!(!debug_output.contains("super-secret-csrf"));
         assert!(debug_output.contains("[REDACTED]"));
-        assert!(debug_output.contains("expected_issuer"));
+        assert!(debug_output.contains("issuer_binding"));
         assert!(debug_output.contains("created_at"));
     }
 
@@ -6223,10 +6518,11 @@ mod tests {
         .await;
         manager.set_credential_store(store.clone());
 
-        let initialized = manager.initialize_from_store().await.unwrap();
+        let error = manager.initialize_from_store().await.unwrap_err();
         let credentials_cleared = store.load().await.unwrap().is_none();
 
-        assert_eq!((initialized, credentials_cleared), (false, true));
+        assert!(matches!(error, AuthError::AuthorizationServerMismatch { .. }));
+        assert!(credentials_cleared);
     }
 
     #[tokio::test]
@@ -6251,7 +6547,8 @@ mod tests {
         .await;
         manager.set_credential_store(store.clone());
 
-        assert!(!manager.initialize_from_store().await.unwrap());
+        assert!(matches!(manager.initialize_from_store().await,
+            Err(AuthError::AuthorizationServerMismatch { .. })));
         assert!(
             store.load().await.unwrap().is_none(),
             "a token without an issuer binding must not be accepted for a discovered issuer"
@@ -6260,6 +6557,41 @@ mod tests {
             manager.get_access_token().await,
             Err(AuthError::AuthorizationRequired)
         ));
+    }
+
+    #[tokio::test]
+    async fn issuer_change_surfaces_mismatch_then_reregisters_with_new_server() {
+        let client = RecordingOAuthHttpClient::with_responses(vec![http_response(201, serde_json::json!({
+            "client_id": "new-client", "redirect_uris": ["http://localhost:8080/callback"]
+        }))]);
+        let store = InMemoryCredentialStore::new();
+        store.save(StoredCredentials {
+            client_id: "old-client".to_string(),
+            token_response: Some(make_token_response("old-token", Some(3600))),
+            granted_scopes: vec![], token_received_at: Some(AuthorizationManager::now_epoch_secs()),
+            issuer: Some("https://old.example.com".to_string()),
+        }).await.unwrap();
+        let mut manager = AuthorizationManager::new_with_oauth_http_client(
+            "https://mcp.example.com/mcp", Arc::new(client.clone())
+        ).await.unwrap();
+        manager.set_metadata(AuthorizationMetadata {
+            issuer: Some("https://new.example.com".to_string()),
+            authorization_endpoint: "https://new.example.com/authorize".to_string(),
+            token_endpoint: "https://new.example.com/token".to_string(),
+            registration_endpoint: Some("https://new.example.com/register".to_string()),
+            code_challenge_methods_supported: Some(vec!["S256".to_string()]),
+            ..Default::default()
+        });
+        manager.set_credential_store(store.clone());
+        assert!(matches!(manager.initialize_from_store().await,
+            Err(AuthError::AuthorizationServerMismatch { .. })));
+        let session = match AuthorizationSession::new(manager,
+            AuthorizationRequest::new("http://localhost:8080/callback").with_client_name("new client")).await {
+            Ok(session) => session,
+            Err((_, error)) => panic!("re-registration failed: {error}"),
+        };
+        assert!(session.auth_url.contains("client_id=new-client"));
+        assert_eq!(client.requests().iter().filter(|r| r.uri == "https://new.example.com/register").count(), 1);
     }
 
     #[tokio::test]
@@ -6750,7 +7082,6 @@ mod tests {
         Some("https://auth.example.com"),
         ExpectedIssuerError::NotRecorded
     )]
-    #[case::required_issuer_without_expected(None, true, None, ExpectedIssuerError::NotRecorded)]
     #[case::mismatched_issuer(
         Some("https://auth.example.com"),
         false,
@@ -6807,9 +7138,36 @@ mod tests {
             .unwrap()
             .expect("authorization state should be stored");
         assert_eq!(
-            stored_state.expected_issuer.as_deref(),
+            stored_state.expected_issuer(),
             Some("https://auth.example.com")
         );
+    }
+
+    #[tokio::test]
+    async fn issuer_mismatch_is_rejected_before_any_token_endpoint_request() {
+        let client = RecordingOAuthHttpClient::with_responses(vec![]);
+        let mut manager = AuthorizationManager::new_with_oauth_http_client(
+            "https://mcp.example.com/mcp", Arc::new(client.clone())
+        ).await.unwrap();
+        manager.set_metadata(AuthorizationMetadata {
+            issuer: Some("https://auth.example.com".to_string()),
+            authorization_endpoint: "https://auth.example.com/authorize".to_string(),
+            token_endpoint: "https://auth.example.com/token".to_string(),
+            additional_fields: HashMap::from([(
+                "authorization_response_iss_parameter_supported".to_string(),
+                serde_json::Value::Bool(true),
+            )]),
+            ..Default::default()
+        });
+        manager.configure_client_id("client").unwrap();
+        let authorization_url = manager.get_authorization_url(&[]).await.unwrap();
+        let state = auth_url_query(&authorization_url)["state"].clone();
+
+        let error = manager.exchange_code_for_token_with_issuer(
+            "code", &state, Some("https://attacker.example.com")
+        ).await.unwrap_err();
+        assert!(matches!(error, AuthError::AuthorizationServerMismatch { .. }));
+        assert!(client.requests().is_empty(), "issuer validation must precede token exchange");
     }
 
     // -- scope management --
@@ -7372,10 +7730,59 @@ mod tests {
             token_endpoint_auth_method: "none".to_string(),
             response_types: vec!["code".to_string()],
             scope: None,
-            application_type: Some("native".to_string()),
+            application_type: Some(ApplicationType::Native),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["application_type"], "native");
+    }
+
+    #[test]
+    fn application_type_rejects_values_outside_native_and_web() {
+        assert!(serde_json::from_str::<ApplicationType>(r#""desktop""#).is_err());
+        assert_eq!(serde_json::to_string(&ApplicationType::Web).unwrap(), r#""web""#);
+    }
+
+    #[test]
+    fn client_registration_selection_rejects_secret_without_preregistered_identity() {
+        let request = AuthorizationRequest::new("http://localhost/callback")
+            .with_client_secret("must-not-float-free");
+        assert!(matches!(request.registration, ClientRegistrationSelection::PendingSecret { .. }));
+    }
+
+    #[test]
+    fn preregistered_identity_is_closed_and_carries_its_secret() {
+        let request = AuthorizationRequest::new("http://localhost/callback")
+            .with_preregistered_client("client")
+            .with_client_secret("secret");
+        assert!(matches!(request.registration,
+            ClientRegistrationSelection::PreRegistered { ref client_id, client_secret: Some(ref secret), .. }
+                if client_id == "client" && secret == "secret"));
+    }
+
+    #[test]
+    fn preregistered_identity_carries_secret_in_either_builder_order() {
+        let request = AuthorizationRequest::new("http://localhost/callback")
+            .with_client_secret("secret")
+            .with_preregistered_client("client");
+        assert!(matches!(request.registration,
+            ClientRegistrationSelection::PreRegistered { ref client_id, client_secret: Some(ref secret), .. }
+                if client_id == "client" && secret == "secret"));
+    }
+
+    #[test]
+    fn stored_credentials_decode_legacy_unbound_and_validate_new_issuer_binding() {
+        let legacy = serde_json::json!({
+            "client_id": "legacy", "token_response": null,
+            "granted_scopes": [], "token_received_at": null
+        });
+        let credentials: StoredCredentials = serde_json::from_value(legacy).unwrap();
+        assert_eq!(credentials.issuer_binding(), CredentialIssuerBinding::LegacyUnbound);
+
+        let bound = StoredCredentials::new("bound".into(), None, vec![], None)
+            .with_issuer(Some("https://auth.example.com/tenant".into())).unwrap();
+        assert_eq!(bound.issuer_binding(), CredentialIssuerBinding::IssuerBound("https://auth.example.com/tenant"));
+        assert!(StoredCredentials::new("bad".into(), None, vec![], None)
+            .with_issuer(Some("not a URL".into())).is_err());
     }
 
     #[test]
@@ -7398,14 +7805,14 @@ mod tests {
     #[test]
     fn oauth_client_config_defaults_application_type_to_native() {
         let config = super::OAuthClientConfig::new("client-id", "http://127.0.0.1:8080/callback");
-        assert_eq!(config.application_type.as_deref(), Some("native"));
+        assert_eq!(config.application_type, Some(ApplicationType::Native));
     }
 
     #[test]
     fn oauth_client_config_with_application_type_overrides_default() {
         let config = super::OAuthClientConfig::new("client-id", "https://app.example.com/callback")
-            .with_application_type("web");
-        assert_eq!(config.application_type.as_deref(), Some("web"));
+            .with_application_type(ApplicationType::Web);
+        assert_eq!(config.application_type, Some(ApplicationType::Web));
     }
 
     // -- client credentials (SEP-1046) --

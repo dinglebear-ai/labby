@@ -3233,7 +3233,7 @@ pub mod tests {
         }
 
         #[tokio::test]
-        async fn oauth_client_callback_keeps_issuer_in_explicit_codex_compatibility_mode() {
+        async fn oauth_client_callback_omits_issuer_in_explicit_codex_compatibility_mode() {
             let redirect = oauth_client_callback_location(true).await;
             let params: std::collections::HashMap<_, _> = redirect.query_pairs().collect();
             assert!(params.contains_key("code"));
@@ -3241,10 +3241,7 @@ pub mod tests {
                 params.get("state").map(|value| value.as_ref()),
                 Some("client-xyz")
             );
-            assert_eq!(
-                params.get("iss").map(|value| value.as_ref()),
-                Some("https://lab.example.com")
-            );
+            assert!(!params.contains_key("iss"));
         }
 
         #[tokio::test(flavor = "current_thread")]

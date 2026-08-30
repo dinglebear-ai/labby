@@ -33,6 +33,56 @@ use super::{UpstreamClientService, UpstreamConnection};
 
 static LEGACY_STDIO_LIFECYCLE: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
 
+const STDIO_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TERM",
+    "TZ",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "PATHEXT",
+    "COMSPEC",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+];
+
+fn allowed_stdio_parent_environment(
+    parent: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    parent
+        .into_iter()
+        .filter(|(name, _)| {
+            STDIO_ENV_ALLOWLIST
+                .iter()
+                .any(|allowed| name == std::ffi::OsStr::new(allowed))
+        })
+        .collect()
+}
+
 fn stdio_lifecycle_key(name: &str, command: &str, args: &[String]) -> String {
     format!("{name}\u{0}{command}\u{0}{}", args.join("\u{0}"))
 }
@@ -266,54 +316,13 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     // scrubbed allowlist of runtime essentials (so npx/uvx/docker/etc. can still
     // find binaries, caches, and TLS roots), then layer the upstream's declared
     // env (and bearer token, below) on top.
-    const STDIO_ENV_ALLOWLIST: &[&str] = &[
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "TERM",
-        "TZ",
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-        "LANG",
-        "LANGUAGE",
-        "LC_ALL",
-        "LC_CTYPE",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_RUNTIME_DIR",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "NODE_EXTRA_CA_CERTS",
-        "REQUESTS_CA_BUNDLE",
-        "CURL_CA_BUNDLE",
-        "SYSTEMROOT",
-        "SYSTEMDRIVE",
-        "WINDIR",
-        "PATHEXT",
-        "COMSPEC",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "PROGRAMDATA",
-        "PROGRAMFILES",
-        "USERPROFILE",
-        "HOMEDRIVE",
-        "HOMEPATH",
-    ];
-
     let mut cmd = Command::new(&command.program);
     cmd.args(&command.args);
     if let Some(cwd) = &command.cwd {
         cmd.current_dir(cwd);
     }
     cmd.env_clear();
-    for key in STDIO_ENV_ALLOWLIST {
-        if let Some(value) = std::env::var_os(key) {
-            cmd.env(key, value);
-        }
-    }
+    cmd.envs(allowed_stdio_parent_environment(std::env::vars_os()));
     for key in &command.inherit_env {
         if let Some(value) = std::env::var_os(key) {
             cmd.env(key, value);
@@ -487,6 +496,36 @@ mod conformance_tests {
             child_env.iter().any(|(name, value)| {
                 name == "UPSTREAM_TOKEN" && value == "stdio-sentinel-secret"
             })
+        );
+    }
+
+    #[test]
+    fn stdio_parent_environment_is_fail_closed_to_explicit_runtime_allowlist() {
+        let inherited = allowed_stdio_parent_environment([
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+            (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+            (
+                OsString::from("LABBY_OAUTH_ENCRYPTION_KEY"),
+                OsString::from("must-not-leak"),
+            ),
+            (
+                OsString::from("AWS_SECRET_ACCESS_KEY"),
+                OsString::from("must-not-leak"),
+            ),
+        ]);
+
+        assert_eq!(
+            inherited,
+            vec![
+                (OsString::from("PATH"), OsString::from("/usr/bin")),
+                (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+            ]
+        );
+        assert!(
+            inherited
+                .iter()
+                .all(|(name, value)| !name.to_string_lossy().contains("SECRET")
+                    && value != "must-not-leak")
         );
     }
 }

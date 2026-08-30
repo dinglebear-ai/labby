@@ -221,6 +221,14 @@ stable IDs. The focused checks cover discovery and authorization-server
 metadata, tool descriptor security declarations and their compatibility
 mirror, MCP result challenges, per-request token validation, public-route
 401/403 challenges, DCR advertisement parity, and refresh/revocation drills.
+`OAI-AUTH-011` derives its denominator from the generated HTTP route inventory
+and the live registered MCP services/actions. Every mounted customer-specific
+or write HTTP route is probed behind the shared authentication layer;
+runtime-conditional entries must remain explicitly classified. Every MCP
+service advertises the canonical OAuth scope, and every action's admin
+requirement is checked against its `ActionSpec` before dispatch. A newly
+inventoried route, registered service, or action therefore fails CI until its
+authentication exposure is explicitly classified.
 
 The independently generated
 [`conformance/mcp-auth-normative.json`](../../conformance/mcp-auth-normative.json)
@@ -259,7 +267,10 @@ origin. Because any in-repository checker can otherwise be changed by the same
 pull request as its inputs, `.github/workflows/vendor-rmcp-policy.yml` runs from
 the protected base branch and requires the maintainer-applied
 `vendor-rmcp-approved` label for changes to the vendor tree, provenance
-manifest, checker, or policy workflow itself.
+manifest, checker, or policy workflow itself. Every new pull-request head
+(`synchronize`) removes any prior approval and deliberately fails the guard;
+after reviewing that exact head, a maintainer must reapply the label to rerun
+the guard successfully.
 
 ### Rollout and Inspector verification
 

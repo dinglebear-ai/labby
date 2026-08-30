@@ -544,6 +544,24 @@
         "scripts/ci/openai-auth-conformance.sh OAI-AUTH-010"
       ],
       "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-011",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Every customer-specific or write HTTP and MCP surface authenticates the user and enforces its required scope before dispatch.",
+      "strength": "openai_recommended",
+      "applicability": "applicable",
+      "implementation": "The generated HTTP route inventory and live MCP service/action registries are the executable denominator: every mounted customer-specific or write HTTP route is probed behind the shared auth layer, runtime-conditional routes must remain explicitly classified, every MCP service descriptor declares Labby's OAuth scope, and every registered action derives its admin gate from ActionSpec metadata.",
+      "evidence_paths": [
+        "crates/labby/src/api/router.rs",
+        "crates/labby/src/mcp/permanent_tools.rs",
+        "crates/labby/src/mcp/context.rs"
+      ],
+      "test_id": "api::router::tests::every_inventoried_customer_or_write_http_route_authenticates_before_dispatch",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-011"
+      ],
+      "status": "pass"
     }
   ]
 }

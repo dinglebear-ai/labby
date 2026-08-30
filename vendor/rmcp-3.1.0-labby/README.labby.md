@@ -10,14 +10,28 @@ following compatibility deltas, all pinned and checked by
 - an optional `Tool.security_schemes` field serialized as top-level
   `securitySchemes`, including macro initialization and wire-model tests;
 - exact authorization-server issuer comparison for OAuth discovery; and
-- an authenticated-client regression proof that bearer credentials use the
-  `Authorization` header and never a query parameter.
+- authenticated bearer credentials in the `Authorization` header, never a
+  query parameter;
+- issuer-bound authorization state and stored credentials, including safe
+  rejection and recovery when an issuer changes;
+- fixed, non-reflecting authorization callback errors and validation before a
+  code can reach a token endpoint;
+- least-privilege scope selection from explicit requests and resource
+  challenges without expansion to the server's full scope catalog;
+- protected-resource propagation through authorization, code exchange, and
+  refresh requests;
+- deterministic pre-registration, CIMD, DCR, and user-supplied registration
+  precedence, including typed DCR application types, authorization/refresh
+  grant declarations, and recoverable registration failures; and
+- explicit expired-token and refresh behavior.
 
 The field uses `Option<Vec<serde_json::Value>>`: omission preserves the standard
 MCP 3.1 wire model, while values preserve OpenAI's current `noauth` / `oauth2`
 objects and remain forward-compatible with future extension shapes.
 
-The standalone `Cargo.toml` adaptation and deterministic formatting-only test
-change are packaging deltas, not protocol behavior. Remove this vendored crate
-only after every behavioral delta above is available in an official `rmcp`
-release and Labby's MCP/OpenAI conformance matrices pass against that release.
+The provenance manifest is the complete machine-checked changed-file and patch
+inventory; this document summarizes the behavioral obligations. The standalone
+`Cargo.toml` adaptation and deterministic formatting-only test change are
+packaging deltas, not protocol behavior. Remove this vendored crate only after
+every manifest obligation is available in an official `rmcp` release and
+Labby's MCP/OpenAI conformance matrices pass against that release.

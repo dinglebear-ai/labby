@@ -124,6 +124,7 @@ async fn secure_get_inner(url: &url::Url) -> Result<reqwest::Response, AuthError
         .send()
         .await
         .map_err(|error| {
+            let error = error.without_url();
             warn!(
                 event = "request.error",
                 method = "GET",
@@ -154,10 +155,9 @@ pub(crate) async fn fetch_json<T>(
 where
     T: DeserializeOwned,
 {
-    let mut response = secure_get(url)
-        .await?
-        .error_for_status()
-        .map_err(|error| AuthError::Network(format!("fetch {document_name}: {error}")))?;
+    let mut response = secure_get(url).await?.error_for_status().map_err(|error| {
+        AuthError::Network(format!("fetch {document_name}: {}", error.without_url()))
+    })?;
     if response
         .content_length()
         .is_some_and(|length| length > MAX_DOCUMENT_BYTES as u64)
@@ -173,11 +173,9 @@ where
             .and_then(|value| value.to_str().ok()),
     );
     let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| AuthError::Network(format!("read {document_name}: {error}")))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        AuthError::Network(format!("read {document_name}: {}", error.without_url()))
+    })? {
         if bytes.len().saturating_add(chunk.len()) > MAX_DOCUMENT_BYTES {
             return Err(AuthError::Validation(format!(
                 "{document_name} exceeds 1 MiB"

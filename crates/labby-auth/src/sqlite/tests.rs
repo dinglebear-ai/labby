@@ -1526,6 +1526,95 @@ async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker
 }
 
 #[test]
+fn v9_migration_fault_rolls_back_table_and_schema_version() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE refresh_tokens (
+           refresh_token_hash TEXT, client_id TEXT, subject TEXT, resource TEXT,
+           scope TEXT, provider_refresh_token TEXT, created_at INTEGER,
+           expires_at INTEGER, refresh_claim_id TEXT, refresh_claim_expires_at INTEGER
+         );
+         CREATE TABLE google_provider_credentials (
+           subject TEXT, email TEXT, refresh_token TEXT, generation INTEGER,
+           created_at INTEGER, updated_at INTEGER, client_id TEXT,
+           granted_scopes_json TEXT, access_token TEXT, token_received_at INTEGER,
+           access_token_expires_at INTEGER, issuer TEXT, last_refresh_at INTEGER,
+           last_scope_upgrade_at INTEGER
+         );
+         CREATE TABLE assertion_jtis (issuer TEXT, jti TEXT, expires_at INTEGER);
+         PRAGMA user_version = 8;",
+    )
+    .unwrap();
+
+    let error = migrations::run_migrations_with_fault(&conn, "v9_after_table")
+        .expect_err("fault must abort v9");
+    assert!(error.to_string().contains("injected v9 migration fault"));
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 8);
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'google_provider_revocations')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!exists);
+}
+
+#[test]
+fn v10_migration_fault_rolls_back_column_and_schema_version() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE authorization_requests (state TEXT PRIMARY KEY);
+         PRAGMA user_version = 9;",
+    )
+    .unwrap();
+
+    let error = migrations::run_migrations_with_fault(&conn, "v10_after_column")
+        .expect_err("fault must abort v10");
+    assert!(error.to_string().contains("injected v10 migration fault"));
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 9);
+    let columns = {
+        let mut statement = conn
+            .prepare("PRAGMA table_info(authorization_requests)")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(columns, vec!["state"]);
+}
+
+#[test]
+fn v11_migration_fault_rolls_back_table_and_schema_version() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA user_version = 10;").unwrap();
+
+    let error = migrations::run_migrations_with_fault(&conn, "v11_after_table")
+        .expect_err("fault must abort v11");
+    assert!(error.to_string().contains("injected v11 migration fault"));
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 10);
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refresh_token_replays')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!exists);
+}
+
+#[test]
 fn v12_migration_fault_rolls_back_columns_and_schema_version() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(

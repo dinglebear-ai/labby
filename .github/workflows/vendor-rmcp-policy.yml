@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  issues: write
 
 jobs:
   require-maintainer-approval:
@@ -17,6 +18,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
+          ACTION: ${{ github.event.action }}
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
@@ -27,6 +29,13 @@ jobs:
           } | grep -E '^(vendor/rmcp-3\.1\.0-labby/|conformance/vendor-rmcp-provenance\.json$|scripts/ci/check_vendor_rmcp_provenance\.py$|\.github/workflows/vendor-rmcp-policy\.yml$)' || true)"
           if [[ -z "$protected_change" ]]; then
             exit 0
+          fi
+          if [[ "$ACTION" == "synchronize" ]] && jq -e 'index("vendor-rmcp-approved") != null' <<<"$LABELS" >/dev/null; then
+            gh api --method DELETE \
+              "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels/vendor-rmcp-approved"
+            echo "A new head revision invalidated the previous vendored-rmcp approval." >&2
+            echo "A maintainer must review the current head and reapply vendor-rmcp-approved." >&2
+            exit 1
           fi
           if ! jq -e 'index("vendor-rmcp-approved") != null' <<<"$LABELS" >/dev/null; then
             echo "Vendored rmcp trust-boundary changes require the maintainer-applied vendor-rmcp-approved label." >&2

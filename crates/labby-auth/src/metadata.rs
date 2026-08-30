@@ -62,7 +62,7 @@ pub async fn authorization_server_metadata(
         // response to rmcp (openai/codex#34684). Operators may explicitly
         // disable RFC 9207 response-issuer binding until that client defect is
         // fixed; standards-compliant metadata remains the default.
-        authorization_response_iss_parameter_supported: true,
+        authorization_response_iss_parameter_supported: !state.config.codex_issuer_compatibility,
         client_id_metadata_document_supported: true,
         authorization_grant_profiles_supported: if has_enterprise_issuers {
             vec!["urn:ietf:params:oauth:grant-profile:id-jag".to_string()]
@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorization_server_metadata_keeps_issuer_binding_in_compatibility_mode() {
+    async fn authorization_server_metadata_disables_issuer_binding_in_compatibility_mode() {
         use crate::authorize::tests::{test_auth_config, test_auth_state_with_config};
 
         let mut config = test_auth_config();
@@ -265,7 +265,10 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["authorization_response_iss_parameter_supported"], true);
+        assert_eq!(
+            json["authorization_response_iss_parameter_supported"],
+            false
+        );
     }
 
     #[tokio::test]

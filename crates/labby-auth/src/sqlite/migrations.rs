@@ -164,38 +164,65 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
         repair_falsely_stamped_v8(conn)?;
     }
     if current < 9 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS google_provider_revocations (
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS google_provider_revocations (
                    subject TEXT PRIMARY KEY,
                    epoch INTEGER NOT NULL,
                    updated_at INTEGER NOT NULL
-                 );
-                 PRAGMA user_version = 9;",
-        )
-        .map_err(sqlite_error)?;
+                 );",
+            )
+            .map_err(sqlite_error)?;
+        if fault == Some("v9_after_table") {
+            return Err(AuthError::Storage(
+                "injected v9 migration fault".to_string(),
+            ));
+        }
+        transaction
+            .execute_batch("PRAGMA user_version = 9;")
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
     }
     if current < 10 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
         add_column_if_missing(
-            conn,
+            &transaction,
             "authorization_requests",
             "native_poll_token_hash",
             "TEXT",
         )?;
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS native_authorization_results;
+        if fault == Some("v10_after_column") {
+            return Err(AuthError::Storage(
+                "injected v10 migration fault".to_string(),
+            ));
+        }
+        transaction
+            .execute_batch(
+                "DROP TABLE IF EXISTS native_authorization_results;
                  CREATE TABLE native_authorization_results (
                    poll_token_hash TEXT PRIMARY KEY,
                    code TEXT NOT NULL,
                    created_at INTEGER NOT NULL,
                    expires_at INTEGER NOT NULL
-                 );
-                 PRAGMA user_version = 10;",
-        )
-        .map_err(sqlite_error)?;
+                 );",
+            )
+            .map_err(sqlite_error)?;
+        if fault == Some("v10_after_table") {
+            return Err(AuthError::Storage(
+                "injected v10 migration fault".to_string(),
+            ));
+        }
+        transaction
+            .execute_batch("PRAGMA user_version = 10;")
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
     }
     if current < 11 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS refresh_token_replays (
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS refresh_token_replays (
                    predecessor_token_hash TEXT PRIMARY KEY,
                    client_id TEXT NOT NULL,
                    resource TEXT NOT NULL,
@@ -206,10 +233,18 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
                    expires_at INTEGER NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS idx_refresh_token_replays_expiry
-                   ON refresh_token_replays(expires_at);
-                 PRAGMA user_version = 11;",
-        )
-        .map_err(sqlite_error)?;
+                   ON refresh_token_replays(expires_at);",
+            )
+            .map_err(sqlite_error)?;
+        if fault == Some("v11_after_table") {
+            return Err(AuthError::Storage(
+                "injected v11 migration fault".to_string(),
+            ));
+        }
+        transaction
+            .execute_batch("PRAGMA user_version = 11;")
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
     }
     if current < 12 {
         let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;

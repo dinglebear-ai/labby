@@ -616,6 +616,32 @@ mod tests {
     }
 
     #[test]
+    fn every_registry_service_tool_declares_the_required_oauth_scope() {
+        let registry = crate::registry::build_default_registry();
+        let permanent = PermanentToolRegistry::new();
+        let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
+
+        for service in registry.services() {
+            assert!(
+                !service.actions.is_empty(),
+                "registered customer-facing service `{}` must expose an auditable action denominator",
+                service.name
+            );
+            let tool = permanent.builtin_service_tool(
+                service,
+                true,
+                SkillLibraryDescriptorMode::Compatibility,
+            );
+            let serialized = serde_json::to_value(tool).expect("Tool descriptor serializes");
+            assert_eq!(
+                serialized["securitySchemes"], expected,
+                "OAI-CLAUSE-001: registered MCP service `{}` lacks the OAuth scope required before dispatch",
+                service.name
+            );
+        }
+    }
+
+    #[test]
     fn builtin_service_tool_mirrors_security_schemes_in_legacy_meta() {
         let tool = PermanentToolRegistry::new().builtin_service_tool(
             &service("gateway-alpha"),

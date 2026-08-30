@@ -118,6 +118,12 @@ rather than adding another required context. Separate required contexts are
 reserved for controls, like the protected-docs guard and repository contract,
 that intentionally execute from a trusted workflow boundary.
 
+Vendored rmcp trust-boundary changes have a second trusted-base workflow,
+`Vendored rmcp policy`. It requires `vendor-rmcp-approved`, removes that label
+whenever the pull-request head changes, and fails until a maintainer reviews and
+relabels the exact new head. It is a separate required `pull_request_target`
+context rather than part of the branch-controlled `ci-gate`.
+
 ## CI Checks
 
 Every push and pull request must pass `ci-gate`, which covers the following
@@ -127,6 +133,7 @@ jobs when their changed-path category is enabled:
 |-------|----------|---------|
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
+| Vendored rmcp policy | separate required `pull_request_target` workflow | invalidates prior approval on every new head and blocks vendor/provenance/checker/policy changes until a maintainer reapplies `vendor-rmcp-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |

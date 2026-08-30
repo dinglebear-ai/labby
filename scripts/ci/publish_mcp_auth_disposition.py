@@ -47,13 +47,17 @@ AGGREGATE_ROWS = {
 }
 
 DIRECT_REMAPS = {
-    "MCP-2026-AUTH-INDEX-003": ["upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth"],
+    "MCP-2026-AUTH-INDEX-003": [
+        "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth",
+        "upstream::pool::connect_stdio::conformance_tests::stdio_parent_environment_is_fail_closed_to_explicit_runtime_allowlist",
+    ],
     "MCP-2026-AUTH-INDEX-011": ["transport::auth::tests::preregistered_client_takes_priority_over_cimd", "transport::auth::tests::cimd_used_when_server_advertises_support", "transport::auth::tests::cimd_falls_back_to_dcr_when_server_lacks_support"],
     "MCP-2026-AUTH-INDEX-015": ["transport::auth::tests::select_scopes_unions_challenge_with_previously_requested"],
     "MCP-2026-AUTH-INDEX-016": ["middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"],
     "MCP-2026-AUTH-INDEX-017": ["transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog"],
     "MCP-2026-AUTH-INDEX-018": ["transport::auth::tests::initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission"],
     "MCP-2026-AUTH-INDEX-020": ["authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer", "authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer"],
+    "MCP-2026-AUTH-INDEX-022": ["transport::auth::tests::issuer_mismatch_is_rejected_before_any_token_endpoint_request"],
     "MCP-2026-AUTH-INDEX-026": ["transport::auth::tests::authorization_callback_rejects_untrusted_error_fields_without_echoing_them"],
     "MCP-2026-AUTH-INDEX-031": ["transport::auth::tests::authorization_url_uses_discovered_resource"],
     "MCP-2026-AUTH-INDEX-032": ["transport::auth::tests::resource_identifier_matching_allows_matching_host_or_parent_path"],
@@ -69,6 +73,11 @@ DIRECT_REMAPS = {
     "MCP-2026-AUTH-INDEX-058": ["transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit"],
     "MCP-2026-AUTH-INDEX-059": ["transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit"],
     "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-009": ["transport::auth::tests::authorization_metadata_accepts_oidc_path_appended_issuer", "transport::auth::tests::authorization_metadata_accepts_oidc_path_inserted_issuer"],
+    "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010": ["transport::auth::tests::path_bearing_authorization_server_discovery_uses_required_order_and_stops"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-001": ["transport::auth::tests::preregistered_client_takes_priority_over_cimd", "transport::auth::tests::cimd_used_when_server_advertises_support", "transport::auth::tests::cimd_falls_back_to_dcr_when_server_lacks_support", "transport::auth::tests::dcr_takes_priority_over_user_entered_client_information", "transport::auth::tests::user_entered_client_is_final_fallback_after_cimd_and_dcr_are_unavailable"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-017": ["transport::auth::tests::native_dcr_registration_sends_native_application_type"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-023": ["transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-024": ["transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server"],
     "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003": ["transport::auth::tests::authorization_url_uses_discovered_resource", "transport::auth::tests::refresh_token_includes_resource_parameter"],
     "MCP-2026-AUTH-CLIENT-REGISTRATION-019": ["transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure"],
     "MCP-2026-AUTH-CLIENT-REGISTRATION-020": ["transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure"],
@@ -118,6 +127,7 @@ EVIDENCE_PATH_REMAPS = {
     "MCP-2026-AUTH-INDEX-017": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
     "MCP-2026-AUTH-INDEX-018": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
     "MCP-2026-AUTH-INDEX-020": ["crates/labby-auth/src/authorize/response.rs"],
+    "MCP-2026-AUTH-INDEX-022": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
     "MCP-2026-AUTH-INDEX-031": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
     "MCP-2026-AUTH-INDEX-047": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
     "MCP-2026-AUTH-INDEX-048": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
@@ -126,6 +136,10 @@ EVIDENCE_PATH_REMAPS = {
     "MCP-2026-AUTH-INDEX-053": ["crates/labby-auth/src/middleware.rs"],
     "MCP-2026-AUTH-INDEX-054": ["crates/labby-auth/src/middleware.rs"],
     "MCP-2026-AUTH-INDEX-055": ["crates/labby-auth/src/middleware.rs"],
+    "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-001": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-023": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs", "crates/labby-auth/src/upstream/store.rs"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-024": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs", "crates/labby-auth/src/upstream/store.rs"],
 }
 
 

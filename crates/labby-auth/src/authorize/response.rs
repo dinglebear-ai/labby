@@ -1,6 +1,7 @@
 //! Authorization response construction and RFC 9207 issuer binding.
 
 use axum::response::{IntoResponse, Redirect, Response};
+use tracing::warn;
 
 use super::AuthorizeQuery;
 use crate::error::AuthError;
@@ -20,16 +21,23 @@ pub(super) fn authorization_error_redirect(
     redirect
         .query_pairs_mut()
         .append_pair("error", error_code)
-        .append_pair("error_description", &error.to_string())
+        .append_pair("error_description", public_error_description(error_code))
         .append_pair("state", &query.state);
+    warn!(
+        kind = error.kind(),
+        oauth_error_code = error_code,
+        "authorization request rejected"
+    );
     append_authorization_response_issuer(state, &mut redirect);
     Ok(Redirect::to(redirect.as_str()).into_response())
 }
 
 pub(super) fn append_authorization_response_issuer(state: &AuthState, redirect: &mut url::Url) {
-    redirect
-        .query_pairs_mut()
-        .append_pair("iss", &crate::metadata::public_base_url(state));
+    if !state.config.codex_issuer_compatibility {
+        redirect
+            .query_pairs_mut()
+            .append_pair("iss", &crate::metadata::public_base_url(state));
+    }
 }
 
 pub(super) fn authorization_callback_error_redirect(
@@ -47,10 +55,25 @@ pub(super) fn authorization_callback_error_redirect(
     redirect
         .query_pairs_mut()
         .append_pair("error", error_code)
-        .append_pair("error_description", &error.to_string())
+        .append_pair("error_description", public_error_description(error_code))
         .append_pair("state", client_state);
+    warn!(
+        kind = error.kind(),
+        oauth_error_code = error_code,
+        "authorization callback rejected"
+    );
     append_authorization_response_issuer(state, &mut redirect);
     Ok(Redirect::to(redirect.as_str()).into_response())
+}
+
+const fn public_error_description(error_code: &str) -> &'static str {
+    match error_code.as_bytes() {
+        b"access_denied" => "The authorization request was denied",
+        b"invalid_scope" => "The requested scope is invalid",
+        b"invalid_target" => "The requested resource is invalid",
+        b"invalid_request" => "The authorization request is invalid",
+        _ => "The authorization request could not be completed",
+    }
 }
 
 pub(super) fn authorization_response_query_presence(redirect: &url::Url) -> (bool, bool, bool) {
@@ -108,6 +131,44 @@ mod tests {
                 .find(|(name, _)| name == "iss")
                 .map(|(_, value)| value.into_owned()),
             Some("https://lab.example.com".to_string())
+        );
+        assert_eq!(
+            redirect
+                .query_pairs()
+                .find(|(name, _)| name == "error_description")
+                .map(|(_, value)| value.into_owned()),
+            Some("The authorization request was denied".to_string())
+        );
+        assert!(!redirect.as_str().contains("access%20denied"));
+    }
+
+    #[tokio::test]
+    async fn callback_error_redirect_does_not_disclose_internal_error_detail() {
+        let state = crate::authorize::tests::test_auth_state().await;
+        let response = authorization_callback_error_redirect(
+            &state,
+            "https://client.example/callback",
+            "state-1",
+            "server_error",
+            &crate::error::AuthError::Storage(
+                "/private/auth.db: signed-query=super-secret".to_string(),
+            ),
+        )
+        .unwrap();
+        let location = response
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .unwrap();
+        let location = location.to_str().unwrap();
+        assert!(!location.contains("auth.db"));
+        assert!(!location.contains("super-secret"));
+        let redirect = url::Url::parse(location).unwrap();
+        assert_eq!(
+            redirect
+                .query_pairs()
+                .find(|(name, _)| name == "error_description")
+                .map(|(_, value)| value.into_owned()),
+            Some("The authorization request could not be completed".to_string())
         );
     }
 }

@@ -4,12 +4,19 @@ set -euo pipefail
 readonly IDS=(
   OAI-AUTH-001 OAI-AUTH-002 OAI-AUTH-003 OAI-AUTH-004 OAI-AUTH-005
   OAI-AUTH-006 OAI-AUTH-007 OAI-AUTH-008 OAI-AUTH-009 OAI-AUTH-010
+  OAI-AUTH-011
 )
 
 run_test() {
   local package=$1
   local filter=$2
-  cargo test -p "$package" --all-features --locked --lib "$filter" -- --exact
+  local output
+  output="$(cargo test -p "$package" --all-features --locked --lib "$filter" -- --exact 2>&1)"
+  printf '%s\n' "$output"
+  if ! grep -Eq 'running [1-9][0-9]* test' <<<"$output"; then
+    echo "exact auth conformance test matched zero tests: $filter" >&2
+    return 1
+  fi
 }
 
 run_requirement() {
@@ -34,7 +41,8 @@ run_requirement() {
       run_test labby-auth authorize::tests::https_redirects_still_require_the_allowlist
       run_test labby-auth metadata::tests::authorization_server_metadata_exposes_lab_endpoints
       run_test labby-auth metadata::tests::authorization_server_metadata_advertises_private_key_jwt_without_machine_clients
-      run_test labby-auth metadata::tests::authorization_server_metadata_keeps_issuer_binding_in_compatibility_mode
+      run_test labby-auth metadata::tests::authorization_server_metadata_disables_issuer_binding_in_compatibility_mode
+      run_test labby-auth authorize::tests::merged_allowlist_callback_tests::oauth_client_callback_omits_issuer_in_explicit_codex_compatibility_mode
       run_test labby-auth authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer
       run_test labby-auth authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer
       run_test labby-auth authorize::tests::authorize_rejects_missing_or_invalid_response_type
@@ -71,6 +79,11 @@ run_requirement() {
       run_test labby-auth token::tests::refresh_grant_replay_rejects_a_revoked_replacement_token
       python3 scripts/ci/auth_backup_restore_drill.py
       ;;
+    OAI-AUTH-011)
+      run_test labby api::router::tests::every_inventoried_customer_or_write_http_route_authenticates_before_dispatch
+      run_test labby mcp::permanent_tools::tests::every_registry_service_tool_declares_the_required_oauth_scope
+      run_test labby mcp::context::tests::every_registered_action_uses_its_catalog_admin_metadata
+      ;;
     *)
       echo "unknown OpenAI auth requirement: $1" >&2
       return 2
@@ -100,7 +113,8 @@ readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_ca
 | test(=authorize::tests::https_redirects_still_require_the_allowlist)
 | test(=metadata::tests::authorization_server_metadata_exposes_lab_endpoints)
 | test(=metadata::tests::authorization_server_metadata_advertises_private_key_jwt_without_machine_clients)
-| test(=metadata::tests::authorization_server_metadata_keeps_issuer_binding_in_compatibility_mode)
+| test(=metadata::tests::authorization_server_metadata_disables_issuer_binding_in_compatibility_mode)
+| test(=authorize::tests::merged_allowlist_callback_tests::oauth_client_callback_omits_issuer_in_explicit_codex_compatibility_mode)
 | test(=authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer)
 | test(=authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer)
 | test(=authorize::tests::authorize_rejects_missing_or_invalid_response_type)
@@ -130,6 +144,9 @@ readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_ca
 | test(=api::router::tests::oauth_mode_missing_token_returns_www_authenticate_metadata_hint)
 | test(=api::router::tests::protected_mcp_route_unauthorized_header_points_to_route_metadata)
 | test(=api::router::tests::protected_mcp_route_insufficient_scope_returns_rfc_9728_challenge)
-| test(=api::router::tests::disabled_dynamic_registration_is_neither_advertised_nor_mounted)'
+| test(=api::router::tests::disabled_dynamic_registration_is_neither_advertised_nor_mounted)
+| test(=api::router::tests::every_inventoried_customer_or_write_http_route_authenticates_before_dispatch)
+| test(=mcp::permanent_tools::tests::every_registry_service_tool_declares_the_required_oauth_scope)
+| test(=mcp::context::tests::every_registered_action_uses_its_catalog_admin_metadata)'
 cargo nextest run -p labby-auth -p labby --all-features --locked --lib -E "$EXACT_TESTS"
 python3 scripts/ci/auth_backup_restore_drill.py

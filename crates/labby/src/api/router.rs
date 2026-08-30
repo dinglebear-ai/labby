@@ -126,19 +126,9 @@ async fn app_auth_state_with_protected_routes(
 
 async fn auth_authorization_server_metadata(
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, LabAuthError> {
+) -> Result<Json<labby_auth::types::AuthorizationServerMetadata>, LabAuthError> {
     let auth_state = app_auth_state(&state)?;
-    let dynamic_registration = auth_state.config.enable_dynamic_registration;
-    let metadata = labby_auth::metadata::authorization_server_metadata(State(auth_state)).await;
-    let mut value = serde_json::to_value(metadata.0)
-        .map_err(|error| LabAuthError::Server(format!("serialize auth metadata: {error}")))?;
-    if !dynamic_registration {
-        value
-            .as_object_mut()
-            .expect("authorization metadata serializes as an object")
-            .remove("registration_endpoint");
-    }
-    Ok(Json(value))
+    Ok(labby_auth::metadata::authorization_server_metadata(State(auth_state)).await)
 }
 
 async fn auth_protected_resource_metadata(
@@ -2422,6 +2412,152 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+
+    /// One representative dispatch route for every registry-backed HTTP service.
+    ///
+    /// The registry is the denominator: adding a service without classifying its
+    /// HTTP exposure makes this test fail. `lab_admin` is the sole reviewed
+    /// MCP-only service. Every other entry must resolve to a mounted route and be
+    /// rejected by the shared authentication layer before its handler runs.
+    fn registry_http_auth_probe(service: &str) -> Option<(Method, String)> {
+        let path = match service {
+            "lab_admin" => return None,
+            "fs" => "/v1/fs/list".to_string(),
+            name @ ("doctor" | "gateway" | "server_logs" | "setup" | "skills" | "snippets") => {
+                format!("/v1/{name}")
+            }
+            unknown => panic!(
+                "registered service `{unknown}` has no reviewed HTTP auth probe; add its mounted dispatch route or explicitly classify it as MCP-only"
+            ),
+        };
+        let method = if service == "fs" {
+            Method::GET
+        } else {
+            Method::POST
+        };
+        Some((method, path))
+    }
+
+    #[tokio::test]
+    async fn every_inventoried_customer_or_write_http_route_authenticates_before_dispatch() {
+        let registry = crate::registry::build_default_registry();
+        let state = AppState::from_registry(registry.clone());
+
+        for service in registry.services() {
+            let Some((method, path)) = registry_http_auth_probe(service.name) else {
+                assert_eq!(service.name, "lab_admin", "only lab_admin is MCP-only");
+                continue;
+            };
+            let response = build_router_with_bearer(
+                state.clone(),
+                Some("registry-denominator-secret".into()),
+                None,
+            )
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help","params":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "OAI-CLAUSE-001: registry-backed HTTP service `{}` at `{path}` reached routing without authentication",
+                service.name
+            );
+        }
+
+        let service_names = registry
+            .services()
+            .iter()
+            .map(|service| service.name.to_string())
+            .collect::<Vec<_>>();
+        let route_inventory = crate::docs::routes::build_route_docs(&service_names);
+        const SERVICE_PLACEHOLDER: &str = "{service}";
+        const PATH_PLACEHOLDER: &str = "{path}";
+        for route in route_inventory
+            .iter()
+            .filter(|route| route.auth_required && route.handler_group != "mcp")
+        {
+            let path = route
+                .path
+                .replace(SERVICE_PLACEHOLDER, "gateway")
+                .replace("{email}", "user%40example.com")
+                .replace("{machine_id}", "machine-1")
+                .replace("{suffix}", "callback")
+                .replace("{name}", "default")
+                .replace(PATH_PLACEHOLDER, "mcp");
+            let method = Method::from_bytes(route.method.as_bytes()).unwrap();
+            let response = build_router_with_bearer(
+                state.clone(),
+                Some("route-denominator-secret".into()),
+                None,
+            )
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&path)
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help","params":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            let status = response.status();
+            // These three browser-session endpoints intentionally self-manage
+            // authentication instead of using the bearer middleware: login is
+            // absent without OAuth, session returns only an anonymous marker,
+            // and unauthenticated logout is an idempotent no-op.
+            match route.path.as_str() {
+                "/auth/login" => {
+                    assert_eq!(
+                        status,
+                        StatusCode::NOT_FOUND,
+                        "login is unavailable without OAuth"
+                    );
+                    continue;
+                }
+                "/auth/session" => {
+                    assert_eq!(status, StatusCode::OK);
+                    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body["authenticated"], false);
+                    assert!(body["user"].is_null());
+                    continue;
+                }
+                "/auth/logout" => {
+                    assert_eq!(status, StatusCode::NO_CONTENT);
+                    continue;
+                }
+                _ => {}
+            }
+            let unavailable_without_runtime =
+                route.runtime_condition.as_deref().is_some_and(|condition| {
+                    condition == crate::docs::routes::OAUTH_MODE_ONLY
+                        || condition == crate::docs::routes::BOOTSTRAP_OWNER_RUNTIME_CONDITION
+                        || condition == crate::docs::routes::DEV_RUNTIME_CONDITION
+                        || condition == crate::docs::routes::GATEWAY_RUNTIME_CONDITION
+                        || condition == crate::docs::routes::FS_RUNTIME_CONDITION
+                });
+            assert!(
+                status == StatusCode::UNAUTHORIZED
+                    || (status == StatusCode::NOT_FOUND && unavailable_without_runtime),
+                "OAI-CLAUSE-001: inventoried sensitive route {} {} did not authenticate before dispatch (status={}, group={}, runtime_condition={:?})",
+                route.method,
+                route.path,
+                status,
+                route.handler_group,
+                route.runtime_condition
+            );
+        }
+    }
 
     #[test]
     fn forwarded_host_requires_explicit_trusted_proxy_configuration() {
