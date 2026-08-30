@@ -57,6 +57,27 @@ runs:
           sudo apt-get install -y $packages
         fi
 
+    - name: Select writable Rust homes
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+        cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+        if ! mkdir -p "$rustup_home" 2>/dev/null || [ ! -w "$rustup_home" ]; then
+          rustup_home="$RUNNER_TEMP/rustup"
+          mkdir -p "$rustup_home"
+        fi
+        if ! mkdir -p "$cargo_home" 2>/dev/null || [ ! -w "$cargo_home" ]; then
+          cargo_home="$RUNNER_TEMP/cargo"
+          mkdir -p "$cargo_home"
+        fi
+        {
+          echo "RUSTUP_HOME=$rustup_home"
+          echo "CARGO_HOME=$cargo_home"
+        } >> "$GITHUB_ENV"
+        echo "$cargo_home/bin" >> "$GITHUB_PATH"
+
     - name: Install Rust
       uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
       with:
