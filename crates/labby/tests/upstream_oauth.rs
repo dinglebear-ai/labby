@@ -441,7 +441,7 @@ async fn issuer_endpoint_host_mismatch_returns_issuer_mismatch() {
 }
 
 #[tokio::test]
-async fn google_split_token_endpoint_origin_is_allowed() {
+async fn google_split_endpoint_metadata_cannot_substitute_for_selected_issuer() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
     h.mount_metadata(
@@ -455,9 +455,11 @@ async fn google_split_token_endpoint_origin_is_allowed() {
     .await;
     let m = h.manager(h.upstream_cfg(preregistered()));
 
-    m.begin_authorization("alice")
-        .await
-        .expect("google split token endpoint origin should be accepted");
+    let error = m.begin_authorization("alice").await.unwrap_err();
+    assert!(
+        matches!(error, OauthError::IssuerMismatch(_)),
+        "Google-shaped metadata must not bypass exact selected-issuer binding: {error:?}"
+    );
 }
 
 #[tokio::test]

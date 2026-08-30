@@ -357,9 +357,14 @@ impl AuthConfig {
         }
 
         if matches!(self.mode, AuthMode::OAuth) {
-            if self.public_url.is_none() {
+            let Some(public_url) = self.public_url.as_ref() else {
                 return Err(AuthError::Config(format!(
                     "{prefix}_PUBLIC_URL is required when {prefix}_AUTH_MODE=oauth"
+                )));
+            };
+            if public_url.scheme() != "https" && !is_loopback_http_url(public_url) {
+                return Err(AuthError::Config(format!(
+                    "{prefix}_PUBLIC_URL must use https when {prefix}_AUTH_MODE=oauth, except for loopback development origins"
                 )));
             }
             if self.google.client_id.is_empty() {
@@ -389,6 +394,16 @@ impl AuthConfig {
 
         Ok(())
     }
+}
+
+fn is_loopback_http_url(url: &Url) -> bool {
+    url.scheme() == "http"
+        && match url.host() {
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            None => false,
+        }
 }
 
 /// Consuming builder for [`AuthConfig`]. The `env_prefix` MUST be set BEFORE
@@ -791,6 +806,47 @@ mod tests {
         assert_eq!(cfg.key_path.file_name().unwrap(), "auth-jwt.pem");
         assert_eq!(cfg.google.callback_path, "/auth/google/callback");
         assert!(!cfg.codex_issuer_compatibility);
+    }
+
+    #[test]
+    fn oauth_mode_rejects_non_https_public_url_except_loopback() {
+        let error = AuthConfig::from_sources(fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "http://auth.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("LAB_PUBLIC_URL must use https"));
+
+        for loopback in [
+            "http://127.0.0.1:8765",
+            "http://[::1]:8765",
+            "http://localhost:8765",
+        ] {
+            AuthConfig::from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_PUBLIC_URL", loopback),
+                ("LAB_GOOGLE_CLIENT_ID", "id"),
+                ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+            ]))
+            .unwrap();
+        }
+
+        let config = AuthConfig::from_sources(fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "https://auth.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+        ]))
+        .unwrap();
+        assert_eq!(config.public_url.unwrap().scheme(), "https");
     }
 
     #[test]

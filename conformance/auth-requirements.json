@@ -14,11 +14,21 @@
         "crates/labby-auth/src/metadata.rs",
         "crates/labby-auth/src/cimd.rs"
       ],
-      "test_id": "at_rest::tests::contextual_ciphertext_rejects_row_transplant",
+      "test_id": null,
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-004"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-006",
+        "MCP-2026-AUTH-INDEX-011",
+        "MCP-2026-AUTH-INDEX-019",
+        "MCP-2026-AUTH-INDEX-027",
+        "MCP-2026-AUTH-INDEX-036",
+        "MCP-2026-AUTH-INDEX-039",
+        "MCP-2026-AUTH-INDEX-046",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001"
+      ]
     },
     {
       "id": "MCP-AUTH-002",
@@ -31,11 +41,12 @@
         "crates/labby-auth/src/upstream/manager.rs",
         "crates/labby-auth/src/metadata.rs"
       ],
-      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-001"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-003",
@@ -48,11 +59,12 @@
         "crates/labby-auth/src/upstream/manager.rs",
         "crates/labby-auth/src/metadata.rs"
       ],
-      "test_id": "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority",
+      "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-005"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-004",
@@ -66,11 +78,12 @@
         "crates/labby-auth/src/metadata.rs",
         "crates/labby-auth/src/cimd.rs"
       ],
-      "test_id": "cimd::tests::accepts_the_real_chatgpt_connector_metadata_document",
+      "test_id": "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-011"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-005",
@@ -83,11 +96,12 @@
         "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
-      "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
+      "test_id": "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-012"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-006",
@@ -104,7 +118,8 @@
       "status": "pass",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-019"
-      ]
+      ],
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-007",
@@ -117,11 +132,23 @@
         "crates/labby-auth/src/authorize.rs",
         "crates/labby-auth/src/token.rs"
       ],
-      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "test_id": null,
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-027"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-028",
+        "MCP-2026-AUTH-INDEX-029",
+        "MCP-2026-AUTH-INDEX-030",
+        "MCP-2026-AUTH-INDEX-031",
+        "MCP-2026-AUTH-INDEX-032",
+        "MCP-2026-AUTH-INDEX-033",
+        "MCP-2026-AUTH-INDEX-034",
+        "MCP-2026-AUTH-INDEX-035",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
+      ]
     },
     {
       "id": "MCP-AUTH-008",
@@ -134,11 +161,30 @@
         "crates/labby-auth/src/middleware.rs",
         "crates/labby-gateway/src/upstream/pool/connect.rs"
       ],
-      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "test_id": null,
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-035"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-028",
+        "MCP-2026-AUTH-INDEX-029",
+        "MCP-2026-AUTH-INDEX-030",
+        "MCP-2026-AUTH-INDEX-031",
+        "MCP-2026-AUTH-INDEX-032",
+        "MCP-2026-AUTH-INDEX-033",
+        "MCP-2026-AUTH-INDEX-034",
+        "MCP-2026-AUTH-INDEX-036",
+        "MCP-2026-AUTH-INDEX-037",
+        "MCP-2026-AUTH-INDEX-038",
+        "MCP-2026-AUTH-INDEX-039",
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-041",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-043",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-INDEX-045"
+      ]
     },
     {
       "id": "MCP-AUTH-009",
@@ -151,11 +197,20 @@
         "crates/labby-auth/src/middleware.rs",
         "crates/labby-gateway/src/upstream/pool/connect.rs"
       ],
-      "test_id": "middleware::tests::jwt_validation_path_accepts_signed_token_and_writes_context",
+      "test_id": null,
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-039"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032"
+      ]
     },
     {
       "id": "MCP-AUTH-010",
@@ -169,11 +224,12 @@
         "crates/labby-auth/src/at_rest.rs",
         "crates/labby-auth/src/metadata.rs"
       ],
-      "test_id": "at_rest::tests::contextual_ciphertext_rejects_row_transplant",
+      "test_id": "sqlite::tests::opening_with_a_key_encrypts_legacy_plaintext_provider_tokens",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-046"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-011",
@@ -186,11 +242,12 @@
         "crates/labby-auth/src/middleware.rs",
         "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
-      "test_id": "middleware::tests::jwt_validation_path_accepts_signed_token_and_writes_context",
+      "test_id": "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-050"
       ],
-      "status": "pass"
+      "status": "pass",
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-012",
@@ -203,11 +260,12 @@
         "crates/labby-auth/src/middleware.rs",
         "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
       ],
-      "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
+      "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
       "status": "pass",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-052"
-      ]
+      ],
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-013",
@@ -220,11 +278,12 @@
         "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
-      "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
+      "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
       "status": "pass",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-015"
-      ]
+      ],
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-014",
@@ -238,10 +297,46 @@
         "crates/labby-auth/src/authorize.rs",
         "crates/labby-auth/src/token.rs"
       ],
-      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "test_id": null,
       "status": "pass",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-061"
+      ],
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-002",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-004",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-005",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-007",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-012",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-013",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-014",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-015",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-016",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-017",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-018",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-019",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-027",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-028",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
       ]
     },
     {
@@ -250,17 +345,17 @@
       "requirement": "STDIO transports obtain credentials from their environment rather than run HTTP OAuth.",
       "strength": "must",
       "applicability": "not_applicable",
-      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "implementation": "Stdio upstream authentication resolves the configured bearer-token environment name and injects only the normalized credential into the scrubbed child environment; OAuth is not configured for stdio.",
       "evidence_paths": [
-        "crates/labby-auth/src/upstream/manager.rs",
-        "crates/labby-auth/src/metadata.rs",
-        "crates/labby-auth/src/cimd.rs"
+        "crates/labby-gateway/src/upstream/auth.rs",
+        "crates/labby-gateway/src/upstream/pool/connect_stdio.rs"
       ],
-      "test_id": "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority",
+      "test_id": "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth",
       "status": "not_applicable",
       "verification_commands": [
         "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-002"
-      ]
+      ],
+      "subordinate_row_ids": []
     },
     {
       "id": "MCP-AUTH-016",

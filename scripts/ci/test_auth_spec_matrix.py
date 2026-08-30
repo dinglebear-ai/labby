@@ -1,6 +1,7 @@
 import json
 import unittest
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 
@@ -28,7 +29,7 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
                 self.assertIn(item["applicability"], {"applicable", "not_applicable"})
                 self.assertIn(item["status"], {"pass", "partial", "gap", "not_applicable"})
                 self.assertTrue(item["implementation"])
-                self.assertTrue(item["test_id"])
+                self.assertTrue(item["test_id"] or item.get("subordinate_row_ids"))
                 if item["status"] == "pass":
                     self.assertTrue(item.get("verification_commands"), item["id"])
                     for command in item["verification_commands"]:
@@ -142,11 +143,12 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
             } else "pass"
             self.assertEqual(row["status"], expected_status)
             if expected_status == "pass":
-                self.assertTrue(row["test_id"])
-                self.assertTrue(row["assertion_test_ids"])
+                self.assertTrue(row["assertion_test_ids"] or row.get("subordinate_row_ids"))
+                self.assertFalse(row["assertion_test_ids"] and row.get("subordinate_row_ids"))
             else:
                 self.assertIsNone(row["test_id"])
                 self.assertEqual(row["assertion_test_ids"], [])
+                self.assertEqual(row.get("subordinate_row_ids", []), [])
             self.assertEqual(
                 row["applicability"],
                 "not_applicable" if expected_status == "not_applicable" else "applicable",
@@ -175,7 +177,11 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(resolved.returncode, 0, resolved.stderr)
-            self.assertEqual(json.loads(resolved.stdout), row["assertion_test_ids"])
+            resolved_ids = json.loads(resolved.stdout)
+            if row.get("subordinate_row_ids"):
+                self.assertTrue(resolved_ids)
+            else:
+                self.assertEqual(resolved_ids, row["assertion_test_ids"])
 
     def test_mcp_assertion_manifest_is_explicit_and_source_bound(self) -> None:
         import hashlib
@@ -193,8 +199,40 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
                 hashlib.sha256(row["requirement"].encode()).hexdigest(),
             )
             self.assertEqual(entry["assertion_test_ids"], row["assertion_test_ids"])
+            self.assertEqual(entry["assertion_evidence"], row["assertion_evidence"])
+            self.assertEqual(
+                entry.get("subordinate_row_ids", []),
+                row.get("subordinate_row_ids", []),
+            )
+            self.assertEqual(
+                [item["test_id"] for item in row["assertion_evidence"]],
+                row["assertion_test_ids"],
+            )
+            self.assertTrue(all(item["behavior"].strip() for item in row["assertion_evidence"]))
             self.assertTrue(entry["asserted_obligation"])
             self.assertTrue(entry["implementation"])
+
+        graph = {
+            row["id"]: row.get("subordinate_row_ids", [])
+            for row in normative["requirements"]
+        }
+        def visit(row_id: str, path: tuple[str, ...] = ()) -> None:
+            self.assertNotIn(row_id, path, f"aggregate cycle: {path + (row_id,)}")
+            for subordinate_id in graph[row_id]:
+                self.assertIn(subordinate_id, graph)
+                visit(subordinate_id, path + (row_id,))
+        for row_id in graph:
+            visit(row_id)
+
+        reuse = Counter(
+            test_id
+            for row in normative["requirements"]
+            for test_id in row["assertion_test_ids"]
+        )
+        self.assertFalse(
+            {test_id: count for test_id, count in reuse.items() if count > 10},
+            "one behavioral test cannot credibly prove an unbounded set of heterogeneous clauses",
+        )
 
     def test_curated_mcp_summary_cannot_contradict_normative_disposition(self) -> None:
         summary = json.loads(MATRIX.read_text())

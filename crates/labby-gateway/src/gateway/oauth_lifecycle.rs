@@ -810,17 +810,11 @@ impl GatewayManager {
             None => None,
         };
 
-        manager.clear_credentials(subject).await.map_err(|e| {
-            tracing::warn!(
-                service = "upstream_oauth",
-                action = "clear",
-                upstream,
-                kind = e.kind(),
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream oauth clear: failed to clear credentials"
-            );
-            tool_error_from_oauth(e)
-        })?;
+        let clear_result = manager.clear_credentials(subject).await;
+        // Invalidation is deliberately unconditional once a clear attempt has
+        // crossed the lifecycle barrier. Even if persistence reports a partial
+        // or uncertain failure, no already-built client/session may continue
+        // using authority that might have been deleted.
         self.invalidate_oauth_status_discovery(upstream, Some(subject))
             .await;
 
@@ -828,6 +822,18 @@ impl GatewayManager {
             .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear", true)
             .await;
         drop(lifecycle_guard);
+        if let Err(error) = clear_result {
+            tracing::warn!(
+                service = "upstream_oauth",
+                action = "clear",
+                upstream,
+                kind = error.kind(),
+                invalidated_sessions = sessions.total(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "upstream oauth clear: persistence failed; live clients were invalidated defensively"
+            );
+            return Err(tool_error_from_oauth(error));
+        }
         tracing::info!(
             service = "upstream_oauth",
             action = "clear",

@@ -233,7 +233,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: failed to create authorization manager"
@@ -251,7 +251,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: AS metadata discovery failed"
@@ -261,7 +261,7 @@ impl UpstreamOauthManager {
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             issuer = metadata.issuer.as_deref().unwrap_or("<none>"),
             "upstream oauth: AS metadata ready"
         );
@@ -270,7 +270,7 @@ impl UpstreamOauthManager {
         Self::verify_s256(&metadata.code_challenge_methods_supported).inspect_err(|e| {
             tracing::warn!(
                 upstream = %self.upstream.name,
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 kind = e.kind(),
                 "upstream oauth: S256 PKCE verification failed"
             );
@@ -288,7 +288,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: client config resolution failed"
@@ -299,7 +299,7 @@ impl UpstreamOauthManager {
         manager.configure_client(client_cfg).map_err(|e| {
             tracing::warn!(
                 upstream = %self.upstream.name,
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 kind = "internal_error",
                 error = %e,
                 "upstream oauth: client configuration failed"
@@ -310,7 +310,7 @@ impl UpstreamOauthManager {
         let authorization_url = manager.get_authorization_url(&scopes).await.map_err(|e| {
             tracing::warn!(
                 upstream = %self.upstream.name,
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 kind = "internal_error",
                 error = %e,
                 "upstream oauth: authorization URL generation failed"
@@ -322,7 +322,7 @@ impl UpstreamOauthManager {
         let _csrf = extract_state_param(&authorization_url).ok_or_else(|| {
             tracing::warn!(
                 upstream = %self.upstream.name,
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 kind = "internal_error",
                 "upstream oauth: authorization URL missing state parameter"
             );
@@ -331,7 +331,7 @@ impl UpstreamOauthManager {
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: authorization started"
         );
@@ -372,7 +372,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: failed to build configured authorization manager for token exchange"
@@ -387,7 +387,7 @@ impl UpstreamOauthManager {
                 let mapped = map_auth_error(e);
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = mapped.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
                     "upstream oauth: token exchange failed"
@@ -397,7 +397,7 @@ impl UpstreamOauthManager {
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: authorization completed, tokens stored"
         );
@@ -450,36 +450,22 @@ impl UpstreamOauthManager {
         }
         self.refresh_failures.clear(&self.upstream.name, subject);
         self.sqlite
-            .delete_upstream_oauth_credentials(&self.upstream.name, subject)
+            .clear_upstream_oauth_identity(&self.upstream.name, subject)
             .await
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = "internal_error",
                     error = %e,
-                    "upstream oauth: failed to delete credentials from store"
-                );
-                OauthError::Storage(e)
-            })?;
-
-        self.sqlite
-            .delete_dynamic_client_registration(&self.upstream.name, subject)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    upstream = %self.upstream.name,
-                    subject,
-                    kind = "internal_error",
-                    error = %e,
-                    "upstream oauth: failed to delete dynamic client registration"
+                    "upstream oauth: failed to atomically clear credentials and dynamic registration"
                 );
                 OauthError::Storage(e)
             })?;
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             "upstream oauth: credentials and dynamic registration cleared"
         );
 
@@ -543,7 +529,7 @@ impl UpstreamOauthManager {
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     scope = %self.oauth_scope_label(),
                     kind = e.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
@@ -556,7 +542,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "internal_error",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -571,7 +557,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "oauth_needs_reauth",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -579,9 +565,10 @@ impl UpstreamOauthManager {
                 "upstream oauth: no stored credentials for auth client{}",
                 transport.suffix()
             );
-            return Err(OauthError::NeedsReauth(format!(
-                "no stored credentials for upstream '{}' subject '{subject}'",
-                self.upstream.name
+            return Err(OauthError::NeedsReauth(missing_identity_message(
+                &self.upstream.name,
+                subject,
+                "stored credentials",
             )));
         }
 
@@ -608,7 +595,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "oauth_needs_reauth",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -644,7 +631,7 @@ impl UpstreamOauthManager {
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     scope = %self.oauth_scope_label(),
                     kind = mapped.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
@@ -669,7 +656,7 @@ impl UpstreamOauthManager {
             tracing::info!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 elapsed_ms = started.elapsed().as_millis(),
                 fallback = "none",
@@ -707,7 +694,7 @@ impl UpstreamOauthManager {
             tracing::debug!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 elapsed_ms = started.elapsed().as_millis(),
                 coalesced = true,
@@ -722,7 +709,7 @@ impl UpstreamOauthManager {
             tracing::debug!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 elapsed_ms = started.elapsed().as_millis(),
                 cooldown = true,
@@ -741,7 +728,7 @@ impl UpstreamOauthManager {
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     scope = %self.oauth_scope_label(),
                     kind = e.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
@@ -753,7 +740,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "internal_error",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -764,9 +751,10 @@ impl UpstreamOauthManager {
         })?;
 
         if !initialized {
-            return Err(OauthError::NeedsReauth(format!(
-                "no stored credentials for upstream '{}' subject '{subject}'",
-                self.upstream.name
+            return Err(OauthError::NeedsReauth(missing_identity_message(
+                &self.upstream.name,
+                subject,
+                "stored credentials",
             )));
         }
 
@@ -791,7 +779,7 @@ impl UpstreamOauthManager {
         tracing::info!(
             upstream = %self.upstream.name,
             provider = %self.oauth_provider_label(),
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             scope = %self.oauth_scope_label(),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: status refresh succeeded"
@@ -1136,7 +1124,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 seconds_until_expiry = state.seconds_until_expiry,
                 refresh_token_present = state.refresh_token_present,
@@ -1155,7 +1143,7 @@ impl UpstreamOauthManager {
             tracing::info!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 seconds_until_expiry = state.seconds_until_expiry,
                 elapsed_ms,
@@ -1165,7 +1153,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 seconds_until_expiry = state.seconds_until_expiry,
                 kind = "oauth_needs_reauth",
@@ -1347,9 +1335,10 @@ impl UpstreamOauthManager {
                             return Ok(cfg);
                         }
 
-                        return Err(OauthError::NeedsReauth(format!(
-                            "no stored credentials for upstream '{}' subject '{subject}'",
-                            self.upstream.name
+                        return Err(OauthError::NeedsReauth(missing_identity_message(
+                            &self.upstream.name,
+                            subject,
+                            "stored credentials",
                         )));
                     }
                     DynamicClientRegistrationUse::CompleteAuthorization => {
@@ -1369,9 +1358,10 @@ impl UpstreamOauthManager {
                             return Ok(cfg);
                         }
 
-                        return Err(OauthError::NeedsReauth(format!(
-                            "no dynamic client registration for upstream '{}' subject '{subject}'",
-                            self.upstream.name
+                        return Err(OauthError::NeedsReauth(missing_identity_message(
+                            &self.upstream.name,
+                            subject,
+                            "dynamic client registration",
                         )));
                     }
                     DynamicClientRegistrationUse::BeginAuthorization => {}
@@ -1458,6 +1448,13 @@ fn now_unix() -> Result<i64, OauthError> {
         .map(|duration| duration.as_secs() as i64)
 }
 
+fn missing_identity_message(upstream: &str, subject: &str, identity: &str) -> String {
+    format!(
+        "no {identity} for upstream '{upstream}' actor '{}'",
+        crate::util::fingerprint(subject)
+    )
+}
+
 fn map_refresh_error(error: rmcp::transport::AuthError) -> (bool, OauthError) {
     let terminal = match &error {
         rmcp::transport::AuthError::AuthorizationRequired
@@ -1517,6 +1514,7 @@ mod url_tests {
         MAX_AUTHORIZATION_SERVERS, ProtectedResourceMetadata, UpstreamOauthManager,
         authorization_metadata_candidates, bounded_authorization_servers,
         discover_published_metadata, google_offline_access_url, map_auth_error, map_refresh_error,
+        missing_identity_message,
     };
     use crate::upstream::types::OauthError;
     use labby_runtime::gateway_config::{
@@ -1531,6 +1529,14 @@ mod url_tests {
             "invalid_grant".to_string(),
         ));
         assert!(matches!(error, OauthError::NeedsReauth(_)));
+    }
+
+    #[test]
+    fn user_visible_identity_errors_never_include_raw_subjects() {
+        let sentinel = "raw-subject-sentinel@example.com";
+        let message = missing_identity_message("calendar", sentinel, "stored credentials");
+        assert!(!message.contains(sentinel));
+        assert!(message.contains(&crate::util::fingerprint(sentinel)));
     }
 
     #[test]
@@ -1616,6 +1622,33 @@ mod url_tests {
                 "issuer": format!("{}/issuer/", server.uri()),
                 "authorization_endpoint": format!("{}/authorize", server.uri()),
                 "token_endpoint": format!("{}/token", server.uri()),
+                "code_challenge_methods_supported": ["S256"]
+            })))
+            .mount(&server)
+            .await;
+
+        let error = discover_published_metadata(&upstream).await.unwrap_err();
+        assert!(matches!(error, OauthError::IssuerMismatch(_)));
+    }
+
+    #[tokio::test]
+    async fn published_metadata_rejects_google_shaped_document_for_non_google_selected_issuer() {
+        let server = MockServer::start().await;
+        let upstream = format!("{}/mcp", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-protected-resource/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resource": upstream,
+                "authorization_servers": [format!("{}/selected", server.uri())]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server/selected"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": "https://accounts.google.com",
+                "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+                "token_endpoint": "https://oauth2.googleapis.com/token",
                 "code_challenge_methods_supported": ["S256"]
             })))
             .mount(&server)

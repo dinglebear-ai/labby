@@ -1342,44 +1342,40 @@ impl AuthorizationManager {
                 self.metadata = Some(resolution.metadata);
             }
 
-            if let (Some(stored_issuer), Some(current_issuer)) =
-                (stored.issuer.as_deref(), self.metadata_issuer().as_deref())
+            let current_issuer = self.metadata_issuer();
+            if stored.issuer.as_deref() != current_issuer.as_deref()
+                && (stored.issuer.is_some() || current_issuer.is_some())
             {
+                let stored_issuer = stored.issuer.as_deref().unwrap_or("<missing>");
+                let current_issuer = current_issuer.as_deref().unwrap_or("<missing>");
                 // A CIMD client ID is the client's metadata URL, so it is
                 // portable across authorization servers and exempt here.
-                if stored_issuer != current_issuer {
-                    if is_https_url(&stored.client_id) {
-                        // A CIMD client ID is the client's metadata URL, so it is
-                        // portable across authorization servers — but the tokens
-                        // were minted by the previous AS and must not be reused.
-                        tracing::warn!(
-                            stored_issuer,
-                            current_issuer,
-                            "authorization server issuer changed; discarding tokens but keeping portable CIMD client ID"
-                        );
-                        self.credential_store
-                            .save(
-                                StoredCredentials::new(
-                                    stored.client_id.clone(),
-                                    None,
-                                    vec![],
-                                    None,
-                                )
-                                .with_issuer(self.metadata_issuer()),
-                            )
-                            .await?;
-                        self.configure_client_id(&stored.client_id)?;
-                        return Ok(false);
-                    }
-
+                if is_https_url(&stored.client_id) {
+                    // A CIMD client ID is the client's metadata URL, so it is
+                    // portable across authorization servers — but the tokens
+                    // were minted by the previous AS and must not be reused.
                     tracing::warn!(
                         stored_issuer,
                         current_issuer,
-                        "authorization server issuer changed; clearing stored credentials bound to the previous issuer"
+                        "authorization server issuer changed; discarding tokens but keeping portable CIMD client ID"
                     );
-                    self.credential_store.clear().await?;
+                    self.credential_store
+                        .save(
+                            StoredCredentials::new(stored.client_id.clone(), None, vec![], None)
+                                .with_issuer(self.metadata_issuer()),
+                        )
+                        .await?;
+                    self.configure_client_id(&stored.client_id)?;
                     return Ok(false);
                 }
+
+                tracing::warn!(
+                    stored_issuer,
+                    current_issuer,
+                    "authorization server issuer changed; clearing stored credentials bound to the previous issuer"
+                );
+                self.credential_store.clear().await?;
+                return Ok(false);
             }
 
             self.configure_client_id(&stored.client_id)?;
@@ -3194,14 +3190,27 @@ impl AuthorizationCallback {
         let mut code = None;
         let mut csrf_token = None;
         let mut issuer = None;
+        let mut contains_authorization_error = false;
 
         for (key, value) in url.query_pairs() {
             match key.as_ref() {
                 "code" => code = Some(value.into_owned()),
                 "state" => csrf_token = Some(value.into_owned()),
                 "iss" => issuer = Some(value.into_owned()),
+                "error" | "error_description" | "error_uri" => {
+                    contains_authorization_error = true;
+                }
                 _ => {}
             }
+        }
+
+        if contains_authorization_error {
+            // Authorization-server error fields are untrusted display content.
+            // Do not act on them, echo them, or allow a smuggled `code` to make
+            // the callback look successful.
+            return Err(AuthError::AuthorizationFailed(
+                "Authorization server rejected the request".to_string(),
+            ));
         }
 
         let code = code.ok_or_else(|| {
@@ -4086,7 +4095,7 @@ mod tests {
                 200,
                 serde_json::json!({
                     "resource": "https://mcp.example.com",
-                    "authorization_servers": ["https://auth.example.com"]
+                    "authorization_servers": ["https://auth.example.com/"]
                 }),
             ),
             http_response(
@@ -4160,7 +4169,7 @@ mod tests {
             http_response(
                 200,
                 serde_json::json!({
-                    "issuer": "https://auth.example.com",
+                    "issuer": "https://auth.example.com/",
                     "authorization_endpoint": "https://auth.example.com/authorize",
                     "token_endpoint": "https://auth.example.com/token",
                     "response_types_supported": ["code"],
@@ -4586,13 +4595,13 @@ mod tests {
                 200,
                 serde_json::json!({
                     "resource": "https://mcp.example.com/mcp",
-                    "authorization_servers": ["https://auth.example.com"]
+                    "authorization_servers": ["https://auth.example.com/"]
                 }),
             ),
             http_response(
                 200,
                 serde_json::json!({
-                    "issuer": "https://auth.example.com",
+                    "issuer": "https://auth.example.com/",
                     "authorization_endpoint": "https://auth.example.com/authorize",
                     "token_endpoint": "https://auth.example.com/token"
                 }),
@@ -4707,7 +4716,7 @@ mod tests {
             http_response(
                 200,
                 serde_json::json!({
-                    "issuer": "https://mcp.example.com",
+                    "issuer": "https://mcp.example.com/",
                     "authorization_endpoint": "https://mcp.example.com/oauth/authorize",
                     "token_endpoint": "https://mcp.example.com/oauth/token"
                 }),
@@ -5167,7 +5176,16 @@ mod tests {
             .start_authorization(request.clone())
             .await
             .unwrap_err();
-        assert!(matches!(err, AuthError::RegistrationFailed(_)), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                AuthError::RegistrationFailed(ref message)
+                    if message.contains("Dynamic registration failed")
+                        && message.contains("400")
+                        && message.contains("invalid_client_metadata")
+            ),
+            "DCR failures should retain their operation, status, and provider error: {err:?}"
+        );
         assert!(
             matches!(state, super::OAuthState::Unauthorized(_)),
             "state should return to Unauthorized after a registration failure"
@@ -5272,14 +5290,14 @@ mod tests {
                     "authorization_servers": [
                         "http://169.254.169.254/latest/meta-data/",
                         "http://127.0.0.1:8080/tenant1",
-                        "https://auth.example.com"
+                        "https://auth.example.com/"
                     ]
                 }),
             ),
             http_response(
                 200,
                 serde_json::json!({
-                    "issuer": "https://auth.example.com",
+                    "issuer": "https://auth.example.com/",
                     "authorization_endpoint": "https://auth.example.com/authorize",
                     "token_endpoint": "https://auth.example.com/token"
                 }),
@@ -5444,6 +5462,13 @@ mod tests {
 
     #[test]
     fn resource_identifier_matching_allows_matching_host_or_parent_path() {
+        // URL parsing normalizes the case-insensitive scheme and host before
+        // identifier comparison. Keep this explicit so matching is not
+        // accidentally replaced with raw string equality.
+        assert!(AuthorizationManager::is_resource_identifier_valid(
+            &Url::parse("HTTPS://MCP.EXAMPLE.COM/mcp").unwrap(),
+            &Url::parse("https://mcp.example.com/mcp").unwrap()
+        ));
         assert!(AuthorizationManager::is_resource_identifier_valid(
             &Url::parse("https://mcp.example.com/").unwrap(),
             &Url::parse("https://mcp.example.com").unwrap()
@@ -6197,6 +6222,87 @@ mod tests {
         assert_eq!((initialized, credentials_cleared), (false, true));
     }
 
+    #[tokio::test]
+    async fn initialize_from_store_rejects_token_without_current_issuer_binding() {
+        let store = InMemoryCredentialStore::new();
+        store
+            .save(StoredCredentials {
+                client_id: "legacy-client".to_string(),
+                token_response: Some(make_token_response("unbound-token", Some(3600))),
+                granted_scopes: vec!["read".to_string()],
+                token_received_at: Some(AuthorizationManager::now_epoch_secs()),
+                issuer: None,
+            })
+            .await
+            .unwrap();
+        let mut manager = manager_with_metadata(Some(AuthorizationMetadata {
+            authorization_endpoint: "https://current.example.com/authorize".to_string(),
+            token_endpoint: "https://current.example.com/token".to_string(),
+            issuer: Some("https://current.example.com".to_string()),
+            ..Default::default()
+        }))
+        .await;
+        manager.set_credential_store(store.clone());
+
+        assert!(!manager.initialize_from_store().await.unwrap());
+        assert!(
+            store.load().await.unwrap().is_none(),
+            "a token without an issuer binding must not be accepted for a discovered issuer"
+        );
+        assert!(matches!(
+            manager.get_access_token().await,
+            Err(AuthError::AuthorizationRequired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn authorized_http_client_uses_bearer_header_and_never_query_token() {
+        let store = InMemoryCredentialStore::new();
+        store
+            .save(StoredCredentials {
+                client_id: "public-client".to_string(),
+                token_response: Some(make_token_response("secret-access-token", Some(3600))),
+                granted_scopes: vec!["lab:read".to_string()],
+                token_received_at: Some(AuthorizationManager::now_epoch_secs()),
+                issuer: Some("https://auth.example.com".to_string()),
+            })
+            .await
+            .unwrap();
+        let mut manager = manager_with_metadata(Some(AuthorizationMetadata {
+            authorization_endpoint: "https://auth.example.com/authorize".to_string(),
+            token_endpoint: "https://auth.example.com/token".to_string(),
+            issuer: Some("https://auth.example.com".to_string()),
+            ..Default::default()
+        }))
+        .await;
+        manager.set_credential_store(store);
+        assert!(manager.initialize_from_store().await.unwrap());
+
+        let request = manager
+            .prepare_request(
+                reqwest::Client::new().get("https://mcp.example.com/mcp?operation=list"),
+            )
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .unwrap(),
+            "Bearer secret-access-token"
+        );
+        assert_eq!(request.url().query(), Some("operation=list"));
+        assert!(!request.url().as_str().contains("secret-access-token"));
+        assert!(
+            !request
+                .url()
+                .query_pairs()
+                .any(|(key, _)| key == "access_token")
+        );
+    }
+
     fn test_client_config() -> OAuthClientConfig {
         OAuthClientConfig {
             client_id: "my-client".to_string(),
@@ -6538,6 +6644,26 @@ mod tests {
             missing_state,
             Err(AuthError::AuthorizationFailed(message)) if message.contains("missing state")
         ));
+    }
+
+    #[test]
+    fn authorization_callback_rejects_untrusted_error_fields_without_echoing_them() {
+        for parameter in ["error", "error_description", "error_uri"] {
+            let malicious = format!(
+                "http://localhost/callback?code=smuggled-code&state=csrf&{parameter}=javascript%3Aalert%28document.cookie%29"
+            );
+            let error = AuthorizationCallback::from_redirect_url(&malicious).unwrap_err();
+            let rendered = error.to_string();
+
+            assert!(matches!(error, AuthError::AuthorizationFailed(_)));
+            assert_eq!(
+                rendered,
+                "OAuth authorization failed: Authorization server rejected the request"
+            );
+            assert!(!rendered.contains(parameter));
+            assert!(!rendered.contains("javascript"));
+            assert!(!rendered.contains("smuggled-code"));
+        }
     }
 
     #[rstest]
@@ -6884,6 +7010,33 @@ mod tests {
         assert!(scopes.contains(&"profile".to_string()));
     }
 
+    #[tokio::test]
+    async fn select_scopes_does_not_expand_user_request_to_entire_server_catalog() {
+        let mgr = manager_with_metadata(Some(AuthorizationMetadata {
+            authorization_endpoint: "http://localhost/authorize".to_string(),
+            token_endpoint: "http://localhost/token".to_string(),
+            scopes_supported: Some(
+                (0..128)
+                    .map(|index| format!("server-scope-{index}"))
+                    .collect(),
+            ),
+            ..Default::default()
+        }))
+        .await;
+        *mgr.current_scopes.write().await = vec!["user-approved".to_string()];
+
+        let scopes = mgr.select_scopes(Some("operation-required"), &[]);
+
+        assert_eq!(
+            scopes,
+            vec![
+                "user-approved".to_string(),
+                "operation-required".to_string()
+            ],
+            "server scope catalogs must not silently expand a user's authorization request"
+        );
+    }
+
     #[test]
     fn resolve_granted_scopes_uses_requested_when_response_omits_scope() {
         let granted = AuthorizationManager::resolve_granted_scopes(
@@ -6965,9 +7118,33 @@ mod tests {
             .query_pairs()
             .find_map(|(key, value)| (key == "scope").then(|| value.into_owned()))
             .expect("scope should be present");
-        let mut scope_parts: Vec<&str> = scope.split_whitespace().collect();
-        scope_parts.sort_unstable();
-        assert_eq!(scope_parts, vec!["email", "offline_access", "profile"]);
+        assert_eq!(scope, "profile email offline_access");
+        assert_eq!(mgr.get_scope_upgrade_attempts().await, 1);
+    }
+
+    #[tokio::test]
+    async fn scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit() {
+        let mut mgr = manager_with_metadata(None).await;
+        mgr.configure_client_id("my-client").unwrap();
+        mgr.set_scope_upgrade_config(ScopeUpgradeConfig {
+            max_upgrade_attempts: 2,
+            auto_upgrade: true,
+        });
+
+        mgr.request_scope_upgrade("write").await.unwrap();
+        mgr.request_scope_upgrade("admin").await.unwrap();
+        assert_eq!(mgr.get_scope_upgrade_attempts().await, 2);
+
+        let error = mgr.request_scope_upgrade("owner").await.unwrap_err();
+        assert!(
+            matches!(error, AuthError::InvalidScope(ref message) if message.contains("Maximum scope upgrade attempts (2) exceeded")),
+            "attempt beyond the configured limit should be classified precisely: {error:?}"
+        );
+        assert_eq!(
+            mgr.get_scope_upgrade_attempts().await,
+            2,
+            "a rejected attempt must not advance the counter"
+        );
     }
 
     #[test]

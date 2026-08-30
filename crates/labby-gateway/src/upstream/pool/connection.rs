@@ -697,7 +697,15 @@ mod tests {
             .expect("test pool has one owner")
             .with_oauth_client_cache(client_cache.clone());
 
-        let keys = [("alpha", "alice"), ("beta", "bob"), ("gamma", "carol")];
+        let keys = [
+            ("alpha", "alice"),
+            ("beta", "bob"),
+            ("gamma", "carol"),
+            ("delta", "dana"),
+            ("epsilon", "erin"),
+            ("zeta", "zoe"),
+            ("eta", "eve"),
+        ];
         for (index, (upstream, subject)) in keys.iter().enumerate() {
             let connection = if index == 0 {
                 pool.connections
@@ -742,24 +750,21 @@ mod tests {
         }
 
         assert_eq!(client_cache.ready_client_count(), 2);
-        assert_eq!(pool.subject_connections.read().await.len(), 3);
+        assert_eq!(pool.subject_connections.read().await.len(), keys.len());
         let epoch_before = client_cache.lifecycle_epoch();
         pool.drain_oauth_client_capacity_evictions().await;
         assert!(client_cache.lifecycle_epoch() > epoch_before);
         assert_eq!(client_cache.ready_client_count(), 2);
         assert_eq!(pool.subject_connections.read().await.len(), 2);
 
-        let evicted = keys
-            .iter()
-            .find(|(upstream, subject)| !client_cache.contains_ready_client(upstream, subject))
-            .expect("one cache victim");
-        assert!(
-            !pool
-                .subject_connections
-                .read()
-                .await
-                .contains_key(&(evicted.0.to_string(), evicted.1.to_string()))
-        );
+        let live = pool.subject_connections.read().await;
+        for (upstream, subject) in keys {
+            assert_eq!(
+                live.contains_key(&(upstream.to_string(), subject.to_string())),
+                client_cache.contains_ready_client(upstream, subject),
+                "capacity drain must invalidate every evicted live subject peer"
+            );
+        }
     }
 
     #[tokio::test]

@@ -106,10 +106,7 @@ async fn discover_published_metadata_inner(
                     } else {
                         server_url.as_str()
                     };
-                    validate_discovered_issuer(
-                        &metadata,
-                        authoritative_selected_issuer(&metadata, expected_issuer),
-                    )?;
+                    validate_discovered_issuer(&metadata, expected_issuer)?;
                     return Ok(Some(metadata));
                 }
             }
@@ -125,10 +122,7 @@ async fn discover_published_metadata_inner(
         )
         .await?
         {
-            validate_discovered_issuer(
-                &metadata,
-                authoritative_selected_issuer(&metadata, upstream_url),
-            )?;
+            validate_discovered_issuer(&metadata, upstream_url)?;
             return Ok(Some(metadata));
         }
     }
@@ -296,29 +290,6 @@ pub(super) fn validate_discovered_issuer(
     Ok(())
 }
 
-/// Select the trusted issuer identity for providers whose discovery document
-/// is intentionally fetched through a different transport origin.
-///
-/// This exception is deliberately exact: only Google's canonical issuer plus
-/// its canonical authorization and token endpoint origins qualify. A metadata
-/// document cannot opt an arbitrary split issuer into this policy.
-fn authoritative_selected_issuer<'a>(
-    metadata: &'a AuthorizationMetadata,
-    selected_server: &'a str,
-) -> &'a str {
-    const GOOGLE_ISSUER: &str = "https://accounts.google.com";
-    if metadata.issuer.as_deref() == Some(GOOGLE_ISSUER)
-        && url_origin(metadata.authorization_endpoint.as_str()).as_deref()
-            == Some("https://accounts.google.com")
-        && url_origin(metadata.token_endpoint.as_str()).as_deref()
-            == Some("https://oauth2.googleapis.com")
-    {
-        GOOGLE_ISSUER
-    } else {
-        selected_server
-    }
-}
-
 fn resolve_authorization_server_url(
     metadata_url: &url::Url,
     authorization_server: &str,
@@ -414,28 +385,13 @@ mod tests {
     }
 
     #[test]
-    fn canonical_google_endpoints_select_only_the_canonical_google_issuer() {
+    fn google_shaped_metadata_cannot_replace_a_different_selected_issuer() {
         let google = metadata(
             "https://accounts.google.com",
             "https://accounts.google.com/o/oauth2/v2/auth",
             "https://oauth2.googleapis.com/token",
         );
-        assert_eq!(
-            authoritative_selected_issuer(&google, "http://127.0.0.1:1234/"),
-            "https://accounts.google.com"
-        );
-    }
-
-    #[test]
-    fn arbitrary_split_provider_cannot_replace_the_selected_issuer() {
-        let arbitrary = metadata(
-            "https://issuer.example",
-            "https://issuer.example/authorize",
-            "https://tokens.example/token",
-        );
-        assert_eq!(
-            authoritative_selected_issuer(&arbitrary, "https://selected.example/"),
-            "https://selected.example/"
-        );
+        assert!(validate_discovered_issuer(&google, "http://127.0.0.1:1234/").is_err());
+        assert!(validate_discovered_issuer(&google, "https://accounts.google.com").is_ok());
     }
 }

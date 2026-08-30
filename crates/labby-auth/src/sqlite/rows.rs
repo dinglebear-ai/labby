@@ -107,6 +107,10 @@ pub(super) fn row_to_upstream_oauth_credentials(
 pub(super) fn row_to_upstream_oauth_state(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<UpstreamOauthStateRow> {
+    let requested_scopes_json = row.get::<_, String>(6)?;
+    let requested_scopes = serde_json::from_str(&requested_scopes_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error))
+    })?;
     Ok(UpstreamOauthStateRow {
         upstream_name: row.get(0)?,
         subject: row.get(1)?,
@@ -114,7 +118,7 @@ pub(super) fn row_to_upstream_oauth_state(
         pkce_verifier: row.get(3)?,
         expected_issuer: row.get(4)?,
         require_issuer: row.get::<_, i64>(5)? != 0,
-        requested_scopes: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+        requested_scopes,
         created_at: row.get(7)?,
         expires_at: row.get(8)?,
     })

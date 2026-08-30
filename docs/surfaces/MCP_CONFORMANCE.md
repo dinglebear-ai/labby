@@ -205,12 +205,14 @@ fixture harness in the same CI job.
 ### Authorization requirement denominator
 
 [`conformance/auth-requirements.json`](../../conformance/auth-requirements.json)
-tracks every applicable MCP `2026-07-28` authorization requirement and the
-OpenAI plugin authentication requirements used by ChatGPT. Each row records an
-authoritative URL, paraphrase, applicability, implementation evidence, stable
-test ID, and status. `scripts/ci/test_auth_spec_matrix.py` rejects missing,
-duplicate, unevidenced, or non-authoritative rows. `gap` and `partial` are
-explicit follow-ups, not passing conformance claims.
+is the concise requirement-family summary for MCP `2026-07-28` authorization
+and the OpenAI plugin authentication requirements used by ChatGPT. The fixed,
+exhaustive denominators are maintained separately in the MCP and OpenAI
+normative matrices described below. Each summary row records an authoritative
+URL, paraphrase, applicability, implementation evidence, stable test ID, and
+status. `scripts/ci/test_auth_spec_matrix.py` rejects missing, duplicate,
+unevidenced, or non-authoritative rows. `gap` and `partial` are explicit
+follow-ups, not passing conformance claims.
 
 OpenAI rows use `scripts/ci/openai-auth-conformance.sh OAI-AUTH-NNN` as their
 requirement-specific executable evidence. Running the script without an ID
@@ -224,22 +226,23 @@ The independently generated
 [`conformance/mcp-auth-normative.json`](../../conformance/mcp-auth-normative.json)
 preserves every normative-keyword occurrence in the official Authorization,
 Authorization Server Discovery, Client Registration, and Authorization
-Security Considerations Markdown pages. At the 2026-08-30 refresh this is 134
-requirements: 83 `MUST`, 11 `MUST NOT`, 38 `SHOULD`, and 2 `SHOULD NOT`.
+Security Considerations Markdown pages. At the 2026-08-30 refresh this is 132
+requirements: 82 `MUST`, 11 `MUST NOT`, 37 `SHOULD`, and 2 `SHOULD NOT`.
 `scripts/ci/refresh_mcp_auth_denominator.py` refreshes that snapshot directly
 from the four official primary-source URLs; the structural CI test prevents a
 summary matrix from silently becoming the standards denominator.
 
-The canonical disposition is 128 applicable passing rows and six explicit
-non-obligation or product-boundary exclusions. Client Registration rows 004–007 describe an MCP
+The canonical disposition is 128 applicable passing rows and four explicit
+product-boundary exclusions. Client Registration rows 004–007 describe an MCP
 OAuth client that elects CIMD and hosts its own HTTPS client metadata; Labby is
 the authorization/resource server validating inbound CIMD, not such a client.
-Authorization Index rows 023–024 are editorial keyword fragments describing a
-possible future `SHOULD`-to-`MUST` change, not requirements imposed on an actor.
 `scripts/ci/mcp_auth_normative_conformance.py` resolves every stable row ID to
-one or more invoked focused assertions. Its CI mode runs 36 distinct Labby
-auth/gateway tests and four distinct vendored rmcp client tests as exact nextest
-selections.
+one or more invoked focused assertions. Direct rows name exact behavioral tests.
+Broad summary clauses instead use `subordinate_row_ids`: an explicit, acyclic
+aggregate-evidence graph whose leaves are direct tests or justified
+not-applicable role branches. Aggregate rows may not also claim direct tests,
+and CI rejects unknown, duplicate, self-referential, cyclic, or unresolved
+subordinate mappings.
 `scripts/ci/publish_mcp_auth_disposition.py` reproducibly publishes the reviewed
 row mappings from `conformance/mcp-auth-coverage-manifest.json` without changing
 the frozen primary-source denominator. Every manifest entry binds the extracted

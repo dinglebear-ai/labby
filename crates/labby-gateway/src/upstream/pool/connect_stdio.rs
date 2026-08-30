@@ -80,16 +80,7 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    let mut env = config
-        .env
-        .iter()
-        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
-        .collect::<Vec<_>>();
-    if let Some(ref env_name) = config.bearer_token_env
-        && let Some(token) = configured_bearer_token(env_name)
-    {
-        env.push((OsString::from(env_name), OsString::from(token)));
-    }
+    let env = stdio_environment(config, None);
     let command_spec = StdioCommandSpec {
         program: OsString::from(command),
         args: args.iter().map(OsString::from).collect(),
@@ -102,6 +93,26 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
         runtime_owner: runtime_owner.cloned(),
     };
     connect_stdio_command(command_spec, handler, true, notification_interceptor).await
+}
+
+fn stdio_environment(
+    config: &UpstreamConfig,
+    dotenv_path: Option<&std::path::Path>,
+) -> Vec<(OsString, OsString)> {
+    let mut env = config
+        .env
+        .iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+        .collect::<Vec<_>>();
+    if let Some(ref env_name) = config.bearer_token_env
+        && let Some(token) = dotenv_path.map_or_else(
+            || configured_bearer_token(env_name),
+            |path| super::super::auth::configured_bearer_token_from_path(env_name, Some(path)),
+        )
+    {
+        env.push((OsString::from(env_name), OsString::from(token)));
+    }
+    env
 }
 
 pub(crate) async fn connect_direct_stdio<H: ClientHandler + Clone>(
@@ -453,6 +464,31 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     );
 
     Ok((conn, tools))
+}
+
+#[cfg(test)]
+mod conformance_tests {
+    use super::*;
+
+    #[test]
+    fn stdio_named_environment_credential_reaches_child_environment_without_oauth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dotenv = dir.path().join(".env");
+        std::fs::write(&dotenv, "UPSTREAM_TOKEN=stdio-sentinel-secret\n").expect("write dotenv");
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.url = None;
+        config.command = Some("server".to_string());
+        config.bearer_token_env = Some("UPSTREAM_TOKEN".to_string());
+
+        let child_env = stdio_environment(&config, Some(&dotenv));
+
+        assert!(config.oauth.is_none());
+        assert!(
+            child_env.iter().any(|(name, value)| {
+                name == "UPSTREAM_TOKEN" && value == "stdio-sentinel-secret"
+            })
+        );
+    }
 }
 
 #[cfg(test)]

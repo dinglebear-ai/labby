@@ -86,6 +86,37 @@ impl SqliteStore {
         .await
     }
 
+    /// Atomically remove both the token credential and its dynamic client
+    /// registration. A failed second delete rolls the credential deletion back,
+    /// so callers never observe a half-cleared OAuth identity.
+    pub async fn clear_upstream_oauth_identity(
+        &self,
+        upstream_name: &str,
+        subject: &str,
+    ) -> Result<(), AuthError> {
+        let upstream_name = upstream_name.to_string();
+        let subject = subject.to_string();
+        self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM upstream_oauth_credentials
+                     WHERE upstream_name = ?1 AND subject = ?2",
+                    params![upstream_name, subject],
+                )
+                .map_err(sqlite_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM upstream_oauth_dynamic_clients
+                     WHERE upstream_name = ?1 AND subject = ?2",
+                    params![upstream_name, subject],
+                )
+                .map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)
+        })
+        .await
+    }
+
     pub async fn save_upstream_oauth_state(
         &self,
         row: UpstreamOauthStateRow,

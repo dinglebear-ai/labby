@@ -393,9 +393,6 @@ impl OauthClientCache {
                     .evicted_clients
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if pending.len() >= self.client_capacity {
-                    pending.pop_front();
-                }
                 pending.push_back(evicted);
             }
         }
@@ -626,6 +623,33 @@ mod tests {
         let victims = cache.take_capacity_evictions();
         assert_eq!(victims.len(), 1);
         assert_eq!(victims[0].0, "upstream");
+    }
+
+    #[tokio::test]
+    async fn capacity_eviction_queue_preserves_every_burst_victim_until_drain() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new())).with_client_capacity(2);
+        let client = dummy_auth_client().await;
+        for index in 0..10 {
+            cache.insert_cached_client(
+                ("upstream".to_string(), format!("subject-{index}")),
+                Arc::new(CachedAuthClient {
+                    client: Arc::clone(&client),
+                    fingerprint: "same".to_string(),
+                }),
+            );
+        }
+
+        assert_eq!(cache.ready_client_count(), 2);
+        let victims = cache.take_capacity_evictions();
+        assert_eq!(victims.len(), 8);
+        assert_eq!(
+            victims
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            8
+        );
+        assert!(cache.take_capacity_evictions().is_empty());
     }
 
     #[test]
@@ -861,8 +885,8 @@ mod tests {
         assert!(cache.is_empty());
     }
 
-    // End-to-end eviction tests live in the Task 4 Step 7 suite where a real
-    // `UpstreamOauthManager` and credential store are set up; constructing an
-    // `AuthClient` here requires an async network-touching call to
-    // `AuthorizationManager::new`, which is inappropriate for a unit test.
+    // Cache lifecycle behavior is covered here; matching a capacity victim to
+    // its live gateway peer is covered by the upstream-pool connection tests.
+    // Constructing an `AuthClient` requires the async, network-touching
+    // `AuthorizationManager::new`, so that integration stays outside this unit.
 }

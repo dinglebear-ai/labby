@@ -1809,6 +1809,43 @@ async fn sqlite_store_rejects_state_ttl_over_600s() {
 }
 
 #[tokio::test]
+async fn malformed_requested_scopes_state_is_rejected_before_exchange() {
+    let store = temp_store().await;
+    let now = now_unix();
+    store
+        .with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO upstream_oauth_state (
+                    upstream_name, subject, csrf_token, pkce_verifier,
+                    expected_issuer, require_issuer, requested_scopes_json,
+                    created_at, expires_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    "acme",
+                    "alice",
+                    "csrf-malformed-scopes",
+                    "verifier",
+                    "https://auth.example",
+                    1_i64,
+                    "not-json",
+                    now,
+                    now + 300,
+                ],
+            )
+            .map(|_| ())
+            .map_err(sqlite_error)
+        })
+        .await
+        .unwrap();
+
+    let error = store
+        .take_upstream_oauth_state("acme", "alice", "csrf-malformed-scopes", now)
+        .await
+        .expect_err("malformed requested scopes must stop callback processing");
+    assert!(matches!(error, crate::error::AuthError::Storage(_)));
+}
+
+#[tokio::test]
 async fn sqlite_store_cleanup_expired_drops_state() {
     let store = temp_store().await;
     let now = now_unix();
@@ -1941,6 +1978,51 @@ async fn dynamic_client_registration_round_trip() {
     assert!(
         store
             .find_dynamic_client_registration("acme", "bob")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn clearing_upstream_identity_rolls_back_when_registration_delete_fails() {
+    let store = temp_store().await;
+    store
+        .upsert_upstream_oauth_credentials(sample_upstream_credentials())
+        .await
+        .unwrap();
+    store
+        .save_dynamic_client_registration("acme", "alice", "client-dyn")
+        .await
+        .unwrap();
+    store
+        .with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_dynamic_delete
+                 BEFORE DELETE ON upstream_oauth_dynamic_clients
+                 BEGIN SELECT RAISE(ABORT, 'injected second delete failure'); END;",
+            )
+            .map_err(sqlite_error)
+        })
+        .await
+        .unwrap();
+
+    let error = store
+        .clear_upstream_oauth_identity("acme", "alice")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("injected second delete failure"));
+    assert!(
+        store
+            .find_upstream_oauth_credentials("acme", "alice")
+            .await
+            .unwrap()
+            .is_some(),
+        "the first delete must roll back with the failed registration delete"
+    );
+    assert!(
+        store
+            .find_dynamic_client_registration("acme", "alice")
             .await
             .unwrap()
             .is_some()

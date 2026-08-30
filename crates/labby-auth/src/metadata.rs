@@ -340,5 +340,13 @@ mod tests {
             json["scopes_supported"],
             serde_json::json!(["syslog:read", "syslog:admin"])
         );
+        assert!(
+            json["scopes_supported"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|scope| scope != "offline_access"),
+            "refresh-token policy is not a protected-resource scope requirement"
+        );
     }
 }

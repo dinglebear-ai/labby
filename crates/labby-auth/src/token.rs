@@ -1400,6 +1400,14 @@ mod tests {
             .expect("decode access token")
             .claims;
         assert_eq!(claims.aud, "https://lab.example.com/mcp");
+        assert_eq!(
+            claims.exp - claims.iat,
+            json["expires_in"].as_u64().unwrap() as usize
+        );
+        assert!(
+            claims.exp - claims.iat <= 3_600,
+            "authorization server access tokens must remain short-lived"
+        );
     }
 
     #[tokio::test]

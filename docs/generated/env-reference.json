@@ -37,6 +37,15 @@
   },
   {
     "service": "auth",
+    "env_var": "LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE",
+    "required": false,
+    "secret": false,
+    "description": "Per-IP authorization and browser-login rate limit",
+    "example": "60",
+    "default_port": null
+  },
+  {
+    "service": "auth",
     "env_var": "LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY",
     "required": false,
     "secret": false,
@@ -82,6 +91,15 @@
   },
   {
     "service": "auth",
+    "env_var": "LABBY_AUTH_MAX_PENDING_OAUTH_STATES",
+    "required": false,
+    "secret": false,
+    "description": "Maximum non-expired pending OAuth states",
+    "example": "1024",
+    "default_port": null
+  },
+  {
+    "service": "auth",
     "env_var": "LABBY_AUTH_MODE",
     "required": false,
     "secret": false,
@@ -100,6 +118,24 @@
   },
   {
     "service": "auth",
+    "env_var": "LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE",
+    "required": false,
+    "secret": false,
+    "description": "Per-IP dynamic-client-registration rate limit",
+    "example": "20",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_SCOPES_SUPPORTED",
+    "required": false,
+    "secret": false,
+    "description": "Comma-separated scopes advertised and accepted for the canonical protected resource",
+    "example": "lab:read,lab,lab:admin",
+    "default_port": null
+  },
+  {
+    "service": "auth",
     "env_var": "LABBY_AUTH_SQLITE_PATH",
     "required": false,
     "secret": false,
@@ -112,7 +148,7 @@
     "env_var": "LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE",
     "required": false,
     "secret": false,
-    "description": "Per-client token endpoint rate limit",
+    "description": "Per-IP token and revocation endpoint rate limit",
     "example": "120",
     "default_port": null
   },
@@ -123,6 +159,15 @@
     "secret": false,
     "description": "Google OAuth callback path",
     "example": "/auth/google/callback",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_GOOGLE_CALLBACK_URL",
+    "required": false,
+    "secret": false,
+    "description": "Absolute Google OAuth callback URL override",
+    "example": "https://lab.example.com/auth/google/callback",
     "default_port": null
   },
   {
@@ -150,6 +195,15 @@
     "secret": false,
     "description": "Comma-separated Google OAuth scopes",
     "example": "openid,email,profile",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_MCP_HTTP_TOKEN",
+    "required": false,
+    "secret": true,
+    "description": "Static bearer token for protected HTTP routes in bearer mode",
+    "example": "<labby_mcp_http_token>",
     "default_port": null
   },
   {

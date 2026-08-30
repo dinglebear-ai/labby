@@ -642,7 +642,7 @@ fn scope_satisfies(granted: &str, required: &str) -> bool {
     granted == required
         || matches!(
             (granted, required),
-            ("lab:admin", "lab" | "lab:read") | ("mcp:write", "mcp:read")
+            ("lab", "lab:read") | ("lab:admin", "lab" | "lab:read") | ("mcp:write", "mcp:read")
         )
 }
 
@@ -1476,6 +1476,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execution_scope_satisfies_read_scope_hierarchy() {
+        let app = echo_app(
+            AuthLayer::new()
+                .with_static_token(Some(Arc::<str>::from("static-secret")))
+                .with_static_token_scopes(vec!["lab".to_string()])
+                .with_required_scopes(vec!["lab:read".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, "Bearer static-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn read_scope_does_not_satisfy_execution_scope() {
+        assert!(!scope_satisfies("lab:read", "lab"));
+        assert!(!scope_satisfies("unrelated", "lab:read"));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -2,18 +2,16 @@
 //!
 //! `RefreshLocks` prevents concurrent callers for the same `(upstream, subject)` pair
 //! from issuing simultaneous token refresh requests against the authorization server.
-//! One caller wins the lock and executes `get_access_token()` (which internally handles
-//! proactive refresh); all others wait and then return the already-refreshed token.
-//!
-//! **Scope:** This module handles *proactive* refresh triggered before making an MCP call.
-//! Reactive 401-retry logic is wired in Task 4 (`dispatch/gateway/`).
+//! It supports mutex-serialized access-token acquisition and cancellation-safe shared
+//! provider refreshes: one caller performs the refresh while waiters receive the same
+//! typed result without holding a mutex across network I/O.
 //!
 //! ## rmcp refresh semantics
 //!
 //! `AuthorizationManager::get_access_token()` refreshes the token when fewer than 30 s
 //! remain before expiry.  It does **not** react to 401 responses from the resource server.
-//! A 401 with a locally-still-valid token requires an explicit `refresh_token()` call
-//! followed by a retry — that is the Task 4 responsibility.
+//! A 401 with a locally-still-valid token requires the gateway's explicit
+//! `refresh_token()` and bounded retry path.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -26,9 +24,10 @@ use super::types::{OAuthEgressKind, OauthError};
 
 /// Per-`(upstream_name, subject)` mutex pool.
 ///
-/// Entries are created lazily on first access and are never removed (the number of
-/// distinct `(upstream, subject)` pairs is bounded by the number of configured upstreams
-/// times the number of users, which is small in a homelab context).
+/// Entries are created lazily and capped at `MAX_COORDINATION_ENTRIES`. At
+/// capacity, idle mutex or flight entries are evicted. When every mutex entry
+/// is live, callers share an overflow mutex; when every flight entry is live,
+/// a new shared refresh fails closed with a capacity error.
 #[derive(Default)]
 pub struct RefreshLocks {
     locks: DashMap<(String, String), Arc<Mutex<()>>>,
@@ -39,9 +38,67 @@ pub struct RefreshLocks {
 
 #[derive(Default)]
 struct RefreshFlight {
-    running: Mutex<bool>,
+    running: std::sync::Mutex<bool>,
     completed: std::sync::Mutex<Option<Result<(), CachedRefreshFailure>>>,
     notify: tokio::sync::Notify,
+}
+
+impl RefreshFlight {
+    fn try_start(&self) -> bool {
+        let mut running = self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *running {
+            false
+        } else {
+            *running = true;
+            true
+        }
+    }
+
+    fn complete(&self, result: Result<(), CachedRefreshFailure>) {
+        *self
+            .completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        *self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        self.notify.notify_waiters();
+    }
+}
+
+struct RefreshFlightOwner {
+    flight: Arc<RefreshFlight>,
+    armed: bool,
+}
+
+impl RefreshFlightOwner {
+    fn new(flight: Arc<RefreshFlight>) -> Self {
+        Self {
+            flight,
+            armed: true,
+        }
+    }
+
+    fn finish(mut self, result: Result<(), CachedRefreshFailure>) {
+        self.flight.complete(result);
+        self.armed = false;
+    }
+}
+
+impl Drop for RefreshFlightOwner {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.flight.complete(Err(CachedRefreshFailure::Egress {
+            kind: OAuthEgressKind::UpstreamError,
+            message: "OAuth refresh owner was cancelled; retry the request".to_string(),
+        }));
+    }
 }
 
 const MAX_COORDINATION_ENTRIES: usize = 2_048;
@@ -110,7 +167,7 @@ impl RefreshLocks {
                         self.flights.remove(&idle);
                     } else {
                         return (
-                            true,
+                            false,
                             Err(OauthError::Internal(
                                 "OAuth refresh coordination capacity exhausted".to_string(),
                             )),
@@ -124,28 +181,23 @@ impl RefreshLocks {
             }
         };
         let notified = flight.notify.notified();
-        {
-            let mut running = flight.running.lock().await;
-            if !*running {
-                *running = true;
-                drop(running);
-                let result = operation().await;
-                let cached = result.as_ref().map(|_| ()).map_err(|error| {
-                    CachedRefreshFailure::from_error(error).unwrap_or_else(|| {
-                        CachedRefreshFailure::Egress {
-                            kind: OAuthEgressKind::UpstreamError,
-                            message: error.to_string(),
-                        }
-                    })
-                });
-                *flight
-                    .completed
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cached);
-                *flight.running.lock().await = false;
-                flight.notify.notify_waiters();
-                return (true, result);
-            }
+        tokio::pin!(notified);
+        // Register before observing `running`; otherwise the owner can finish
+        // between that observation and the first poll, losing `notify_waiters`.
+        notified.as_mut().enable();
+        if flight.try_start() {
+            let owner = RefreshFlightOwner::new(Arc::clone(&flight));
+            let result = operation().await;
+            let cached = result.as_ref().map(|_| ()).map_err(|error| {
+                CachedRefreshFailure::from_error(error).unwrap_or_else(|| {
+                    CachedRefreshFailure::Egress {
+                        kind: OAuthEgressKind::UpstreamError,
+                        message: error.to_string(),
+                    }
+                })
+            });
+            owner.finish(cached);
+            return (true, result);
         }
         notified.await;
         let result = flight
@@ -279,7 +331,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::{MAX_COORDINATION_ENTRIES, RefreshFailureCache, RefreshLocks};
+    use super::{MAX_COORDINATION_ENTRIES, RefreshFailureCache, RefreshFlight, RefreshLocks};
     use crate::upstream::types::{OAuthEgressKind, OauthError};
 
     #[test]
@@ -374,5 +426,92 @@ mod tests {
         assert_ne!(first.0, second.0);
         assert_eq!(first.1.unwrap_err().kind(), "timeout");
         assert_eq!(second.1.unwrap_err().kind(), "timeout");
+    }
+
+    #[tokio::test]
+    async fn refresh_coordination_capacity_rejection_never_reports_execution() {
+        let locks = RefreshLocks::new();
+        let held = (0..MAX_COORDINATION_ENTRIES)
+            .map(|index| {
+                let flight = Arc::new(RefreshFlight::default());
+                locks.flights.insert(
+                    ("upstream".to_string(), format!("subject-{index}")),
+                    Arc::clone(&flight),
+                );
+                flight
+            })
+            .collect::<Vec<_>>();
+        let called = std::sync::atomic::AtomicBool::new(false);
+
+        let (executed, result) = locks
+            .run_shared("upstream", "overflow", || async {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        assert!(!executed, "capacity rejection cannot claim ownership");
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            matches!(result, Err(OauthError::Internal(message)) if message.contains("capacity exhausted"))
+        );
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn cancelled_refresh_owner_wakes_waiter_and_allows_retry() {
+        let locks = Arc::new(RefreshLocks::new());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let owner = {
+            let locks = Arc::clone(&locks);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            let calls = Arc::clone(&calls);
+            tokio::spawn(async move {
+                locks
+                    .run_shared("google-drive", "subject", || async move {
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        started.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    })
+                    .await
+            })
+        };
+        started.notified().await;
+
+        let waiter = {
+            let locks = Arc::clone(&locks);
+            tokio::spawn(async move {
+                locks
+                    .run_shared("google-drive", "subject", || async { Ok(()) })
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        owner.abort();
+        owner.await.expect_err("owner task must be cancelled");
+
+        let joined = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter must be woken")
+            .expect("waiter task");
+        assert!(!joined.0);
+        let error = joined.1.expect_err("waiter must observe cancellation");
+        assert_eq!(error.kind(), "upstream_error");
+        assert!(error.to_string().contains("cancelled"));
+
+        let (executed, result) = locks
+            .run_shared("google-drive", "subject", || async {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+        assert!(executed);
+        result.expect("a later caller may retry");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

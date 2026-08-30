@@ -2,13 +2,22 @@
 
 This directory vendors `rmcp` 3.1.0 from
 `dinglebear-ai/rust-sdk@c9c3e518ce94b8d715519657c88195515978bda4`.
-That immutable fork commit carries Labby's protocol-generic custom-result decoder
-fix. Labby additionally adds one optional `Tool.security_schemes` field, serialized
-as top-level `securitySchemes`, plus a builder and wire-model tests.
+That immutable fork commit carries Labby's protocol-generic custom-result
+decoder fix. Relative to that base, this vendored crate also carries the
+following compatibility deltas, all pinned and checked by
+`conformance/vendor-rmcp-provenance.json`:
+
+- an optional `Tool.security_schemes` field serialized as top-level
+  `securitySchemes`, including macro initialization and wire-model tests;
+- exact authorization-server issuer comparison for OAuth discovery; and
+- an authenticated-client regression proof that bearer credentials use the
+  `Authorization` header and never a query parameter.
 
 The field uses `Option<Vec<serde_json::Value>>`: omission preserves the standard
 MCP 3.1 wire model, while values preserve OpenAI's current `noauth` / `oauth2`
 objects and remain forward-compatible with future extension shapes.
 
-Remove this vendored patch after both changes are available in an official `rmcp`
-release.
+The standalone `Cargo.toml` adaptation and deterministic formatting-only test
+change are packaging deltas, not protocol behavior. Remove this vendored crate
+only after every behavioral delta above is available in an official `rmcp`
+release and Labby's MCP/OpenAI conformance matrices pass against that release.

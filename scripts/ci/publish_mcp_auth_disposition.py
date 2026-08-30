@@ -30,6 +30,56 @@ SUMMARY_ROWS = {
     "MCP-AUTH-015": "MCP-2026-AUTH-INDEX-002",
 }
 
+AGGREGATE_ROWS = {
+    "MCP-2026-AUTH-INDEX-001": ["MCP-2026-AUTH-INDEX-006", "MCP-2026-AUTH-INDEX-008", "MCP-2026-AUTH-INDEX-011", "MCP-2026-AUTH-INDEX-027", "MCP-2026-AUTH-INDEX-039", "MCP-2026-AUTH-INDEX-046", "MCP-2026-AUTH-INDEX-050", "MCP-2026-AUTH-INDEX-061"],
+    "MCP-2026-AUTH-INDEX-003": ["MCP-2026-AUTH-INDEX-002", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033"],
+    "MCP-2026-AUTH-INDEX-004": ["MCP-2026-AUTH-INDEX-006", "MCP-2026-AUTH-INDEX-011", "MCP-2026-AUTH-INDEX-019", "MCP-2026-AUTH-INDEX-027", "MCP-2026-AUTH-INDEX-036", "MCP-2026-AUTH-INDEX-039", "MCP-2026-AUTH-INDEX-046", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001"],
+    "MCP-2026-AUTH-INDEX-009": [f"MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-{number:03d}" for number in range(6, 11)],
+    "MCP-2026-AUTH-INDEX-010": [f"MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-{number:03d}" for number in range(1, 16)],
+    "MCP-2026-AUTH-INDEX-027": [*[f"MCP-2026-AUTH-INDEX-{number:03d}" for number in range(28, 36)], "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"],
+    "MCP-2026-AUTH-INDEX-035": [*[f"MCP-2026-AUTH-INDEX-{number:03d}" for number in range(28, 35)], *[f"MCP-2026-AUTH-INDEX-{number:03d}" for number in range(36, 46)]],
+    "MCP-2026-AUTH-INDEX-039": ["MCP-2026-AUTH-INDEX-040", "MCP-2026-AUTH-INDEX-042", "MCP-2026-AUTH-INDEX-044", *[f"MCP-2026-AUTH-SECURITY-CONSIDERATIONS-{number:03d}" for number in range(29, 33)]],
+    "MCP-2026-AUTH-INDEX-041": ["MCP-2026-AUTH-INDEX-042", "MCP-2026-AUTH-INDEX-050", "MCP-2026-AUTH-INDEX-051"],
+    "MCP-2026-AUTH-INDEX-061": [f"MCP-2026-AUTH-SECURITY-CONSIDERATIONS-{number:03d}" for number in range(1, 35)],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-003": [f"MCP-2026-AUTH-CLIENT-REGISTRATION-{number:03d}" for number in range(4, 14)],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-013": [*[f"MCP-2026-AUTH-CLIENT-REGISTRATION-{number:03d}" for number in range(9, 13)], "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001": [f"MCP-2026-AUTH-SECURITY-CONSIDERATIONS-{number:03d}" for number in range(3, 35)],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-002": [f"MCP-2026-AUTH-SECURITY-CONSIDERATIONS-{number:03d}" for number in range(3, 35)],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029": ["MCP-2026-AUTH-INDEX-040", "MCP-2026-AUTH-INDEX-042", "MCP-2026-AUTH-INDEX-044", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030": ["MCP-2026-AUTH-INDEX-040", "MCP-2026-AUTH-INDEX-042", "MCP-2026-AUTH-INDEX-044", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031", "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032"],
+}
+
+DIRECT_REMAPS = {
+    "MCP-2026-AUTH-INDEX-015": ["transport::auth::tests::select_scopes_unions_challenge_with_previously_requested"],
+    "MCP-2026-AUTH-INDEX-016": ["transport::auth::tests::select_scopes_unions_challenge_with_previously_requested", "transport::auth::tests::select_scopes_deduplicates_challenge_already_requested"],
+    "MCP-2026-AUTH-INDEX-017": ["authorize::tests::omitted_initial_scope_defaults_to_least_privilege_read_only_scope"],
+    "MCP-2026-AUTH-INDEX-020": ["authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer", "authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer"],
+    "MCP-2026-AUTH-INDEX-026": ["transport::auth::tests::authorization_callback_rejects_untrusted_error_fields_without_echoing_them"],
+    "MCP-2026-AUTH-INDEX-032": ["transport::auth::tests::resource_identifier_matching_allows_matching_host_or_parent_path"],
+    "MCP-2026-AUTH-INDEX-043": ["transport::auth::tests::initialize_from_store_rejects_token_without_current_issuer_binding", "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes"],
+    "MCP-2026-AUTH-INDEX-048": ["transport::auth::tests::get_access_token_requires_reauth_when_expired_and_no_refresh_token"],
+    "MCP-2026-AUTH-INDEX-050": ["middleware::tests::missing_bearer_token_returns_401_with_www_authenticate", "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge", "token::tests::token_endpoint_errors_use_oauth_error_shape"],
+    "MCP-2026-AUTH-INDEX-051": ["middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"],
+    "MCP-2026-AUTH-INDEX-053": ["transport::auth::tests::select_scopes_unions_challenge_with_previously_requested"],
+    "MCP-2026-AUTH-INDEX-055": ["transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog"],
+    "MCP-2026-AUTH-INDEX-058": ["transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit"],
+    "MCP-2026-AUTH-INDEX-059": ["transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit"],
+    "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-009": ["transport::auth::tests::authorization_metadata_accepts_oidc_path_appended_issuer", "transport::auth::tests::authorization_metadata_accepts_oidc_path_inserted_issuer"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003": ["transport::auth::tests::authorization_url_uses_discovered_resource", "transport::auth::tests::refresh_token_includes_resource_parameter"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-019": ["transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-020": ["transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006": ["token::tests::token_endpoint_mints_lab_jwt_and_refresh_token"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011": ["upstream::manager::url_tests::pkce_validation_accepts_advertised_s256", "upstream::manager::url_tests::pkce_validation_rejects_advertised_non_s256_methods", "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024": ["upstream::http_client::tests::different_private_origin_is_blocked", "upstream::http_client::tests::redirect_policy_stops_cross_origin", "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url", "cimd::tests::absolute_metadata_deadline_includes_single_flight_wait"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025": ["upstream::http_client::tests::different_private_origin_is_blocked", "upstream::http_client::tests::redirect_policy_stops_cross_origin", "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url", "cimd::tests::absolute_metadata_deadline_includes_single_flight_wait"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020": ["authorize::tests::authorize_rejects_nonidentical_registered_redirect_without_redirecting"],
+    "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026": ["authorize::tests::localhost_redirect_consent_warns_with_exact_loopback_host"],
+}
+
+
+def behavior(test_id: str) -> str:
+    return f"Exact test observes that {test_id.rsplit('::', 1)[-1].replace('_', ' ')}."
+
 
 def main() -> None:
     data = json.loads(MATRIX.read_text())
@@ -40,21 +90,45 @@ def main() -> None:
     row_ids = {row["id"] for row in data["requirements"]}
     if set(mappings) != row_ids or len(mappings) != len(coverage["coverage"]):
         raise SystemExit("MCP coverage manifest must map every row exactly once")
+    for row_id, tests in DIRECT_REMAPS.items():
+        mappings[row_id]["assertion_test_ids"] = tests
+        mappings[row_id]["assertion_evidence"] = [
+            {"test_id": test_id, "behavior": behavior(test_id)} for test_id in tests
+        ]
+    for row_id, subordinate_ids in AGGREGATE_ROWS.items():
+        mappings[row_id]["assertion_test_ids"] = []
+        mappings[row_id]["assertion_evidence"] = []
+        mappings[row_id]["subordinate_row_ids"] = subordinate_ids
+    for entry in mappings.values():
+        entry.setdefault("subordinate_row_ids", [])
     for row in data["requirements"]:
         entry = mappings[row["id"]]
         digest = hashlib.sha256(row["requirement"].encode()).hexdigest()
         if digest != entry["source_requirement_sha256"]:
             raise SystemExit(f"stale assertion mapping for {row['id']}")
-        if not entry["asserted_obligation"] or not entry["assertion_test_ids"]:
+        subordinate_ids = entry.get("subordinate_row_ids", [])
+        if not entry["asserted_obligation"] or (
+            entry["applicability"] == "applicable"
+            and not entry["assertion_test_ids"]
+            and not subordinate_ids
+        ):
             raise SystemExit(f"empty assertion mapping for {row['id']}")
+        if [item.get("test_id") for item in entry.get("assertion_evidence", [])] != entry["assertion_test_ids"]:
+            raise SystemExit(f"assertion evidence/test mismatch for {row['id']}")
         row["implementation"] = entry["implementation"]
         row["evidence_paths"] = entry["evidence_paths"]
-        row["test_id"] = entry["assertion_test_ids"][0]
+        row["test_id"] = (
+            entry["assertion_test_ids"][0] if entry["assertion_test_ids"] else None
+        )
         row["assertion_test_ids"] = entry["assertion_test_ids"]
+        row["assertion_evidence"] = entry["assertion_evidence"]
+        row["subordinate_row_ids"] = subordinate_ids
         row["asserted_obligation"] = entry["asserted_obligation"]
         row["verification_commands"] = [f"{HARNESS} {row['id']}"]
         row["applicability"] = entry["applicability"]
         row["status"] = entry["status"]
+    coverage["coverage"] = [mappings[row["id"]] for row in data["requirements"]]
+    MANIFEST.write_text(json.dumps(coverage, indent=2) + "\n")
     MATRIX.write_text(json.dumps(data, indent=2) + "\n")
     by_id = {row["id"]: row for row in data["requirements"]}
     summary = json.loads(SUMMARY.read_text())
@@ -64,6 +138,7 @@ def main() -> None:
             row["implementation"] = normative["implementation"]
             row["evidence_paths"] = normative["evidence_paths"]
             row["test_id"] = normative["test_id"]
+            row["subordinate_row_ids"] = normative.get("subordinate_row_ids", [])
             row["verification_commands"] = normative["verification_commands"]
             row["status"] = "not_applicable" if row["id"] == "MCP-AUTH-015" else normative["status"]
         elif row["id"] == "MCP-AUTH-016":

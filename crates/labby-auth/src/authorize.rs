@@ -1071,6 +1071,51 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn localhost_redirect_consent_warns_with_exact_loopback_host() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let state = test_auth_state_with_config(config).await;
+        let app = router(state);
+        let registration = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"redirect_uris": ["http://localhost:7777/callback"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registration.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(registration.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let client_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["client_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let uri = format!(
+            "/authorize?response_type=code&client_id={client_id}&redirect_uri=http%3A%2F%2Flocalhost%3A7777%2Fcallback&state=secret-client-state&scope=lab%3Aread&code_challenge=pkce&code_challenge_method=S256"
+        );
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("redirect you to <strong>localhost</strong>"));
+        assert!(html.contains("Continue"));
+        assert!(!html.contains("secret-client-state"));
+    }
+
+    #[tokio::test]
     async fn native_poll_returns_202_with_no_code_for_an_unknown_poll_token() {
         let app = router(test_auth_state().await);
         let response = app
@@ -2386,6 +2431,46 @@ pub mod tests {
         // Anything not in scopes_supported is rejected.
         let err = super::validate_scope(&state, &canonical, "lab:write").unwrap_err();
         assert!(err.to_string().contains("lab"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn omitted_initial_scope_defaults_to_least_privilege_read_only_scope() {
+        let state = test_auth_state().await;
+        let canonical = crate::metadata::canonical_resource_url(&state);
+        let selected = super::validate_scope(&state, &canonical, "").unwrap();
+        assert_eq!(selected, "lab:read");
+        assert!(!selected.split_whitespace().any(|scope| scope == "lab"));
+        assert!(
+            !selected
+                .split_whitespace()
+                .any(|scope| scope == "lab:admin")
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_rejects_nonidentical_registered_redirect_without_redirecting() {
+        let app = router(test_auth_state_with_registered_client().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback/extra&state=abc&scope=lab:read&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(response.headers().get(header::LOCATION).is_none());
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "validation_failed");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("does not match"))
+        );
     }
 
     #[test]

@@ -306,14 +306,36 @@ fn secondary_workflow_changes_enable_only_their_own_categories() {
 fn auth_matrix_changes_route_to_conformance() {
     for path in [
         "conformance/auth-requirements.json",
+        "conformance/mcp-auth-coverage-manifest.json",
         "scripts/ci/test_auth_spec_matrix.py",
         "conformance/mcp-auth-normative.json",
+        "conformance/openai-auth-normative.json",
+        "conformance/vendor-rmcp-provenance.json",
         "scripts/ci/refresh_mcp_auth_denominator.py",
+        "scripts/ci/refresh_openai_auth_denominator.py",
+        "scripts/ci/publish_mcp_auth_disposition.py",
+        "scripts/ci/openai-auth-conformance.sh",
+        "scripts/ci/check_vendor_rmcp_provenance.py",
         "scripts/ci/auth_backup_restore_drill.py",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path}");
         assert_eq!(out["rust_test"], "true", "{path}");
+    }
+}
+
+#[test]
+fn vendored_rmcp_changes_run_compile_test_security_and_conformance() {
+    for path in [
+        "vendor/rmcp-3.1.0-labby/Cargo.toml",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "vendor/rmcp-3.1.0-labby/tests/test_tool_security_schemes.rs",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["workflow"], "true", "{path}");
+        assert_eq!(out["rust_compile"], "true", "{path}");
+        assert_eq!(out["rust_test"], "true", "{path}");
+        assert_eq!(out["security"], "true", "{path}");
     }
 }
 
