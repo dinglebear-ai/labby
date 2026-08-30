@@ -158,6 +158,7 @@ test('a completed empty browse names Code Mode being disabled, instead of lookin
     status: 'authenticated', user: { sub: 'admin', email: 'admin@example.com' },
     expiresAt: 100, csrfToken: 'csrf', isAdmin: true,
   })
+  let codeModeConfigRead = false
   globalThis.fetch = async (input, init) => {
     const path = String(input)
     if (path.endsWith('/search')) {
@@ -169,6 +170,7 @@ test('a completed empty browse names Code Mode being disabled, instead of lookin
     if (path.endsWith('/gateway')) {
       const body = JSON.parse(String(init?.body)) as { action?: string }
       if (body.action === 'gateway.code_mode.get') {
+        codeModeConfigRead = true
         return new Response(JSON.stringify({
           enabled: false, timeout_ms: 5000, max_tool_calls: 10, max_response_bytes: 1024, max_response_tokens: 1024,
         }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -187,6 +189,7 @@ test('a completed empty browse names Code Mode being disabled, instead of lookin
     </SWRConfig>,
   )
   try {
+    await waitFor(() => assert.equal(codeModeConfigRead, true))
     assert.match(view.container.textContent ?? '', /Search, or browse the live catalog without a query/)
     const form = view.container.querySelector('form'); assert.ok(form)
     await act(async () => { form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })) })
