@@ -14,6 +14,33 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+#[test]
+fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
+    let action =
+        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
+            .expect("read setup-rust-kache action");
+
+    let fallback = action
+        .split("- name: Select writable Rust homes")
+        .nth(1)
+        .and_then(|section| section.split("\n    - name: Install Rust").next())
+        .expect("writable Rust homes step must run before toolchain installation");
+    for contract in [
+        "[ ! -w \"$rustup_home\" ]",
+        "rustup_home=\"$RUNNER_TEMP/rustup\"",
+        "[ ! -w \"$cargo_home\" ]",
+        "cargo_home=\"$RUNNER_TEMP/cargo\"",
+        "echo \"RUSTUP_HOME=$rustup_home\"",
+        "echo \"CARGO_HOME=$cargo_home\"",
+        "echo \"$cargo_home/bin\" >> \"$GITHUB_PATH\"",
+    ] {
+        assert!(
+            fallback.contains(contract),
+            "writable Rust home fallback must retain `{contract}`"
+        );
+    }
+}
+
 fn classify(event: &str, files: &[&str]) -> HashMap<String, String> {
     let temp_dir = std::env::temp_dir().join(format!(
         "lab-ci-paths-{}-{}-{}",
