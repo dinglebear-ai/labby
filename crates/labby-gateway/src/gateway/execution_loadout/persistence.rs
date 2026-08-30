@@ -55,7 +55,13 @@ impl ExecutionLoadoutStore {
 }
 
 fn store_path(config_path: &Path) -> PathBuf {
-    config_path.with_extension("execution-loadouts.json")
+    // Persistence owns the filename. The host selects the configuration
+    // directory, but cannot redirect loadout reads/writes with a crafted
+    // configuration basename or extension.
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("execution-loadouts.json")
 }
 
 fn storage_error(path: &Path, error: impl std::fmt::Display) -> ExecutionLoadoutError {

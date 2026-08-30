@@ -4,8 +4,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn manager() -> GatewayManager {
-    let path =
-        std::env::temp_dir().join(format!("execution-loadout-{}.toml", uuid::Uuid::new_v4()));
+    let directory =
+        std::env::temp_dir().join(format!("execution-loadout-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).expect("create isolated loadout test directory");
+    let path = directory.join("labby.toml");
     GatewayManager::new(path, GatewayRuntimeHandle::default())
 }
 
@@ -467,8 +469,8 @@ async fn activation_creates_immutable_revision_and_rollback_revises_draft() {
 
 #[tokio::test]
 async fn revisions_survive_manager_restart_in_separate_atomic_store() {
-    let path =
-        std::env::temp_dir().join(format!("execution-loadout-{}.toml", uuid::Uuid::new_v4()));
+    let directory = tempfile::tempdir().expect("temporary loadout store");
+    let path = directory.path().join("labby.toml");
     let first = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
     first
         .execution_loadout_create(
@@ -492,7 +494,4 @@ async fn revisions_survive_manager_restart_in_separate_atomic_store() {
             .draft_revision,
         1
     );
-    drop(std::fs::remove_file(
-        path.with_extension("execution-loadouts.json"),
-    ));
 }
