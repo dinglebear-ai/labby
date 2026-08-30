@@ -308,14 +308,7 @@ mod tests {
     use crate::access::{BootstrapOwnerInput, store::AccessStore};
 
     fn secure_tempdir() -> tempfile::TempDir {
-        let directory = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
-        directory
+        super::super::test_support::secure_tempdir()
     }
 
     fn external(authenticator: Authenticator) -> VerifiedIdentity {

@@ -9,6 +9,7 @@ use crate::error::AuthError;
 pub(crate) const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_CACHE_SECS: i64 = 300;
 pub(crate) const MAX_CACHE_SECS: i64 = 60 * 60;
+pub(crate) const REMOTE_FETCH_DEADLINE: Duration = Duration::from_secs(5);
 
 fn is_public_ip(ip: IpAddr) -> bool {
     match ip {
@@ -71,6 +72,12 @@ pub(crate) fn cache_policy(value: Option<&str>) -> CachePolicy {
 /// Fetch a remote OAuth metadata document with redirects disabled and DNS
 /// pinned to addresses that passed the shared private-network deny policy.
 pub(crate) async fn secure_get(url: &url::Url) -> Result<reqwest::Response, AuthError> {
+    tokio::time::timeout(REMOTE_FETCH_DEADLINE, secure_get_inner(url))
+        .await
+        .map_err(|_| AuthError::Network("remote OAuth document fetch timed out".to_string()))?
+}
+
+async fn secure_get_inner(url: &url::Url) -> Result<reqwest::Response, AuthError> {
     let validated = labby_primitives::ssrf::parse_validated_https_url(url.as_str())
         .map_err(|error| AuthError::Validation(error.to_string()))?;
     let host = validated
@@ -99,7 +106,7 @@ pub(crate) async fn secure_get(url: &url::Url) -> Result<reqwest::Response, Auth
     }
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(5))
+        .timeout(REMOTE_FETCH_DEADLINE)
         .resolve_to_addrs(&host, &addresses)
         .build()
         .map_err(|error| AuthError::Config(format!("build OAuth metadata client: {error}")))?;

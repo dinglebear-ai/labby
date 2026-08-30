@@ -15,7 +15,8 @@
 
 use std::sync::{Arc, LazyLock};
 
-use rmcp::model::{Tool, ToolAnnotations};
+use rmcp::model::{MetaObject, Tool, ToolAnnotations};
+use serde::Serialize;
 use serde_json::Value;
 
 #[cfg(feature = "gateway")]
@@ -309,11 +310,12 @@ impl PermanentToolRegistry {
         let tool = Tool::new(service.name, service.description, builtin_action_schema())
             .with_annotations(builtin_service_annotations(service))
             .with_raw_output_schema(dispatch_envelope_output_schema());
-        if service.name == SERVER_LOGS_TOOL_NAME && admin_apps_visible {
+        let tool = if service.name == SERVER_LOGS_TOOL_NAME && admin_apps_visible {
             tool.with_meta(server_logs_tool_meta(service.name))
         } else {
             tool
-        }
+        };
+        with_labby_security(tool)
     }
 
     /// Canonical descriptor for the existing `skills` service with its Skill
@@ -350,7 +352,7 @@ impl PermanentToolRegistry {
         )
         .with_annotations(annotations)
         .with_raw_output_schema(dispatch_envelope_output_schema());
-        match mode {
+        let tool = match mode {
             SkillLibraryDescriptorMode::Management {
                 app_visible: true, ..
             } => tool.with_meta(skill_library_tool_meta(service.name)),
@@ -358,21 +360,24 @@ impl PermanentToolRegistry {
             | SkillLibraryDescriptorMode::Management {
                 app_visible: false, ..
             } => tool,
-        }
+        };
+        with_labby_security(tool)
     }
 
     /// Descriptor for the optional Code Mode MCP App twin of `codemode`.
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn code_mode_ui_tool(&self, upstreams: &[CodeModeUpstreamDescription]) -> Tool {
-        Tool::new(
-            CODE_MODE_UI_TOOL_NAME,
-            code_mode_ui_description(upstreams),
-            code_mode_execute_schema(),
+        with_labby_security(
+            Tool::new(
+                CODE_MODE_UI_TOOL_NAME,
+                code_mode_ui_description(upstreams),
+                code_mode_execute_schema(),
+            )
+            .with_annotations(code_mode_full_annotations())
+            .with_raw_output_schema(code_mode_trace_output_schema())
+            .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME)),
         )
-        .with_annotations(code_mode_full_annotations())
-        .with_raw_output_schema(code_mode_trace_output_schema())
-        .with_meta(code_mode_tool_meta(CODE_MODE_UI_TOOL_NAME))
     }
 
     /// Descriptor for the MCP App control tool.
@@ -390,11 +395,12 @@ impl PermanentToolRegistry {
             mcp_app_tool_schema(),
         )
         .with_annotations(mcp_app_annotations());
-        if app_visible {
+        let tool = if app_visible {
             tool.with_meta(mcp_app_tool_meta(MCP_APP_TOOL_NAME))
         } else {
             tool
-        }
+        };
+        with_labby_security(tool)
     }
 
     /// Descriptor for the Add Server admin app tool.
@@ -404,14 +410,14 @@ impl PermanentToolRegistry {
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn add_server_tool(&self) -> Tool {
-        Tool::new(
+        with_labby_security(Tool::new(
             ADD_SERVER_TOOL_NAME,
             "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
             add_server_tool_schema(),
         )
         .with_annotations(code_mode_full_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
-        .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME))
+        .with_meta(add_server_tool_meta(ADD_SERVER_TOOL_NAME)))
     }
 
     /// Descriptor for the Gateway Status admin app tool.
@@ -421,27 +427,27 @@ impl PermanentToolRegistry {
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn gateway_status_tool(&self) -> Tool {
-        Tool::new(
+        with_labby_security(Tool::new(
             GATEWAY_STATUS_TOOL_NAME,
             "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
             gateway_status_tool_schema(),
         )
         .with_annotations(gateway_status_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
-        .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME))
+        .with_meta(gateway_status_tool_meta(GATEWAY_STATUS_TOOL_NAME)))
     }
 
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn settings_tool(&self) -> Tool {
-        Tool::new(
+        with_labby_security(Tool::new(
             SETTINGS_TOOL_NAME,
             "Open and manage schema-backed Labby settings, including Code Mode, proxy, surface, and feature controls.",
             settings_tool_schema(),
         )
         .with_annotations(settings_annotations())
         .with_raw_output_schema(dispatch_envelope_output_schema())
-        .with_meta(settings_tool_meta(SETTINGS_TOOL_NAME))
+        .with_meta(settings_tool_meta(SETTINGS_TOOL_NAME)))
     }
 
     #[cfg(feature = "gateway")]
@@ -457,13 +463,15 @@ impl PermanentToolRegistry {
         // `codemode` is permanently text-only: the MCP App metadata belongs to
         // the optional `codemode_ui` twin so disabling the app surface can never
         // remove the execution entry point. See mcp/CLAUDE.md.
-        Tool::new(
-            CODE_MODE_TOOL_NAME,
-            code_mode_description_with_suffix(upstreams, &code_mode_app_text_note()),
-            code_mode_execute_schema(),
+        with_labby_security(
+            Tool::new(
+                CODE_MODE_TOOL_NAME,
+                code_mode_description_with_suffix(upstreams, &code_mode_app_text_note()),
+                code_mode_execute_schema(),
+            )
+            .with_annotations(code_mode_full_annotations())
+            .with_raw_output_schema(code_mode_trace_output_schema()),
         )
-        .with_annotations(code_mode_full_annotations())
-        .with_raw_output_schema(code_mode_trace_output_schema())
     }
 
     #[cfg(feature = "gateway")]
@@ -472,7 +480,7 @@ impl PermanentToolRegistry {
         &self,
         upstreams: &[CodeModeUpstreamDescription],
     ) -> Tool {
-        Tool::new(
+        with_labby_security(Tool::new(
             CODE_MODE_READ_TOOL_NAME,
             code_mode_description_with_suffix(
                 upstreams,
@@ -481,7 +489,7 @@ impl PermanentToolRegistry {
             code_mode_execute_schema(),
         )
         .with_annotations(code_mode_read_annotations())
-        .with_raw_output_schema(code_mode_trace_output_schema())
+        .with_raw_output_schema(code_mode_trace_output_schema()))
     }
 }
 
@@ -491,7 +499,7 @@ mod tests {
     use super::is_reserved_non_upstream_tool_name;
     use super::{
         PermanentToolId, PermanentToolRegistry, SkillLibraryDescriptorMode,
-        dispatch_envelope_output_schema,
+        dispatch_envelope_output_schema, with_labby_security,
     };
     #[cfg(feature = "gateway")]
     use crate::mcp::call_tool_codemode::CODE_MODE_DESCRIPTION_MAX_BYTES;
@@ -504,6 +512,7 @@ mod tests {
         CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, SERVER_LOGS_TOOL_NAME,
     };
     use crate::registry::RegisteredService;
+    use rmcp::model::Tool;
     use serde_json::Value;
 
     fn noop_dispatch(
@@ -577,12 +586,69 @@ mod tests {
         );
         let schema = tool.output_schema.as_ref().expect("outputSchema");
         assert_eq!(schema["properties"]["ok"]["const"], serde_json::json!(true));
-        assert!(tool.meta.is_none(), "only server_logs carries app meta");
+        assert!(
+            tool.meta.is_some(),
+            "every Labby-owned tool carries auth metadata"
+        );
         let annotations = tool.annotations.expect("fallback annotations");
         assert_eq!(annotations.read_only_hint, Some(false));
         assert_eq!(annotations.destructive_hint, Some(true));
         assert_eq!(annotations.idempotent_hint, Some(false));
         assert_eq!(annotations.open_world_hint, Some(true));
+    }
+
+    #[test]
+    fn builtin_service_tool_advertises_top_level_security_schemes() {
+        let registry = PermanentToolRegistry::new();
+        let tool = registry.builtin_service_tool(
+            &service("gateway-alpha"),
+            false,
+            SkillLibraryDescriptorMode::Compatibility,
+        );
+        let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
+        let serialized = serde_json::to_value(&tool).expect("Tool descriptor serializes");
+        assert_eq!(serialized["securitySchemes"], expected, "OAI-AUTH-002");
+        let round_trip: Tool = serde_json::from_value(serialized).expect("Tool round trips");
+        assert_eq!(
+            Value::Array(round_trip.security_schemes.expect("canonical schemes")),
+            expected
+        );
+    }
+
+    #[test]
+    fn builtin_service_tool_mirrors_security_schemes_in_legacy_meta() {
+        let tool = PermanentToolRegistry::new().builtin_service_tool(
+            &service("gateway-alpha"),
+            false,
+            SkillLibraryDescriptorMode::Compatibility,
+        );
+        let serialized = serde_json::to_value(tool).expect("Tool descriptor serializes");
+        assert_eq!(
+            serialized["_meta"]["securitySchemes"], serialized["securitySchemes"],
+            "OAI-AUTH-004 compatibility mirror must match canonical declaration"
+        );
+    }
+
+    #[test]
+    fn protected_boundary_rebinds_upstream_descriptor_security_policy() {
+        // Decode the same wire descriptor an upstream MCP peer supplies. Tests
+        // must not use the project-banned rmcp `Tool::new` constructor because
+        // it silently leaves contract fields at SDK defaults.
+        let upstream: Tool = serde_json::from_value(serde_json::json!({
+            "name": "upstream_search",
+            "description": "Search an upstream",
+            "inputSchema": {"type": "object"},
+            "securitySchemes": [{
+                "type": "oauth2",
+                "scopes": ["upstream:private"]
+            }]
+        }))
+        .unwrap();
+
+        let serialized = serde_json::to_value(with_labby_security(upstream)).unwrap();
+        let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
+        assert_eq!(serialized["securitySchemes"], expected);
+        assert_eq!(serialized["_meta"]["securitySchemes"], expected);
     }
 
     #[test]
@@ -599,7 +665,13 @@ mod tests {
             false,
             SkillLibraryDescriptorMode::Compatibility,
         );
-        assert!(hidden.meta.is_none(), "non-admin server_logs has no meta");
+        assert!(
+            hidden
+                .meta
+                .as_ref()
+                .is_some_and(|meta| !meta.0.contains_key("ui")),
+            "non-admin server_logs has no app meta"
+        );
         // The schema is not audience-dependent.
         assert_eq!(visible.output_schema, hidden.output_schema);
         assert_eq!(visible.annotations, hidden.annotations);
@@ -822,7 +894,7 @@ mod tests {
         assert_eq!(meta.0["openai/widgetAccessible"], serde_json::json!(true));
         assert_eq!(
             meta.0["securitySchemes"][0]["scopes"],
-            serde_json::json!(["lab:read", "lab", "lab:admin"])
+            serde_json::json!(["lab:read"])
         );
 
         let hidden_app = permanent.skill_library_tool(
@@ -832,12 +904,22 @@ mod tests {
                 allowed_actions: None,
             },
         );
-        assert!(hidden_app.meta.is_none());
+        assert!(
+            hidden_app
+                .meta
+                .as_ref()
+                .is_some_and(|meta| !meta.0.contains_key("ui"))
+        );
         assert_eq!(hidden_app.input_schema, tool.input_schema);
 
         let compatibility =
             permanent.skill_library_tool(&skills, SkillLibraryDescriptorMode::Compatibility);
-        assert!(compatibility.meta.is_none());
+        assert!(
+            compatibility
+                .meta
+                .as_ref()
+                .is_some_and(|meta| !meta.0.contains_key("ui"))
+        );
         assert_eq!(
             compatibility.input_schema["properties"]["action"]["enum"]
                 .as_array()
@@ -885,7 +967,7 @@ mod tests {
             CODE_MODE_READ_TOOL_NAME,
         ];
 
-        let mut descriptors: Vec<rmcp::model::Tool> = services
+        let mut descriptors: Vec<Tool> = services
             .services()
             .iter()
             .map(|service| {
@@ -990,4 +1072,34 @@ mod tests {
             descriptor.description.expect("description").len() <= CODE_MODE_DESCRIPTION_MAX_BYTES
         );
     }
+}
+#[derive(Serialize)]
+struct OAuthSecurityScheme<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    scopes: &'a [&'a str],
+}
+
+/// Bind a descriptor advertised by Labby's protected MCP boundary to Labby's
+/// OAuth policy. This applies to both Labby-owned and proxied upstream tools:
+/// upstream authentication is terminated by the gateway and must not leak as
+/// the public boundary's client-facing policy.
+pub(crate) fn with_labby_security(mut tool: Tool) -> Tool {
+    const DISCOVERY_SCOPES: &[&str] = &["lab:read"];
+    let schemes = serde_json::to_value([OAuthSecurityScheme {
+        kind: "oauth2",
+        scopes: DISCOVERY_SCOPES,
+    }])
+    .expect("static OAuth security scheme serializes");
+    tool.security_schemes = Some(
+        schemes
+            .as_array()
+            .expect("static OAuth security schemes are an array")
+            .clone(),
+    );
+    tool.meta
+        .get_or_insert_with(|| MetaObject(serde_json::Map::new()))
+        .0
+        .insert("securitySchemes".to_string(), schemes);
+    tool
 }

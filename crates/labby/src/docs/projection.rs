@@ -179,6 +179,25 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         ));
     }
     vars.extend([
+        auth_env("LABBY_AUTH_MODE", false, false, "bearer", "Inbound authentication mode: bearer or oauth"),
+        auth_env("LABBY_PUBLIC_URL", true, false, "https://lab.example.com", "Canonical public application URL and OAuth issuer"),
+        auth_env("LABBY_GOOGLE_CLIENT_ID", true, false, "google-client-id", "Google OAuth client identifier used in oauth mode"),
+        auth_env("LABBY_GOOGLE_CLIENT_SECRET", true, true, "<labby_google_client_secret>", "Google OAuth client secret used in oauth mode"),
+        auth_env("LABBY_AUTH_ADMIN_EMAIL", true, false, "admin@example.com", "Bootstrap administrator email required in oauth mode"),
+        auth_env("LABBY_AUTH_ALLOWED_REDIRECT_URIS", false, false, "https://chatgpt.com/connector/oauth/*", "Comma-separated exact or wildcard OAuth redirect allowlist"),
+        auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated Google Workspace hosted-domain allowlist"),
+        auth_env("LABBY_AUTH_SQLITE_PATH", false, false, "~/.labby/auth.db", "OAuth authorization-state SQLite database path"),
+        auth_env("LABBY_AUTH_KEY_PATH", false, true, "~/.labby/auth-jwt.pem", "OAuth JWT signing-key path"),
+        auth_env("LABBY_TOKEN_ENCRYPTION_KEY", true, true, "<64-hex-or-base64url-key>", "Encryption key for persisted provider access and refresh tokens"),
+        auth_env("LABBY_GOOGLE_CALLBACK_PATH", false, false, "/auth/google/callback", "Google OAuth callback path"),
+        auth_env("LABBY_GOOGLE_SCOPES", false, false, "openid,email,profile", "Comma-separated Google OAuth scopes"),
+        auth_env("LABBY_AUTH_ACCESS_TOKEN_TTL_SECS", false, false, "3600", "Labby access-token lifetime in seconds"),
+        auth_env("LABBY_AUTH_REFRESH_TOKEN_TTL_SECS", false, false, "2592000", "Labby refresh-token lifetime in seconds"),
+        auth_env("LABBY_AUTH_CODE_TTL_SECS", false, false, "300", "Authorization-code lifetime in seconds"),
+        auth_env("LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE", false, false, "120", "Per-client token endpoint rate limit"),
+        auth_env("LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY", false, false, "false", "Temporary compatibility switch for clients without RFC 9207 response issuer support"),
+        auth_env("LABBY_AUTH_MACHINE_CLIENTS_JSON", false, true, "[]", "Preregistered machine-client definitions"),
+        auth_env("LABBY_AUTH_ENTERPRISE_ISSUERS_JSON", false, true, "[]", "Trusted enterprise issuer definitions"),
         EnvDoc {
             service: "proxy".to_string(),
             env_var: "LABBY_PROXY_BEARER_TOKEN".to_string(),
@@ -224,6 +243,18 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         (a.service.as_str(), a.env_var.as_str()).cmp(&(b.service.as_str(), b.env_var.as_str()))
     });
     vars
+}
+
+fn auth_env(name: &str, required: bool, secret: bool, example: &str, description: &str) -> EnvDoc {
+    EnvDoc {
+        service: "auth".to_string(),
+        env_var: name.to_string(),
+        required,
+        secret,
+        description: description.to_string(),
+        example: example.to_string(),
+        default_port: None,
+    }
 }
 
 fn build_proxy_config_reference() -> Vec<ConfigDoc> {
@@ -947,5 +978,61 @@ mod tests {
                 "OpenAPI omits {action}"
             );
         }
+    }
+
+    #[test]
+    fn env_projection_covers_oauth_runtime_contract() {
+        let projection = build_docs_projection(&workspace_root().unwrap()).unwrap();
+        let vars = projection
+            .env_reference
+            .iter()
+            .map(|entry| entry.env_var.as_str())
+            .collect::<BTreeSet<_>>();
+        for required in [
+            "LABBY_AUTH_MODE",
+            "LABBY_PUBLIC_URL",
+            "LABBY_GOOGLE_CLIENT_ID",
+            "LABBY_GOOGLE_CLIENT_SECRET",
+            "LABBY_AUTH_ADMIN_EMAIL",
+            "LABBY_AUTH_ALLOWED_REDIRECT_URIS",
+            "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS",
+            "LABBY_AUTH_SQLITE_PATH",
+            "LABBY_AUTH_KEY_PATH",
+        ] {
+            assert!(
+                vars.contains(required),
+                "missing OAuth env documentation for {required}"
+            );
+        }
+        let projected = projection
+            .env_reference
+            .iter()
+            .filter(|entry| entry.service == "auth")
+            .map(|entry| entry.env_var.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            projected,
+            BTreeSet::from([
+                "LABBY_AUTH_ACCESS_TOKEN_TTL_SECS",
+                "LABBY_AUTH_ADMIN_EMAIL",
+                "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS",
+                "LABBY_AUTH_ALLOWED_REDIRECT_URIS",
+                "LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY",
+                "LABBY_AUTH_CODE_TTL_SECS",
+                "LABBY_AUTH_ENTERPRISE_ISSUERS_JSON",
+                "LABBY_AUTH_KEY_PATH",
+                "LABBY_AUTH_MACHINE_CLIENTS_JSON",
+                "LABBY_AUTH_MODE",
+                "LABBY_AUTH_REFRESH_TOKEN_TTL_SECS",
+                "LABBY_AUTH_SQLITE_PATH",
+                "LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE",
+                "LABBY_GOOGLE_CALLBACK_PATH",
+                "LABBY_GOOGLE_CLIENT_ID",
+                "LABBY_GOOGLE_CLIENT_SECRET",
+                "LABBY_GOOGLE_SCOPES",
+                "LABBY_PUBLIC_URL",
+                "LABBY_TOKEN_ENCRYPTION_KEY",
+            ])
+        );
     }
 }

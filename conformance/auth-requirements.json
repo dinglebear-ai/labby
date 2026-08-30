@@ -1,0 +1,451 @@
+{
+  "mcp_protocol_version": "2026-07-28",
+  "reviewed_at": "2026-08-30",
+  "requirements": [
+    {
+      "id": "MCP-AUTH-001",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview",
+      "requirement": "HTTP MCP authorization servers implement OAuth 2.1 security measures.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "test_id": "at_rest::tests::contextual_ciphertext_rejects_row_transplant",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-004"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-002",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview",
+      "requirement": "Protected resources publish RFC 9728 metadata.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-001"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-003",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview",
+      "requirement": "Authorization servers provide OAuth or OIDC discovery.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "test_id": "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-005"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-004",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#client-registration",
+      "requirement": "Clients obtain an identifier by CIMD, preregistration, or DCR, preferring CIMD.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "test_id": "cimd::tests::accepts_the_real_chatgpt_connector_metadata_document",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-011"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-005",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy",
+      "requirement": "Resource challenges should declare the scopes needed for the operation.",
+      "strength": "should",
+      "applicability": "applicable",
+      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-gateway/src/upstream/http_client.rs"
+      ],
+      "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-012"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-006",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#authorization-response-validation",
+      "requirement": "Clients validate response iss exactly before code redemption when present or advertised.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/store.rs",
+        "crates/labby-auth/src/upstream/manager.rs"
+      ],
+      "test_id": "upstream::store::tests::authorization_state_round_trips_issuer_requirement_and_requested_scopes",
+      "status": "pass",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-019"
+      ]
+    },
+    {
+      "id": "MCP-AUTH-007",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#resource-parameter-implementation",
+      "requirement": "Clients send the canonical resource in authorization and token requests.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-027"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-008",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#access-token-usage",
+      "requirement": "Clients use Authorization Bearer on every HTTP request and never query-string tokens.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-035"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-009",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling",
+      "requirement": "Resource servers validate token audience and reject invalid or expired tokens with 401.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "test_id": "middleware::tests::jwt_validation_path_accepts_signed_token_and_writes_context",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-039"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-010",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#refresh-tokens",
+      "requirement": "Refresh tokens remain confidential and clients do not assume issuance.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "Refresh material is encrypted, confidential, optional, rotated on success, and never advertised as a resource scope.",
+      "evidence_paths": [
+        "crates/labby-auth/src/token.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "test_id": "at_rest::tests::contextual_ciphertext_rejects_row_transplant",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-046"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-011",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling",
+      "requirement": "Authorization failures use 401, insufficient permission uses 403, malformed authorization uses 400.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "test_id": "middleware::tests::jwt_validation_path_accepts_signed_token_and_writes_context",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-050"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "MCP-AUTH-012",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#runtime-insufficient-scope-errors",
+      "requirement": "Insufficient scope should return a 403 Bearer challenge with error, scopes, and resource metadata.",
+      "strength": "should",
+      "applicability": "applicable",
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
+      "status": "pass",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-052"
+      ]
+    },
+    {
+      "id": "MCP-AUTH-013",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#step-up-authorization-flow",
+      "requirement": "Clients union prior and newly challenged scopes and bound retries.",
+      "strength": "should",
+      "applicability": "applicable",
+      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-gateway/src/upstream/http_client.rs"
+      ],
+      "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
+      "status": "pass",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-015"
+      ]
+    },
+    {
+      "id": "MCP-AUTH-014",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#security-considerations",
+      "requirement": "Implementations follow normative authorization security requirements.",
+      "strength": "must",
+      "applicability": "applicable",
+      "implementation": "The complete security-considerations cluster is enforced by the individually mapped executable rows.",
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "test_id": "authorize::tests::authorize_accepts_configured_protected_resource_scopes",
+      "status": "pass",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-061"
+      ]
+    },
+    {
+      "id": "MCP-AUTH-015",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements",
+      "requirement": "STDIO transports obtain credentials from their environment rather than run HTTP OAuth.",
+      "strength": "must",
+      "applicability": "not_applicable",
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "test_id": "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority",
+      "status": "not_applicable",
+      "verification_commands": [
+        "python3 scripts/ci/mcp_auth_normative_conformance.py MCP-2026-AUTH-INDEX-002"
+      ]
+    },
+    {
+      "id": "MCP-AUTH-016",
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview",
+      "requirement": "DCR is optional and deprecated in favor of CIMD.",
+      "strength": "should",
+      "applicability": "applicable",
+      "implementation": "Public metadata and route registration omit DCR together when disabled.",
+      "evidence_paths": [
+        "crates/labby/src/api/router.rs"
+      ],
+      "test_id": "api::router::tests::disabled_dynamic_registration_is_neither_advertised_nor_mounted",
+      "status": "pass",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-009"
+      ]
+    },
+    {
+      "id": "OAI-AUTH-001",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Publish protected-resource metadata for ChatGPT OAuth discovery.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "Root and route-specific RFC 9728 documents.",
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "test_id": "metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-001"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-002",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Declare an explicit securitySchemes policy on each tool.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "Every descriptor crossing Labby's protected MCP boundary, including owned, upstream, and subject-scoped tools, is bound to the canonical Labby OAuth policy.",
+      "evidence_paths": [
+        "crates/labby/src/mcp/permanent_tools.rs",
+        "crates/labby/src/mcp/handlers_tools.rs",
+        "crates/labby/src/mcp/peer_contract.rs"
+      ],
+      "test_id": "mcp::permanent_tools::tests::builtin_service_tool_advertises_top_level_security_schemes",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-002"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-003",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Tool-level auth errors carry _meta mcp/www_authenticate with error and error_description.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "MCP authentication and insufficient-scope error results publish structured Bearer challenges.",
+      "evidence_paths": [
+        "crates/labby/src/mcp/result_format.rs",
+        "crates/labby/src/mcp/result_format/tests.rs"
+      ],
+      "test_id": "mcp::result_format::tests::auth_errors_carry_mcp_reauthentication_metadata",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-003"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-004",
+      "source_url": "https://developers.openai.com/plugins/reference",
+      "requirement": "Mirror securitySchemes in descriptor _meta for older ChatGPT clients.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "Every Labby-owned permanent tool mirrors its canonical OAuth policy in descriptor _meta.securitySchemes for older ChatGPT clients.",
+      "evidence_paths": [
+        "crates/labby/src/mcp/permanent_tools.rs"
+      ],
+      "test_id": "mcp::permanent_tools::tests::builtin_service_tool_mirrors_security_schemes_in_legacy_meta",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-004"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-005",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Advertise correct issuer, endpoints, PKCE S256, CIMD and supported token authentication methods.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "Authorization-server metadata advertises bound endpoints, S256, CIMD, and private_key_jwt without claiming disabled DCR.",
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby/src/api/router.rs"
+      ],
+      "test_id": "metadata::tests::authorization_server_metadata_exposes_lab_endpoints",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-005"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-006",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Verify signature, issuer, expiry or not-before, audience or resource, and required scopes for each protected request.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "JWT middleware verifies signed tokens and enforces issuer, temporal claims, exact audience, and required scope on protected requests.",
+      "evidence_paths": [
+        "crates/labby-auth/src/jwt.rs",
+        "crates/labby-auth/src/middleware.rs"
+      ],
+      "test_id": "middleware::tests::jwt_validation_path_accepts_signed_token_and_writes_context",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-006"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-007",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Protected metadata uses the canonical HTTPS resource and matching authorization-server issuer URLs.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "Resource metadata is derived from the canonical public route and configured issuer, including route-specific resources.",
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby/src/api/router.rs"
+      ],
+      "test_id": "api::router::tests::protected_mcp_route_metadata_uses_host_and_path_resource",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-007"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-008",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Invalid or missing credentials return 401 with a Bearer challenge pointing to protected-resource metadata.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "Public HTTP routes emit route-specific resource_metadata challenges for 401 and standards-shaped insufficient_scope challenges for 403.",
+      "evidence_paths": [
+        "crates/labby/src/api/router.rs"
+      ],
+      "test_id": "api::router::tests::protected_mcp_route_unauthorized_header_points_to_route_metadata",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-008"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-009",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Only advertise registration_endpoint when DCR is supported.",
+      "strength": "openai_required",
+      "applicability": "applicable",
+      "implementation": "The public authorization-server document and route table omit dynamic registration together while DCR is disabled.",
+      "evidence_paths": [
+        "crates/labby/src/api/router.rs"
+      ],
+      "test_id": "api::router::tests::disabled_dynamic_registration_is_neither_advertised_nor_mounted",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-009"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "OAI-AUTH-010",
+      "source_url": "https://developers.openai.com/plugins/build/auth",
+      "requirement": "Plan token revocation, refresh, scope changes, staged rollout, and OAuth debugging.",
+      "strength": "openai_recommended",
+      "applicability": "applicable",
+      "implementation": "Operations and OAuth runbooks cover rollout and diagnosis; executable drills prove idempotent revocation, non-elevating refresh, replay rejection, and encrypted-state backup restore.",
+      "evidence_paths": [
+        "docs/OPERATIONS.md",
+        "docs/runtime/OAUTH.md",
+        "scripts/ci/auth_backup_restore_drill.py",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "test_id": "token::tests::revocation_endpoint_invalidates_refresh_token_and_is_idempotent",
+      "verification_commands": [
+        "scripts/ci/openai-auth-conformance.sh OAI-AUTH-010"
+      ],
+      "status": "pass"
+    }
+  ]
+}

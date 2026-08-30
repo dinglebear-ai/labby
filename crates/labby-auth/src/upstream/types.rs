@@ -104,6 +104,10 @@ pub enum OauthError {
         message: String,
     },
 
+    /// Typed local auth-store failure retained for source-chain inspection.
+    #[error("oauth_storage_error: {0}")]
+    Storage(#[source] crate::error::AuthError),
+
     /// Internal / configuration errors that are not caller-recoverable.
     #[error("internal_error: {0}")]
     Internal(String),
@@ -123,6 +127,7 @@ impl OauthError {
             Self::ClientMismatch(_) => "oauth_client_mismatch",
             Self::SharedCredentialProtected(_) => "oauth_shared_credential_protected",
             Self::Egress { kind, .. } => kind.as_str(),
+            Self::Storage(_) => "oauth_storage_error",
             Self::Internal(_) => "internal_error",
         }
     }
@@ -144,6 +149,7 @@ impl OauthError {
             | Self::ClientMismatch(_)
             | Self::SharedCredentialProtected(_) => 409,
             Self::Egress { kind, .. } => kind.http_status_code(),
+            Self::Storage(_) => 500,
             Self::Internal(_) => 500,
         }
     }

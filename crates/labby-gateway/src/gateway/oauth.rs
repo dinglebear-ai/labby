@@ -100,6 +100,21 @@ pub async fn complete_authorization_callback(
         .await
 }
 
+pub async fn complete_authorization_callback_with_issuer(
+    manager: &GatewayManager,
+    upstream: &str,
+    subject: &str,
+    code: &str,
+    state: &str,
+    issuer: Option<&str>,
+) -> Result<(), ToolError> {
+    manager
+        .complete_upstream_authorization_callback_with_issuer(
+            upstream, subject, code, state, issuer,
+        )
+        .await
+}
+
 pub async fn status(
     manager: &GatewayManager,
     upstream: &str,

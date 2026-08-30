@@ -25,7 +25,11 @@ pub const DEFAULT_ENV_PREFIX: &str = "LAB";
 /// Default browser session cookie name (preserved for the lab consumer).
 pub const DEFAULT_SESSION_COOKIE_NAME: &str = "lab_session";
 /// Default OAuth scope label applied when callers do not request one.
-pub const DEFAULT_SCOPE: &str = "lab";
+/// Least-privilege scope requested when a client omits `scope`.
+///
+/// `lab` remains the execution scope and `lab:admin` remains the administrative
+/// scope, but discovery/default authorization must not silently grant execution.
+pub const DEFAULT_SCOPE: &str = "lab:read";
 /// Default protected resource path (canonical MCP endpoint).
 pub const DEFAULT_RESOURCE_PATH: &str = "/mcp";
 /// Default browser login path mounted by the auth router.
@@ -245,11 +249,15 @@ impl Default for AuthConfig {
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             default_data_dir: base_dir,
             session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
-            // Advertise both the base scope and `:admin` so MCP clients that
-            // need destructive operations can request the elevated scope at
-            // /authorize. Allowed-emails users also receive `:admin` implicitly
-            // (see `authorize::elevate_scope_for_allowed_user`).
-            scopes_supported: vec![DEFAULT_SCOPE.to_string(), format!("{DEFAULT_SCOPE}:admin")],
+            // Advertise least-privilege discovery plus the explicit execution
+            // and administrative scopes. Allowed users may still receive
+            // `lab:admin` through the authorization policy; an omitted scope
+            // starts at `lab:read` and never silently gains execution.
+            scopes_supported: vec![
+                DEFAULT_SCOPE.to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string(),
+            ],
             resource_path: DEFAULT_RESOURCE_PATH.to_string(),
             default_scope: DEFAULT_SCOPE.to_string(),
             static_token_scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
@@ -423,7 +431,11 @@ impl AuthConfigBuilder {
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             default_data_dir: None,
             session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
-            scopes_supported: vec![DEFAULT_SCOPE.to_string(), format!("{DEFAULT_SCOPE}:admin")],
+            scopes_supported: vec![
+                DEFAULT_SCOPE.to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string(),
+            ],
             resource_path: DEFAULT_RESOURCE_PATH.to_string(),
             default_scope: DEFAULT_SCOPE.to_string(),
             static_token_scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
@@ -912,10 +924,14 @@ mod tests {
         assert_eq!(cfg.session_cookie_name, "lab_session");
         assert_eq!(
             cfg.scopes_supported,
-            vec!["lab".to_string(), "lab:admin".to_string()]
+            vec![
+                "lab:read".to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string()
+            ]
         );
         assert_eq!(cfg.resource_path, "/mcp");
-        assert_eq!(cfg.default_scope, "lab");
+        assert_eq!(cfg.default_scope, "lab:read");
         assert_eq!(
             cfg.static_token_scopes,
             vec!["lab:read".to_string(), "lab:admin".to_string()]
@@ -981,13 +997,14 @@ mod tests {
         let cfg = AuthConfigBuilder::new()
             .build_from_sources(fake_env_with_many([(
                 "LAB_AUTH_SCOPES_SUPPORTED",
-                "lab,lab:admin,mcp:read,mcp:write",
+                "lab:read,lab,lab:admin,mcp:read,mcp:write",
             )]))
             .unwrap();
 
         assert_eq!(
             cfg.scopes_supported,
             vec![
+                "lab:read".to_string(),
                 "lab".to_string(),
                 "lab:admin".to_string(),
                 "mcp:read".to_string(),
@@ -1004,7 +1021,11 @@ mod tests {
 
         assert_eq!(
             cfg.scopes_supported,
-            vec!["lab".to_string(), "lab:admin".to_string()],
+            vec![
+                "lab:read".to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string()
+            ],
             "an unset override must not change the advertised vocabulary"
         );
     }

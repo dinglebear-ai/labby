@@ -56,6 +56,11 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/mcp_upstream_drift.py",
             "scripts/ci/test_mcp_upstream_drift.py",
             "conformance/upstream-baseline.json",
+            "conformance/auth-requirements.json",
+            "conformance/mcp-auth-normative.json",
+            "scripts/ci/test_auth_spec_matrix.py",
+            "scripts/ci/refresh_mcp_auth_denominator.py",
+            "scripts/ci/auth_backup_restore_drill.py",
             "crates/labby/tests/ci_changed_paths.rs",
         },
     )
@@ -115,6 +120,16 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     # Dependency, lockfile, toolchain, and build-policy changes can alter test
     # compilation and runtime behavior just as directly as a Rust source edit.
     rust_test = rust_sources or rust_manifests
+    rust_test = rust_test or any_match(
+        paths,
+        lambda p: p in {
+            "conformance/auth-requirements.json",
+            "scripts/ci/test_auth_spec_matrix.py",
+            "conformance/mcp-auth-normative.json",
+            "scripts/ci/refresh_mcp_auth_denominator.py",
+            "scripts/ci/auth_backup_restore_drill.py",
+        },
+    )
     security = any_match(
         paths,
         lambda p: p in {"Cargo.lock", "deny.toml"} or starts(p, ".cargo/"),

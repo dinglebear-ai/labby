@@ -68,22 +68,26 @@ fn validate_custom_header(name: &HeaderName) -> Result<(), String> {
 }
 
 fn extract_scope_from_header(header: &str) -> Option<String> {
-    let header_lowercase = header.to_ascii_lowercase();
-    let scope_key = "scope=";
-    if let Some(pos) = header_lowercase.find(scope_key) {
-        let start = pos + scope_key.len();
-        let value_slice = &header[start..];
-        if let Some(stripped) = value_slice.strip_prefix('"') {
-            if let Some(end_quote) = stripped.find('"') {
-                return Some(stripped[..end_quote].to_string());
-            }
-        } else {
-            let end = value_slice
-                .find(|c: char| c == ',' || c == ';' || c.is_whitespace())
-                .unwrap_or(value_slice.len());
-            if end > 0 {
-                return Some(value_slice[..end].to_string());
-            }
+    let (scheme, parameters) = header.trim().split_once(char::is_whitespace)?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    for parameter in parameters.split(',') {
+        let Some((name, raw_value)) = parameter.trim().split_once('=') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case("scope") {
+            continue;
+        }
+        let value = raw_value.trim();
+        if let Some(quoted) = value.strip_prefix('"') {
+            return quoted.find('"').map(|end| quoted[..end].to_string());
+        }
+        let end = value
+            .find(|character: char| character == ';' || character.is_whitespace())
+            .unwrap_or(value.len());
+        if end != 0 {
+            return Some(value[..end].to_string());
         }
     }
     None
@@ -631,6 +635,20 @@ mod tests {
             "params": {}
         }))
         .expect("valid jsonrpc")
+    }
+
+    #[test]
+    fn bearer_scope_parser_rejects_parameter_name_substrings() {
+        assert_eq!(
+            extract_scope_from_header(
+                r#"Bearer error="insufficient_scope", fooscope="admin", scope="mcp:write""#,
+            ),
+            Some("mcp:write".to_string())
+        );
+        assert_eq!(
+            extract_scope_from_header(r#"Bearer error="insufficient_scope", fooscope="admin""#),
+            None
+        );
     }
 
     #[tokio::test]

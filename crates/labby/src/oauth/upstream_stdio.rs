@@ -104,6 +104,7 @@ pub async fn build_stdio_upstream_oauth_runtime(
 struct CallbackQuery {
     code: Option<String>,
     state: Option<String>,
+    iss: Option<String>,
     error: Option<String>,
 }
 
@@ -359,7 +360,12 @@ impl StdioOauthCoordinator {
                 );
             };
             manager
-                .complete_authorization_callback(&subject, code, state)
+                .complete_authorization_callback_with_issuer(
+                    &subject,
+                    code,
+                    state,
+                    query.iss.as_deref(),
+                )
                 .await
                 .map(|_| ())
                 .map_err(|error| {
@@ -511,6 +517,9 @@ mod tests {
                 subject: "gateway".to_string(),
                 csrf_token: "cancelled-state".to_string(),
                 pkce_verifier: "cancelled-verifier".to_string(),
+                expected_issuer: None,
+                require_issuer: false,
+                requested_scopes: Vec::new(),
                 created_at: now,
                 expires_at: now + 300,
             })
@@ -553,4 +562,15 @@ mod tests {
         assert!(!coordinator.pending.contains_key("cancelled-state"));
         assert!(!coordinator.outcomes.contains_key("cancelled-state"));
     }
+}
+#[test]
+fn callback_query_preserves_rfc9207_issuer_verbatim() {
+    let query: CallbackQuery = serde_json::from_value(serde_json::json!({
+        "code": "c", "state": "s", "iss": "https://issuer.example/tenant"
+    }))
+    .unwrap();
+    assert_eq!(query.iss.as_deref(), Some("https://issuer.example/tenant"));
+    let missing: CallbackQuery =
+        serde_json::from_value(serde_json::json!({"code": "c", "state": "s"})).unwrap();
+    assert!(missing.iss.is_none());
 }

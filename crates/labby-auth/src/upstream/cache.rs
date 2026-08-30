@@ -14,9 +14,13 @@
 //! the pool does not need a reference to the gateway and the gateway does
 //! not need to know how the pool uses the clients.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use dashmap::DashMap;
 use labby_runtime::gateway_config::{UpstreamConfig, UpstreamOauthRegistration};
@@ -61,13 +65,23 @@ pub struct OauthClientCache {
     /// Per-`(upstream, subject)` build lock so concurrent first-request
     /// tasks don't issue duplicate token exchanges against the AS.
     build_locks: Arc<DashMap<(String, String), Arc<Mutex<()>>>>,
+    build_lock_overflow: Arc<Mutex<()>>,
+    build_lock_maintenance: Arc<std::sync::Mutex<()>>,
+    client_maintenance: Arc<std::sync::Mutex<()>>,
+    evicted_clients: Arc<std::sync::Mutex<VecDeque<(String, String)>>>,
+    client_capacity: usize,
     /// Process-wide credential lifecycle barrier shared with every upstream
     /// pool built from this cache. Connection builders take a read guard for
     /// their complete build-and-publish path; revocation takes the write guard.
     invalidation_barrier: Arc<RwLock<()>>,
+    /// Monotonic credential lifecycle generation. Builders snapshot this
+    /// before I/O and must re-check it under the short publication reader.
+    lifecycle_epoch: Arc<AtomicU64>,
     /// Optional host-owned interactive reauthorization hook.
     reauth_handler: Option<OauthReauthHandler>,
 }
+
+const MAX_BUILD_LOCKS: usize = 2_048;
 
 impl OauthClientCache {
     /// Create a new cache backed by the gateway's OAuth manager map.
@@ -77,15 +91,87 @@ impl OauthClientCache {
             clients: Arc::new(DashMap::new()),
             managers,
             build_locks: Arc::new(DashMap::new()),
+            build_lock_overflow: Arc::new(Mutex::new(())),
+            build_lock_maintenance: Arc::new(std::sync::Mutex::new(())),
+            client_maintenance: Arc::new(std::sync::Mutex::new(())),
+            evicted_clients: Arc::new(std::sync::Mutex::new(VecDeque::new())),
+            client_capacity: MAX_BUILD_LOCKS,
             invalidation_barrier: Arc::new(RwLock::new(())),
+            lifecycle_epoch: Arc::new(AtomicU64::new(0)),
             reauth_handler: None,
         }
+    }
+
+    /// Override the number of ready clients retained by this cache.
+    ///
+    /// Hosts with a smaller connection budget may use this to keep the auth
+    /// client and transport registries under the same bound.
+    #[must_use]
+    pub fn with_client_capacity(mut self, capacity: usize) -> Self {
+        self.client_capacity = capacity.max(1);
+        self
+    }
+
+    /// Publish a host-prepared client through the normal bounded cache path.
+    ///
+    /// This is useful when a host completes authorization outside the lazy
+    /// builder but still needs identical lifecycle and capacity semantics.
+    pub fn publish_prebuilt(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        client: Arc<AuthClient<reqwest::Client>>,
+    ) -> Result<(), OauthError> {
+        let fingerprint = registration_fingerprint(config, None)?;
+        self.insert_cached_client(
+            (config.name.clone(), subject.to_string()),
+            Arc::new(CachedAuthClient {
+                client,
+                fingerprint,
+            }),
+        );
+        Ok(())
+    }
+
+    /// Number of ready clients currently retained.
+    #[must_use]
+    pub fn ready_client_count(&self) -> usize {
+        self.clients.len()
+    }
+
+    /// Whether a ready client remains reusable for this subject.
+    #[must_use]
+    pub fn contains_ready_client(&self, upstream: &str, subject: &str) -> bool {
+        self.clients
+            .contains_key(&(upstream.to_string(), subject.to_string()))
     }
 
     /// Shared lifecycle barrier used by gateway pools and credential mutation.
     #[must_use]
     pub fn invalidation_barrier(&self) -> Arc<RwLock<()>> {
         Arc::clone(&self.invalidation_barrier)
+    }
+
+    /// Snapshot the credential lifecycle generation before starting I/O.
+    #[must_use]
+    pub fn lifecycle_epoch(&self) -> u64 {
+        self.lifecycle_epoch.load(Ordering::Acquire)
+    }
+
+    /// Advance the generation while holding the lifecycle write barrier.
+    pub fn advance_lifecycle_epoch(&self) -> u64 {
+        self.lifecycle_epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    async fn ensure_epoch_current(&self, expected: u64) -> Result<(), OauthError> {
+        let _publication = self.invalidation_barrier.read().await;
+        if self.lifecycle_epoch() == expected {
+            Ok(())
+        } else {
+            Err(OauthError::NeedsReauth(
+                "credentials changed while the OAuth client was being built".to_string(),
+            ))
+        }
     }
 
     /// Install a host-owned interactive reauthorization hook.
@@ -122,7 +208,7 @@ impl OauthClientCache {
         config: &UpstreamConfig,
         subject: &str,
     ) -> Result<Arc<AuthClient<reqwest::Client>>, OauthError> {
-        let _lifecycle = self.invalidation_barrier.read().await;
+        let lifecycle_epoch = self.lifecycle_epoch();
         // For Dynamic upstreams, include the stored client_id in the
         // fingerprint so a re-registration is detected (lab-77y5.13).
         let dynamic_client_id: Option<String> = if config
@@ -148,35 +234,41 @@ impl OauthClientCache {
         let reauth_handler = self.reauth_handler.clone();
         let upstream_name = config.name.clone();
         let subject_owned = subject.to_string();
-        self.get_or_insert_with(
-            config,
-            subject,
-            dynamic_client_id.as_deref(),
-            || async move {
-                let manager = self
-                    .managers
-                    .get(&upstream_name)
-                    .map(|r| r.clone())
-                    .ok_or_else(|| {
-                        OauthError::Internal(format!(
-                            "no oauth manager registered for upstream '{}'",
-                            upstream_name
-                        ))
-                    })?;
-                let auth_client = match manager.build_auth_client(&subject_owned).await {
-                    Err(OauthError::NeedsReauth(reason)) => {
-                        let Some(handler) = reauth_handler else {
-                            return Err(OauthError::NeedsReauth(reason));
-                        };
-                        handler(upstream_name.clone(), subject_owned.clone()).await?;
-                        manager.build_auth_client(&subject_owned).await?
-                    }
-                    result => result?,
-                };
-                Ok(Arc::new(auth_client))
-            },
-        )
-        .await
+        let client = self
+            .get_or_insert_with(
+                config,
+                subject,
+                dynamic_client_id.as_deref(),
+                || async move {
+                    let manager = self
+                        .managers
+                        .get(&upstream_name)
+                        .map(|r| r.clone())
+                        .ok_or_else(|| {
+                            OauthError::Internal(format!(
+                                "no oauth manager registered for upstream '{}'",
+                                upstream_name
+                            ))
+                        })?;
+                    let auth_client = match manager.build_auth_client(&subject_owned).await {
+                        Err(OauthError::NeedsReauth(reason)) => {
+                            let Some(handler) = reauth_handler else {
+                                return Err(OauthError::NeedsReauth(reason));
+                            };
+                            handler(upstream_name.clone(), subject_owned.clone()).await?;
+                            manager.build_auth_client(&subject_owned).await?
+                        }
+                        result => result?,
+                    };
+                    Ok(Arc::new(auth_client))
+                },
+            )
+            .await?;
+        if let Err(error) = self.ensure_epoch_current(lifecycle_epoch).await {
+            self.evict_subject(&config.name, subject);
+            return Err(error);
+        }
+        Ok(client)
     }
 
     /// Build an `AuthClient<C>` wrapping the supplied HTTP client and return it
@@ -197,16 +289,13 @@ impl OauthClientCache {
     where
         C: StreamableHttpClient + Clone,
     {
+        let lifecycle_epoch = self.lifecycle_epoch();
         // The capped path does not retain the resulting AuthClient, but it
         // still shares this single-flight gate with `get_or_build`. Without
         // the gate, two cold connections could both observe a revoked refresh
         // token and open duplicate interactive browser flows.
         let key = (config.name.clone(), subject.to_string());
-        let lock = self
-            .build_locks
-            .entry(key)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone();
+        let lock = self.build_lock(&key);
         let _guard = lock.lock().await;
 
         let manager = self
@@ -220,17 +309,21 @@ impl OauthClientCache {
                 ))
             })?;
         let Some(handler) = self.reauth_handler.clone() else {
-            return manager.build_auth_client_with(subject, http_client).await;
+            let client = manager.build_auth_client_with(subject, http_client).await?;
+            self.ensure_epoch_current(lifecycle_epoch).await?;
+            return Ok(client);
         };
 
         let retry_client = http_client.clone();
-        match manager.build_auth_client_with(subject, http_client).await {
+        let client = match manager.build_auth_client_with(subject, http_client).await {
             Err(OauthError::NeedsReauth(_)) => {
                 handler(config.name.clone(), subject.to_string()).await?;
                 manager.build_auth_client_with(subject, retry_client).await
             }
             result => result,
-        }
+        }?;
+        self.ensure_epoch_current(lifecycle_epoch).await?;
+        Ok(client)
     }
 
     #[allow(dead_code)]
@@ -249,6 +342,7 @@ impl OauthClientCache {
     {
         let fingerprint = registration_fingerprint(config, dynamic_client_id)?;
         let key = (config.name.clone(), subject.to_string());
+        let lock = self.build_lock(&key);
 
         if let Some(entry) = self.clients.get(&key)
             && entry.fingerprint == fingerprint
@@ -256,11 +350,6 @@ impl OauthClientCache {
             return Ok(Arc::clone(&entry.client));
         }
 
-        let lock = self
-            .build_locks
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone();
         let _guard = lock.lock().await;
 
         // Re-check after acquiring the lock: another caller may have built
@@ -271,9 +360,16 @@ impl OauthClientCache {
             return Ok(Arc::clone(&entry.client));
         }
 
+        let lifecycle_epoch = self.lifecycle_epoch();
         let arc_client = builder().await?;
+        let _publication = self.invalidation_barrier.read().await;
+        if self.lifecycle_epoch() != lifecycle_epoch {
+            return Err(OauthError::NeedsReauth(
+                "credentials changed while the OAuth client was being built".to_string(),
+            ));
+        }
 
-        self.clients.insert(
+        self.insert_cached_client(
             key,
             Arc::new(CachedAuthClient {
                 client: Arc::clone(&arc_client),
@@ -282,6 +378,38 @@ impl OauthClientCache {
         );
 
         Ok(arc_client)
+    }
+
+    fn insert_cached_client(&self, key: (String, String), client: Arc<CachedAuthClient>) {
+        let _maintenance = self
+            .client_maintenance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.clients.contains_key(&key) && self.clients.len() >= self.client_capacity {
+            let evicted = { self.clients.iter().next().map(|entry| entry.key().clone()) };
+            if let Some(evicted) = evicted {
+                self.clients.remove(&evicted);
+                let mut pending = self
+                    .evicted_clients
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pending.len() >= self.client_capacity {
+                    pending.pop_front();
+                }
+                pending.push_back(evicted);
+            }
+        }
+        self.clients.insert(key, client);
+    }
+
+    /// Drain cache-capacity victims so the gateway can evict the matching live
+    /// subject connection from its separately-owned transport registry.
+    pub fn take_capacity_evictions(&self) -> Vec<(String, String)> {
+        self.evicted_clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect()
     }
 
     /// Evict the entry for a single `(upstream, subject)` pair.
@@ -324,6 +452,37 @@ impl OauthClientCache {
             .retain(|(name, _), _| known.contains(name.as_str()));
     }
 
+    fn build_lock(&self, incoming: &(String, String)) -> Arc<Mutex<()>> {
+        let _maintenance = self
+            .build_lock_maintenance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = self.build_locks.get(incoming) {
+            return existing.value().clone();
+        }
+        if self.build_locks.len() < MAX_BUILD_LOCKS {
+            return self
+                .build_locks
+                .entry(incoming.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone();
+        }
+        let idle = self
+            .build_locks
+            .iter()
+            .find(|entry| Arc::strong_count(entry.value()) == 1)
+            .map(|entry| entry.key().clone());
+        if let Some(idle) = idle {
+            self.build_locks.remove(&idle);
+            self.build_locks
+                .entry(incoming.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        } else {
+            Arc::clone(&self.build_lock_overflow)
+        }
+    }
+
     /// Number of cached clients. Intended for tests and observability.
     #[allow(dead_code)]
     #[must_use]
@@ -336,28 +495,6 @@ impl OauthClientCache {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.clients.is_empty()
-    }
-
-    /// Insert a pre-built `AuthClient` directly into the cache.
-    ///
-    /// Test-only seam: available in `labby-auth`'s own tests and downstream
-    /// debug test builds. It is intentionally not gated by a Cargo feature so
-    /// `--all-features --release` cannot expose it in production artifacts.
-    #[cfg(any(test, debug_assertions))]
-    pub fn insert_for_tests(
-        &self,
-        upstream: &str,
-        subject: &str,
-        fingerprint: &str,
-        client: Arc<AuthClient<reqwest::Client>>,
-    ) {
-        self.clients.insert(
-            (upstream.to_string(), subject.to_string()),
-            Arc::new(CachedAuthClient {
-                client,
-                fingerprint: fingerprint.to_string(),
-            }),
-        );
     }
 }
 
@@ -403,6 +540,22 @@ mod tests {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    fn insert_test_client(
+        cache: &OauthClientCache,
+        upstream: &str,
+        subject: &str,
+        fingerprint: &str,
+        client: Arc<AuthClient<reqwest::Client>>,
+    ) {
+        cache.clients.insert(
+            (upstream.to_string(), subject.to_string()),
+            Arc::new(CachedAuthClient {
+                client,
+                fingerprint: fingerprint.to_string(),
+            }),
+        );
+    }
+
     fn cfg(name: &str, client_id: &str) -> UpstreamConfig {
         UpstreamConfig {
             enabled: true,
@@ -436,6 +589,43 @@ mod tests {
             imported_from: None,
             priority: 1.0,
         }
+    }
+
+    #[test]
+    fn active_build_lock_references_cannot_grow_registry_past_cap() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        let held = (0..MAX_BUILD_LOCKS)
+            .map(|index| cache.build_lock(&("upstream".to_string(), format!("subject-{index}"))))
+            .collect::<Vec<_>>();
+        let overflow_one = cache.build_lock(&("upstream".to_string(), "overflow-one".to_string()));
+        let overflow_two = cache.build_lock(&("upstream".to_string(), "overflow-two".to_string()));
+        assert_eq!(cache.build_locks.len(), MAX_BUILD_LOCKS);
+        assert!(Arc::ptr_eq(&overflow_one, &overflow_two));
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn live_client_references_cannot_grow_cache_past_cap() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        let client = dummy_auth_client().await;
+        let held = (0..=MAX_BUILD_LOCKS)
+            .map(|index| {
+                cache.insert_cached_client(
+                    ("upstream".to_string(), format!("subject-{index}")),
+                    Arc::new(CachedAuthClient {
+                        client: Arc::clone(&client),
+                        fingerprint: "same".to_string(),
+                    }),
+                );
+                Arc::clone(&client)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(cache.clients.len(), MAX_BUILD_LOCKS);
+        assert_eq!(held.len(), MAX_BUILD_LOCKS + 1);
+        let victims = cache.take_capacity_evictions();
+        assert_eq!(victims.len(), 1);
+        assert_eq!(victims[0].0, "upstream");
     }
 
     #[test]
@@ -532,7 +722,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "issuer": server.uri(),
+                "issuer": format!("{}/mcp", server.uri()),
                 "authorization_endpoint": format!("{}/authorize", server.uri()),
                 "token_endpoint": format!("{}/token", server.uri()),
                 "code_challenge_methods_supported": ["S256"]
@@ -578,13 +768,15 @@ mod tests {
     #[tokio::test]
     async fn evict_all_removes_clients_for_every_google_upstream() {
         let cache = OauthClientCache::new(Arc::new(DashMap::new()));
-        cache.insert_for_tests(
+        insert_test_client(
+            &cache,
             "google-calendar",
             "gateway",
             "preregistered:google-client",
             dummy_auth_client().await,
         );
-        cache.insert_for_tests(
+        insert_test_client(
+            &cache,
             "google-drive",
             "gateway",
             "preregistered:google-client",
@@ -603,7 +795,13 @@ mod tests {
         let old = cfg("acme", "id-1");
         let new = cfg("acme", "id-2");
         let old_fingerprint = registration_fingerprint(&old, None).expect("old fingerprint");
-        cache.insert_for_tests("acme", "alice", &old_fingerprint, dummy_auth_client().await);
+        insert_test_client(
+            &cache,
+            "acme",
+            "alice",
+            &old_fingerprint,
+            dummy_auth_client().await,
+        );
 
         let rebuilt = Arc::new(AtomicUsize::new(0));
         let client = cache
@@ -628,6 +826,39 @@ mod tests {
             registration_fingerprint(&new, None).unwrap()
         );
         assert!(Arc::ptr_eq(&stored.client, &client));
+    }
+
+    #[tokio::test]
+    async fn uncapped_builder_cannot_publish_after_lifecycle_epoch_changes() {
+        let cache = OauthClientCache::new(Arc::new(DashMap::new()));
+        let config = cfg("epoch-race", "client");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let building = cache.clone();
+        let started_for_builder = Arc::clone(&started);
+        let resume_for_builder = Arc::clone(&resume);
+        let config_for_builder = config.clone();
+        let task = tokio::spawn(async move {
+            building
+                .get_or_insert_with(&config_for_builder, "alice", None, || async move {
+                    started_for_builder.notify_one();
+                    resume_for_builder.notified().await;
+                    Ok(dummy_auth_client().await)
+                })
+                .await
+        });
+        started.notified().await;
+        let barrier = cache.invalidation_barrier();
+        let writer = barrier.write_owned().await;
+        cache.advance_lifecycle_epoch();
+        drop(writer);
+        resume.notify_one();
+
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(OauthError::NeedsReauth(_))
+        ));
+        assert!(cache.is_empty());
     }
 
     // End-to-end eviction tests live in the Task 4 Step 7 suite where a real

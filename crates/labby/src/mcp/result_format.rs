@@ -8,7 +8,7 @@
 
 #[cfg(feature = "gateway")]
 use labby_codemode::CodeModeCallError;
-use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -77,9 +77,65 @@ pub(crate) fn code_mode_error_envelope(
 }
 
 pub(crate) fn error_result_from_envelope(envelope: Value) -> CallToolResult {
+    let required_scope = envelope["error"]["required_scopes"]
+        .as_array()
+        .map(|scopes| {
+            scopes
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|scope| {
+                    !scope.is_empty()
+                        && scope.chars().all(|ch| {
+                            ch.is_ascii_alphanumeric() || matches!(ch, ':' | '.' | '_' | '-')
+                        })
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|scope| !scope.is_empty());
+    let kind = envelope["error"]["kind"].as_str().unwrap_or_default();
+    let challenge = match kind {
+        "auth_failed" => Some((
+            "invalid_token",
+            required_scope.unwrap_or_else(|| "lab:read".to_string()),
+        )),
+        "forbidden" => required_scope.map(|scope| ("insufficient_scope", scope)),
+        _ => None,
+    };
+    let challenge_description = envelope["error"]["message"]
+        .as_str()
+        .unwrap_or("authorization failed")
+        .to_string();
     let mut result = CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
     result.structured_content = Some(envelope);
+    if let Some((error, scope)) = challenge {
+        let challenge = bearer_challenge(error, &challenge_description, &scope);
+        result.meta = Some(MetaObject(serde_json::Map::from_iter([(
+            "mcp/www_authenticate".to_string(),
+            serde_json::json!([challenge]),
+        )])));
+    }
     result
+}
+
+fn bearer_challenge(error: &str, description: &str, scope: &str) -> String {
+    fn quoted(value: &str) -> String {
+        value
+            .chars()
+            .filter(|ch| ch.is_ascii() && !ch.is_ascii_control())
+            .flat_map(|ch| match ch {
+                '\\' => "\\\\".chars().collect::<Vec<_>>(),
+                '"' => "\\\"".chars().collect::<Vec<_>>(),
+                _ => vec![ch],
+            })
+            .collect()
+    }
+    format!(
+        "Bearer error=\"{}\", error_description=\"{}\", scope=\"{}\"",
+        quoted(error),
+        quoted(description),
+        quoted(scope)
+    )
 }
 
 pub(crate) fn hash_arguments(arguments: &Value) -> String {

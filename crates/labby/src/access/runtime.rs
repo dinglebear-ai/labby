@@ -253,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialization_is_observational_for_missing_store() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
 
         let runtime = AccessRuntime::initialize(path.clone()).await;
@@ -267,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn current_but_unbootstrapped_store_requires_setup_without_mutation() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path.clone()).await.unwrap();
         let before = store.metadata_for_test().await.unwrap();
@@ -285,7 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn canonical_v1_is_not_migrated_until_explicit_bootstrap() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
@@ -347,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_bootstrap_promotes_runtime_and_restart_is_ready() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let runtime = AccessRuntime::initialize(path.clone()).await;
 
@@ -364,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_bootstrap_is_serialized_and_idempotent() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let runtime = AccessRuntime::initialize(secure_test_path(&directory)).await;
         let first = runtime.clone();
         let second = runtime.clone();
@@ -387,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_request_does_not_cancel_lifecycle_promotion() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let runtime = AccessRuntime::initialize(secure_test_path(&directory)).await;
         let request_runtime = runtime.clone();
         let request = tokio::spawn(async move { request_runtime.bootstrap_owner(input()).await });
@@ -411,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn insecure_store_is_typed_blocked_and_not_changed() {
         use std::os::unix::fs::PermissionsExt as _;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         std::fs::write(&path, []).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -430,7 +430,7 @@ mod tests {
 
     #[tokio::test]
     async fn corrupt_and_newer_stores_are_typed_blocked() {
-        let corrupt_directory = tempfile::tempdir().unwrap();
+        let corrupt_directory = super::super::test_support::secure_tempdir();
         let corrupt_path = secure_test_path(&corrupt_directory);
         std::fs::write(&corrupt_path, b"not sqlite").unwrap();
         #[cfg(unix)]
@@ -445,7 +445,7 @@ mod tests {
             AccessRuntimeStatus::Blocked(AccessBlockedReason::Corrupt)
         );
 
-        let newer_directory = tempfile::tempdir().unwrap();
+        let newer_directory = super::super::test_support::secure_tempdir();
         let newer_path = secure_test_path(&newer_directory);
         let connection = rusqlite::Connection::open(&newer_path).unwrap();
         connection
@@ -472,7 +472,7 @@ mod tests {
     #[tokio::test]
     async fn read_only_store_is_typed_blocked() {
         use std::os::unix::fs::PermissionsExt as _;
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path.clone()).await.unwrap();
         store.bootstrap_owner(input()).await.unwrap();
@@ -488,7 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_journal_mode_is_rejected_as_corrupt() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path.clone()).await.unwrap();
         store.bootstrap_owner(input()).await.unwrap();
@@ -508,7 +508,7 @@ mod tests {
 
     #[tokio::test]
     async fn rollback_journal_is_typed_locked() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path.clone()).await.unwrap();
         store.bootstrap_owner(input()).await.unwrap();

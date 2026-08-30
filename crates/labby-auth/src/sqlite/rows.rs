@@ -112,7 +112,10 @@ pub(super) fn row_to_upstream_oauth_state(
         subject: row.get(1)?,
         csrf_token: row.get(2)?,
         pkce_verifier: row.get(3)?,
-        created_at: row.get(4)?,
-        expires_at: row.get(5)?,
+        expected_issuer: row.get(4)?,
+        require_issuer: row.get::<_, i64>(5)? != 0,
+        requested_scopes: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
+        created_at: row.get(7)?,
+        expires_at: row.get(8)?,
     })
 }

@@ -140,11 +140,11 @@ jobs when their changed-path category is enabled:
 | Deny | `security` | `cargo deny check` |
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
 | Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
-| Rust coverage | `rust_test` | LCOV trend artifact with project and critical auth/gateway/dispatch/config floors |
+| Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
 | Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on the Rust runner-farm pool without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke plus the pinned rmcp `3.1.0` fixture's dated `2026-07-28` server/client suites, with separate strict dated and extension baselines |
+| MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
 | Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |

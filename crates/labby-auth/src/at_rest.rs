@@ -26,7 +26,7 @@
 /// encrypted blobs and returned as-is.
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use getrandom::fill;
 
@@ -34,6 +34,7 @@ use crate::error::AuthError;
 
 /// Sentinel prefix that distinguishes ciphertext blobs from legacy plaintext.
 const ENC_PREFIX: &str = "enc:";
+const ENC_CONTEXT_PREFIX: &str = "enc2:";
 
 /// 32-byte ChaCha20-Poly1305 key.
 #[derive(Clone, PartialEq, Eq)]
@@ -122,6 +123,68 @@ pub fn encrypt_provider_token(
     blob.extend_from_slice(&ciphertext);
 
     Ok(format!("{ENC_PREFIX}{}", URL_SAFE_NO_PAD.encode(&blob)))
+}
+
+pub(crate) fn encrypt_provider_token_with_context(
+    key: &TokenEncryptionKey,
+    plaintext: &str,
+    context: &[u8],
+) -> Result<String, AuthError> {
+    let cipher = ChaCha20Poly1305::new_from_slice(&key.0)
+        .map_err(|e| AuthError::Storage(format!("init cipher: {e}")))?;
+    let mut nonce_bytes = [0u8; 12];
+    fill(&mut nonce_bytes).map_err(|e| AuthError::Storage(format!("generate nonce: {e}")))?;
+    let nonce = Nonce::from(nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: context,
+            },
+        )
+        .map_err(|_| AuthError::Storage("token encryption failed".to_string()))?;
+    let mut blob = Vec::with_capacity(12 + ciphertext.len());
+    blob.extend_from_slice(&nonce_bytes);
+    blob.extend_from_slice(&ciphertext);
+    Ok(format!(
+        "{ENC_CONTEXT_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(&blob)
+    ))
+}
+
+pub(crate) fn decrypt_provider_token_with_context(
+    key: &TokenEncryptionKey,
+    stored: &str,
+    context: &[u8],
+) -> Result<String, AuthError> {
+    let Some(encoded) = stored.strip_prefix(ENC_CONTEXT_PREFIX) else {
+        return decrypt_provider_token(key, stored);
+    };
+    let blob = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| {
+        AuthError::Storage("provider token ciphertext is not valid base64".to_string())
+    })?;
+    if blob.len() < 12 {
+        return Err(AuthError::Storage(
+            "provider token ciphertext blob too short".to_string(),
+        ));
+    }
+    let (nonce_bytes, ciphertext) = blob.split_at(12);
+    let cipher = ChaCha20Poly1305::new_from_slice(&key.0)
+        .map_err(|e| AuthError::Storage(format!("init cipher: {e}")))?;
+    let plaintext = cipher
+        .decrypt(
+            Nonce::from_slice(nonce_bytes),
+            Payload {
+                msg: ciphertext,
+                aad: context,
+            },
+        )
+        .map_err(|_| {
+            AuthError::Storage("provider token context mismatch or corruption".to_string())
+        })?;
+    String::from_utf8(plaintext)
+        .map_err(|_| AuthError::Storage("decrypted provider token is not valid UTF-8".to_string()))
 }
 
 /// Decrypt a provider refresh token that was encrypted by [`encrypt_provider_token`].
@@ -302,5 +365,18 @@ mod tests {
             result.is_err(),
             "tampered ciphertext should fail to decrypt"
         );
+    }
+
+    #[test]
+    fn contextual_ciphertext_rejects_row_transplant() {
+        let key = TokenEncryptionKey::from_passphrase("context-key");
+        let alice = b"issuer=google\0subject=alice\0client=lab\0kind=refresh";
+        let bob = b"issuer=google\0subject=bob\0client=lab\0kind=refresh";
+        let encrypted = encrypt_provider_token_with_context(&key, "refresh-secret", alice).unwrap();
+        assert_eq!(
+            decrypt_provider_token_with_context(&key, &encrypted, alice).unwrap(),
+            "refresh-secret"
+        );
+        assert!(decrypt_provider_token_with_context(&key, &encrypted, bob).is_err());
     }
 }

@@ -822,6 +822,18 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
       - name: Verify Labby auth core and extension contracts
         run: cargo test -p labby-auth --all-features --locked
+      - name: Verify authoritative auth requirement matrix
+        run: python3 -m unittest scripts.ci.test_auth_spec_matrix
+      - name: Verify frozen MCP source digests and extraction reproducibility
+        run: python3 scripts/ci/refresh_mcp_auth_denominator.py --check
+      - name: Verify current OpenAI authentication source denominator
+        run: python3 scripts/ci/refresh_openai_auth_denominator.py --check
+      - name: Verify vendored rmcp base and explicit patch provenance
+        run: python3 scripts/ci/check_vendor_rmcp_provenance.py
+      - name: Verify requirement-specific OpenAI authentication contracts
+        run: scripts/ci/openai-auth-conformance.sh
+      - name: Verify requirement-specific MCP authorization contracts
+        run: python3 scripts/ci/mcp_auth_normative_conformance.py
       - name: Run dated protocol and extension suites
         run: scripts/ci/mcp-conformance.sh
       - name: Upload conformance reports
@@ -1282,9 +1294,8 @@ jobs:
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
-    # The 90-minute instrumented re-run enforces a 15% floor; keep it off the
-    # PR critical path. ci-gate accepts the resulting `skipped` conclusion.
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.rust_test == 'true' }}
+    # Coverage is a required regression gate for Rust changes, including PRs.
+    if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1309,7 +1320,7 @@ jobs:
         run: |
           python3 scripts/ci/check-rust-coverage.py lcov.info \
             --overall-minimum 15 \
-            --critical-minimum 5 \
+            --critical-minimum 30 \
             --critical crates/labby-auth/src/ \
             --critical crates/labby-gateway/src/ \
             --critical crates/labby/src/dispatch/ \

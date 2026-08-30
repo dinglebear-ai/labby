@@ -1,0 +1,36 @@
+{
+  "upstream_repository": "https://github.com/dinglebear-ai/rust-sdk",
+  "upstream_commit": "c9c3e518ce94b8d715519657c88195515978bda4",
+  "upstream_archive_url": "https://github.com/dinglebear-ai/rust-sdk/archive/c9c3e518ce94b8d715519657c88195515978bda4.tar.gz",
+  "upstream_archive_sha256": "f29835a3b9124d72234c05b7f2ca331841c6303d9f7b5e094842191897d6da25",
+  "crate_path": "crates/rmcp",
+  "unified_diff_sha256": "4ee2f32b69e13034e9eb6065fc1220e5915835f85c3eb2b6d420c7ed3092bbb0",
+  "patches": [
+    {
+      "path": "Cargo.toml",
+      "patched_sha256": "68d9c0e50476fb475a278e7c9b330643882813c2c5f6d0eb9ab0a3e0330808d1",
+      "obligation": "Make the vendored crate independently buildable without upstream workspace inheritance."
+    },
+    {
+      "path": "src/handler/server/router/tool/tool_traits.rs",
+      "patched_sha256": "59a17b9999441f6a561fcc495ca6ab18d764054bf13b2e3c26a954ad65559397",
+      "obligation": "Initialize the optional tool security extension in macro-generated descriptors."
+    },
+    {
+      "path": "src/model/tool.rs",
+      "patched_sha256": "006727a9d74ace067e034d3095cfbfa1beb10d6b9559540cb34b870f6dcf59bf",
+      "obligation": "Serialize and deserialize top-level OpenAI securitySchemes without changing standard MCP descriptors."
+    },
+    {
+      "path": "src/transport/auth.rs",
+      "patched_sha256": "d632db13dd721ca64f00d6ff748552374f84e73c6a0e3c3bca66c4c0a613a147",
+      "obligation": "Compare authorization metadata issuer identifiers exactly as required by RFC 9207, including exact-issuer conformance fixtures."
+    },
+    {
+      "path": "tests/test_tool_security_schemes.rs",
+      "upstream_absent": true,
+      "patched_sha256": "832fb7fd9776a9db026246ae6a3badd7cd53d08fcdb81149971f95d209e74fc6",
+      "obligation": "Prove extension wire name, round trip, arbitrary extension preservation, and omission compatibility."
+    }
+  ]
+}

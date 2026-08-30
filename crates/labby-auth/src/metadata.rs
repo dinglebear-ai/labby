@@ -32,7 +32,10 @@ pub async fn authorization_server_metadata(
         authorization_endpoint: format!("{base}/authorize"),
         token_endpoint: format!("{base}/token"),
         revocation_endpoint: format!("{base}/revoke"),
-        registration_endpoint: format!("{base}/register"),
+        registration_endpoint: state
+            .config
+            .enable_dynamic_registration
+            .then(|| format!("{base}/register")),
         native_callback_endpoint: Some(native_callback_endpoint(&state)),
         // Keep the legacy field absent so pre-v2 Palette releases safely fall
         // back to loopback rather than polling caller-controlled `state`.
@@ -59,7 +62,7 @@ pub async fn authorization_server_metadata(
         // response to rmcp (openai/codex#34684). Operators may explicitly
         // disable RFC 9207 response-issuer binding until that client defect is
         // fixed; standards-compliant metadata remains the default.
-        authorization_response_iss_parameter_supported: !state.config.codex_issuer_compatibility,
+        authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
         authorization_grant_profiles_supported: if has_enterprise_issuers {
             vec!["urn:ietf:params:oauth:grant-profile:id-jag".to_string()]
@@ -125,7 +128,9 @@ mod tests {
 
     use crate::routes::router;
 
-    use super::super::authorize::tests::test_auth_state;
+    use super::super::authorize::tests::{
+        test_auth_config, test_auth_state, test_auth_state_with_config,
+    };
 
     #[tokio::test]
     async fn authorization_server_metadata_exposes_lab_endpoints() {
@@ -144,7 +149,16 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["issuer"], "https://lab.example.com");
+        assert_eq!(
+            json["authorization_endpoint"],
+            "https://lab.example.com/authorize"
+        );
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
+        assert_eq!(
+            json["code_challenge_methods_supported"],
+            serde_json::json!(["S256"])
+        );
         assert_eq!(
             json["authorization_response_iss_parameter_supported"], true,
             "RFC 9207 issuer binding must remain the default"
@@ -163,6 +177,27 @@ mod tests {
             json["revocation_endpoint"],
             "https://lab.example.com/revoke"
         );
+    }
+
+    #[tokio::test]
+    async fn authorization_server_metadata_omits_unmounted_registration_endpoint() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = false;
+        let app = crate::routes::bearer_only_router(test_auth_state_with_config(config).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("registration_endpoint").is_none());
     }
 
     #[tokio::test]
@@ -203,7 +238,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorization_server_metadata_supports_explicit_codex_issuer_compatibility() {
+    async fn authorization_server_metadata_keeps_issuer_binding_in_compatibility_mode() {
         use crate::authorize::tests::{test_auth_config, test_auth_state_with_config};
 
         let mut config = test_auth_config();
@@ -223,10 +258,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            json["authorization_response_iss_parameter_supported"],
-            false
-        );
+        assert_eq!(json["authorization_response_iss_parameter_supported"], true);
     }
 
     #[tokio::test]
@@ -247,6 +279,16 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["resource"], "https://lab.example.com/mcp");
+        assert_eq!(
+            json["authorization_servers"],
+            serde_json::json!(["https://lab.example.com"])
+        );
+        assert_eq!(
+            json["scopes_supported"],
+            serde_json::json!(["lab:read", "lab", "lab:admin"]),
+            "root discovery must lead with the least-privilege read scope"
+        );
+        assert!(json["resource"].as_str().unwrap().starts_with("https://"));
     }
 
     #[tokio::test]

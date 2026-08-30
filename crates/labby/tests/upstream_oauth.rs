@@ -163,6 +163,10 @@ impl Harness {
         self.mock.uri()
     }
 
+    fn selected_issuer(&self) -> String {
+        format!("{}/", self.mock.uri())
+    }
+
     /// Mount an AS metadata document with the given fields. `issuer` and
     /// `code_challenge_methods_supported` are nullable so we can exercise
     /// degenerate configurations.
@@ -201,7 +205,7 @@ impl Harness {
         Mock::given(method("GET"))
             .and(path("/.well-known/oauth-authorization-server"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "issuer": self.as_url(),
+                "issuer": self.selected_issuer(),
                 "authorization_endpoint": format!("{}/authorize", self.as_url()),
                 "token_endpoint": format!("{}/token", self.as_url()),
                 "registration_endpoint": format!("{}/register", self.as_url()),
@@ -310,7 +314,8 @@ async fn canonical_url_strips_default_port_and_lowercases_host() {
 async fn missing_code_challenge_methods_returns_unsupported() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), None, None).await;
+    h.mount_metadata(Some(&h.selected_issuer()), None, None)
+        .await;
     let m = h.manager(h.upstream_cfg(preregistered()));
 
     let err = m.begin_authorization("alice").await.unwrap_err();
@@ -324,7 +329,7 @@ async fn missing_code_challenge_methods_returns_unsupported() {
 async fn plain_pkce_only_returns_unsupported() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["plain"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["plain"]), None)
         .await;
     let m = h.manager(h.upstream_cfg(preregistered()));
 
@@ -339,7 +344,7 @@ async fn plain_pkce_only_returns_unsupported() {
 async fn authorize_url_carries_canonical_resource_indicator() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["S256"]), None)
         .await;
     let expected_resource = canonicalize_upstream_url(&h.upstream_url()).unwrap();
     let m = h.manager(h.upstream_cfg(preregistered()));
@@ -366,7 +371,7 @@ async fn authorize_url_carries_canonical_resource_indicator() {
 async fn token_exchange_carries_canonical_resource_indicator() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["S256"]), None)
         .await;
     h.mount_token_endpoint().await;
     let expected_resource = canonicalize_upstream_url(&h.upstream_url()).unwrap();
@@ -459,7 +464,7 @@ async fn google_split_token_endpoint_origin_is_allowed() {
 async fn cimd_registration_uses_metadata_url_as_client_id() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["S256"]), None)
         .await;
     let cimd_url = "https://lab.example/.well-known/oauth-client-metadata";
     let m = h.manager(
@@ -537,7 +542,7 @@ async fn dynamic_begin_authorization_reregisters_when_pending_client_is_stale() 
 async fn subject_lookup_survives_restart_for_saved_state() {
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["S256"]), None)
         .await;
     let manager = h.manager(h.upstream_cfg(preregistered()));
 
@@ -587,7 +592,7 @@ async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets_in
 
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["S256"]), None)
         .await;
     h.mount_token_endpoint_with_expires(10).await;
     let m = h.manager(h.upstream_cfg(preregistered()));
@@ -657,7 +662,7 @@ async fn build_auth_client_with_logs_near_expiry_refresh_lifecycle_inner() {
 
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["S256"]), None)
         .await;
     h.mount_token_endpoint_with_expires(10).await;
     let m = h.manager(h.upstream_cfg(preregistered()));
@@ -693,7 +698,7 @@ async fn build_auth_client_with_skips_live_retry_after_a_recent_failure() {
     // endpoint on every single request for a dead refresh token.
     let h = Harness::new().await;
     h.mount_no_resource_metadata().await;
-    h.mount_metadata(Some(&h.as_url()), Some(&["S256"]), None)
+    h.mount_metadata(Some(&h.selected_issuer()), Some(&["S256"]), None)
         .await;
 
     // First /token call (the initial code exchange) succeeds with a token

@@ -41,6 +41,18 @@ pub async fn resolve_client(
     state: &AuthState,
     client_id: &str,
 ) -> Result<Option<RegisteredClient>, AuthError> {
+    tokio::time::timeout(
+        crate::remote::REMOTE_FETCH_DEADLINE,
+        resolve_client_within_deadline(state, client_id),
+    )
+    .await
+    .map_err(|_| AuthError::Network("client metadata resolution timed out".to_string()))?
+}
+
+async fn resolve_client_within_deadline(
+    state: &AuthState,
+    client_id: &str,
+) -> Result<Option<RegisteredClient>, AuthError> {
     let Some(url) = metadata_document_url(client_id) else {
         return state.store.find_client(client_id).await;
     };
@@ -65,11 +77,13 @@ pub async fn resolve_client(
             "client metadata document is temporarily unavailable".to_string(),
         ));
     }
-    let _permit = state
-        .remote_fetch_permits
-        .acquire()
-        .await
-        .map_err(|_| AuthError::Server("remote metadata fetch limiter closed".to_string()))?;
+    let _permit = tokio::time::timeout(
+        crate::remote::REMOTE_FETCH_DEADLINE,
+        state.remote_fetch_permits.acquire(),
+    )
+    .await
+    .map_err(|_| AuthError::Network("remote metadata permit timed out".to_string()))?
+    .map_err(|_| AuthError::Server("remote metadata fetch limiter closed".to_string()))?;
     let (document, cache_policy) =
         match crate::remote::fetch_json::<ClientMetadataDocument>(&url, "client metadata document")
             .await
@@ -655,6 +669,23 @@ mod tests {
         let next = acquire_remote_fetch_lock(&state, key).unwrap();
         assert!(Arc::ptr_eq(&lock, &next));
         assert_eq!(state.remote_fetch_locks.len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absolute_metadata_deadline_includes_single_flight_wait() {
+        let state = test_auth_state().await;
+        let client_id = "https://client.example/metadata.json";
+        let key = format!("cimd:{client_id}");
+        let lock = acquire_remote_fetch_lock(&state, &key).unwrap();
+        let _held = lock.lock().await;
+        let resolving = tokio::spawn({
+            let state = state.clone();
+            async move { resolve_client(&state, client_id).await }
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(crate::remote::REMOTE_FETCH_DEADLINE).await;
+        let error = resolving.await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("timed out"));
     }
 
     #[tokio::test]

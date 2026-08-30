@@ -6,7 +6,8 @@ pub struct AuthorizationServerMetadata {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub revocation_endpoint: String,
-    pub registration_endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_callback_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -432,6 +433,9 @@ pub struct UpstreamOauthStateRow {
     pub subject: String,
     pub csrf_token: String,
     pub pkce_verifier: String,
+    pub expected_issuer: Option<String>,
+    pub require_issuer: bool,
+    pub requested_scopes: Vec<String>,
     pub created_at: i64,
     pub expires_at: i64,
 }
@@ -455,6 +459,9 @@ impl std::fmt::Debug for UpstreamOauthStateRow {
             .field("subject", &"<redacted>")
             .field("csrf_token", &"<redacted>")
             .field("pkce_verifier", &"<redacted>")
+            .field("expected_issuer", &self.expected_issuer)
+            .field("require_issuer", &self.require_issuer)
+            .field("requested_scopes", &self.requested_scopes)
             .field("created_at", &self.created_at)
             .field("expires_at", &self.expires_at)
             .finish()

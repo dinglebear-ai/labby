@@ -1461,9 +1461,28 @@ fn skills_operator_row(
 #[cfg(not(feature = "skills"))]
 async fn handle_skills_list(
     _manager: &GatewayManager,
-    _params_value: Value,
-    _enrichment_scope: GatewayEnrichmentScope,
+    params_value: Value,
+    enrichment_scope: GatewayEnrichmentScope,
 ) -> Result<Value, ToolError> {
+    #[derive(serde::Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    struct Params {
+        #[serde(default)]
+        upstream: Option<String>,
+    }
+
+    let params: Params = if params_value.is_null() {
+        Params::default()
+    } else {
+        parse_params(params_value)?
+    };
+    // Feature slicing must not bypass route isolation. A caller restricted to
+    // a subset of upstreams must receive the same non-enumerating error before
+    // learning whether this build happens to include the Skills runtime.
+    if let Some(filter) = params.upstream.as_deref() {
+        enrichment_scope.ensure_visible(filter)?;
+    }
+
     // Not `unknown_action`: that kind's recovery advice is "rediscover", and
     // rediscovery re-advertises this same action, so an agent would loop. The
     // action is real and permanently unavailable in this build.

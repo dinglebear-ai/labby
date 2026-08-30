@@ -220,6 +220,9 @@ impl StateStore for SqliteStateStore {
                 subject: self.subject.clone(),
                 csrf_token: csrf_token.to_string(),
                 pkce_verifier: state.pkce_verifier,
+                expected_issuer: state.expected_issuer,
+                require_issuer: state.require_issuer,
+                requested_scopes: state.requested_scopes,
                 created_at: now,
                 expires_at: now + STATE_TTL_SECS,
             };
@@ -254,10 +257,13 @@ impl StateStore for SqliteStateStore {
                 .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
             Ok(row.map(|r| {
-                StoredAuthorizationState::new(
+                StoredAuthorizationState::new_with_expected_issuer(
                     &PkceCodeVerifier::new(r.pkce_verifier),
                     &CsrfToken::new(r.csrf_token),
+                    r.expected_issuer,
+                    r.require_issuer,
                 )
+                .with_requested_scopes(r.requested_scopes)
             }))
         })
     }
@@ -361,6 +367,28 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn authorization_state_round_trips_issuer_requirement_and_requested_scopes() {
+        let store = make_state_store(temp_store().await, "acme", "alice");
+        let csrf = "issuer-bound-state";
+        let state = StoredAuthorizationState::new_with_expected_issuer(
+            &PkceCodeVerifier::new("verifier-value".to_string()),
+            &CsrfToken::new(csrf.to_string()),
+            Some("https://auth.example/tenant".to_string()),
+            true,
+        )
+        .with_requested_scopes(vec!["mcp:read".to_string(), "mcp:write".to_string()]);
+
+        store.save(csrf, state).await.unwrap();
+        let loaded = store.load(csrf).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.expected_issuer.as_deref(),
+            Some("https://auth.example/tenant")
+        );
+        assert!(loaded.require_issuer);
+        assert_eq!(loaded.requested_scopes, ["mcp:read", "mcp:write"]);
+    }
+
     /// Loading a state token whose TTL has expired returns `None`.
     ///
     /// The underlying `take_upstream_oauth_state` query filters by `expires_at`,
@@ -382,6 +410,9 @@ mod tests {
             subject: "alice".to_string(),
             csrf_token: "csrf-expired".to_string(),
             pkce_verifier: "verifier".to_string(),
+            expected_issuer: None,
+            require_issuer: false,
+            requested_scopes: Vec::new(),
             created_at: now - 400,
             expires_at: now - 1, // already expired
         };

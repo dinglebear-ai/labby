@@ -3,7 +3,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use super::{SqliteStore, sqlite_error};
-use crate::at_rest::{maybe_decrypt, maybe_encrypt, require_encrypt};
+use crate::at_rest::{decrypt_provider_token_with_context, encrypt_provider_token_with_context};
 use crate::error::AuthError;
 use crate::google::merge_google_scopes;
 use crate::types::{GoogleProviderCredentialRow, GoogleProviderCredentialUpdate};
@@ -31,11 +31,44 @@ fn decode_row(
             "TOKEN_ENCRYPTION_KEY is required to read Google provider credentials".to_string(),
         ));
     }
-    row.refresh_token = maybe_decrypt(enc_key, &row.refresh_token)?;
+    let key = enc_key.expect("encryption key checked above");
+    row.refresh_token = decrypt_provider_token_with_context(
+        key,
+        &row.refresh_token,
+        &google_token_context(&row.subject, &row.client_id, "refresh"),
+    )?;
     if let Some(access_token) = row.access_token.as_deref() {
-        row.access_token = Some(maybe_decrypt(enc_key, access_token)?);
+        row.access_token = Some(decrypt_provider_token_with_context(
+            key,
+            access_token,
+            &google_token_context(&row.subject, &row.client_id, "access"),
+        )?);
     }
     Ok(row)
+}
+
+fn google_token_context(subject: &str, client_id: &str, token_kind: &str) -> Vec<u8> {
+    format!("issuer=https://accounts.google.com\0subject={subject}\0client_id={client_id}\0kind={token_kind}")
+        .into_bytes()
+}
+
+fn encrypt_google_token(
+    key: Option<&crate::at_rest::TokenEncryptionKey>,
+    value: &str,
+    subject: &str,
+    client_id: &str,
+    token_kind: &str,
+) -> Result<String, AuthError> {
+    let key = key.ok_or_else(|| {
+        AuthError::Config(
+            "TOKEN_ENCRYPTION_KEY is required to persist Google provider credentials".to_string(),
+        )
+    })?;
+    encrypt_provider_token_with_context(
+        key,
+        value,
+        &google_token_context(subject, client_id, token_kind),
+    )
 }
 
 impl SqliteStore {
@@ -76,7 +109,7 @@ impl SqliteStore {
             let rows = {
                 let mut statement = transaction
                     .prepare(
-                        "SELECT subject, access_token, refresh_token
+                        "SELECT subject, client_id, access_token, refresh_token
                          FROM google_provider_credentials",
                     )
                     .map_err(sqlite_error)?;
@@ -84,8 +117,9 @@ impl SqliteStore {
                     .query_map([], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
                         ))
                     })
                     .map_err(sqlite_error)?
@@ -103,14 +137,40 @@ impl SqliteStore {
             }
 
             let mut updated = 0_u64;
-            for (subject, access_token, refresh_token) in rows {
+            for (subject, client_id, access_token, refresh_token) in rows {
                 let next_access = access_token
                     .as_deref()
-                    .filter(|token| !token.starts_with("enc:"))
-                    .map(|token| maybe_encrypt(Some(enc_key.as_ref()), token))
+                    .filter(|token| !token.starts_with("enc2:"))
+                    .map(|token| {
+                        let plaintext = decrypt_provider_token_with_context(
+                            enc_key.as_ref(),
+                            token,
+                            &google_token_context(&subject, &client_id, "access"),
+                        )?;
+                        encrypt_google_token(
+                            Some(enc_key.as_ref()),
+                            &plaintext,
+                            &subject,
+                            &client_id,
+                            "access",
+                        )
+                    })
                     .transpose()?;
-                let next_refresh = (!refresh_token.starts_with("enc:"))
-                    .then(|| maybe_encrypt(Some(enc_key.as_ref()), &refresh_token))
+                let next_refresh = (!refresh_token.starts_with("enc2:"))
+                    .then(|| {
+                        let plaintext = decrypt_provider_token_with_context(
+                            enc_key.as_ref(),
+                            &refresh_token,
+                            &google_token_context(&subject, &client_id, "refresh"),
+                        )?;
+                        encrypt_google_token(
+                            Some(enc_key.as_ref()),
+                            &plaintext,
+                            &subject,
+                            &client_id,
+                            "refresh",
+                        )
+                    })
                     .transpose()?;
                 if next_access.is_none() && next_refresh.is_none() {
                     continue;
@@ -262,8 +322,20 @@ impl SqliteStore {
         let granted_scopes = normalize_scopes(&granted_scopes);
         let granted_scopes_json = serde_json::to_string(&granted_scopes)
             .map_err(|error| AuthError::Storage(format!("serialize Google scopes: {error}")))?;
-        let encrypted_access_token = require_encrypt(self.enc_key.as_deref(), &access_token)?;
-        let encrypted_refresh_token = require_encrypt(self.enc_key.as_deref(), &refresh_token)?;
+        let encrypted_access_token = encrypt_google_token(
+            self.enc_key.as_deref(),
+            &access_token,
+            &subject,
+            &client_id,
+            "access",
+        )?;
+        let encrypted_refresh_token = encrypt_google_token(
+            self.enc_key.as_deref(),
+            &refresh_token,
+            &subject,
+            &client_id,
+            "refresh",
+        )?;
         let now = crate::util::now_unix();
         let refreshed = i64::from(refreshed);
         let scope_upgraded = i64::from(scope_upgraded);
@@ -345,8 +417,20 @@ impl SqliteStore {
             .filter(|value| !value.is_empty());
         let granted_scopes_json = serde_json::to_string(&normalize_scopes(&granted_scopes))
             .map_err(|error| AuthError::Storage(format!("serialize Google scopes: {error}")))?;
-        let encrypted_access_token = require_encrypt(self.enc_key.as_deref(), &access_token)?;
-        let encrypted_refresh_token = require_encrypt(self.enc_key.as_deref(), &refresh_token)?;
+        let encrypted_access_token = encrypt_google_token(
+            self.enc_key.as_deref(),
+            &access_token,
+            &subject,
+            &client_id,
+            "access",
+        )?;
+        let encrypted_refresh_token = encrypt_google_token(
+            self.enc_key.as_deref(),
+            &refresh_token,
+            &subject,
+            &client_id,
+            "refresh",
+        )?;
         let now = crate::util::now_unix();
         let refreshed = i64::from(refreshed);
         let scope_upgraded = i64::from(scope_upgraded);
@@ -416,8 +500,20 @@ impl SqliteStore {
             .filter(|value| !value.is_empty());
         let granted_scopes_json = serde_json::to_string(&normalize_scopes(&granted_scopes))
             .map_err(|error| AuthError::Storage(format!("serialize Google scopes: {error}")))?;
-        let encrypted_access_token = require_encrypt(self.enc_key.as_deref(), &access_token)?;
-        let encrypted_refresh_token = require_encrypt(self.enc_key.as_deref(), &refresh_token)?;
+        let encrypted_access_token = encrypt_google_token(
+            self.enc_key.as_deref(),
+            &access_token,
+            &subject,
+            &client_id,
+            "access",
+        )?;
+        let encrypted_refresh_token = encrypt_google_token(
+            self.enc_key.as_deref(),
+            &refresh_token,
+            &subject,
+            &client_id,
+            "refresh",
+        )?;
         let now = crate::util::now_unix();
         let refreshed = i64::from(refreshed);
         let scope_upgraded = i64::from(scope_upgraded);

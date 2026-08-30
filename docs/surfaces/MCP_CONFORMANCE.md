@@ -1,7 +1,7 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-08-18"
+updated: "2026-08-30"
 ---
 
 # MCP 2026-07-28 Conformance
@@ -12,6 +12,19 @@ authenticated `/mcp` boundary, runs the matching upstream rmcp fixture, and
 covers Labby-native gateway and multi-hop scenarios. Dated protocol, extension,
 and native-product results are reported separately so fixture coverage cannot
 hide a product regression or inflate the dated-protocol score.
+
+Labby has simultaneous protocol roles, and the evidence keeps them distinct:
+
+- over Streamable HTTP, Labby is an MCP protected resource and runs an inbound
+  OAuth authorization server for clients such as ChatGPT;
+- as a gateway, Labby is an OAuth client of protected HTTP upstream MCP
+  servers;
+- over stdio, downstream credentials come from the local environment or the
+  already configured gateway runtime. Stdio is not itself an HTTP OAuth
+  transport, although `labby mcp` may initiate OAuth for an HTTP upstream and
+  receive its callback on a process-local loopback listener.
+
+An assertion about one role is not accepted as evidence for another role.
 
 ## Reproducible Pins
 
@@ -170,6 +183,14 @@ credentials extension. Machine clients are preregistered out of band and may
 authenticate with `client_secret_basic` or RFC 7523 `private_key_jwt`;
 assertions are audience-bound to `/token` and replay-protected.
 
+For an upstream URL with a path, protected-resource discovery tries the three
+MCP candidates in this order: `/.well-known/oauth-protected-resource/<path>`,
+`/<path>/.well-known/oauth-protected-resource`, then the origin-root
+`/.well-known/oauth-protected-resource`. Authorization-server discovery keeps
+the selected issuer path and tries RFC 8414 metadata, path-scoped OIDC metadata,
+then the issuer-path OIDC form. Published `issuer` values are compared exactly;
+only the explicitly tested Google issuer/token-origin split is permitted.
+
 Trusted enterprise issuers may be configured for enterprise-managed
 authorization. Labby validates `oauth-id-jag+jwt` assertions against pinned
 inline or HTTPS JWKS and enforces issuer, audience, client, resource, scope,
@@ -180,6 +201,68 @@ DPoP nonce, and WIF JWT-bearer describe experimental outbound flows not
 implemented by the pinned rmcp conformance client. They do not describe Labby's
 inbound authorization server. Product-server coverage runs before the SDK
 fixture harness in the same CI job.
+
+### Authorization requirement denominator
+
+[`conformance/auth-requirements.json`](../../conformance/auth-requirements.json)
+tracks every applicable MCP `2026-07-28` authorization requirement and the
+OpenAI plugin authentication requirements used by ChatGPT. Each row records an
+authoritative URL, paraphrase, applicability, implementation evidence, stable
+test ID, and status. `scripts/ci/test_auth_spec_matrix.py` rejects missing,
+duplicate, unevidenced, or non-authoritative rows. `gap` and `partial` are
+explicit follow-ups, not passing conformance claims.
+
+OpenAI rows use `scripts/ci/openai-auth-conformance.sh OAI-AUTH-NNN` as their
+requirement-specific executable evidence. Running the script without an ID
+runs the complete OpenAI authentication denominator in CI; `--list` prints the
+stable IDs. The focused checks cover discovery and authorization-server
+metadata, tool descriptor security declarations and their compatibility
+mirror, MCP result challenges, per-request token validation, public-route
+401/403 challenges, DCR advertisement parity, and refresh/revocation drills.
+
+The independently generated
+[`conformance/mcp-auth-normative.json`](../../conformance/mcp-auth-normative.json)
+preserves every normative-keyword occurrence in the official Authorization,
+Authorization Server Discovery, Client Registration, and Authorization
+Security Considerations Markdown pages. At the 2026-08-30 refresh this is 134
+requirements: 83 `MUST`, 11 `MUST NOT`, 38 `SHOULD`, and 2 `SHOULD NOT`.
+`scripts/ci/refresh_mcp_auth_denominator.py` refreshes that snapshot directly
+from the four official primary-source URLs; the structural CI test prevents a
+summary matrix from silently becoming the standards denominator.
+
+The canonical disposition is 128 applicable passing rows and six explicit
+non-obligation or product-boundary exclusions. Client Registration rows 004–007 describe an MCP
+OAuth client that elects CIMD and hosts its own HTTPS client metadata; Labby is
+the authorization/resource server validating inbound CIMD, not such a client.
+Authorization Index rows 023–024 are editorial keyword fragments describing a
+possible future `SHOULD`-to-`MUST` change, not requirements imposed on an actor.
+`scripts/ci/mcp_auth_normative_conformance.py` resolves every stable row ID to
+one or more invoked focused assertions. Its CI mode runs 36 distinct Labby
+auth/gateway tests and four distinct vendored rmcp client tests as exact nextest
+selections.
+`scripts/ci/publish_mcp_auth_disposition.py` reproducibly publishes the reviewed
+row mappings from `conformance/mcp-auth-coverage-manifest.json` without changing
+the frozen primary-source denominator. Every manifest entry binds the extracted
+source-clause digest, asserted obligation, executable assertions, and evidence;
+the publisher contains no numeric-range promotion logic.
+
+`scripts/ci/refresh_mcp_auth_denominator.py --check` re-downloads the four frozen
+official pages and verifies their digests and extracted clauses. Vendored rmcp
+provenance is separately pinned in `conformance/vendor-rmcp-provenance.json`:
+CI verifies the immutable upstream archive checksum, every patched-file hash,
+the explicit changed-file manifest, and the normalized unified-diff checksum.
+
+### Rollout and Inspector verification
+
+Before an auth change is rolled out, run the normative and OpenAI denominators,
+the repository auth gates, and the backup/restore drill documented above. In a
+staged instance, verify unauthenticated discovery, a `lab:read` challenge and
+catalog read, execution step-up, refresh, revocation, and a denied destructive
+call from a client without elicitation. Use the Code Mode Inspector only as an
+operator observability aid: it may confirm the authenticated subject's visible
+catalog and structured failures, but it is not a substitute for the executable
+wire assertions and must never display bearer tokens, OAuth codes, or provider
+credentials.
 
 ### Event stores and disconnect
 
@@ -205,5 +288,8 @@ the baseline only in the PR that adopts and verifies the upstream change.
 Primary references:
 
 - <https://modelcontextprotocol.io/specification/2026-07-28>
+- <https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization>
+- <https://developers.openai.com/plugins/build/auth>
+- <https://developers.openai.com/plugins/reference>
 - <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.1.0>
 - <https://github.com/modelcontextprotocol/conformance>

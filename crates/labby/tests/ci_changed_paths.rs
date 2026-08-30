@@ -303,6 +303,21 @@ fn secondary_workflow_changes_enable_only_their_own_categories() {
 }
 
 #[test]
+fn auth_matrix_changes_route_to_conformance() {
+    for path in [
+        "conformance/auth-requirements.json",
+        "scripts/ci/test_auth_spec_matrix.py",
+        "conformance/mcp-auth-normative.json",
+        "scripts/ci/refresh_mcp_auth_denominator.py",
+        "scripts/ci/auth_backup_restore_drill.py",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["workflow"], "true", "{path}");
+        assert_eq!(out["rust_test"], "true", "{path}");
+    }
+}
+
+#[test]
 fn release_workflow_changes_enable_the_release_contract() {
     for path in [
         ".github/workflows/release.yml",

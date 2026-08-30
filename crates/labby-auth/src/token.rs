@@ -1,5 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Extension, Form, State};
 use axum::{
@@ -25,289 +25,17 @@ use crate::util::{
     duration_secs_usize, expires_at, fingerprint, now_unix, random_token, timestamp_usize,
 };
 
+mod refresh;
+mod refresh_replay;
 mod response;
+use refresh::refresh_token_grant;
+#[cfg(test)]
+use refresh::{
+    RefreshClaimLease, RefreshClaimLeaseObserver, claim_refresh_after_subject_lock,
+    refresh_lock_waiter_counter,
+};
+use refresh_replay::cached_refresh_response;
 use response::{TokenEndpointError, TokenResponseWithCache, apply_token_cache_headers};
-
-/// The local single-use claim starts only after subject-scoped provider
-/// serialization. Keep enough headroom beyond Google's 30-second HTTP timeout
-/// for response verification, durable broker persistence, JWT issuance, and
-/// the final atomic local-token rotation.
-const REFRESH_CLAIM_LEASE_SECONDS: i64 = 90;
-
-#[cfg(test)]
-static REFRESH_LOCK_WAITERS: std::sync::OnceLock<
-    dashmap::DashMap<String, std::sync::Arc<std::sync::atomic::AtomicUsize>>,
-> = std::sync::OnceLock::new();
-
-#[cfg(test)]
-fn refresh_lock_waiter_counter(subject: &str) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-    REFRESH_LOCK_WAITERS
-        .get_or_init(dashmap::DashMap::new)
-        .entry(subject.to_string())
-        .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)))
-        .clone()
-}
-const REFRESH_CLAIM_RENEW_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
-const REFRESH_REPLAY_GRACE_SECONDS: i64 = 5 * 60;
-
-async fn cached_refresh_response(
-    state: &AuthState,
-    client_id: &str,
-    refresh_token: &str,
-    requested_resource: Option<&str>,
-) -> Result<Option<TokenResponse>, AuthError> {
-    state
-        .store
-        .find_refresh_token_replay(refresh_token, client_id, requested_resource)
-        .await
-}
-
-struct RefreshClaimLease {
-    store: crate::sqlite::SqliteStore,
-    refresh_token: String,
-    claim_id: String,
-    heartbeat: Option<tokio::task::JoinHandle<()>>,
-    cancel: Option<tokio::sync::oneshot::Sender<()>>,
-    active: bool,
-    #[cfg(test)]
-    observer: Option<std::sync::Arc<RefreshClaimLeaseObserver>>,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct RefreshClaimLeaseObserver {
-    cancellation_released: tokio::sync::Notify,
-    renewal_finished: tokio::sync::Notify,
-    explicit_release_started: tokio::sync::Notify,
-    explicit_release_continue: tokio::sync::Notify,
-}
-
-impl RefreshClaimLease {
-    fn start(
-        store: crate::sqlite::SqliteStore,
-        refresh_token: String,
-        claim_id: String,
-        refresh_token_id: String,
-    ) -> (Self, tokio::sync::oneshot::Receiver<AuthError>) {
-        Self::start_with_timing(
-            store,
-            refresh_token,
-            claim_id,
-            refresh_token_id,
-            REFRESH_CLAIM_LEASE_SECONDS,
-            REFRESH_CLAIM_RENEW_INTERVAL,
-        )
-    }
-
-    fn start_with_timing(
-        store: crate::sqlite::SqliteStore,
-        refresh_token: String,
-        claim_id: String,
-        refresh_token_id: String,
-        lease_seconds: i64,
-        renew_interval: std::time::Duration,
-    ) -> (Self, tokio::sync::oneshot::Receiver<AuthError>) {
-        Self::start_inner(
-            store,
-            refresh_token,
-            claim_id,
-            refresh_token_id,
-            lease_seconds,
-            renew_interval,
-            None,
-        )
-    }
-
-    #[cfg(test)]
-    fn start_with_timing_observed(
-        store: crate::sqlite::SqliteStore,
-        refresh_token: String,
-        claim_id: String,
-        refresh_token_id: String,
-        lease_seconds: i64,
-        renew_interval: std::time::Duration,
-        observer: std::sync::Arc<RefreshClaimLeaseObserver>,
-    ) -> (Self, tokio::sync::oneshot::Receiver<AuthError>) {
-        Self::start_inner(
-            store,
-            refresh_token,
-            claim_id,
-            refresh_token_id,
-            lease_seconds,
-            renew_interval,
-            Some(observer),
-        )
-    }
-
-    fn start_inner(
-        store: crate::sqlite::SqliteStore,
-        refresh_token: String,
-        claim_id: String,
-        refresh_token_id: String,
-        lease_seconds: i64,
-        renew_interval: std::time::Duration,
-        #[cfg(test)] observer: Option<std::sync::Arc<RefreshClaimLeaseObserver>>,
-        #[cfg(not(test))] _observer: Option<()>,
-    ) -> (Self, tokio::sync::oneshot::Receiver<AuthError>) {
-        let heartbeat_store = store.clone();
-        let heartbeat_token = refresh_token.clone();
-        let heartbeat_claim_id = claim_id.clone();
-        let heartbeat_token_id = refresh_token_id.clone();
-        let (lost_tx, lost_rx) = tokio::sync::oneshot::channel();
-        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
-        #[cfg(test)]
-        let heartbeat_observer = observer.clone();
-        let heartbeat = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut cancel_rx => {
-                        let release = heartbeat_store
-                            .release_refresh_claim(&heartbeat_token, &heartbeat_claim_id)
-                            .await;
-                        match release {
-                            Ok(()) => debug!(
-                                refresh_token_id = %heartbeat_token_id,
-                                "oauth refresh_token claim released after request cancellation"
-                            ),
-                            Err(error) => warn!(
-                                refresh_token_id = %heartbeat_token_id,
-                                kind = error.kind(),
-                                error = %error,
-                                "oauth refresh_token claim release after cancellation failed"
-                            ),
-                        }
-                        #[cfg(test)]
-                        if let Some(observer) = heartbeat_observer.as_ref() {
-                            observer.cancellation_released.notify_one();
-                        }
-                        return;
-                    }
-                    renewal = async {
-                        tokio::time::sleep(renew_interval).await;
-                        let expires_at = now_unix().saturating_add(lease_seconds);
-                        heartbeat_store
-                            .renew_refresh_claim(&heartbeat_token, &heartbeat_claim_id, expires_at)
-                            .await
-                    } => {
-                        #[cfg(test)]
-                        if let Some(observer) = heartbeat_observer.as_ref() {
-                            observer.renewal_finished.notify_one();
-                        }
-                        match renewal {
-                            Ok(true) => {
-                                debug!(
-                                    refresh_token_id = %heartbeat_token_id,
-                                    claim_lease_seconds = lease_seconds,
-                                    "oauth refresh_token claim lease renewed"
-                                );
-                            }
-                            Ok(false) => {
-                                let error = AuthError::InvalidGrant(
-                                    "refresh token claim ownership was lost".to_string(),
-                                );
-                                warn!(
-                                    refresh_token_id = %heartbeat_token_id,
-                                    kind = error.kind(),
-                                    "oauth refresh_token claim lease could not be renewed"
-                                );
-                                drop(lost_tx.send(error));
-                                return;
-                            }
-                            Err(error) => {
-                                warn!(
-                                    refresh_token_id = %heartbeat_token_id,
-                                    kind = error.kind(),
-                                    error = %error,
-                                    "oauth refresh_token claim lease renewal failed"
-                                );
-                                drop(lost_tx.send(error));
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        (
-            Self {
-                store,
-                refresh_token,
-                claim_id,
-                heartbeat: Some(heartbeat),
-                cancel: Some(cancel_tx),
-                active: true,
-                #[cfg(test)]
-                observer,
-            },
-            lost_rx,
-        )
-    }
-
-    fn disarm(&mut self) {
-        self.active = false;
-        self.cancel.take();
-        if let Some(heartbeat) = self.heartbeat.take() {
-            heartbeat.abort();
-        }
-    }
-
-    async fn release(mut self) -> Result<(), AuthError> {
-        self.cancel.take();
-        if let Some(heartbeat) = self.heartbeat.take() {
-            heartbeat.abort();
-        }
-        let store = self.store.clone();
-        let refresh_token = self.refresh_token.clone();
-        let refresh_token_id = fingerprint(&refresh_token);
-        let claim_id = self.claim_id.clone();
-        #[cfg(test)]
-        let observer = self.observer.clone();
-        let cleanup = tokio::spawn(async move {
-            #[cfg(test)]
-            if let Some(observer) = observer.as_ref() {
-                observer.explicit_release_started.notify_one();
-                observer.explicit_release_continue.notified().await;
-            }
-            let result = store.release_refresh_claim(&refresh_token, &claim_id).await;
-            match result.as_ref() {
-                Ok(()) => debug!(
-                    refresh_token_id = %refresh_token_id,
-                    "oauth refresh_token claim released after completed request"
-                ),
-                Err(error) => warn!(
-                    refresh_token_id = %refresh_token_id,
-                    kind = error.kind(),
-                    error = %error,
-                    "oauth refresh_token claim release after completed request failed"
-                ),
-            }
-            result
-        });
-        // From this point onward the owned task, rather than Drop, is solely
-        // responsible for cleanup. Dropping this request future detaches the
-        // task but cannot cancel the durable release.
-        self.active = false;
-        cleanup.await.map_err(|error| {
-            AuthError::Storage(format!("refresh claim release task failed: {error}"))
-        })?
-    }
-}
-
-impl Drop for RefreshClaimLease {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        if let Some(cancel) = self.cancel.take() {
-            let _ = cancel.send(());
-            // The heartbeat task owns the cancellation cleanup and must remain
-            // detached long enough to release the durable claim.
-            self.heartbeat.take();
-        } else if let Some(heartbeat) = self.heartbeat.take() {
-            heartbeat.abort();
-        }
-    }
-}
 
 pub async fn token(
     State(state): State<AuthState>,
@@ -635,6 +363,20 @@ async fn load_remote_jwks(
     required_kid: &str,
     document_name: &str,
 ) -> Result<JwkSet, AuthError> {
+    tokio::time::timeout(
+        crate::remote::REMOTE_FETCH_DEADLINE,
+        load_remote_jwks_within_deadline(state, uri, required_kid, document_name),
+    )
+    .await
+    .map_err(|_| AuthError::Network(format!("{document_name} resolution timed out")))?
+}
+
+async fn load_remote_jwks_within_deadline(
+    state: &AuthState,
+    uri: &url::Url,
+    required_kid: &str,
+    document_name: &str,
+) -> Result<JwkSet, AuthError> {
     let cache_key = uri.as_str();
     let now = now_unix();
     if let Some(entry) = state.jwks_cache.get(cache_key)
@@ -666,11 +408,13 @@ async fn load_remote_jwks(
             "{document_name} is temporarily unavailable"
         )));
     }
-    let _permit = state
-        .remote_fetch_permits
-        .acquire()
-        .await
-        .map_err(|_| AuthError::Server("remote metadata fetch limiter closed".to_string()))?;
+    let _permit = tokio::time::timeout(
+        crate::remote::REMOTE_FETCH_DEADLINE,
+        state.remote_fetch_permits.acquire(),
+    )
+    .await
+    .map_err(|_| AuthError::Network("remote JWKS permit timed out".to_string()))?
+    .map_err(|_| AuthError::Server("remote metadata fetch limiter closed".to_string()))?;
     let (jwks, cache_policy) = match crate::remote::fetch_json::<JwkSet>(uri, document_name).await {
         Ok(value) => value,
         Err(error) => {
@@ -1351,419 +1095,6 @@ async fn authorization_code_grant(
     )
 }
 
-async fn refresh_token_grant(
-    state: AuthState,
-    request: TokenRequest,
-) -> Result<TokenResponse, AuthError> {
-    let requested_resource = request
-        .resource
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| crate::authorize::validate_resource(&state, Some(value)))
-        .transpose()?;
-    let client_id = require_field(request.client_id, "client_id")?;
-    let refresh_token = require_field(request.refresh_token, "refresh_token")?;
-    authenticate_oauth_client(
-        &state,
-        &client_id,
-        request.client_secret.as_deref(),
-        request.client_assertion_type.as_deref(),
-        request.client_assertion.as_deref(),
-    )
-    .await?;
-    if let Some(response) = cached_refresh_response(
-        &state,
-        &client_id,
-        &refresh_token,
-        requested_resource.as_deref(),
-    )
-    .await?
-    {
-        info!(
-            grant_type = "refresh_token",
-            client_id = %client_id,
-            refresh_token_id = %fingerprint(&refresh_token),
-            "oauth refresh_token retry reused the prior rotated response"
-        );
-        return Ok(response);
-    }
-    let refresh_token_id = fingerprint(&refresh_token);
-    debug!(
-        grant_type = "refresh_token",
-        client_id = %client_id,
-        refresh_token_id = %refresh_token_id,
-        requested_resource = requested_resource.as_deref().unwrap_or("<refresh-token-resource>"),
-        "oauth refresh_token grant received"
-    );
-    let refresh_subject = state
-        .store
-        .find_refresh_token(&refresh_token)
-        .await?
-        .map(|stored| stored.subject)
-        .ok_or_else(|| {
-            debug!(
-                refresh_token_id = %refresh_token_id,
-                client_id = %client_id,
-                "oauth token rejected: unknown or expired refresh token"
-            );
-            AuthError::InvalidGrant("unknown refresh_token".to_string())
-        })?;
-    let subject_id = fingerprint(&refresh_subject);
-    let claim_id = random_token(18)?;
-    let claim_expires_at = now_unix().saturating_add(REFRESH_CLAIM_LEASE_SECONDS);
-    let (_refresh_guard, stored, lock_wait_ms) = claim_refresh_after_subject_lock(
-        &state.store,
-        &refresh_subject,
-        &refresh_token,
-        &claim_id,
-        claim_expires_at,
-    )
-    .await?;
-    debug!(
-        grant_type = "refresh_token",
-        client_id = %client_id,
-        refresh_token_id = %refresh_token_id,
-        subject_id = %subject_id,
-        lock_wait_ms,
-        claim_lease_seconds = REFRESH_CLAIM_LEASE_SECONDS,
-        "oauth refresh_token grant acquired subject serialization before local claim"
-    );
-    let Some(stored) = stored else {
-        if let Some(response) = cached_refresh_response(
-            &state,
-            &client_id,
-            &refresh_token,
-            requested_resource.as_deref(),
-        )
-        .await?
-        {
-            info!(
-                grant_type = "refresh_token",
-                client_id = %client_id,
-                refresh_token_id = %refresh_token_id,
-                lock_wait_ms,
-                "oauth concurrent refresh reused the prior rotated response"
-            );
-            return Ok(response);
-        }
-        debug!(
-            refresh_token_id = %refresh_token_id,
-            client_id = %client_id,
-            "oauth token rejected: unknown or expired refresh token"
-        );
-        return Err(AuthError::InvalidGrant("unknown refresh_token".to_string()));
-    };
-    let (mut claim_lease, claim_lost) = RefreshClaimLease::start(
-        state.store.clone(),
-        refresh_token.clone(),
-        claim_id.clone(),
-        refresh_token_id.clone(),
-    );
-    let operation = complete_claimed_refresh(
-        &state,
-        &client_id,
-        &refresh_token,
-        &claim_id,
-        &refresh_token_id,
-        requested_resource,
-        stored,
-    );
-    tokio::pin!(operation);
-    tokio::pin!(claim_lost);
-    let result = tokio::select! {
-        biased;
-        result = &mut operation => result,
-        lost = &mut claim_lost => Err(lost.unwrap_or_else(|_| {
-            AuthError::Storage("refresh token claim heartbeat stopped unexpectedly".to_string())
-        })),
-    };
-    if result.is_ok() {
-        claim_lease.disarm();
-    } else {
-        if matches!(&result, Err(AuthError::OauthNeedsReauth(_))) {
-            state.store.revoke_refresh_token(&refresh_token).await?;
-        }
-        claim_lease.release().await?;
-    }
-    result
-}
-
-async fn claim_refresh_after_subject_lock(
-    store: &crate::sqlite::SqliteStore,
-    subject: &str,
-    refresh_token: &str,
-    claim_id: &str,
-    claim_expires_at: i64,
-) -> Result<
-    (
-        tokio::sync::OwnedMutexGuard<()>,
-        Option<RefreshTokenRow>,
-        u128,
-    ),
-    AuthError,
-> {
-    let lock_wait_started = Instant::now();
-    #[cfg(test)]
-    refresh_lock_waiter_counter(refresh_token).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let guard = crate::google_refresh::lock(subject).lock_owned().await;
-    let lock_wait_ms = lock_wait_started.elapsed().as_millis();
-    let stored = store
-        .claim_refresh_token(refresh_token, claim_id, claim_expires_at)
-        .await?;
-    Ok((guard, stored, lock_wait_ms))
-}
-
-async fn refresh_google_provider_credential(
-    state: &AuthState,
-    subject: &str,
-    refresh_token_id: &str,
-) -> Result<GoogleExchange, AuthError> {
-    let subject_id = fingerprint(subject);
-    let mut credential = state
-        .store
-        .find_google_provider_credential(subject)
-        .await?
-        .ok_or_else(|| {
-            warn!(
-                refresh_token_id = %refresh_token_id,
-                subject_id = %subject_id,
-                kind = "oauth_needs_reauth",
-                "oauth token rejected: no google provider credential exists for subject"
-            );
-            AuthError::OauthNeedsReauth(
-                "google provider credential is unavailable; reauthorization required".to_string(),
-            )
-        })?;
-
-    for attempt in 0..2 {
-        match state
-            .google
-            .refresh(
-                &credential.refresh_token,
-                &credential.subject,
-                credential.email.as_deref(),
-            )
-            .await
-        {
-            Ok(google) => {
-                if google.subject != subject {
-                    let invalidation = state
-                        .store
-                        .invalidate_google_provider_credential(subject, credential.generation)
-                        .await?;
-                    warn!(
-                        refresh_token_id = %refresh_token_id,
-                        expected_subject_id = %subject_id,
-                        returned_subject_id = %fingerprint(&google.subject),
-                        provider_credential_invalidated = invalidation.invalidated,
-                        kind = "auth_failed",
-                        "oauth token rejected: google refresh returned a different subject"
-                    );
-                    return Err(AuthError::AuthFailed(
-                        "google refresh returned a different account subject".to_string(),
-                    ));
-                }
-                let next_provider_refresh_token = google
-                    .refresh_token
-                    .as_deref()
-                    .unwrap_or(&credential.refresh_token);
-                let granted_scopes =
-                    merge_google_scopes(&credential.granted_scopes, &google.granted_scopes);
-                let token_received_at = now_unix();
-                let persisted = state
-                    .store
-                    .replace_google_provider_token_bundle_if_generation(
-                        crate::types::GoogleProviderCredentialUpdate {
-                            subject: google.subject.clone(),
-                            email: google.email.clone(),
-                            client_id: state.google.client_id.clone(),
-                            granted_scopes: granted_scopes.clone(),
-                            access_token: google.access_token.clone(),
-                            refresh_token: next_provider_refresh_token.to_string(),
-                            token_received_at,
-                            access_token_expires_at: token_received_at.saturating_add(
-                                i64::try_from(google.expires_in.unwrap_or(3600))
-                                    .unwrap_or(i64::MAX),
-                            ),
-                            issuer: Some("https://accounts.google.com".to_string()),
-                            refreshed: true,
-                            scope_upgraded: false,
-                        },
-                        credential.generation,
-                    )
-                    .await?;
-                if !persisted {
-                    let replacement_present = state
-                        .store
-                        .has_google_provider_credential_for_subject(subject)
-                        .await?;
-                    warn!(
-                        refresh_token_id = %refresh_token_id,
-                        subject_id = %subject_id,
-                        stale_provider_generation = credential.generation,
-                        replacement_provider_credential_present = replacement_present,
-                        kind = "oauth_needs_reauth",
-                        "oauth provider refresh result discarded because a newer generation was persisted"
-                    );
-                    return Err(AuthError::OauthNeedsReauth(
-                        "google provider credential changed during refresh; reauthorization required"
-                            .to_string(),
-                    ));
-                }
-                return Ok(google);
-            }
-            Err(AuthError::OauthNeedsReauth(message)) => {
-                let invalidation = state
-                    .store
-                    .invalidate_google_provider_credential(subject, credential.generation)
-                    .await?;
-                if invalidation.invalidated {
-                    warn!(
-                        refresh_token_id = %refresh_token_id,
-                        subject_id = %subject_id,
-                        provider_generation = credential.generation,
-                        revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
-                        revoked_authorization_codes = invalidation.revoked_authorization_codes,
-                        kind = "oauth_needs_reauth",
-                        "oauth provider credential invalidated after google rejected refresh"
-                    );
-                    return Err(AuthError::OauthNeedsReauth(message));
-                }
-                if attempt == 1 {
-                    return Err(AuthError::OauthNeedsReauth(message));
-                }
-                let replacement = state
-                    .store
-                    .find_google_provider_credential(subject)
-                    .await?
-                    .ok_or_else(|| AuthError::OauthNeedsReauth(message.clone()))?;
-                warn!(
-                    refresh_token_id = %refresh_token_id,
-                    subject_id = %subject_id,
-                    stale_provider_generation = credential.generation,
-                    replacement_provider_generation = replacement.generation,
-                    "oauth provider credential changed during failed refresh; retrying newest generation"
-                );
-                credential = replacement;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-
-    Err(AuthError::OauthNeedsReauth(
-        "google provider credential could not be refreshed; reauthorization required".to_string(),
-    ))
-}
-
-async fn complete_claimed_refresh(
-    state: &AuthState,
-    client_id: &str,
-    refresh_token: &str,
-    claim_id: &str,
-    refresh_token_id: &str,
-    requested_resource: Option<String>,
-    stored: RefreshTokenRow,
-) -> Result<TokenResponse, AuthError> {
-    if stored.client_id != client_id {
-        warn!(
-            refresh_token_id = %refresh_token_id,
-            requested_client_id = client_id,
-            stored_client_id = %stored.client_id,
-            "oauth token rejected: client_id does not match refresh token"
-        );
-        return Err(AuthError::InvalidGrant(
-            "client_id does not match the refresh token".to_string(),
-        ));
-    }
-    let stored_resource = if stored.resource.trim().is_empty() {
-        crate::metadata::canonical_resource_url(state)
-    } else {
-        stored.resource.clone()
-    };
-    if let Some(requested_resource) = requested_resource
-        && requested_resource != stored_resource
-    {
-        warn!(
-            refresh_token_id = %refresh_token_id,
-            requested_resource = %requested_resource,
-            stored_resource = %stored_resource,
-            "oauth token rejected: resource does not match refresh token"
-        );
-        return Err(AuthError::InvalidGrant(
-            "resource does not match the refresh token".to_string(),
-        ));
-    }
-
-    // Refresh the subject-scoped Google credential before consuming the local
-    // token. An invalid_grant compare-and-deletes the exact provider
-    // generation that failed and atomically revokes every dependent local
-    // grant, so the next authorization is forced through fresh consent.
-    let google =
-        refresh_google_provider_credential(state, &stored.subject, refresh_token_id).await?;
-
-    let now = now_unix();
-    let refreshed_expires_at = expires_at(
-        now,
-        state.config.refresh_token_ttl,
-        &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
-    )?;
-    // Re-apply admin elevation in case this refresh token was originally
-    // issued before elevation was wired in, or before the user's email was
-    // on the allowlist.  elevate_scope_for_allowed_user is idempotent — if
-    // the scope already contains the admin token it is left unchanged.
-    let elevated_scope = crate::authorize::elevate_scope_for_allowed_user(
-        &stored.scope,
-        &state.config.default_scope,
-    );
-
-    let replacement_refresh_token = random_token(24)?;
-    let replacement = RefreshTokenRow {
-        refresh_token: replacement_refresh_token.clone(),
-        client_id: stored.client_id.clone(),
-        subject: google.subject.clone(),
-        resource: stored_resource.clone(),
-        scope: elevated_scope.clone(),
-        provider_refresh_token: None,
-        created_at: now,
-        expires_at: refreshed_expires_at,
-    };
-    let response = build_token_response(
-        state,
-        stored.client_id.clone(),
-        google.subject.clone(),
-        stored_resource.clone(),
-        elevated_scope.clone(),
-        Some(replacement_refresh_token),
-        TokenIdentity::ExternalIssuer(crate::google::GOOGLE_ISSUER.to_string()),
-    )?;
-    let response_ttl = i64::try_from(response.expires_in).unwrap_or(i64::MAX);
-    let replay_expires_at = now.saturating_add(REFRESH_REPLAY_GRACE_SECONDS.min(response_ttl));
-    state
-        .store
-        .rotate_claimed_refresh_token(
-            refresh_token,
-            claim_id,
-            replacement,
-            &response,
-            replay_expires_at,
-        )
-        .await?
-        .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".to_string()))?;
-
-    info!(
-        grant_type = "refresh_token",
-        client_id = %stored.client_id,
-        refresh_token_id = %refresh_token_id,
-        subject_id = %fingerprint(&google.subject),
-        resource = %stored_resource,
-        scope = %elevated_scope,
-        "oauth refresh_token grant rotated local token and issued new access token"
-    );
-
-    Ok(response)
-}
-
 enum TokenIdentity {
     ExternalIssuer(String),
     LocalCredential(String),
@@ -1835,6 +1166,8 @@ fn pkce_challenge(code_verifier: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use base64::Engine as _;
@@ -1851,6 +1184,7 @@ mod tests {
     use crate::google::GoogleProvider;
     use crate::routes::router;
     use crate::state::AuthState;
+    use crate::types::TokenResponse;
 
     use super::super::authorize::tests::{
         test_auth_state_with_mock_google, test_auth_state_with_registered_client,
@@ -1941,7 +1275,7 @@ mod tests {
             .store
             .upsert_google_provider_credential(
                 "google-subject-123",
-                Some("admin@example.com"),
+                Some("user@example.com"),
                 "provider-refresh",
             )
             .await
@@ -1955,6 +1289,13 @@ mod tests {
     }
 
     async fn test_auth_state_with_failing_google_refresh() -> AuthState {
+        test_auth_state_with_failing_google_refresh_and_server()
+            .await
+            .0
+    }
+
+    async fn test_auth_state_with_failing_google_refresh_and_server()
+    -> (AuthState, &'static MockServer) {
         let state = test_auth_state_with_registered_client().await;
         let server = Box::leak(Box::new(MockServer::start().await));
         Mock::given(method("POST"))
@@ -1981,7 +1322,7 @@ mod tests {
             google,
         );
         install_google_provider_credential(&state).await;
-        state
+        (state, server)
     }
 
     async fn test_auth_state_with_invalid_google_refresh() -> AuthState {
@@ -2985,6 +2326,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cached_refresh_replay_rechecks_allowlist_and_revokes_replacement() {
+        let state = test_auth_state_with_refreshable_google().await;
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "offboarded-replay-predecessor".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: "https://lab.example.com/mcp".to_string(),
+                scope: "lab".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "grant_type=refresh_token&refresh_token=offboarded-replay-predecessor&client_id=client",
+                ))
+                .unwrap()
+        };
+        let first = router(state.clone()).oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first_json: TokenResponse = serde_json::from_slice(&first_body).unwrap();
+        let replacement = first_json.refresh_token.expect("replacement refresh token");
+
+        let mut config = (*state.config).clone();
+        config.admin_email = "replacement-admin@example.com".to_string();
+        let offboarded = AuthState::for_tests(
+            config,
+            state.store.clone(),
+            (*state.signing_keys).clone(),
+            (*state.google).clone(),
+        );
+        let replay = router(offboarded).oneshot(request()).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            state
+                .store
+                .find_refresh_token(&replacement)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn concurrent_refresh_grants_share_the_rotated_response() {
         let state = test_auth_state_with_refreshable_google().await;
         let subject = "google-subject-123";
@@ -3018,7 +2414,7 @@ mod tests {
         };
         let first = tokio::spawn(app.clone().oneshot(request()));
         let second = tokio::spawn(app.oneshot(request()));
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             while waiters.load(std::sync::atomic::Ordering::SeqCst) < 2 {
                 tokio::task::yield_now().await;
             }
@@ -3041,7 +2437,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_grant_waits_for_subject_lock_before_claiming_local_token() {
+    async fn refresh_grant_claim_does_not_wait_on_provider_io_coordination() {
         let state = test_auth_state_with_refreshable_google().await;
         state
             .store
@@ -3063,39 +2459,15 @@ mod tests {
             .await;
         let claim = super::claim_refresh_after_subject_lock(
             &state.store,
-            "google-subject-123",
             "contended-refresh-token",
             "request-claim",
             crate::util::now_unix() + 90,
         );
-        tokio::pin!(claim);
-        tokio::select! {
-            biased;
-            _ = &mut claim => panic!("claim must wait for the held subject lock"),
-            _ = tokio::task::yield_now() => {}
-        }
-
-        let independent_claim = state
-            .store
-            .claim_refresh_token(
-                "contended-refresh-token",
-                "independent-claim",
-                crate::util::now_unix() + 30,
-            )
+        let (claimed, _) = tokio::time::timeout(Duration::from_secs(1), claim)
             .await
+            .expect("local claim must not convoy behind provider I/O")
             .unwrap();
-
-        state
-            .store
-            .release_refresh_claim("contended-refresh-token", "independent-claim")
-            .await
-            .unwrap();
-        assert!(
-            independent_claim.is_some(),
-            "waiting for the Google subject mutex must not consume the local refresh-token lease"
-        );
         drop(subject_guard);
-        let (_, claimed, _) = claim.await.unwrap();
         assert!(claimed.is_some());
         state
             .store
@@ -3191,13 +2563,13 @@ mod tests {
             "cancelled-owner".to_string(),
             crate::util::fingerprint("cancelled-refresh-token"),
             90,
-            std::time::Duration::from_mins(1),
+            Duration::from_mins(1),
             observer.clone(),
         );
 
         drop(lease);
         tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            Duration::from_secs(2),
             observer.cancellation_released.notified(),
         )
         .await
@@ -3253,15 +2625,12 @@ mod tests {
             "heartbeat-owner".to_string(),
             crate::util::fingerprint("heartbeat-refresh-token"),
             30,
-            std::time::Duration::from_millis(10),
+            Duration::from_millis(10),
             observer.clone(),
         );
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            observer.renewal_finished.notified(),
-        )
-        .await
-        .expect("heartbeat extended the original claim");
+        tokio::time::timeout(Duration::from_secs(2), observer.renewal_finished.notified())
+            .await
+            .expect("heartbeat extended the original claim");
         let renewed_expiry = state
             .store
             .refresh_claim_state("heartbeat-refresh-token")
@@ -3275,7 +2644,7 @@ mod tests {
             .release_refresh_claim("heartbeat-refresh-token", "heartbeat-owner")
             .await
             .unwrap();
-        let lost_error = tokio::time::timeout(std::time::Duration::from_secs(2), &mut lost)
+        let lost_error = tokio::time::timeout(Duration::from_secs(2), &mut lost)
             .await
             .expect("heartbeat detected ownership loss")
             .expect("heartbeat reports an error");
@@ -3314,7 +2683,7 @@ mod tests {
             "completed-owner".to_string(),
             crate::util::fingerprint("completed-refresh-token"),
             90,
-            std::time::Duration::from_mins(1),
+            Duration::from_mins(1),
             observer,
         );
 
@@ -3364,13 +2733,13 @@ mod tests {
             "release-owner".to_string(),
             crate::util::fingerprint("release-cancel-refresh-token"),
             90,
-            std::time::Duration::from_mins(1),
+            Duration::from_mins(1),
             observer.clone(),
         );
 
         let release = tokio::spawn(lease.release());
         tokio::time::timeout(
-            std::time::Duration::from_secs(2),
+            Duration::from_secs(2),
             observer.explicit_release_started.notified(),
         )
         .await
@@ -3379,7 +2748,7 @@ mod tests {
         release.await.expect_err("release request was cancelled");
         observer.explicit_release_continue.notify_one();
 
-        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let recovered = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let Some(claim) = state
                     .store
@@ -3442,7 +2811,7 @@ mod tests {
             .expect("decode access token")
             .claims;
         assert_eq!(claims.aud, "https://mcp.example.com/syslog");
-        assert_eq!(claims.scope, "mcp:read mcp:write lab:admin");
+        assert_eq!(claims.scope, "mcp:read mcp:write");
     }
 
     #[tokio::test]
@@ -3712,7 +3081,7 @@ mod tests {
             .store
             .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
                 subject: "google-subject-123".to_string(),
-                email: Some("admin@example.com".to_string()),
+                email: Some("user@example.com".to_string()),
                 client_id: "client-id".to_string(),
                 granted_scopes: vec![
                     "openid".to_string(),
@@ -3850,7 +3219,7 @@ mod tests {
             .and(path("/token"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .set_delay(std::time::Duration::from_millis(500))
+                    .set_delay(Duration::from_millis(500))
                     .set_body_json(serde_json::json!({
                         "access_token": "stale-provider-access",
                         "refresh_token": "stale-provider-refresh",
@@ -3919,7 +3288,7 @@ mod tests {
             .await
             .unwrap()
         });
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if server.received_requests().await.is_some_and(|requests| {
                     requests
@@ -3945,7 +3314,7 @@ mod tests {
                 .replace_google_provider_token_bundle_if_generation(
                     crate::types::GoogleProviderCredentialUpdate {
                         subject: "google-subject-123".to_string(),
-                        email: Some("admin@example.com".to_string()),
+                        email: Some("user@example.com".to_string()),
                         client_id: "client-id".to_string(),
                         granted_scopes: vec!["openid".to_string()],
                         access_token: "fresh-provider-access".to_string(),
@@ -4030,6 +3399,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_transient_refresh_failure_is_shared_with_one_provider_call() {
+        let (state, server) = test_auth_state_with_failing_google_refresh_and_server().await;
+        let subject = "google-transient-shared-subject";
+        state
+            .store
+            .upsert_google_provider_credential(
+                subject,
+                Some("user@example.com"),
+                "provider-refresh",
+            )
+            .await
+            .unwrap();
+        for token in ["transient-one", "transient-two"] {
+            state
+                .store
+                .upsert_refresh_token(crate::types::RefreshTokenRow {
+                    refresh_token: token.to_string(),
+                    client_id: "client".to_string(),
+                    subject: subject.to_string(),
+                    resource: String::new(),
+                    scope: "lab".to_string(),
+                    provider_refresh_token: None,
+                    created_at: crate::util::now_unix() - 60,
+                    expires_at: crate::util::now_unix() + 3600,
+                })
+                .await
+                .unwrap();
+        }
+        let request = |token: &'static str| {
+            let app = router(state.clone());
+            tokio::spawn(async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/token")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(format!(
+                            "grant_type=refresh_token&refresh_token={token}&client_id=client"
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            })
+        };
+        let (first, second) = tokio::join!(request("transient-one"), request("transient-two"));
+        assert_ne!(first.unwrap(), StatusCode::OK);
+        assert_ne!(second.unwrap(), StatusCode::OK);
+        let provider_calls = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|request| request.url.path() == "/token")
+            .count();
+        assert_eq!(provider_calls, 1);
+    }
+
+    #[tokio::test]
     async fn refresh_grant_surfaces_google_invalid_grant_as_oauth_needs_reauth() {
         let state = test_auth_state_with_invalid_google_refresh().await;
         state
@@ -4089,12 +3518,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_grant_elevates_stale_scope_to_admin() {
-        // Simulate a refresh token that was issued before elevation was wired in,
-        // storing only the base scope ("lab") without "lab:admin".  The refresh
-        // grant must re-apply elevate_scope_for_allowed_user so the new access
-        // token carries "lab:admin".
+    async fn refresh_grant_does_not_elevate_legacy_scope() {
         let state = test_auth_state_with_refreshable_google().await;
+        let now = crate::util::now_unix();
+        state
+            .store
+            .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
+                subject: "google-subject-123".to_string(),
+                email: Some("user@example.com".to_string()),
+                client_id: "client-id".to_string(),
+                granted_scopes: vec!["openid".to_string()],
+                access_token: "cached-access".to_string(),
+                refresh_token: "provider-refresh".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                refreshed: false,
+                scope_upgraded: false,
+            })
+            .await
+            .unwrap();
         state
             .store
             .upsert_refresh_token(crate::types::RefreshTokenRow {
@@ -4128,7 +3571,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        // Decode the access token and verify the scope was elevated.
+        // Decode the access token and verify refresh preserved its old scope.
         let access_token = json["access_token"].as_str().expect("access_token");
         let claims = state
             .signing_keys
@@ -4140,9 +3583,61 @@ mod tests {
             .expect("access token must be valid");
         let scopes: Vec<&str> = claims.scope.split_whitespace().collect();
         assert!(
-            scopes.contains(&"lab:admin"),
-            "elevated access token must contain lab:admin, got: {:?}",
-            scopes
+            !scopes.contains(&"lab:admin"),
+            "refresh must not elevate scope"
+        );
+        assert!(scopes.contains(&"lab"));
+    }
+
+    #[tokio::test]
+    async fn refresh_grant_rejects_subject_removed_from_current_allowlist() {
+        let authorized = test_auth_state_with_refreshable_google().await;
+        authorized
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "offboarded-token".to_string(),
+                client_id: "client".to_string(),
+                subject: "google-subject-123".to_string(),
+                resource: String::new(),
+                scope: "lab:admin".to_string(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix() - 60,
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let mut config = (*authorized.config).clone();
+        config.admin_email = "replacement-admin@example.com".to_string();
+        let state = AuthState::for_tests(
+            config,
+            authorized.store.clone(),
+            (*authorized.signing_keys).clone(),
+            (*authorized.google).clone(),
+        );
+
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/token")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "grant_type=refresh_token&refresh_token=offboarded-token&client_id=client",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            state
+                .store
+                .find_refresh_token("offboarded-token")
+                .await
+                .unwrap()
+                .is_none(),
+            "offboarding must revoke the renewable local grant"
         );
     }
 
@@ -4208,7 +3703,7 @@ mod tests {
     async fn refresh_replay_window_is_capped_by_access_token_ttl() {
         let base = test_auth_state_with_refreshable_google().await;
         let mut config = (*base.config).clone();
-        config.access_token_ttl = std::time::Duration::from_secs(30);
+        config.access_token_ttl = Duration::from_secs(30);
         let state = AuthState::for_tests(
             config,
             base.store.clone(),

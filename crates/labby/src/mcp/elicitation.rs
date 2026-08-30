@@ -30,7 +30,7 @@ pub(crate) fn destructive_confirmation(
         .and_then(|elicitation| elicitation.form)
         .is_some();
     if !supports_form_elicitation {
-        return DestructiveConfirmation::Proceed;
+        return DestructiveConfirmation::Refused;
     }
 
     if let Some(responses) = request.input_responses.as_ref() {
@@ -60,7 +60,7 @@ pub(crate) fn destructive_confirmation(
         )
         .build()
     else {
-        return DestructiveConfirmation::Proceed;
+        return DestructiveConfirmation::Refused;
     };
     let params = ElicitRequestParams::FormElicitationParams {
         meta: None,
@@ -135,12 +135,12 @@ mod tests {
     }
 
     #[test]
-    fn destructive_confirmation_does_not_gate_clients_without_elicitation() {
+    fn destructive_confirmation_fails_closed_without_elicitation() {
         let request = CallToolRequestParams::new("danger");
 
         assert!(matches!(
             destructive_confirmation(&request, "danger", "danger.delete"),
-            DestructiveConfirmation::Proceed
+            DestructiveConfirmation::Refused
         ));
     }
 }

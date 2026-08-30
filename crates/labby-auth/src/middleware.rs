@@ -603,10 +603,11 @@ fn challenge_scopes(layer: &AuthLayerInner) -> &[String] {
 
 fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Option<Response> {
     let required = layer.required_scopes.as_slice();
-    if required
-        .iter()
-        .all(|scope| granted.iter().any(|granted| granted == scope))
-    {
+    if required.iter().all(|scope| {
+        granted
+            .iter()
+            .any(|granted| scope_satisfies(granted, scope))
+    }) {
         return None;
     }
     let metadata_url = layer
@@ -635,6 +636,14 @@ fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Op
         }
     }
     Some(response)
+}
+
+fn scope_satisfies(granted: &str, required: &str) -> bool {
+    granted == required
+        || matches!(
+            (granted, required),
+            ("lab:admin", "lab" | "lab:read") | ("mcp:write", "mcp:read")
+        )
 }
 
 fn metadata_url_for_resource(resource: &str) -> String {
@@ -1446,6 +1455,27 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn broader_admin_scope_satisfies_read_scope_hierarchy() {
+        let app = echo_app(
+            AuthLayer::new()
+                .with_static_token(Some(Arc::<str>::from("static-secret")))
+                .with_static_token_scopes(vec!["lab:admin".to_string()])
+                .with_required_scopes(vec!["lab:read".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, "Bearer static-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test(flavor = "current_thread")]

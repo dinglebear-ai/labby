@@ -318,11 +318,7 @@ impl UpstreamPool {
         rmcp::service::Peer<rmcp::RoleClient>,
         Vec<rmcp::model::Tool>,
     )> {
-        // Held through cache publication so credential mutation cannot evict
-        // the client cache and then race an older authenticated connection
-        // into the live pool.
-        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
-
+        self.drain_oauth_client_capacity_evictions().await;
         self.acquire_or_connect_subject_guarded(config, subject)
             .await
     }
@@ -340,6 +336,7 @@ impl UpstreamPool {
         use super::connect::connect_upstream_with_client;
 
         let key = (config.name.clone(), subject.to_string());
+        let lifecycle_epoch = self.oauth_lifecycle_epoch();
 
         // Fast path: check cache with inline TTL eviction (write lock allows
         // removing the stale entry atomically).
@@ -398,6 +395,9 @@ impl UpstreamPool {
 
             let peer = conn.peer.clone();
             let cached_tools = tools.clone();
+            // Network I/O completes without holding the lifecycle barrier.
+            // Only the atomic epoch check plus cache publication is fenced.
+            let _oauth_publication = self.oauth_publication_guard(lifecycle_epoch).await?;
             // Enforce the LRU cap BEFORE inserting so a burst of unique subjects
             // can't push the live-peer (and FD) count past the bound. Evicted
             // peers are shut down cleanly off-lock (P-H2).
@@ -673,6 +673,93 @@ mod tests {
 
         assert_eq!(invalidated.subject_connections, 1);
         assert!(pool.subject_connections.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn oauth_client_capacity_eviction_removes_the_same_live_subject_peer() {
+        use std::time::Instant;
+
+        use labby_auth::upstream::cache::OauthClientCache;
+        use labby_runtime::gateway_config::{
+            UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
+        };
+        use rmcp::transport::{AuthClient, AuthorizationManager};
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let auth_manager = AuthorizationManager::new("http://localhost")
+            .await
+            .expect("authorization manager");
+        let auth_client = Arc::new(AuthClient::new(reqwest::Client::new(), auth_manager));
+        let client_cache =
+            OauthClientCache::new(Arc::new(dashmap::DashMap::new())).with_client_capacity(2);
+        let pool = Arc::try_unwrap(static_catalog_pool("alpha").await)
+            .ok()
+            .expect("test pool has one owner")
+            .with_oauth_client_cache(client_cache.clone());
+
+        let keys = [("alpha", "alice"), ("beta", "bob"), ("gamma", "carol")];
+        for (index, (upstream, subject)) in keys.iter().enumerate() {
+            let connection = if index == 0 {
+                pool.connections
+                    .write()
+                    .await
+                    .remove(*upstream)
+                    .expect("alpha connection")
+            } else {
+                static_catalog_pool(upstream)
+                    .await
+                    .connections
+                    .write()
+                    .await
+                    .remove(*upstream)
+                    .expect("fixture connection")
+            };
+            let peer = connection.peer.clone();
+            pool.subject_connections.write().await.insert(
+                ((*upstream).to_string(), (*subject).to_string()),
+                SubjectScopedConnection {
+                    _connection: connection,
+                    peer,
+                    tools: vec![],
+                    last_used: Instant::now(),
+                },
+            );
+            let mut config = named_test_upstream_config(upstream);
+            config.url = Some(format!("https://{upstream}.example/mcp"));
+            config.oauth = Some(UpstreamOauthConfig {
+                mode: UpstreamOauthMode::AuthorizationCodePkce,
+                registration: UpstreamOauthRegistration::Preregistered {
+                    client_id: format!("{upstream}-client"),
+                    client_secret_env: None,
+                },
+                scopes: None,
+                credential: Default::default(),
+                prefer_client_metadata_document: None,
+            });
+            client_cache
+                .publish_prebuilt(&config, subject, Arc::clone(&auth_client))
+                .expect("publish client");
+        }
+
+        assert_eq!(client_cache.ready_client_count(), 2);
+        assert_eq!(pool.subject_connections.read().await.len(), 3);
+        let epoch_before = client_cache.lifecycle_epoch();
+        pool.drain_oauth_client_capacity_evictions().await;
+        assert!(client_cache.lifecycle_epoch() > epoch_before);
+        assert_eq!(client_cache.ready_client_count(), 2);
+        assert_eq!(pool.subject_connections.read().await.len(), 2);
+
+        let evicted = keys
+            .iter()
+            .find(|(upstream, subject)| !client_cache.contains_ready_client(upstream, subject))
+            .expect("one cache victim");
+        assert!(
+            !pool
+                .subject_connections
+                .read()
+                .await
+                .contains_key(&(evicted.0.to_string(), evicted.1.to_string()))
+        );
     }
 
     #[tokio::test]
