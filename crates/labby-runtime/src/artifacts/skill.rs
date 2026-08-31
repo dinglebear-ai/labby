@@ -151,6 +151,7 @@ mod tests {
         SkillResource {
             uri: uri.to_string(),
             digest: ResourceDigest::of_bytes(bytes).to_wire(),
+            size: bytes.len() as u64,
         }
     }
 

@@ -236,6 +236,7 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
         .filter(|entry| !context.permits_first_party_uri(entry.descriptor().id.source_id()))
         .count();
     let mut listing = SkillsListResult {
+        result_type: Default::default(),
         skills: context
             .first_party
             .providers
@@ -679,10 +680,12 @@ mod tests {
                     SkillResource {
                         uri: manifest.to_owned(),
                         digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+                        size: body.len() as u64,
                     },
                     SkillResource {
                         uri: support.to_owned(),
                         digest: ResourceDigest::of_bytes(notes.as_bytes()).to_wire(),
+                        size: notes.len() as u64,
                     },
                 ]),
                 meta: None,

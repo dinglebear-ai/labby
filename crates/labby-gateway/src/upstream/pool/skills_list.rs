@@ -30,8 +30,8 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use rmcp::RoleClient;
-use rmcp::model::{ClientRequest, CustomRequest, ServerResult};
-use rmcp::service::Peer;
+use rmcp::model::{ClientRequest, CustomRequest};
+use rmcp::service::{Peer, ServiceError};
 use serde_json::json;
 
 use labby_runtime::skills::wire::{
@@ -129,19 +129,19 @@ pub(super) fn peer_declares_skills(peer: &Peer<RoleClient>) -> bool {
     })
 }
 
-fn custom_result_value(result: ServerResult) -> Result<serde_json::Value, String> {
-    match result {
-        ServerResult::CustomResult(value) => Ok(value.0),
-        other => Err(format!(
-            "expected a custom result for a skills method, received `{other:?}`"
-        )),
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SkillIngestCap {
     ValidatedSkills,
     Candidates,
+}
+
+pub(super) fn skills_list_error(error: ServiceError) -> String {
+    match error {
+        ServiceError::ResponseDeserialization(error) => {
+            format!("skills/list returned a malformed result: {error}")
+        }
+        error => format!("skills/list failed: {error}"),
+    }
 }
 
 /// Validate and accumulate one page of entries, honoring the per-upstream caps.
@@ -221,13 +221,10 @@ impl UpstreamPool {
             let request =
                 ClientRequest::CustomRequest(CustomRequest::new(SKILLS_LIST_METHOD, Some(params)));
 
-            let value = peer
-                .send_request(request)
+            let result: SkillsListResult = peer
+                .send_request_as(request)
                 .await
-                .map_err(|error| format!("skills/list failed: {error}"))
-                .and_then(custom_result_value)?;
-            let result: SkillsListResult = serde_json::from_value(value)
-                .map_err(|error| format!("skills/list returned a malformed result: {error}"))?;
+                .map_err(skills_list_error)?;
 
             // A server MUST apply one cacheScope to every page of a list; a
             // change mid-walk means the pages do not describe one listing.
@@ -325,7 +322,7 @@ impl UpstreamPool {
             UpstreamCapability::Skills,
             event,
             start,
-            peer.send_request(request),
+            peer.send_request_as::<SkillsGetResult>(request),
             |_| 0,
             subject,
             |error| format!("upstream `{upstream_name}` skills/get failed: {error}"),
@@ -333,8 +330,8 @@ impl UpstreamPool {
         )
         .await;
 
-        let value = match result {
-            Ok(result) => custom_result_value(result)?,
+        let parsed = match result {
+            Ok(result) => result,
             Err(message) => {
                 // -32602 is the spec's answer for "not a skill this server
                 // serves". Treating it as a transport failure would open the
@@ -356,8 +353,6 @@ impl UpstreamPool {
             }
         };
 
-        let parsed: SkillsGetResult = serde_json::from_value(value)
-            .map_err(|error| format!("skills/get returned a malformed result: {error}"))?;
         validate_skill_entry(&parsed.skill)
             .map(Some)
             .map_err(|reason| {

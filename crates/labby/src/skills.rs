@@ -153,6 +153,7 @@ fn build_first_party_skills() -> BTreeMap<String, FirstPartySkill> {
             resources.push(SkillResource {
                 uri: uri.clone(),
                 digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+                size: body.len() as u64,
             });
             #[cfg(test)]
             contents.insert(uri, *body);
@@ -221,6 +222,7 @@ fn first_party_skills() -> &'static BTreeMap<String, FirstPartySkill> {
 #[cfg(test)]
 pub(crate) fn list_first_party_skills() -> SkillsListResult {
     SkillsListResult {
+        result_type: Default::default(),
         skills: first_party_skills()
             .values()
             .map(|skill| skill.entry.clone())

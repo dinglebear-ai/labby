@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use rmcp::RoleClient;
-use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
@@ -323,6 +323,10 @@ impl Transport<RoleClient> for DiagnosticChildTransport {
         "labby-diagnostic-child-process".into()
     }
 
+    fn preserves_raw_responses() -> bool {
+        true
+    }
+
     fn send(
         &mut self,
         item: TxJsonRpcMessage<RoleClient>,
@@ -332,6 +336,14 @@ impl Transport<RoleClient> for DiagnosticChildTransport {
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
         let message = self.transport.receive().await;
+        if message.is_none() {
+            self.finish_child("transport_eof", false).await;
+        }
+        message
+    }
+
+    async fn receive_raw(&mut self) -> Option<RawRxJsonRpcMessage<RoleClient>> {
+        let message = self.transport.receive_raw().await;
         if message.is_none() {
             self.finish_child("transport_eof", false).await;
         }

@@ -422,6 +422,7 @@ mod tests {
             resources: Some(vec![SkillResource {
                 uri: uri.to_string(),
                 digest: ResourceDigest::of_bytes(b"manifest").to_wire(),
+                size: b"manifest".len() as u64,
             }]),
             meta: None,
         };
@@ -591,6 +592,7 @@ mod tests {
             resources: Some(vec![SkillResource {
                 uri: uri.to_string(),
                 digest: ResourceDigest::of_bytes(b"manifest").to_wire(),
+                size: b"manifest".len() as u64,
             }]),
             // `Some(empty)` is intentionally distinct from absent provider
             // metadata and used to be collapsed by descriptor reconstruction.

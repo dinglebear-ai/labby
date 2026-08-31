@@ -284,6 +284,7 @@ fn load_skill(
         resources.push(SkillResource {
             uri: uri.clone(),
             digest,
+            size: body.len() as u64,
         });
         if relative == "SKILL.md" {
             skill_md = Some(body.clone());

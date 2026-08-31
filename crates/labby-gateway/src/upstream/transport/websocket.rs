@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use futures::{SinkExt, StreamExt};
-use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{RawRxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::worker::{Worker, WorkerConfig, WorkerContext, WorkerQuitReason};
 use rmcp::{RoleClient, transport::worker::WorkerTransport};
 use tokio_tungstenite::connect_async_with_config;
@@ -65,6 +65,10 @@ impl WebSocketClientWorker {
 impl Worker for WebSocketClientWorker {
     type Error = WebSocketTransportError;
     type Role = RoleClient;
+
+    fn preserves_raw_responses() -> bool {
+        true
+    }
 
     fn err_closed() -> Self::Error {
         WebSocketTransportError::new("websocket transport is closed")
@@ -214,7 +218,7 @@ pub fn encode_client_message(
 
 pub fn decode_server_message(
     payload: &str,
-) -> Result<RxJsonRpcMessage<RoleClient>, WebSocketTransportError> {
+) -> Result<RawRxJsonRpcMessage<RoleClient>, WebSocketTransportError> {
     serde_json::from_str(payload).map_err(|error| {
         WebSocketTransportError::new(format!("failed to decode json-rpc frame: {error}"))
     })
@@ -231,8 +235,7 @@ pub fn log_context(reason: &'static str) -> Cow<'static, str> {
 mod tests {
     use super::*;
     use rmcp::model::{
-        ClientRequest, DiscoverRequest, DiscoverRequestParams, ErrorCode, ErrorData,
-        NumberOrString, ServerResult,
+        ClientRequest, DiscoverRequest, DiscoverRequestParams, ErrorCode, ErrorData, NumberOrString,
     };
 
     #[test]
@@ -260,18 +263,18 @@ mod tests {
         assert_eq!(decoded_request["jsonrpc"], "2.0");
         assert_eq!(decoded_request["id"], 7);
 
-        let response = serde_json::to_string(&RxJsonRpcMessage::<RoleClient>::response(
-            ServerResult::empty(()),
+        let response = serde_json::to_string(&RawRxJsonRpcMessage::<RoleClient>::response(
+            serde_json::json!({}),
             NumberOrString::Number(9),
         ))
         .expect("encode response");
         let decoded_response = decode_server_message(&response).expect("decode response");
         assert!(matches!(
             decoded_response,
-            RxJsonRpcMessage::<RoleClient>::Response(_)
+            RawRxJsonRpcMessage::<RoleClient>::Response(_)
         ));
 
-        let error = serde_json::to_string(&RxJsonRpcMessage::<RoleClient>::error(
+        let error = serde_json::to_string(&RawRxJsonRpcMessage::<RoleClient>::error(
             ErrorData::new(ErrorCode::METHOD_NOT_FOUND, "method not found", None),
             Some(NumberOrString::Number(11)),
         ))
@@ -279,7 +282,7 @@ mod tests {
         let decoded_error = decode_server_message(&error).expect("decode error");
         assert!(matches!(
             decoded_error,
-            RxJsonRpcMessage::<RoleClient>::Error(_)
+            RawRxJsonRpcMessage::<RoleClient>::Error(_)
         ));
     }
 }

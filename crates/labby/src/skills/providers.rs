@@ -492,12 +492,14 @@ mod tests {
         let mut resources = vec![SkillResource {
             uri: manifest.clone(),
             digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+            size: body.len() as u64,
         }];
         let mut files = BTreeMap::from([(manifest.clone(), body.into_bytes())]);
         if let Some(uri) = extra_uri {
             resources.push(SkillResource {
                 uri: uri.to_string(),
                 digest: labby_runtime::skills::ResourceDigest::of_bytes(b"extra").to_wire(),
+                size: b"extra".len() as u64,
             });
             files.insert(uri.to_string(), b"extra".to_vec());
         }
@@ -528,6 +530,7 @@ mod tests {
                     uri: manifest.clone(),
                     digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes())
                         .to_wire(),
+                    size: body.len() as u64,
                 }]),
                 meta: None,
             },
@@ -770,6 +773,7 @@ mod tests {
                     uri: manifest.to_owned(),
                     digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes())
                         .to_wire(),
+                    size: body.len() as u64,
                 }]),
                 meta: None,
             },

@@ -213,6 +213,7 @@ mod tests {
             resources: Some(vec![SkillResource {
                 uri: uri.to_string(),
                 digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+                size: body.len() as u64,
             }]),
             meta: Some(
                 json!({"vendor.example/hint": "preserved"})
@@ -309,6 +310,7 @@ mod tests {
             resources: Some(vec![SkillResource {
                 uri: uri.to_string(),
                 digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+                size: body.len() as u64,
             }]),
             meta: None,
         };
