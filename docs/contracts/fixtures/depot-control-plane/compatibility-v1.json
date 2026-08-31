@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "labby.depot-compatibility/v1",
+  "labby": {
+    "minimumCommit": "fecb63f15e16b87a9bde3e4c60d46191ab149fc0",
+    "frontend": "gateway-admin-static-export",
+    "feature": "skills",
+    "surface": "authenticated-browser-http"
+  },
+  "depot": {
+    "contractCommit": "b6aaad0",
+    "durableSchemaGeneration": 2,
+    "sessionContractVersion": 1,
+    "artifactInterchange": "dinglebear.artifact-interchange/v1",
+    "routes": [
+      "GET /api/session",
+      "GET /api/operations",
+      "POST /api/operations/:operation",
+      "GET /api/jobs/:id",
+      "PUT /uploads/:id",
+      "POST /api/artifacts/exact",
+      "GET /api/artifacts/components/:artifact_id/:revision_id/:component_id"
+    ]
+  },
+  "mountPolicy": {
+    "oauthBrowserSession": "supported",
+    "staticBearerBrowser": "disabled",
+    "webUiAuthDisabled": "disabled",
+    "noAuth": "disabled",
+    "syntheticDevelopment": "disabled"
+  },
+  "actorPolicy": {
+    "delegatedOAuth": "mutations-and-import",
+    "serviceCredential": "read-only-unless-explicitly-approved"
+  },
+  "limits": {
+    "artifactPage": 200,
+    "operationCatalog": 1000,
+    "responseBytes": 1048576,
+    "componentBytes": 67108864,
+    "packageBytes": 268435456,
+    "interactiveConcurrency": 16,
+    "streamConcurrency": 4,
+    "queueMilliseconds": 2000
+  },
+  "flows": {
+    "bootstrap": {"status": "supported", "operations": []},
+    "bazaarBrowse": {"status": "supported", "operations": ["depot.artifacts.list"]},
+    "artifactDetail": {"status": "supported", "operations": ["depot.artifacts.get"]},
+    "sendToLabby": {"status": "supported", "operations": ["depot.artifacts.get"], "exactExport": true},
+    "candidateIntake": {"status": "expansion", "operations": ["depot.artifacts.intake_candidate"]},
+    "fork": {"status": "expansion", "operations": ["depot.artifacts.fork"]},
+    "publication": {"status": "expansion", "operations": ["depot.artifacts.set_publication"]},
+    "license": {"status": "expansion", "operations": ["depot.artifacts.set_license"]},
+    "archive": {"status": "excluded", "operations": []},
+    "delete": {"status": "excluded", "operations": []},
+    "browserCredentialAdministration": {"status": "deferred", "operations": []}
+  }
+}
