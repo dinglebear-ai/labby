@@ -56,6 +56,8 @@ pub struct AppState {
     pub config: Arc<LabConfig>,
     /// OAuth-mode auth server state, mounted only when LABBY_AUTH_MODE=oauth.
     pub oauth_state: Option<Arc<labby_auth::state::AuthState>>,
+    /// Provider-independent store for project-bound browser sessions.
+    pub project_session_state: Option<Arc<labby_auth::project_session::ProjectSessionState>>,
     /// Cached actor-key deriver used at authenticated bind boundaries.
     pub actor_key_deriver: Option<Arc<crate::observability::activity::ActorKeyDeriver>>,
     /// Shared gateway manager for runtime upstream pool access and config mutation.
@@ -89,6 +91,13 @@ pub struct AppState {
     /// The default is a conservative, non-I/O unavailable runtime. Server
     /// startup replaces it after resolving and observing the configured store.
     pub(crate) access_runtime: Arc<crate::access::AccessRuntime>,
+    /// Daemon-owned proof lifecycle orchestration. `None` fails closed and
+    /// keeps the local bootstrap routes unavailable until startup wires L6.
+    pub(crate) access_bootstrap_proof:
+        Option<Arc<dyn crate::api::services::access_bootstrap_proof::AccessBootstrapProofService>>,
+    /// Shared uncached credential/session adapter backed by the production
+    /// published-policy authority.
+    pub(crate) access_credential_adapter: Option<Arc<crate::access::AccessCredentialAdapter>>,
     #[cfg(feature = "skills")]
     pub(crate) skill_library: Option<
         Arc<
@@ -148,6 +157,7 @@ impl AppState {
             auth_config: None,
             config: Arc::new(LabConfig::default()),
             oauth_state: None,
+            project_session_state: None,
             actor_key_deriver: None,
             #[cfg(feature = "gateway")]
             gateway_manager: None,
@@ -158,6 +168,8 @@ impl AppState {
             bearer_token: None,
             http_bind_host: None,
             access_runtime: Arc::new(crate::access::AccessRuntime::blocked_unavailable()),
+            access_bootstrap_proof: None,
+            access_credential_adapter: None,
             #[cfg(feature = "skills")]
             skill_library: None,
             #[cfg(feature = "skills")]
@@ -180,6 +192,24 @@ impl AppState {
         runtime: Arc<crate::access::AccessRuntime>,
     ) -> Self {
         self.access_runtime = runtime;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_access_bootstrap_proof(
+        mut self,
+        service: Arc<dyn crate::api::services::access_bootstrap_proof::AccessBootstrapProofService>,
+    ) -> Self {
+        self.access_bootstrap_proof = Some(service);
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn with_access_credential_adapter(
+        mut self,
+        adapter: Arc<crate::access::AccessCredentialAdapter>,
+    ) -> Self {
+        self.access_credential_adapter = Some(adapter);
         self
     }
 
@@ -231,6 +261,15 @@ impl AppState {
     #[must_use]
     pub fn with_oauth_state(mut self, auth_state: labby_auth::state::AuthState) -> Self {
         self.oauth_state = Some(Arc::new(auth_state));
+        self
+    }
+
+    #[must_use]
+    pub fn with_project_session_state(
+        mut self,
+        state: labby_auth::project_session::ProjectSessionState,
+    ) -> Self {
+        self.project_session_state = Some(Arc::new(state));
         self
     }
 

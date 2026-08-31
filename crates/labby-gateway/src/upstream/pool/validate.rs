@@ -106,6 +106,20 @@ mod tests {
     }
 
     #[test]
+    fn stdio_auth_uses_environment_credential_without_oauth() {
+        let config: UpstreamConfig = toml::from_str(
+            "name=\"stdio\"\ncommand=\"server\"\nbearer_token_env=\"UPSTREAM_TOKEN\"\n",
+        )
+        .unwrap();
+
+        assert!(validate_upstream_config(&config).is_ok());
+        assert_eq!(config.command.as_deref(), Some("server"));
+        assert_eq!(config.bearer_token_env.as_deref(), Some("UPSTREAM_TOKEN"));
+        assert!(config.oauth.is_none());
+        assert!(config.url.is_none());
+    }
+
+    #[test]
     fn validate_rejects_empty_name() {
         let config = UpstreamConfig {
             enabled: true,

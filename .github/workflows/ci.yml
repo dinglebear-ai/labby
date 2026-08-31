@@ -361,6 +361,7 @@ jobs:
               libxfixes3 \
               libxkbcommon0 \
               libxrandr2
+
           else
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -425,6 +426,43 @@ jobs:
           NODE
       - run: pnpm test:browser
 
+  live-e2e-core:
+    name: Live E2E core
+    runs-on: ci-pool-rust
+    timeout-minutes: 25
+    needs: [changes, frontend-assets]
+    if: ${{ needs.changes.outputs.rust_test == 'true' || needs.changes.outputs.web == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Download immutable Gateway Admin assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gateway-admin-out
+          path: apps/gateway-admin/out
+      - name: Select exclusive live E2E run root
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_root="${RUNNER_TEMP}/labby-live-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          test ! -e "$run_root"
+          printf 'LABBY_E2E_RUN_ROOT=%s\n' "$run_root" >> "$GITHUB_ENV"
+      - name: Run bounded hermetic product E2E shards
+        env:
+          CARGO_BUILD_JOBS: "2"
+          LABBY_E2E_SEED: "1"
+          LABBY_E2E_TIER: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && 'manual' || 'pr' }}
+        run: scripts/ci/labby-live-e2e.sh "$LABBY_E2E_TIER" "$LABBY_E2E_SEED"
+      - name: Upload concise live E2E evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: labby-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/labby-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}-live-e2e-core/artifacts/
+          if-no-files-found: error
+          retention-days: 3
+
   fmt:
     name: Format
     runs-on: ci-pool-rust
@@ -447,6 +485,26 @@ jobs:
         run: bash scripts/check-kache-persistent-host-action.sh
       # cargo fmt never invokes rustc, so skip the full setup-rust-kache
       # composite (apt preflight + cache wiring) and install only rustfmt.
+      # The fleet may expose read-only runner-global Rust homes, so retain the
+      # composite's per-job writable-home guard before invoking rustup.
+      - name: Select writable Rust homes for rustfmt
+        run: |
+          set -euo pipefail
+          rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          if ! mkdir -p "$rustup_home" 2>/dev/null || [ ! -w "$rustup_home" ]; then
+            rustup_home="$RUNNER_TEMP/rustup"
+            mkdir -p "$rustup_home"
+          fi
+          if ! mkdir -p "$cargo_home" 2>/dev/null || [ ! -w "$cargo_home" ]; then
+            cargo_home="$RUNNER_TEMP/cargo"
+            mkdir -p "$cargo_home"
+          fi
+          {
+            echo "RUSTUP_HOME=$rustup_home"
+            echo "CARGO_HOME=$cargo_home"
+          } >> "$GITHUB_ENV"
+          echo "$cargo_home/bin" >> "$GITHUB_PATH"
       - name: Install Rust toolchain with rustfmt
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -511,6 +569,14 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
         with:
           toolchain: "1.97.1"
+      - name: Warm gateway MSRV test target
+        # The workspace all-target pass can otherwise compile the large
+        # labby-gateway lib-test target alongside Labby's targets and cross
+        # the shared runner memory ceiling. Keep the required command below
+        # unchanged; this pass only makes its largest test target reusable.
+        run: >-
+          cargo +1.97.1 check -p labby-gateway --all-features
+          --all-targets --locked
       - run: cargo +1.97.1 check --workspace --all-features --all-targets --locked
 
   codemode-runner-smoke:
@@ -747,6 +813,13 @@ jobs:
         run: >-
           cargo clippy --workspace --exclude labby --all-features
           --all-targets --locked -- -D warnings
+      - name: Warm Labby Clippy test dependency graph
+        # Selecting one integration test enables the same dev-dependency
+        # feature graph as the all-target pass while keeping that large normal
+        # library compile isolated from the remaining test targets.
+        run: >-
+          cargo clippy -p labby --all-features
+          --test architecture_boundaries --locked -- -D warnings
       - name: Lint all Labby targets
         run: >-
           cargo clippy -p labby --all-features --all-targets --locked
@@ -820,8 +893,23 @@ jobs:
           node-version: "22"
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: cargo:cargo-nextest
       - name: Verify Labby auth core and extension contracts
         run: cargo test -p labby-auth --all-features --locked
+      - name: Verify authoritative auth requirement matrix
+        run: python3 -m unittest scripts.ci.test_auth_spec_matrix
+      - name: Verify frozen MCP source digests and extraction reproducibility
+        run: python3 scripts/ci/refresh_mcp_auth_denominator.py --check
+      - name: Verify current OpenAI authentication source denominator
+        run: python3 scripts/ci/refresh_openai_auth_denominator.py --check
+      - name: Verify vendored rmcp base and explicit patch provenance
+        run: python3 scripts/ci/check_vendor_rmcp_provenance.py
+      - name: Verify requirement-specific OpenAI authentication contracts
+        run: scripts/ci/openai-auth-conformance.sh
+      - name: Verify requirement-specific MCP authorization contracts
+        run: python3 scripts/ci/mcp_auth_normative_conformance.py
       - name: Run dated protocol and extension suites
         run: scripts/ci/mcp-conformance.sh
       - name: Upload conformance reports
@@ -1282,9 +1370,8 @@ jobs:
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
-    # The 90-minute instrumented re-run enforces a 15% floor; keep it off the
-    # PR critical path. ci-gate accepts the resulting `skipped` conclusion.
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.rust_test == 'true' }}
+    # Coverage is a required regression gate for Rust changes, including PRs.
+    if: ${{ needs.changes.outputs.rust_test == 'true' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1309,7 +1396,7 @@ jobs:
         run: |
           python3 scripts/ci/check-rust-coverage.py lcov.info \
             --overall-minimum 15 \
-            --critical-minimum 5 \
+            --critical-minimum 30 \
             --critical crates/labby-auth/src/ \
             --critical crates/labby-gateway/src/ \
             --critical crates/labby/src/dispatch/ \
@@ -1336,6 +1423,7 @@ jobs:
       - actionlint
       - frontend-assets
       - gateway-admin-browser
+      - live-e2e-core
       - fmt
       - deny
       - msrv
@@ -1402,6 +1490,7 @@ jobs:
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
           require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
+          require_success_or_skipped live-e2e-core "${{ needs.live-e2e-core.result }}"
           require_success_or_skipped fmt "${{ needs.fmt.result }}"
           require_success_or_skipped deny "${{ needs.deny.result }}"
           require_success_or_skipped msrv "${{ needs.msrv.result }}"

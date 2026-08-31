@@ -161,6 +161,32 @@ pub(crate) fn validate_transport_credential_binding(
     })
 }
 
+pub(crate) fn validated_product_transport_binding(
+    issuer: &str,
+    credential_id: &str,
+    credential_generation: u64,
+    expires_at_unix: u64,
+    now: SystemTime,
+) -> Result<TransportCredentialBinding, BoundAccessContextError> {
+    if issuer.is_empty()
+        || credential_id.is_empty()
+        || credential_generation == 0
+        || unix_seconds(now)? >= expires_at_unix
+    {
+        return Err(BoundAccessContextError::Unavailable);
+    }
+    Ok(TransportCredentialBinding {
+        fingerprint: labby_auth::util::fingerprint(&format!(
+            "labby.mcp.product-transport-binding.v1\0{}:{}{}:{}:{credential_generation}",
+            issuer.len(),
+            issuer,
+            credential_id.len(),
+            credential_id
+        )),
+        expires_at_unix,
+    })
+}
+
 #[allow(dead_code)]
 impl BoundAccessContext {
     pub(crate) fn id(&self) -> BoundAccessContextId {
@@ -893,6 +919,32 @@ mod tests {
         for invalid in ["", " padded", &"x".repeat(257)] {
             assert!(validate_transport_credential_binding("issuer", invalid, 101, now).is_err());
         }
+    }
+
+    #[test]
+    fn product_transport_binding_is_generation_specific_redacted_and_expiring() {
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(100);
+        let first = validated_product_transport_binding(
+            "product-issuer-secret",
+            "credential-secret-id",
+            1,
+            101,
+            now,
+        )
+        .unwrap();
+        let rotated = validated_product_transport_binding(
+            "product-issuer-secret",
+            "credential-secret-id",
+            2,
+            101,
+            now,
+        )
+        .unwrap();
+        assert_ne!(first.fingerprint, rotated.fingerprint);
+        assert!(!first.fingerprint.contains("product-issuer-secret"));
+        assert!(!first.fingerprint.contains("credential-secret-id"));
+        assert!(validated_product_transport_binding("issuer", "credential", 1, 100, now).is_err());
+        assert!(validated_product_transport_binding("issuer", "credential", 0, 101, now).is_err());
     }
 
     #[derive(Clone, Copy)]

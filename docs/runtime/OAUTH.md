@@ -73,6 +73,38 @@ Startup also fails if:
 - `LABBY_AUTH_ADMIN_EMAIL` is missing — fail-closed default so no Google account can authenticate without explicit permission
 - the auth database or signing key has insecure file permissions
 
+## Owner bootstrap and project-bound credentials
+
+Labby supports two separate first-owner flows:
+
+- `POST /v1/access/bootstrap-owner` remains the Google-backed browser flow. It
+  requires the authenticated browser session, CSRF token, `lab:admin`, the
+  canonical external identity, and an email matching
+  `LABBY_AUTH_ADMIN_EMAIL`.
+- `labby setup access-bootstrap` is the direct-local operator flow documented
+  in [Local access bootstrap](../guides/LOCAL_ACCESS_BOOTSTRAP.md). Eligibility
+  comes only from a one-time 256-bit proof prepared offline while the
+  installation is pristine. Loopback location by itself grants nothing.
+
+The local flow binds the first owner, default Project, already-published
+Loadout, protected route, resource, audience, ordered scopes, installation
+generation, and client-generated credential digest in one access-store
+transaction. It does not depend on OAuth being configured. Its consume,
+status, and cleanup routes accept `X-Labby-Bootstrap-Proof` only from a direct
+loopback or Unix peer, reject forwarded authority, return uniform
+non-enumerating denials, and set private no-store/no-referrer response headers.
+
+Issued `lby_pc_v1_...` product credentials are distinct from OAuth access
+tokens and from `LABBY_MCP_HTTP_TOKEN`. Every request revalidates the source
+credential, project membership, policy epochs, published Loadout/route
+generations, resource, audience, and scopes. Revocation therefore immediately
+denies both the credential and browser sessions derived from it, even if
+best-effort session-row cleanup has not completed.
+
+`POST /token` continues to exchange OAuth grants only; it never consumes a
+bootstrap proof or issues a project credential. Never edit the access database,
+forge credential rows, or treat loopback reachability as bootstrap authority.
+
 ## Registration and Authorize Flow
 
 OAuth mode exposes:
@@ -130,7 +162,12 @@ Flow summary:
 2. The client sends the user to `/authorize` with `response_type=code`.
 3. Labby stores the request state, generates PKCE data, and redirects to Google.
 4. Google redirects back to `/auth/google/callback`.
-5. Labby enforces the email allowlist (currently `LABBY_AUTH_ADMIN_EMAIL`; expanding to a SQLite-backed user list managed via the web UI). The id_token's `email_verified` claim is required — unverified accounts are rejected even when the address matches. Browser-login callers receive a 401; OAuth-client callers receive an RFC 6749 §4.1.2.1 redirect with `error=access_denied`.
+5. Labby enforces the merged allowlist: `LABBY_AUTH_ADMIN_EMAIL`, configured
+   Workspace domains, and the current SQLite-backed allowed-user list managed
+   through settings. The id_token's `email_verified` claim is required —
+   unverified accounts are rejected even when an address or domain matches.
+   Browser-login callers receive a 401; OAuth-client callers receive an RFC
+   6749 §4.1.2.1 redirect with `error=access_denied`.
 6. Labby exchanges the Google code server-side, stores a local authorization code, and redirects the client back to its registered redirect URI with the local code.
 7. The client exchanges that local code at `/token` for a Labby access token and, when Google granted offline access, a Labby refresh token.
 
@@ -343,9 +380,20 @@ allowed_client_redirect_uris = [
 ]
 ```
 
-ChatGPT custom MCP connectors use callback URLs shaped like
-`https://chatgpt.com/connector/oauth/{callback_id}`. Labby's product defaults
-also include the legacy ChatGPT redirect and Claude callback URLs. Other
+Labby advertises and enforces RFC 9207 authorization-response issuer binding, so
+current ChatGPT custom MCP connectors should select the stable redirect
+`https://chatgpt.com/connector_platform_oauth_redirect` together with the stable
+CIMD client ID `https://chatgpt.com/oauth/client.json`. The callback-ID form
+`https://chatgpt.com/connector/oauth/{callback_id}` is ChatGPT's fallback for an
+authorization server that does not meet those issuer-identification
+requirements; it remains allowlisted for compatibility, not as the preferred
+Labby path. Labby's product defaults cover both forms plus the legacy
+`https://chatgpt.com/aip/plugin-callback`, and Claude's
+`https://claude.ai/api/mcp/auth_callback`. These are redirect allowlist entries,
+not client identifiers: a ChatGPT CIMD client still uses its exact HTTPS
+metadata-document URL as `client_id`, and Labby validates the document as
+described above. Treat the stable CIMD URL as the client ID, not as a redirect
+URI or an authorization-server metadata location. Other
 browser-based clients, such as Gemini, VS Code, Zed, Cursor, Windsurf, Cline,
 Roo Code, Kilo Code, Droid, Antigravity, OpenClaw, Hermes, and future MCP
 clients, may use different HTTPS domains. Add those patterns explicitly as they
@@ -543,7 +591,7 @@ They must also:
 ### OAuth Error Kinds
 
 Most auth-route failures use the canonical error envelope described in
-`docs/ERRORS.md`.
+[Errors and recovery](../dev/ERRORS.md).
 
 Documented auth-specific exception:
 
@@ -570,7 +618,7 @@ Response:
 {
   "resource": "https://lab.example.com",
   "authorization_servers": ["https://lab.example.com"],
-  "scopes_supported": ["lab"],
+  "scopes_supported": ["lab:read", "lab", "lab:admin"],
   "bearer_methods_supported": ["header"]
 }
 ```
@@ -580,10 +628,13 @@ Response:
 When a request fails authentication (401), the response includes:
 
 ```http
-WWW-Authenticate: Bearer resource_metadata="https://lab.example.com/.well-known/oauth-protected-resource"
+WWW-Authenticate: Bearer resource_metadata="https://lab.example.com/.well-known/oauth-protected-resource", scope="lab:read"
 ```
 
-This header is only included when `LABBY_PUBLIC_URL` is configured. If not, the header is omitted rather than advertising localhost.
+This header is only included when `LABBY_PUBLIC_URL` is configured. If not, the
+header is omitted rather than advertising localhost. Challenges for read-only
+discovery use `scope="lab:read"`; execution and administrative operations may
+step up to `lab` or `lab:admin` without changing the protected resource.
 
 ## Gateway-Managed Route Metadata
 

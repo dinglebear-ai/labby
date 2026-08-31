@@ -777,53 +777,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_revocation_cannot_scan_between_relay_removal_and_task_publication() {
-        let (pool, _server, _downstream, relay_key) = task_pool().await;
-        let oauth_key = rekey_relay_for_oauth_subject(&pool, &relay_key, "alice-oauth").await;
+    async fn oauth_revocation_is_not_blocked_by_inflight_network_work() {
+        let cache =
+            labby_auth::upstream::cache::OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
+        let epoch = cache.lifecycle_epoch();
 
-        // Model the exact transition performed by `call_tool_relayed`: its
-        // outer lifecycle reader spans the relay response and registration.
-        let lifecycle = pool.oauth_invalidation_barrier.read().await;
-        let connection = pool
-            .relay_connections
-            .write()
+        // An in-flight request holds no lifecycle reader. Revocation can take
+        // the writer immediately and makes the request's snapshot stale.
+        let barrier = cache.invalidation_barrier();
+        let writer = tokio::time::timeout(Duration::from_millis(100), barrier.write_owned())
             .await
-            .remove(&oauth_key)
-            .expect("relay removed at deterministic transition pause");
+            .expect("revocation writer must not wait on network work");
+        cache.advance_lifecycle_epoch();
+        drop(writer);
 
-        let invalidating_pool = pool.clone();
-        let invalidation = tokio::spawn(async move {
-            invalidating_pool
-                .invalidate_oauth_subject_sessions(
-                    "task-upstream",
-                    "alice-oauth",
-                    "oauth.credentials.clear",
-                )
-                .await
-        });
-        tokio::task::yield_now().await;
-        assert!(
-            !invalidation.is_finished(),
-            "revocation writer must wait while relay ownership is in transition"
-        );
-
-        pool.relay_connections
-            .write()
-            .await
-            .insert(oauth_key.clone(), connection);
-        pool.register_task_response(
-            &oauth_key,
-            Some("alice"),
-            super::TaskRouteAuthorization::root(),
-            create_task_response(),
-        )
-        .await
-        .expect("task publishes before lifecycle reader releases");
-        drop(lifecycle);
-
-        let invalidated = invalidation.await.expect("invalidation joins");
-        assert_eq!(invalidated.task_routes, 1);
-        assert!(pool.task_routes.read().await.is_empty());
+        assert_ne!(cache.lifecycle_epoch(), epoch);
     }
 
     #[tokio::test]

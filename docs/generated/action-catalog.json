@@ -9,7 +9,7 @@
     "params": [],
     "returns": "DoctorReport",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -69,7 +69,7 @@
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -190,7 +190,7 @@
     ],
     "returns": "Schema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -240,7 +240,7 @@
       "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -293,7 +293,7 @@
       "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -320,7 +320,7 @@
       "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -381,10 +381,10 @@
     ],
     "returns": "McpClientConfigView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -406,7 +406,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -578,7 +578,7 @@
     ],
     "returns": "string[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -607,7 +607,7 @@
     ],
     "returns": "string[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -636,7 +636,7 @@
     ],
     "returns": "GatewayToolExposureRowView[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -680,7 +680,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -733,7 +733,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -832,7 +832,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -854,7 +854,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -883,7 +883,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -933,7 +933,7 @@
     ],
     "returns": "ImportTombstoneView[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -955,10 +955,10 @@
     "params": [],
     "returns": "ImportTombstoneView[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1008,7 +1008,7 @@
     ],
     "returns": "GatewayView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -1110,10 +1110,10 @@
     "params": [],
     "returns": "GatewayLoadoutConfig[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1295,7 +1295,7 @@
     ],
     "returns": "GatewayLoadoutStageResult",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -1330,7 +1330,7 @@
     ],
     "returns": "GatewayLoadoutConfig",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -1508,7 +1508,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1537,7 +1537,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1572,7 +1572,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1598,10 +1598,10 @@
     ],
     "returns": "ProbeResult",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1645,10 +1645,10 @@
     ],
     "returns": "ResourceLease",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1674,10 +1674,10 @@
     ],
     "returns": "ResourceLeaseReleaseView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1709,10 +1709,10 @@
     ],
     "returns": "ResourceLease",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1741,7 +1741,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1770,7 +1770,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1805,7 +1805,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -1882,10 +1882,10 @@
     "params": [],
     "returns": "ProtectedMcpRouteConfig[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -2115,7 +2115,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -2190,10 +2190,10 @@
     ],
     "returns": "GatewayServerSchema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -2219,7 +2219,7 @@
     ],
     "returns": "ServerView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2241,10 +2241,10 @@
     "params": [],
     "returns": "GatewayServersDoc",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -2270,7 +2270,7 @@
     ],
     "returns": "ServiceActionView[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2299,7 +2299,7 @@
     ],
     "returns": "ServiceConfigView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2334,7 +2334,7 @@
     ],
     "returns": "ServiceConfigView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2366,7 +2366,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -2392,10 +2392,10 @@
     ],
     "returns": "GatewayRuntimeView[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -2414,7 +2414,7 @@
     "params": [],
     "returns": "SupportedServiceView[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2727,7 +2727,7 @@
     ],
     "returns": "ServerView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2756,7 +2756,7 @@
     ],
     "returns": "ServerView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2785,7 +2785,7 @@
     ],
     "returns": "VirtualServerMcpPolicyView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2810,7 +2810,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -2839,7 +2839,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -2865,7 +2865,7 @@
     ],
     "returns": "ServerView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2900,7 +2900,7 @@
     ],
     "returns": "VirtualServerMcpPolicyView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2941,7 +2941,7 @@
     ],
     "returns": "ServerView",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -2961,10 +2961,10 @@
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -2988,10 +2988,10 @@
     ],
     "returns": "Schema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -3008,7 +3008,7 @@
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": false,
       "web_ui": false
@@ -3035,7 +3035,7 @@
     ],
     "returns": "AuditReport",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": false,
       "web_ui": false
@@ -3062,7 +3062,7 @@
     ],
     "returns": "Schema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": false,
       "web_ui": false
@@ -3082,7 +3082,7 @@
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -3109,7 +3109,7 @@
     ],
     "returns": "Schema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -3220,10 +3220,10 @@
     "params": [],
     "returns": "BootstrapOutcome",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3243,7 +3243,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -3269,7 +3269,7 @@
     ],
     "returns": "CommitOutcome",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3313,7 +3313,7 @@
     "params": [],
     "returns": "DraftEntry[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3348,7 +3348,7 @@
     ],
     "returns": "DraftSetOutcome",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3377,7 +3377,7 @@
     ],
     "returns": "CommitOutcome",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3397,10 +3397,10 @@
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -3426,7 +3426,7 @@
     ],
     "returns": "PluginMutationResult",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3455,7 +3455,7 @@
     ],
     "returns": "InstalledPlugin[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3487,7 +3487,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3516,7 +3516,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3545,7 +3545,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3567,7 +3567,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3596,7 +3596,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3618,7 +3618,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3647,7 +3647,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3688,7 +3688,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3710,7 +3710,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3734,10 +3734,10 @@
     ],
     "returns": "Schema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -3761,7 +3761,7 @@
     ],
     "returns": "ServiceSchemaMap",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3786,7 +3786,7 @@
       "cli": true,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3805,7 +3805,7 @@
     "params": [],
     "returns": "ServiceStatus[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3827,10 +3827,10 @@
     "params": [],
     "returns": "SettingsState",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": true
+      "web_ui": false
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
@@ -3856,7 +3856,7 @@
     ],
     "returns": "SettingsMutationOutcome",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3885,7 +3885,7 @@
     ],
     "returns": "SettingsState",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3905,7 +3905,7 @@
     "params": [],
     "returns": "EnvSettingSpec[]",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3925,7 +3925,7 @@
     "params": [],
     "returns": "SettingsSchema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3954,7 +3954,7 @@
     ],
     "returns": "SettingsState",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -3983,7 +3983,7 @@
     ],
     "returns": "SettingsState",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -4034,7 +4034,7 @@
     ],
     "returns": "PluginMutationResult",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": true
@@ -4054,7 +4054,7 @@
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -4081,7 +4081,7 @@
     ],
     "returns": "Schema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -4227,7 +4227,7 @@
     "params": [],
     "returns": "Catalog",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -4254,7 +4254,7 @@
     ],
     "returns": "Schema",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -4438,7 +4438,7 @@
     ],
     "returns": "SnippetPromotionResult",
     "surface_availability": {
-      "cli": true,
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false

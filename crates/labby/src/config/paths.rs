@@ -22,13 +22,15 @@ fn toml_candidates_for(lab_home: Option<PathBuf>, home: Option<PathBuf>) -> Vec<
 }
 
 fn lab_home_override() -> Option<PathBuf> {
-    std::env::var_os("LABBY_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    crate::installation::InstallationPaths::resolve()
+        .ok()
+        .map(|paths| paths.root().to_path_buf())
 }
 
 fn lab_home_dir() -> Option<PathBuf> {
-    lab_home_override().or_else(|| home_dir().map(|home| home.join(".labby")))
+    crate::installation::InstallationPaths::resolve()
+        .ok()
+        .map(|paths| paths.root().to_path_buf())
 }
 
 pub(crate) fn home_dir() -> Option<PathBuf> {
@@ -110,9 +112,10 @@ fn access_db_path_for(lab_home: Option<PathBuf>, home: Option<PathBuf>) -> Resul
 
 #[allow(dead_code)]
 pub(crate) fn access_db_path() -> Result<PathBuf> {
-    access_db_path_from_roots(lab_home_override(), home_dir())
+    Ok(crate::installation::InstallationPaths::resolve()?.access_db())
 }
 
+#[cfg(test)]
 fn access_db_path_from_roots(lab_home: Option<PathBuf>, home: Option<PathBuf>) -> Result<PathBuf> {
     let state_root = lab_home
         .or_else(|| home.map(|home| home.join(".labby")))

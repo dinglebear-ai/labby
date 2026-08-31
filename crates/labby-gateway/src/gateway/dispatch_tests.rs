@@ -907,6 +907,33 @@ async fn gateway_skills_list_is_restricted_to_route_visible_upstreams() {
     );
 }
 
+#[cfg(not(feature = "skills"))]
+#[tokio::test]
+async fn gateway_skills_list_reports_missing_feature_after_route_scope_accepts_upstream() {
+    let manager = test_manager();
+    manager
+        .replace_config_for_tests(vec![upstream_fixture(
+            "github",
+            Some("https://example.invalid/mcp".to_string()),
+            None,
+        )])
+        .await;
+
+    let error = dispatch_with_manager_scoped(
+        &manager,
+        "gateway.skills.list",
+        json!({"upstream": "github"}),
+        GatewayEnrichmentScope {
+            route_visible_upstreams: Some(std::collections::BTreeSet::from(["github".to_string()])),
+            oauth_subject: None,
+        },
+    )
+    .await
+    .expect_err("a visible upstream still requires the compiled Skills feature");
+
+    assert_eq!(error.kind(), "feature_not_compiled");
+}
+
 #[tokio::test]
 async fn protected_route_rejects_unsaved_gateway_test_spec() {
     let manager = test_manager();

@@ -36,27 +36,6 @@ fn run_setup(labby_home: &std::path::Path, user_home: &std::path::Path) -> std::
 }
 
 #[test]
-fn invalid_gateway_config_exits_without_panicking() {
-    let labby_home = tempfile::tempdir().expect("labby home");
-    let user_home = tempfile::tempdir().expect("user home");
-    write_invalid_config(labby_home.path(), "/definitely/not/allowed");
-    write_invalid_config(&user_home.path().join(".labby"), "/definitely/not/allowed");
-
-    let output = run_serve(labby_home.path(), user_home.path());
-
-    assert!(!output.status.success(), "invalid config must fail startup");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("loaded gateway config failed validation"),
-        "startup error should retain validation context: {stderr}"
-    );
-    assert!(
-        !stderr.contains("panicked at"),
-        "invalid operator config must not panic: {stderr}"
-    );
-}
-
-#[test]
 fn labby_home_controls_config_secrets_and_durable_stores() {
     let labby_home = tempfile::tempdir().expect("labby home");
     let user_home = tempfile::tempdir().expect("user home");

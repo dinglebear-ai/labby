@@ -24,6 +24,11 @@ path = "tests/fixtures/stdio_mcp_fixture.rs"
 test = false
 required-features = ["proxy-testkit"]
 
+[[bin]]
+name = "live-harness-fixture"
+path = "tests/fixtures/live_harness_fixture.rs"
+test = false
+
 [dependencies]
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
 labby-primitives = { path = "../labby-primitives" }

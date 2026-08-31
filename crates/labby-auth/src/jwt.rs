@@ -130,40 +130,6 @@ impl SigningKeys {
             .map_err(|error| AuthError::Storage(format!("encode access token: {error}")))
     }
 
-    /// Validate access token signature, algorithm, and audience.
-    ///
-    /// NOTE: this method does NOT enforce the `iss` claim. Callers that
-    /// need RFC 7519 issuer validation MUST use
-    /// [`Self::validate_access_token_with_issuer`] instead. This entry
-    /// point is preserved for the lab consumer, which performs its own
-    /// post-decode `iss` check. New consumers (syslog-mcp et al.) should
-    /// always use the issuer-enforcing variant.
-    #[deprecated(note = "Use `validate_access_token_with_issuer` for RFC 7519 §4.1.1 compliance")]
-    pub fn validate_access_token(
-        &self,
-        token: &str,
-        expected_audience: &str,
-    ) -> Result<AccessClaims, AuthError> {
-        let mut validation = Validation::new(Algorithm::EdDSA);
-        validation.set_audience(&[expected_audience]);
-        validation.validate_nbf = true;
-        decode::<AccessClaims>(token, &self.decoding_key, &validation)
-            .map(|data| data.claims)
-            .map_err(|error| {
-                // `AuthError::InvalidAccessToken` renders as a single opaque
-                // string, so without this the reason a token was refused —
-                // expired, bad signature, wrong audience — is unrecoverable
-                // from the logs. The jsonwebtoken error names the kind and
-                // never embeds the token itself.
-                warn!(
-                    kind = "auth_failed",
-                    reason = ?error.kind(),
-                    "access token rejected"
-                );
-                AuthError::InvalidAccessToken
-            })
-    }
-
     /// Validate signature, algorithm, audience, AND issuer in a single
     /// pass — the issuer is enforced via `Validation::set_issuer` BEFORE
     /// decode (RFC 7519 §4.1.1 compliant) rather than via a manual
@@ -269,13 +235,16 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn minted_access_token_round_trips_and_contains_kid() {
         let signer = test_signer();
         let claims = sample_claims();
         let token = signer.issue_access_token(&claims).unwrap();
         let claims = signer
-            .validate_access_token(&token, "https://lab.example.com")
+            .validate_access_token_with_issuer(
+                &token,
+                "https://lab.example.com",
+                "https://lab.example.com",
+            )
             .unwrap();
         assert_eq!(claims.aud, "https://lab.example.com");
         assert!(!claims.jti.is_empty());
@@ -283,15 +252,52 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn wrong_audience_is_rejected() {
         let signer = test_signer();
         let claims = sample_claims();
         let token = signer.issue_access_token(&claims).unwrap();
-        let result = signer.validate_access_token(&token, "https://other.example.com");
+        let result = signer.validate_access_token_with_issuer(
+            &token,
+            "https://other.example.com",
+            "https://lab.example.com",
+        );
         assert!(
             result.is_err(),
             "token with wrong audience must be rejected"
+        );
+    }
+
+    #[test]
+    fn expired_access_token_is_rejected() {
+        let signer = test_signer();
+        let mut claims = sample_claims();
+        claims.exp = 1;
+        let token = signer.issue_access_token(&claims).unwrap();
+        assert!(
+            signer
+                .validate_access_token_with_issuer(
+                    &token,
+                    "https://lab.example.com",
+                    "https://lab.example.com",
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn not_yet_valid_access_token_is_rejected() {
+        let signer = test_signer();
+        let mut claims = sample_claims();
+        claims.nbf = Some(4_102_444_000);
+        let token = signer.issue_access_token(&claims).unwrap();
+        assert!(
+            signer
+                .validate_access_token_with_issuer(
+                    &token,
+                    "https://lab.example.com",
+                    "https://lab.example.com",
+                )
+                .is_err()
         );
     }
 

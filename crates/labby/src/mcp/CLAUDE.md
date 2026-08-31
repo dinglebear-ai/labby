@@ -134,8 +134,12 @@ Each service dispatcher must:
 When an action's `ActionSpec.destructive == true`, the 2026-07-28 protocol
 handler **must** return an MRTR `input_required` result containing form
 elicitation in `inputRequests`. The client retries the original request with
-`inputResponses`; do not send an in-flight `elicitation/create` RPC and do not
-invent custom `requestState`.
+`inputResponses`; do not send an in-flight `elicitation/create` RPC. Labby also
+issues the protocol-standard opaque `requestState` and consumes it exactly once
+on the retry. That state is server-owned, short-lived, and bound to the
+canonical action, normalized params, authenticated caller, transport/session,
+route, and action-catalog security metadata. Do not replace it with a custom
+parameter, header, or client-asserted confirmation token.
 
 When the MCP client does not support form elicitation, the dispatcher executes
 normally. Do not add a `params.confirm`, `--yes`, header, or any other fake

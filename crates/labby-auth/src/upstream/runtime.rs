@@ -17,6 +17,39 @@ pub struct UpstreamOauthRuntime {
     pub redirect_uri: String,
 }
 
+async fn initialize_runtime_parts(
+    upstreams: &[UpstreamConfig],
+    auth_config: &AuthConfig,
+    encryption_key_raw: Option<&str>,
+) -> Result<Option<(SqliteStore, EncryptionKey)>> {
+    if !upstreams.iter().any(|upstream| upstream.oauth.is_some()) {
+        return Ok(None);
+    }
+    let encryption_key_raw = encryption_key_raw
+        .and_then(|value| (!value.trim().is_empty()).then_some(value))
+        .context("LABBY_OAUTH_ENCRYPTION_KEY is required when upstream OAuth is configured")?;
+    let shared_google_enabled = upstreams.iter().any(|upstream| {
+        upstream
+            .oauth
+            .as_ref()
+            .is_some_and(|oauth| oauth.credential.is_google_provider())
+    });
+    anyhow::ensure!(
+        !shared_google_enabled || auth_config.token_encryption_key.is_some(),
+        "{prefix}_TOKEN_ENCRYPTION_KEY is required when an upstream uses credential.source=google_provider",
+        prefix = auth_config.env_prefix
+    );
+    let key = load_key(encryption_key_raw)
+        .map_err(|error| anyhow::anyhow!("invalid upstream OAuth encryption key: {error}"))?;
+    let sqlite = SqliteStore::open_with_key(
+        auth_config.sqlite_path.clone(),
+        auth_config.token_encryption_key.clone(),
+    )
+    .await
+    .context("open sqlite store for upstream oauth")?;
+    Ok(Some((sqlite, key)))
+}
+
 /// Build the upstream OAuth runtime for the upstreams that declare an `oauth`
 /// block.
 ///
@@ -31,45 +64,20 @@ pub async fn build_upstream_oauth_runtime(
     if !upstreams.iter().any(|upstream| upstream.oauth.is_some()) {
         return Ok(None);
     }
-
     let Some(public_url) = auth_config.public_url.as_ref() else {
         anyhow::bail!(
             "LABBY_PUBLIC_URL is required when upstream OAuth is configured; it must be the explicit public callback base"
         );
     };
-    let Some(encryption_key_raw) =
-        encryption_key_raw.and_then(|value| (!value.trim().is_empty()).then_some(value))
-    else {
-        tracing::info!(
-            subsystem = "gateway_client",
-            phase = "oauth.runtime.disabled",
-            "upstream oauth runtime disabled because no encryption key is configured"
-        );
-        return Ok(None);
-    };
     anyhow::ensure!(
         public_url.scheme() == "https",
         "public_url must be absolute https:// when upstream oauth is configured"
     );
-    let shared_google_enabled = upstreams.iter().any(|upstream| {
-        upstream
-            .oauth
-            .as_ref()
-            .is_some_and(|oauth| oauth.credential.is_google_provider())
-    });
-    anyhow::ensure!(
-        !shared_google_enabled || auth_config.token_encryption_key.is_some(),
-        "{prefix}_TOKEN_ENCRYPTION_KEY is required when an upstream uses credential.source=google_provider",
-        prefix = auth_config.env_prefix
-    );
-    let key = load_key(&encryption_key_raw)
-        .map_err(|error| anyhow::anyhow!("invalid upstream OAuth encryption key: {error}"))?;
-    let sqlite = SqliteStore::open_with_key(
-        auth_config.sqlite_path.clone(),
-        auth_config.token_encryption_key.clone(),
-    )
-    .await
-    .context("open sqlite store for upstream oauth")?;
+    let Some((sqlite, key)) =
+        initialize_runtime_parts(upstreams, auth_config, encryption_key_raw).await?
+    else {
+        return Ok(None);
+    };
     let redirect_uri = build_upstream_oauth_callback_uri(public_url)?;
 
     Ok(Some(build_upstream_oauth_runtime_from_parts(
@@ -96,15 +104,6 @@ pub async fn build_upstream_oauth_runtime_with_redirect(
     if !upstreams.iter().any(|upstream| upstream.oauth.is_some()) {
         return Ok(None);
     }
-
-    let Some(encryption_key_raw) =
-        encryption_key_raw.and_then(|value| (!value.trim().is_empty()).then_some(value))
-    else {
-        anyhow::bail!(
-            "LABBY_OAUTH_ENCRYPTION_KEY is required when native stdio upstream OAuth is configured"
-        );
-    };
-
     let redirect_url = url::Url::parse(&redirect_uri)
         .with_context(|| format!("invalid upstream OAuth redirect URI: {redirect_uri}"))?;
     anyhow::ensure!(
@@ -112,26 +111,11 @@ pub async fn build_upstream_oauth_runtime_with_redirect(
         "upstream OAuth redirect URI must use http:// or https://"
     );
 
-    let shared_google_enabled = upstreams.iter().any(|upstream| {
-        upstream
-            .oauth
-            .as_ref()
-            .is_some_and(|oauth| oauth.credential.is_google_provider())
-    });
-    anyhow::ensure!(
-        !shared_google_enabled || auth_config.token_encryption_key.is_some(),
-        "{prefix}_TOKEN_ENCRYPTION_KEY is required when an upstream uses credential.source=google_provider",
-        prefix = auth_config.env_prefix
-    );
-
-    let key = load_key(encryption_key_raw)
-        .map_err(|error| anyhow::anyhow!("invalid upstream OAuth encryption key: {error}"))?;
-    let sqlite = SqliteStore::open_with_key(
-        auth_config.sqlite_path.clone(),
-        auth_config.token_encryption_key.clone(),
-    )
-    .await
-    .context("open sqlite store for upstream oauth")?;
+    let Some((sqlite, key)) =
+        initialize_runtime_parts(upstreams, auth_config, encryption_key_raw).await?
+    else {
+        return Ok(None);
+    };
 
     Ok(Some(build_upstream_oauth_runtime_from_parts(
         upstreams,

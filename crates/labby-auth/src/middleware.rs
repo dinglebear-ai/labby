@@ -31,14 +31,20 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
+use labby_primitives::product_credential::{
+    BoundAccessGrant, ProductCredentialGrant, ProductCredentialSelection,
+    ProductCredentialVerificationError, ProductCredentialVerifier, select_product_credential,
+};
 use subtle::ConstantTimeEq;
 use tower::{Layer, Service};
 
 use crate::auth_context::{AuthContext, www_authenticate_value};
 use crate::error::AuthError;
 use crate::metadata::canonical_resource_url;
+use crate::project_session::ProjectSessionState;
 use crate::session;
 use crate::state::AuthState;
+use crate::types::ProjectSessionBinding;
 use crate::{Authenticator, VerifiedIdentity};
 
 /// Closure-erased actor-key derivation hook.
@@ -51,6 +57,45 @@ use crate::{Authenticator, VerifiedIdentity};
 /// The closure receives the JWT `sub` (or `"static-bearer"` /
 /// browser-session subject) and returns a per-request [`Arc<str>`] key.
 pub type ActorKeyDeriver = dyn Fn(&str) -> Option<Arc<str>> + Send + Sync;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ProjectSessionRevalidationError {
+    #[error("project session is no longer authorized")]
+    Denied,
+    #[error("project session authorization is unavailable")]
+    Unavailable,
+}
+
+pub type ProjectSessionRevalidationFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<BoundAccessGrant, ProjectSessionRevalidationError>> + Send + 'a>,
+>;
+
+/// Consumer-injected policy lookup. It is called on every request carrying a
+/// project-bound browser session; no cached session row is sufficient by
+/// itself to authorize a request.
+pub trait ProjectSessionRevalidator: Send + Sync {
+    fn revalidate<'a>(
+        &'a self,
+        binding: &'a ProjectSessionBinding,
+    ) -> ProjectSessionRevalidationFuture<'a>;
+}
+
+pub type ProductAccessGrantResolutionFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<BoundAccessGrant, ProductCredentialVerificationError>>
+            + Send
+            + 'a,
+    >,
+>;
+
+/// Consumer-owned product authorization lookup performed only after the
+/// credential verifier has proven the source credential.
+pub trait ProductAccessGrantResolver: Send + Sync {
+    fn resolve<'a>(
+        &'a self,
+        grant: &'a ProductCredentialGrant,
+    ) -> ProductAccessGrantResolutionFuture<'a>;
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RequiredScopes(Vec<String>);
@@ -111,6 +156,10 @@ struct AuthLayerInner {
     /// Optional consumer-owned error projection. Authentication decisions stay
     /// in this crate while products can preserve their public error contract.
     error_response_mapper: Option<Arc<dyn Fn(AuthError) -> Response + Send + Sync>>,
+    project_session_revalidator: Option<Arc<dyn ProjectSessionRevalidator>>,
+    product_credential_verifier: Option<Arc<dyn ProductCredentialVerifier>>,
+    product_access_grant_resolver: Option<Arc<dyn ProductAccessGrantResolver>>,
+    project_session_state: Option<Arc<ProjectSessionState>>,
 }
 
 impl AuthLayer {
@@ -133,6 +182,10 @@ impl AuthLayer {
                 login_path: crate::config::DEFAULT_LOGIN_PATH.to_string(),
                 session_cookie_name: crate::config::DEFAULT_SESSION_COOKIE_NAME.to_string(),
                 error_response_mapper: None,
+                project_session_revalidator: None,
+                product_credential_verifier: None,
+                product_access_grant_resolver: None,
+                project_session_state: None,
             }),
         }
     }
@@ -160,6 +213,10 @@ impl AuthLayer {
                 login_path,
                 session_cookie_name,
                 error_response_mapper: None,
+                project_session_revalidator: None,
+                product_credential_verifier: None,
+                product_access_grant_resolver: None,
+                project_session_state: None,
             }),
         }
     }
@@ -243,6 +300,35 @@ impl AuthLayer {
     ) -> Self {
         self.with(|inner| inner.error_response_mapper = Some(Arc::new(mapper)))
     }
+
+    #[must_use]
+    pub fn with_project_session_revalidator(
+        self,
+        revalidator: Arc<dyn ProjectSessionRevalidator>,
+    ) -> Self {
+        self.with(|inner| inner.project_session_revalidator = Some(revalidator))
+    }
+
+    #[must_use]
+    pub fn with_product_credential_verifier(
+        self,
+        verifier: Arc<dyn ProductCredentialVerifier>,
+    ) -> Self {
+        self.with(|inner| inner.product_credential_verifier = Some(verifier))
+    }
+
+    #[must_use]
+    pub fn with_product_access_grant_resolver(
+        self,
+        resolver: Arc<dyn ProductAccessGrantResolver>,
+    ) -> Self {
+        self.with(|inner| inner.product_access_grant_resolver = Some(resolver))
+    }
+
+    #[must_use]
+    pub fn with_project_session_state(self, state: Option<Arc<ProjectSessionState>>) -> Self {
+        self.with(|inner| inner.project_session_state = state)
+    }
 }
 
 impl Default for AuthLayer {
@@ -323,7 +409,115 @@ async fn authenticate(
         .and_then(|v| v.to_str().ok())
         .and_then(parse_bearer_token);
 
+    // A project cookie and bearer token are two independent authorities. Do
+    // not let header precedence silently combine them. Legacy Google sessions
+    // retain the historical bearer-first behavior.
+    if auth_header.is_some()
+        && layer.allow_session_cookie
+        && let Some(session_state) = layer.project_session_state.as_ref()
+        && let Some(session_id) =
+            session::read_cookie(request.headers(), &session_state.cookie_name)
+    {
+        match session_state.store.find_browser_session(&session_id).await {
+            Ok(Some(_)) => {
+                return Err(auth_error_response(
+                    "project session cookie cannot be combined with bearer authorization",
+                    layer,
+                ));
+            }
+            Err(_) => return Err(project_session_unavailable_response(layer)),
+            Ok(None) => {}
+        }
+    }
+    if auth_header.is_some()
+        && layer.allow_session_cookie
+        && let Some(auth_state) = layer.auth_state.as_ref()
+        && let Some(session_id) =
+            session::read_cookie(request.headers(), &layer.session_cookie_name)
+    {
+        match auth_state.store.find_browser_session(&session_id).await {
+            Ok(Some(session)) if session.project_binding.is_some() => {
+                return Err(auth_error_response(
+                    "project session cookie cannot be combined with bearer authorization",
+                    layer,
+                ));
+            }
+            Err(_) => return Err(project_session_unavailable_response(layer)),
+            Ok(_) => {}
+        }
+    }
+
     if let Some(token) = auth_header {
+        match select_product_credential(&token) {
+            ProductCredentialSelection::Malformed(_) => {
+                return Err(product_credential_denied_response(layer));
+            }
+            ProductCredentialSelection::Parsed(credential) => {
+                let verifier = layer
+                    .product_credential_verifier
+                    .as_ref()
+                    .ok_or_else(|| product_credential_denied_response(layer))?;
+                let source_grant =
+                    verifier
+                        .verify(&credential)
+                        .await
+                        .map_err(|error| match error {
+                            ProductCredentialVerificationError::Denied => {
+                                product_credential_denied_response(layer)
+                            }
+                            ProductCredentialVerificationError::Unavailable => {
+                                product_credential_unavailable_response(layer)
+                            }
+                        })?;
+                let resolver = layer
+                    .product_access_grant_resolver
+                    .as_ref()
+                    .ok_or_else(|| product_credential_denied_response(layer))?;
+                let bound_grant =
+                    resolver
+                        .resolve(&source_grant)
+                        .await
+                        .map_err(|error| match error {
+                            ProductCredentialVerificationError::Denied => {
+                                product_credential_denied_response(layer)
+                            }
+                            ProductCredentialVerificationError::Unavailable => {
+                                product_credential_unavailable_response(layer)
+                            }
+                        })?;
+                if !source_grant_matches_bound(&source_grant, &bound_grant) {
+                    return Err(product_credential_denied_response(layer));
+                }
+                let identity = VerifiedIdentity::local_credential_with_issuer(
+                    Authenticator::ProductCredential,
+                    bound_grant.issuer.clone(),
+                    bound_grant.credential_id.clone(),
+                )
+                .map_err(|_| product_credential_denied_response(layer))?;
+                let auth = AuthContext {
+                    actor_key: derive_actor_key(
+                        layer.actor_key_deriver.as_deref(),
+                        &bound_grant.principal_id,
+                    ),
+                    sub: bound_grant.principal_id.clone(),
+                    scopes: bound_grant.scopes.clone(),
+                    issuer: bound_grant.issuer.clone(),
+                    via_session: false,
+                    csrf_token: None,
+                    email: None,
+                };
+                if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+                    return Err(response);
+                }
+                request.extensions_mut().insert(identity);
+                request.extensions_mut().insert(source_grant);
+                request.extensions_mut().insert(bound_grant);
+                request.extensions_mut().insert(auth);
+                return Ok(request);
+            }
+            ProductCredentialSelection::NotProductCredential => {}
+        }
+
         // 1. Static bearer match — skipped when the consumer has set
         //    `disable_static_token_with_oauth=true` and OAuth mode is active.
         let static_token_blocked = layer.auth_state.as_ref().is_some_and(|s| {
@@ -374,10 +568,13 @@ async fn authenticate(
                     layer,
                 ));
             };
-            let expected_aud = layer
+            let configured_aud = layer
                 .resource_url
                 .as_deref()
                 .map_or_else(|| canonical_resource_url(auth_state), str::to_string);
+            let expected_aud = url::Url::parse(&configured_aud).map_or(configured_aud, |url| {
+                url.as_str().trim_end_matches('/').to_string()
+            });
             match auth_state.signing_keys.validate_access_token_with_issuer(
                 &token,
                 &expected_aud,
@@ -446,23 +643,32 @@ async fn authenticate(
 
     // 3. Browser session cookie path.
     if layer.allow_session_cookie
+        && let Some(session_state) = layer.project_session_state.as_ref()
+        && let Some(session_id) =
+            session::read_cookie(request.headers(), &session_state.cookie_name)
+    {
+        let session = session_state
+            .store
+            .find_browser_session(&session_id)
+            .await
+            .map_err(|_| project_session_unavailable_response(layer))?
+            .ok_or_else(|| auth_error_response("invalid project session", layer))?;
+        return authorize_project_session(layer, request, &session_state.store, session).await;
+    }
+
+    if layer.allow_session_cookie
         && let Some(auth_state) = layer.auth_state.as_ref()
         && let Some(session_id) =
             session::read_cookie(request.headers(), &layer.session_cookie_name)
     {
         match auth_state.store.find_browser_session(&session_id).await {
             Ok(Some(session)) => {
-                if !matches!(
-                    *request.method(),
-                    Method::GET | Method::HEAD | Method::OPTIONS
-                ) {
-                    let csrf = request
-                        .headers()
-                        .get(session::BROWSER_CSRF_HEADER_NAME)
-                        .and_then(|value| value.to_str().ok());
-                    if csrf != Some(session.csrf_token.as_str()) {
-                        return Err(csrf_error_response("missing or invalid csrf token"));
-                    }
+                if !session_csrf_valid(&request, &session) {
+                    return Err(csrf_error_response("missing or invalid csrf token"));
+                }
+                if session.project_binding.is_some() {
+                    return authorize_project_session(layer, request, &auth_state.store, session)
+                        .await;
                 }
 
                 let identity = VerifiedIdentity::external(
@@ -524,6 +730,128 @@ async fn authenticate(
         },
         layer,
     ))
+}
+
+async fn authorize_project_session(
+    layer: &AuthLayerInner,
+    mut request: Request<Body>,
+    store: &crate::sqlite::SqliteStore,
+    session: crate::types::BrowserSessionRow,
+) -> Result<Request<Body>, Response> {
+    let binding = session
+        .project_binding
+        .as_ref()
+        .ok_or_else(|| auth_error_response("invalid project session", layer))?;
+    if !session_csrf_valid(&request, &session) {
+        return Err(csrf_error_response("missing or invalid csrf token"));
+    }
+    let revalidator = layer
+        .project_session_revalidator
+        .as_ref()
+        .ok_or_else(|| project_session_unavailable_response(layer))?;
+    let grant = match revalidator.revalidate(binding).await {
+        Ok(grant) => grant,
+        Err(ProjectSessionRevalidationError::Denied) => {
+            let _revocation_result = store.revoke_browser_session(&session.session_id).await;
+            return Err(auth_error_response(
+                "project session is no longer authorized",
+                layer,
+            ));
+        }
+        Err(ProjectSessionRevalidationError::Unavailable) => {
+            return Err(project_session_unavailable_response(layer));
+        }
+    };
+    if !binding_matches_grant(binding, &grant) {
+        let _revocation_result = store.revoke_browser_session(&session.session_id).await;
+        return Err(auth_error_response(
+            "project session authorization binding changed",
+            layer,
+        ));
+    }
+    let identity = VerifiedIdentity::local_credential_with_issuer(
+        Authenticator::BrowserSession,
+        binding.issuer.clone(),
+        binding.source_credential_id.clone(),
+    )
+    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
+    let auth = AuthContext {
+        actor_key: derive_actor_key(layer.actor_key_deriver.as_deref(), &binding.principal_id),
+        sub: binding.principal_id.clone(),
+        scopes: grant.scopes.clone(),
+        issuer: binding.issuer.clone(),
+        via_session: true,
+        csrf_token: Some(session.csrf_token),
+        email: None,
+    };
+    if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+        return Err(response);
+    }
+    request.extensions_mut().insert(identity);
+    request.extensions_mut().insert(ProductCredentialGrant {
+        issuer: binding.issuer.clone(),
+        subject: binding.subject.clone(),
+        credential_id: binding.source_credential_id.clone(),
+        credential_generation: binding.source_credential_generation,
+        scopes: binding.scopes.clone(),
+        resource: binding.resource.clone(),
+        audience: binding.audience.clone(),
+        expires_at: binding.source_credential_expires_at,
+    });
+    request.extensions_mut().insert(grant);
+    request.extensions_mut().insert(auth);
+    Ok(request)
+}
+
+fn session_csrf_valid(request: &Request<Body>, session: &crate::types::BrowserSessionRow) -> bool {
+    if matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) {
+        return true;
+    }
+    let csrf = request
+        .headers()
+        .get(session::BROWSER_CSRF_HEADER_NAME)
+        .and_then(|value| value.to_str().ok());
+    csrf == Some(session.csrf_token.as_str())
+}
+
+fn binding_matches_grant(binding: &ProjectSessionBinding, grant: &BoundAccessGrant) -> bool {
+    binding == &ProjectSessionBinding::from(grant)
+}
+
+fn source_grant_matches_bound(source: &ProductCredentialGrant, bound: &BoundAccessGrant) -> bool {
+    source.issuer == bound.issuer
+        && source.subject == bound.subject
+        && source.credential_id == bound.credential_id
+        && source.credential_generation == bound.credential_generation
+        && source.scopes == bound.scopes
+        && source.resource == bound.resource
+        && source.audience == bound.audience
+        && source.expires_at == bound.expires_at
+}
+
+fn product_credential_denied_response(layer: &AuthLayerInner) -> Response {
+    auth_error_response("invalid product credential", layer)
+}
+
+fn product_credential_unavailable_response(layer: &AuthLayerInner) -> Response {
+    let error = AuthError::Server("product credential verification is unavailable".into());
+    if let Some(mapper) = layer.error_response_mapper.as_ref() {
+        mapper(error)
+    } else {
+        error.into_response()
+    }
+}
+
+fn project_session_unavailable_response(layer: &AuthLayerInner) -> Response {
+    let error = AuthError::Server("project session authorization is unavailable".into());
+    if let Some(mapper) = layer.error_response_mapper.as_ref() {
+        mapper(error)
+    } else {
+        error.into_response()
+    }
 }
 
 /// Constant-time byte comparison for static-bearer matching (prevents
@@ -603,10 +931,11 @@ fn challenge_scopes(layer: &AuthLayerInner) -> &[String] {
 
 fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Option<Response> {
     let required = layer.required_scopes.as_slice();
-    if required
-        .iter()
-        .all(|scope| granted.iter().any(|granted| granted == scope))
-    {
+    if required.iter().all(|scope| {
+        granted
+            .iter()
+            .any(|granted| scope_satisfies(granted, scope))
+    }) {
         return None;
     }
     let metadata_url = layer
@@ -635,6 +964,14 @@ fn insufficient_scope_response(layer: &AuthLayerInner, granted: &[String]) -> Op
         }
     }
     Some(response)
+}
+
+fn scope_satisfies(granted: &str, required: &str) -> bool {
+    granted == required
+        || matches!(
+            (granted, required),
+            ("lab", "lab:read") | ("lab:admin", "lab" | "lab:read") | ("mcp:write", "mcp:read")
+        )
 }
 
 fn metadata_url_for_resource(resource: &str) -> String {
@@ -675,11 +1012,179 @@ mod tests {
     use super::*;
     use axum::Router;
     use axum::http::{Request as HttpRequest, StatusCode};
-    use axum::routing::get;
+    use axum::routing::{get, post};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tower::ServiceExt;
 
     use crate::authorize::tests::{test_auth_config, test_auth_state, test_auth_state_with_config};
     use crate::{PrincipalLink, VerifiedIdentity};
+
+    fn project_binding() -> ProjectSessionBinding {
+        ProjectSessionBinding {
+            installation_id: "install-1".into(),
+            issuer: "https://issuer.example".into(),
+            subject: "operator-1".into(),
+            principal_id: "principal-1".into(),
+            organization_id: "org-1".into(),
+            project_id: "project-1".into(),
+            loadout_id: "loadout-1".into(),
+            loadout_generation: 2,
+            assignment_generation: 3,
+            catalog_generation: 4,
+            route_id: "route-1".into(),
+            route_generation: 5,
+            membership_epoch: 6,
+            organization_policy_epoch: 7,
+            project_policy_epoch: 8,
+            source_credential_id: "credential-1".into(),
+            source_credential_generation: 9,
+            scopes: vec!["lab:read".into()],
+            resource: "lab://project-1".into(),
+            audience: "labby".into(),
+            source_credential_expires_at: u64::try_from(crate::util::now_unix() + 3_600).unwrap(),
+        }
+    }
+
+    fn bound_grant(binding: &ProjectSessionBinding) -> BoundAccessGrant {
+        BoundAccessGrant {
+            installation_id: binding.installation_id.clone(),
+            issuer: binding.issuer.clone(),
+            subject: binding.subject.clone(),
+            principal_id: binding.principal_id.clone(),
+            organization_id: binding.organization_id.clone(),
+            project_id: binding.project_id.clone(),
+            loadout_id: binding.loadout_id.clone(),
+            loadout_generation: binding.loadout_generation,
+            assignment_generation: binding.assignment_generation,
+            catalog_generation: binding.catalog_generation,
+            route_id: binding.route_id.clone(),
+            route_generation: binding.route_generation,
+            membership_epoch: binding.membership_epoch,
+            organization_policy_epoch: binding.organization_policy_epoch,
+            project_policy_epoch: binding.project_policy_epoch,
+            credential_id: binding.source_credential_id.clone(),
+            credential_generation: binding.source_credential_generation,
+            scopes: binding.scopes.clone(),
+            resource: binding.resource.clone(),
+            audience: binding.audience.clone(),
+            expires_at: binding.source_credential_expires_at,
+            requires_admin: false,
+            destructive: false,
+        }
+    }
+
+    struct CountingRevalidator {
+        calls: Arc<AtomicUsize>,
+        grant: BoundAccessGrant,
+    }
+
+    struct ToggleRevalidator {
+        denied: Arc<AtomicBool>,
+        grant: BoundAccessGrant,
+    }
+
+    impl ProjectSessionRevalidator for ToggleRevalidator {
+        fn revalidate<'a>(
+            &'a self,
+            _: &'a ProjectSessionBinding,
+        ) -> ProjectSessionRevalidationFuture<'a> {
+            let denied = self.denied.load(Ordering::SeqCst);
+            let grant = self.grant.clone();
+            Box::pin(async move {
+                if denied {
+                    Err(ProjectSessionRevalidationError::Denied)
+                } else {
+                    Ok(grant)
+                }
+            })
+        }
+    }
+
+    struct StubProductVerifier {
+        result: Result<ProductCredentialGrant, ProductCredentialVerificationError>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ProductCredentialVerifier for StubProductVerifier {
+        fn verify<'a>(
+            &'a self,
+            _: &'a labby_primitives::product_credential::ProductCredential,
+        ) -> labby_primitives::product_credential::ProductCredentialVerificationFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let result = self.result.clone();
+            Box::pin(async move { result })
+        }
+    }
+
+    struct StubProductResolver {
+        result: Result<BoundAccessGrant, ProductCredentialVerificationError>,
+    }
+
+    impl ProductAccessGrantResolver for StubProductResolver {
+        fn resolve<'a>(
+            &'a self,
+            _: &'a ProductCredentialGrant,
+        ) -> ProductAccessGrantResolutionFuture<'a> {
+            let result = self.result.clone();
+            Box::pin(async move { result })
+        }
+    }
+
+    fn product_source_grant() -> ProductCredentialGrant {
+        ProductCredentialGrant {
+            issuer: "https://issuer.example".into(),
+            subject: "operator-1".into(),
+            credential_id: "credential-1".into(),
+            credential_generation: 9,
+            scopes: vec!["lab:read".into()],
+            resource: "lab://project-1".into(),
+            audience: "labby".into(),
+            expires_at: u64::try_from(crate::util::now_unix() + 3_600).unwrap(),
+        }
+    }
+
+    fn product_bound_grant(source: &ProductCredentialGrant) -> BoundAccessGrant {
+        BoundAccessGrant {
+            installation_id: "install-1".into(),
+            issuer: source.issuer.clone(),
+            subject: source.subject.clone(),
+            principal_id: "principal-1".into(),
+            organization_id: "org-1".into(),
+            project_id: "project-1".into(),
+            loadout_id: "loadout-1".into(),
+            loadout_generation: 2,
+            assignment_generation: 3,
+            catalog_generation: 4,
+            route_id: "route-1".into(),
+            route_generation: 5,
+            membership_epoch: 6,
+            organization_policy_epoch: 7,
+            project_policy_epoch: 8,
+            credential_id: source.credential_id.clone(),
+            credential_generation: source.credential_generation,
+            scopes: source.scopes.clone(),
+            resource: source.resource.clone(),
+            audience: source.audience.clone(),
+            expires_at: source.expires_at,
+            requires_admin: false,
+            destructive: false,
+        }
+    }
+
+    fn product_token() -> &'static str {
+        "lby_pc_v1_credential-1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+
+    impl ProjectSessionRevalidator for CountingRevalidator {
+        fn revalidate<'a>(
+            &'a self,
+            _: &'a ProjectSessionBinding,
+        ) -> ProjectSessionRevalidationFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let grant = self.grant.clone();
+            Box::pin(async move { Ok(grant) })
+        }
+    }
 
     fn echo_app(layer: AuthLayer) -> Router {
         Router::new()
@@ -1344,6 +1849,7 @@ mod tests {
 
         for (configured_resource, expected) in [
             (exact_resource, StatusCode::OK),
+            ("HTTPS://PROXY.EXAMPLE:53147/mcp", StatusCode::OK),
             ("https://proxy.example:53148/mcp", StatusCode::UNAUTHORIZED),
             (
                 "https://proxy.example:53147/other",
@@ -1371,6 +1877,52 @@ mod tests {
                 "resource {configured_resource}"
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn expired_access_token_receives_http_401() {
+        let state = Arc::new(test_auth_state().await);
+        let issuer = state
+            .config
+            .public_url
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .trim_end_matches('/');
+        let resource = "https://proxy.example:53147/mcp";
+        let now = crate::util::now_unix();
+        let token = state
+            .signing_keys
+            .issue_access_token(&crate::jwt::AccessClaims {
+                iss: issuer.to_string(),
+                sub: "user@example.com".to_string(),
+                aud: resource.to_string(),
+                exp: usize::try_from(now - 3_600).unwrap(),
+                nbf: None,
+                iat: usize::try_from(now - 7_200).unwrap(),
+                jti: "expired-http-token".to_string(),
+                scope: "mcp:read".to_string(),
+                azp: String::new(),
+                identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                identity_credential_id: None,
+            })
+            .unwrap();
+        let app = echo_app(
+            AuthLayer::from_state(state)
+                .with_resource_url(Some(Arc::<str>::from(resource)))
+                .with_required_scopes(vec!["mcp:read".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1449,6 +2001,54 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn broader_admin_scope_satisfies_read_scope_hierarchy() {
+        let app = echo_app(
+            AuthLayer::new()
+                .with_static_token(Some(Arc::<str>::from("static-secret")))
+                .with_static_token_scopes(vec!["lab:admin".to_string()])
+                .with_required_scopes(vec!["lab:read".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, "Bearer static-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn execution_scope_satisfies_read_scope_hierarchy() {
+        let app = echo_app(
+            AuthLayer::new()
+                .with_static_token(Some(Arc::<str>::from("static-secret")))
+                .with_static_token_scopes(vec!["lab".to_string()])
+                .with_required_scopes(vec!["lab:read".to_string()]),
+        );
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, "Bearer static-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn read_scope_does_not_satisfy_execution_scope() {
+        assert!(!scope_satisfies("lab:read", "lab"));
+        assert!(!scope_satisfies("unrelated", "lab:read"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn browser_session_is_rejected_when_required_scope_is_missing() {
         let state = Arc::new(test_auth_state().await);
         let session = session::create_browser_session(
@@ -1512,5 +2112,422 @@ mod tests {
                 "scope=\"mcp:read mcp:write\""
             )
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn valid_project_session_survives_more_than_raw_credential_attempt_budget() {
+        let state = Arc::new(test_auth_state().await);
+        let binding = project_binding();
+        let session = crate::types::BrowserSessionRow {
+            session_id: "project-session".into(),
+            subject: binding.subject.clone(),
+            email: None,
+            csrf_token: "csrf".into(),
+            created_at: crate::util::now_unix(),
+            expires_at: crate::util::now_unix() + 7_200,
+            project_binding: Some(binding.clone()),
+        };
+        state.store.upsert_browser_session(session).await.unwrap();
+        let persisted = state
+            .store
+            .find_browser_session("project-session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(persisted.project_binding.as_ref() == Some(&binding));
+        assert_eq!(
+            persisted.expires_at,
+            i64::try_from(binding.source_credential_expires_at).unwrap()
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let revalidator = Arc::new(CountingRevalidator {
+            calls: Arc::clone(&calls),
+            grant: bound_grant(&binding),
+        });
+        let app = Router::new()
+            .route(
+                "/probe",
+                get(
+                    |axum::Extension(grant): axum::Extension<BoundAccessGrant>| async move {
+                        grant.project_id
+                    },
+                ),
+            )
+            .route_layer(
+                AuthLayer::from_state(Arc::clone(&state))
+                    .with_allow_session_cookie(true)
+                    .with_project_session_revalidator(revalidator),
+            );
+        const REQUESTS: usize = 32;
+        for _ in 0..REQUESTS {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/probe")
+                        .header(header::COOKIE, "lab_session=project-session")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), REQUESTS);
+        assert!(
+            state
+                .store
+                .find_browser_session("project-session")
+                .await
+                .unwrap()
+                .is_some(),
+            "ordinary revalidation must not consume a raw-secret attempt budget or revoke the session"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn project_session_fails_closed_without_revalidator_and_rejects_mixed_authority() {
+        let state = Arc::new(test_auth_state().await);
+        let binding = project_binding();
+        state
+            .store
+            .upsert_browser_session(crate::types::BrowserSessionRow {
+                session_id: "project-session".into(),
+                subject: binding.subject.clone(),
+                email: None,
+                csrf_token: "csrf".into(),
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 60,
+                project_binding: Some(binding),
+            })
+            .await
+            .unwrap();
+        let layer = AuthLayer::from_state(state)
+            .with_allow_session_cookie(true)
+            .with_static_token(Some(Arc::<str>::from("valid-static")));
+        let unavailable = echo_app(layer.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::COOKIE, "lab_session=project-session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), StatusCode::BAD_GATEWAY);
+        let mixed = echo_app(layer)
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::COOKIE, "lab_session=project-session")
+                    .header(header::AUTHORIZATION, "Bearer valid-static")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mixed.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn access_revocation_remains_authoritative_when_auth_session_cleanup_fails() {
+        let state = Arc::new(test_auth_state().await);
+        let binding = project_binding();
+        state
+            .store
+            .upsert_browser_session(crate::types::BrowserSessionRow {
+                session_id: "cleanup-failure-session".into(),
+                subject: binding.subject.clone(),
+                email: None,
+                csrf_token: "csrf".into(),
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 60,
+                project_binding: Some(binding.clone()),
+            })
+            .await
+            .unwrap();
+        state
+            .store
+            .execute_test_statement(
+                "CREATE TRIGGER deny_project_session_delete
+                 BEFORE DELETE ON browser_sessions
+                 BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;",
+            )
+            .await
+            .unwrap();
+        let denied = Arc::new(AtomicBool::new(true));
+        let app = echo_app(
+            AuthLayer::from_state(Arc::clone(&state))
+                .with_allow_session_cookie(true)
+                .with_project_session_revalidator(Arc::new(ToggleRevalidator {
+                    denied,
+                    grant: bound_grant(&binding),
+                })),
+        );
+
+        for _ in 0..2 {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/probe")
+                        .header(header::COOKIE, "lab_session=cleanup-failure-session")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert!(
+            state
+                .store
+                .find_browser_session("cleanup-failure-session")
+                .await
+                .unwrap()
+                .is_some(),
+            "the injected auth.db cleanup failure must leave the row behind"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn concurrent_revocation_and_policy_drift_fail_closed_without_cached_authority() {
+        let state = Arc::new(test_auth_state().await);
+        let binding = project_binding();
+        state
+            .store
+            .upsert_browser_session(crate::types::BrowserSessionRow {
+                session_id: "race-session".into(),
+                subject: binding.subject.clone(),
+                email: None,
+                csrf_token: "csrf".into(),
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 60,
+                project_binding: Some(binding.clone()),
+            })
+            .await
+            .unwrap();
+        let denied = Arc::new(AtomicBool::new(false));
+        let app = echo_app(
+            AuthLayer::from_state(Arc::clone(&state))
+                .with_allow_session_cookie(true)
+                .with_project_session_revalidator(Arc::new(ToggleRevalidator {
+                    denied: Arc::clone(&denied),
+                    grant: bound_grant(&binding),
+                })),
+        );
+        let allowed = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::COOKIE, "lab_session=race-session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        denied.store(true, Ordering::SeqCst);
+        let request = || {
+            app.clone().oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::COOKIE, "lab_session=race-session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let (first, second, third, fourth) =
+            tokio::join!(request(), request(), request(), request());
+        for response in <[_; 4]>::from((first, second, third, fourth)) {
+            assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
+        }
+        assert!(
+            state
+                .store
+                .find_browser_session("race-session")
+                .await
+                .unwrap()
+                .is_none(),
+            "a genuine live-authority denial must revoke the stored session"
+        );
+
+        let mut drifted = bound_grant(&binding);
+        drifted.project_policy_epoch += 1;
+        state
+            .store
+            .upsert_browser_session(crate::types::BrowserSessionRow {
+                session_id: "drift-session".into(),
+                subject: binding.subject.clone(),
+                email: None,
+                csrf_token: "csrf".into(),
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 60,
+                project_binding: Some(binding),
+            })
+            .await
+            .unwrap();
+        let drift_app = echo_app(
+            AuthLayer::from_state(state)
+                .with_allow_session_cookie(true)
+                .with_project_session_revalidator(Arc::new(CountingRevalidator {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    grant: drifted,
+                })),
+        );
+        let response = drift_app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::COOKIE, "lab_session=drift-session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn csrf_is_rotated_per_session_and_old_or_mixed_authority_is_denied() {
+        let state = Arc::new(test_auth_state().await);
+        let binding = project_binding();
+        let session_state =
+            ProjectSessionState::from_store(state.store.clone(), "__Host-labby-session").unwrap();
+        let first = session_state.create(&bound_grant(&binding)).await.unwrap();
+        let second = session_state.create(&bound_grant(&binding)).await.unwrap();
+        assert_ne!(first.session_id, second.session_id);
+        assert_ne!(first.csrf_token, second.csrf_token);
+        let layer = AuthLayer::from_state(state)
+            .with_allow_session_cookie(true)
+            .with_project_session_state(Some(Arc::new(session_state)))
+            .with_project_session_revalidator(Arc::new(CountingRevalidator {
+                calls: Arc::new(AtomicUsize::new(0)),
+                grant: bound_grant(&binding),
+            }));
+        let app = Router::new()
+            .route("/probe", post(|| async { "ok" }))
+            .route_layer(layer);
+        let stale_csrf = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/probe")
+                    .header(
+                        header::COOKIE,
+                        format!("__Host-labby-session={}", second.session_id),
+                    )
+                    .header(session::BROWSER_CSRF_HEADER_NAME, first.csrf_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale_csrf.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let mixed = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/probe")
+                    .header(
+                        header::COOKIE,
+                        format!("__Host-labby-session={}", second.session_id),
+                    )
+                    .header(header::AUTHORIZATION, "Bearer any")
+                    .header(session::BROWSER_CSRF_HEADER_NAME, second.csrf_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mixed.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn product_credential_precedes_static_bearer_and_attaches_exact_bound_access() {
+        let source = product_source_grant();
+        let bound = product_bound_grant(&source);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let layer = AuthLayer::new()
+            .with_static_token(Some(Arc::<str>::from(product_token())))
+            .with_product_credential_verifier(Arc::new(StubProductVerifier {
+                result: Ok(source),
+                calls: Arc::clone(&calls),
+            }))
+            .with_product_access_grant_resolver(Arc::new(StubProductResolver {
+                result: Ok(bound),
+            }));
+        let app = Router::new().route("/probe", get(
+            |axum::Extension(ctx): axum::Extension<AuthContext>,
+             axum::Extension(grant): axum::Extension<BoundAccessGrant>,
+             axum::Extension(identity): axum::Extension<VerifiedIdentity>| async move {
+                assert_eq!(identity.authenticator(), Authenticator::ProductCredential);
+                format!("{}|{}|{}", ctx.sub, grant.project_id, ctx.scopes.join(","))
+            },
+        )).route_layer(layer);
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/probe")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", product_token()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"principal-1|project-1|lab:read");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn malformed_unknown_and_unconfigured_product_credentials_fail_uniformly_without_fallback()
+     {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let denied_layer = AuthLayer::new()
+            .with_static_token(Some(Arc::<str>::from(product_token())))
+            .with_product_credential_verifier(Arc::new(StubProductVerifier {
+                result: Err(ProductCredentialVerificationError::Denied),
+                calls: Arc::clone(&calls),
+            }));
+        let cases = [
+            (
+                "lby_pc_v1_bad",
+                AuthLayer::new().with_static_token(Some(Arc::<str>::from("lby_pc_v1_bad"))),
+            ),
+            (product_token(), denied_layer),
+            (
+                product_token(),
+                AuthLayer::new().with_static_token(Some(Arc::<str>::from(product_token()))),
+            ),
+        ];
+        let mut bodies = Vec::new();
+        for (token, layer) in cases {
+            let response = echo_app(layer)
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/probe")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            bodies.push(
+                axum::body::to_bytes(response.into_body(), 1024)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
     }
 }

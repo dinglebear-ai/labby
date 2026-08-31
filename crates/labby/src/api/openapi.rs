@@ -35,6 +35,85 @@ pub struct AccessBootstrapOwnerResponse {
     pub status: String,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BootstrapProofConsumeRequest {
+    pub version: u8,
+    pub installation_id: String,
+    pub canonical_issuer: String,
+    pub organization_name: String,
+    pub project_name: String,
+    pub subject: String,
+    pub loadout_id: String,
+    pub route_id: String,
+    pub resource: String,
+    pub scopes: Vec<String>,
+    pub ttl_seconds: u64,
+    pub credential_id: String,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BootstrapPrepareIdRequest {
+    pub prepare_id: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BootstrapProofMetadataResponse {
+    pub status: String,
+    pub prepare_id: String,
+    pub credential_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CredentialIssueRequestDoc {
+    pub credential_id: String,
+    pub credential_digest_hex: String,
+    pub project_id: String,
+    pub route_id: String,
+    pub resource: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    pub expires_at: i64,
+    pub idempotency_key: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CredentialMetadataResponseDoc {
+    pub status: String,
+    pub credential_id: String,
+    pub credential_generation: u64,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CredentialSelfResponseDoc {
+    pub status: String,
+    pub credential_id: String,
+    pub credential_generation: u64,
+    pub installation_id: String,
+    pub organization_id: String,
+    pub project_id: String,
+    pub loadout_id: String,
+    pub route_id: String,
+    pub resource: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    pub expires_at: i64,
+    pub revocation_generation: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MutationMetadataResponseDoc {
+    pub status: String,
+    pub credential_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LocalSessionResponseDoc {
+    pub csrf_token: String,
+    pub expires_at: i64,
+}
+
 // ── Documentation-only error schemas ────────────────────────────────────
 //
 // These mirror the `ToolError` wire format for OpenAPI documentation but
@@ -463,6 +542,10 @@ impl Modify for SecurityAddon {
         components.security_schemes.insert(
             "browser_session".to_string(),
             SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("lab_session"))),
+        );
+        components.security_schemes.insert(
+            "LabbyBootstrapProof".to_string(),
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("X-Labby-Bootstrap-Proof"))),
         );
     }
 }
@@ -909,6 +992,212 @@ pub fn build_access_paths() -> Vec<(String, PathItem)> {
     )]
 }
 
+fn private_json_response(description: &str, schema: &str) -> Response {
+    ResponseBuilder::new()
+        .description(description)
+        .content(
+            "application/json",
+            ContentBuilder::new()
+                .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(schema))))
+                .build(),
+        )
+        .build()
+}
+
+fn bootstrap_proof_operation(
+    summary: &'static str,
+    request_schema: &'static str,
+) -> utoipa::openapi::path::Operation {
+    OperationBuilder::new()
+        .tag("access")
+        .summary(Some(summary))
+        .description(Some(
+            "Direct-local proof-authenticated operation. Unknown, malformed, expired, or mismatched proofs receive one uniform non-enumerating denial. Responses are private, no-store and no-referrer.",
+        ))
+        .request_body(Some(
+            RequestBodyBuilder::new()
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                            request_schema,
+                        ))))
+                        .build(),
+                )
+                .required(Some(Required::True))
+                .build(),
+        ))
+        .responses(
+            ResponsesBuilder::new()
+                .response(
+                    "200",
+                    private_json_response(
+                        "Metadata-only operation outcome",
+                        "#/components/schemas/BootstrapProofMetadataResponse",
+                    ),
+                )
+                .response("403", agent_error_response("Uniform bootstrap proof denial"))
+                .response("503", agent_error_response("Bootstrap service unavailable"))
+                .build(),
+        )
+        .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
+            "LabbyBootstrapProof",
+            [],
+        ))
+        .build()
+}
+
+#[must_use]
+pub fn build_project_credential_paths() -> Vec<(String, PathItem)> {
+    let bearer = || SecurityRequirement::new::<&str, [&str; 0], &str>("bearer_auth", []);
+    let credential_response = private_json_response(
+        "Credential metadata only; plaintext credential secrets are never returned",
+        "#/components/schemas/CredentialMetadataResponseDoc",
+    );
+    vec![
+        (
+            "/auth/bootstrap/consume".into(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    bootstrap_proof_operation(
+                        "Consume an offline-prepared bootstrap proof",
+                        "#/components/schemas/BootstrapProofConsumeRequest",
+                    ),
+                )
+                .build(),
+        ),
+        (
+            "/auth/bootstrap/status".into(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    bootstrap_proof_operation(
+                        "Read bootstrap prepare status",
+                        "#/components/schemas/BootstrapPrepareIdRequest",
+                    ),
+                )
+                .build(),
+        ),
+        (
+            "/auth/bootstrap/cleanup".into(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    bootstrap_proof_operation(
+                        "Tombstone and clean an exact bootstrap prepare",
+                        "#/components/schemas/BootstrapPrepareIdRequest",
+                    ),
+                )
+                .build(),
+        ),
+        (
+            "/v1/access/credentials".into(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    OperationBuilder::new()
+                        .tag("access")
+                        .summary(Some("Issue a narrower project credential"))
+                        .request_body(Some(
+                            RequestBodyBuilder::new()
+                                .content(
+                                    "application/json",
+                                    ContentBuilder::new()
+                                        .schema(Some(RefOr::Ref(utoipa::openapi::Ref::new(
+                                            "#/components/schemas/CredentialIssueRequestDoc",
+                                        ))))
+                                        .build(),
+                                )
+                                .required(Some(Required::True))
+                                .build(),
+                        ))
+                        .response("201", credential_response.clone())
+                        .security(bearer())
+                        .build(),
+                )
+                .build(),
+        ),
+        (
+            "/v1/access/credentials/self".into(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Get,
+                    OperationBuilder::new()
+                        .tag("access")
+                        .summary(Some("Introspect the exact source credential"))
+                        .response(
+                            "200",
+                            private_json_response(
+                                "Exact active credential binding",
+                                "#/components/schemas/CredentialSelfResponseDoc",
+                            ),
+                        )
+                        .security(bearer())
+                        .build(),
+                )
+                .build(),
+        ),
+        (
+            "/v1/access/credentials/{credential_id}".into(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Delete,
+                    OperationBuilder::new()
+                        .tag("access")
+                        .summary(Some("Revoke a project credential"))
+                        .response(
+                            "200",
+                            private_json_response(
+                                "Idempotent revocation outcome",
+                                "#/components/schemas/MutationMetadataResponseDoc",
+                            ),
+                        )
+                        .security(bearer())
+                        .build(),
+                )
+                .build(),
+        ),
+        (
+            "/auth/local-session".into(),
+            PathItemBuilder::new()
+                .operation(
+                    utoipa::openapi::HttpMethod::Post,
+                    OperationBuilder::new()
+                        .tag("access")
+                        .summary(Some("Create a source-bound local browser session"))
+                        .response(
+                            "201",
+                            private_json_response(
+                                "Source-bound browser session metadata",
+                                "#/components/schemas/LocalSessionResponseDoc",
+                            ),
+                        )
+                        .security(bearer())
+                        .build(),
+                )
+                .operation(
+                    utoipa::openapi::HttpMethod::Delete,
+                    OperationBuilder::new()
+                        .tag("access")
+                        .summary(Some("Revoke the current local browser session"))
+                        .response(
+                            "204",
+                            ResponseBuilder::new()
+                                .description("Browser session revoked and cookie cleared")
+                                .build(),
+                        )
+                        .security(SecurityRequirement::new::<&str, [&str; 0], &str>(
+                            "browser_session",
+                            [],
+                        ))
+                        .build(),
+                )
+                .build(),
+        ),
+    ]
+}
+
 fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
     [
         (
@@ -970,6 +1259,14 @@ fn server_logs_query_parameters() -> Vec<utoipa::openapi::path::Parameter> {
         CodeModeToolDescribeResponseDoc,
         AccessBootstrapOwnerRequest,
         AccessBootstrapOwnerResponse,
+        BootstrapProofConsumeRequest,
+        BootstrapPrepareIdRequest,
+        BootstrapProofMetadataResponse,
+        CredentialIssueRequestDoc,
+        CredentialMetadataResponseDoc,
+        CredentialSelfResponseDoc,
+        MutationMetadataResponseDoc,
+        LocalSessionResponseDoc,
     )),
     modifiers(&SecurityAddon),
 )]
@@ -1007,9 +1304,68 @@ pub fn build_openapi_spec(
     for (path, item) in build_access_paths() {
         spec.paths.paths.insert(path, item);
     }
+    for (path, item) in build_project_credential_paths() {
+        spec.paths.paths.insert(path, item);
+    }
 
-    let json = serde_json::to_string_pretty(&spec)?;
+    let mut value = serde_json::to_value(&spec)?;
+    annotate_access_contracts(&mut value);
+    let json = serde_json::to_string_pretty(&value)?;
     Ok(Arc::new(json))
+}
+
+fn annotate_access_contracts(spec: &mut serde_json::Value) {
+    let contracts = [
+        (
+            "/auth/bootstrap/consume",
+            "post",
+            "atomic owner and credential creation; exact retry idempotent",
+        ),
+        ("/auth/bootstrap/status", "post", "none_expected"),
+        (
+            "/auth/bootstrap/cleanup",
+            "post",
+            "tombstone before exact-file cleanup; exact retry idempotent",
+        ),
+        (
+            "/v1/access/credentials",
+            "post",
+            "credential creation; exact retry idempotent",
+        ),
+        ("/v1/access/credentials/self", "get", "none_expected"),
+        (
+            "/v1/access/credentials/{credential_id}",
+            "delete",
+            "immediate credential revocation; exact retry idempotent",
+        ),
+        (
+            "/auth/local-session",
+            "post",
+            "source-bound browser session creation",
+        ),
+        (
+            "/auth/local-session",
+            "delete",
+            "browser session revocation",
+        ),
+    ];
+    for (path, method, side_effects) in contracts {
+        let Some(operation) = spec["paths"][path][method].as_object_mut() else {
+            continue;
+        };
+        operation.insert(
+            "x-labby-cache-posture".into(),
+            serde_json::json!("private, no-store"),
+        );
+        operation.insert(
+            "x-labby-failure-disclosure".into(),
+            serde_json::json!("uniform non-enumerating denial"),
+        );
+        operation.insert(
+            "x-labby-side-effects".into(),
+            serde_json::json!(side_effects),
+        );
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -1426,6 +1782,35 @@ mod tests {
             security_schemes.contains_key("browser_session"),
             "missing browser_session security scheme"
         );
+        assert!(
+            security_schemes.contains_key("LabbyBootstrapProof"),
+            "missing LabbyBootstrapProof security scheme"
+        );
+        for path in [
+            "/auth/bootstrap/consume",
+            "/auth/bootstrap/status",
+            "/auth/bootstrap/cleanup",
+        ] {
+            let operation = &paths[path]["post"];
+            assert_eq!(
+                operation["security"][0]["LabbyBootstrapProof"],
+                serde_json::json!([])
+            );
+            assert_eq!(operation["x-labby-cache-posture"], "private, no-store");
+            assert_eq!(
+                operation["x-labby-failure-disclosure"],
+                "uniform non-enumerating denial"
+            );
+            assert!(operation.get("x-labby-side-effects").is_some());
+        }
+        for path in [
+            "/v1/access/credentials",
+            "/v1/access/credentials/self",
+            "/v1/access/credentials/{credential_id}",
+            "/auth/local-session",
+        ] {
+            assert!(paths.contains_key(path), "missing access path {path}");
+        }
 
         // Service dispatch paths should have POST operations with security requirement.
         // Non-dispatch app routes under /v1 (for example /v1/apps/manifest)

@@ -15,4 +15,5 @@ pub mod action;
 pub mod mcp;
 pub mod plugin;
 pub mod plugin_ui;
+pub mod product_credential;
 pub mod ssrf;

@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Query, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     response::IntoResponse,
@@ -34,13 +34,33 @@ struct CachedPaletteCatalog {
     catalog: LauncherCatalogView,
 }
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/catalog", get(catalog))
-        .route("/search", get(search))
-        .route("/schema", get(schema))
-        .route("/descriptor", get(descriptor))
-        .route("/execute", post(execute))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), get(catalog))
+        .route(descriptors.next().unwrap(), get(search))
+        .route(descriptors.next().unwrap(), get(schema))
+        .route(descriptors.next().unwrap(), get(descriptor))
+        .route(descriptors.next().unwrap(), post(execute))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    [
+        ("GET", "/catalog", "catalog"),
+        ("GET", "/search", "search"),
+        ("GET", "/schema", "schema"),
+        ("GET", "/descriptor", "descriptor"),
+        ("POST", "/execute", "execute"),
+    ]
+    .into_iter()
+    .map(|(method, path, handler)| {
+        RouteDescriptor::new(method, path, handler, "palette", RouteAuth::V1)
+            .feature("gateway")
+            .when("mounted only when API authentication and the gateway manager are configured")
+    })
+    .collect()
 }
 
 async fn catalog(

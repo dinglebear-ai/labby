@@ -11,6 +11,9 @@ use super::*;
 
 #[tokio::test]
 async fn reload_evicts_removed_upstream_oauth_clients() {
+    // Keep the shared client fixture covered without exposing a production
+    // cache-insertion seam solely for downstream tests.
+    drop(dummy_auth_client().await);
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
     let mut kept_upstream = fixture_http_upstream("kept");
@@ -24,16 +27,23 @@ async fn reload_evicts_removed_upstream_oauth_clients() {
     )
     .expect("write config");
 
-    let cache = OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
-    cache.insert_for_tests(
-        "removed",
-        "alice",
-        "preregistered:client-a",
-        dummy_auth_client().await,
+    let managers = Arc::new(dashmap::DashMap::new());
+    let cache = OauthClientCache::new(Arc::clone(&managers));
+    let (sqlite, key, redirect_uri) = fixture_oauth_resources(&dir).await;
+    managers.insert(
+        "removed".to_string(),
+        UpstreamOauthManager::new(
+            sqlite.clone(),
+            key.clone(),
+            fixture_oauth_upstream("removed", "https://removed.example.com/mcp"),
+            redirect_uri.clone(),
+        ),
     );
 
     let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default())
-        .with_oauth_client_cache(cache.clone());
+        .with_upstream_oauth_managers(Arc::clone(&managers))
+        .with_oauth_client_cache(cache.clone())
+        .with_oauth_resources(sqlite, key, redirect_uri);
     let mut removed_upstream = fixture_http_upstream("removed");
     removed_upstream.url = Some("http://127.0.0.1:7000".to_string());
     removed_upstream.oauth = Some(UpstreamOauthConfig {
@@ -50,12 +60,13 @@ async fn reload_evicts_removed_upstream_oauth_clients() {
         })
         .await;
 
-    assert_eq!(cache.len(), 1);
+    assert!(managers.contains_key("removed"));
     manager
         .reload_with_origin(None, None)
         .await
         .expect("reload");
     assert!(cache.is_empty());
+    assert!(!managers.contains_key("removed"));
 }
 
 #[tokio::test]
@@ -107,12 +118,6 @@ async fn reload_replaces_changed_upstream_oauth_manager_and_evicts_cache() {
         ),
     );
     let cache = OauthClientCache::new(Arc::clone(&managers));
-    cache.insert_for_tests(
-        "changed-oauth",
-        "alice",
-        "dynamic",
-        dummy_auth_client().await,
-    );
     let manager = GatewayManager::new(
         dir.path().join("config.toml"),
         GatewayRuntimeHandle::default(),
@@ -121,7 +126,7 @@ async fn reload_replaces_changed_upstream_oauth_manager_and_evicts_cache() {
     .with_oauth_client_cache(cache.clone())
     .with_oauth_resources(sqlite, key, redirect_uri);
 
-    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.len(), 0);
     manager.reconcile_upstream_oauth_managers(&GatewayConfig {
         upstream: vec![fixture_oauth_upstream(
             "changed-oauth",

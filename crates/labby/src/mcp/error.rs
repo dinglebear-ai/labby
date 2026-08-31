@@ -233,6 +233,8 @@ pub(crate) fn canonical_kind(s: &str) -> &'static str {
         "missing_param" => "missing_param",
         "invalid_param" => "invalid_param",
         "unknown_instance" => "unknown_instance",
+        "unknown_execution" => "unknown_execution",
+        "unknown_service" => "unknown_service",
         "confirmation_required" => "confirmation_required",
         "conflict" => "conflict",
         "auth_failed" => "auth_failed",
@@ -248,6 +250,7 @@ pub(crate) fn canonical_kind(s: &str) -> &'static str {
         "http_only" => "http_only",
         "route_scope_denied" => "route_scope_denied",
         "restart_required" => "restart_required",
+        "stale_suggestion" => "stale_suggestion",
         _ => "internal_error",
     }
 }

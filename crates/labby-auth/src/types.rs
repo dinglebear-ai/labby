@@ -1,3 +1,4 @@
+use labby_primitives::product_credential::BoundAccessGrant;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -6,7 +7,8 @@ pub struct AuthorizationServerMetadata {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub revocation_endpoint: String,
-    pub registration_endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_callback_endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -362,7 +364,63 @@ impl std::fmt::Debug for AllowedUserRevocation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Immutable authorization facts captured when a project browser session is
+/// created.  The credential secret is deliberately absent; only its stable ID
+/// and generation are persisted.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectSessionBinding {
+    pub installation_id: String,
+    pub issuer: String,
+    pub subject: String,
+    pub principal_id: String,
+    pub organization_id: String,
+    pub project_id: String,
+    pub loadout_id: String,
+    pub loadout_generation: u64,
+    pub assignment_generation: u64,
+    pub catalog_generation: u64,
+    pub route_id: String,
+    pub route_generation: u64,
+    pub membership_epoch: u64,
+    pub organization_policy_epoch: u64,
+    pub project_policy_epoch: u64,
+    pub source_credential_id: String,
+    pub source_credential_generation: u64,
+    pub scopes: Vec<String>,
+    pub resource: String,
+    pub audience: String,
+    pub source_credential_expires_at: u64,
+}
+
+impl From<&BoundAccessGrant> for ProjectSessionBinding {
+    fn from(grant: &BoundAccessGrant) -> Self {
+        Self {
+            installation_id: grant.installation_id.clone(),
+            issuer: grant.issuer.clone(),
+            subject: grant.subject.clone(),
+            principal_id: grant.principal_id.clone(),
+            organization_id: grant.organization_id.clone(),
+            project_id: grant.project_id.clone(),
+            loadout_id: grant.loadout_id.clone(),
+            loadout_generation: grant.loadout_generation,
+            assignment_generation: grant.assignment_generation,
+            catalog_generation: grant.catalog_generation,
+            route_id: grant.route_id.clone(),
+            route_generation: grant.route_generation,
+            membership_epoch: grant.membership_epoch,
+            organization_policy_epoch: grant.organization_policy_epoch,
+            project_policy_epoch: grant.project_policy_epoch,
+            source_credential_id: grant.credential_id.clone(),
+            source_credential_generation: grant.credential_generation,
+            scopes: grant.scopes.clone(),
+            resource: grant.resource.clone(),
+            audience: grant.audience.clone(),
+            source_credential_expires_at: grant.expires_at,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserSessionRow {
     pub session_id: String,
     pub subject: String,
@@ -370,6 +428,23 @@ pub struct BrowserSessionRow {
     pub csrf_token: String,
     pub created_at: i64,
     pub expires_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_binding: Option<ProjectSessionBinding>,
+}
+
+impl std::fmt::Debug for BrowserSessionRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserSessionRow")
+            .field("session_id", &"<redacted>")
+            .field("subject", &"<redacted>")
+            .field("email_present", &self.email.is_some())
+            .field("csrf_token", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("project_bound", &self.project_binding.is_some())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +507,9 @@ pub struct UpstreamOauthStateRow {
     pub subject: String,
     pub csrf_token: String,
     pub pkce_verifier: String,
+    pub expected_issuer: Option<String>,
+    pub require_issuer: bool,
+    pub requested_scopes: Vec<String>,
     pub created_at: i64,
     pub expires_at: i64,
 }
@@ -455,6 +533,9 @@ impl std::fmt::Debug for UpstreamOauthStateRow {
             .field("subject", &"<redacted>")
             .field("csrf_token", &"<redacted>")
             .field("pkce_verifier", &"<redacted>")
+            .field("expected_issuer", &self.expected_issuer)
+            .field("require_issuer", &self.require_issuer)
+            .field("requested_scopes", &self.requested_scopes)
             .field("created_at", &self.created_at)
             .field("expires_at", &self.expires_at)
             .finish()

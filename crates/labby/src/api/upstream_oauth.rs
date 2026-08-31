@@ -1,5 +1,5 @@
 use axum::{
-    Json, Router,
+    Json,
     extract::{Extension, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect},
@@ -14,27 +14,91 @@ use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::redact::redact_url;
 
-pub fn gateway_routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/upstreams", get(upstreams))
-        .route("/probe", post(probe))
-        .route("/start", post(start))
-        .route("/status", get(status))
-        .route("/clear", post(clear))
-        .route("/google/revoke", post(revoke_google))
+pub fn gateway_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = gateway_descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), get(upstreams))
+        .route(descriptors.next().unwrap(), post(probe))
+        .route(descriptors.next().unwrap(), post(start))
+        .route(descriptors.next().unwrap(), get(status))
+        .route(descriptors.next().unwrap(), post(clear))
+        .route(descriptors.next().unwrap(), post(revoke_google))
 }
 
-pub fn browser_routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/auth/upstream/callback", get(callback))
-        .route("/gateway/oauth/result", get(result_page))
+pub(crate) fn gateway_descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    [
+        ("GET", "/upstreams", "upstreams"),
+        ("POST", "/probe", "probe"),
+        ("POST", "/start", "start"),
+        ("GET", "/status", "status"),
+        ("POST", "/clear", "clear"),
+        ("POST", "/google/revoke", "revoke_google"),
+    ]
+    .into_iter()
+    .map(|(method, path, handler)| {
+        RouteDescriptor::new(method, path, handler, "upstream_oauth", RouteAuth::V1)
+            .feature("gateway")
+            .when("mounted only when the gateway manager is configured")
+    })
+    .collect()
+}
+
+pub fn browser_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = browser_descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), get(callback))
+        .route(descriptors.next().unwrap(), get(result_page))
+}
+
+pub(crate) fn browser_descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new(
+            "GET",
+            "/auth/upstream/callback",
+            "callback",
+            "upstream_oauth",
+            RouteAuth::Public,
+        )
+        .feature("gateway"),
+        RouteDescriptor::new(
+            "GET",
+            "/gateway/oauth/result",
+            "result_page",
+            "upstream_oauth",
+            RouteAuth::Public,
+        )
+        .feature("gateway"),
+    ]
 }
 
 /// Route group for `/.well-known/oauth-client` — the CIMD metadata document.
 ///
 /// Mounted unconditionally; returns 404 when upstream OAuth is not configured.
-pub fn well_known_routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/.well-known/oauth-client", get(oauth_client_metadata))
+pub fn well_known_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(
+        well_known_descriptors().remove(0),
+        get(oauth_client_metadata),
+    )
+}
+
+pub(crate) fn well_known_descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new(
+            "GET",
+            "/.well-known/oauth-client",
+            "oauth_client_metadata",
+            "upstream_oauth",
+            RouteAuth::Public,
+        )
+        .feature("gateway")
+        .when("returns metadata only when upstream OAuth is configured"),
+    ]
 }
 
 /// Serve the OAuth Client ID Metadata Document (RFC 9728 / MCP OAuth 2.1).
@@ -113,6 +177,7 @@ struct GoogleRevokeRequest {
 struct CallbackQuery {
     code: Option<String>,
     state: String,
+    iss: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
 }
@@ -657,12 +722,13 @@ async fn callback(
         }
     };
 
-    let result = crate::dispatch::gateway::oauth::complete_authorization_callback(
+    let result = crate::dispatch::gateway::oauth::complete_authorization_callback_with_issuer(
         &manager,
         &upstream,
         SHARED_GATEWAY_OAUTH_SUBJECT,
         code,
         &query.state,
+        query.iss.as_deref(),
     )
     .await;
 
@@ -859,7 +925,7 @@ mod tests {
     #[tokio::test]
     async fn result_page_escapes_upstream_name() {
         let state = AppState::new();
-        let app = browser_routes(state.clone()).with_state(state);
+        let app = browser_routes(state.clone()).router.with_state(state);
 
         let response = app
             .oneshot(
@@ -884,7 +950,7 @@ mod tests {
     #[tokio::test]
     async fn callback_authorization_error_consumes_oauth_state() {
         let (_dir, store, state) = callback_test_state().await;
-        let app = browser_routes(state.clone()).with_state(state);
+        let app = browser_routes(state.clone()).router.with_state(state);
 
         let response = app
             .oneshot(
@@ -915,7 +981,7 @@ mod tests {
     #[tokio::test]
     async fn callback_missing_code_consumes_oauth_state() {
         let (_dir, store, state) = callback_test_state().await;
-        let app = browser_routes(state.clone()).with_state(state);
+        let app = browser_routes(state.clone()).router.with_state(state);
 
         let response = app
             .oneshot(
@@ -940,6 +1006,7 @@ mod tests {
     async fn clear_does_not_require_explicit_confirmation() {
         let state = AppState::new();
         let app = gateway_routes(state.clone())
+            .router
             .layer(Extension(test_auth_context()))
             .with_state(state);
 
@@ -968,6 +1035,7 @@ mod tests {
     async fn probe_requires_explicit_confirmation() {
         let state = AppState::new();
         let app = gateway_routes(state.clone())
+            .router
             .layer(Extension(test_auth_context()))
             .with_state(state);
 
@@ -997,6 +1065,7 @@ mod tests {
     async fn upstream_oauth_routes_require_admin_scope() {
         let state = AppState::new();
         let app = gateway_routes(state.clone())
+            .router
             .layer(Extension(read_only_auth_context()))
             .with_state(state);
 
@@ -1111,6 +1180,9 @@ mod tests {
                     subject: SHARED_GATEWAY_OAUTH_SUBJECT.to_string(),
                     csrf_token: csrf.to_string(),
                     pkce_verifier: "verifier".to_string(),
+                    expected_issuer: None,
+                    require_issuer: false,
+                    requested_scopes: Vec::new(),
                     created_at: now,
                     expires_at: now + 300,
                 })
@@ -1134,4 +1206,15 @@ mod tests {
             .with_gateway_manager(manager);
         (dir, store, state)
     }
+}
+#[test]
+fn callback_query_preserves_rfc9207_issuer_verbatim() {
+    let query: CallbackQuery = serde_json::from_value(serde_json::json!({
+        "code": "c", "state": "s", "iss": "https://issuer.example/tenant"
+    }))
+    .unwrap();
+    assert_eq!(query.iss.as_deref(), Some("https://issuer.example/tenant"));
+    let missing: CallbackQuery =
+        serde_json::from_value(serde_json::json!({"code": "c", "state": "s"})).unwrap();
+    assert!(missing.iss.is_none());
 }

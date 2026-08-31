@@ -87,17 +87,18 @@ pub use self::import_matchers::ImportTombstoneSelector;
 pub(crate) use self::import_matchers::{discovered_is_tombstoned, partition_discovered_for_import};
 #[allow(unused_imports)]
 pub use self::pool_lifecycle::{GatewayCatalogSnapshot, GatewayReloadOutcome, diff_catalogs};
-pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
 pub use self::publication::{
-    LoadoutMcpCatalogPublicationError, LoadoutPromptCatalogPublicationError,
-    LoadoutResourceCatalogPublicationError, LoadoutResourceTemplateCatalogPublicationError,
-    LoadoutServiceCatalogPublicationError, LoadoutToolCatalogPublicationError,
-    ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot,
+    BootstrapPolicyLeaseError, LoadoutMcpCatalogPublicationError,
+    LoadoutPromptCatalogPublicationError, LoadoutResourceCatalogPublicationError,
+    LoadoutResourceTemplateCatalogPublicationError, LoadoutServiceCatalogPublicationError,
+    LoadoutToolCatalogPublicationError, ProjectRoutePublicationError,
+    PublishedBootstrapPolicyLease, PublishedLoadoutMcpCatalogSnapshot,
     PublishedLoadoutPromptCatalogSnapshot, PublishedLoadoutResourceCatalogSnapshot,
     PublishedLoadoutResourceTemplateCatalogSnapshot, PublishedLoadoutService,
     PublishedLoadoutServiceCatalogSnapshot, PublishedLoadoutToolCatalogSnapshot,
     PublishedProjectRouteSnapshot,
 };
+pub use self::publication::{GatewayRuntimeConfigGeneration, PublishedRuntimeLoadoutSnapshot};
 pub use super::service_registry::{
     PublishedServiceRegistrySnapshot, ServiceRegistryPublicationError,
     ServiceRegistryPublicationGeneration,

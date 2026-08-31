@@ -16,6 +16,12 @@ pub mod error;
 /// Router builder — composes all feature-gated route groups.
 pub mod router;
 
+/// Typed runtime HTTP route descriptors shared with generated documentation.
+pub mod route_registry;
+
+/// Safe matched-route observability shared by the production HTTP stack.
+mod route_observability;
+
 /// Focused authentication helpers used by the top-level router middleware.
 mod router_middleware;
 

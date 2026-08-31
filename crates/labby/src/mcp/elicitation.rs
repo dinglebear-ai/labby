@@ -3,8 +3,25 @@ use rmcp::model::{
     ElicitationSchema, InputRequest, InputRequests, InputRequiredResult, PrimitiveSchemaDefinition,
 };
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub(crate) const DESTRUCTIVE_CONFIRMATION_INPUT: &str = "destructive_confirmation";
+const CONFIRMATION_TTL: Duration = Duration::from_mins(2);
+const MAX_CONFIRMATIONS: usize = 256;
+const MAX_CONFIRMATIONS_PER_OWNER: usize = 8;
+
+struct PendingConfirmation {
+    binding: String,
+    owner: String,
+    expires: Instant,
+}
+
+fn pending_confirmations() -> &'static Mutex<HashMap<String, PendingConfirmation>> {
+    static PENDING: OnceLock<Mutex<HashMap<String, PendingConfirmation>>> = OnceLock::new();
+    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub(crate) enum DestructiveConfirmation {
     Proceed,
@@ -14,13 +31,16 @@ pub(crate) enum DestructiveConfirmation {
 
 /// Apply the 2026-07-28 MRTR elicitation pattern to one destructive tool call.
 ///
-/// The original tool request already identifies the operation, so this carries
-/// no custom `requestState`: the client simply retries that request with the
-/// elicitation result in `inputResponses`.
+/// The server issues opaque, expiring `requestState` bound to the complete
+/// authorization and request context supplied by the caller. A retry consumes
+/// that state before validating the response, so mismatches and replays fail
+/// closed and cannot execute the destructive operation.
 pub(crate) fn destructive_confirmation(
     request: &CallToolRequestParams,
     service: &str,
     action: &str,
+    binding: &str,
+    owner: &str,
 ) -> DestructiveConfirmation {
     let supports_form_elicitation = request
         .meta
@@ -30,10 +50,23 @@ pub(crate) fn destructive_confirmation(
         .and_then(|elicitation| elicitation.form)
         .is_some();
     if !supports_form_elicitation {
-        return DestructiveConfirmation::Proceed;
+        return DestructiveConfirmation::Refused;
     }
 
     if let Some(responses) = request.input_responses.as_ref() {
+        let Some(state) = request.request_state.as_deref() else {
+            return DestructiveConfirmation::Refused;
+        };
+        let pending = pending_confirmations()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(state);
+        let Some(pending) = pending else {
+            return DestructiveConfirmation::Refused;
+        };
+        if pending.expires <= Instant::now() || pending.binding != binding {
+            return DestructiveConfirmation::Refused;
+        }
         let accepted = responses
             .get(DESTRUCTIVE_CONFIRMATION_INPUT)
             .and_then(|value| serde_json::from_value::<ElicitResult>(value.clone()).ok())
@@ -60,7 +93,7 @@ pub(crate) fn destructive_confirmation(
         )
         .build()
     else {
-        return DestructiveConfirmation::Proceed;
+        return DestructiveConfirmation::Refused;
     };
     let params = ElicitRequestParams::FormElicitationParams {
         meta: None,
@@ -74,7 +107,30 @@ pub(crate) fn destructive_confirmation(
         DESTRUCTIVE_CONFIRMATION_INPUT.to_string(),
         InputRequest::Elicitation(ElicitRequest::new(params)),
     )]);
-    DestructiveConfirmation::InputRequired(InputRequiredResult::from_input_requests(requests))
+    let state = ulid::Ulid::new().to_string();
+    let now = Instant::now();
+    let mut pending = pending_confirmations()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pending.retain(|_, value| value.expires > now);
+    let owner_count = pending
+        .values()
+        .filter(|value| value.owner == owner)
+        .count();
+    if pending.len() >= MAX_CONFIRMATIONS || owner_count >= MAX_CONFIRMATIONS_PER_OWNER {
+        return DestructiveConfirmation::Refused;
+    }
+    pending.insert(
+        state.clone(),
+        PendingConfirmation {
+            binding: binding.to_owned(),
+            owner: owner.to_owned(),
+            expires: now + CONFIRMATION_TTL,
+        },
+    );
+    let mut result = InputRequiredResult::from_input_requests(requests);
+    result.request_state = Some(state);
+    DestructiveConfirmation::InputRequired(result)
 }
 
 #[cfg(test)]
@@ -87,7 +143,7 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::{DestructiveConfirmation, destructive_confirmation};
+    use super::{DestructiveConfirmation, MAX_CONFIRMATIONS_PER_OWNER, destructive_confirmation};
 
     fn elicitation_request() -> CallToolRequestParams {
         let capabilities = ClientCapabilities::builder()
@@ -105,16 +161,16 @@ mod tests {
     }
 
     #[test]
-    fn destructive_confirmation_uses_mrtr_without_request_state() {
+    fn destructive_confirmation_uses_server_owned_request_state() {
         let request = elicitation_request();
 
         let DestructiveConfirmation::InputRequired(result) =
-            destructive_confirmation(&request, "danger", "danger.delete")
+            destructive_confirmation(&request, "danger", "danger.delete", "binding-a", "owner-a")
         else {
             panic!("expected input_required");
         };
 
-        assert!(result.request_state.is_none());
+        assert!(result.request_state.is_some());
         let requests = result.input_requests.expect("inputRequests");
         assert_eq!(requests.len(), 1);
         assert!(requests.contains_key("destructive_confirmation"));
@@ -123,23 +179,119 @@ mod tests {
     #[test]
     fn destructive_confirmation_accepts_the_retried_elicitation_response() {
         let mut request = elicitation_request();
+        let DestructiveConfirmation::InputRequired(challenge) =
+            destructive_confirmation(&request, "danger", "danger.delete", "binding-b", "owner-b")
+        else {
+            panic!("expected input_required");
+        };
+        request.request_state = challenge.request_state;
         request.input_responses = Some(BTreeMap::from([(
             "destructive_confirmation".to_string(),
             json!({"action": "accept", "content": {"confirm": true}}),
         )]));
 
         assert!(matches!(
-            destructive_confirmation(&request, "danger", "danger.delete"),
+            destructive_confirmation(&request, "danger", "danger.delete", "binding-b", "owner-b"),
             DestructiveConfirmation::Proceed
+        ));
+        assert!(matches!(
+            destructive_confirmation(&request, "danger", "danger.delete", "binding-b", "owner-b"),
+            DestructiveConfirmation::Refused
         ));
     }
 
     #[test]
-    fn destructive_confirmation_does_not_gate_clients_without_elicitation() {
+    fn confirmation_capacity_is_partitioned_per_owner() {
+        let request = elicitation_request();
+        let owner = format!("quota-owner-{}", ulid::Ulid::new());
+        let mut states = Vec::new();
+        for index in 0..MAX_CONFIRMATIONS_PER_OWNER {
+            let DestructiveConfirmation::InputRequired(challenge) = destructive_confirmation(
+                &request,
+                "danger",
+                "danger.delete",
+                &format!("binding-{index}"),
+                &owner,
+            ) else {
+                panic!("owner quota rejected too early");
+            };
+            states.push((challenge.request_state.unwrap(), format!("binding-{index}")));
+        }
+        assert!(matches!(
+            destructive_confirmation(&request, "danger", "danger.delete", "overflow", &owner),
+            DestructiveConfirmation::Refused
+        ));
+        let other_owner = format!("other-owner-{}", ulid::Ulid::new());
+        assert!(matches!(
+            destructive_confirmation(
+                &request,
+                "danger",
+                "danger.delete",
+                "other-binding",
+                &other_owner
+            ),
+            DestructiveConfirmation::InputRequired(_)
+        ));
+
+        for (state, binding) in states {
+            let mut response = elicitation_request();
+            response.request_state = Some(state);
+            response.input_responses = Some(BTreeMap::from([(
+                "destructive_confirmation".to_string(),
+                json!({"action": "decline"}),
+            )]));
+            assert!(matches!(
+                destructive_confirmation(&response, "danger", "danger.delete", &binding, &owner),
+                DestructiveConfirmation::Refused
+            ));
+        }
+    }
+
+    #[test]
+    fn destructive_confirmation_burns_state_on_binding_mismatch() {
+        let mut request = elicitation_request();
+        let DestructiveConfirmation::InputRequired(challenge) = destructive_confirmation(
+            &request,
+            "danger",
+            "danger.delete",
+            "binding-original",
+            "owner-c",
+        ) else {
+            panic!("expected input_required");
+        };
+        request.request_state = challenge.request_state;
+        request.input_responses = Some(BTreeMap::from([(
+            "destructive_confirmation".to_string(),
+            json!({"action": "accept", "content": {"confirm": true}}),
+        )]));
+        assert!(matches!(
+            destructive_confirmation(
+                &request,
+                "danger",
+                "danger.delete",
+                "binding-changed",
+                "owner-c"
+            ),
+            DestructiveConfirmation::Refused
+        ));
+        assert!(matches!(
+            destructive_confirmation(
+                &request,
+                "danger",
+                "danger.delete",
+                "binding-original",
+                "owner-c"
+            ),
+            DestructiveConfirmation::Refused
+        ));
+    }
+
+    #[test]
+    fn destructive_confirmation_fails_closed_without_elicitation() {
         let request = CallToolRequestParams::new("danger");
 
         assert!(matches!(
-            destructive_confirmation(&request, "danger", "danger.delete"),
+            destructive_confirmation(&request, "danger", "danger.delete", "binding-c", "owner-d"),
             DestructiveConfirmation::Proceed
         ));
     }

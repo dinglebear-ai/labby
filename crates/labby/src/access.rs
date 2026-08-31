@@ -1,5 +1,8 @@
 mod authorization;
 mod bootstrap;
+mod credential_schema;
+mod credential_store;
+mod credential_verifier;
 mod domain;
 mod error;
 #[cfg(feature = "gateway")]
@@ -12,6 +15,8 @@ mod read;
 mod resolver;
 mod runtime;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod workflow;
 
 #[allow(unused_imports)]
@@ -20,6 +25,15 @@ pub(crate) use authorization::{
 };
 #[allow(unused_imports)]
 pub(crate) use bootstrap::{BootstrapOutcome, BootstrapOwnerInput};
+pub(crate) use credential_store::{
+    ActivateProofInput, ConsumeBootstrapInput, CredentialSnapshot, IssueCredentialInput,
+    MutationOutcome,
+};
+#[allow(unused_imports)]
+pub(crate) use credential_verifier::{
+    AccessCredentialAdapter, LiveAuthority, LiveAuthorityError, LiveAuthorityFuture,
+    LiveAuthoritySnapshot, ProtectedCredentialRequirements, StoredBinding, VerifiedProductBinding,
+};
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole};
 pub(crate) use error::AccessStoreError;
@@ -38,6 +52,7 @@ pub(crate) use health::{AccessHealth, AccessHealthStatus, inspect_health};
 pub(crate) use loadout::{AssignProjectLoadoutInput, AssignProjectLoadoutOutcome};
 #[allow(unused_imports)]
 pub(crate) use read::{AccessibleProjectSnapshot, ProjectAccessSnapshot};
+pub(crate) use runtime::CredentialLifecycleError;
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     AccessBlockedReason, AccessRuntime, AccessRuntimeError, AccessRuntimeStatus, AccessSetupReason,

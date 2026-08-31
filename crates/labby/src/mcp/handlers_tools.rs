@@ -471,7 +471,7 @@ impl LabMcpServer {
                     );
                     continue;
                 }
-                descriptors.push(ut.tool);
+                descriptors.push(crate::mcp::permanent_tools::with_labby_security(ut.tool));
                 upstream_tool_count += 1;
             }
             if !hide_raw_tools
@@ -496,7 +496,7 @@ impl LabMcpServer {
                         {
                             continue;
                         }
-                        descriptors.push(ut);
+                        descriptors.push(crate::mcp::permanent_tools::with_labby_security(ut));
                         subject_scoped_tool_count += 1;
                     }
                 }

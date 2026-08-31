@@ -54,7 +54,7 @@ The code-owned proxy key inventory lives in
 - `[proxy]`: foreground direct stdio-proxy exposure, auth, endpoint path,
   external port selection, bearer secret key name, OAuth scopes, explicit
   child-environment inheritance, and shutdown preference.
-- `[api]`: CORS preferences.
+- `[api]`: CORS preferences and the explicit trusted-forwarded-authority opt-in.
 - `[web]`: exported asset location and development-only auth bypass.
 - `[workspace]`: root for the optional filesystem browser. Default:
   `~/.labby/workspace`.
@@ -73,6 +73,25 @@ The code-owned proxy key inventory lives in
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
+
+### Trusted forwarded authority
+
+Protected-route selection uses the request's `Host` header by default and
+ignores `X-Forwarded-Host`. A deployment whose reverse proxy cannot preserve
+the public `Host` may set:
+
+```toml
+[api]
+trust_forwarded_headers = true
+```
+
+This setting makes `X-Forwarded-Host` authoritative for protected-route and
+route-metadata selection; it does not change client-IP attribution or trust
+`X-Forwarded-Proto`. Enable it only when direct access to Labby's listener is
+blocked and every trusted proxy overwrites, rather than appends or preserves,
+the inbound `X-Forwarded-Host` value. Otherwise a client can choose the virtual
+protected resource by supplying that header. Prefer preserving the original
+`Host` and leaving this setting at its secure default of `false`.
 
 Gateway-subset protected routes may set `target.project_id` to bind the route
 to one access-control Project. The value is opaque authorization context, not a

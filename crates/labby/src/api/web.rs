@@ -57,6 +57,17 @@ pub async fn serve_web_request(State(state): State<AppState>, request: Request) 
         return StatusCode::NOT_FOUND.into_response();
     }
 
+    // The web router is the product's final fallback, so an extensionless miss
+    // is not automatically a browser navigation. Keep the asset crate's SPA
+    // resolution reusable, but only opt product-owned UI routes into its
+    // index.html fallback. Otherwise absent API/protocol routes (including a
+    // configured protected-MCP host whose route is currently absent) would be
+    // converted into successful HTML responses.
+    let path = request.uri().path();
+    if !is_web_navigation(path) && std::path::Path::new(path).extension().is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     // Source precedence is product policy and stays here: a configured directory
     // always wins; the embedded bundle is the no-config fallback. When neither
     // is available there is nothing to serve. Asset lookup, symlink-escape
@@ -73,6 +84,35 @@ pub async fn serve_web_request(State(state): State<AppState>, request: Request) 
         Ok(asset) => web_asset_response(asset, request.method()),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+#[cfg(feature = "web-ui")]
+fn is_web_navigation(path: &str) -> bool {
+    const EXACT: &[&str] = &[
+        "/",
+        "/404",
+        "/design-system",
+        "/docs",
+        "/gateway",
+        "/gateways",
+        "/loadouts",
+        "/mcp/code-mode",
+        "/settings",
+        "/skills",
+        "/snippets",
+        "/tools",
+        "/traces",
+        "/usage",
+    ];
+
+    // Preserve the root route: stripping its only slash would turn it into an
+    // empty string and incorrectly disable the embedded index page.
+    let normalized = if path == "/" {
+        path
+    } else {
+        path.strip_suffix('/').unwrap_or(path)
+    };
+    EXACT.contains(&normalized) || normalized.starts_with("/settings/")
 }
 
 /// No asset bundle is compiled in without `web-ui` — the SPA fallback route

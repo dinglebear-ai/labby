@@ -1,5 +1,230 @@
 [
   {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_ACCESS_TOKEN_TTL_SECS",
+    "required": false,
+    "secret": false,
+    "description": "Labby access-token lifetime in seconds",
+    "example": "3600",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_ADMIN_EMAIL",
+    "required": true,
+    "secret": false,
+    "description": "Bootstrap administrator email required in oauth mode",
+    "example": "admin@example.com",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS",
+    "required": false,
+    "secret": false,
+    "description": "Comma-separated Google Workspace hosted-domain allowlist",
+    "example": "example.com",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_ALLOWED_REDIRECT_URIS",
+    "required": false,
+    "secret": false,
+    "description": "Comma-separated exact or wildcard OAuth redirect allowlist",
+    "example": "https://chatgpt.com/connector/oauth/*",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_AUTHORIZE_REQUESTS_PER_MINUTE",
+    "required": false,
+    "secret": false,
+    "description": "Per-IP authorization and browser-login rate limit",
+    "example": "60",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY",
+    "required": false,
+    "secret": false,
+    "description": "Temporary compatibility switch for clients without RFC 9207 response issuer support",
+    "example": "false",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_CODE_TTL_SECS",
+    "required": false,
+    "secret": false,
+    "description": "Authorization-code lifetime in seconds",
+    "example": "300",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_ENTERPRISE_ISSUERS_JSON",
+    "required": false,
+    "secret": true,
+    "description": "Trusted enterprise issuer definitions",
+    "example": "[]",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_KEY_PATH",
+    "required": false,
+    "secret": true,
+    "description": "OAuth JWT signing-key path",
+    "example": "~/.labby/auth-jwt.pem",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_MACHINE_CLIENTS_JSON",
+    "required": false,
+    "secret": true,
+    "description": "Preregistered machine-client definitions",
+    "example": "[]",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_MAX_PENDING_OAUTH_STATES",
+    "required": false,
+    "secret": false,
+    "description": "Maximum non-expired pending OAuth states",
+    "example": "1024",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_MODE",
+    "required": false,
+    "secret": false,
+    "description": "Inbound authentication mode: bearer or oauth",
+    "example": "bearer",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_REFRESH_TOKEN_TTL_SECS",
+    "required": false,
+    "secret": false,
+    "description": "Labby refresh-token lifetime in seconds",
+    "example": "2592000",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_REGISTER_REQUESTS_PER_MINUTE",
+    "required": false,
+    "secret": false,
+    "description": "Per-IP dynamic-client-registration rate limit",
+    "example": "20",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_SCOPES_SUPPORTED",
+    "required": false,
+    "secret": false,
+    "description": "Comma-separated scopes advertised and accepted for the canonical protected resource",
+    "example": "lab:read,lab,lab:admin",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_SQLITE_PATH",
+    "required": false,
+    "secret": false,
+    "description": "OAuth authorization-state SQLite database path",
+    "example": "~/.labby/auth.db",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_TOKEN_REQUESTS_PER_MINUTE",
+    "required": false,
+    "secret": false,
+    "description": "Per-IP token and revocation endpoint rate limit",
+    "example": "120",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_GOOGLE_CALLBACK_PATH",
+    "required": false,
+    "secret": false,
+    "description": "Google OAuth callback path",
+    "example": "/auth/google/callback",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_GOOGLE_CALLBACK_URL",
+    "required": false,
+    "secret": false,
+    "description": "Absolute Google OAuth callback URL override",
+    "example": "https://lab.example.com/auth/google/callback",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_GOOGLE_CLIENT_ID",
+    "required": true,
+    "secret": false,
+    "description": "Google OAuth client identifier used in oauth mode",
+    "example": "google-client-id",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_GOOGLE_CLIENT_SECRET",
+    "required": true,
+    "secret": true,
+    "description": "Google OAuth client secret used in oauth mode",
+    "example": "<labby_google_client_secret>",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_GOOGLE_SCOPES",
+    "required": false,
+    "secret": false,
+    "description": "Comma-separated Google OAuth scopes",
+    "example": "openid,email,profile",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_MCP_HTTP_TOKEN",
+    "required": false,
+    "secret": true,
+    "description": "Static bearer token for protected HTTP routes in bearer mode",
+    "example": "<labby_mcp_http_token>",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_PUBLIC_URL",
+    "required": true,
+    "secret": false,
+    "description": "Canonical public application URL and OAuth issuer",
+    "example": "https://lab.example.com",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_TOKEN_ENCRYPTION_KEY",
+    "required": true,
+    "secret": true,
+    "description": "Encryption key for persisted provider access and refresh tokens",
+    "example": "<64-hex-or-base64url-key>",
+    "default_port": null
+  },
+  {
     "service": "proxy",
     "env_var": "LABBY_GW_UPSTREAM_STDERR",
     "required": false,

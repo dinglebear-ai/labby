@@ -426,6 +426,7 @@ Usage: setup [OPTIONS] [COMMAND]
 Commands:
   wizard               Open the web-based first-run wizard or settings flow
   draft                Manage the local setup draft
+  access-bootstrap     Prepare and operate the local project-credential bootstrap flow
   host-service         Manage the systemd Labby gateway service
   installed-plugins    List installed Claude Code lab plugins
   services-status      Join service configuration, draft, and Claude plugin state
@@ -558,6 +559,200 @@ Options:
 ```
 
 ## `labby setup draft help`
+
+```text
+Print this message or the help of the given subcommand(s)
+
+Usage: help [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+          Print help for the subcommand(s)
+```
+
+## `labby setup access-bootstrap`
+
+```text
+Prepare and operate the local project-credential bootstrap flow
+
+Usage: access-bootstrap [OPTIONS] <COMMAND>
+
+Commands:
+  prepare  Securely create a one-time proof bundle and client credential
+  consume  Submit the prepared request to the running daemon without local mutation
+  status   Ask the running daemon for authoritative prepare status
+  recover  Verify a prepare and report its current recovery state
+  cleanup  Offline cleanup; requires the daemon to be stopped and durable tombstones
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup access-bootstrap prepare`
+
+```text
+Securely create a one-time proof bundle and client credential
+
+Usage: prepare [OPTIONS] --proof-file <PROOF_FILE> --credential-file <CREDENTIAL_FILE> --organization-name <ORGANIZATION_NAME> --project-name <PROJECT_NAME> --subject <SUBJECT> --loadout-id <LOADOUT_ID> --route-id <ROUTE_ID> --resource <RESOURCE> --scope <SCOPE>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --proof-file <PROOF_FILE>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --credential-file <CREDENTIAL_FILE>
+
+
+      --organization-name <ORGANIZATION_NAME>
+
+
+      --project-name <PROJECT_NAME>
+
+
+      --subject <SUBJECT>
+
+
+      --loadout-id <LOADOUT_ID>
+
+
+      --route-id <ROUTE_ID>
+
+
+      --resource <RESOURCE>
+
+
+      --scope <SCOPE>
+
+
+      --ttl <TTL>
+          [default: 600]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup access-bootstrap consume`
+
+```text
+Submit the prepared request to the running daemon without local mutation
+
+Usage: consume [OPTIONS] --prepare-id <PREPARE_ID>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --prepare-id <PREPARE_ID>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup access-bootstrap status`
+
+```text
+Ask the running daemon for authoritative prepare status
+
+Usage: status [OPTIONS] --prepare-id <PREPARE_ID>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --prepare-id <PREPARE_ID>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup access-bootstrap recover`
+
+```text
+Verify a prepare and report its current recovery state
+
+Usage: recover [OPTIONS] --prepare-id <PREPARE_ID>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --prepare-id <PREPARE_ID>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --complete
+
+
+      --revoke
+
+
+  -h, --help
+          Print help
+```
+
+## `labby setup access-bootstrap cleanup`
+
+```text
+Offline cleanup; requires the daemon to be stopped and durable tombstones
+
+Usage: cleanup [OPTIONS] --prepare-id <PREPARE_ID>
+
+Options:
+      --json
+          Emit JSON instead of human-readable tables
+
+      --prepare-id <PREPARE_ID>
+
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -h, --help
+          Print help
+```
+
+## `labby setup access-bootstrap help`
 
 ```text
 Print this message or the help of the given subcommand(s)

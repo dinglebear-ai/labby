@@ -20,7 +20,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use oauth2::{CsrfToken, PkceCodeVerifier, TokenResponse as _};
+use oauth2::TokenResponse as _;
 use rmcp::transport::auth::{
     AuthError, CredentialStore, StateStore, StoredAuthorizationState, StoredCredentials,
 };
@@ -214,14 +214,23 @@ impl StateStore for SqliteStateStore {
         Self: 'async_trait,
     {
         Box::pin(async move {
-            let now = now_unix();
+            let created_at = i64::try_from(state.created_at).map_err(|_| {
+                AuthError::InternalError(
+                    "authorization state timestamp exceeds SQLite range".to_string(),
+                )
+            })?;
+            let expected_issuer = state.expected_issuer().map(str::to_owned);
+            let require_issuer = state.requires_issuer();
             let row = UpstreamOauthStateRow {
                 upstream_name: self.upstream_name.clone(),
                 subject: self.subject.clone(),
                 csrf_token: csrf_token.to_string(),
                 pkce_verifier: state.pkce_verifier,
-                created_at: now,
-                expires_at: now + STATE_TTL_SECS,
+                expected_issuer,
+                require_issuer,
+                requested_scopes: state.requested_scopes,
+                created_at,
+                expires_at: created_at.saturating_add(STATE_TTL_SECS),
             };
             self.store
                 .save_upstream_oauth_state(row)
@@ -253,12 +262,23 @@ impl StateStore for SqliteStateStore {
                 .await
                 .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
-            Ok(row.map(|r| {
-                StoredAuthorizationState::new(
-                    &PkceCodeVerifier::new(r.pkce_verifier),
-                    &CsrfToken::new(r.csrf_token),
+            row.map(|r| {
+                let created_at = u64::try_from(r.created_at).map_err(|_| {
+                    AuthError::InternalError(
+                        "persisted authorization state has a negative created_at".to_string(),
+                    )
+                })?;
+                StoredAuthorizationState::try_from_persisted(
+                    r.pkce_verifier,
+                    r.csrf_token,
+                    r.expected_issuer,
+                    r.require_issuer,
+                    created_at,
+                    r.requested_scopes,
                 )
-            }))
+                .map(Some)
+            })
+            .unwrap_or(Ok(None))
         })
     }
 
@@ -361,6 +381,57 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn authorization_state_round_trips_issuer_requirement_and_requested_scopes() {
+        let store = make_state_store(temp_store().await, "acme", "alice");
+        let csrf = "issuer-bound-state";
+        let state = StoredAuthorizationState::new_with_expected_issuer(
+            &PkceCodeVerifier::new("verifier-value".to_string()),
+            &CsrfToken::new(csrf.to_string()),
+            Some("https://auth.example/tenant".to_string()),
+            true,
+        )
+        .with_requested_scopes(vec!["mcp:read".to_string(), "mcp:write".to_string()]);
+
+        store.save(csrf, state).await.unwrap();
+        let loaded = store.load(csrf).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.expected_issuer(),
+            Some("https://auth.example/tenant")
+        );
+        assert!(loaded.requires_issuer());
+        assert_eq!(loaded.requested_scopes, ["mcp:read", "mcp:write"]);
+    }
+
+    #[tokio::test]
+    async fn corrupt_required_issuer_state_is_rejected_instead_of_panicking() {
+        use crate::types::UpstreamOauthStateRow;
+
+        let sqlite = temp_store().await;
+        let now = super::now_unix();
+        sqlite
+            .save_upstream_oauth_state(UpstreamOauthStateRow {
+                upstream_name: "acme".to_string(),
+                subject: "alice".to_string(),
+                csrf_token: "csrf-corrupt".to_string(),
+                pkce_verifier: "verifier".to_string(),
+                expected_issuer: None,
+                require_issuer: true,
+                requested_scopes: vec!["mcp:read".to_string()],
+                created_at: now,
+                expires_at: now + 300,
+            })
+            .await
+            .expect("save corrupt row");
+
+        let store = make_state_store(sqlite, "acme", "alice");
+        let error = store.load("csrf-corrupt").await.unwrap_err();
+        assert!(matches!(
+            error,
+            rmcp_client::transport::auth::AuthError::AuthorizationFailed(_)
+        ));
+    }
+
     /// Loading a state token whose TTL has expired returns `None`.
     ///
     /// The underlying `take_upstream_oauth_state` query filters by `expires_at`,
@@ -382,6 +453,9 @@ mod tests {
             subject: "alice".to_string(),
             csrf_token: "csrf-expired".to_string(),
             pkce_verifier: "verifier".to_string(),
+            expected_issuer: None,
+            require_issuer: false,
+            requested_scopes: Vec::new(),
             created_at: now - 400,
             expires_at: now - 1, // already expired
         };

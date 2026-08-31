@@ -6,66 +6,66 @@ This is a global inventory, not the active runtime exposure or authorization pol
 
 | Service | Action | Built-in | Destructive | Admin | Required scopes | Params | Returns | Surfaces |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
+| `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | mcp, api |
 | `doctor` | `audit.full` | false | false | false |  |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
-| `doctor` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
+| `doctor` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
 | `doctor` | `oauth.relay.check` | false | false | true | lab:admin | `probe_targets: boolean` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `proxy.check` | false | false | false |  | `app_url*: string`<br>`mcp_url*: string`<br>`route*: string`<br>`backend_url: string` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `proxy.preflight` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
-| `doctor` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
+| `doctor` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
 | `doctor` | `system.checks` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
-| `fs` | `fs.list` | false | false | false |  | `path: string` | `{entries: [{name, path, kind, size, modified, accessible}], truncated: bool}` | mcp, api, web |
+| `fs` | `fs.list` | false | false | false |  | `path: string` | `{entries: [{name, path, kind, size, modified, accessible}], truncated: bool}` | mcp, api |
 | `fs` | `fs.preview` | false | false | false |  | `path*: string`<br>`max_bytes: integer` | `binary (streamed); mime from safe-MIME whitelist or application/octet-stream` | api, web |
-| `fs` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api, web |
-| `fs` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api, web |
+| `fs` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `fs` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
 | `gateway` | `gateway.add` | false | false | true | lab:admin | `spec*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `name*: string` | `McpClientConfigView` | cli, mcp, api, web |
-| `gateway` | `gateway.clients.list` | false | false | true | lab:admin |  | `GatewayClientView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `name*: string` | `McpClientConfigView` | mcp, api |
+| `gateway` | `gateway.clients.list` | false | false | true | lab:admin |  | `GatewayClientView[]` | cli, mcp, api |
 | `gateway` | `gateway.code_mode.get` | false | false | true | lab:admin |  | `CodeModeConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.code_mode.set` | false | false | true | lab:admin | `enabled: boolean`<br>`trusted_read_only_tools: array`<br>`mcp_ui_enabled: boolean`<br>`trace_params: boolean`<br>`result_shape_policy: string`<br>`timeout_ms: integer`<br>`max_response_bytes: integer`<br>`max_response_tokens: integer`<br>`token_estimate_divisor: integer`<br>`max_log_entries: integer`<br>`max_log_bytes: integer` | `CodeModeConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.discover` | false | false | true | lab:admin | `clients: string[]`<br>`include_existing: boolean` | `DiscoveredServerView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.discovered_prompts` | false | false | true | lab:admin | `name*: string` | `string[]` | cli, mcp, api, web |
-| `gateway` | `gateway.discovered_resources` | false | false | true | lab:admin | `name*: string` | `string[]` | cli, mcp, api, web |
-| `gateway` | `gateway.discovered_tools` | false | false | true | lab:admin | `name*: string` | `GatewayToolExposureRowView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.enrich.apply` | false | false | true | lab:admin | `upstream*: string`<br>`hint*: string`<br>`metadata_hash*: string` | `GatewayHintApplyView` | cli, mcp, api, web |
-| `gateway` | `gateway.enrich.preview` | false | false | true | lab:admin | `upstreams: string[]`<br>`all: boolean`<br>`provider: string`<br>`max_upstreams: integer`<br>`timeout_ms: integer` | `GatewayEnrichmentPreviewView` | cli, mcp, api, web |
+| `gateway` | `gateway.discovered_prompts` | false | false | true | lab:admin | `name*: string` | `string[]` | mcp, api, web |
+| `gateway` | `gateway.discovered_resources` | false | false | true | lab:admin | `name*: string` | `string[]` | mcp, api, web |
+| `gateway` | `gateway.discovered_tools` | false | false | true | lab:admin | `name*: string` | `GatewayToolExposureRowView[]` | mcp, api, web |
+| `gateway` | `gateway.enrich.apply` | false | false | true | lab:admin | `upstream*: string`<br>`hint*: string`<br>`metadata_hash*: string` | `GatewayHintApplyView` | cli, mcp, api |
+| `gateway` | `gateway.enrich.preview` | false | false | true | lab:admin | `upstreams: string[]`<br>`all: boolean`<br>`provider: string`<br>`max_upstreams: integer`<br>`timeout_ms: integer` | `GatewayEnrichmentPreviewView` | cli, mcp, api |
 | `gateway` | `gateway.get` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.import` | false | false | true | lab:admin | `all: boolean`<br>`names: string[]`<br>`clients: string[]` | `ImportResultView` | cli, mcp, api, web |
-| `gateway` | `gateway.import_pending.approve` | false | false | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api, web |
-| `gateway` | `gateway.import_pending.list` | false | false | true | lab:admin |  | `PendingImportView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.import_pending.reject` | false | false | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api, web |
-| `gateway` | `gateway.import_tombstones.clear` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `ImportTombstoneView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.import_tombstones.list` | false | false | true | lab:admin |  | `ImportTombstoneView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.import_tombstones.restore` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.import_pending.approve` | false | false | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api |
+| `gateway` | `gateway.import_pending.list` | false | false | true | lab:admin |  | `PendingImportView[]` | cli, mcp, api |
+| `gateway` | `gateway.import_pending.reject` | false | false | true | lab:admin | `name*: string` | `PendingImportView` | cli, mcp, api |
+| `gateway` | `gateway.import_tombstones.clear` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `ImportTombstoneView[]` | mcp, api, web |
+| `gateway` | `gateway.import_tombstones.list` | false | false | true | lab:admin |  | `ImportTombstoneView[]` | mcp, api |
+| `gateway` | `gateway.import_tombstones.restore` | false | false | true | lab:admin | `name*: string`<br>`source_client: string`<br>`source_path: string`<br>`server_name: string`<br>`transport_fingerprint: string` | `GatewayView` | mcp, api, web |
 | `gateway` | `gateway.list` | false | false | true | lab:admin |  | `ServerView[]` | cli, mcp, api, web |
 | `gateway` | `gateway.loadout.add` | false | false | true | lab:admin | `loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.loadout.get` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.list` | false | false | true | lab:admin |  | `GatewayLoadoutConfig[]` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.list` | false | false | true | lab:admin |  | `GatewayLoadoutConfig[]` | mcp, api |
 | `gateway` | `gateway.loadout.list_state` | false | false | true | lab:admin |  | `GatewayLoadoutState[]` | cli, mcp, api, web |
 | `gateway` | `gateway.loadout.patch` | false | false | true | lab:admin | `name*: string`<br>`patch*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.loadout.remove` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.loadout.stage_patch` | false | false | true | lab:admin | `name*: string`<br>`patch*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
 | `gateway` | `gateway.loadout.stage_remove` | false | false | true | lab:admin | `name*: string` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.stage_update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutStageResult` | cli, mcp, api, web |
-| `gateway` | `gateway.loadout.update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutConfig` | cli, mcp, api, web |
+| `gateway` | `gateway.loadout.stage_update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutStageResult` | mcp, api, web |
+| `gateway` | `gateway.loadout.update` | false | false | true | lab:admin | `name*: string`<br>`loadout*: json` | `GatewayLoadoutConfig` | mcp, api, web |
 | `gateway` | `gateway.mcp.cleanup` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean`<br>`dry_run: boolean` | `GatewayCleanupView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.disable` | false | false | true | lab:admin | `name*: string`<br>`cleanup: boolean`<br>`aggressive: boolean` | `GatewayView + optional cleanup result` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.enable` | false | false | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.mcp.list` | false | false | true | lab:admin | `name: string` | `GatewayMcpRuntimeView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string` | `ok` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.resource_lease.release` | false | false | true | lab:admin | `id*: string` | `ResourceLeaseReleaseView` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.resource_lease.renew` | false | false | true | lab:admin | `id*: string`<br>`ttl_secs*: integer` | `ResourceLease` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `upstream*: string` | `BeginAuthorization` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `upstream*: string` | `UpstreamOauthStatusView` | cli, mcp, api, web |
-| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `upstream*: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api, web |
+| `gateway` | `gateway.mcp.restart` | false | false | true | lab:admin | `name*: string`<br>`aggressive: boolean` | `GatewayView + cleanup result` | cli, mcp, api |
+| `gateway` | `gateway.oauth.clear` | false | false | true | lab:admin | `upstream*: string` | `ok` | cli, mcp, api |
+| `gateway` | `gateway.oauth.google_revoke` | false | true | true | lab:admin | `upstream*: string`<br>`confirm*: boolean` | `GoogleProviderInvalidation` | cli, mcp, api |
+| `gateway` | `gateway.oauth.probe` | false | false | true | lab:admin | `url*: string` | `ProbeResult` | mcp, api |
+| `gateway` | `gateway.oauth.resource_lease.create` | false | false | true | lab:admin | `resource*: string`<br>`scopes*: string[]`<br>`ttl_secs*: integer`<br>`owner*: string` | `ResourceLease` | mcp, api |
+| `gateway` | `gateway.oauth.resource_lease.release` | false | false | true | lab:admin | `id*: string` | `ResourceLeaseReleaseView` | mcp, api |
+| `gateway` | `gateway.oauth.resource_lease.renew` | false | false | true | lab:admin | `id*: string`<br>`ttl_secs*: integer` | `ResourceLease` | mcp, api |
+| `gateway` | `gateway.oauth.start` | false | false | true | lab:admin | `upstream*: string` | `BeginAuthorization` | cli, mcp, api |
+| `gateway` | `gateway.oauth.status` | false | false | true | lab:admin | `upstream*: string` | `UpstreamOauthStatusView` | cli, mcp, api |
+| `gateway` | `gateway.oauth.wait` | false | false | true | lab:admin | `upstream*: string`<br>`timeout_secs: integer` | `{authenticated: bool, timed_out: bool}` | cli, mcp, api |
 | `gateway` | `gateway.protected_route.add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.get` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.protected_route.list` | false | false | true | lab:admin |  | `ProtectedMcpRouteConfig[]` | cli, mcp, api, web |
+| `gateway` | `gateway.protected_route.list` | false | false | true | lab:admin |  | `ProtectedMcpRouteConfig[]` | mcp, api |
 | `gateway` | `gateway.protected_route.list_state` | false | false | true | lab:admin |  | `ProtectedMcpRouteState[]` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.remove` | false | false | true | lab:admin | `name*: string` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.stage_add` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
@@ -73,83 +73,83 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.protected_route.stage_update` | false | false | true | lab:admin | `name*: string`<br>`route*: json` | `ProtectedMcpRouteStageResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.test` | false | false | true | lab:admin | `route*: json` | `ProtectedMcpRouteTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.protected_route.update` | false | false | true | lab:admin | `name*: string`<br>`route*: json` | `ProtectedMcpRouteConfig` | cli, mcp, api, web |
-| `gateway` | `gateway.public_urls.get` | false | false | true | lab:admin |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api, web |
+| `gateway` | `gateway.public_urls.get` | false | false | true | lab:admin |  | `{app: string?, mcp_gateway: string?, effective_mcp_gateway: string?}` | cli, mcp, api |
 | `gateway` | `gateway.reload` | false | false | true | lab:admin |  | `GatewayCatalogDiff` | cli, mcp, api, web |
 | `gateway` | `gateway.remove` | false | true | true | lab:admin | `name*: string` | `GatewayView` | cli, mcp, api, web |
-| `gateway` | `gateway.schema` | false | false | false |  | `name*: string` | `GatewayServerSchema` | cli, mcp, api, web |
-| `gateway` | `gateway.server.get` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
-| `gateway` | `gateway.servers` | false | false | true | lab:admin |  | `GatewayServersDoc` | cli, mcp, api, web |
-| `gateway` | `gateway.service_actions` | false | false | true | lab:admin | `service*: string` | `ServiceActionView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `service*: string` | `ServiceConfigView` | cli, mcp, api, web |
-| `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `service*: string`<br>`values*: json` | `ServiceConfigView` | cli, mcp, api, web |
-| `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.status` | false | false | true | lab:admin | `name: string` | `GatewayRuntimeView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.supported_services` | false | false | true | lab:admin |  | `SupportedServiceView[]` | cli, mcp, api, web |
+| `gateway` | `gateway.schema` | false | false | false |  | `name*: string` | `GatewayServerSchema` | mcp, api |
+| `gateway` | `gateway.server.get` | false | false | true | lab:admin | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.servers` | false | false | true | lab:admin |  | `GatewayServersDoc` | mcp, api |
+| `gateway` | `gateway.service_actions` | false | false | true | lab:admin | `service*: string` | `ServiceActionView[]` | mcp, api, web |
+| `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `service*: string` | `ServiceConfigView` | mcp, api, web |
+| `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `service*: string`<br>`values*: json` | `ServiceConfigView` | mcp, api, web |
+| `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api |
+| `gateway` | `gateway.status` | false | false | true | lab:admin | `name: string` | `GatewayRuntimeView[]` | mcp, api |
+| `gateway` | `gateway.supported_services` | false | false | true | lab:admin |  | `SupportedServiceView[]` | mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.update` | false | false | true | lab:admin | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
 | `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `id*: string` | `VirtualServerMcpPolicyView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.quarantine.list` | false | false | true | lab:admin |  | `ServerView[]` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.quarantine.restore` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.remove` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.set_mcp_policy` | false | false | true | lab:admin | `id*: string`<br>`allowed_actions*: string[]` | `VirtualServerMcpPolicyView` | cli, mcp, api, web |
-| `gateway` | `gateway.virtual_server.set_surface` | false | false | true | lab:admin | `id*: string`<br>`surface*: string`<br>`enabled*: boolean` | `ServerView` | cli, mcp, api, web |
-| `gateway` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api, web |
-| `gateway` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api, web |
-| `lab_admin` | `help` | false | false | false |  |  | `Catalog` | cli, mcp |
-| `lab_admin` | `onboarding.audit` | false | false | false |  | `services*: string[]` | `AuditReport` | cli, mcp |
-| `lab_admin` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp |
-| `server_logs` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
-| `server_logs` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
+| `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `id*: string` | `VirtualServerMcpPolicyView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.quarantine.list` | false | false | true | lab:admin |  | `ServerView[]` | cli, mcp, api |
+| `gateway` | `gateway.virtual_server.quarantine.restore` | false | false | true | lab:admin | `id*: string` | `ServerView` | cli, mcp, api |
+| `gateway` | `gateway.virtual_server.remove` | false | false | true | lab:admin | `id*: string` | `ServerView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.set_mcp_policy` | false | false | true | lab:admin | `id*: string`<br>`allowed_actions*: string[]` | `VirtualServerMcpPolicyView` | mcp, api, web |
+| `gateway` | `gateway.virtual_server.set_surface` | false | false | true | lab:admin | `id*: string`<br>`surface*: string`<br>`enabled*: boolean` | `ServerView` | mcp, api, web |
+| `gateway` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
+| `gateway` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
+| `lab_admin` | `help` | false | false | false |  |  | `Catalog` | mcp |
+| `lab_admin` | `onboarding.audit` | false | false | false |  | `services*: string[]` | `AuditReport` | mcp |
+| `lab_admin` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp |
+| `server_logs` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
+| `server_logs` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
 | `server_logs` | `server_logs.query` | false | false | true | lab:admin | `limit: integer`<br>`level: string`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer`<br>`stop_after_limit: boolean`<br>`correlated_only: boolean` | `ServerLogsQueryResult` | cli, mcp, api |
-| `setup` | `bootstrap` | false | true | true | lab:admin |  | `BootstrapOutcome` | cli, mcp, api, web |
-| `setup` | `check` | false | false | false |  |  | `SetupReport` | cli, mcp, api, web |
-| `setup` | `draft.commit` | false | true | true | lab:admin | `force: boolean` | `CommitOutcome` | cli, mcp, api, web |
+| `setup` | `bootstrap` | false | true | true | lab:admin |  | `BootstrapOutcome` | mcp, api |
+| `setup` | `check` | false | false | false |  |  | `SetupReport` | cli, mcp, api |
+| `setup` | `draft.commit` | false | true | true | lab:admin | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `draft.discard` | false | true | true | lab:admin |  | `DraftDiscardOutcome` | cli, mcp, api, web |
-| `setup` | `draft.get` | false | false | true | lab:admin |  | `DraftEntry[]` | cli, mcp, api, web |
-| `setup` | `draft.set` | false | true | true | lab:admin | `entries*: DraftEntry[]`<br>`force: boolean` | `DraftSetOutcome` | cli, mcp, api, web |
-| `setup` | `finalize` | false | true | true | lab:admin | `force: boolean` | `CommitOutcome` | cli, mcp, api, web |
-| `setup` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api, web |
-| `setup` | `install_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
-| `setup` | `installed_plugins` | false | false | true | lab:admin | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api, web |
-| `setup` | `plugin.install` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
-| `setup` | `plugin.uninstall` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
-| `setup` | `plugin_connectivity` | false | false | true | lab:admin | `server_url: string` | `ConnectivityOutcome` | cli, mcp, api, web |
-| `setup` | `plugin_export` | false | false | true | lab:admin |  | `PluginExportOutcome` | cli, mcp, api, web |
-| `setup` | `plugin_hook` | false | true | true | lab:admin | `repair: boolean` | `PluginHookReport` | cli, mcp, api, web |
-| `setup` | `plugin_sync` | false | true | true | lab:admin |  | `PluginSyncOutcome` | cli, mcp, api, web |
-| `setup` | `plugins.installed` | false | false | true | lab:admin | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api, web |
-| `setup` | `proxy.configure` | false | true | true | lab:admin | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api, web |
-| `setup` | `repair` | false | true | true | lab:admin |  | `SetupReport` | cli, mcp, api, web |
-| `setup` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api, web |
-| `setup` | `schema.get` | false | false | false |  | `services: string[]` | `ServiceSchemaMap` | cli, mcp, api, web |
-| `setup` | `services.status` | false | false | true | lab:admin |  | `ServiceStatus[]` | cli, mcp, api, web |
-| `setup` | `services_status` | false | false | true | lab:admin |  | `ServiceStatus[]` | cli, mcp, api, web |
-| `setup` | `settings.advanced_state` | false | false | true | lab:admin |  | `SettingsState` | cli, mcp, api, web |
-| `setup` | `settings.config.update` | false | true | true | lab:admin | `entries*: SettingsUpdateEntry[]` | `SettingsMutationOutcome` | cli, mcp, api, web |
-| `setup` | `settings.env.update` | false | true | true | lab:admin | `entries*: SettingsUpdateEntry[]` | `SettingsState` | cli, mcp, api, web |
-| `setup` | `settings.env_schema` | false | false | false |  |  | `EnvSettingSpec[]` | cli, mcp, api, web |
-| `setup` | `settings.schema` | false | false | false |  |  | `SettingsSchema` | cli, mcp, api, web |
-| `setup` | `settings.state` | false | false | true | lab:admin | `section: string` | `SettingsState` | cli, mcp, api, web |
-| `setup` | `settings.update` | false | true | true | lab:admin | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | cli, mcp, api, web |
+| `setup` | `draft.get` | false | false | true | lab:admin |  | `DraftEntry[]` | mcp, api, web |
+| `setup` | `draft.set` | false | true | true | lab:admin | `entries*: DraftEntry[]`<br>`force: boolean` | `DraftSetOutcome` | mcp, api, web |
+| `setup` | `finalize` | false | true | true | lab:admin | `force: boolean` | `CommitOutcome` | mcp, api, web |
+| `setup` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
+| `setup` | `install_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | mcp, api, web |
+| `setup` | `installed_plugins` | false | false | true | lab:admin | `force: boolean` | `InstalledPlugin[]` | mcp, api, web |
+| `setup` | `plugin.install` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api |
+| `setup` | `plugin.uninstall` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api |
+| `setup` | `plugin_connectivity` | false | false | true | lab:admin | `server_url: string` | `ConnectivityOutcome` | cli, mcp, api |
+| `setup` | `plugin_export` | false | false | true | lab:admin |  | `PluginExportOutcome` | cli, mcp, api |
+| `setup` | `plugin_hook` | false | true | true | lab:admin | `repair: boolean` | `PluginHookReport` | cli, mcp, api |
+| `setup` | `plugin_sync` | false | true | true | lab:admin |  | `PluginSyncOutcome` | cli, mcp, api |
+| `setup` | `plugins.installed` | false | false | true | lab:admin | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api |
+| `setup` | `proxy.configure` | false | true | true | lab:admin | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
+| `setup` | `repair` | false | true | true | lab:admin |  | `SetupReport` | cli, mcp, api |
+| `setup` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
+| `setup` | `schema.get` | false | false | false |  | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |
+| `setup` | `services.status` | false | false | true | lab:admin |  | `ServiceStatus[]` | cli, mcp, api |
+| `setup` | `services_status` | false | false | true | lab:admin |  | `ServiceStatus[]` | mcp, api, web |
+| `setup` | `settings.advanced_state` | false | false | true | lab:admin |  | `SettingsState` | mcp, api |
+| `setup` | `settings.config.update` | false | true | true | lab:admin | `entries*: SettingsUpdateEntry[]` | `SettingsMutationOutcome` | mcp, api, web |
+| `setup` | `settings.env.update` | false | true | true | lab:admin | `entries*: SettingsUpdateEntry[]` | `SettingsState` | mcp, api, web |
+| `setup` | `settings.env_schema` | false | false | false |  |  | `EnvSettingSpec[]` | mcp, api, web |
+| `setup` | `settings.schema` | false | false | false |  |  | `SettingsSchema` | mcp, api, web |
+| `setup` | `settings.state` | false | false | true | lab:admin | `section: string` | `SettingsState` | mcp, api, web |
+| `setup` | `settings.update` | false | true | true | lab:admin | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin |  | `SetupSnapshot` | cli, mcp, api, web |
-| `setup` | `uninstall_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | cli, mcp, api, web |
-| `skills` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
-| `skills` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
+| `setup` | `uninstall_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | mcp, api, web |
+| `skills` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
+| `skills` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
 | `skills` | `skills.get` | false | false | false |  | `uri*: string` | `SkillGetResponse` | cli, mcp, api |
 | `skills` | `skills.list` | false | false | false |  | `origin: string`<br>`limit: integer` | `SkillListResponse` | cli, mcp, api |
 | `skills` | `skills.read` | false | false | false |  | `uri*: string` | `VisibleSkillFile` | cli, mcp, api |
 | `skills` | `skills.search` | false | false | false |  | `query*: string`<br>`origin: string`<br>`limit: integer` | `SkillSearchResponse` | cli, mcp, api |
-| `snippets` | `help` | false | false | false |  |  | `Catalog` | cli, mcp, api |
-| `snippets` | `schema` | false | false | false |  | `action*: string` | `Schema` | cli, mcp, api |
+| `snippets` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
+| `snippets` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |
 | `snippets` | `snippets.exec` | false | false | true | lab:admin | `name*: string`<br>`params: object` | `CodeModeExecutionResponse` | cli, mcp, api |
 | `snippets` | `snippets.get` | false | false | true | lab:admin | `name*: string` | `ResolvedSnippet` | cli, mcp, api |
 | `snippets` | `snippets.list` | false | false | false |  |  | `SnippetList` | cli, mcp, api |
-| `snippets` | `snippets.promote` | false | true | true | lab:admin | `execution_id*: string`<br>`name*: string`<br>`description: string`<br>`force: boolean`<br>`shadow_builtin: boolean` | `SnippetPromotionResult` | cli, mcp, api |
+| `snippets` | `snippets.promote` | false | true | true | lab:admin | `execution_id*: string`<br>`name*: string`<br>`description: string`<br>`force: boolean`<br>`shadow_builtin: boolean` | `SnippetPromotionResult` | mcp, api |
 | `snippets` | `snippets.remove` | false | true | true | lab:admin | `name*: string` | `SnippetRemoveResult` | cli, mcp, api |
 | `snippets` | `snippets.test` | false | false | true | lab:admin | `name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
 | `snippets` | `snippets.validate` | false | false | true | lab:admin | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |

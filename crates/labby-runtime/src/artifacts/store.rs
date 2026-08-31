@@ -15,8 +15,8 @@ use crate::path_safety::{
 use super::ArtifactError;
 use super::library::{LibrarySnapshot, MAX_LIBRARY_STATE_BYTES};
 use super::local_io::{
-    SnapshotFile, ensure_private_dir, materialize_tree, prepare_empty_internal_dir, read_json,
-    revision_dir, storage_key, write_json_atomic,
+    SnapshotFile, ensure_private_dir, materialize_tree, normalize_verified_macos_var_alias,
+    prepare_empty_internal_dir, read_json, revision_dir, storage_key, write_json_atomic,
 };
 use super::model::{
     ARTIFACT_INTERCHANGE_SCHEMA, ArtifactInterchange, ArtifactLicenseState, ArtifactProvenance,
@@ -125,11 +125,9 @@ impl ArtifactStore {
         if !root.is_absolute() {
             return Err(ArtifactError::UnsafePath("store_root_relative"));
         }
-        validate_store_creation_ancestor(root)?;
-        reject_existing_symlinks_in_path(root)
-            .map_err(|_| ArtifactError::UnsafePath("store_symlink"))?;
-        ensure_private_dir(root)?;
-        let root = canonicalize_and_reject_write_path(root)
+        let root = canonical_store_creation_target(root)?;
+        ensure_private_dir(&root)?;
+        let root = canonicalize_and_reject_write_path(&root)
             .map_err(|_| ArtifactError::UnsafePath("store_root"))?;
         ensure_private_dir(&root.join("artifacts"))?;
         ensure_private_dir(&root.join("locks"))?;
@@ -660,18 +658,24 @@ fn cleanup_recovery_dir(path: &Path, artifact_id: &str, kind: &str) {
     }
 }
 
-fn validate_store_creation_ancestor(root: &Path) -> Result<(), ArtifactError> {
+fn canonical_store_creation_target(root: &Path) -> Result<PathBuf, ArtifactError> {
     let mut probe = root;
     while !probe.exists() {
         probe = probe
             .parent()
             .ok_or(ArtifactError::UnsafePath("store_root"))?;
     }
-    reject_existing_symlinks_in_path(probe)
-        .map_err(|_| ArtifactError::UnsafePath("store_symlink"))?;
-    canonicalize_and_reject_write_path(probe)
+    // Validate the caller-controlled boundary component itself, then
+    // canonicalize it. Platform-managed aliases above that boundary (notably
+    // macOS `/var` -> `/private/var`) are not part of the artifact root and
+    // must not make an otherwise private temp/store directory unsafe.
+    reject_symlink(probe).map_err(|_| ArtifactError::UnsafePath("store_symlink"))?;
+    let canonical_probe = canonicalize_and_reject_write_path(probe)
         .map_err(|_| ArtifactError::UnsafePath("store_root"))?;
-    Ok(())
+    let suffix = root
+        .strip_prefix(probe)
+        .map_err(|_| ArtifactError::UnsafePath("store_root"))?;
+    Ok(canonical_probe.join(suffix))
 }
 
 pub(crate) struct MutationLock {
@@ -745,6 +749,33 @@ mod tests {
             error,
             ArtifactError::UnsafePath("store_root_relative")
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn store_accepts_private_root_below_verified_macos_var_alias() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+
+        assert!(store.root().starts_with("/private/var"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_rejects_arbitrary_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let data = tempdir().unwrap();
+        let actual = data.path().join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        let alias = data.path().join("alias");
+        symlink(&actual, &alias).unwrap();
+
+        assert!(matches!(
+            ArtifactStore::new(alias.join("store")),
+            Err(ArtifactError::UnsafePath("store_symlink"))
+        ));
+        assert!(!actual.join("store").exists());
     }
 
     #[cfg(unix)]

@@ -4,7 +4,7 @@ mod action_catalog;
 mod artifacts;
 mod projection;
 mod render;
-mod routes;
+pub(crate) mod routes;
 mod types;
 
 pub use artifacts::{check, generate};
