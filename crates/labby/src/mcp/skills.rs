@@ -419,6 +419,7 @@ impl LabMcpServer {
                 "Skills catalog hidden by loadout"
             );
             return serde_json::to_value(SkillsListResult {
+                result_type: Default::default(),
                 skills: Vec::new(),
                 next_cursor: None,
                 ttl_ms: Some(0),
@@ -462,7 +463,10 @@ async fn dispatch_native_with_registry(
                     None,
                 )
             })?;
-        let result = SkillsGetResult { skill: entry };
+        let result = SkillsGetResult {
+            result_type: Default::default(),
+            skill: entry,
+        };
         return serde_json::to_value(result)
             .map(CustomResult::new)
             .map_err(|error| ErrorData::internal_error(error.to_string(), None));
@@ -695,10 +699,12 @@ mod serve_tests {
                             SkillResource {
                                 uri: manifest.clone(),
                                 digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+                                size: body.len() as u64,
                             },
                             SkillResource {
                                 uri: support.clone(),
                                 digest: ResourceDigest::of_bytes(notes.as_bytes()).to_wire(),
+                                size: notes.len() as u64,
                             },
                         ]),
                         meta: None,

@@ -114,6 +114,7 @@ pub(crate) fn mint_proxied_entry(
                     uri: parsed.with_origin(origin).ok()?.to_uri(),
                     // Untouched: the label moved, the bytes did not.
                     digest: resource.digest.clone(),
+                    size: resource.size,
                 });
             }
             Some(minted)
@@ -422,6 +423,7 @@ mod tests {
             .push(SkillResource {
                 uri: shared.to_string(),
                 digest: labby_runtime::skills::ResourceDigest::of_bytes(b"parent").to_wire(),
+                size: b"parent".len() as u64,
             });
         child
             .entry
@@ -431,6 +433,7 @@ mod tests {
             .push(SkillResource {
                 uri: shared.to_string(),
                 digest: labby_runtime::skills::ResourceDigest::of_bytes(b"child").to_wire(),
+                size: b"child".len() as u64,
             });
         let result = mint_proxied_entries(
             &UpstreamConfig {
@@ -478,6 +481,7 @@ mod tests {
         candidate.resources = Some(vec![SkillResource {
             uri: published_resource,
             digest: labby_runtime::skills::ResourceDigest::of_bytes(b"candidate").to_wire(),
+            size: b"candidate".len() as u64,
         }]);
 
         assert!(result.conflicts_with(&candidate));

@@ -2,38 +2,80 @@
   "upstream_commit": "c9c3e518ce94b8d715519657c88195515978bda4",
   "upstream_archive_sha256": "f29835a3b9124d72234c05b7f2ca331841c6303d9f7b5e094842191897d6da25",
   "crate_path": "crates/rmcp",
-  "unified_diff_sha256": "224bcb94bed69f7f95f7fa48128a5d9041e64838a7a6ee7f1d9c7e969b03b083",
+  "unified_diff_sha256": "906c6913441cc0a7e4f4f5de06104b04cc29e31ec1fd54013ad2fc68f866598a",
   "patches": [
     {
       "path": "Cargo.toml",
-      "patched_sha256": "68d9c0e50476fb475a278e7c9b330643882813c2c5f6d0eb9ab0a3e0330808d1",
-      "obligation": "Make the vendored crate independently buildable without upstream workspace inheritance."
+      "patched_sha256": "68d9c0e50476fb475a278e7c9b330643882813c2c5f6d0eb9ab0a3e0330808d1"
     },
     {
       "path": "src/handler/server/router/tool/tool_traits.rs",
-      "patched_sha256": "59a17b9999441f6a561fcc495ca6ab18d764054bf13b2e3c26a954ad65559397",
-      "obligation": "Initialize the optional tool security extension in macro-generated descriptors."
+      "patched_sha256": "59a17b9999441f6a561fcc495ca6ab18d764054bf13b2e3c26a954ad65559397"
     },
     {
       "path": "src/model/tool.rs",
-      "patched_sha256": "006727a9d74ace067e034d3095cfbfa1beb10d6b9559540cb34b870f6dcf59bf",
-      "obligation": "Serialize and deserialize top-level OpenAI securitySchemes without changing standard MCP descriptors."
+      "patched_sha256": "006727a9d74ace067e034d3095cfbfa1beb10d6b9559540cb34b870f6dcf59bf"
+    },
+    {
+      "path": "src/service/client.rs",
+      "patched_sha256": "231d5f524dc4b99afb81f1e8f4bff2da946c158a5ec40c316ebea3da75f79a9b"
+    },
+    {
+      "path": "src/service/server.rs",
+      "patched_sha256": "85d2b474da10a74bfcc747f1e58787a5639a2cabc8631eb71c25c256cf4958ed"
+    },
+    {
+      "path": "src/service.rs",
+      "patched_sha256": "13bad8a4fa8490bda9fbe8ebfbce1ad4c71f2bef0ec3bd5082cceb3d6cb968e8"
+    },
+    {
+      "path": "src/transport/async_rw.rs",
+      "patched_sha256": "8f74b913a7cac34d93a6bbdf7a8987aecd3958e94988545b5425b78294148e16"
     },
     {
       "path": "src/transport/auth.rs",
-      "patched_sha256": "a63bbe58ee8c7185e5d5a12b2c3cfc8f191d5644319c90883f3a9fcfabe1ccbf",
-      "obligation": "Compare authorization metadata issuer identifiers exactly as required by RFC 9207; reject untrusted callback error fields and issuer-unbound credentials; prove OAuth client requests use the Bearer header without query-token leakage; and cover scope-upgrade, resource-identifier, expired-token, and DCR-failure behavior."
+      "patched_sha256": "a63bbe58ee8c7185e5d5a12b2c3cfc8f191d5644319c90883f3a9fcfabe1ccbf"
     },
     {
-      "path": "tests/test_tool_security_schemes.rs",
-      "upstream_absent": true,
-      "patched_sha256": "832fb7fd9776a9db026246ae6a3badd7cd53d08fcdb81149971f95d209e74fc6",
-      "obligation": "Prove extension wire name, round trip, arbitrary extension preservation, and omission compatibility."
+      "path": "src/transport/child_process.rs",
+      "patched_sha256": "005808362223a1c8b21e7572aacd32d494d5c5f17dac1c85ee9f6a6b267bfc65"
+    },
+    {
+      "path": "src/transport/common/client_side_sse.rs",
+      "patched_sha256": "9a552d3f9d0e8b806e27a621f9ca279a38a328b2f69c4e2c2329141d0ece76c1"
+    },
+    {
+      "path": "src/transport/common/reqwest/streamable_http_client.rs",
+      "patched_sha256": "399caaf9c4947cdb3e2aa80eead4358e4b32794483b7f2c3923f44c45d70cfbb"
+    },
+    {
+      "path": "src/transport/common/unix_socket.rs",
+      "patched_sha256": "8a3076dbcf568779936e96d286d20e5f09a6d87a6326d426310d2ad5b96d32ca"
+    },
+    {
+      "path": "src/transport/streamable_http_client.rs",
+      "patched_sha256": "a6ad87e40f115ddf45a7b4ebf9ff94a45e28197f6082d74fea4c9ab268189e80"
+    },
+    {
+      "path": "src/transport/streamable_http_server/session/local.rs",
+      "patched_sha256": "baeae32b40d7b38eae109ce4ac044534c1d6ee6402f4ce1f47e387e443f307ef"
+    },
+    {
+      "path": "src/transport/worker.rs",
+      "patched_sha256": "00eb6e9a3a71d9c0eb1bd6aa235a6aa41899912c92c76e467553f3964ddb894a"
+    },
+    {
+      "path": "src/transport.rs",
+      "patched_sha256": "8213383c7b83cd612016bffa78d1eaad64088c23659758cdca5a9a15d8f0974e"
     },
     {
       "path": "tests/test_json_schema_detection.rs",
-      "patched_sha256": "f84bda1e8f23a70befbc63e6ee8cdd3b926e952e552124f522edde891e4ef551",
-      "obligation": "Normalize upstream trailing whitespace so repository formatting checks remain deterministic."
+      "patched_sha256": "f84bda1e8f23a70befbc63e6ee8cdd3b926e952e552124f522edde891e4ef551"
+    },
+    {
+      "path": "tests/test_tool_security_schemes.rs",
+      "patched_sha256": "832fb7fd9776a9db026246ae6a3badd7cd53d08fcdb81149971f95d209e74fc6",
+      "upstream_absent": true
     }
   ]
 }

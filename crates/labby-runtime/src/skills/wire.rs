@@ -10,7 +10,7 @@
 //! `nextCursor`/`ttlMs`/`cacheScope` keys inherited from the base protocol's
 //! list-caching attributes.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 /// Extension capability key advertised in `capabilities.extensions`.
@@ -49,13 +49,51 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// One `{uri, digest}` pair from a skill entry's `resources` manifest.
+/// One `{uri, digest, size}` entry from a skill's `resources` manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillResource {
     /// Resource URI relative to the skill protocol namespace.
     pub uri: String,
     /// Content digest advertised for integrity verification.
     pub digest: String,
+    /// Length in bytes of the raw content covered by `digest`.
+    pub size: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DynamicResources {
+    Dynamic,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ResourcesWire {
+    Manifest(Vec<SkillResource>),
+    Dynamic(DynamicResources),
+}
+
+fn deserialize_resources<'de, D>(deserializer: D) -> Result<Option<Vec<SkillResource>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ResourcesWire::deserialize(deserializer).map(|resources| match resources {
+        ResourcesWire::Manifest(resources) => Some(resources),
+        ResourcesWire::Dynamic(DynamicResources::Dynamic) => None,
+    })
+}
+
+fn serialize_resources<S>(
+    resources: &Option<Vec<SkillResource>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match resources {
+        Some(resources) => resources.serialize(serializer),
+        None => DynamicResources::Dynamic.serialize(serializer),
+    }
 }
 
 /// A skill entry, as carried by both `skills/list` and `skills/get`.
@@ -65,10 +103,12 @@ pub struct SkillEntry {
     pub uri: String,
     /// The `SKILL.md` YAML frontmatter rendered verbatim as a JSON object.
     pub frontmatter: Map<String, Value>,
-    /// Complete file manifest. Absent only for dynamically generated skills,
-    /// which cannot publish stable digests and therefore cannot be
-    /// content-bound.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Complete file manifest, or `"dynamic"` for generated skills that cannot
+    /// publish stable content. The wire field itself is always required.
+    #[serde(
+        deserialize_with = "deserialize_resources",
+        serialize_with = "serialize_resources"
+    )]
     pub resources: Option<Vec<SkillResource>>,
     /// Implementation metadata about where this entry came from.
     ///
@@ -97,6 +137,14 @@ pub struct SkillsListParams {
     pub cursor: Option<String>,
 }
 
+/// The complete-result marker required on extension result objects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompleteResultType {
+    #[default]
+    Complete,
+}
+
 /// `skills/list` result.
 ///
 /// A server whose catalog is large, generated, or otherwise unenumerable may
@@ -104,8 +152,10 @@ pub struct SkillsListParams {
 /// as proof that a server has no skills.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsListResult {
+    /// Identifies this as a complete MCP result rather than an input request.
+    #[serde(rename = "resultType")]
+    pub result_type: CompleteResultType,
     /// Skill entries returned on this page.
-    #[serde(default)]
     pub skills: Vec<SkillEntry>,
     #[serde(
         rename = "nextCursor",
@@ -203,6 +253,9 @@ pub struct SkillsGetParams {
 /// The entry is nested under a `skill` key rather than returned flat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsGetResult {
+    /// Identifies this as a complete MCP result rather than an input request.
+    #[serde(rename = "resultType")]
+    pub result_type: CompleteResultType,
     /// Retrieved skill entry.
     pub skill: SkillEntry,
 }
@@ -215,6 +268,7 @@ mod tests {
     #[test]
     fn deserializes_skills_list_result_from_spec_example() {
         let raw = json!({
+            "resultType": "complete",
             "skills": [
                 {
                     "uri": "skill://git-workflow/SKILL.md",
@@ -223,7 +277,7 @@ mod tests {
                         "description": "Follow this team's Git conventions for branching and commits"
                     },
                     "resources": [
-                        { "uri": "skill://git-workflow/SKILL.md", "digest": "sha256:a1b2c3d4" }
+                        { "uri": "skill://git-workflow/SKILL.md", "digest": "sha256:a1b2c3d4", "size": 2314 }
                     ]
                 },
                 {
@@ -234,8 +288,8 @@ mod tests {
                         "license": "Apache-2.0"
                     },
                     "resources": [
-                        { "uri": "skill://acme/billing/refunds/SKILL.md", "digest": "sha256:b2c3d4e5" },
-                        { "uri": "skill://acme/billing/refunds/examples/email.md", "digest": "sha256:c3d4e5f6" }
+                        { "uri": "skill://acme/billing/refunds/SKILL.md", "digest": "sha256:b2c3d4e5", "size": 3871 },
+                        { "uri": "skill://acme/billing/refunds/examples/email.md", "digest": "sha256:c3d4e5f6", "size": 962 }
                     ]
                 }
             ],
@@ -260,6 +314,7 @@ mod tests {
     #[test]
     fn deserializes_skills_get_result_with_nested_skill_key() {
         let raw = json!({
+            "resultType": "complete",
             "skill": {
                 "uri": "skill://pdf-processing/SKILL.md",
                 "frontmatter": {
@@ -268,8 +323,8 @@ mod tests {
                     "metadata": { "version": "2.1.0" }
                 },
                 "resources": [
-                    { "uri": "skill://pdf-processing/SKILL.md", "digest": "sha256:d5e6f7a8" },
-                    { "uri": "skill://pdf-processing/references/FORMS.md", "digest": "sha256:e6f7a8b9" }
+                    { "uri": "skill://pdf-processing/SKILL.md", "digest": "sha256:d5e6f7a8", "size": 5120 },
+                    { "uri": "skill://pdf-processing/references/FORMS.md", "digest": "sha256:e6f7a8b9", "size": 18433 }
                 ]
             }
         });
@@ -284,36 +339,69 @@ mod tests {
     fn empty_listing_round_trips() {
         // A server that cannot enumerate returns an empty listing; that must
         // deserialize cleanly rather than erroring.
-        let result: SkillsListResult = serde_json::from_value(json!({ "skills": [] })).expect("ok");
+        let result: SkillsListResult = serde_json::from_value(json!({
+            "resultType": "complete",
+            "skills": []
+        }))
+        .expect("ok");
         assert!(result.skills.is_empty());
         assert!(result.next_cursor.is_none());
     }
 
     #[test]
-    fn entry_without_resources_is_unverifiable() {
+    fn dynamic_resources_are_unverifiable_and_round_trip() {
         let entry: SkillEntry = serde_json::from_value(json!({
             "uri": "skill://generated/SKILL.md",
-            "frontmatter": { "name": "generated", "description": "d" }
+            "frontmatter": { "name": "generated", "description": "d" },
+            "resources": "dynamic"
         }))
         .expect("deserializes");
         assert!(entry.is_unverifiable());
-        // Absent, not null: an omitted manifest must not serialize back as an
-        // explicit `"resources": null`.
         let encoded = serde_json::to_value(&entry).expect("serializes");
-        assert!(encoded.get("resources").is_none());
+        assert_eq!(encoded["resources"], "dynamic");
+    }
+
+    #[test]
+    fn missing_resources_is_rejected() {
+        let result = serde_json::from_value::<SkillEntry>(json!({
+            "uri": "skill://generated/SKILL.md",
+            "frontmatter": { "name": "generated", "description": "d" }
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn missing_required_result_fields_are_rejected() {
+        assert!(serde_json::from_value::<SkillsListResult>(json!({ "skills": [] })).is_err());
+        assert!(
+            serde_json::from_value::<SkillsListResult>(json!({ "resultType": "complete" }))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<SkillsGetResult>(json!({
+                "skill": {
+                    "uri": "skill://generated/SKILL.md",
+                    "frontmatter": { "name": "generated", "description": "d" },
+                    "resources": "dynamic"
+                }
+            }))
+            .is_err()
+        );
     }
 
     #[test]
     fn unknown_cache_scope_round_trips() {
-        let result: SkillsListResult =
-            serde_json::from_value(json!({ "skills": [], "cacheScope": "some-future-scope" }))
-                .expect("unknown scope tolerated");
+        let result: SkillsListResult = serde_json::from_value(
+            json!({ "resultType": "complete", "skills": [], "cacheScope": "some-future-scope" }),
+        )
+        .expect("unknown scope tolerated");
         assert_eq!(result.cache_scope.as_deref(), Some("some-future-scope"));
     }
 
     #[test]
     fn empty_private_absorb_still_downgrades_cache_scope() {
         let mut result = SkillsListResult {
+            result_type: CompleteResultType::Complete,
             skills: Vec::new(),
             next_cursor: None,
             ttl_ms: Some(60_000),
@@ -330,6 +418,7 @@ mod tests {
     #[test]
     fn absent_empty_source_does_not_downgrade_cache_scope() {
         let mut result = SkillsListResult {
+            result_type: CompleteResultType::Complete,
             skills: Vec::new(),
             next_cursor: None,
             ttl_ms: Some(60_000),

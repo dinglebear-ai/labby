@@ -49,6 +49,10 @@ fn parse_json_rpc_error(body: &str) -> Option<ServerJsonRpcMessage> {
 impl StreamableHttpClient for reqwest::Client {
     type Error = reqwest::Error;
 
+    fn preserves_raw_responses() -> bool {
+        true
+    }
+
     async fn get_stream(
         &self,
         uri: Arc<str>,
@@ -93,6 +97,37 @@ impl StreamableHttpClient for reqwest::Client {
         let response = request_builder.send().await?;
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);
+        }
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && let Some(header) = response.headers().get(WWW_AUTHENTICATE)
+        {
+            let header = header
+                .to_str()
+                .map_err(|_| {
+                    StreamableHttpError::UnexpectedServerResponse(Cow::from(
+                        "invalid www-authenticate header value",
+                    ))
+                })?
+                .to_string();
+            return Err(StreamableHttpError::AuthRequired(AuthRequiredError {
+                www_authenticate_header: header,
+            }));
+        }
+        if response.status() == reqwest::StatusCode::FORBIDDEN
+            && let Some(header) = response.headers().get(WWW_AUTHENTICATE)
+        {
+            let header_str = header.to_str().map_err(|_| {
+                StreamableHttpError::UnexpectedServerResponse(Cow::from(
+                    "invalid www-authenticate header value",
+                ))
+            })?;
+            let scope = extract_scope_from_header(header_str);
+            return Err(StreamableHttpError::InsufficientScope(
+                InsufficientScopeError {
+                    www_authenticate_header: header_str.to_string(),
+                    required_scope: scope,
+                },
+            ));
         }
         let response = response.error_for_status()?;
         match response.headers().get(reqwest::header::CONTENT_TYPE) {
@@ -262,6 +297,11 @@ impl StreamableHttpClient for reqwest::Client {
                     ),
                 }
             }
+            if let Some(response) =
+                legacy_discover_response(&message, session_was_attached, status, &body)
+            {
+                return Ok(response);
+            }
             return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
                 format!("HTTP {status}: {body}"),
             )));
@@ -275,8 +315,11 @@ impl StreamableHttpClient for reqwest::Client {
                 // Try to parse as a valid JSON-RPC message. If the body is
                 // malformed (e.g. a 200 response to a notification that lacks
                 // an `id` field), treat it as accepted rather than failing.
-                match response.json::<ServerJsonRpcMessage>().await {
-                    Ok(message) => Ok(StreamableHttpPostResponse::Json(message, session_id)),
+                match response
+                    .json::<crate::service::RawRxJsonRpcMessage<crate::RoleClient>>()
+                    .await
+                {
+                    Ok(message) => Ok(StreamableHttpPostResponse::RawJson(message, session_id)),
                     Err(e) => {
                         tracing::warn!(
                             "could not parse JSON response as ServerJsonRpcMessage, treating as accepted: {e}"

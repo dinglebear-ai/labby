@@ -47,11 +47,12 @@ fn skill_md_body(name: &str) -> String {
 
 fn entry(origin: &str, name: &str) -> Value {
     let uri = format!("skill://{origin}/{name}/SKILL.md");
+    let body = skill_md_body(name);
     json!({
         "uri": uri,
         "frontmatter": { "name": name, "description": "a test skill" },
         "resources": [
-            { "uri": uri, "digest": ResourceDigest::of_bytes(skill_md_body(name).as_bytes()).to_wire() }
+            { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire(), "size": body.len() }
         ]
     })
 }
@@ -59,12 +60,13 @@ fn entry(origin: &str, name: &str) -> Value {
 fn entry_with_supporting(origin: &str, name: &str) -> Value {
     let uri = format!("skill://{origin}/{name}/SKILL.md");
     let notes = format!("skill://{origin}/{name}/notes.md");
+    let body = skill_md_body(name);
     json!({
         "uri": uri,
         "frontmatter": { "name": name, "description": "a test skill" },
         "resources": [
-            { "uri": uri, "digest": ResourceDigest::of_bytes(skill_md_body(name).as_bytes()).to_wire() },
-            { "uri": notes, "digest": ResourceDigest::of_bytes(b"supporting notes").to_wire() }
+            { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire(), "size": body.len() },
+            { "uri": notes, "digest": ResourceDigest::of_bytes(b"supporting notes").to_wire(), "size": b"supporting notes".len() }
         ]
     })
 }
@@ -209,12 +211,16 @@ impl ServerHandler for SkillsServer {
                     std::future::pending::<()>().await;
                 }
                 let index = self.list_calls.fetch_add(1, Ordering::SeqCst);
-                let page = self
+                let mut page = self
                     .pages
                     .get(index)
                     .or_else(|| self.pages.last())
                     .cloned()
                     .unwrap_or_else(|| json!({ "skills": [] }));
+                if let Some(page) = page.as_object_mut() {
+                    page.entry("resultType")
+                        .or_insert_with(|| json!("complete"));
+                }
                 Ok(CustomResult::new(page))
             }
             "skills/get" => {
@@ -275,7 +281,7 @@ async fn capability_detection_reads_the_declared_extension() {
 }
 
 #[tokio::test]
-async fn skills_list_with_result_type_and_meta_stays_a_custom_result() {
+async fn skills_list_with_result_type_and_meta_decodes_as_the_typed_extension_result() {
     let server = SkillsServer::new(vec![json!({
         "resultType": "complete",
         "skills": [entry("up", "alpha")],
@@ -293,7 +299,7 @@ async fn skills_list_with_result_type_and_meta_stays_a_custom_result() {
     let skills = pool
         .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
         .await
-        .expect("skills/list custom result remains intact");
+        .expect("skills/list typed extension result decodes");
 
     assert_eq!(skills.skills.len(), 1);
     assert_eq!(
@@ -418,7 +424,8 @@ async fn the_candidate_cap_bounds_invalid_skill_floods() {
             let name = format!("invalid-{i}");
             json!({
                 "uri": format!("skill://up/{name}/SKILL.md"),
-                "frontmatter": { "name": name, "description": "d" }
+                "frontmatter": { "name": name, "description": "d" },
+                "resources": "dynamic"
             })
         })
         .collect();
@@ -458,13 +465,14 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
         "uri": "skill://up/broken/SKILL.md",
         "frontmatter": { "name": "broken", "description": "d" },
         "resources": [
-            { "uri": "skill://up/broken/other.md", "digest": ResourceDigest::of_bytes(b"x").to_wire() }
+            { "uri": "skill://up/broken/other.md", "digest": ResourceDigest::of_bytes(b"x").to_wire(), "size": 1 }
         ]
     });
     // Generated skills publish no manifest and cannot be content-bound.
     let unverifiable = json!({
         "uri": "skill://up/generated/SKILL.md",
-        "frontmatter": { "name": "generated", "description": "d" }
+        "frontmatter": { "name": "generated", "description": "d" },
+        "resources": "dynamic"
     });
     let server = SkillsServer::new(vec![json!({ "skills": [good, bad, unverifiable] })]);
     let pool = catalog_pool_with_server("up", server).await;
@@ -525,6 +533,38 @@ async fn a_malformed_page_fails_rather_than_returning_a_partial_snapshot() {
     assert!(error.contains("malformed"));
 }
 
+#[test]
+fn skills_list_errors_distinguish_malformed_results_from_protocol_failures() {
+    let malformed = serde_json::from_value::<Vec<String>>(json!({"not": "an array"}))
+        .expect_err("malformed fixture");
+    let malformed = super::skills_list::skills_list_error(
+        &rmcp::service::ServiceError::ResponseDeserialization(malformed),
+    );
+    assert!(malformed.contains("malformed result"));
+
+    let protocol = super::skills_list::skills_list_error(&rmcp::service::ServiceError::McpError(
+        ErrorData::new(ErrorCode::INVALID_PARAMS, "bad request", None),
+    ));
+    assert!(protocol.contains("skills/list failed"));
+    assert!(!protocol.contains("malformed result"));
+}
+
+#[test]
+fn skills_get_errors_distinguish_malformed_results_from_protocol_failures() {
+    let malformed = serde_json::from_value::<Vec<String>>(json!({"not": "an array"}))
+        .expect_err("malformed fixture");
+    let malformed = super::skills_list::skills_get_error(
+        &rmcp::service::ServiceError::ResponseDeserialization(malformed),
+    );
+    assert!(malformed.contains("skills/get returned a malformed result"));
+
+    let protocol = super::skills_list::skills_get_error(&rmcp::service::ServiceError::McpError(
+        ErrorData::new(ErrorCode::INVALID_PARAMS, "bad request", None),
+    ));
+    assert!(protocol.contains("skills/get failed"));
+    assert!(!protocol.contains("malformed result"));
+}
+
 #[tokio::test]
 async fn skills_get_resolves_a_skill_that_never_appeared_in_a_listing() {
     // The unlisted-skill path: the listing is empty, but the URI still loads.
@@ -564,6 +604,30 @@ async fn skills_get_treats_invalid_params_as_not_a_skill() {
         .await
         .expect("a -32602 is a successful negative answer");
     assert!(answer.is_none());
+}
+
+#[tokio::test]
+async fn skills_get_reports_a_malformed_typed_result_with_upstream_context() {
+    let server =
+        SkillsServer::new(vec![json!({ "skills": [] })]).with_get(json!("not a skill entry"));
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .fetch_upstream_skill(
+            "up",
+            &peer_for(&pool, "up").await,
+            "skill://up/malformed/SKILL.md",
+            None,
+        )
+        .await
+        .expect_err("a malformed typed skills/get result must fail");
+
+    assert!(error.contains("upstream `up`"), "{error}");
+    assert!(
+        error.contains("skills/get returned a malformed result"),
+        "{error}"
+    );
+    assert!(!error.contains("skills/get failed"), "{error}");
 }
 
 #[cfg(feature = "skills")]
@@ -775,8 +839,8 @@ async fn direct_get_cannot_reuse_a_listed_supporting_resource_uri() {
         "uri": "skill://up/parent/SKILL.md",
         "frontmatter": { "name": "parent", "description": "a test skill" },
         "resources": [
-            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire() },
-            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire() }
+            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire(), "size": parent_body.len() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire(), "size": b"parent bytes".len() }
         ]
     });
     let child_body = skill_md_body("child");
@@ -784,8 +848,8 @@ async fn direct_get_cannot_reuse_a_listed_supporting_resource_uri() {
         "uri": "skill://up/parent/child/SKILL.md",
         "frontmatter": { "name": "child", "description": "a test skill" },
         "resources": [
-            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire() },
-            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire() }
+            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire(), "size": child_body.len() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire(), "size": b"child bytes".len() }
         ]
     });
     let server = SkillsServer::new(vec![json!({ "skills": [parent] })]).with_get(child);
@@ -844,8 +908,8 @@ async fn refresh_drops_direct_snapshot_when_hidden_listed_owner_claims_its_resou
         "uri": "skill://up/parent/child/SKILL.md",
         "frontmatter": { "name": "child", "description": "a test skill" },
         "resources": [
-            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire() },
-            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire() }
+            { "uri": "skill://up/parent/child/SKILL.md", "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire(), "size": child_body.len() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"child bytes").to_wire(), "size": b"child bytes".len() }
         ]
     });
     let parent_body = skill_md_body("parent");
@@ -853,8 +917,8 @@ async fn refresh_drops_direct_snapshot_when_hidden_listed_owner_claims_its_resou
         "uri": "skill://up/parent/SKILL.md",
         "frontmatter": { "name": "parent", "description": "a test skill" },
         "resources": [
-            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire() },
-            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire() }
+            { "uri": "skill://up/parent/SKILL.md", "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire(), "size": parent_body.len() },
+            { "uri": shared, "digest": ResourceDigest::of_bytes(b"parent bytes").to_wire(), "size": b"parent bytes".len() }
         ]
     });
     let server = SkillsServer::new(vec![json!({ "skills": [] }), json!({ "skills": [parent] })])
@@ -1375,7 +1439,7 @@ async fn a_body_whose_frontmatter_contradicts_its_entry_is_refused() {
             "frontmatter": { "name": "alpha", "description": "a test skill" },
             // An honest digest of the dishonest body.
             "resources": [
-                { "uri": uri, "digest": ResourceDigest::of_bytes(forged.as_bytes()).to_wire() }
+                { "uri": uri, "digest": ResourceDigest::of_bytes(forged.as_bytes()).to_wire(), "size": forged.len() }
             ]
         }]
     });
@@ -1515,7 +1579,7 @@ fn native_entry(scheme: &str, path: &str, name: &str, body: &str) -> Value {
         "uri": uri,
         "frontmatter": { "name": name, "description": "a test skill" },
         "resources": [
-            { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire() }
+            { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire(), "size": body.len() }
         ]
     })
 }
@@ -1560,10 +1624,10 @@ async fn a_manifest_may_not_mix_schemes_to_escape_its_namespace() {
             "uri": uri,
             "frontmatter": { "name": "refunds", "description": "a test skill" },
             "resources": [
-                { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire() },
+                { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire(), "size": body.len() },
                 // Same path, different scheme — outside this skill's directory.
                 { "uri": "evil://owner/refunds/steal.md",
-                  "digest": ResourceDigest::of_bytes(b"x").to_wire() }
+                  "digest": ResourceDigest::of_bytes(b"x").to_wire(), "size": 1 }
             ]
         }]
     });

@@ -219,6 +219,7 @@ fn materialize_skill_bytes(
         .map(|(path, bytes)| SkillResource {
             uri: format!("{root}/{path}"),
             digest: ResourceDigest::of_bytes(bytes).to_wire(),
+            size: bytes.len() as u64,
         })
         .collect();
     let entry = SkillEntry {

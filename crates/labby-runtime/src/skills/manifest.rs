@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 use crate::error::ToolError;
 use crate::skills::digest::parse_digest;
 use crate::skills::frontmatter::validate_frontmatter;
-use crate::skills::limits::MAX_RESOURCES_PER_SKILL;
+use crate::skills::limits::{MAX_RESOURCES_PER_SKILL, MAX_SKILL_TOTAL_BYTES};
 use crate::skills::uri::{SkillUri, parse_skill_resource_uri};
 use crate::skills::wire::SkillEntry;
 
@@ -53,6 +53,8 @@ pub enum SkillRejection {
     ManifestDuplicateUri,
     /// The manifest exceeds the per-skill resource cap.
     ManifestTooLarge,
+    /// The manifest declares more total bytes than a conforming host must accept.
+    ManifestBytesTooLarge,
 }
 
 /// Operator-safe detail for one rejected skill candidate.
@@ -75,6 +77,7 @@ impl SkillRejection {
             Self::ManifestMissingSkillMd => "manifest_missing_skill_md",
             Self::ManifestDuplicateUri => "manifest_duplicate_uri",
             Self::ManifestTooLarge => "manifest_too_large",
+            Self::ManifestBytesTooLarge => "manifest_bytes_too_large",
         }
     }
 }
@@ -137,6 +140,21 @@ pub fn validate_skill_entry_detailed(
         return Err(reject(
             SkillRejection::ManifestTooLarge,
             format!("resources manifest exceeds {MAX_RESOURCES_PER_SKILL} entries"),
+        ));
+    }
+    let total_size = resources
+        .iter()
+        .try_fold(0_u64, |total, resource| total.checked_add(resource.size))
+        .ok_or_else(|| {
+            reject(
+                SkillRejection::ManifestBytesTooLarge,
+                "resources manifest byte total overflows u64".into(),
+            )
+        })?;
+    if total_size > MAX_SKILL_TOTAL_BYTES {
+        return Err(reject(
+            SkillRejection::ManifestBytesTooLarge,
+            format!("resources manifest exceeds {MAX_SKILL_TOTAL_BYTES} total bytes"),
         ));
     }
 
@@ -219,6 +237,16 @@ impl ValidatedSkill {
             .find(|resource| resource.uri == uri)
             .map(|resource| resource.digest.as_str())
     }
+
+    /// Look up the complete manifest binding for one resource URI.
+    #[must_use]
+    pub fn resource_for(&self, uri: &str) -> Option<&crate::skills::wire::SkillResource> {
+        self.entry
+            .resources
+            .as_ref()?
+            .iter()
+            .find(|resource| resource.uri == uri)
+    }
 }
 
 /// Verify fetched bytes against the digest the manifest published for `uri`.
@@ -231,7 +259,7 @@ pub fn verify_manifest_file(
     uri: &str,
     bytes: &[u8],
 ) -> Result<(), ToolError> {
-    let Some(raw) = skill.digest_for(uri) else {
+    let Some(resource) = skill.resource_for(uri) else {
         return Err(ToolError::Sdk {
             sdk_kind: "validation_failed".to_string(),
             message: format!(
@@ -240,7 +268,16 @@ pub fn verify_manifest_file(
             ),
         });
     };
-    let digest = parse_digest(raw)?;
+    if u64::try_from(bytes.len()).ok() != Some(resource.size) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "validation_failed".to_string(),
+            message: format!(
+                "content length of `{uri}` does not match the size published for skill `{}`",
+                skill.name
+            ),
+        });
+    }
+    let digest = parse_digest(&resource.digest)?;
     if !digest.matches(bytes) {
         return Err(ToolError::Sdk {
             sdk_kind: "validation_failed".to_string(),
@@ -276,6 +313,7 @@ mod tests {
         SkillResource {
             uri: uri.to_string(),
             digest: ResourceDigest::of_bytes(bytes).to_wire(),
+            size: bytes.len() as u64,
         }
     }
 
@@ -400,6 +438,7 @@ mod tests {
             .push(SkillResource {
                 uri: "skill://labby/x/SKILL.md".to_string(),
                 digest: ResourceDigest::of_bytes(b"different").to_wire(),
+                size: b"different".len() as u64,
             });
         assert_eq!(
             validate_skill_entry(&entry),
@@ -416,6 +455,7 @@ mod tests {
                 Some(vec![SkillResource {
                     uri: "skill://labby/x/SKILL.md".to_string(),
                     digest: bad.to_string(),
+                    size: 0,
                 }]),
             );
             assert_eq!(
@@ -505,6 +545,51 @@ mod tests {
     }
 
     #[test]
+    fn rejects_manifest_over_total_byte_limit() {
+        let mut entry = valid_entry();
+        entry.resources.as_mut().expect("manifest")[0].size = MAX_SKILL_TOTAL_BYTES + 1;
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::ManifestBytesTooLarge)
+        );
+    }
+
+    #[test]
+    fn manifest_total_size_accepts_limit_and_rejects_cumulative_and_integer_overflow() {
+        let mut exact = valid_entry();
+        let resources = exact.resources.as_mut().expect("manifest");
+        resources[0].size = MAX_SKILL_TOTAL_BYTES;
+        for resource in &mut resources[1..] {
+            resource.size = 0;
+        }
+        assert!(validate_skill_entry(&exact).is_ok());
+
+        let mut cumulative = valid_entry();
+        let resources = cumulative.resources.as_mut().expect("manifest");
+        resources[0].size = MAX_SKILL_TOTAL_BYTES;
+        for resource in &mut resources[1..] {
+            resource.size = 0;
+        }
+        resources.push(resource("skill://labby/using-labby/extra.md", b"x"));
+        assert_eq!(
+            validate_skill_entry(&cumulative),
+            Err(SkillRejection::ManifestBytesTooLarge)
+        );
+
+        let mut overflow = valid_entry();
+        let resources = overflow.resources.as_mut().expect("manifest");
+        resources[0].size = u64::MAX;
+        for resource in &mut resources[1..] {
+            resource.size = 0;
+        }
+        resources.push(resource("skill://labby/using-labby/extra.md", b"x"));
+        assert_eq!(
+            validate_skill_entry(&overflow),
+            Err(SkillRejection::ManifestBytesTooLarge)
+        );
+    }
+
+    #[test]
     fn verifies_listed_file_and_rejects_mismatch_and_unlisted() {
         let skill = validate_skill_entry(&valid_entry()).expect("valid");
 
@@ -513,6 +598,10 @@ mod tests {
 
         let err = verify_manifest_file(&skill, "skill://labby/using-labby/SKILL.md", b"tampered")
             .expect_err("mismatch");
+        assert!(err.to_string().contains("does not match the size"));
+
+        let err = verify_manifest_file(&skill, "skill://labby/using-labby/SKILL.md", b"evil")
+            .expect_err("same-size digest mismatch");
         assert!(err.to_string().contains("does not match the digest"));
 
         let err = verify_manifest_file(&skill, "skill://labby/using-labby/unlisted.md", b"x")
@@ -531,6 +620,7 @@ mod tests {
             SkillRejection::ManifestMissingSkillMd,
             SkillRejection::ManifestDuplicateUri,
             SkillRejection::ManifestTooLarge,
+            SkillRejection::ManifestBytesTooLarge,
         ];
         let unique: BTreeSet<_> = all.iter().map(|reason| reason.as_str()).collect();
         assert_eq!(unique.len(), all.len());

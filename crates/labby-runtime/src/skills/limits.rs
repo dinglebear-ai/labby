@@ -1,8 +1,7 @@
 //! Hard safety caps for the skills extension (SEP-2640).
 //!
-//! These are host-chosen budgets, not spec-mandated values: SEP-2640 defines no
-//! size or pagination limits, and its own threat model (T6, resource
-//! exhaustion) pushes that responsibility onto the host. They live here as
+//! These combine SEP-2640's required per-skill interoperability limits with
+//! stricter host-chosen catalog and parsing budgets. They live here as
 //! `pub const` rather than configuration because they exist to bound a
 //! *hostile* upstream — an operator-tunable ceiling is a ceiling an operator can
 //! be talked into raising.
@@ -27,13 +26,16 @@ pub const MAX_SKILLS_PER_UPSTREAM: usize = 256;
 pub const MAX_SKILL_CANDIDATES_PER_UPSTREAM: usize = 1024;
 
 /// Maximum entries in a single skill's `resources` manifest.
-pub const MAX_RESOURCES_PER_SKILL: usize = 64;
+pub const MAX_RESOURCES_PER_SKILL: usize = 512;
+
+/// Maximum total raw bytes declared across one skill's resource manifest.
+pub const MAX_SKILL_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Maximum bytes returned for one Skill resource.
 ///
 /// This matches the operator-local snapshot cap and applies to every provider,
 /// so switching source types cannot silently widen the memory budget.
-pub const MAX_SKILL_RESOURCE_BYTES: usize = 1024 * 1024;
+pub const MAX_SKILL_RESOURCE_BYTES: usize = MAX_SKILL_TOTAL_BYTES as usize;
 
 /// Maximum `skills/list` pages traversed for one upstream before the walk stops.
 ///

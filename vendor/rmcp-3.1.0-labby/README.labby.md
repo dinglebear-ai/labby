@@ -24,6 +24,8 @@ following compatibility deltas, all pinned and checked by
   precedence, including typed DCR application types, authorization/refresh
   grant declarations, and recoverable registration failures; and
 - explicit expired-token and refresh behavior.
+- typed custom-request response decoding with raw response preservation across
+  supported transports, ported from `jmagar/rust-sdk@e3bc6c71f5ee6d708fa79f860280a96788ebdf27`.
 
 The field uses `Option<Vec<serde_json::Value>>`: omission preserves the standard
 MCP 3.1 wire model, while values preserve OpenAI's current `noauth` / `oauth2`
