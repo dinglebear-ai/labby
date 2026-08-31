@@ -10,7 +10,7 @@ use rmcp::model::{
     ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
     TaskStatusNotificationParams,
 };
-use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -900,6 +900,39 @@ struct OrderedRelayNotificationFixture {
     messages: VecDeque<RxJsonRpcMessage<RoleClient>>,
 }
 
+struct OrderedRelayRawFixture {
+    messages: VecDeque<RawRxJsonRpcMessage<RoleClient>>,
+}
+
+impl Transport<RoleClient> for OrderedRelayRawFixture {
+    type Error = Infallible;
+
+    fn preserves_raw_responses() -> bool {
+        true
+    }
+
+    fn send(
+        &mut self,
+        _item: TxJsonRpcMessage<RoleClient>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        std::future::ready(Ok(()))
+    }
+
+    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
+        None
+    }
+
+    fn receive_raw(
+        &mut self,
+    ) -> impl Future<Output = Option<RawRxJsonRpcMessage<RoleClient>>> + Send {
+        std::future::ready(self.messages.pop_front())
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
+    }
+}
+
 impl Transport<RoleClient> for OrderedRelayNotificationFixture {
     type Error = Infallible;
 
@@ -944,6 +977,65 @@ fn task_status_message() -> RxJsonRpcMessage<RoleClient> {
     RxJsonRpcMessage::<RoleClient>::notification(ServerNotification::TaskStatusNotification(
         TaskStatusNotification::new(TaskStatusNotificationParams::new(task)),
     ))
+}
+
+#[tokio::test]
+async fn ordered_relay_raw_receive_preserves_order_cancellation_and_result_body() {
+    let observed = Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let interceptor_observed = Arc::clone(&observed);
+    let interceptor_release = Arc::clone(&release);
+    let interceptor: RelayNotificationInterceptor = Arc::new(move |notification| {
+        let observed = Arc::clone(&interceptor_observed);
+        let release = Arc::clone(&interceptor_release);
+        Box::pin(async move {
+            release.acquire().await.expect("release permit").forget();
+            if let OrderedRelayNotification::Progress(params) = notification {
+                observed
+                    .lock()
+                    .await
+                    .push(params.message.unwrap_or_default());
+            }
+        })
+    });
+    let notification = RawRxJsonRpcMessage::<RoleClient>::notification(
+        ServerNotification::ProgressNotification(ProgressNotification::new(
+            ProgressNotificationParam::new(
+                ProgressToken(NumberOrString::String("ordered-progress".into())),
+                0.5,
+            )
+            .with_message("before-result"),
+        )),
+    );
+    let result_body = json!({
+        "resultType": "complete",
+        "skills": [{"uri": "skill://up/x/SKILL.md"}],
+        "extensionOnly": {"preserved": true}
+    });
+    let response =
+        RawRxJsonRpcMessage::<RoleClient>::response(result_body.clone(), NumberOrString::Number(7));
+    let fixture = OrderedRelayRawFixture {
+        messages: VecDeque::from([notification, response]),
+    };
+    let mut transport = OrderedRelayNotificationTransport::new(fixture, Some(interceptor));
+
+    let timed_out = tokio::time::timeout(
+        std::time::Duration::from_millis(10),
+        transport.receive_raw(),
+    )
+    .await;
+    assert!(
+        timed_out.is_err(),
+        "raw response must wait for notification delivery"
+    );
+
+    release.add_permits(1);
+    let message = transport.receive_raw().await.expect("raw response");
+    let RawRxJsonRpcMessage::<RoleClient>::Response(response) = message else {
+        panic!("expected raw response");
+    };
+    assert_eq!(observed.lock().await.as_slice(), ["before-result"]);
+    assert_eq!(response.result, result_body);
 }
 
 #[tokio::test]

@@ -555,6 +555,41 @@ mod tests {
     }
 
     #[test]
+    fn manifest_total_size_accepts_limit_and_rejects_cumulative_and_integer_overflow() {
+        let mut exact = valid_entry();
+        let resources = exact.resources.as_mut().expect("manifest");
+        resources[0].size = MAX_SKILL_TOTAL_BYTES;
+        for resource in &mut resources[1..] {
+            resource.size = 0;
+        }
+        assert!(validate_skill_entry(&exact).is_ok());
+
+        let mut cumulative = valid_entry();
+        let resources = cumulative.resources.as_mut().expect("manifest");
+        resources[0].size = MAX_SKILL_TOTAL_BYTES;
+        for resource in &mut resources[1..] {
+            resource.size = 0;
+        }
+        resources.push(resource("skill://labby/using-labby/extra.md", b"x"));
+        assert_eq!(
+            validate_skill_entry(&cumulative),
+            Err(SkillRejection::ManifestBytesTooLarge)
+        );
+
+        let mut overflow = valid_entry();
+        let resources = overflow.resources.as_mut().expect("manifest");
+        resources[0].size = u64::MAX;
+        for resource in &mut resources[1..] {
+            resource.size = 0;
+        }
+        resources.push(resource("skill://labby/using-labby/extra.md", b"x"));
+        assert_eq!(
+            validate_skill_entry(&overflow),
+            Err(SkillRejection::ManifestBytesTooLarge)
+        );
+    }
+
+    #[test]
     fn verifies_listed_file_and_rejects_mismatch_and_unlisted() {
         let skill = validate_skill_entry(&valid_entry()).expect("valid");
 
