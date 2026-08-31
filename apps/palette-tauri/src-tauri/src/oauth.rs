@@ -553,7 +553,12 @@ async fn run_login_via_native_poll(
         .await
         .map_err(|err| format!("native OAuth start returned an invalid response: {err}"))?;
 
-    if let Err(err) = open::that(&start.authorization_url) {
+    let authorization_url =
+        flow::validate_native_authorization_url(&start.authorization_url, &authorize_url)?;
+
+    if let Err(err) =
+        open_validated_native_authorization_url(&authorization_url, |url| open::that(url))
+    {
         return Err(format!(
             "failed to open the system browser — open this URL manually to sign in:\n{}\n({err})",
             start.authorization_url
@@ -593,6 +598,13 @@ async fn run_login_via_native_poll(
         token,
         now_unix(),
     ))
+}
+
+fn open_validated_native_authorization_url(
+    authorization_url: &url::Url,
+    opener: impl FnOnce(&str) -> Result<(), std::io::Error>,
+) -> Result<(), std::io::Error> {
+    opener(authorization_url.as_str())
 }
 
 async fn run_login_via_loopback(
@@ -725,7 +737,7 @@ async fn ensure_loaded(app: &AppHandle, state: &OauthState) {
             return;
         }
     };
-    let loaded = crate::persistence::run_blocking_io(move || Ok(store::load(&path)))
+    let loaded = crate::persistence::run_blocking_io(move || store::load(&path))
         .await
         .unwrap_or_else(|err| {
             crate::warn(format!("OAuth credential reader failed: {err}"));

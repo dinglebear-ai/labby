@@ -20,6 +20,13 @@ pub fn configured_bearer_token(env_name: &str) -> Option<String> {
     configured_bearer_token_with_dotenv(env_name, dotenv_path.as_deref())
 }
 
+pub(crate) fn configured_bearer_token_from_path(
+    env_name: &str,
+    dotenv_path: Option<&Path>,
+) -> Option<String> {
+    configured_bearer_token_with_dotenv(env_name, dotenv_path)
+}
+
 fn configured_bearer_token_with_dotenv(
     env_name: &str,
     dotenv_path: Option<&Path>,

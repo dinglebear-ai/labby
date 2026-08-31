@@ -30,6 +30,25 @@ pub(crate) struct SnapshotFile {
     pub unix_mode: Option<u32>,
 }
 
+pub(crate) fn normalize_verified_macos_var_alias(path: &Path) -> Result<PathBuf, ArtifactError> {
+    #[cfg(target_os = "macos")]
+    {
+        let system_var = Path::new("/var");
+        if let Ok(relative) = path.strip_prefix(system_var) {
+            let trusted_target = Path::new("/private/var");
+            if !matches!(
+                std::fs::canonicalize(system_var),
+                Ok(resolved) if resolved == trusted_target
+            ) {
+                return Err(ArtifactError::UnsafePath("symlink"));
+            }
+            return Ok(trusted_target.join(relative));
+        }
+    }
+
+    Ok(path.to_path_buf())
+}
+
 pub(crate) fn snapshot_local_path(source: &Path) -> Result<Vec<SnapshotFile>, ArtifactError> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     return snapshot_local_path_descriptor_relative(source, |_| {});
@@ -40,6 +59,8 @@ pub(crate) fn snapshot_local_path(source: &Path) -> Result<Vec<SnapshotFile>, Ar
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn snapshot_local_path_portable(source: &Path) -> Result<Vec<SnapshotFile>, ArtifactError> {
+    let source = normalize_verified_macos_var_alias(source)?;
+    let source = source.as_path();
     reject_existing_symlinks_in_path(source).map_err(|_| ArtifactError::UnsafePath("symlink"))?;
     reject_symlink(source).map_err(|_| ArtifactError::UnsafePath("symlink"))?;
     let root = canonicalize_and_reject_read_path(source)
@@ -733,17 +754,49 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn package_import_accepts_source_below_verified_macos_var_alias() {
+        let temp = tempdir().unwrap();
+        std::fs::write(temp.path().join("payload.txt"), b"payload").unwrap();
+
+        let snapshot = snapshot_local_path(temp.path()).unwrap();
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].path, "payload.txt");
+        assert_eq!(snapshot[0].bytes, b"payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_import_rejects_arbitrary_symlinked_source_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let actual = temp.path().join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        std::fs::write(actual.join("payload.txt"), b"payload").unwrap();
+        let alias = temp.path().join("alias");
+        symlink(&actual, &alias).unwrap();
+
+        assert!(matches!(
+            snapshot_local_path(&alias),
+            Err(ArtifactError::UnsafePath("symlink"))
+        ));
+    }
+
     #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
     #[test]
     fn opened_file_replaced_by_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
         let temp = tempdir().unwrap();
-        let path = temp.path().join("payload.txt");
-        let outside = temp.path().join("outside.txt");
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let path = root.join("payload.txt");
+        let outside = root.join("outside.txt");
         std::fs::write(&path, b"original").unwrap();
         std::fs::write(&outside, b"outside").unwrap();
         let mut total = 0;
-        let error = read_one_with_hook(temp.path(), &path, "payload.txt", &mut total, || {
+        let error = read_one_with_hook(&root, &path, "payload.txt", &mut total, || {
             std::fs::remove_file(&path).unwrap();
             symlink(&outside, &path).unwrap();
         })
@@ -758,12 +811,13 @@ mod tests {
     #[test]
     fn opened_file_replaced_by_regular_file_is_rejected() {
         let temp = tempdir().unwrap();
-        let path = temp.path().join("payload.txt");
-        let replacement = temp.path().join("replacement.txt");
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let path = root.join("payload.txt");
+        let replacement = root.join("replacement.txt");
         std::fs::write(&path, b"original").unwrap();
         std::fs::write(&replacement, b"replacement").unwrap();
         let mut total = 0;
-        let error = read_one_with_hook(temp.path(), &path, "payload.txt", &mut total, || {
+        let error = read_one_with_hook(&root, &path, "payload.txt", &mut total, || {
             std::fs::rename(&replacement, &path).unwrap();
         })
         .unwrap_err();

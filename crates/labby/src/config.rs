@@ -1399,6 +1399,10 @@ pub struct ApiPreferences {
     /// Overridden by `LABBY_PROTECTED_MCP_CONNECT_TIMEOUT_SECS` env var.
     #[serde(default)]
     pub protected_mcp_connect_timeout_secs: Option<u64>,
+    /// Trust reverse-proxy authority headers for virtual protected-route
+    /// selection. Off by default: direct clients control these headers.
+    #[serde(default)]
+    pub trust_forwarded_headers: bool,
 }
 
 // `WebPreferences` moved to `labby_runtime::gateway_config`; re-exported above.

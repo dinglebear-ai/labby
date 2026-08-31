@@ -1,0 +1,3464 @@
+{
+  "protocol_version": "2026-07-28",
+  "coverage": [
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "0c10d6b2619583464ff76ec329ccf9e020af8c488185ad422a1d4e915fdeff08",
+      "actor": "HTTP MCP implementation",
+      "asserted_obligation": "conform to this specification.",
+      "assertion_test_ids": [],
+      "implementation": "Labby's HTTP MCP client, resource server, and authorization server resolve through every applicable actor-bound row in this denominator.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "conformance/mcp-auth-normative.json",
+        "scripts/ci/mcp_auth_normative_conformance.py"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-001",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-004",
+        "MCP-2026-AUTH-INDEX-005",
+        "MCP-2026-AUTH-INDEX-006",
+        "MCP-2026-AUTH-INDEX-007",
+        "MCP-2026-AUTH-INDEX-008",
+        "MCP-2026-AUTH-INDEX-009",
+        "MCP-2026-AUTH-INDEX-010",
+        "MCP-2026-AUTH-INDEX-011",
+        "MCP-2026-AUTH-INDEX-012",
+        "MCP-2026-AUTH-INDEX-013",
+        "MCP-2026-AUTH-INDEX-014",
+        "MCP-2026-AUTH-INDEX-015",
+        "MCP-2026-AUTH-INDEX-016",
+        "MCP-2026-AUTH-INDEX-017",
+        "MCP-2026-AUTH-INDEX-018",
+        "MCP-2026-AUTH-INDEX-019",
+        "MCP-2026-AUTH-INDEX-020",
+        "MCP-2026-AUTH-INDEX-021",
+        "MCP-2026-AUTH-INDEX-022",
+        "MCP-2026-AUTH-INDEX-025",
+        "MCP-2026-AUTH-INDEX-026",
+        "MCP-2026-AUTH-INDEX-027",
+        "MCP-2026-AUTH-INDEX-028",
+        "MCP-2026-AUTH-INDEX-029",
+        "MCP-2026-AUTH-INDEX-030",
+        "MCP-2026-AUTH-INDEX-031",
+        "MCP-2026-AUTH-INDEX-032",
+        "MCP-2026-AUTH-INDEX-033",
+        "MCP-2026-AUTH-INDEX-034",
+        "MCP-2026-AUTH-INDEX-035",
+        "MCP-2026-AUTH-INDEX-036",
+        "MCP-2026-AUTH-INDEX-037",
+        "MCP-2026-AUTH-INDEX-038",
+        "MCP-2026-AUTH-INDEX-039",
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-041",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-043",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-INDEX-045",
+        "MCP-2026-AUTH-INDEX-046",
+        "MCP-2026-AUTH-INDEX-047",
+        "MCP-2026-AUTH-INDEX-048",
+        "MCP-2026-AUTH-INDEX-049",
+        "MCP-2026-AUTH-INDEX-050",
+        "MCP-2026-AUTH-INDEX-051",
+        "MCP-2026-AUTH-INDEX-052",
+        "MCP-2026-AUTH-INDEX-053",
+        "MCP-2026-AUTH-INDEX-054",
+        "MCP-2026-AUTH-INDEX-055",
+        "MCP-2026-AUTH-INDEX-056",
+        "MCP-2026-AUTH-INDEX-057",
+        "MCP-2026-AUTH-INDEX-058",
+        "MCP-2026-AUTH-INDEX-059",
+        "MCP-2026-AUTH-INDEX-060",
+        "MCP-2026-AUTH-INDEX-061",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-001",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-002",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-003",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-004",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-005",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-006",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-007",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-008",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-009",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-011",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-012",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-013",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-014",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-015",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-001",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-002",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-003",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-008",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-009",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-010",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-011",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-012",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-013",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-014",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-015",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-016",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-017",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-018",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-019",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-020",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-021",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-022",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-023",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-002",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-004",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-005",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-007",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-012",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-013",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-014",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-015",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-016",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-017",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-018",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-019",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-027",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-028",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "ca09425a4f2c7ec24ac949b02fcc091e231436d4313f9e8624ea83eec7a85910",
+      "actor": "STDIO MCP implementation",
+      "asserted_obligation": "follow this specification, and instead retrieve credentials from the environment.",
+      "assertion_test_ids": [
+        "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth",
+        "upstream::pool::connect_stdio::conformance_tests::stdio_parent_environment_is_fail_closed_to_explicit_runtime_allowlist"
+      ],
+      "implementation": "Stdio upstream authentication resolves the configured bearer-token environment name and injects only the normalized credential into the scrubbed child environment; OAuth is not configured for stdio.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth",
+          "behavior": "Exact test observes that stdio named environment credential reaches child environment without oauth."
+        },
+        {
+          "test_id": "upstream::pool::connect_stdio::conformance_tests::stdio_parent_environment_is_fail_closed_to_explicit_runtime_allowlist",
+          "behavior": "Exact test proves ambient secrets are excluded and only explicitly allowlisted runtime variables can cross the stdio child-process boundary."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-gateway/src/upstream/auth.rs",
+        "crates/labby-gateway/src/upstream/pool/connect_stdio.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-002",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "d88344f9c4876946a51632f5e828fbbf532dd346a91433d847c78dc2e4477784",
+      "actor": "alternative-transport MCP implementation",
+      "asserted_obligation": "follow established security best practices for their protocol.",
+      "assertion_test_ids": [
+        "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth",
+        "upstream::pool::connect_stdio::conformance_tests::stdio_parent_environment_is_fail_closed_to_explicit_runtime_allowlist"
+      ],
+      "implementation": "Labby's only non-HTTP transport is STDIO; it injects explicitly named environment credentials into the child instead of applying HTTP OAuth semantics.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::pool::connect_stdio::conformance_tests::stdio_named_environment_credential_reaches_child_environment_without_oauth",
+          "behavior": "Exact test observes that stdio named environment credential reaches child environment without oauth."
+        },
+        {
+          "test_id": "upstream::pool::connect_stdio::conformance_tests::stdio_parent_environment_is_fail_closed_to_explicit_runtime_allowlist",
+          "behavior": "Exact test observes that stdio parent environment is fail closed to explicit runtime allowlist."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-gateway/src/upstream/pool/connect_stdio.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-003",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "55b4ef2f409e814202fc8519d42d637252347a40d22b6f3ec4761d0c0b1ccc74",
+      "actor": "MCP implementation",
+      "asserted_obligation": "implement OAuth 2.1 with appropriate security measures for both confidential and public clients.",
+      "assertion_test_ids": [],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-004",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-006",
+        "MCP-2026-AUTH-INDEX-011",
+        "MCP-2026-AUTH-INDEX-019",
+        "MCP-2026-AUTH-INDEX-027",
+        "MCP-2026-AUTH-INDEX-036",
+        "MCP-2026-AUTH-INDEX-039",
+        "MCP-2026-AUTH-INDEX-046",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "4d077422410770529d7ad46943863987170df69e1d23f03e8dc5e0a57518f59a",
+      "actor": "MCP client",
+      "asserted_obligation": "support [OAuth Client ID Metadata Documents](/specification/2026-07-28/basic/authorization/client-registration#client-id-metadata-documents) ([draft-ietf-oauth-client-id-metadata-document-00](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00)).",
+      "assertion_test_ids": [
+        "transport::auth::tests::cimd_used_when_server_advertises_support"
+      ],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::cimd_used_when_server_advertises_support",
+          "behavior": "Exact test observes that cimd used when server advertises support."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-005",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "8fac5ec78048fcb8aed58ed814e952908993ecdf4ca7888f1f01f0275015e417",
+      "actor": "MCP authorization server",
+      "asserted_obligation": "implement OAuth 2.0 Protected Resource Metadata ([RFC9728](https://datatracker.ietf.org/doc/html/rfc9728)).",
+      "assertion_test_ids": [
+        "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path"
+      ],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
+          "behavior": "Exact test observes that protected resource metadata advertises configured scopes and resource path."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-006",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "4d566615d4a7d71f5c82a11489cba841d4bb94ec0f8ae38033845ec942d584e1",
+      "actor": "MCP client",
+      "asserted_obligation": "use OAuth 2.0 Protected Resource Metadata for [authorization server discovery](/specification/2026-07-28/basic/authorization/authorization-server-discovery).",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority"
+      ],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority",
+          "behavior": "Exact test observes that authorization metadata candidates preserve issuer path and priority."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-007",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "14148590a4a4fd5e7012e1ac30017b8b9a1495e18a044aa36a2cb7806937d263",
+      "actor": "MCP authorization server",
+      "asserted_obligation": "MCP authorization servers MUST provide OAuth Authorization Server Metadata, OpenID Connect Discovery, or both.",
+      "assertion_test_ids": [
+        "metadata::tests::authorization_server_metadata_exposes_lab_endpoints"
+      ],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::authorization_server_metadata_exposes_lab_endpoints",
+          "behavior": "Exact test observes that authorization server metadata exposes lab endpoints."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-008",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "bd01e82c5ad403181e5784e8974c6249223187aafa0d3256bc69f7e1dff89b43",
+      "actor": "MCP client",
+      "asserted_obligation": "support both [discovery mechanisms](/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery) to obtain the information required to interact with the authorization server.",
+      "assertion_test_ids": [],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-009",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-006",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-007",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-008",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-009",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "623506c2cf03bf93395a36b09ddabd8ea323b89dfd1a1d35ecec7751c73b6d1e",
+      "actor": "MCP client",
+      "asserted_obligation": "follow the normative discovery requirements defined in [Authorization Server Discovery](/specification/2026-07-28/basic/authorization/authorization-server-discovery).",
+      "assertion_test_ids": [],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-010",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-001",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-002",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-003",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-004",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-005",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-006",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-007",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-008",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-009",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-011",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-012",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-013",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-014",
+        "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-015"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "3c2970d5fa0a63006f2174f71b3c6814f731556446892acd5364e932c3924e1d",
+      "actor": "MCP client",
+      "asserted_obligation": "obtain a client ID through one of three registration mechanisms: Client ID Metadata Documents, pre-registration, or Dynamic Client Registration, following the requirements and selection priority defined in [Client Registration](/specification/2026-07-28/basic/authorization/client-registration).",
+      "assertion_test_ids": [
+        "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
+        "transport::auth::tests::cimd_used_when_server_advertises_support",
+        "transport::auth::tests::cimd_falls_back_to_dcr_when_server_lacks_support"
+      ],
+      "implementation": "OAuth 2.1 discovery supports PRM, ordered metadata candidates, CIMD, and exact issuer binding.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
+          "behavior": "Exact test observes that preregistered client takes priority over cimd."
+        },
+        {
+          "test_id": "transport::auth::tests::cimd_used_when_server_advertises_support",
+          "behavior": "Exact test observes that cimd used when server advertises support."
+        },
+        {
+          "test_id": "transport::auth::tests::cimd_falls_back_to_dcr_when_server_lacks_support",
+          "behavior": "Exact test observes that cimd falls back to dcr when server lacks support."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-011",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "bc3ea701cd30d3a7e5b3006c6b3f345fdd15458439726cddc0383d5fcef1aee8",
+      "actor": "MCP server",
+      "asserted_obligation": "include a `scope` parameter in the `WWW-Authenticate` header as defined in [RFC 6750 Section 3](https://datatracker.ietf.org/doc/html/rfc6750#section-3) to indicate the scopes required for accessing the resource.",
+      "assertion_test_ids": [
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
+      ],
+      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact HTTP test proves insufficient JWT and static scopes receive a challenge containing the operation-required scope."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-gateway/src/upstream/http_client.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-012",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "8b2ac33ac3eb7cb1932d78ef3998aa701ef8a428bbc36819bc886b6eee530e11",
+      "actor": "MCP client",
+      "asserted_obligation": "assume any particular set relationship between the challenged scope set and `scopes_supported`.",
+      "assertion_test_ids": [
+        "transport::auth::tests::select_scopes_prefers_exact_challenge_over_resource_metadata_catalog"
+      ],
+      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::select_scopes_prefers_exact_challenge_over_resource_metadata_catalog",
+          "behavior": "Exact client test proves challenge scopes remain authoritative and are not inferred from the protected-resource scopes_supported catalog."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-gateway/src/upstream/http_client.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-013",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "540c83adce27d04e23d4993f47f1941a086699984d61f1cfa7069d32b4cb7989",
+      "actor": "MCP client",
+      "asserted_obligation": "treat the scopes provided in the challenge as authoritative for the current operation.",
+      "assertion_test_ids": [
+        "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested"
+      ],
+      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
+          "behavior": "Exact test observes that select scopes unions challenge with previously requested."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-gateway/src/upstream/http_client.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-014",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "f1437bf9e88619fb23a952225410f33ebe45bc6ec2055e583f7c101b866eaf2c",
+      "actor": "MCP client",
+      "asserted_obligation": "include these scopes alongside any previously granted scopes to avoid losing permissions needed for other operations (see [Step-Up Authorization Flow](#step-up-authorization-flow)).",
+      "assertion_test_ids": [
+        "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested"
+      ],
+      "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
+          "behavior": "Exact test observes that select scopes unions challenge with previously requested."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-gateway/src/upstream/http_client.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-015",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "f3b339257629041fe867a0b0203e250698119f267a6b8d687d31690d1b67cbd6",
+      "actor": "MCP server",
+      "asserted_obligation": "strive for consistency in how they construct scope sets but they are not required to surface every dynamically issued scope through `scopes_supported`.",
+      "assertion_test_ids": [
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
+      ],
+      "implementation": "The resource server emits one deterministic challenge scope set derived from the current operation's required scopes.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-016",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "d6ea0e5df4066b25b9981d91c3fb764e22fd6b88a7c5ae7ad3167782ab6b5d12",
+      "actor": "MCP client",
+      "asserted_obligation": "follow the principle of least privilege by requesting only the scopes necessary for their intended operations.",
+      "assertion_test_ids": [
+        "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog"
+      ],
+      "implementation": "The client preserves user-approved and operation-required scopes without expanding the request to the authorization server's complete scope catalog.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog",
+          "behavior": "Exact test observes that select scopes does not expand user request to entire server catalog."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-017",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "631e4e082798a42ed4843661dc03dc35914f97f43c3bda51849d66234987eb2a",
+      "actor": "MCP client",
+      "asserted_obligation": "During initial authorization, MCP clients SHOULD prefer challenge scopes, then protected-resource `scopes_supported`, and otherwise omit `scope`.",
+      "assertion_test_ids": [
+        "transport::auth::tests::initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission"
+      ],
+      "implementation": "Initial client scope selection prefers an exact challenge, then protected-resource metadata, and omits scope when neither supplies one.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission",
+          "behavior": "Exact test observes that initial scope selection prefers challenge then resource metadata then omission."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-018",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "2ceea226ee90fa8c29264949c80e3e589c688f588e9b99672863b81bb5b51285",
+      "actor": "MCP client",
+      "asserted_obligation": "record the `issuer` value from the selected authorization server's validated metadata document (see [Authorization Server Metadata Discovery](/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery)) and associate it with the same per-request record used to store the PKCE code verifier (and the `state` value, if used).",
+      "assertion_test_ids": [
+        "upstream::store::tests::authorization_state_round_trips_issuer_requirement_and_requested_scopes"
+      ],
+      "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::store::tests::authorization_state_round_trips_issuer_requirement_and_requested_scopes",
+          "behavior": "Exact test observes that authorization state round trips issuer requirement and requested scopes."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/store.rs",
+        "crates/labby-auth/src/upstream/manager.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-019",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "de405b878db45877b72a4eaf597ed1e9b9b7c40a55be41498b4f18efdc423e64",
+      "actor": "MCP authorization server",
+      "asserted_obligation": "include the `iss` parameter in authorization responses, including error responses, as defined in [RFC9207 Section 2](https://datatracker.ietf.org/doc/html/rfc9207#section-2).",
+      "assertion_test_ids": [
+        "authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer",
+        "authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer"
+      ],
+      "implementation": "The authorization server returns its exact metadata issuer in successful and trusted error authorization responses.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::response::tests::successful_authorization_response_uses_exact_metadata_issuer",
+          "behavior": "Exact test observes that successful authorization response uses exact metadata issuer."
+        },
+        {
+          "test_id": "authorize::response::tests::error_authorization_response_uses_exact_metadata_issuer",
+          "behavior": "Exact test observes that error authorization response uses exact metadata issuer."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize/response.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-020",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "e6cf3073e6cb012c55801ff2473ab73b031f5b4b83f54a6d6c16715eae05ff89",
+      "actor": "MCP authorization server",
+      "asserted_obligation": "advertise this by setting `authorization_response_iss_parameter_supported` to `true` in their metadata ([RFC9207 Section 2.3](https://datatracker.ietf.org/doc/html/rfc9207#section-2.3)).",
+      "assertion_test_ids": [
+        "metadata::tests::authorization_server_metadata_exposes_lab_endpoints"
+      ],
+      "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::authorization_server_metadata_exposes_lab_endpoints",
+          "behavior": "Exact test observes that authorization server metadata exposes lab endpoints."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/store.rs",
+        "crates/labby-auth/src/upstream/manager.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-021",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "2c070d44b7370015327928265ee171786236a7ed02b6ed19a3bad782e388b242",
+      "actor": "MCP client",
+      "asserted_obligation": "MCP clients MUST apply RFC 9207 Section 2.4 issuer validation before transmitting an authorization code to any token endpoint.",
+      "assertion_test_ids": [
+        "transport::auth::tests::issuer_mismatch_is_rejected_before_any_token_endpoint_request"
+      ],
+      "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::issuer_mismatch_is_rejected_before_any_token_endpoint_request",
+          "behavior": "Exact test observes that issuer mismatch is rejected before any token endpoint request."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-022",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "eb685bbcd944553b26155541b534e3cff4fc9091686f14b9f1e83435bbaaf19d",
+      "actor": "MCP client",
+      "asserted_obligation": "apply scheme or host case folding, default-port elision, trailing-slash, or percent-encoding normalization ([RFC 3986 Sections 6.2.2-6.2.3](https://datatracker.ietf.org/doc/html/rfc3986#section-6.2.2)) before comparison.",
+      "assertion_test_ids": [
+        "transport::auth::tests::validate_authorization_response_issuer_rejects_invalid_cases"
+      ],
+      "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::validate_authorization_response_issuer_rejects_invalid_cases",
+          "behavior": "Exact test observes that validate authorization response issuer rejects invalid cases."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/store.rs",
+        "crates/labby-auth/src/upstream/manager.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-025",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "9b539eebcee960b2659b35d3a3d92258fdfd805bb8fd385c4edbd1e39291261f",
+      "actor": "MCP client",
+      "asserted_obligation": "act on or display `error`, `error_description`, or `error_uri`.",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorization_callback_rejects_untrusted_error_fields_without_echoing_them"
+      ],
+      "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorization_callback_rejects_untrusted_error_fields_without_echoing_them",
+          "behavior": "Exact test observes that authorization callback rejects untrusted error fields without echoing them."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/store.rs",
+        "crates/labby-auth/src/upstream/manager.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-026",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "3398ed3be4cbd6569f6b2a0a442c83ab85b75bc8295f966d710c25da3875bd2f",
+      "actor": "MCP authorization server",
+      "asserted_obligation": "implement Resource Indicators for OAuth 2.0 as defined in [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html) to explicitly specify the target resource for which the token is being requested.",
+      "assertion_test_ids": [],
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-027",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-028",
+        "MCP-2026-AUTH-INDEX-029",
+        "MCP-2026-AUTH-INDEX-030",
+        "MCP-2026-AUTH-INDEX-031",
+        "MCP-2026-AUTH-INDEX-032",
+        "MCP-2026-AUTH-INDEX-033",
+        "MCP-2026-AUTH-INDEX-034",
+        "MCP-2026-AUTH-INDEX-035",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "b59ac09184f229d583ac5a50ba5030d47f5ec75bf5a585e6f356116c8b179570",
+      "actor": "MCP client",
+      "asserted_obligation": "be included in both authorization requests and token requests.",
+      "assertion_test_ids": [
+        "transport::auth::tests::refresh_token_uses_discovered_protected_resource"
+      ],
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::refresh_token_uses_discovered_protected_resource",
+          "behavior": "Integrated OAuth client test proves the discovered resource is sent in authorization, authorization-code token, and refresh-token requests."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-028",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "1dabb552e6c3757fc4bb8c9a55940f85466beae112619a301985d8b686c0ef55",
+      "actor": "MCP client",
+      "asserted_obligation": "identify the MCP server that the client intends to use the token with.",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorization_url_uses_discovered_resource"
+      ],
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorization_url_uses_discovered_resource",
+          "behavior": "Exact test observes that authorization url uses discovered resource."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-029",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "39c5f376aab268fe876b7835f4810137536a8ff625a5263b75e57aa398e11800",
+      "actor": "MCP client",
+      "asserted_obligation": "use the canonical URI of the MCP server as defined in [RFC 8707 Section 2](https://www.rfc-editor.org/rfc/rfc8707.html#name-access-token-request).",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorization_url_uses_discovered_resource"
+      ],
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorization_url_uses_discovered_resource",
+          "behavior": "Exact test observes that authorization url uses discovered resource."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-030",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "7394aa8f39daa3e1fe0d227fec1b5977014d11872718bfed576872c14eea6943",
+      "actor": "MCP client",
+      "asserted_obligation": "provide the most specific URI that they can for the MCP server they intend to access, following the guidance in [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707).",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorization_url_uses_discovered_resource"
+      ],
+      "implementation": "The client uses the protected-resource document's canonical resource URI in its authorization request.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorization_url_uses_discovered_resource",
+          "behavior": "Exact test observes that authorization url uses discovered resource."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-031",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "c99f3e145cbf056bf7a5e39c49603dc918fcd241bf91af9eb23d2a183b0b1cff",
+      "actor": "MCP server",
+      "asserted_obligation": "accept uppercase scheme and host components for robustness and interoperability.",
+      "assertion_test_ids": [
+        "transport::auth::tests::resource_identifier_matching_allows_matching_host_or_parent_path"
+      ],
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::resource_identifier_matching_allows_matching_host_or_parent_path",
+          "behavior": "Exact test observes that resource identifier matching allows matching host or parent path."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-032",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "7e8ec2c370ac8c6339d61fba3b4edce59a0d47d022e0686bffc45d77fc9bdd9a",
+      "actor": "MCP client and resource server",
+      "asserted_obligation": "consistently use the form without the trailing slash for better interoperability unless the trailing slash is semantically significant for the specific resource.",
+      "assertion_test_ids": [
+        "metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri"
+      ],
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri",
+          "behavior": "Exact test observes that protected resource metadata uses canonical mcp resource uri."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-033",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "9f4f31cbe83bfde96108c11bf8c84a59b5ae3713fe536c2df15eb3ee297696cb",
+      "actor": "MCP client",
+      "asserted_obligation": "send this parameter regardless of whether authorization servers support it.",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorization_url_uses_default_resource_without_protected_resource_document"
+      ],
+      "implementation": "Resource indicators are persisted and validated against the canonical protected resource across authorization and token flows.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorization_url_uses_default_resource_without_protected_resource_document",
+          "behavior": "Exact test observes that authorization url uses default resource without protected resource document."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-034",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "d44e2aec0b6b5d37ed3c7e0a740339209705d32b01256c9e23564227227e0c03",
+      "actor": "MCP client and resource server",
+      "asserted_obligation": "conform to the requirements defined in [OAuth 2.1 Section 5 \"Resource Requests\"](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-5).",
+      "assertion_test_ids": [],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-035",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-028",
+        "MCP-2026-AUTH-INDEX-029",
+        "MCP-2026-AUTH-INDEX-030",
+        "MCP-2026-AUTH-INDEX-031",
+        "MCP-2026-AUTH-INDEX-032",
+        "MCP-2026-AUTH-INDEX-033",
+        "MCP-2026-AUTH-INDEX-034",
+        "MCP-2026-AUTH-INDEX-036",
+        "MCP-2026-AUTH-INDEX-037",
+        "MCP-2026-AUTH-INDEX-038",
+        "MCP-2026-AUTH-INDEX-039",
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-041",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-043",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-INDEX-045"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "992c2d794a55372cd027d7df6aa83262f146f208953ba8568fd09b91f6e6334c",
+      "actor": "MCP client",
+      "asserted_obligation": "MCP clients MUST send access tokens in the HTTP `Authorization: Bearer` request header.",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorized_http_client_uses_bearer_header_and_never_query_token"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorized_http_client_uses_bearer_header_and_never_query_token",
+          "behavior": "Exact test observes that authorized http client uses bearer header and never query token."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-036",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "5fb59c0a366f421c2a1c7165f558b6074d976c76a28d2433be1e943814dab757",
+      "actor": "MCP client",
+      "asserted_obligation": "be included in every HTTP request from client to server.",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorized_http_client_uses_bearer_header_and_never_query_token"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorized_http_client_uses_bearer_header_and_never_query_token",
+          "behavior": "Exact test observes that authorized http client uses bearer header and never query token."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-037",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "f3498cc44c57e4326b659046bec25169a0c1a502aa09754056d3e282963c7f4a",
+      "actor": "MCP client",
+      "asserted_obligation": "be included in the URI query string",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorized_http_client_uses_bearer_header_and_never_query_token"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorized_http_client_uses_bearer_header_and_never_query_token",
+          "behavior": "Exact test observes that authorized http client uses bearer header and never query token."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-038",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "04609b84b25d7851a2b328f65c7e2c64fd0295b65e1f0dffc1c672e95d1b2f3f",
+      "actor": "MCP server",
+      "asserted_obligation": "validate access tokens as described in [OAuth 2.1 Section 5.2](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-5.2).",
+      "assertion_test_ids": [],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-039",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "f546202f9527089c34cbe739b62afd44f1d43ef6117d49168cb80212228e67bd",
+      "actor": "MCP server",
+      "asserted_obligation": "validate that access tokens were issued specifically for them as the intended audience, according to [RFC 8707 Section 2](https://www.rfc-editor.org/rfc/rfc8707.html#section-2).",
+      "assertion_test_ids": [
+        "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced",
+          "behavior": "Exact test observes that exact resource audience including port and path is enforced."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-040",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "2a540985228e87f075226683875acb91edd7893a171ccace5d27ae7bac458697",
+      "actor": "MCP server",
+      "asserted_obligation": "respond according to [OAuth 2.1 Section 5.3](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-5.3) error handling requirements.",
+      "assertion_test_ids": [],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-041",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-050",
+        "MCP-2026-AUTH-INDEX-051"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "490e4200eb45512fad6ca9ce5ed7c8e1a7f6a7fcf40a86b7fee01264ba6bc74a",
+      "actor": "MCP server",
+      "asserted_obligation": "Invalid or expired access tokens MUST receive HTTP 401 Unauthorized.",
+      "assertion_test_ids": [
+        "middleware::tests::expired_access_token_receives_http_401"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::expired_access_token_receives_http_401",
+          "behavior": "Exact middleware test sends an expired signed access token to a protected HTTP resource and observes 401 Unauthorized."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-042",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "d00681b6e1c802dbe92e858ce89213819e0028bad2ac8794469aeb2759bb2416",
+      "actor": "MCP client",
+      "asserted_obligation": "send tokens to the MCP server other than ones issued by the MCP server's authorization server.",
+      "assertion_test_ids": [
+        "transport::auth::tests::initialize_from_store_rejects_token_without_current_issuer_binding",
+        "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::initialize_from_store_rejects_token_without_current_issuer_binding",
+          "behavior": "Exact test observes that initialize from store rejects token without current issuer binding."
+        },
+        {
+          "test_id": "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes",
+          "behavior": "Exact test observes that initialize from store clears dcr credentials when issuer changes."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-043",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "218795eb13debca8115c761ed10d4c0b4511dec4ab7504db002304a6f920f094",
+      "actor": "MCP server",
+      "asserted_obligation": "only accept tokens that are valid for use with their own resources.",
+      "assertion_test_ids": [
+        "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced",
+          "behavior": "Exact test observes that exact resource audience including port and path is enforced."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-044",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "dc66574dac1e1641fb864d75f8af9f93fee468357c34417d883e51e46681b440",
+      "actor": "MCP gateway",
+      "asserted_obligation": "accept or transit any other tokens.",
+      "assertion_test_ids": [
+        "upstream::pool::connect::conformance_tests::configured_headers_cannot_transit_an_inbound_authorization_token"
+      ],
+      "implementation": "Every protected request validates Bearer token audience/resource and gateway forwarding rejects inbound token passthrough.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::pool::connect::conformance_tests::configured_headers_cannot_transit_an_inbound_authorization_token",
+          "behavior": "Exact test observes that configured headers cannot transit an inbound authorization token."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-045",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "439a3a4f9d474d000bd2b218354ac77dfd18d3970e6e324691f2dbd19be9bcda",
+      "actor": "MCP implementation",
+      "asserted_obligation": "keep refresh tokens confidential in transit and storage as specified in [OAuth 2.1 Section 4.3](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-14#section-4.3)",
+      "assertion_test_ids": [
+        "sqlite::tests::opening_with_a_key_encrypts_legacy_plaintext_provider_tokens"
+      ],
+      "implementation": "Refresh material is encrypted, confidential, optional, rotated on success, and never advertised as a resource scope.",
+      "assertion_evidence": [
+        {
+          "test_id": "sqlite::tests::opening_with_a_key_encrypts_legacy_plaintext_provider_tokens",
+          "behavior": "Exact test observes that opening with a key encrypts legacy plaintext provider tokens."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/token.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-046",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "6cdfec25f378924a22c8819fd7710ded58e4ddd1873e028371a80a3c46376cf2",
+      "actor": "MCP client",
+      "asserted_obligation": "include `refresh_token` in their `grant_types` client metadata",
+      "assertion_test_ids": [
+        "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants"
+      ],
+      "implementation": "The DCR client metadata declares authorization_code and refresh_token grants together.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
+          "behavior": "Exact test observes that dcr registration declares application type and authorization code refresh grants."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-047",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "2234e87d7d053639f82e44dd8f7986c8b0818dd1a4e97823d8f58baac60a5395",
+      "actor": "MCP client",
+      "asserted_obligation": "assume refresh tokens will be issued; the AS retains discretion",
+      "assertion_test_ids": [
+        "transport::auth::tests::get_access_token_requires_reauth_when_expired_and_no_refresh_token"
+      ],
+      "implementation": "An expired client access token without a refresh token triggers reauthorization instead of assuming refresh material exists.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::get_access_token_requires_reauth_when_expired_and_no_refresh_token",
+          "behavior": "Exact test observes that get access token requires reauth when expired and no refresh token."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-048",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "8ac1bd931463032335b399cc7f98080b1c788f5453f53844b4c36fbc5c365e0f",
+      "actor": "MCP server",
+      "asserted_obligation": "include `offline_access` in `WWW-Authenticate` scope or Protected Resource Metadata `scopes_supported`, as refresh tokens are not a resource requirement.",
+      "assertion_test_ids": [
+        "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path"
+      ],
+      "implementation": "Protected-resource metadata advertises only resource scopes and explicitly excludes offline_access.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
+          "behavior": "Exact production metadata test configures offline_access and proves the protected-resource response filters it while retaining resource scopes and path."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-049",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "4096d35f6fe64d4111ba19046ea7cf09aca087db88abd60d706d4474f95c0505",
+      "actor": "MCP server",
+      "asserted_obligation": "Servers MUST return 401 for missing or invalid tokens, 403 for insufficient scope, and 400 for malformed authorization requests.",
+      "assertion_test_ids": [
+        "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+        "token::tests::token_endpoint_errors_use_oauth_error_shape"
+      ],
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
+          "behavior": "Exact test observes that missing bearer token returns 401 with www authenticate."
+        },
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
+        },
+        {
+          "test_id": "token::tests::token_endpoint_errors_use_oauth_error_shape",
+          "behavior": "Exact test observes that token endpoint errors use oauth error shape."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-050",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "1ca8e5d67d415988034efe6f069e64cce63363d231322fb5c93194eb474fb824",
+      "actor": "MCP server",
+      "asserted_obligation": "For runtime insufficient scope, servers SHOULD return HTTP 403 with a Bearer challenge containing `insufficient_scope`, required `scope`, and `resource_metadata`.",
+      "assertion_test_ids": [
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
+      ],
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-051",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "38fbf9b9f1937924078552437affb974fe7d3f56e350b532b51a6d439d7db638",
+      "actor": "MCP server",
+      "asserted_obligation": "include the scopes needed to satisfy the current operation in the `scope` parameter, consistent with [RFC 6750 Section 3.1](https://datatracker.ietf.org/doc/html/rfc6750#section-3.1).",
+      "assertion_test_ids": [
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
+      ],
+      "implementation": "The resource server's insufficient-scope challenge contains the exact scopes required by the current operation.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-052",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "334ed4f97b0385a553e9141c95970a6928044ad9e40bfe49f36527301f479d35",
+      "actor": "MCP server",
+      "asserted_obligation": "include all scopes required for the current operation in a single challenge.",
+      "assertion_test_ids": [
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
+      ],
+      "implementation": "All scopes required by the tested operation are emitted together in one Bearer challenge.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-053",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "019ebc0129316ef3b8de774760b20e2e41c31453245c64eaee38f91b6877984f",
+      "actor": "MCP server",
+      "asserted_obligation": "be consistent in their scope inclusion strategy to provide predictable behavior for clients.",
+      "assertion_test_ids": [
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
+      ],
+      "implementation": "JWT and static-token paths produce the same deterministic insufficient-scope challenge.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-054",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "ba0bfc07603e42ae0ebbc455ad80be39bdca8d81fc72aafb5dfb335bb5eb7f09",
+      "actor": "MCP server",
+      "asserted_obligation": "consider the user experience impact when determining which scopes to include in the response, as misconfigured scopes may require frequent user interaction.",
+      "assertion_test_ids": [
+        "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge"
+      ],
+      "implementation": "The challenge contains only the current operation's required scopes, avoiding unrelated authorization prompts.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
+          "behavior": "Exact test observes that insufficient jwt and static scopes return 403 challenge."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-055",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "686692aab5985a133a8be380ab4cc6fd4e1ec1977267b53ff3afb28ef48c0ffc",
+      "actor": "MCP client",
+      "asserted_obligation": "respond to these errors by requesting a new access token with an increased set of scopes via a step-up authorization flow or handle the errors in other, appropriate ways.",
+      "assertion_test_ids": [
+        "transport::auth::tests::extract_www_authenticate_params_insufficient_scope",
+        "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it"
+      ],
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::extract_www_authenticate_params_insufficient_scope",
+          "behavior": "Exact client test recognizes an insufficient_scope challenge and extracts its required scope."
+        },
+        {
+          "test_id": "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it",
+          "behavior": "Exact client test requests a new authorization URL with the existing and newly required scopes."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-056",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "68e972947058a3d36fe041e1e73444dd0cfbb3fbbb4b94a9fa5ac2a49b725b82",
+      "actor": "MCP client",
+      "asserted_obligation": "attempt the step-up authorization flow.",
+      "assertion_test_ids": [
+        "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it"
+      ],
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it",
+          "behavior": "Exact client test initiates step-up authorization and returns a new authorization URL carrying the expanded scope set."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-057",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "d4299fedbfc8da3dbf5fd2719dd592466c4de2ba017fd379cdecb3d468b0228a",
+      "actor": "MCP client",
+      "asserted_obligation": "Clients SHOULD implement retry limits and SHOULD track scope-upgrade attempts to avoid repeated failures for the same resource and operation combination.",
+      "assertion_test_ids": [
+        "transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit"
+      ],
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit",
+          "behavior": "Exact test observes that scope upgrade attempt counter tracks requests and stops at limit."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-058",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "b2b44b7ea3ac11e733a1ce50189385d56e97bbccb6216de5c0ab23781c8afac2",
+      "actor": "MCP client",
+      "asserted_obligation": "track scope upgrade attempts to avoid repeated failures for the same resource and operation combination.",
+      "assertion_test_ids": [
+        "transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit"
+      ],
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit",
+          "behavior": "Exact test observes that scope upgrade attempt counter tracks requests and stops at limit."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-059",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "83438213f546745bff55a6cbffb419ce814f19ad808d05cce70290b2768f99a8",
+      "actor": "MCP server",
+      "asserted_obligation": "account for scope hierarchies, where a broader scope implies narrower ones, when deciding whether a token is sufficient for an operation.",
+      "assertion_test_ids": [
+        "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy"
+      ],
+      "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
+          "behavior": "Exact test observes that broader admin scope satisfies read scope hierarchy."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-060",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/index.md",
+      "source_requirement_sha256": "fe0258c2d8cb307427f6ae806f9a8f832f83f1b105eebecaa6828135951dda99",
+      "actor": "MCP authorization server",
+      "asserted_obligation": "follow the normative security requirements in [Security Considerations](/specification/2026-07-28/basic/authorization/security-considerations), covering token audience binding and validation, token theft, communication security, authorization code protection, mix-up and confused deputy attacks, open redirection, and Client ID Metadata Document security.",
+      "assertion_test_ids": [],
+      "implementation": "The complete security-considerations cluster is enforced by the individually mapped executable rows.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/authorize.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-INDEX-061",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-002",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-004",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-005",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-007",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-012",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-013",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-014",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-015",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-016",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-017",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-018",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-019",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-027",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-028",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "504962178c871beac3deabaffe84de66144a6a936c364be495e056b879c4c296",
+      "actor": "MCP server",
+      "asserted_obligation": "implement the OAuth 2.0 Protected Resource Metadata ([RFC9728](https://datatracker.ietf.org/doc/html/rfc9728)) specification to indicate the locations of authorization servers.",
+      "assertion_test_ids": [
+        "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
+          "behavior": "Exact test observes that protected resource metadata advertises configured scopes and resource path."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-001",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "ee9372798a974064fe236499d33a9cd16b827dd2f7afddb94e43ffda442dc37c",
+      "actor": "MCP server",
+      "asserted_obligation": "include the `authorization_servers` field containing at least one authorization server.",
+      "assertion_test_ids": [
+        "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
+          "behavior": "Exact test observes that protected resource metadata advertises configured scopes and resource path."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-002",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "a9a52e2b9e0d2e96146f6182af385749d373bd343de55ef842dcf55d344b1445",
+      "actor": "MCP client",
+      "asserted_obligation": "Clients MUST maintain separate registration state (client credentials and tokens) per authorization server.",
+      "assertion_test_ids": [
+        "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes",
+          "behavior": "Exact test observes that initialize from store clears dcr credentials when issuer changes."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-003",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "b5cf3594fad08f0d8eb7adc08355835c79bc6e06eae003e41213646dd6953237",
+      "actor": "MCP client",
+      "asserted_obligation": "assume that credentials valid for one authorization server will be accepted by another.",
+      "assertion_test_ids": [
+        "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes",
+          "behavior": "Exact test observes that initialize from store clears dcr credentials when issuer changes."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-004",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "33510fd0274f0438268595ee0ce85bbd0d5d3840b374db01de8eec7e09d407c2",
+      "actor": "MCP server",
+      "asserted_obligation": "MCP servers MUST provide protected-resource metadata through a `resource_metadata` Bearer challenge or a well-known URI.",
+      "assertion_test_ids": [
+        "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::protected_resource_metadata_advertises_configured_scopes_and_resource_path",
+          "behavior": "Exact test observes that protected resource metadata advertises configured scopes and resource path."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-005",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "ebc03353e0dda9327585c59e01307324f7e19f4359f2b8b28ff894e7b435c448",
+      "actor": "MCP client",
+      "asserted_obligation": "support both discovery mechanisms and use the resource metadata URL from the parsed `WWW-Authenticate` headers when present; otherwise, they",
+      "assertion_test_ids": [
+        "transport::auth::tests::protected_resource_metadata_supports_custom_location_and_oidc_path_append"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::protected_resource_metadata_supports_custom_location_and_oidc_path_append",
+          "behavior": "Exact test observes that protected resource metadata supports custom location and oidc path append."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-006",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "df59fdc5a6cbcfbad2b9b7e5bfed2fcfa9749ec5df47a53aaeb60fcfc76b7e46",
+      "actor": "MCP client",
+      "asserted_obligation": "fall back to constructing and requesting the well-known URIs in the order listed above.",
+      "assertion_test_ids": [
+        "transport::auth::tests::protected_resource_metadata_supports_authorization_server_path_insertion"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::protected_resource_metadata_supports_authorization_server_path_insertion",
+          "behavior": "Exact test observes that protected resource metadata supports authorization server path insertion."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-007",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "099d429977d8932c9f1a028e7f0ae0a2e45d59a2785e399f248ee2526181f2a3",
+      "actor": "MCP client",
+      "asserted_obligation": "be able to parse `WWW-Authenticate` headers and respond appropriately to `HTTP 401 Unauthorized` responses from the MCP server.",
+      "assertion_test_ids": [
+        "transport::auth::tests::resolve_metadata_from_challenge_uses_challenge_pointer_and_scope"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::resolve_metadata_from_challenge_uses_challenge_pointer_and_scope",
+          "behavior": "Exact test observes that resolve metadata from challenge uses challenge pointer and scope."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-008",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "b3d4d3e741845f85347805cc2ea6635d7071f746f3259cfe0b9164b85c2ad73f",
+      "actor": "MCP client",
+      "asserted_obligation": "attempt multiple well-known endpoints when discovering authorization server metadata.",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorization_metadata_accepts_oidc_path_appended_issuer",
+        "transport::auth::tests::authorization_metadata_accepts_oidc_path_inserted_issuer"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorization_metadata_accepts_oidc_path_appended_issuer",
+          "behavior": "Exact test observes that authorization metadata accepts oidc path appended issuer."
+        },
+        {
+          "test_id": "transport::auth::tests::authorization_metadata_accepts_oidc_path_inserted_issuer",
+          "behavior": "Exact test observes that authorization metadata accepts oidc path inserted issuer."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-009",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "5ee6e3146e56b670cdbecf07c7ca601fcc18c8d0c7243a6952fa7c6775388487",
+      "actor": "MCP client",
+      "asserted_obligation": "MUST try, for path-bearing issuers and in order, OAuth path insertion, OIDC path insertion, then OIDC path appending.",
+      "assertion_test_ids": [
+        "transport::auth::tests::path_bearing_authorization_server_discovery_uses_required_order_and_stops"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::path_bearing_authorization_server_discovery_uses_required_order_and_stops",
+          "behavior": "Exact test observes that path bearing authorization server discovery uses required order and stops."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "f1e7805ed75c99f3ab99786a2a7aa7f46e69f779dde03e2c4d33510f5e912a90",
+      "actor": "MCP client",
+      "asserted_obligation": "MUST try, for root issuers and in order, OAuth Authorization Server Metadata then OpenID Connect Discovery.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::authorization_metadata_candidates_preserve_issuer_path_and_priority",
+          "behavior": "Exact test observes that authorization metadata candidates preserve issuer path and priority."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-011",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "16d4639810b6033c5524339505ee542584b2adbd438fbecf1e939b87661515c9",
+      "actor": "MCP client",
+      "asserted_obligation": "validate it as required by [RFC8414 Section 3.3](https://datatracker.ietf.org/doc/html/rfc8414#section-3.3) or [OpenID Connect Discovery Section 4.3](https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationValidation): the `issuer` value in the document",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server",
+          "behavior": "Exact test observes that published metadata rejects issuer not identical to selected server."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-012",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "f29765bcc85557e8af3d11c6d5e17c6e5f7e8d293dbcc4400b6a769b7ee1357c",
+      "actor": "MCP client",
+      "asserted_obligation": "be identical to the issuer identifier used to construct the well-known URL.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server",
+          "behavior": "Exact test observes that published metadata rejects issuer not identical to selected server."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-013",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "0b04ea64fd1afa7c5123375b3259c47310ba7617fa67aee74cb3fa329bf4a443",
+      "actor": "MCP client",
+      "asserted_obligation": "Clients MUST NOT use authorization-server metadata whose issuer is not identical to the selected issuer.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server",
+          "behavior": "Exact test observes that published metadata rejects issuer not identical to selected server."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-014",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery.md",
+      "source_requirement_sha256": "617f2c252ea9ae381de935ef58b3793e2d47af863650bb414513a6dc6ec69e8b",
+      "actor": "MCP client",
+      "asserted_obligation": "Authorization-server metadata without a valid identical issuer MUST be rejected.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server"
+      ],
+      "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server",
+          "behavior": "Exact test observes that published metadata rejects issuer not identical to selected server."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/manager.rs",
+        "crates/labby-auth/src/metadata.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-015",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "c2ad2ee02f59dd03f264661aaea6a346a866ed1c9abbc36e556e3fcf34bcc5b8",
+      "actor": "MCP client",
+      "asserted_obligation": "Clients supporting all registration options SHOULD prefer pre-registration, then CIMD when advertised, then DCR when advertised, then user-entered client information.",
+      "assertion_test_ids": [
+        "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
+        "transport::auth::tests::cimd_used_when_server_advertises_support",
+        "transport::auth::tests::cimd_falls_back_to_dcr_when_server_lacks_support",
+        "transport::auth::tests::dcr_takes_priority_over_user_entered_client_information",
+        "transport::auth::tests::user_entered_client_is_final_fallback_after_cimd_and_dcr_are_unavailable"
+      ],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
+          "behavior": "Exact test observes that preregistered client takes priority over cimd."
+        },
+        {
+          "test_id": "transport::auth::tests::cimd_used_when_server_advertises_support",
+          "behavior": "Exact test observes that cimd used when server advertises support."
+        },
+        {
+          "test_id": "transport::auth::tests::cimd_falls_back_to_dcr_when_server_lacks_support",
+          "behavior": "Exact test observes that cimd falls back to dcr when server lacks support."
+        },
+        {
+          "test_id": "transport::auth::tests::dcr_takes_priority_over_user_entered_client_information",
+          "behavior": "Exact test observes that dcr takes priority over user entered client information."
+        },
+        {
+          "test_id": "transport::auth::tests::user_entered_client_is_final_fallback_after_cimd_and_dcr_are_unavailable",
+          "behavior": "Exact test observes that user entered client is final fallback after cimd and dcr are unavailable."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-001",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "7636a8730220328a57194ba44d22810c67b82e239251bc166913ccdc249ceb55",
+      "actor": "MCP client",
+      "asserted_obligation": "support OAuth Client ID Metadata Documents as specified in [OAuth Client ID Metadata Document](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00) for client registration.",
+      "assertion_test_ids": [
+        "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url"
+      ],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [
+        {
+          "test_id": "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url",
+          "behavior": "Exact test observes that rejects document whose client id does not exactly match url."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-002",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "0fb0cd57f58558c39af14e44ebe8e91f76fb4552aa480d286eca4fa265fa3432",
+      "actor": "MCP client",
+      "asserted_obligation": "follow the requirements specified in [OAuth Client ID Metadata Document](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00).",
+      "assertion_test_ids": [],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-003",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-004",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-005",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-006",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-007",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-008",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-009",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-010",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-011",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-012",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-013"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "40df6c6a3027c320168a48383c0380ced7b83c86074fd17086237407e0c3b0cd",
+      "actor": "MCP client using CIMD",
+      "asserted_obligation": "Clients using Client ID Metadata Documents **MUST** host their metadata document at an HTTPS URL following RFC requirements.",
+      "assertion_test_ids": [],
+      "implementation": "Conditional CIMD client-hosting obligation not selected: Labby accepts CIMD as an authorization server, while its outbound MCP client uses pre-registration or DCR and does not publish a URL-form client_id.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "not_applicable",
+      "status": "not_applicable",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-004",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "6d626b23bb0416c26f9809551db2bdefc1b1738b87b15a242fb5edd74518311d",
+      "actor": "MCP client using CIMD",
+      "asserted_obligation": "The `client_id` URL **MUST** use the \"https\" scheme and contain a path component, e.g. `https://example.com/client.json`.",
+      "assertion_test_ids": [],
+      "implementation": "Conditional CIMD client-hosting obligation not selected: Labby accepts CIMD as an authorization server, while its outbound MCP client uses pre-registration or DCR and does not publish a URL-form client_id.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "not_applicable",
+      "status": "not_applicable",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-005",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "9f3e80de4b03a0f5c000a4a8582c4414044073e50a93ed6ba5e3442c15e8ed92",
+      "actor": "MCP client using CIMD",
+      "asserted_obligation": "The metadata document **MUST** include at least the following properties: `client_id`, `client_name`, `redirect_uris`.",
+      "assertion_test_ids": [],
+      "implementation": "Conditional CIMD client-hosting obligation not selected: Labby accepts CIMD as an authorization server, while its outbound MCP client uses pre-registration or DCR and does not publish a URL-form client_id.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "not_applicable",
+      "status": "not_applicable",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-006",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "2ab4a1104e7caad5d897746bc6df1bd5b197bc98fc15f6ac200924ea51541062",
+      "actor": "MCP client using CIMD",
+      "asserted_obligation": "Clients using Client ID Metadata Documents **MUST** ensure the `client_id` value in the metadata matches the document URL exactly.",
+      "assertion_test_ids": [],
+      "implementation": "Conditional CIMD client-hosting obligation not selected: Labby accepts CIMD as an authorization server, while its outbound MCP client uses pre-registration or DCR and does not publish a URL-form client_id.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "not_applicable",
+      "status": "not_applicable",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-007",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "87f2ae06a644cb05c3160b51276efe21be3279106229f5e2cc8f021c6de86adc",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "fetch metadata documents when encountering URL-formatted client\\_ids",
+      "assertion_test_ids": [
+        "cimd::tests::accepts_the_real_chatgpt_connector_metadata_document"
+      ],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [
+        {
+          "test_id": "cimd::tests::accepts_the_real_chatgpt_connector_metadata_document",
+          "behavior": "Exact test observes that accepts the real chatgpt connector metadata document."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-008",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "10b1a7110279314cb49e5ad1edce6396d4a645317433d1dc45d6be88d412232e",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "validate that the fetched document's `client_id` matches the URL exactly",
+      "assertion_test_ids": [
+        "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url"
+      ],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [
+        {
+          "test_id": "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url",
+          "behavior": "Exact test observes that rejects document whose client id does not exactly match url."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-009",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "a88da6cdee6147b655d987252abaec53f5ea82cf745bcbd084398c8efaffc2ab",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "Authorization servers accepting CIMD SHOULD cache metadata respecting HTTP cache headers.",
+      "assertion_test_ids": [
+        "remote::tests::cache_policy_is_case_insensitive_and_bounded"
+      ],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [
+        {
+          "test_id": "remote::tests::cache_policy_is_case_insensitive_and_bounded",
+          "behavior": "Exact test observes that cache policy is case insensitive and bounded."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-010",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "e97217865fae30d51fb4cabef9b311dd8c42111d3f56f0da2387986c1051ac7e",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "validate redirect URIs presented in an authorization request against those in the metadata document",
+      "assertion_test_ids": [
+        "authorize::tests::authorize_validates_redirect_against_cimd_document_and_persists_reference"
+      ],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::authorize_validates_redirect_against_cimd_document_and_persists_reference",
+          "behavior": "Exact authorization-endpoint test rejects a redirect absent from the resolved CIMD document and accepts the exact declared redirect."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-011",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "495dc2dfed6ce6b87017cbe111395ea2b160b6f3fe359c901c467ca8a2f3c880",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "validate the document structure is valid JSON and contains required fields",
+      "assertion_test_ids": [
+        "cimd::tests::rejects_malformed_or_incomplete_client_metadata_documents"
+      ],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [
+        {
+          "test_id": "cimd::tests::rejects_malformed_or_incomplete_client_metadata_documents",
+          "behavior": "Exact parser test rejects invalid JSON and documents missing required client_id or redirect_uris fields."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-012",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "d45af14cda29bd7d42ebde6b0cfbb382fe66fff6747352e23b54b386f1af84d0",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "follow the security considerations in [Section 6 of Client ID Metadata Document](https://www.ietf.org/archive/id/draft-ietf-oauth-client-id-metadata-document-00.html#section-6) and in [Client ID Metadata Document Security](/specification/2026-07-28/basic/authorization/security-considerations#client-id-metadata-document-security)",
+      "assertion_test_ids": [],
+      "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-013",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-009",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-010",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-011",
+        "MCP-2026-AUTH-CLIENT-REGISTRATION-012",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "080f99facb12307258e247a543fb2bbe8bb6698102c508db0fe74164a5746764",
+      "actor": "MCP client",
+      "asserted_obligation": "MCP clients SHOULD check `client_id_metadata_document_supported` and MAY fall back to DCR or pre-registration when unavailable.",
+      "assertion_test_ids": [
+        "transport::auth::tests::preregistered_client_takes_priority_over_cimd"
+      ],
+      "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
+          "behavior": "Exact test observes that preregistered client takes priority over cimd."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-014",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "eb52333cd4dc6b138151c7b249f4da9c0b61b0d3d8dcfd6ea49bbeb1a99e9776",
+      "actor": "MCP client",
+      "asserted_obligation": "support an option for static client credentials such as those supplied by a pre-registration flow.",
+      "assertion_test_ids": [
+        "transport::auth::tests::preregistered_client_skips_registration_endpoint"
+      ],
+      "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::preregistered_client_skips_registration_endpoint",
+          "behavior": "Exact test observes that preregistered client skips registration endpoint."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-015",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "bd08ca5befbd74cdd54bd859bf862d8598b62d2d2659f7df3a1f72ea47cef531",
+      "actor": "MCP client using DCR",
+      "asserted_obligation": "specify an appropriate `application_type` during Dynamic Client Registration.",
+      "assertion_test_ids": [
+        "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants"
+      ],
+      "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
+          "behavior": "Exact test observes that dcr registration uses requested application type."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-016",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "a6fb1afc1644ba2a7db12fb59204d6bf03bf61723aea1d75db0119df0725917d",
+      "actor": "native MCP client using DCR",
+      "asserted_obligation": "Native MCP clients using DCR SHOULD use `application_type: \"native\"`.",
+      "assertion_test_ids": [
+        "transport::auth::tests::native_dcr_registration_sends_native_application_type"
+      ],
+      "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::native_dcr_registration_sends_native_application_type",
+          "behavior": "Exact test observes that native dcr registration sends native application type."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-017",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "86ab89c6e0f8c3bcaaa25307e6d3d5d7205c18a02433008c919e231e23ec800b",
+      "actor": "web MCP client using DCR",
+      "asserted_obligation": "use `application_type: \"web\"`",
+      "assertion_test_ids": [
+        "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants"
+      ],
+      "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
+          "behavior": "Exact test observes that dcr registration uses requested application type."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-018",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "c0715cfea75b5aa8b74acd3cee7b1b0e09a94368079f4f050b1a75e45d3f017e",
+      "actor": "MCP client",
+      "asserted_obligation": "be prepared to handle registration failures due to redirect URI constraints when authorization servers implement OIDC.",
+      "assertion_test_ids": [
+        "transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure"
+      ],
+      "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure",
+          "behavior": "Exact test observes that dcr recovers unauthorized state after registration failure."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-019",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "82f2f1bc32ddf6d90a4ea05b2f8190b82971620d46b4524b6c898ec54ed11523",
+      "actor": "MCP client",
+      "asserted_obligation": "surface a meaningful error to the user or developer.",
+      "assertion_test_ids": [
+        "transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure"
+      ],
+      "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure",
+          "behavior": "Exact test observes that dcr recovers unauthorized state after registration failure."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-020",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "d30823438c9136605b9d442f75ed98c845118319260133f7d0808c7d66e98eee",
+      "actor": "MCP client",
+      "asserted_obligation": "associate those credentials with the specific authorization server that issued them, keyed by the authorization server's `issuer` identifier.",
+      "assertion_test_ids": [
+        "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes"
+      ],
+      "implementation": "Registration and authorization state is issuer-bound and cannot be silently reused across authorization servers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes",
+          "behavior": "Exact test observes that initialize from store clears dcr credentials when issuer changes."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/store.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-021",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "c365968ec4b532e5d44d1c41865d1772136b29535eaf92d84dd4022e7ab12b93",
+      "actor": "MCP client",
+      "asserted_obligation": "Clients MUST NOT reuse client credentials from a different authorization server.",
+      "assertion_test_ids": [
+        "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes"
+      ],
+      "implementation": "Registration and authorization state is issuer-bound and cannot be silently reused across authorization servers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::initialize_from_store_clears_dcr_credentials_when_issuer_changes",
+          "behavior": "Exact test observes that initialize from store clears dcr credentials when issuer changes."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/upstream/store.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-022",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "5ba02815da7034c90f826205d1206ffb09e7533653841bd424a7240b8aabc87c",
+      "actor": "MCP client",
+      "asserted_obligation": "re-register with the new authorization server.",
+      "assertion_test_ids": [
+        "transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server"
+      ],
+      "implementation": "Registration and authorization state is issuer-bound and cannot be silently reused across authorization servers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server",
+          "behavior": "Exact test observes that issuer change surfaces mismatch then reregisters with new server."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-auth/src/upstream/store.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-023",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration.md",
+      "source_requirement_sha256": "4780be90cc67f7d11468a72ad124cc8c8060931acee21b284e83cfa974c29a06",
+      "actor": "MCP client",
+      "asserted_obligation": "surface an error rather than silently attempting to use mismatched credentials.",
+      "assertion_test_ids": [
+        "transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server"
+      ],
+      "implementation": "Registration and authorization state is issuer-bound and cannot be silently reused across authorization servers.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server",
+          "behavior": "Exact test observes that issuer change surfaces mismatch then reregisters with new server."
+        }
+      ],
+      "evidence_paths": [
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "crates/labby-auth/src/upstream/store.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-CLIENT-REGISTRATION-024",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "bdb1ed32d8172504422b576e96e6e41b8c853de4eba4fa3bfc4edaa509e63a0d",
+      "actor": "MCP implementation",
+      "asserted_obligation": "Implementers MUST consider the documented MCP authorization security requirements when building clients and servers.",
+      "assertion_test_ids": [],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-001",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-004",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-005",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-007",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-012",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-013",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-014",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-015",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-016",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-017",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-018",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-019",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-027",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-028",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "e63363305e2671c84abc22d074d9ab61cb82bbacc01ce6f9822e62b324556414",
+      "actor": "MCP implementation",
+      "asserted_obligation": "follow OAuth 2.1 security best practices as outlined in [OAuth 2.1 Section 7.",
+      "assertion_test_ids": [],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-002",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-004",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-005",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-007",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-012",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-013",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-014",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-015",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-016",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-017",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-018",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-019",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-027",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-028",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "8d69fc5d2cddd9cca1d23ccab4fea1ae7a68fe651fd931338aff418a8803beb4",
+      "actor": "MCP implementation",
+      "asserted_obligation": "include the `resource` parameter in authorization and token requests as specified in the [Resource Parameter Implementation](/specification/2026-07-28/basic/authorization#resource-parameter-implementation) section * MCP servers",
+      "assertion_test_ids": [
+        "transport::auth::tests::authorization_url_uses_discovered_resource",
+        "transport::auth::tests::refresh_token_includes_resource_parameter"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::authorization_url_uses_discovered_resource",
+          "behavior": "Exact test observes that authorization url uses discovered resource."
+        },
+        {
+          "test_id": "transport::auth::tests::refresh_token_includes_resource_parameter",
+          "behavior": "Exact test observes that refresh token includes resource parameter."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-003",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "2520aadf02ee6f5d8601b5c82b19119eb8b50955971851fb8ad724b5813a90bc",
+      "actor": "MCP server",
+      "asserted_obligation": "validate that tokens presented to them were specifically issued for their use",
+      "assertion_test_ids": [
+        "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced",
+          "behavior": "Exact test observes that exact resource audience including port and path is enforced."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-004",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "65af2dc7ba21367b2c8b3450a06e9b5dd1fab9fca47ac9b9a74be2de4d3c19ef",
+      "actor": "MCP client",
+      "asserted_obligation": "implement secure token storage and follow OAuth best practices, as outlined in [OAuth 2.1, Section 7.1](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-7.1).",
+      "assertion_test_ids": [
+        "sqlite::tests::opening_with_a_key_encrypts_legacy_plaintext_provider_tokens"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "sqlite::tests::opening_with_a_key_encrypts_legacy_plaintext_provider_tokens",
+          "behavior": "Exact test observes that opening with a key encrypts legacy plaintext provider tokens."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-005",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "a2acb85f406efdd2190ac39ac65a0f35201bc534099c969c546ee5f4f26bb35c",
+      "actor": "authorization server",
+      "asserted_obligation": "issue short-lived access tokens to reduce the impact of leaked tokens.",
+      "assertion_test_ids": [
+        "token::tests::token_endpoint_mints_lab_jwt_and_refresh_token"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "token::tests::token_endpoint_mints_lab_jwt_and_refresh_token",
+          "behavior": "Exact test observes that token endpoint mints lab jwt and refresh token."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-006",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "3571a23b78cf99411df6751de4c5286c45fbb577b1241662f8a96d46faede9a7",
+      "actor": "authorization server",
+      "asserted_obligation": "rotate refresh tokens as described in [OAuth 2.1 Section 4.3.1 \"Token Endpoint Extension\"](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-4.3.1).",
+      "assertion_test_ids": [
+        "token::tests::refresh_grant_rotates_local_token_on_success"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "token::tests::refresh_grant_rotates_local_token_on_success",
+          "behavior": "Exact test observes that refresh grant rotates local token on success."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-007",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "7c3fd728f16906b7960325cf29351e6ce0cbb63b0a8e850f481cc143eb2a4e9b",
+      "actor": "MCP implementation",
+      "asserted_obligation": "follow [OAuth 2.1 Section 1.5 \"Communication Security\"](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-1.5).",
+      "assertion_test_ids": [
+        "config::tests::oauth_mode_rejects_non_https_public_url_except_loopback"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "config::tests::oauth_mode_rejects_non_https_public_url_except_loopback",
+          "behavior": "Exact test observes that oauth mode rejects non https public url except loopback."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-008",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "788f9151fcf46b791be193585a6ee00df038794adc006afd882db407e788f03e",
+      "actor": "authorization server",
+      "asserted_obligation": "All authorization-server endpoints MUST be served over HTTPS.",
+      "assertion_test_ids": [
+        "config::tests::oauth_mode_rejects_non_https_public_url_except_loopback"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "config::tests::oauth_mode_rejects_non_https_public_url_except_loopback",
+          "behavior": "Exact test observes that oauth mode rejects non https public url except loopback."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-009",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "46c1c5b7d30e9e7a74d04e5a56a2b45c19a914fabc5c9f319966492ec995f5bc",
+      "actor": "MCP implementation",
+      "asserted_obligation": "All redirect URIs MUST use HTTPS or a localhost host.",
+      "assertion_test_ids": [
+        "authorize::tests::register_accepts_public_dcr_and_enforces_loopback_redirects"
+      ],
+      "implementation": "Inbound tokens are signature/time/audience/resource validated and protected state is encrypted and rotated.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::register_accepts_public_dcr_and_enforces_loopback_redirects",
+          "behavior": "Exact test observes that register accepts public dcr and enforces loopback redirects."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-auth/src/at_rest.rs",
+        "crates/labby-auth/src/token.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-010",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "c12502a50a4399f0adcf20815d65ebab5dd70b172851c21fa11d3568c5f1a058",
+      "actor": "MCP client",
+      "asserted_obligation": "MCP clients MUST implement PKCE according to OAuth 2.1 Section 7.5.2 and MUST verify PKCE support before proceeding with authorization.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256",
+        "upstream::manager::url_tests::pkce_validation_rejects_advertised_non_s256_methods",
+        "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"
+      ],
+      "implementation": "Authorization metadata and flows require OAuth 2.1 PKCE S256 and publish the required capability.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256",
+          "behavior": "Exact test observes that pkce validation accepts advertised s256."
+        },
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_advertised_non_s256_methods",
+          "behavior": "Exact test observes that pkce validation rejects advertised non s256 methods."
+        },
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata",
+          "behavior": "Exact test observes that pkce validation rejects missing method metadata."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-011",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "80df3538ca7b38f8c21e5275e2f95452b4b0220113baccb9813aeb89cb0077fb",
+      "actor": "MCP client",
+      "asserted_obligation": "verify PKCE support before proceeding with authorization.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256"
+      ],
+      "implementation": "Outbound authorization validates metadata before starting PKCE: S256 is accepted while absent or non-S256 capability is rejected.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256",
+          "behavior": "Exact test observes that pkce validation accepts advertised s256."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-012",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "c45d5ea6b78c4a4a88914bfccecc6dbb608feb779d9cba860f1dfc76da2c9fe2",
+      "actor": "MCP implementation",
+      "asserted_obligation": "use the `S256` code challenge method when technically capable, as required by [OAuth 2.1 Section 4.1.1](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-4.1.1).",
+      "assertion_test_ids": [
+        "authorize::tests::authorization_endpoint_requires_code_flow_and_pkce_s256"
+      ],
+      "implementation": "Authorization metadata and flows require OAuth 2.1 PKCE S256 and publish the required capability.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::authorization_endpoint_requires_code_flow_and_pkce_s256",
+          "behavior": "Exact test observes that authorization endpoint requires code flow and pkce s256."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-013",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "47700784459c385b562e8f8e8cf0f5d2f07c82b998e08e91b39d1b3542bd1161",
+      "actor": "MCP client",
+      "asserted_obligation": "MCP clients MUST rely on authorization-server metadata to verify PKCE capability.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"
+      ],
+      "implementation": "Outbound authorization validates metadata before starting PKCE: S256 is accepted while absent or non-S256 capability is rejected.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata",
+          "behavior": "Exact OAuth client test refuses authorization when OIDC metadata omits code_challenge_methods_supported."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-014",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "9df74522c5f3b3b61bc3dae77d8bff6f890ee432c5d5160243f1f251707a7acd",
+      "actor": "MCP client",
+      "asserted_obligation": "MCP clients MUST refuse authorization when OAuth metadata omits `code_challenge_methods_supported`.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"
+      ],
+      "implementation": "Outbound authorization validates metadata before starting PKCE: S256 is accepted while absent or non-S256 capability is rejected.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata",
+          "behavior": "Exact test observes that pkce validation rejects missing method metadata."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-015",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "6b4d3c098e42b1657aaf19d09b276db144024097cf2560537cb26145db293e0f",
+      "actor": "MCP client",
+      "asserted_obligation": "verify the presence of `code_challenge_methods_supported` in the provider metadata response.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256"
+      ],
+      "implementation": "Outbound authorization validates metadata before starting PKCE: S256 is accepted while absent or non-S256 capability is rejected.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_accepts_advertised_s256",
+          "behavior": "Exact test observes that pkce validation accepts advertised s256."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-016",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "5db96f7e6f3dffb41853171f4c2d76bfb6a8a9ee30f743341607ebfb7048ccbc",
+      "actor": "MCP client",
+      "asserted_obligation": "MCP clients MUST refuse authorization when OIDC metadata omits `code_challenge_methods_supported`.",
+      "assertion_test_ids": [
+        "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata"
+      ],
+      "implementation": "Outbound authorization validates metadata before starting PKCE: S256 is accepted while absent or non-S256 capability is rejected.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::manager::url_tests::pkce_validation_rejects_missing_method_metadata",
+          "behavior": "Exact OAuth client test refuses authorization when OIDC metadata omits code_challenge_methods_supported."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-017",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "fe6380a86f052f021a0dc36c847c011f5a00b5e206a293291b57f4b76b9a3132",
+      "actor": "authorization server",
+      "asserted_obligation": "include `code_challenge_methods_supported` in their metadata to ensure MCP compatibility.",
+      "assertion_test_ids": [
+        "metadata::tests::authorization_server_metadata_exposes_lab_endpoints"
+      ],
+      "implementation": "Authorization metadata and flows require OAuth 2.1 PKCE S256 and publish the required capability.",
+      "assertion_evidence": [
+        {
+          "test_id": "metadata::tests::authorization_server_metadata_exposes_lab_endpoints",
+          "behavior": "Exact test observes that authorization server metadata exposes lab endpoints."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/metadata.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-018",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "2aa58a7b0d0bb824a60bbfadb72300cc85986947bbdea46911a58b5756e6f093",
+      "actor": "MCP implementation",
+      "asserted_obligation": "have redirect URIs registered with the authorization server.",
+      "assertion_test_ids": [
+        "authorize::tests::https_redirects_still_require_the_allowlist"
+      ],
+      "implementation": "Exact redirect, state, HTTPS, metadata validation, and SSRF controls protect authorization redirects.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::https_redirects_still_require_the_allowlist",
+          "behavior": "Exact test observes that https redirects still require the allowlist."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-019",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "3eeafd908480db09322dfefc928539e16618fa405035afa69b85391828b62139",
+      "actor": "authorization server",
+      "asserted_obligation": "validate exact redirect URIs against pre-registered values to prevent redirection attacks.",
+      "assertion_test_ids": [
+        "authorize::tests::authorize_rejects_nonidentical_registered_redirect_without_redirecting"
+      ],
+      "implementation": "Exact redirect, state, HTTPS, metadata validation, and SSRF controls protect authorization redirects.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::authorize_rejects_nonidentical_registered_redirect_without_redirecting",
+          "behavior": "Exact test observes that authorize rejects nonidentical registered redirect without redirecting."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-020",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "cfae9bdc47d08020ebd1372067de1b31a5e8a274d330af7145c45deeaa80e552",
+      "actor": "MCP implementation",
+      "asserted_obligation": "use and verify state parameters in the authorization code flow and discard any results that do not include or have a mismatch with the original state.",
+      "assertion_test_ids": [
+        "authorize::tests::callback_rejects_expired_or_mismatched_state"
+      ],
+      "implementation": "Exact redirect, state, HTTPS, metadata validation, and SSRF controls protect authorization redirects.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::callback_rejects_expired_or_mismatched_state",
+          "behavior": "Exact test observes that callback rejects expired or mismatched state."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-021",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "58ff26397e53e4ffdcafc77150cc2f7c75f0194560030f866d8894981c095d11",
+      "actor": "MCP implementation",
+      "asserted_obligation": "take precautions to prevent redirecting user agents to untrusted URI's, following suggestions laid out in [OAuth 2.1 Section 7.12.2](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13#section-7.12.2)",
+      "assertion_test_ids": [
+        "authorize::tests::register_rejects_native_callback_endpoint_smuggled_with_an_unsafe_redirect_uri"
+      ],
+      "implementation": "Exact redirect, state, HTTPS, metadata validation, and SSRF controls protect authorization redirects.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::register_rejects_native_callback_endpoint_smuggled_with_an_unsafe_redirect_uri",
+          "behavior": "Exact test observes that register rejects native callback endpoint smuggled with an unsafe redirect uri."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-022",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "ea23778e6c5427cefd1bdd3681ba9f97d947d7bc39d636553976370302cae10a",
+      "actor": "authorization server",
+      "asserted_obligation": "only automatically redirect the user agent if it trusts the redirection URI.",
+      "assertion_test_ids": [
+        "authorize::tests::wildcard_redirect_patterns_do_not_overmatch_similar_hosts"
+      ],
+      "implementation": "Exact redirect, state, HTTPS, metadata validation, and SSRF controls protect authorization redirects.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::wildcard_redirect_patterns_do_not_overmatch_similar_hosts",
+          "behavior": "Exact test observes that wildcard redirect patterns do not overmatch similar hosts."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-023",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "006f05197fc120cd450660ea6e4bbb7144edb704481f791b2e99e04b57b3040e",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "consider the security implications detailed in [OAuth Client ID Metadata Document, Section 6](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00#name-security-considerations).",
+      "assertion_test_ids": [
+        "upstream::http_client::tests::different_private_origin_is_blocked",
+        "upstream::http_client::tests::redirect_policy_stops_cross_origin",
+        "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url",
+        "cimd::tests::absolute_metadata_deadline_includes_single_flight_wait"
+      ],
+      "implementation": "Exact redirect, state, HTTPS, metadata validation, and SSRF controls protect authorization redirects.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::http_client::tests::different_private_origin_is_blocked",
+          "behavior": "Exact test observes that different private origin is blocked."
+        },
+        {
+          "test_id": "upstream::http_client::tests::redirect_policy_stops_cross_origin",
+          "behavior": "Exact test observes that redirect policy stops cross origin."
+        },
+        {
+          "test_id": "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url",
+          "behavior": "Exact test observes that rejects document whose client id does not exactly match url."
+        },
+        {
+          "test_id": "cimd::tests::absolute_metadata_deadline_includes_single_flight_wait",
+          "behavior": "Exact test observes that absolute metadata deadline includes single flight wait."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-024",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "39ee2dec10d86d5635609f5f914f11a9a21a83442cacc4930a54d728eea51c1c",
+      "actor": "authorization server accepting CIMD",
+      "asserted_obligation": "consider [Server-Side Request Forgery (SSRF)](https://developer.mozilla.org/docs/Web/Security/Attacks/SSRF) risks, as described in [OAuth Client ID Metadata Document: Server Side Request Forgery (SSRF) Attacks](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00#name-server-side-request-forgery).",
+      "assertion_test_ids": [
+        "upstream::http_client::tests::different_private_origin_is_blocked",
+        "upstream::http_client::tests::redirect_policy_stops_cross_origin",
+        "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url",
+        "cimd::tests::absolute_metadata_deadline_includes_single_flight_wait"
+      ],
+      "implementation": "Exact redirect, state, HTTPS, metadata validation, and SSRF controls protect authorization redirects.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::http_client::tests::different_private_origin_is_blocked",
+          "behavior": "Exact test observes that different private origin is blocked."
+        },
+        {
+          "test_id": "upstream::http_client::tests::redirect_policy_stops_cross_origin",
+          "behavior": "Exact test observes that redirect policy stops cross origin."
+        },
+        {
+          "test_id": "cimd::tests::rejects_document_whose_client_id_does_not_exactly_match_url",
+          "behavior": "Exact test observes that rejects document whose client id does not exactly match url."
+        },
+        {
+          "test_id": "cimd::tests::absolute_metadata_deadline_includes_single_flight_wait",
+          "behavior": "Exact test observes that absolute metadata deadline includes single flight wait."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/cimd.rs",
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-025",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "3f357cbfac1325430279b9d03799ce335b3582bedfa8ac41a0c468b42625bde1",
+      "actor": "authorization server",
+      "asserted_obligation": "display additional warnings for `localhost`-only redirect URIs",
+      "assertion_test_ids": [
+        "authorize::tests::localhost_redirect_consent_warns_with_exact_loopback_host"
+      ],
+      "implementation": "Dynamic clients receive an explicit click-consent page displaying the redirect hostname before authorization.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::localhost_redirect_consent_warns_with_exact_loopback_host",
+          "behavior": "Exact test observes that localhost redirect consent warns with exact loopback host."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-026",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "5f4e9eb9b629886d4d55da9c6bf4a45416e81f1ce9d45013c01696b37c58e2d8",
+      "actor": "authorization server",
+      "asserted_obligation": "clearly display the redirect URI hostname during authorization",
+      "assertion_test_ids": [
+        "authorize::tests::dynamically_registered_client_requires_click_consent_showing_redirect_host"
+      ],
+      "implementation": "Dynamic clients receive an explicit click-consent page displaying the redirect hostname before authorization.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::dynamically_registered_client_requires_click_consent_showing_redirect_host",
+          "behavior": "Exact test observes that dynamically registered client requires click consent showing redirect host."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-027",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "e56c9d26c11dd40c1b063d686c3a880cf05e1418c4fd758e68b905fdaab960e9",
+      "actor": "authorization server",
+      "asserted_obligation": "obtain user consent for each [dynamically registered client](/specification/2026-07-28/basic/authorization/client-registration#dynamic-client-registration) before forwarding to third-party authorization servers (which may require additional consent).",
+      "assertion_test_ids": [
+        "authorize::tests::dynamically_registered_client_requires_click_consent_showing_redirect_host"
+      ],
+      "implementation": "Dynamic clients receive an explicit click-consent page displaying the redirect hostname before authorization.",
+      "assertion_evidence": [
+        {
+          "test_id": "authorize::tests::dynamically_registered_client_requires_click_consent_showing_redirect_host",
+          "behavior": "Exact test observes that dynamically registered client requires click consent showing redirect host."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/authorize.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-028",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "cbb13e77c61baf017d09446055ddd9fd4f064b30f810571bcbd3a67117f8989d",
+      "actor": "MCP server",
+      "asserted_obligation": "validate access tokens before processing the request, ensuring the access token is issued specifically for the MCP server, and take all necessary steps to ensure no data is returned to unauthorized parties.",
+      "assertion_test_ids": [],
+      "implementation": "Resource-bound audience checks reject foreign tokens and gateway forwarding cannot transit inbound Authorization.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-029",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "ecaab46bb142444caeb012eb6d61e4ebfd1ea26b23df0cb2f4d388bd4d2343be",
+      "actor": "MCP server",
+      "asserted_obligation": "follow the guidelines in [OAuth 2.1 - Section 5.2](https://www.ietf.org/archive/id/draft-ietf-oauth-v2-1-13.html#section-5.2) to validate inbound tokens.",
+      "assertion_test_ids": [],
+      "implementation": "Resource-bound audience checks reject foreign tokens and gateway forwarding cannot transit inbound Authorization.",
+      "assertion_evidence": [],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-030",
+      "subordinate_row_ids": [
+        "MCP-2026-AUTH-INDEX-040",
+        "MCP-2026-AUTH-INDEX-042",
+        "MCP-2026-AUTH-INDEX-044",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+        "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032"
+      ]
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "9f75854eb8d1c2d854db1f262b0e4e3d2cad1b232a8eea723d2f0df5436de47c",
+      "actor": "MCP server",
+      "asserted_obligation": "MCP servers MUST only accept tokens specifically intended for themselves.",
+      "assertion_test_ids": [
+        "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced"
+      ],
+      "implementation": "Resource-bound audience checks reject foreign tokens and gateway forwarding cannot transit inbound Authorization.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced",
+          "behavior": "Exact test observes that exact resource audience including port and path is enforced."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-031",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "cbcc4cbff92487dff35a8245e64fc715f868d35ac9ff4ec093470ded0de39614",
+      "actor": "MCP server",
+      "asserted_obligation": "reject tokens that do not include them in the audience claim or otherwise verify that they are the intended recipient of the token.",
+      "assertion_test_ids": [
+        "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced"
+      ],
+      "implementation": "Resource-bound audience checks reject foreign tokens and gateway forwarding cannot transit inbound Authorization.",
+      "assertion_evidence": [
+        {
+          "test_id": "middleware::tests::exact_resource_audience_including_port_and_path_is_enforced",
+          "behavior": "Exact test observes that exact resource audience including port and path is enforced."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-032",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "98ba5f4bb07dfecddf32dbc16424d848409528db8faf5961e15115f724bcdf6a",
+      "actor": "MCP gateway",
+      "asserted_obligation": "pass through the token it received from the MCP client.",
+      "assertion_test_ids": [
+        "upstream::pool::connect::conformance_tests::configured_headers_cannot_transit_an_inbound_authorization_token"
+      ],
+      "implementation": "Resource-bound audience checks reject foreign tokens and gateway forwarding cannot transit inbound Authorization.",
+      "assertion_evidence": [
+        {
+          "test_id": "upstream::pool::connect::conformance_tests::configured_headers_cannot_transit_an_inbound_authorization_token",
+          "behavior": "Exact test observes that configured headers cannot transit an inbound authorization token."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-033",
+      "subordinate_row_ids": []
+    },
+    {
+      "source_url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations.md",
+      "source_requirement_sha256": "77f5490c99e0980dcb4e9898af8c8de3777449ccb0099fa61d5d749854acd542",
+      "actor": "MCP implementation",
+      "asserted_obligation": "implement and use the `resource` parameter as defined in [RFC 8707 - Resource Indicators for OAuth 2.0](https://www.rfc-editor.org/rfc/rfc8707.html) to explicitly specify the target resource for which the token is being requested.",
+      "assertion_test_ids": [
+        "transport::auth::tests::refresh_token_includes_resource_parameter"
+      ],
+      "implementation": "Resource-bound audience checks reject foreign tokens and gateway forwarding cannot transit inbound Authorization.",
+      "assertion_evidence": [
+        {
+          "test_id": "transport::auth::tests::refresh_token_includes_resource_parameter",
+          "behavior": "Exact test observes that refresh token includes resource parameter."
+        }
+      ],
+      "evidence_paths": [
+        "crates/labby-auth/src/middleware.rs",
+        "crates/labby-gateway/src/upstream/pool/connect.rs"
+      ],
+      "applicability": "applicable",
+      "status": "pass",
+      "row_id": "MCP-2026-AUTH-SECURITY-CONSIDERATIONS-034",
+      "subordinate_row_ids": []
+    }
+  ]
+}

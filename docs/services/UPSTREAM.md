@@ -267,14 +267,10 @@ labby gateway mcp auth clear chrome-devtools
   authorization request and the token request, byte-identical between the
   two. Canonicalization runs at config-validation time so the stored URL and
   the `resource` wire value are the same string. Mismatched `aud` claims on
-  the returned token surface as `oauth_resource_mismatch`.
-
-  **Known gap (upstream).** rmcp 1.4's refresh path does not re-emit the
-  `resource` parameter on the `refresh_token` grant. Most authorization
-  servers continue to honor the audience bound at initial exchange, so this
-  is acceptable in practice today, but an AS that requires `resource` on
-  every token-endpoint call will reject refreshes. Tracked for follow-up
-  once rmcp exposes a refresh hook we can extend.
+  the returned token surface as `oauth_resource_mismatch`. Labby's pinned,
+  provenance-checked rmcp patch also re-emits the same `resource` parameter on
+  `refresh_token` grants; the conformance suite asserts authorization, code
+  exchange, and refresh all retain the discovered audience.
 - **Issuer binding.** After AS metadata discovery, `metadata.issuer` is
   required — missing `issuer` surfaces as `oauth_issuer_mismatch`. The
   `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, and
@@ -284,9 +280,11 @@ labby gateway mcp auth clear chrome-devtools
   allowed when they are part of the provider's documented OAuth deployment;
   today Lab allows Google's `https://accounts.google.com` issuer to use the
   `https://oauth2.googleapis.com` token endpoint.
-- **No Google reuse.** Outbound upstream OAuth is distinct from the inbound
-  `labby-auth` Google provider used for user login to `lab`. They do not share
-  code, clients, or tokens.
+- **Provider credential broker.** Generic upstream OAuth clients remain
+  per-upstream and per-subject. Google-backed upstreams may instead use the
+  authenticated subject's centralized, encrypted Google provider credential.
+  The broker shares only that subject-bound credential and lifecycle; it does
+  not expose provider tokens to callers.
 
 ### Per-`(upstream, subject)` Client Cache
 

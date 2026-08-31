@@ -263,7 +263,7 @@ impl CredentialStore for GoogleProviderCredentialStore {
                     row.granted_scopes,
                     Some(token_received_at),
                 )
-                .with_issuer(row.issuer),
+                .with_issuer(row.issuer)?,
             ))
         })
     }
@@ -338,6 +338,9 @@ impl CredentialStore for GoogleProviderCredentialStore {
             let scope_upgraded = existing
                 .as_ref()
                 .is_none_or(|row| !missing_scopes(&granted_scopes, &row.granted_scopes).is_empty());
+            let issuer = credentials
+                .issuer_owned()
+                .or_else(|| Some(GOOGLE_ISSUER.to_string()));
             let update = GoogleProviderCredentialUpdate {
                 subject,
                 email,
@@ -347,9 +350,7 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 refresh_token,
                 token_received_at,
                 access_token_expires_at,
-                issuer: credentials
-                    .issuer
-                    .or_else(|| Some(GOOGLE_ISSUER.to_string())),
+                issuer,
                 refreshed: existing.is_some() && !scope_upgraded,
                 scope_upgraded,
             };

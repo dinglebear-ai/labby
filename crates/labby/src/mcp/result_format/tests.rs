@@ -2,8 +2,8 @@
 //! estimation. Distributed from `server.rs` (bead `lab-kvji.24.1.6`).
 
 use super::{
-    estimate_tokens, estimate_tokens_args, estimate_tokens_value, extract_error_info,
-    format_dispatch_result, tool_error_envelope,
+    error_result_from_envelope, estimate_tokens, estimate_tokens_args, estimate_tokens_value,
+    extract_error_info, format_dispatch_result, tool_error_envelope,
 };
 use crate::dispatch::error::ToolError;
 use crate::mcp::error::{DispatchError, canonical_kind};
@@ -17,6 +17,47 @@ fn estimate_tokens_uses_chars_div_four_heuristic() {
     // 5 chars → 2 tokens (ceiling).
     assert_eq!(estimate_tokens("abcde"), 2);
     assert_eq!(estimate_tokens("hello world"), 3);
+}
+
+#[test]
+fn auth_errors_carry_mcp_reauthentication_metadata() {
+    let envelope = crate::mcp::envelope::build_error(
+        "gateway",
+        "status.list",
+        "auth_failed",
+        "sign in required",
+    );
+    let result = error_result_from_envelope(envelope);
+    assert_eq!(
+        result
+            .meta
+            .expect("authentication errors must provide protocol recovery metadata")
+            .0["mcp/www_authenticate"],
+        serde_json::json!([
+            "Bearer error=\"invalid_token\", error_description=\"sign in required\", scope=\"lab:read\""
+        ])
+    );
+}
+
+#[test]
+fn forbidden_and_non_auth_errors_publish_only_applicable_challenges() {
+    let forbidden = crate::mcp::envelope::build_error_extra(
+        "gateway",
+        "write",
+        "forbidden",
+        "need write",
+        &serde_json::json!({"required_scopes": ["lab:admin"]}),
+    );
+    let challenge = error_result_from_envelope(forbidden).meta.unwrap().0;
+    assert_eq!(
+        challenge["mcp/www_authenticate"],
+        serde_json::json!([
+            "Bearer error=\"insufficient_scope\", error_description=\"need write\", scope=\"lab:admin\""
+        ])
+    );
+
+    let other = crate::mcp::envelope::build_error("gateway", "read", "not_found", "missing");
+    assert!(error_result_from_envelope(other).meta.is_none());
 }
 
 #[test]

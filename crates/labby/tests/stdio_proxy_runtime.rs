@@ -19,6 +19,44 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
 
+#[cfg(unix)]
+const PROCESS_DEADLOCK_WATCHDOG: Duration = Duration::from_mins(1);
+
+#[cfg(unix)]
+async fn wait_for_readiness_or_exit(
+    child: &mut tokio::process::Child,
+    stdout: tokio::process::ChildStdout,
+    context: &str,
+) -> Result<String, String> {
+    use tokio::io::{AsyncBufReadExt as _, BufReader};
+
+    tokio::time::timeout(PROCESS_DEADLOCK_WATCHDOG, async {
+        let mut lines = BufReader::new(stdout).lines();
+        tokio::select! {
+            line = lines.next_line() => line
+                .map_err(|error| format!("failed to read {context}: {error}"))?
+                .ok_or_else(|| format!("child closed stdout before {context}")),
+            status = child.wait() => Err(format!(
+                "child exited before {context}: {}",
+                status.map_err(|error| format!("failed to read child exit status: {error}"))?
+            )),
+        }
+    })
+    .await
+    .map_err(|_| format!("deadlock waiting for {context}"))?
+}
+
+#[cfg(unix)]
+async fn wait_for_child_output(
+    child: tokio::process::Child,
+    context: &str,
+) -> Result<std::process::Output, String> {
+    tokio::time::timeout(PROCESS_DEADLOCK_WATCHDOG, child.wait_with_output())
+        .await
+        .map_err(|_| format!("deadlock waiting for {context}"))?
+        .map_err(|error| format!("failed waiting for {context}: {error}"))
+}
+
 fn ensure_tls_provider() {
     drop(rustls::crypto::ring::default_provider().install_default());
 }
@@ -770,15 +808,14 @@ async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
             "LABBY_TOKEN_ENCRYPTION_KEY",
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         )
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-
-    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+    let output = wait_for_child_output(child, "local OAuth rejection")
         .await
-        .expect("local OAuth rejection did not stop promptly")
-        .unwrap();
+        .expect("local OAuth rejection completes");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -800,7 +837,6 @@ async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
 #[tokio::test]
 async fn cli_tailscale_oauth_collision_releases_old_lease_then_renewal_failure_cleans_all() {
     use std::os::unix::fs::PermissionsExt;
-    use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -830,6 +866,7 @@ async fn cli_tailscale_oauth_collision_releases_old_lease_then_renewal_failure_c
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     let tailscale = root.join("tailscale");
+    let tailscale_events = root.join("tailscale-events");
     std::fs::write(
         &tailscale,
         format!(
@@ -837,6 +874,7 @@ async fn cli_tailscale_oauth_collision_releases_old_lease_then_renewal_failure_c
 set -u
 root='{root}'
 mapping="$root/mapping"
+events="$root/tailscale-events"
 if [[ "${{1:-}}" == "version" ]]; then echo 1.98.10; exit 0; fi
 if [[ "${{1:-}} ${{2:-}}" == "status --json" ]]; then
   echo '{{"BackendState":"Running","Self":{{"Online":true,"DNSName":"node.example.ts.net."}}}}'; exit 0
@@ -849,9 +887,10 @@ if [[ "${{1:-}}" == "serve" ]]; then
   port="${{3#--https=}}"
   if [[ "${{4:-}}" == "off" ]]; then rm -f "$mapping"; exit 0; fi
   count=0; [[ -f "$root/claims" ]] && count=$(<"$root/claims"); count=$((count+1)); echo "$count" > "$root/claims"
-  if [[ "$count" == 1 ]]; then echo 'port already configured' >&2; exit 1; fi
+  if [[ "$count" == 1 ]]; then printf 'collision:%s\n' "$port" >> "$events"; echo 'port already configured' >&2; exit 1; fi
   printf '%s|%s\n' "$port" "${{4:-}}" > "$mapping"
-  trap 'rm -f "$mapping"; exit 0' TERM INT
+  printf 'claimed:%s\n' "$port" >> "$events"
+  trap 'printf "released:%s\n" "$port" >> "$events"; rm -f "$mapping"; exit 0' TERM INT
   while :; do sleep 0.02; done
 fi
 exit 2
@@ -921,26 +960,21 @@ exit 2
         )
         .env("LABBY_TAILSCALE_BIN", &tailscale)
         .env("LABBY_PROXY_TEST_RENEW_MS", "100")
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let stdout = child.stdout.take().unwrap();
-    let line = tokio::time::timeout(
-        Duration::from_secs(10),
-        BufReader::new(stdout).lines().next_line(),
-    )
-    .await
-    .unwrap()
-    .unwrap()
-    .expect("ready output");
+    let line = wait_for_readiness_or_exit(&mut child, stdout, "OAuth proxy readiness")
+        .await
+        .expect("OAuth proxy reaches readiness");
     let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(ready["auth"], "oauth");
     assert_eq!(ready["exposure"], "tailscale");
-    let output = tokio::time::timeout(Duration::from_secs(5), child.wait_with_output())
+    let output = wait_for_child_output(child, "OAuth lease-renewal failure")
         .await
-        .expect("renewal failure did not terminate proxy")
-        .unwrap();
+        .expect("OAuth lease-renewal failure completes");
     assert!(!output.status.success());
     let stderr: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(stderr["ok"], false);
@@ -977,6 +1011,10 @@ exit 2
     assert_ne!(created[0], created[1]);
     assert_eq!(released, 2);
     assert!(!root.join("mapping").exists());
+    let tailscale_events = std::fs::read_to_string(tailscale_events).unwrap();
+    assert!(tailscale_events.contains("collision:"));
+    assert!(tailscale_events.contains("claimed:"));
+    assert!(tailscale_events.contains("released:"));
     let child_pid: i32 = std::fs::read_to_string(child_pid_file)
         .unwrap()
         .parse()
@@ -988,19 +1026,20 @@ exit 2
 #[tokio::test]
 async fn zero_flag_cli_publishes_verified_tailscale_url_with_fake_cli() {
     use std::os::unix::fs::PermissionsExt;
-    use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
 
     let temp = tempfile::tempdir().unwrap();
     let pid_file = temp.path().join("tailscale-child.pid");
     let mapping = temp.path().join("mapping");
     let calls = temp.path().join("tailscale-calls");
+    let events = temp.path().join("tailscale-events");
     let fake_tailscale = temp.path().join("tailscale");
     let script = format!(
         r#"#!/usr/bin/env bash
 set -u
 mapping='{mapping}'
 calls='{calls}'
+events='{events}'
 printf '%s\n' "$*" >> "$calls"
 if [[ "${{1:-}} ${{2:-}}" == "status --json" ]]; then
   printf '%s\n' '{{"BackendState":"Running","Self":{{"Online":true,"DNSName":"proxy-test.example.ts.net."}}}}'
@@ -1010,6 +1049,7 @@ if [[ "${{1:-}}" == "version" ]]; then printf '%s\n' '1.98.10'; exit 0; fi
 if [[ "${{1:-}} ${{2:-}} ${{3:-}}" == "serve status --json" ]]; then
   if [[ -f "$mapping" ]]; then
     IFS='|' read -r port backend < "$mapping"
+    printf 'verified:%s\n' "$port" >> "$events"
     printf '{{"TCP":{{}},"Web":{{"proxy-test.example.ts.net:%s":{{"Handlers":{{"/":{{"Proxy":"%s"}}}}}}}}}}\n' "$port" "$backend"
   else
     printf '%s\n' '{{"TCP":{{}},"Web":{{}}}}'
@@ -1020,13 +1060,15 @@ if [[ "${{1:-}}" == "serve" ]]; then
   port="${{3#--https=}}"; backend="${{4:-}}"
   if [[ "$backend" == "off" ]]; then rm -f "$mapping"; exit 0; fi
   printf '%s|%s\n' "$port" "$backend" > "$mapping"
-  trap 'rm -f "$mapping"; exit 0' TERM INT
+  printf 'claimed:%s\n' "$port" >> "$events"
+  trap 'printf "released:%s\n" "$port" >> "$events"; rm -f "$mapping"; exit 0' TERM INT
   while :; do sleep 0.05; done
 fi
 exit 2
 "#,
         mapping = mapping.display(),
         calls = calls.display(),
+        events = events.display(),
     );
     std::fs::write(&fake_tailscale, script).unwrap();
     std::fs::set_permissions(&fake_tailscale, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1040,25 +1082,23 @@ exit 2
         .env("LABBY_HOME", temp.path())
         .env("LABBY_TAILSCALE_BIN", &fake_tailscale)
         .current_dir(temp.path())
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let line = tokio::time::timeout(
-        Duration::from_secs(10),
-        BufReader::new(child.stdout.take().unwrap())
-            .lines()
-            .next_line(),
-    )
-    .await
-    .expect("CLI readiness output timed out")
-    .unwrap()
-    .expect("CLI exited before readiness");
+    let stdout = child.stdout.take().unwrap();
+    let line = wait_for_readiness_or_exit(&mut child, stdout, "Tailscale proxy readiness")
+        .await
+        .expect("Tailscale proxy reaches readiness");
     let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(ready["url"], "https://proxy-test.example.ts.net:54000/mcp");
     assert_eq!(ready["exposure"], "tailscale");
     assert_eq!(ready["auth"], "tailnet");
     assert_eq!(ready["external_port"], 54_000);
+    let readiness_events = std::fs::read_to_string(&events).unwrap();
+    assert!(readiness_events.contains("claimed:54000"));
+    assert!(readiness_events.contains("verified:54000"));
     let local_url = url::Url::parse(&format!(
         "http://{}/mcp",
         ready["local_addr"].as_str().unwrap()
@@ -1112,12 +1152,17 @@ exit 2
         nix::sys::signal::Signal::SIGINT,
     )
     .unwrap();
-    let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+    let status = tokio::time::timeout(PROCESS_DEADLOCK_WATCHDOG, child.wait())
         .await
-        .expect("CLI did not stop after Ctrl+C")
+        .expect("deadlock waiting for CLI shutdown")
         .unwrap();
     assert!(status.success(), "CLI exited with {status}");
     assert!(!mapping.exists());
     let calls = std::fs::read_to_string(calls).unwrap();
     assert!(!calls.contains("reset"));
+    assert!(
+        std::fs::read_to_string(events)
+            .unwrap()
+            .contains("released:54000")
+    );
 }

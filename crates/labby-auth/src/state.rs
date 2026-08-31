@@ -187,7 +187,7 @@ impl PerIpRateLimiter {
             let _maintenance = self
                 .maintenance_lock
                 .lock()
-                .expect("rate limiter maintenance lock");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(bucket) = self.buckets.get(&ip) {
                 Arc::clone(bucket.value())
             } else {
@@ -206,12 +206,22 @@ impl PerIpRateLimiter {
 
     fn evict_stale_and_lru(&self, now_secs: u64) {
         let stale_before = now_secs.saturating_sub(self.idle_ttl_secs);
-        self.buckets
-            .retain(|_, bucket| bucket.last_seen_secs.load(Ordering::Relaxed) >= stale_before);
+        const EVICTION_SCAN_LIMIT: usize = 64;
+        let stale = self
+            .buckets
+            .iter()
+            .take(EVICTION_SCAN_LIMIT)
+            .filter(|entry| entry.last_seen_secs.load(Ordering::Relaxed) < stale_before)
+            .map(|entry| *entry.key())
+            .collect::<Vec<_>>();
+        for key in stale {
+            self.buckets.remove(&key);
+        }
         while self.buckets.len() >= self.max_buckets {
             let oldest = self
                 .buckets
                 .iter()
+                .take(EVICTION_SCAN_LIMIT)
                 .min_by_key(|entry| entry.last_seen_secs.load(Ordering::Relaxed))
                 .map(|entry| *entry.key());
             let Some(oldest) = oldest else { break };
@@ -257,6 +267,11 @@ pub struct AuthState {
     pub(crate) jwks_negative_cache: Arc<DashMap<String, i64>>,
     #[cfg(feature = "http-axum")]
     pub(crate) jwks_cache_maintenance: Arc<std::sync::Mutex<()>>,
+    #[cfg(feature = "http-axum")]
+    pub(crate) google_refresh_failures: Arc<DashMap<String, (bool, String, Instant)>>,
+    #[cfg(feature = "http-axum")]
+    pub(crate) google_refresh_flights:
+        Arc<DashMap<String, Arc<crate::google_refresh::GoogleRefreshFlight>>>,
     /// Per-document single-flight locks. Never hold one global lock across
     /// remote I/O: an unrelated slow metadata endpoint must not block OAuth.
     #[cfg(feature = "http-axum")]
@@ -346,6 +361,10 @@ impl AuthState {
             token_limiter,
             #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            google_refresh_failures: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            google_refresh_flights: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
             cimd_negative_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
@@ -525,6 +544,10 @@ impl AuthState {
             #[cfg(feature = "http-axum")]
             cimd_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
+            google_refresh_failures: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
+            google_refresh_flights: Arc::new(DashMap::new()),
+            #[cfg(feature = "http-axum")]
             cimd_negative_cache: Arc::new(DashMap::new()),
             #[cfg(feature = "http-axum")]
             cimd_cache_maintenance: Arc::new(std::sync::Mutex::new(())),
@@ -622,6 +645,23 @@ mod tests {
         assert_eq!(limiter.bucket_count(), 1);
     }
 
+    #[tokio::test]
+    #[allow(clippy::panic)]
+    async fn per_ip_rate_limiter_recovers_poisoned_maintenance_lock() {
+        let limiter = PerIpRateLimiter::new_with_limits(60, 3, 10);
+        let lock = Arc::clone(&limiter.maintenance_lock);
+        drop(std::panic::catch_unwind(move || {
+            let _guard = lock.lock().expect("initial maintenance lock");
+            panic!("poison maintenance lock");
+        }));
+
+        assert!(
+            limiter
+                .try_acquire_at(IpAddr::from([192, 0, 2, 9]), 1)
+                .await
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn periodic_cleanup_removes_expired_records_after_interval() {
         let directory = tempdir().unwrap();
@@ -640,6 +680,9 @@ mod tests {
                 subject: "expired-subject".to_string(),
                 csrf_token: "expired-csrf".to_string(),
                 pkce_verifier: "expired-verifier".to_string(),
+                expected_issuer: None,
+                require_issuer: false,
+                requested_scopes: Vec::new(),
                 created_at: now - 20,
                 expires_at: now - 1,
             })

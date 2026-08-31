@@ -171,11 +171,11 @@ When the client supports elicitation, destructive service actions use the shared
 2026-07-28 MRTR confirmation flow: the dispatcher returns `input_required` and
 validates the answer from the retried request's `inputResponses`.
 
-When the client does **not** support form elicitation, the dispatcher executes
-normally. There is no `params.confirm`, `--yes`, or header equivalent on the MCP
-path — request params are payload, not authorization. MCP is therefore the one
-surface that fails **open** without elicitation support; CLI bails without `-y`
-and the palette defaults its confirmation to false.
+When the client does **not** support form elicitation, destructive dispatch
+fails closed before the action or any upstream transport runs. There is no
+`params.confirm`, `--yes`, or header equivalent on the MCP path — request params
+are payload, not authorization. The caller must use an elicitation-capable MCP
+client or an operator surface with its own explicit confirmation contract.
 
 `ActionSpec.destructive` is the single source of truth for this gate.
 Authorization scope and confirmation are separate checks.

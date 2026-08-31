@@ -25,7 +25,11 @@ pub const DEFAULT_ENV_PREFIX: &str = "LAB";
 /// Default browser session cookie name (preserved for the lab consumer).
 pub const DEFAULT_SESSION_COOKIE_NAME: &str = "lab_session";
 /// Default OAuth scope label applied when callers do not request one.
-pub const DEFAULT_SCOPE: &str = "lab";
+/// Least-privilege scope requested when a client omits `scope`.
+///
+/// `lab` remains the execution scope and `lab:admin` remains the administrative
+/// scope, but discovery/default authorization must not silently grant execution.
+pub const DEFAULT_SCOPE: &str = "lab:read";
 /// Default protected resource path (canonical MCP endpoint).
 pub const DEFAULT_RESOURCE_PATH: &str = "/mcp";
 /// Default browser login path mounted by the auth router.
@@ -245,11 +249,15 @@ impl Default for AuthConfig {
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             default_data_dir: base_dir,
             session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
-            // Advertise both the base scope and `:admin` so MCP clients that
-            // need destructive operations can request the elevated scope at
-            // /authorize. Allowed-emails users also receive `:admin` implicitly
-            // (see `authorize::elevate_scope_for_allowed_user`).
-            scopes_supported: vec![DEFAULT_SCOPE.to_string(), format!("{DEFAULT_SCOPE}:admin")],
+            // Advertise least-privilege discovery plus the explicit execution
+            // and administrative scopes. Allowed users may still receive
+            // `lab:admin` through the authorization policy; an omitted scope
+            // starts at `lab:read` and never silently gains execution.
+            scopes_supported: vec![
+                DEFAULT_SCOPE.to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string(),
+            ],
             resource_path: DEFAULT_RESOURCE_PATH.to_string(),
             default_scope: DEFAULT_SCOPE.to_string(),
             static_token_scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
@@ -349,9 +357,14 @@ impl AuthConfig {
         }
 
         if matches!(self.mode, AuthMode::OAuth) {
-            if self.public_url.is_none() {
+            let Some(public_url) = self.public_url.as_ref() else {
                 return Err(AuthError::Config(format!(
                     "{prefix}_PUBLIC_URL is required when {prefix}_AUTH_MODE=oauth"
+                )));
+            };
+            if public_url.scheme() != "https" && !is_loopback_http_url(public_url) {
+                return Err(AuthError::Config(format!(
+                    "{prefix}_PUBLIC_URL must use https when {prefix}_AUTH_MODE=oauth, except for loopback development origins"
                 )));
             }
             if self.google.client_id.is_empty() {
@@ -381,6 +394,16 @@ impl AuthConfig {
 
         Ok(())
     }
+}
+
+fn is_loopback_http_url(url: &Url) -> bool {
+    url.scheme() == "http"
+        && match url.host() {
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+            None => false,
+        }
 }
 
 /// Consuming builder for [`AuthConfig`]. The `env_prefix` MUST be set BEFORE
@@ -423,7 +446,11 @@ impl AuthConfigBuilder {
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             default_data_dir: None,
             session_cookie_name: DEFAULT_SESSION_COOKIE_NAME.to_string(),
-            scopes_supported: vec![DEFAULT_SCOPE.to_string(), format!("{DEFAULT_SCOPE}:admin")],
+            scopes_supported: vec![
+                DEFAULT_SCOPE.to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string(),
+            ],
             resource_path: DEFAULT_RESOURCE_PATH.to_string(),
             default_scope: DEFAULT_SCOPE.to_string(),
             static_token_scopes: vec!["lab:read".to_string(), "lab:admin".to_string()],
@@ -782,6 +809,47 @@ mod tests {
     }
 
     #[test]
+    fn oauth_mode_rejects_non_https_public_url_except_loopback() {
+        let error = AuthConfig::from_sources(fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "http://auth.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+        ]))
+        .unwrap_err();
+        assert!(error.to_string().contains("LAB_PUBLIC_URL must use https"));
+
+        for loopback in [
+            "http://127.0.0.1:8765",
+            "http://[::1]:8765",
+            "http://localhost:8765",
+        ] {
+            AuthConfig::from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_PUBLIC_URL", loopback),
+                ("LAB_GOOGLE_CLIENT_ID", "id"),
+                ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+            ]))
+            .unwrap();
+        }
+
+        let config = AuthConfig::from_sources(fake_env_with_many([
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "https://auth.example.com"),
+            ("LAB_GOOGLE_CLIENT_ID", "id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+        ]))
+        .unwrap();
+        assert_eq!(config.public_url.unwrap().scheme(), "https");
+    }
+
+    #[test]
     fn codex_issuer_compatibility_is_explicit_and_validated() {
         let cfg = AuthConfig::from_sources(fake_env_with_many([(
             "LAB_AUTH_CODEX_ISSUER_COMPATIBILITY",
@@ -912,10 +980,14 @@ mod tests {
         assert_eq!(cfg.session_cookie_name, "lab_session");
         assert_eq!(
             cfg.scopes_supported,
-            vec!["lab".to_string(), "lab:admin".to_string()]
+            vec![
+                "lab:read".to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string()
+            ]
         );
         assert_eq!(cfg.resource_path, "/mcp");
-        assert_eq!(cfg.default_scope, "lab");
+        assert_eq!(cfg.default_scope, "lab:read");
         assert_eq!(
             cfg.static_token_scopes,
             vec!["lab:read".to_string(), "lab:admin".to_string()]
@@ -981,13 +1053,14 @@ mod tests {
         let cfg = AuthConfigBuilder::new()
             .build_from_sources(fake_env_with_many([(
                 "LAB_AUTH_SCOPES_SUPPORTED",
-                "lab,lab:admin,mcp:read,mcp:write",
+                "lab:read,lab,lab:admin,mcp:read,mcp:write",
             )]))
             .unwrap();
 
         assert_eq!(
             cfg.scopes_supported,
             vec![
+                "lab:read".to_string(),
                 "lab".to_string(),
                 "lab:admin".to_string(),
                 "mcp:read".to_string(),
@@ -1004,7 +1077,11 @@ mod tests {
 
         assert_eq!(
             cfg.scopes_supported,
-            vec!["lab".to_string(), "lab:admin".to_string()],
+            vec![
+                "lab:read".to_string(),
+                "lab".to_string(),
+                "lab:admin".to_string()
+            ],
             "an unset override must not change the advertised vocabulary"
         );
     }

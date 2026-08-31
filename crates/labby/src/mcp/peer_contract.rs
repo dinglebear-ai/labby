@@ -704,7 +704,9 @@ impl PeerContract {
                 {
                     continue;
                 }
-                descriptors.push(upstream_tool.tool);
+                descriptors.push(crate::mcp::permanent_tools::with_labby_security(
+                    upstream_tool.tool,
+                ));
                 upstream_tool_count += 1;
             }
 
@@ -726,7 +728,7 @@ impl PeerContract {
                         {
                             continue;
                         }
-                        descriptors.push(tool);
+                        descriptors.push(crate::mcp::permanent_tools::with_labby_security(tool));
                     }
                 }
             }

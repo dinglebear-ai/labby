@@ -12,6 +12,8 @@ mod read;
 mod resolver;
 mod runtime;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod workflow;
 
 #[allow(unused_imports)]

@@ -51,13 +51,13 @@ pub fn router(state: AuthState) -> Router {
 /// `/auth/google/callback`, and `/token`. Excludes:
 ///
 /// - `/auth/login` (browser HTML — no UI on a headless service).
-/// - `/register` (RFC 7591 dynamic client registration — extra attack
-///   surface with no current consumer).
+/// - `/register` unless dynamic registration is explicitly enabled.
 /// - Any session-cookie endpoints.
 ///
 /// Use [`router`] for the full surface (lab itself).
 pub fn bearer_only_router(state: AuthState) -> Router {
-    Router::new()
+    let enable_registration = state.config.enable_dynamic_registration;
+    let mut app = Router::new()
         .route(
             "/.well-known/oauth-authorization-server",
             get(authorization_server_metadata),
@@ -74,8 +74,11 @@ pub fn bearer_only_router(state: AuthState) -> Router {
         .route("/authorize", get(authorize))
         .route("/auth/google/callback", get(callback))
         .route("/token", post(token))
-        .route("/revoke", post(revoke))
-        .with_state(state)
+        .route("/revoke", post(revoke));
+    if enable_registration {
+        app = app.route("/register", post(register_client));
+    }
+    app.with_state(state)
         .layer(middleware::from_fn(auth_dispatch_observability))
 }
 
@@ -196,7 +199,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use super::*;
-    use crate::authorize::tests::{test_auth_config, test_auth_state, test_auth_state_with_config};
+    use crate::authorize::tests::{test_auth_config, test_auth_state_with_config};
 
     #[test]
     fn auth_dispatch_action_names_are_stable() {
@@ -265,7 +268,9 @@ mod tests {
     /// [`router`] but forget to keep the headless subset in lock-step.
     #[tokio::test(flavor = "current_thread")]
     async fn bearer_only_router_route_list_matches_pinned_snapshot() {
-        let state = test_auth_state().await;
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = false;
+        let state = test_auth_state_with_config(config).await;
         let app = bearer_only_router(state);
 
         for (method, path) in BEARER_ONLY_ROUTER_PATHS {

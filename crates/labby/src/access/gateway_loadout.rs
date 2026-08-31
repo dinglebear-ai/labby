@@ -390,13 +390,7 @@ mod tests {
     }
 
     async fn fixture() -> (tempfile::TempDir, AccessRuntime, VerifiedIdentity) {
-        let directory = tempfile::tempdir().unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
+        let directory = super::super::test_support::secure_tempdir();
         let runtime = AccessRuntime::initialize(directory.path().join("access.db")).await;
         let owner = identity("static-bearer:gateway-adapter-owner");
         runtime

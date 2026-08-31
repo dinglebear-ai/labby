@@ -727,6 +727,85 @@ mod tests {
         }
     }
 
+    static DESTRUCTIVE_DISPATCH_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static DESTRUCTIVE_ACTIONS: &[labby_primitives::action::ActionSpec] =
+        &[labby_primitives::action::ActionSpec {
+            name: "danger.delete",
+            description: "test destructive action",
+            destructive: true,
+            requires_admin: false,
+            params: &[],
+            returns: "object",
+        }];
+
+    fn destructive_dispatch(
+        _action: String,
+        _params: serde_json::Value,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = Result<serde_json::Value, crate::dispatch::error::ToolError>>
+                + Send,
+        >,
+    > {
+        Box::pin(async {
+            DESTRUCTIVE_DISPATCH_CALLS.fetch_add(1, Ordering::SeqCst);
+            Ok(serde_json::json!({"dispatched": true}))
+        })
+    }
+
+    #[tokio::test]
+    async fn call_tool_response_refuses_unsupported_destructive_call_before_dispatch() {
+        DESTRUCTIVE_DISPATCH_CALLS.store(0, Ordering::SeqCst);
+        let mut registry = crate::registry::ToolRegistry::new();
+        registry.register(crate::registry::RegisteredService::bootstrap_operator(
+            "danger",
+            "test",
+            "test",
+            DESTRUCTIVE_ACTIONS,
+            destructive_dispatch,
+        ));
+        let server = LabMcpServer {
+            registry: Arc::new(registry),
+            access_runtime: Arc::new(AccessRuntime::blocked_unavailable()),
+            gateway_manager: None,
+            peers: Default::default(),
+            code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
+            client_registry: Default::default(),
+            transport_label: "test",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
+                LoggingLevel::Emergency,
+            ))),
+            route_scope: McpRouteScope::Root,
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        };
+        let (transport, _client) = tokio::io::duplex(16 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let response = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("danger").with_arguments(serde_json::Map::from_iter([
+                    ("action".into(), serde_json::json!("danger.delete")),
+                ])),
+                legacy_handler_context(running.peer().clone()),
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(response) = response else {
+            panic!("unsupported elicitation must return a terminal refusal")
+        };
+        assert!(
+            serde_json::to_string(&response)
+                .unwrap()
+                .contains("confirmation_required")
+        );
+        assert_eq!(DESTRUCTIVE_DISPATCH_CALLS.load(Ordering::SeqCst), 0);
+    }
+
     fn handler_context(
         peer: rmcp::service::Peer<RoleServer>,
         identity: Option<VerifiedIdentity>,
@@ -1833,6 +1912,32 @@ mod tests {
             "nested/tool:\"legacy\""
         );
         assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
+
+        pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", true)])
+            .await;
+        let refused = running
+            .service()
+            .call_tool_response_impl(
+                CallToolRequestParams::new("nested/tool"),
+                legacy_handler_context(running.peer().clone()),
+            )
+            .await
+            .unwrap();
+        let CallToolResponse::Complete(refused) = refused else {
+            panic!("unsupported elicitation must return a terminal refusal")
+        };
+        assert!(
+            serde_json::to_string(&refused)
+                .unwrap()
+                .contains("confirmation_required")
+        );
+        assert_eq!(
+            handler_calls.load(Ordering::SeqCst),
+            2,
+            "destructive dispatch must not run when form elicitation is unsupported"
+        );
+        pool.insert_tool_routes_for_tests("alpha", vec![upstream_tool("nested/tool", false)])
+            .await;
 
         let owned =
             transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;

@@ -1,6 +1,18 @@
 use super::*;
 use crate::oauth::store::StoredCredentials;
 
+#[test]
+fn native_browser_opener_receives_only_the_validated_url() {
+    let expected = url::Url::parse("https://auth.example/authorize?state=safe").unwrap();
+    let mut opened = None;
+    open_validated_native_authorization_url(&expected, |url| {
+        opened = Some(url.to_string());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(opened.as_deref(), Some(expected.as_str()));
+}
+
 fn creds(server: &str) -> StoredCredentials {
     StoredCredentials {
         client_id: "c".to_string(),

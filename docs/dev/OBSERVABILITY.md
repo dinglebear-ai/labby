@@ -699,13 +699,13 @@ Illustrative success fields:
 
 ```json
 {
-  "surface": "http",
-  "service": "marketplace",
-  "action": "mcp.list",
+  "surface": "api",
+  "service": "gateway",
+  "action": "gateway.list",
   "request_id": "req-123",
   "method": "GET",
-  "path": "/v0.1/servers",
-  "host": "registry.modelcontextprotocol.io",
+  "path": "/v1/gateway/upstreams",
+  "host": "lab.example.com",
   "status": 200,
   "elapsed_ms": 42
 }
@@ -716,13 +716,13 @@ Illustrative failure fields:
 ```json
 {
   "surface": "cli",
-  "service": "marketplace",
-  "action": "mcp.list",
+  "service": "gateway",
+  "action": "gateway.list",
   "method": "GET",
-  "path": "/v0.1/servers",
-  "host": "registry.modelcontextprotocol.io",
+  "path": "/v1/gateway/upstreams",
+  "host": "lab.example.com",
   "kind": "network_error",
-  "message": "registry request failed",
+  "message": "gateway request failed",
   "elapsed_ms": 311
 }
 ```

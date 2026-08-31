@@ -27,12 +27,24 @@ use crate::google::{AuthorizeUrlRequest, merge_google_scopes};
 use crate::session::{append_set_cookie, build_browser_session_cookie, create_browser_session};
 use crate::state::AuthState;
 use crate::types::{
-    AuthorizationCodeRow, AuthorizationRequestRow, AuthorizeQuery, BrowserLoginQuery,
-    BrowserLoginStateRow, CallbackQuery, ClientRegistrationRequest, ClientRegistrationResponse,
+    AuthorizationCodeRow, AuthorizationRequestRow, AuthorizeQuery, CallbackQuery,
     NativeAuthorizationResultRow, NativeAuthorizationStartResponse, NativeCallbackQuery,
-    NativePollQuery, NativePollResponse, RegisteredClient,
+    NativePollQuery, NativePollResponse,
 };
 use crate::util::{expires_at, fingerprint, now_unix, random_token};
+
+mod entrypoints;
+mod policy;
+mod redirect;
+mod response;
+pub use entrypoints::{browser_login, register_client};
+use policy::validate_response_type;
+pub(crate) use policy::{
+    check_email_allowlist, elevate_scope_for_allowed_user, validate_resource, validate_scope,
+};
+pub(crate) use redirect::is_allowed_redirect_uri;
+#[cfg(test)]
+use redirect::{host_pattern_matches, wildcard_matches};
 
 const AUTH_REQUEST_TTL_SECS: i64 = 300;
 const NATIVE_START_MEDIA_TYPE: &str = "application/vnd.labby.native-oauth-start+json";
@@ -50,163 +62,6 @@ fn remote_ip(addr: SocketAddr) -> IpAddr {
             .unwrap_or(IpAddr::V6(v6)),
         v4 => v4,
     }
-}
-
-/// Enforces the configured email allowlist.
-///
-/// Access is granted by either an exact address match against `allowed_emails`
-/// or, for Google Workspace accounts, a match of the ID token's `hd` (hosted
-/// domain) claim against `allowed_domains`.
-///
-/// `email_verified` is enforced before the email comparison: without this guard,
-/// an attacker who creates a Google account with someone else's address (without
-/// verifying it) could bypass the allowlist.
-///
-/// Domain access deliberately keys on `hd` rather than the address suffix.
-/// Google asserts `hd` only for accounts genuinely hosted in that Workspace
-/// domain, so a consumer account cannot present one; matching on the address
-/// would instead accept lookalikes such as `user@evil-example.com`.
-fn check_email_allowlist(
-    email: Option<&str>,
-    email_verified: Option<bool>,
-    hosted_domain: Option<&str>,
-    allowed_emails: &[String],
-    allowed_domains: &[String],
-) -> Result<(), AuthError> {
-    if allowed_emails.is_empty() && allowed_domains.is_empty() {
-        return Ok(());
-    }
-    if email_verified != Some(true) {
-        warn!("oauth callback rejected: google did not return a verified email address");
-        return Err(AuthError::AuthFailed(
-            "google did not return a verified email address".to_string(),
-        ));
-    }
-    let Some(e) = email else {
-        warn!("oauth callback rejected: google did not return an email address");
-        return Err(AuthError::AuthFailed(
-            "google did not return an email address".to_string(),
-        ));
-    };
-    let trimmed = e.trim();
-    if allowed_emails
-        .iter()
-        .any(|a| a.eq_ignore_ascii_case(trimmed))
-    {
-        return Ok(());
-    }
-    if let Some(domain) = hosted_domain.map(str::trim).filter(|d| !d.is_empty())
-        && allowed_domains
-            .iter()
-            .any(|d| d.eq_ignore_ascii_case(domain))
-    {
-        return Ok(());
-    }
-    warn!(
-        email_id = %fingerprint(trimmed),
-        "oauth callback rejected: email not in allowed list"
-    );
-    Err(AuthError::AuthFailed(
-        "google account is not permitted to access this gateway".to_string(),
-    ))
-}
-
-pub async fn browser_login(
-    State(state): State<AuthState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Query(query): Query<BrowserLoginQuery>,
-) -> Result<Response, AuthError> {
-    state.check_authorize_rate_limit(remote_ip(addr)).await?;
-    state.ensure_pending_oauth_state_capacity().await?;
-    let return_to = sanitize_return_to(&state, query.return_to.as_deref());
-    let provider_code_verifier = random_token(32)?;
-    let provider_code_challenge =
-        URL_SAFE_NO_PAD.encode(Sha256::digest(provider_code_verifier.as_bytes()));
-    let request_state = random_token(24)?;
-    let oauth_state_id = fingerprint(&request_state);
-
-    state
-        .store
-        .insert_browser_login_state(BrowserLoginStateRow {
-            state: request_state.clone(),
-            return_to: return_to.clone(),
-            provider_code_verifier,
-            created_at: now_unix(),
-            expires_at: now_unix() + AUTH_REQUEST_TTL_SECS,
-        })
-        .await?;
-
-    let location = state.google.authorize_url(&AuthorizeUrlRequest {
-        state: request_state,
-        scope: state.config.default_scope.clone(),
-        code_challenge: provider_code_challenge,
-        code_challenge_method: "S256".to_string(),
-        offline_access: false,
-        force_consent: false,
-    })?;
-    info!(
-        oauth_state_id = %oauth_state_id,
-        return_to = %return_to,
-        "browser login redirected to upstream provider"
-    );
-
-    Ok((
-        StatusCode::FOUND,
-        [(header::LOCATION, location.to_string())],
-    )
-        .into_response())
-}
-
-pub async fn register_client(
-    State(state): State<AuthState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(request): Json<ClientRegistrationRequest>,
-) -> Result<Json<ClientRegistrationResponse>, AuthError> {
-    state.check_register_rate_limit(remote_ip(addr)).await?;
-    if request.redirect_uris.is_empty() {
-        warn!("oauth register rejected: no redirect URIs provided");
-        return Err(AuthError::Validation(
-            "at least one redirect URI is required".to_string(),
-        ));
-    }
-    let native_callback_endpoint = crate::metadata::native_callback_endpoint(&state);
-    for redirect_uri in &request.redirect_uris {
-        if redirect_uri != &native_callback_endpoint
-            && !is_allowed_redirect_uri(redirect_uri, &state.config.allowed_client_redirect_uris)
-        {
-            warn!(
-                redirect_uri = %redirect_uri,
-                native_callback_endpoint = %native_callback_endpoint,
-                allowed_patterns = ?state.config.allowed_client_redirect_uris,
-                "oauth register rejected: redirect URI is not in the allowlist, native callback, or loopback set"
-            );
-            return Err(AuthError::Validation(format!(
-                "redirect URI `{redirect_uri}` must target a loopback host, match the native callback endpoint, or match an allowed redirect pattern"
-            )));
-        }
-    }
-
-    let client = RegisteredClient {
-        client_id: random_token(18)?,
-        redirect_uris: request.redirect_uris,
-        created_at: now_unix(),
-        token_endpoint_auth_method: "none".to_string(),
-        token_endpoint_auth_methods: Vec::new(),
-        jwks: None,
-        jwks_uri: None,
-    };
-    state.store.register_client(client.clone()).await?;
-    info!(
-        client_id = %client.client_id,
-        redirect_uri_count = client.redirect_uris.len(),
-        redirect_uris = ?client.redirect_uris,
-        "oauth client registration accepted"
-    );
-    Ok(Json(ClientRegistrationResponse {
-        client_id: client.client_id,
-        redirect_uris: client.redirect_uris,
-        token_endpoint_auth_method: "none".to_string(),
-    }))
 }
 
 pub async fn authorize(
@@ -235,7 +90,7 @@ pub async fn authorize(
     {
         warn!(
             client_id = %query.client_id,
-            redirect_uri = %query.redirect_uri,
+            redirect_uri_id = %fingerprint(&query.redirect_uri),
             client_state_id = %client_state_id,
             "oauth authorize rejected: redirect URI does not match registered client"
         );
@@ -253,23 +108,28 @@ pub async fn authorize(
         state.store.register_client(client.clone()).await?;
     }
     if let Err(error) = validate_response_type(&query.response_type) {
-        return authorization_error_redirect(&state, &query, "unsupported_response_type", error);
+        return response::authorization_error_redirect(
+            &state,
+            &query,
+            "unsupported_response_type",
+            error,
+        );
     }
     let resource = match validate_resource(&state, query.resource.as_deref()) {
         Ok(resource) => resource,
         Err(error) => {
-            return authorization_error_redirect(&state, &query, "invalid_target", error);
+            return response::authorization_error_redirect(&state, &query, "invalid_target", error);
         }
     };
     let scope = match validate_scope(&state, &resource, &query.scope) {
         Ok(scope) => scope,
         Err(error) => {
-            return authorization_error_redirect(&state, &query, "invalid_scope", error);
+            return response::authorization_error_redirect(&state, &query, "invalid_scope", error);
         }
     };
     info!(
         client_id = %query.client_id,
-        redirect_uri = %query.redirect_uri,
+        redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
         resource = %resource,
         requested_scope = %query.scope,
@@ -283,7 +143,7 @@ pub async fn authorize(
             code_challenge_method = %query.code_challenge_method,
             "oauth authorize rejected: unsupported PKCE method"
         );
-        return authorization_error_redirect(
+        return response::authorization_error_redirect(
             &state,
             &query,
             "invalid_request",
@@ -367,7 +227,7 @@ pub async fn authorize(
     })?;
     info!(
         client_id = %query.client_id,
-        redirect_uri = %query.redirect_uri,
+        redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
         oauth_state_id = %oauth_state_id,
         resource = %resource,
@@ -395,6 +255,28 @@ pub async fn authorize(
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         Ok(response)
+    } else if query.client_id.starts_with("dcr_") {
+        let redirect_host = url::Url::parse(&query.redirect_uri)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .unwrap_or_else(|| "local application".to_string());
+        let provider_url = escape_html_attribute(location.as_str());
+        let html = format!(
+            r#"<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Authorize client</title></head><body><main><h1>Authorize client</h1><p>After authorization, Labby will redirect you to <strong>{redirect_host}</strong>.</p><p><a rel="noreferrer" href="{provider_url}">Continue</a></p></main></body></html>"#
+        );
+        let mut response = (StatusCode::OK, html).into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"),
+        );
+        Ok(response)
     } else {
         Ok((
             StatusCode::FOUND,
@@ -404,6 +286,14 @@ pub async fn authorize(
     }
 }
 
+fn escape_html_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 fn sanitized_authorization_endpoint(location: &url::Url) -> String {
     let mut endpoint = location.clone();
     endpoint.set_query(None);
@@ -411,26 +301,6 @@ fn sanitized_authorization_endpoint(location: &url::Url) -> String {
     let _ = endpoint.set_username("");
     let _ = endpoint.set_password(None);
     endpoint.to_string()
-}
-
-fn authorization_error_redirect(
-    state: &AuthState,
-    query: &AuthorizeQuery,
-    error_code: &str,
-    error: AuthError,
-) -> Result<Response, AuthError> {
-    let mut redirect = url::Url::parse(&query.redirect_uri).map_err(|parse_error| {
-        AuthError::Config(format!(
-            "validated redirect_uri could not be parsed: {parse_error}"
-        ))
-    })?;
-    redirect
-        .query_pairs_mut()
-        .append_pair("error", error_code)
-        .append_pair("error_description", &error.to_string())
-        .append_pair("state", &query.state);
-    append_authorization_response_issuer(state, &mut redirect);
-    Ok(Redirect::to(redirect.as_str()).into_response())
 }
 
 pub async fn callback(
@@ -464,7 +334,6 @@ pub async fn callback(
         );
         info!(
             oauth_state_id = %oauth_state_id,
-            return_to = %login.return_to,
             subject_id = %fingerprint(&session.subject),
             "browser login callback issued session cookie"
         );
@@ -484,23 +353,70 @@ pub async fn callback(
         })?;
     info!(
         client_id = %request.client_id,
-        redirect_uri = %request.redirect_uri,
+        redirect_uri_id = %fingerprint(&request.redirect_uri),
         oauth_state_id = %oauth_state_id,
         client_state_id = %fingerprint(&request.client_state),
         resource = %request.resource,
         scope = %request.scope,
         "oauth callback state redeemed"
     );
-    let observed_revocation_epoch = state.store.google_provider_fence_epoch().await?;
-    let google = state
+    macro_rules! callback_try {
+        ($expression:expr, $code:literal) => {
+            match $expression {
+                Ok(value) => value,
+                Err(error) => {
+                    return response::authorization_callback_error_redirect(
+                        &state,
+                        &request.redirect_uri,
+                        &request.client_state,
+                        $code,
+                        &error,
+                    );
+                }
+            }
+        };
+    }
+    let observed_revocation_epoch = match state.store.google_provider_fence_epoch().await {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            return response::authorization_callback_error_redirect(
+                &state,
+                &request.redirect_uri,
+                &request.client_state,
+                "server_error",
+                &error,
+            );
+        }
+    };
+    let google = match state
         .google
         .exchange_code(&query.code, &request.provider_code_verifier)
-        .await?;
+        .await
+    {
+        Ok(google) => google,
+        Err(error) => {
+            let code = if matches!(
+                error,
+                AuthError::OauthNeedsReauth(_) | AuthError::InvalidGrant(_)
+            ) {
+                "access_denied"
+            } else {
+                "server_error"
+            };
+            return response::authorization_callback_error_redirect(
+                &state,
+                &request.redirect_uri,
+                &request.client_state,
+                code,
+                &error,
+            );
+        }
+    };
 
     // RFC 6749 §4.1.2.1: errors must redirect to the client's redirect_uri,
     // not surface as a JSON HTTP error. The denial reason is sourced from the
     // AuthError so we only log once (inside check_email_allowlist).
-    let allowed = state.resolve_allowed_emails().await?;
+    let allowed = callback_try!(state.resolve_allowed_emails().await, "server_error");
     if let Err(denial) = check_email_allowlist(
         google.email.as_deref(),
         google.email_verified,
@@ -508,32 +424,38 @@ pub async fn callback(
         &allowed,
         &state.config.allowed_email_domains,
     ) {
-        let mut redirect_target = url::Url::parse(&request.redirect_uri).map_err(|error| {
-            // Unreachable in practice: redirect_uri was validated against the
-            // client's registered URIs before being stored.
-            AuthError::Config(format!("failed to parse registered redirect_uri: {error}"))
-        })?;
+        let mut redirect_target = callback_try!(
+            url::Url::parse(&request.redirect_uri).map_err(|error| {
+                // Unreachable in practice: redirect_uri was validated against the
+                // client's registered URIs before being stored.
+                AuthError::Config(format!("failed to parse registered redirect_uri: {error}"))
+            }),
+            "server_error"
+        );
         redirect_target
             .query_pairs_mut()
             .append_pair("error", "access_denied")
             .append_pair("error_description", &denial.to_string())
             .append_pair("state", &request.client_state);
-        append_authorization_response_issuer(&state, &mut redirect_target);
+        response::append_authorization_response_issuer(&state, &mut redirect_target);
         return Ok(Redirect::to(redirect_target.as_str()).into_response());
     }
 
     let subject_id = fingerprint(&google.subject);
-    let verified_email = google
-        .email
-        .as_deref()
-        .map(str::trim)
-        .filter(|email| !email.is_empty())
-        .ok_or_else(|| {
-            AuthError::AuthFailed(
-                "google did not return a verified email address after allowlist validation"
-                    .to_string(),
-            )
-        })?;
+    let verified_email = callback_try!(
+        google
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .ok_or_else(|| {
+                AuthError::AuthFailed(
+                    "google did not return a verified email address after allowlist validation"
+                        .to_string(),
+                )
+            }),
+        "access_denied"
+    );
     // Serialize callback installation with refresh/invalidation for this Google
     // account. SQLite generation CAS below also protects deployments with more
     // than one Labby process sharing the auth database.
@@ -543,10 +465,13 @@ pub async fn callback(
         .lock_owned()
         .await;
     let received_provider_refresh_token = google.refresh_token.is_some();
-    let existing_credential = state
-        .store
-        .find_google_provider_credential(&google.subject)
-        .await?;
+    let existing_credential = callback_try!(
+        state
+            .store
+            .find_google_provider_credential(&google.subject)
+            .await,
+        "server_error"
+    );
     #[cfg(test)]
     if request.client_state == "generation-loss-client-state"
         && CALLBACK_CAS_PAUSE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
@@ -587,9 +512,12 @@ pub async fn callback(
             kind = "oauth_needs_reauth",
             "oauth callback rejected: google did not provide a reusable refresh credential"
         );
-        let mut redirect_target = url::Url::parse(&request.redirect_uri).map_err(|error| {
-            AuthError::Config(format!("failed to parse registered redirect_uri: {error}"))
-        })?;
+        let mut redirect_target = callback_try!(
+            url::Url::parse(&request.redirect_uri).map_err(|error| {
+                AuthError::Config(format!("failed to parse registered redirect_uri: {error}"))
+            }),
+            "server_error"
+        );
         redirect_target
                 .query_pairs_mut()
                 .append_pair("error", "server_error")
@@ -598,7 +526,7 @@ pub async fn callback(
                     "Google did not issue a reusable offline credential; reconnect and grant access again",
                 )
                 .append_pair("state", &request.client_state);
-        append_authorization_response_issuer(&state, &mut redirect_target);
+        response::append_authorization_response_issuer(&state, &mut redirect_target);
         return Ok(Redirect::to(redirect_target.as_str()).into_response());
     };
     let provider_token_received_at = now_unix();
@@ -617,27 +545,36 @@ pub async fn callback(
         scope_upgraded,
     };
     let provider_update_persisted = if let Some(existing) = existing_credential.as_ref() {
-        state
-            .store
-            .replace_google_provider_token_bundle_if_generation(
-                provider_update,
-                existing.generation,
-            )
-            .await?
+        callback_try!(
+            state
+                .store
+                .replace_google_provider_token_bundle_if_generation(
+                    provider_update,
+                    existing.generation,
+                )
+                .await,
+            "server_error"
+        )
     } else {
-        state
-            .store
-            .insert_google_provider_token_bundle_if_absent(
-                provider_update,
-                observed_revocation_epoch,
-            )
-            .await?
+        callback_try!(
+            state
+                .store
+                .insert_google_provider_token_bundle_if_absent(
+                    provider_update,
+                    observed_revocation_epoch,
+                )
+                .await,
+            "server_error"
+        )
     };
     if !provider_update_persisted {
-        let replacement_present = state
-            .store
-            .has_google_provider_credential_for_subject(&google.subject)
-            .await?;
+        let replacement_present = callback_try!(
+            state
+                .store
+                .has_google_provider_credential_for_subject(&google.subject)
+                .await,
+            "server_error"
+        );
         warn!(
             client_id = %request.client_id,
             oauth_state_id = %oauth_state_id,
@@ -647,10 +584,16 @@ pub async fn callback(
             kind = "oauth_needs_reauth",
             "oauth callback discarded stale provider exchange after generation changed"
         );
-        return Err(AuthError::OauthNeedsReauth(
-            "google provider credential changed during authorization; retry authorization"
-                .to_string(),
-        ));
+        return response::authorization_callback_error_redirect(
+            &state,
+            &request.redirect_uri,
+            &request.client_state,
+            "server_error",
+            &AuthError::OauthNeedsReauth(
+                "google provider credential changed during authorization; retry authorization"
+                    .to_string(),
+            ),
+        );
     }
     info!(
         client_id = %request.client_id,
@@ -661,7 +604,7 @@ pub async fn callback(
         reused_provider_refresh_token,
         "oauth callback exchanged upstream code successfully"
     );
-    let auth_code = random_token(24)?;
+    let auth_code = callback_try!(random_token(24), "server_error");
     let auth_code_id = fingerprint(&auth_code);
     // The user just passed `check_email_allowlist`, which IS the admin gate:
     // operators are added to the allowlist explicitly to grant access. Elevate
@@ -674,33 +617,39 @@ pub async fn callback(
     let request_client_id = request.client_id.clone();
     let request_resource = request.resource.clone();
     let request_scope = elevated_scope.clone();
-    state
-        .store
-        .insert_auth_code(AuthorizationCodeRow {
-            code: auth_code.clone(),
-            client_id: request.client_id,
-            subject: google.subject,
-            redirect_uri: request.redirect_uri.clone(),
-            resource: request.resource,
-            scope: elevated_scope,
-            code_challenge: request.code_challenge,
-            code_challenge_method: request.code_challenge_method,
-            provider_refresh_token: None,
-            created_at: now_unix(),
-            expires_at: expires_at(
-                now_unix(),
-                state.config.auth_code_ttl,
-                &format!("{}_AUTH_CODE_TTL_SECS", state.config.env_prefix),
-            )?,
-        })
-        .await?;
+    callback_try!(
+        state
+            .store
+            .insert_auth_code(AuthorizationCodeRow {
+                code: auth_code.clone(),
+                client_id: request.client_id,
+                subject: google.subject,
+                redirect_uri: request.redirect_uri.clone(),
+                resource: request.resource,
+                scope: elevated_scope,
+                code_challenge: request.code_challenge,
+                code_challenge_method: request.code_challenge_method,
+                provider_refresh_token: None,
+                created_at: now_unix(),
+                expires_at: callback_try!(
+                    expires_at(
+                        now_unix(),
+                        state.config.auth_code_ttl,
+                        &format!("{}_AUTH_CODE_TTL_SECS", state.config.env_prefix),
+                    ),
+                    "server_error"
+                ),
+            })
+            .await,
+        "server_error"
+    );
     info!(
         auth_code_id = %auth_code_id,
         oauth_state_id = %oauth_state_id,
         client_id = %request_client_id,
         resource = %request_resource,
         scope = %request_scope,
-        redirect_uri = %request.redirect_uri,
+        redirect_uri_id = %fingerprint(&request.redirect_uri),
         "oauth callback issued local authorization code"
     );
 
@@ -744,18 +693,22 @@ pub async fn callback(
         return Ok(response);
     }
 
-    let redirect_uri = reqwest::Url::parse(&request.redirect_uri).map_err(|error| {
-        AuthError::Storage(format!(
-            "registered redirect_uri is not a valid URL: {error}"
-        ))
-    })?;
+    let redirect_uri = callback_try!(
+        reqwest::Url::parse(&request.redirect_uri).map_err(|error| {
+            AuthError::Storage(format!(
+                "registered redirect_uri is not a valid URL: {error}"
+            ))
+        }),
+        "server_error"
+    );
     let mut redirect_uri = redirect_uri;
     redirect_uri
         .query_pairs_mut()
         .append_pair("code", &auth_code)
         .append_pair("state", &request.client_state);
-    append_authorization_response_issuer(&state, &mut redirect_uri);
-    let (has_code, has_state, has_issuer) = authorization_response_query_presence(&redirect_uri);
+    response::append_authorization_response_issuer(&state, &mut redirect_uri);
+    let (has_code, has_state, has_issuer) =
+        response::authorization_response_query_presence(&redirect_uri);
     info!(
         auth_code_id = %auth_code_id,
         oauth_state_id = %oauth_state_id,
@@ -770,29 +723,6 @@ pub async fn callback(
     );
 
     Ok(Redirect::to(redirect_uri.as_str()).into_response())
-}
-
-fn append_authorization_response_issuer(state: &AuthState, redirect: &mut url::Url) {
-    if !state.config.codex_issuer_compatibility {
-        redirect
-            .query_pairs_mut()
-            .append_pair("iss", &crate::metadata::public_base_url(state));
-    }
-}
-
-fn authorization_response_query_presence(redirect: &url::Url) -> (bool, bool, bool) {
-    let mut has_code = false;
-    let mut has_state = false;
-    let mut has_issuer = false;
-    for (name, _) in redirect.query_pairs() {
-        match name.as_ref() {
-            "code" => has_code = true,
-            "state" => has_state = true,
-            "iss" => has_issuer = true,
-            _ => {}
-        }
-    }
-    (has_code, has_state, has_issuer)
 }
 
 /// Direct-hit fallback for the registered native `redirect_uri`. In the real
@@ -885,277 +815,6 @@ fn sanitize_return_to(state: &AuthState, requested: Option<&str>) -> String {
         normalized.push_str(fragment);
     }
     normalized
-}
-
-fn validate_response_type(response_type: &str) -> Result<(), AuthError> {
-    if response_type == "code" {
-        Ok(())
-    } else {
-        warn!(
-            response_type = %response_type,
-            "oauth authorize rejected: unsupported response_type"
-        );
-        Err(AuthError::Validation(
-            "response_type must be `code`".to_string(),
-        ))
-    }
-}
-
-/// Add `<base>:admin` to `scope` if not already present, where `base` is the
-/// resource prefix of `default_scope` (everything before the first `:`).
-///
-/// For example, `default_scope = "syslog:read"` produces the admin scope
-/// `"syslog:admin"`, not `"syslog:read:admin"`.
-///
-/// Called after `check_email_allowlist` succeeds. Being on the allowlist IS
-/// the admin gate (operators add users explicitly), so the issued token
-/// carries the elevated scope regardless of what the OAuth client originally
-/// requested — most MCP clients use the default scope and have no way to
-/// negotiate `:admin` themselves.
-pub(crate) fn elevate_scope_for_allowed_user(scope: &str, default_scope: &str) -> String {
-    let base = default_scope.split(':').next().unwrap_or(default_scope);
-    let admin_scope = format!("{base}:admin");
-    let mut scopes: Vec<&str> = scope.split_whitespace().filter(|s| !s.is_empty()).collect();
-    // Always inject the default-brand admin scope (e.g. "lab:admin") for
-    // allowlisted users, even when the token is for a cross-brand protected
-    // route (e.g. "mcp:read mcp:write" for a cortex endpoint).  The JWT
-    // audience is still bound to the specific resource URL, so a cortex token
-    // carrying "lab:admin" cannot be presented to lab endpoints.  This lets
-    // authenticate_protected_route_request recognise the admin unconditionally
-    // without re-reading the allowlist at request time.
-    if !scopes.iter().any(|s| *s == admin_scope.as_str()) {
-        scopes.push(admin_scope.as_str());
-    }
-    scopes.join(" ")
-}
-
-pub(crate) fn validate_scope(
-    state: &AuthState,
-    resource: &str,
-    scope: &str,
-) -> Result<String, AuthError> {
-    let canonical = crate::metadata::canonical_resource_url(state);
-    let supported = if resource.trim_end_matches('/') == canonical {
-        state.config.scopes_supported.clone()
-    } else {
-        state
-            .allowed_resource_scopes(resource)
-            .filter(|scopes| !scopes.is_empty())
-            .ok_or_else(|| {
-                AuthError::Validation(format!(
-                    "resource must be `{canonical}` or a configured protected MCP route"
-                ))
-            })?
-    };
-    let normalized = scope.trim();
-    if normalized.is_empty() {
-        if resource.trim_end_matches('/') == canonical {
-            let scope = state.config.default_scope.clone();
-            debug!(
-                resource = %resource,
-                scope = %scope,
-                "oauth authorize defaulted scope"
-            );
-            return Ok(scope);
-        }
-        let scope = supported.join(" ");
-        debug!(
-            resource = %resource,
-            scope = %scope,
-            "oauth authorize defaulted protected resource scope"
-        );
-        return Ok(scope);
-    }
-    let requested = normalized.split_whitespace().collect::<Vec<_>>();
-    if requested
-        .iter()
-        .all(|scope| supported.iter().any(|allowed| allowed == scope))
-    {
-        let scope = requested.join(" ");
-        debug!(
-            resource = %resource,
-            requested_scope = %normalized,
-            normalized_scope = %scope,
-            "oauth authorize scope accepted"
-        );
-        return Ok(scope);
-    }
-    warn!(
-        scope = %normalized,
-        resource = %resource,
-        supported_scopes = ?supported,
-        "oauth authorize rejected: unsupported scope"
-    );
-    Err(AuthError::Validation(format!(
-        "scope must be one of: {}",
-        supported.join(", ")
-    )))
-}
-
-pub(crate) fn validate_resource(
-    state: &AuthState,
-    requested: Option<&str>,
-) -> Result<String, AuthError> {
-    let canonical = crate::metadata::canonical_resource_url(state);
-    let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(canonical);
-    };
-    let requested = requested.trim_end_matches('/');
-    if requested == canonical || state.is_allowed_resource_url(requested) {
-        debug!(
-            requested_resource = %requested,
-            canonical_resource = %canonical,
-            protected_resource = requested != canonical,
-            "oauth resource accepted"
-        );
-        return Ok(requested.to_string());
-    }
-
-    warn!(
-        requested_resource = %requested,
-        expected_resource = %canonical,
-        "oauth request rejected: resource does not match an allowed MCP endpoint"
-    );
-    Err(AuthError::Validation(format!(
-        "resource must be `{canonical}` or a configured protected MCP route"
-    )))
-}
-
-fn is_loopback_redirect(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
-    if url.scheme() != "http" {
-        return false;
-    }
-    matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
-}
-
-/// Native-app private-use URI scheme redirects (RFC 8252 §7.1), e.g.
-/// `com.raycast:/oauth`. Only an app registered for that scheme with the
-/// OS can receive the redirect, so — like loopback — these don't need an
-/// explicit allowlist entry per client. Deliberately excludes `http(s)`
-/// (network-reachable, needs the allowlist) and script-executing pseudo
-/// schemes a browser might act on directly instead of merely redirecting.
-fn is_native_app_scheme_redirect(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
-    !matches!(
-        url.scheme(),
-        "http" | "https" | "javascript" | "data" | "vbscript" | "file"
-    )
-}
-
-pub(crate) fn is_allowed_redirect_uri(value: &str, patterns: &[String]) -> bool {
-    if is_loopback_redirect(value) || is_native_app_scheme_redirect(value) {
-        return true;
-    }
-
-    let Ok(candidate) = reqwest::Url::parse(value) else {
-        return false;
-    };
-    patterns
-        .iter()
-        .any(|pattern| redirect_pattern_matches(pattern, &candidate))
-}
-
-fn wildcard_matches(pattern: &str, value: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        return pattern == value;
-    }
-
-    let anchored_start = !pattern.starts_with('*');
-    let anchored_end = !pattern.ends_with('*');
-    let non_empty_parts: Vec<&str> = parts.into_iter().filter(|part| !part.is_empty()).collect();
-    if non_empty_parts.is_empty() {
-        return true;
-    }
-
-    let mut cursor = 0usize;
-    for (index, part) in non_empty_parts.iter().enumerate() {
-        if index == 0 && anchored_start {
-            if !value[cursor..].starts_with(part) {
-                return false;
-            }
-            cursor += part.len();
-            continue;
-        }
-
-        match value[cursor..].find(part) {
-            Some(found) => cursor += found + part.len(),
-            None => return false,
-        }
-    }
-
-    if anchored_end && let Some(last) = non_empty_parts.last() {
-        return value.ends_with(last);
-    }
-
-    true
-}
-
-fn redirect_pattern_matches(pattern: &str, candidate: &reqwest::Url) -> bool {
-    if pattern == "https://*" {
-        return candidate.scheme() == "https" && candidate.host_str().is_some();
-    }
-
-    let Ok(pattern_url) = reqwest::Url::parse(pattern) else {
-        return false;
-    };
-    if pattern_url.scheme() != candidate.scheme() {
-        return false;
-    }
-
-    // Native-app custom URI schemes (e.g. `com.raycast:/oauth`) have no
-    // authority component, so `host_str()` is None and can never satisfy the
-    // host/port comparison below. Compare the whole URI instead.
-    if pattern_url.host_str().is_none() || candidate.host_str().is_none() {
-        return wildcard_matches(pattern, candidate.as_str());
-    }
-
-    if pattern_url.port_or_known_default() != candidate.port_or_known_default() {
-        return false;
-    }
-    let Some(pattern_host) = pattern_url.host_str() else {
-        return false;
-    };
-    let Some(candidate_host) = candidate.host_str() else {
-        return false;
-    };
-    if !host_pattern_matches(pattern_host, candidate_host) {
-        return false;
-    }
-    if !wildcard_matches(pattern_url.path(), candidate.path()) {
-        return false;
-    }
-
-    match (pattern_url.query(), candidate.query()) {
-        (Some(pattern_query), Some(candidate_query)) => {
-            wildcard_matches(pattern_query, candidate_query)
-        }
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-fn host_pattern_matches(pattern_host: &str, candidate_host: &str) -> bool {
-    let pattern_labels = pattern_host.split('.').collect::<Vec<_>>();
-    let candidate_labels = candidate_host.split('.').collect::<Vec<_>>();
-    if pattern_labels.len() != candidate_labels.len() {
-        return false;
-    }
-
-    pattern_labels
-        .iter()
-        .zip(candidate_labels.iter())
-        .all(|(pattern, candidate)| {
-            *pattern == "*" || (!pattern.contains('*') && pattern.eq_ignore_ascii_case(candidate))
-        })
 }
 
 #[cfg(test)]
@@ -1328,6 +987,75 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn register_rejects_redirect_uris_with_fragments() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        config.allowed_client_redirect_uris = vec!["https://client.example/callback".to_string()];
+        let app = router(test_auth_state_with_config(config).await);
+
+        for redirect_uri in [
+            "http://127.0.0.1:7777/callback#fragment",
+            "com.example.app:/oauth#fragment",
+            "https://client.example/callback#fragment",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/register")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            json!({ "redirect_uris": [redirect_uri] }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn registration_logs_do_not_include_redirect_uri_query_values() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let app = router(test_auth_state_with_config(config).await);
+        let secret = "registration-query-secret";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "redirect_uris": [format!(
+                                "http://127.0.0.1:7777/callback?tenant={secret}"
+                            )]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(
+            !logs.contains(secret),
+            "redirect query leaked into logs: {logs}"
+        );
+        assert!(
+            !logs.contains("redirect_uris"),
+            "redirect URI list entered logs: {logs}"
+        );
+        assert!(logs.contains("\"redirect_uri_count\":1"), "{logs}");
+    }
+
+    #[tokio::test]
     async fn register_rejects_native_callback_endpoint_smuggled_with_an_unsafe_redirect_uri() {
         // The native-endpoint bypass in `register_client` is per-redirect_uri —
         // confirm a registration that mixes the native endpoint with an
@@ -1359,6 +1087,100 @@ pub mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn dynamically_registered_client_requires_click_consent_showing_redirect_host() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        config.allowed_client_redirect_uris = vec!["https://client.example/callback".to_string()];
+        let state = test_auth_state_with_config(config).await;
+        let app = router(state);
+        let registration = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"redirect_uris": ["https://client.example/callback"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(registration.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let client_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["client_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let uri = format!(
+            "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&state=client-state&scope=lab&code_challenge=pkce&code_challenge_method=S256"
+        );
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("client.example"));
+        assert!(html.contains("Continue"));
+        assert!(!html.contains("client-state"));
+    }
+
+    #[tokio::test]
+    async fn localhost_redirect_consent_warns_with_exact_loopback_host() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = true;
+        let state = test_auth_state_with_config(config).await;
+        let app = router(state);
+        let registration = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({"redirect_uris": ["http://localhost:7777/callback"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registration.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(registration.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let client_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["client_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let uri = format!(
+            "/authorize?response_type=code&client_id={client_id}&redirect_uri=http%3A%2F%2Flocalhost%3A7777%2Fcallback&state=secret-client-state&scope=lab%3Aread&code_challenge=pkce&code_challenge_method=S256"
+        );
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("redirect you to <strong>localhost</strong>"));
+        assert!(html.contains("Continue"));
+        assert!(!html.contains("secret-client-state"));
     }
 
     #[tokio::test]
@@ -1766,6 +1588,20 @@ pub mod tests {
     }
 
     #[test]
+    fn redirect_uris_with_fragments_are_never_allowed() {
+        for redirect_uri in [
+            "http://127.0.0.1:7777/callback#fragment",
+            "com.raycast:/oauth#fragment",
+            "https://callback.tootie.tv/callback/node-a#fragment",
+        ] {
+            assert!(!is_allowed_redirect_uri(
+                redirect_uri,
+                &[String::from("https://callback.tootie.tv/callback/*")],
+            ));
+        }
+    }
+
+    #[test]
     fn script_executing_pseudo_schemes_are_never_auto_allowed() {
         assert!(!is_allowed_redirect_uri("javascript:alert(1)", &[]));
         assert!(!is_allowed_redirect_uri("data:text/html,evil", &[]));
@@ -1886,7 +1722,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn authorize_persists_a_cimd_client_reference_for_token_issuance() {
+    async fn authorize_validates_redirect_against_cimd_document_and_persists_reference() {
         let mut config = test_auth_config();
         config.allowed_client_redirect_uris =
             vec!["https://chatgpt.com/connector/oauth/*".to_string()];
@@ -1911,6 +1747,19 @@ pub mod tests {
         );
 
         let app = router(state.clone());
+        let rejected = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Ftest-client%2Fclient.json&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector%2Foauth%2Fother-client&state=abc&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(rejected.headers().get(header::LOCATION).is_none());
+
         let response = app
             .oneshot(
                 Request::builder()
@@ -2125,14 +1974,19 @@ pub mod tests {
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn browser_login_starts_upstream_flow_and_persists_return_to_state() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
         let state = test_auth_state().await;
         let app = router(state.clone());
+        let return_to_secret = "return-to-query-secret";
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/auth/login?return_to=%2Fgateways%2F%3Ftab%3Dlab")
+                    .uri(format!(
+                        "/auth/login?return_to=%2Fgateways%2F%3Ftab%3Dlab%26token%3D{return_to_secret}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2164,7 +2018,15 @@ pub mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stored.return_to, "/gateways/?tab=lab");
+        assert_eq!(
+            stored.return_to,
+            format!("/gateways/?tab=lab&token={return_to_secret}")
+        );
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(
+            !logs.contains(return_to_secret),
+            "browser return_to query leaked into logs: {logs}"
+        );
     }
 
     #[tokio::test]
@@ -2349,23 +2211,24 @@ pub mod tests {
         super::CALLBACK_CAS_PAUSE_ENABLED.store(false, std::sync::atomic::Ordering::Release);
         super::CALLBACK_CAS_RESUME.add_permits(1);
         let response = response_task.await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-
-        if response.status() == StatusCode::SEE_OTHER {
-            let location = response
-                .headers()
-                .get(header::LOCATION)
-                .unwrap()
-                .to_str()
-                .unwrap();
-            assert!(
-                !Url::parse(location)
-                    .unwrap()
-                    .query_pairs()
-                    .any(|(key, _)| key == "code"),
-                "a pre-revoke callback must not issue a Labby authorization code"
-            );
-        }
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let parameters = Url::parse(location)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            parameters.get("error").map(String::as_str),
+            Some("server_error")
+        );
+        assert!(parameters.contains_key("iss"));
+        assert!(!parameters.contains_key("code"));
         let credential = state
             .store
             .find_google_provider_credential("google-subject-123")
@@ -2648,14 +2511,75 @@ pub mod tests {
         }
     }
 
+    /// OpenAI auth clause OAI-CLAUSE-014: the production authorization
+    /// endpoint supports only the authorization-code flow and requires PKCE
+    /// with the S256 transformation. This exercises the HTTP adapter, not just
+    /// the policy helper.
+    #[tokio::test]
+    async fn authorization_endpoint_requires_code_flow_and_pkce_s256() {
+        let app = router(test_auth_state_with_registered_client().await);
+        let base = "/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=abc&scope=lab";
+
+        let accepted = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "{base}&code_challenge=pkce&code_challenge_method=S256"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::FOUND);
+
+        for method in ["plain", "s256", "S512"] {
+            let rejected = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "{base}&code_challenge=pkce&code_challenge_method={method}"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_authorization_error(&rejected, "invalid_request");
+        }
+
+        for missing_pkce_parameter in [
+            format!("{base}&code_challenge=pkce"),
+            format!("{base}&code_challenge_method=S256"),
+        ] {
+            let rejected = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(missing_pkce_parameter)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
     #[tokio::test]
     async fn validate_scope_accepts_supported_scopes_and_rejects_others() {
         let state = test_auth_state().await;
         let canonical = crate::metadata::canonical_resource_url(&state);
-        // Empty scope falls back to configured default ("lab").
+        // Empty scope falls back to the least-privilege configured default.
         assert_eq!(
             super::validate_scope(&state, &canonical, "").unwrap(),
-            "lab"
+            "lab:read"
+        );
+        assert_eq!(
+            super::validate_scope(&state, &canonical, "lab:read").unwrap(),
+            "lab:read"
         );
         // Base scope passes.
         assert_eq!(
@@ -2672,6 +2596,46 @@ pub mod tests {
         // Anything not in scopes_supported is rejected.
         let err = super::validate_scope(&state, &canonical, "lab:write").unwrap_err();
         assert!(err.to_string().contains("lab"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn omitted_initial_scope_defaults_to_least_privilege_read_only_scope() {
+        let state = test_auth_state().await;
+        let canonical = crate::metadata::canonical_resource_url(&state);
+        let selected = super::validate_scope(&state, &canonical, "").unwrap();
+        assert_eq!(selected, "lab:read");
+        assert!(!selected.split_whitespace().any(|scope| scope == "lab"));
+        assert!(
+            !selected
+                .split_whitespace()
+                .any(|scope| scope == "lab:admin")
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_rejects_nonidentical_registered_redirect_without_redirecting() {
+        let app = router(test_auth_state_with_registered_client().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback/extra&state=abc&scope=lab:read&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(response.headers().get(header::LOCATION).is_none());
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["kind"], "validation_failed");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("does not match"))
+        );
     }
 
     #[test]

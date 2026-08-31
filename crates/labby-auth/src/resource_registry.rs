@@ -77,6 +77,12 @@ struct StoredLease {
 }
 
 impl ResourceRegistry {
+    fn write_inner(&self) -> std::sync::RwLockWriteGuard<'_, ResourceRegistryInner> {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -92,10 +98,7 @@ impl ResourceRegistry {
         for (resource, scopes) in resources {
             configured.insert(canonical_resource(&resource)?, validated_scopes(scopes)?);
         }
-        self.inner
-            .write()
-            .expect("resource registry lock")
-            .configured = configured;
+        self.write_inner().configured = configured;
         Ok(())
     }
 
@@ -135,7 +138,7 @@ impl ResourceRegistry {
             owner: owner.to_string(),
             expires_at_unix,
         };
-        let mut inner = self.inner.write().expect("resource registry lock");
+        let mut inner = self.write_inner();
         prune_locked(&mut inner, now_unix);
         inner.leases.insert(id.clone(), stored);
         Ok(ResourceLease {
@@ -165,7 +168,7 @@ impl ResourceRegistry {
         let expires_at_unix = now_unix
             .checked_add(ttl.as_secs())
             .ok_or(ResourceRegistryError::InvalidTtl)?;
-        let mut inner = self.inner.write().expect("resource registry lock");
+        let mut inner = self.write_inner();
         prune_locked(&mut inner, now_unix);
         let lease = inner
             .leases
@@ -177,7 +180,7 @@ impl ResourceRegistry {
 
     pub fn release_resource_lease(&self, id: &str) -> Result<(), ResourceRegistryError> {
         let now = unix_seconds(SystemTime::now())?;
-        let mut inner = self.inner.write().expect("resource registry lock");
+        let mut inner = self.write_inner();
         prune_locked(&mut inner, now);
         inner
             .leases
@@ -190,7 +193,7 @@ impl ResourceRegistry {
         let Ok(now_unix) = unix_seconds(now) else {
             return 0;
         };
-        let mut inner = self.inner.write().expect("resource registry lock");
+        let mut inner = self.write_inner();
         let before = inner.leases.len();
         prune_locked(&mut inner, now_unix);
         before - inner.leases.len()
@@ -209,7 +212,7 @@ impl ResourceRegistry {
     ) -> Option<Vec<String>> {
         let resource = canonical_resource(resource).ok()?;
         let now_unix = unix_seconds(now).ok()?;
-        let mut inner = self.inner.write().expect("resource registry lock");
+        let mut inner = self.write_inner();
         prune_locked(&mut inner, now_unix);
         let mut scopes = inner.configured.get(&resource).cloned().unwrap_or_default();
         for lease in inner
@@ -227,7 +230,7 @@ impl ResourceRegistry {
         let Ok(now) = unix_seconds(SystemTime::now()) else {
             return 0;
         };
-        let mut inner = self.inner.write().expect("resource registry lock");
+        let mut inner = self.write_inner();
         prune_locked(&mut inner, now);
         inner.leases.len()
     }
@@ -237,7 +240,7 @@ impl ResourceRegistry {
         let Ok(now) = unix_seconds(SystemTime::now()) else {
             return Vec::new();
         };
-        let mut inner = self.inner.write().expect("resource registry lock");
+        let mut inner = self.write_inner();
         prune_locked(&mut inner, now);
         inner
             .leases
@@ -326,4 +329,31 @@ fn random_lease_id() -> Result<String, ResourceRegistryError> {
     let mut bytes = [0_u8; LEASE_ID_BYTES];
     getrandom::fill(&mut bytes).map_err(|_| ResourceRegistryError::RandomnessUnavailable)?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod poison_tests {
+    use super::ResourceRegistry;
+
+    #[test]
+    fn poisoned_registry_lock_is_recovered_without_panicking() {
+        let registry = ResourceRegistry::new();
+        let shared = registry.inner.clone();
+        drop(std::panic::catch_unwind(move || {
+            let _guard = shared.write().expect("initial registry write lock");
+            panic!("poison registry lock");
+        }));
+
+        registry
+            .replace_configured_resource_scopes([(
+                "https://example.com/mcp".to_string(),
+                vec!["lab:read".to_string()],
+            )])
+            .expect("poisoned registry must recover");
+        assert_eq!(
+            registry.effective_resource_scopes("https://example.com/mcp"),
+            Some(vec!["lab:read".to_string()])
+        );
+    }
 }

@@ -118,6 +118,34 @@ pub(crate) fn require_secure_url(raw: &str) -> Result<url::Url, String> {
     }
 }
 
+/// Validate the browser URL returned by Labby's native-start extension.
+///
+/// This value is independently controlled by the HTTP response, so validating
+/// the discovery document is not sufficient. Keep it on the exact origin of
+/// the authorization URL Palette constructed locally and reject URL userinfo
+/// before handing it to the operating-system opener.
+pub(crate) fn validate_native_authorization_url(
+    raw: &str,
+    expected_authorization_url: &str,
+) -> Result<url::Url, String> {
+    let url = require_secure_url(raw)?;
+    let expected = require_secure_url(expected_authorization_url)?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("native authorization URL must not contain userinfo".to_string());
+    }
+    if url.scheme() != expected.scheme()
+        || url.host_str() != expected.host_str()
+        || url.port_or_known_default() != expected.port_or_known_default()
+        || url.path() != expected.path()
+    {
+        return Err(
+            "native authorization URL does not match the discovered authorization endpoint"
+                .to_string(),
+        );
+    }
+    Ok(url)
+}
+
 pub(crate) fn build_authorize_url(
     meta: &AuthServerMetadata,
     client_id: &str,

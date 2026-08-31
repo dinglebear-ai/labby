@@ -10,7 +10,7 @@ use thiserror::Error;
 #[derive(Clone, Copy, Debug)]
 pub struct AuthErrorKind(pub &'static str);
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum AuthError {
     #[error("{0}")]
     Config(String),

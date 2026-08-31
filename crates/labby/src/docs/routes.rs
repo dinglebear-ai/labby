@@ -4,6 +4,14 @@ use crate::app_manifest::{
     SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_QUERY_API_ROUTE,
 };
 
+pub(crate) const OAUTH_MODE_ONLY: &str = "OAuth mode only";
+pub(crate) const BOOTSTRAP_OWNER_RUNTIME_CONDITION: &str = "OAuth mode only; handler requires a browser session, middleware-derived VerifiedIdentity, lab:admin, and the configured admin email; bearer, MCP, CLI, stdio, and loopback identity bypasses are rejected";
+pub(crate) const DEV_RUNTIME_CONDITION: &str = "development/mockup routes";
+pub(crate) const GATEWAY_RUNTIME_CONDITION: &str =
+    "mounted only when the gateway runtime is configured";
+pub(crate) const FS_RUNTIME_CONDITION: &str =
+    "mounted only when fs is enabled and /v1 auth is configured if LABBY_WEB_UI_AUTH_DISABLED=true";
+
 pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
     let mut routes = vec![
         public("GET", "/health", "health", "liveness probe"),
@@ -100,10 +108,7 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "remove OAuth email allowlist entry",
         ),
         RouteDoc {
-            runtime_condition: Some(
-                "OAuth mode only; handler requires a browser session, middleware-derived VerifiedIdentity, lab:admin, and the configured admin email; bearer, MCP, CLI, stdio, and loopback identity bypasses are rejected"
-                    .to_string(),
-            ),
+            runtime_condition: Some(BOOTSTRAP_OWNER_RUNTIME_CONDITION.to_string()),
             ..auth(
                 "POST",
                 "/v1/access/bootstrap-owner",
@@ -153,25 +158,25 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "import public OAuth callback relay registry",
         ),
         host_validated_auth("POST", "/v1/setup", "setup", "setup action dispatch"),
-        auth(
+        gateway_runtime_auth(
             "GET",
             "/v1/gateway/oauth/status",
             "upstream_oauth",
             "upstream OAuth status",
         ),
-        auth(
+        gateway_runtime_auth(
             "POST",
             "/v1/gateway/oauth/start",
             "upstream_oauth",
             "start upstream OAuth flow",
         ),
-        auth(
+        gateway_runtime_auth(
             "POST",
             "/v1/gateway/oauth/cancel",
             "upstream_oauth",
             "cancel upstream OAuth flow",
         ),
-        auth(
+        gateway_runtime_auth(
             "POST",
             "/v1/gateway/oauth/google/revoke",
             "upstream_oauth",
@@ -253,10 +258,7 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
             "service action dispatch",
         );
         if service == "fs" {
-            route.runtime_condition = Some(
-                "mounted only when fs is enabled and /v1 auth is configured if LABBY_WEB_UI_AUTH_DISABLED=true"
-                    .to_string(),
-            );
+            route.runtime_condition = Some(FS_RUNTIME_CONDITION.to_string());
             route.feature = Some("fs".to_string());
         }
         routes.push(route);
@@ -299,6 +301,13 @@ fn host_validated_auth(method: &str, path: &str, group: &str, notes: &str) -> Ro
     }
 }
 
+fn gateway_runtime_auth(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        runtime_condition: Some(GATEWAY_RUNTIME_CONDITION.to_string()),
+        ..auth(method, path, group, notes)
+    }
+}
+
 fn relay_admin(method: &str, path: &str, notes: &str) -> RouteDoc {
     RouteDoc {
         runtime_condition: Some(
@@ -337,6 +346,7 @@ fn oauth(method: &str, path: &str, notes: &str) -> RouteDoc {
 
 fn browser(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
     RouteDoc {
+        runtime_condition: Some(OAUTH_MODE_ONLY.to_string()),
         auth_required: true,
         session_cookie_allowed: true,
         csrf_required: csrf_required(method, true),
@@ -346,7 +356,7 @@ fn browser(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
 
 fn dev(method: &str, path: &str, notes: &str) -> RouteDoc {
     RouteDoc {
-        runtime_condition: Some("development/mockup routes".to_string()),
+        runtime_condition: Some(DEV_RUNTIME_CONDITION.to_string()),
         auth_required: true,
         session_cookie_allowed: true,
         csrf_required: csrf_required(method, true),

@@ -53,7 +53,13 @@ target_triple() {
                 *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64" ;;
             esac
             ;;
-        *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64" ;;
+        Darwin)
+            case "$arch" in
+                arm64) echo "aarch64-apple-darwin" ;;
+                *) fail "unsupported platform ${os}/${arch}; supported: macOS/arm64" ;;
+            esac
+            ;;
+        *) fail "unsupported platform ${os}/${arch}; supported: Linux/x86_64 and macOS/arm64" ;;
     esac
 }
 
