@@ -49,7 +49,7 @@ export function DepotPageContent() {
     return () => controller.abort()
   }, [selectedId])
 
-  const filtered = useMemo(() => state.artifacts.filter((artifact) => JSON.stringify(artifact.descriptor ?? {}).toLowerCase().includes(query.toLowerCase())), [state.artifacts, query])
+  const filtered = useMemo(() => state.artifacts.filter((artifact) => JSON.stringify({ id: artifact.id, kind: artifact.kind, namespace: artifact.namespace, name: artifact.name, title: artifact.title, description: artifact.description }).toLowerCase().includes(query.toLowerCase())), [state.artifacts, query])
   const mutate = async (operation: string, params: Record<string, unknown>, message: string) => {
     try { await depotCall(operation, params); toast.success(message); await load() }
     catch (error) { toast.error(error instanceof Error ? error.message : String(error)) }
@@ -80,15 +80,15 @@ export function DepotPageContent() {
       {state.error ? <DashboardPanel title="Depot unavailable"><p role="alert" className="text-sm text-destructive">{state.error}. Labby-only routes remain available.</p></DashboardPanel> : null}
       <DashboardPanel title="Browse immutable artifacts" icon={<Search className="size-4"/>} action={<Input aria-label="Search Depot artifacts" className="h-8 w-64" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, kind, namespace"/>}>
         <div className="divide-y divide-aurora-border-subtle">
-          {filtered.map((artifact) => { const id = artifact.descriptor?.id ?? 'unknown'; return <a key={id} href={`/depot?artifact=${encodeURIComponent(id)}`} className="flex min-h-14 items-center justify-between gap-4 rounded px-2 py-2 hover:bg-aurora-surface-muted focus-visible:outline-none focus-visible:ring-2"><div><div className="font-medium">{artifact.descriptor?.name ?? id}</div><div className="text-xs text-muted-foreground">{artifact.descriptor?.kind} · {artifact.descriptor?.namespace} · {id}</div></div><Badge variant="outline">{artifact.publication?.visibility ?? 'private'}</Badge></a> })}
+          {filtered.map((artifact) => { const id = artifact.id ?? 'unknown'; return <a key={id} href={`/depot?artifact=${encodeURIComponent(id)}`} className="flex min-h-14 items-center justify-between gap-4 rounded px-2 py-2 hover:bg-aurora-surface-muted focus-visible:outline-none focus-visible:ring-2"><div><div className="font-medium">{artifact.name ?? id}</div><div className="text-xs text-muted-foreground">{artifact.kind} · {artifact.namespace} · {id}</div></div><Badge variant="outline">{artifact.publication?.visibility ?? 'private'}</Badge></a> })}
           {!state.loading && filtered.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No matching artifacts.</p> : null}
         </div>
         {state.cursor ? <Button variant="outline" onClick={() => void load(state.cursor)}>Next page</Button> : null}
       </DashboardPanel>
       {detail && selectedId ? <DashboardPanel title="Artifact detail" icon={<Box className="size-4"/>}>
-        <h2 className="text-lg font-semibold">{detail.descriptor?.name ?? selectedId}</h2><p className="text-sm text-muted-foreground">{detail.descriptor?.summary ?? 'No summary supplied.'}</p><code className="break-all text-xs">{detail.currentRevisionId}</code>
+        <h2 className="text-lg font-semibold">{detail.name ?? selectedId}</h2><p className="text-sm text-muted-foreground">{detail.description ?? 'No description supplied.'}</p><code className="break-all text-xs">{detail.currentRevisionId}</code>
         <div className="flex flex-wrap gap-2">
-          {detail.descriptor?.kind === 'skill' ? <Button onClick={() => void importDepotSkill({ source_id: 'depot', artifact_id: selectedId, revision_id: detail.currentRevisionId }).then(() => toast.success('Exact revision imported')).catch((error) => toast.error(String(error)))}><Upload className="size-4"/>Import exact revision</Button> : null}
+          {detail.kind === 'skill' ? <Button onClick={() => void importDepotSkill({ source_id: 'depot', artifact_id: selectedId, revision_id: detail.currentRevisionId }).then(() => toast.success('Exact revision imported')).catch((error) => toast.error(String(error)))}><Upload className="size-4"/>Import exact revision</Button> : null}
           <Button variant="outline" onClick={() => void mutate('depot.artifacts.follow', { artifactId: selectedId, expectedRevision: detail.currentRevisionId, following: !detail.lineage?.following }, detail.lineage?.following ? 'Following disabled' : 'Following enabled')}>{detail.lineage?.following ? 'Unfollow' : 'Follow'}</Button>
           <Button variant="outline" onClick={() => void mutate('depot.artifacts.set_publication', { artifactId: selectedId, expectedRevision: detail.currentRevisionId, visibility: 'private' }, 'Visibility updated')}>Make private</Button>
         </div>

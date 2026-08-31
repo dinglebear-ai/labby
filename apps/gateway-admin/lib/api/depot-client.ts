@@ -8,7 +8,12 @@ export type DepotStatus = {
 }
 
 export type DepotArtifact = {
-  descriptor?: { id?: string; kind?: string; namespace?: string; name?: string; summary?: string }
+  id?: string
+  kind?: string
+  namespace?: string
+  name?: string
+  title?: string
+  description?: string
   currentRevisionId?: string
   publication?: { state?: string; visibility?: string; distribution?: string }
   license?: { reviewState?: string; takedownState?: string }

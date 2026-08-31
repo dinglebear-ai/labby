@@ -67,37 +67,50 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
 }
 
 fn actor(
+    state: &AppState,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
-    identity
-        .map(|Extension(value)| value.safe_fingerprint().to_string())
-        .ok_or_else(|| {
-            (
-                StatusCode::FORBIDDEN,
-                Json(json!({"error":"verified_identity_required"})),
-            )
-        })
+    identity.map_or_else(
+        || {
+            if state.web_ui_auth_disabled {
+                Ok("development-web-ui".to_owned())
+            } else {
+                Err((
+                    StatusCode::FORBIDDEN,
+                    Json(json!({"error":"verified_identity_required"})),
+                ))
+            }
+        },
+        |Extension(value)| Ok(value.safe_fingerprint().to_string()),
+    )
 }
 
-fn require_admin(auth: Option<Extension<AuthContext>>) -> Result<(), (StatusCode, Json<Value>)> {
+fn require_admin(
+    state: &AppState,
+    auth: Option<Extension<AuthContext>>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    if state.web_ui_auth_disabled {
+        return Ok(());
+    }
     if auth.is_some_and(|Extension(ctx)| {
         ctx.scopes
             .iter()
             .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin"))
     }) {
-        return Ok(());
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"lab_admin_required"})),
+        ))
     }
-    Err((
-        StatusCode::FORBIDDEN,
-        Json(json!({"error":"lab_admin_required"})),
-    ))
 }
 
 async fn session(
     State(state): State<AppState>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let actor = actor(identity)?;
+    let actor = actor(&state, identity)?;
     state
         .depot
         .session(&actor)
@@ -110,7 +123,7 @@ async fn operations(
     State(state): State<AppState>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let actor = actor(identity)?;
+    let actor = actor(&state, identity)?;
     state
         .depot
         .operations(&actor)
@@ -125,8 +138,8 @@ async fn call(
     identity: Option<Extension<VerifiedIdentity>>,
     Json(request): Json<OperationRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    require_admin(auth)?;
-    let actor = actor(identity)?;
+    require_admin(&state, auth)?;
+    let actor = actor(&state, identity)?;
     state
         .depot
         .call(&request.operation, request.params, &actor)
@@ -142,8 +155,8 @@ async fn upload(
     identity: Option<Extension<VerifiedIdentity>>,
     bytes: Bytes,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    require_admin(auth)?;
-    let actor = actor(identity)?;
+    require_admin(&state, auth)?;
+    let actor = actor(&state, identity)?;
     state
         .depot
         .upload(&upload_id, bytes.to_vec(), &actor)
