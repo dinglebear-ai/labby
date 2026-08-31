@@ -51,7 +51,9 @@ fn action_managed_kache_fails_open_when_its_daemon_has_no_remote() {
         .split("- name: Verify action-managed Kache remote")
         .nth(1)
         .and_then(|section| {
-            section.split("\n    # Fork PRs (and any run without shared MinIO credentials)").next()
+            section
+                .split("\n    # Fork PRs (and any run without shared MinIO credentials)")
+                .next()
         })
         .expect("action-managed Kache must be verified before compilation");
     for contract in [
@@ -68,9 +70,45 @@ fn action_managed_kache_fails_open_when_its_daemon_has_no_remote() {
     }
 
     assert!(
-        action.matches("steps.kache-action-health.outputs.usable == 'false'").count() >= 2,
+        action
+            .matches("steps.kache-action-health.outputs.usable == 'false'")
+            .count()
+            >= 2,
         "an unhealthy Kache daemon must select both the safe cache fallback and bare Cargo"
     );
+}
+
+#[test]
+fn rustfmt_lane_selects_writable_rust_homes_before_toolchain_install() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let fmt = workflow
+        .split("  fmt:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  deny:\n").next())
+        .expect("Format job must remain present");
+
+    let homes = fmt
+        .split("- name: Select writable Rust homes for rustfmt")
+        .nth(1)
+        .and_then(|section| {
+            section
+                .split("\n      - name: Install Rust toolchain with rustfmt")
+                .next()
+        })
+        .expect("rustfmt lane must select writable homes before rustup runs");
+    for contract in [
+        "rustup_home=\"$RUNNER_TEMP/rustup\"",
+        "cargo_home=\"$RUNNER_TEMP/cargo\"",
+        "echo \"RUSTUP_HOME=$rustup_home\"",
+        "echo \"CARGO_HOME=$cargo_home\"",
+        "echo \"$cargo_home/bin\" >> \"$GITHUB_PATH\"",
+    ] {
+        assert!(
+            homes.contains(contract),
+            "rustfmt writable-home guard must retain `{contract}`"
+        );
+    }
 }
 
 fn classify(event: &str, files: &[&str]) -> HashMap<String, String> {

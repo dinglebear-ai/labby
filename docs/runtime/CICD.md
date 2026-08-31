@@ -205,7 +205,9 @@ policy/metadata jobs select `ci-pool-ops`. Rust jobs use the repository
 cache and runs bare Cargo when credentials are unavailable. The composite also
 verifies that an action-managed Kache daemon reports the expected S3 remote;
 if a stale daemon has no matching remote, the job clears both Rust compiler
-wrappers and uses the GitHub Actions Cargo cache instead. Runner setup is
+wrappers and uses the GitHub Actions Cargo cache instead. The rustfmt-only lane
+skips cache setup but still selects writable per-job Rust homes before rustup
+runs. Runner setup is
 documented in [Actions runner setup](./ACTIONS_RUNNER.md).
 
 ## Build Matrix
