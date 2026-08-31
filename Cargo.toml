@@ -85,6 +85,9 @@ toml = "1.1"
 serde_yaml = "0.9"
 
 # mcp
+# Temporary fork pin for rmcp's typed custom-request API and raw Streamable HTTP
+# response support. Remove once that API is available in an upstream release;
+# keep this revision synchronized with the rmcp-client alias in labby-auth.
 rmcp = { git = "https://github.com/jmagar/rust-sdk", rev = "e3bc6c71f5ee6d708fa79f860280a96788ebdf27", version = "=3.1.4", features = [
   "server",
   "transport-io",

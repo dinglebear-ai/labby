@@ -264,8 +264,8 @@ pub(super) fn service_error_affects_connection_health(error: &rmcp::ServiceError
 ///   `estimate_response_size` / `estimate_resource_response_size`.
 /// - `subject` — `Some(subject)` when this is a subject-scoped OAuth call so that a
 ///   broken connection is evicted on error; `None` for the normal pool path.
-/// - `error_message_fn` — builds the user-visible error string from the upstream
-///   error display value.
+/// - `error_message_fn` — builds the user-visible error string from the typed
+///   upstream error.
 /// - `timeout_message` — user-visible error string for the timeout case.
 ///
 /// Returns `Ok(R)` on success and a typed `CapabilityCallError` on failure.
@@ -279,7 +279,7 @@ pub(super) async fn timed_capability_call<R, Fut, SizeFn>(
     rpc_future: Fut,
     size_fn: SizeFn,
     subject: Option<&str>,
-    error_message_fn: impl Fn(&dyn std::fmt::Display) -> String,
+    error_message_fn: impl Fn(&rmcp::ServiceError) -> String,
     timeout_message: String,
 ) -> Result<R, CapabilityCallError>
 where
@@ -316,7 +316,7 @@ pub(super) async fn timed_capability_call_with_timeout<R, Fut, SizeFn>(
     rpc_future: Fut,
     size_fn: SizeFn,
     subject: Option<&str>,
-    error_message_fn: impl Fn(&dyn std::fmt::Display) -> String,
+    error_message_fn: impl Fn(&rmcp::ServiceError) -> String,
     timeout_message: String,
     cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<R, CapabilityCallError>
@@ -598,7 +598,7 @@ pub(super) async fn timed_capability_call_str<R, Fut, SizeFn>(
     rpc_future: Fut,
     size_fn: SizeFn,
     subject: Option<&str>,
-    error_message_fn: impl Fn(&dyn std::fmt::Display) -> String,
+    error_message_fn: impl Fn(&rmcp::ServiceError) -> String,
     timeout_message: String,
 ) -> Result<R, String>
 where

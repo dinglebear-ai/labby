@@ -538,14 +538,30 @@ fn skills_list_errors_distinguish_malformed_results_from_protocol_failures() {
     let malformed = serde_json::from_value::<Vec<String>>(json!({"not": "an array"}))
         .expect_err("malformed fixture");
     let malformed = super::skills_list::skills_list_error(
-        rmcp::service::ServiceError::ResponseDeserialization(malformed),
+        &rmcp::service::ServiceError::ResponseDeserialization(malformed),
     );
     assert!(malformed.contains("malformed result"));
 
-    let protocol = super::skills_list::skills_list_error(rmcp::service::ServiceError::McpError(
+    let protocol = super::skills_list::skills_list_error(&rmcp::service::ServiceError::McpError(
         ErrorData::new(ErrorCode::INVALID_PARAMS, "bad request", None),
     ));
     assert!(protocol.contains("skills/list failed"));
+    assert!(!protocol.contains("malformed result"));
+}
+
+#[test]
+fn skills_get_errors_distinguish_malformed_results_from_protocol_failures() {
+    let malformed = serde_json::from_value::<Vec<String>>(json!({"not": "an array"}))
+        .expect_err("malformed fixture");
+    let malformed = super::skills_list::skills_get_error(
+        &rmcp::service::ServiceError::ResponseDeserialization(malformed),
+    );
+    assert!(malformed.contains("skills/get returned a malformed result"));
+
+    let protocol = super::skills_list::skills_get_error(&rmcp::service::ServiceError::McpError(
+        ErrorData::new(ErrorCode::INVALID_PARAMS, "bad request", None),
+    ));
+    assert!(protocol.contains("skills/get failed"));
     assert!(!protocol.contains("malformed result"));
 }
 

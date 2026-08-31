@@ -135,13 +135,21 @@ enum SkillIngestCap {
     Candidates,
 }
 
-pub(super) fn skills_list_error(error: ServiceError) -> String {
+fn skills_method_error(method: &str, error: &ServiceError) -> String {
     match error {
         ServiceError::ResponseDeserialization(error) => {
-            format!("skills/list returned a malformed result: {error}")
+            format!("{method} returned a malformed result: {error}")
         }
-        error => format!("skills/list failed: {error}"),
+        error => format!("{method} failed: {error}"),
     }
+}
+
+pub(super) fn skills_list_error(error: &ServiceError) -> String {
+    skills_method_error(SKILLS_LIST_METHOD, error)
+}
+
+pub(super) fn skills_get_error(error: &ServiceError) -> String {
+    skills_method_error(SKILLS_GET_METHOD, error)
 }
 
 /// Validate and accumulate one page of entries, honoring the per-upstream caps.
@@ -224,7 +232,7 @@ impl UpstreamPool {
             let result: SkillsListResult = peer
                 .send_request_as(request)
                 .await
-                .map_err(skills_list_error)?;
+                .map_err(|error| skills_list_error(&error))?;
 
             // A server MUST apply one cacheScope to every page of a list; a
             // change mid-walk means the pages do not describe one listing.
@@ -325,7 +333,7 @@ impl UpstreamPool {
             peer.send_request_as::<SkillsGetResult>(request),
             |_| 0,
             subject,
-            |error| format!("upstream `{upstream_name}` skills/get failed: {error}"),
+            |error| format!("upstream `{upstream_name}` {}", skills_get_error(error)),
             format!("upstream `{upstream_name}` skills/get timed out after {timeout_ms}ms"),
         )
         .await;
