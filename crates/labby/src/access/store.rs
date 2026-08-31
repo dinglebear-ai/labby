@@ -38,6 +38,8 @@ impl std::fmt::Debug for AccessStore {
 
 impl AccessStore {
     pub(crate) async fn open(path: PathBuf) -> AccessStoreResult<Self> {
+        let path = validated_access_path(&path)
+            .map_err(|()| AccessStoreError::InsecurePath { path: path.clone() })?;
         let open_path = path.clone();
         let connection = tokio::task::spawn_blocking(move || open_connection(&open_path))
             .await
@@ -54,6 +56,8 @@ impl AccessStore {
     /// Opens an already-bootstrapped store at the exact current schema without creating or
     /// migrating any persistent state.
     pub(crate) async fn open_existing_current(path: PathBuf) -> AccessStoreResult<Self> {
+        let path = validated_access_path(&path)
+            .map_err(|()| AccessStoreError::InsecurePath { path: path.clone() })?;
         let open_path = path.clone();
         let connection =
             tokio::task::spawn_blocking(move || open_existing_current_connection(&open_path))
@@ -781,7 +785,7 @@ mod tests {
 
     #[tokio::test]
     async fn canonical_reopen_preserves_data_and_global_revision() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path.clone()).await.unwrap();
         store
@@ -798,7 +802,7 @@ mod tests {
 
     #[tokio::test]
     async fn newer_schema_fails_closed() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
         let newer = super::super::migrations::SCHEMA_VERSION + 1;
@@ -818,7 +822,7 @@ mod tests {
 
     #[tokio::test]
     async fn stamped_v1_without_canonical_schema_identity_fails_closed() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
         connection
@@ -901,7 +905,7 @@ mod tests {
 
     #[tokio::test]
     async fn populated_canonical_v1_migrates_healthy_but_is_not_bootstrap_pristine() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
         connection
@@ -956,7 +960,7 @@ mod tests {
 
     #[tokio::test]
     async fn canonical_names_and_metadata_do_not_hide_altered_schema_definition() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path.clone()).await.unwrap();
         drop(store);
@@ -981,7 +985,7 @@ mod tests {
 
     #[tokio::test]
     async fn composite_foreign_keys_reject_cross_tenant_edges() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let store = AccessStore::open(secure_test_path(&directory))
             .await
             .unwrap();
@@ -1026,7 +1030,7 @@ mod tests {
 
     #[tokio::test]
     async fn principal_link_shape_and_uniqueness_are_database_invariants() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let store = AccessStore::open(secure_test_path(&directory))
             .await
             .unwrap();
@@ -1072,7 +1076,7 @@ mod tests {
     async fn rejects_weak_permissions_symlinks_hardlinks_and_corrupt_files() {
         use std::os::unix::fs::{PermissionsExt as _, symlink};
 
-        let weak_directory = tempfile::tempdir().unwrap();
+        let weak_directory = super::super::test_support::secure_tempdir();
         let weak_path = secure_test_path(&weak_directory);
         std::fs::write(&weak_path, []).unwrap();
         std::fs::set_permissions(&weak_path, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -1081,7 +1085,7 @@ mod tests {
             Err(AccessStoreError::InsecurePermissions { .. })
         ));
 
-        let symlink_directory = tempfile::tempdir().unwrap();
+        let symlink_directory = super::super::test_support::secure_tempdir();
         let symlink_path = secure_test_path(&symlink_directory);
         let target = symlink_directory.path().join("target.db");
         std::fs::write(&target, []).unwrap();
@@ -1091,7 +1095,7 @@ mod tests {
             Err(AccessStoreError::InsecurePath { .. })
         ));
 
-        let hardlink_directory = tempfile::tempdir().unwrap();
+        let hardlink_directory = super::super::test_support::secure_tempdir();
         let hardlink_path = secure_test_path(&hardlink_directory);
         let hardlink_target = hardlink_directory.path().join("other.db");
         let original = b"must remain byte-for-byte unchanged";
@@ -1104,7 +1108,7 @@ mod tests {
         ));
         assert_eq!(std::fs::read(&hardlink_target).unwrap(), original);
 
-        let corrupt_directory = tempfile::tempdir().unwrap();
+        let corrupt_directory = super::super::test_support::secure_tempdir();
         let corrupt_path = secure_test_path(&corrupt_directory);
         std::fs::write(&corrupt_path, b"not a sqlite database").unwrap();
         std::fs::set_permissions(&corrupt_path, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -1119,7 +1123,7 @@ mod tests {
     async fn creates_new_leaf_and_store_with_owner_only_permissions_without_fixing_weak_dirs() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let base = tempfile::tempdir().unwrap();
+        let base = super::super::test_support::secure_tempdir();
         std::fs::set_permissions(base.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let leaf = base.path().join("access-state");
         let path = leaf.join("access.db");

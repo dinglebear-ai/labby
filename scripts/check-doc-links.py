@@ -10,7 +10,14 @@ import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_PREFIXES = ("docs/archive/", "docs/sessions/", "docs/superpowers/")
+SKIP_PREFIXES = (
+    "docs/archive/",
+    "docs/sessions/",
+    "docs/superpowers/",
+    # Vendored dependency prose preserves links from its upstream workspace;
+    # product documentation checks do not own or rewrite those snapshots.
+    "vendor/",
+)
 SKIP_FILES = {
     "CHANGELOG.md",
     # This package README is intentionally synced byte-for-byte from the root

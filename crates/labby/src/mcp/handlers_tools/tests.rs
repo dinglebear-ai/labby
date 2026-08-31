@@ -891,7 +891,7 @@ async fn hidden_add_server_name_is_reserved_from_discovery_but_legacy_call_still
 }
 
 #[tokio::test]
-async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() {
+async fn call_tool_blocks_destructive_builtin_when_elicitation_is_not_supported() {
     DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION.store(0, Ordering::SeqCst);
     let server = test_server(
         destructive_test_registry(destructive_counting_dispatch_no_elicitation),
@@ -922,15 +922,14 @@ async fn call_tool_runs_destructive_builtin_when_elicitation_is_not_supported() 
     .await
     .expect("call tool result");
 
-    assert!(
-        !result.is_error.unwrap_or(false),
-        "unexpected destructive gate: {}",
-        result.content[0].as_text().expect("text").text.as_str()
-    );
+    assert!(result.is_error.unwrap_or(false));
+    let text = result.content[0].as_text().expect("text").text.as_str();
+    let envelope: Value = serde_json::from_str(text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "confirmation_required");
     assert_eq!(
         DESTRUCTIVE_DISPATCH_COUNT_NO_ELICITATION.load(Ordering::SeqCst),
-        1,
-        "MCP clients without elicitation support must not hit a fake destructive gate"
+        0,
+        "unsupported elicitation must fail closed before destructive dispatch"
     );
 }
 
@@ -1327,7 +1326,13 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         serde_json::json!(1),
         "codemode must advertise non-empty code"
     );
-    assert!(codemode.meta.is_none(), "codemode must remain text-only");
+    assert!(
+        codemode
+            .meta
+            .as_ref()
+            .is_some_and(|meta| !meta.0.contains_key("ui")),
+        "codemode must remain text-only"
+    );
     let read_annotations = codemode_read
         .annotations
         .as_ref()
@@ -1408,7 +1413,13 @@ async fn mcp_app_control_tool_survives_manager_ui_disable() {
         .iter()
         .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
         .expect("mcp_app control tool");
-    assert!(control.meta.is_none(), "manager UI metadata must be opt-in");
+    assert!(
+        control
+            .meta
+            .as_ref()
+            .is_some_and(|meta| !meta.0.contains_key("ui")),
+        "manager UI metadata must be opt-in"
+    );
 
     let resources = running
         .service()
@@ -1852,7 +1863,9 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
         .find(|tool| tool.name.as_ref() == SERVER_LOGS_TOOL_NAME)
         .expect("server_logs text service remains available");
     assert!(
-        logs.meta.is_none(),
+        logs.meta
+            .as_ref()
+            .is_some_and(|meta| !meta.0.contains_key("ui")),
         "only server_logs app metadata should be hidden"
     );
 
@@ -2025,7 +2038,10 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         .find(|tool| tool.name.as_ref() == MCP_APP_TOOL_NAME)
         .expect("mcp_app control tool remains available");
     assert!(
-        manager_tool.meta.is_none(),
+        manager_tool
+            .meta
+            .as_ref()
+            .is_some_and(|meta| !meta.0.contains_key("ui")),
         "disabled manager UI must leave the control tool text-only"
     );
     let logs = tools
@@ -2034,7 +2050,9 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         .find(|tool| tool.name.as_ref() == SERVER_LOGS_TOOL_NAME)
         .expect("server_logs text service remains available");
     assert!(
-        logs.meta.is_none(),
+        logs.meta
+            .as_ref()
+            .is_some_and(|meta| !meta.0.contains_key("ui")),
         "server_logs app metadata must be disabled"
     );
 
@@ -3470,7 +3488,7 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
 }
 
 #[tokio::test]
-async fn destructive_direct_mcp_app_tools_require_execute_scope() {
+async fn destructive_direct_mcp_app_tools_require_execute_scope_and_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -3533,10 +3551,10 @@ async fn destructive_direct_mcp_app_tools_require_execute_scope() {
     .await
     .expect("execute-scope destructive call result");
     let allowed_text = allowed.content[0].as_text().expect("text").text.as_str();
-    assert!(
-        allowed_text.contains("upstream_error"),
-        "execute scope should reach normal upstream routing, got {allowed_text}"
-    );
+    let envelope: Value = serde_json::from_str(allowed_text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert!(envelope["error"]["upstream"].is_null());
+    assert!(envelope["error"]["cause"].is_null());
 }
 
 #[tokio::test]
@@ -4441,7 +4459,7 @@ async fn list_tools_hides_subject_scoped_oauth_app_when_ui_resource_is_not_expos
 
 #[tokio::test]
 #[cfg(feature = "proxy-testkit")]
-async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks() {
+async fn call_tool_blocks_oauth_mcp_app_sibling_callback_before_subject_route_dispatch() {
     let upstream_name: Arc<str> = Arc::from("oauth_apps");
     let ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -4479,14 +4497,15 @@ async fn call_tool_uses_subject_scoped_route_for_oauth_mcp_app_sibling_callbacks
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     let envelope: Value = serde_json::from_str(text).expect("structured agent error");
-    assert_eq!(envelope["error"]["upstream"], "oauth_apps");
-    assert_eq!(envelope["error"]["kind"], "upstream_error");
-    assert_eq!(envelope["error"]["origin"], "upstream_transport");
     assert!(
-        envelope["error"]["cause"]
-            .as_str()
-            .is_some_and(|cause| cause.contains("relayed upstream")),
-        "subject-scoped catalog must pass the sibling callback gate and reach relayed execution: {text}"
+        envelope["error"]["upstream"].is_null(),
+        "the redacted transport error must not leak a route name: {text}"
+    );
+    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert_eq!(envelope["error"]["origin"], "policy");
+    assert!(
+        envelope["error"]["cause"].is_null(),
+        "fail-closed policy must run before any subject-scoped upstream transport: {text}"
     );
 }
 
@@ -4766,7 +4785,7 @@ async fn list_tools_rejects_invalid_cursor() {
 }
 
 #[tokio::test]
-async fn call_tool_allows_destructive_mcp_app_sibling_callbacks_without_elicitation() {
+async fn call_tool_blocks_destructive_mcp_app_sibling_callbacks_without_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -4813,15 +4832,14 @@ async fn call_tool_allows_destructive_mcp_app_sibling_callbacks_without_elicitat
 
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
-    assert!(
-        text.contains("upstream_error"),
-        "destructive sibling callback should reach normal upstream routing when elicitation is unavailable, got {text}"
-    );
-    assert!(!text.contains("confirm:true") && !text.contains("confirm\":true"));
+    let envelope: Value = serde_json::from_str(text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert!(envelope["error"]["upstream"].is_null());
+    assert!(envelope["error"]["cause"].is_null());
 }
 
 #[tokio::test]
-async fn call_tool_allows_destructive_direct_mcp_app_callbacks_without_elicitation() {
+async fn call_tool_blocks_destructive_direct_mcp_app_callbacks_without_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -4848,7 +4866,9 @@ async fn call_tool_allows_destructive_direct_mcp_app_callbacks_without_elicitati
 
     let text = call_tool_error_text(server, "youtube_delete_ui").await;
     let envelope: Value = serde_json::from_str(&text).expect("error envelope");
-    assert_eq!(envelope["error"]["kind"], "upstream_error");
+    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert!(envelope["error"]["upstream"].is_null());
+    assert!(envelope["error"]["cause"].is_null());
     assert!(
         !text.contains("confirm:true") && !text.contains("confirm\":true"),
         "destructive widget callbacks must not suggest confirm bypasses: {text}"
@@ -4856,7 +4876,7 @@ async fn call_tool_allows_destructive_direct_mcp_app_callbacks_without_elicitati
 }
 
 #[tokio::test]
-async fn call_tool_allows_destructive_legacy_widget_callbacks_without_elicitation() {
+async fn call_tool_blocks_destructive_legacy_widget_callbacks_without_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let mut delete_tool = fixture_upstream_tool(&upstream_name, "youtube_delete", None);
     delete_tool.destructive = true;
@@ -4897,7 +4917,9 @@ async fn call_tool_allows_destructive_legacy_widget_callbacks_without_elicitatio
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     let envelope: Value = serde_json::from_str(text).expect("error envelope");
-    assert_eq!(envelope["error"]["kind"], "upstream_error");
+    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert!(envelope["error"]["upstream"].is_null());
+    assert!(envelope["error"]["cause"].is_null());
 }
 
 #[tokio::test]
@@ -5186,9 +5208,7 @@ async fn call_tool_rejects_ambiguous_non_destructive_mcp_app_sibling_callbacks()
 }
 
 #[tokio::test]
-async fn call_tool_allows_destructive_mcp_app_sibling_callback_without_elicitation() {
-    // If the client cannot do elicitation, Labby must not invent a second
-    // destructive gate for MCP App callbacks.
+async fn call_tool_blocks_destructive_mcp_app_sibling_callback_without_elicitation() {
     let upstream_name: Arc<str> = Arc::from("apps");
     let ui_tool = fixture_upstream_tool(
         &upstream_name,
@@ -5233,15 +5253,10 @@ async fn call_tool_allows_destructive_mcp_app_sibling_callback_without_elicitati
     .expect("call tool result");
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
-    assert!(
-        text.contains("upstream_error"),
-        "destructive sibling callback should reach upstream routing, got {text}"
-    );
-    assert!(
-        !text.contains("confirmation_required"),
-        "destructive sibling callback must not hit a fake confirmation gate, got {text}"
-    );
-    assert!(!text.contains("confirm:true") && !text.contains("confirm\":true"));
+    let envelope: Value = serde_json::from_str(text).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "confirmation_required");
+    assert!(envelope["error"]["upstream"].is_null());
+    assert!(envelope["error"]["cause"].is_null());
 }
 
 #[tokio::test]
@@ -6181,7 +6196,12 @@ async fn authenticated_http_gets_management_descriptor_while_local_peers_keep_co
             .len(),
         6
     );
-    assert!(compat.meta.is_none());
+    assert!(
+        compat
+            .meta
+            .as_ref()
+            .is_some_and(|meta| !meta.0.contains_key("ui"))
+    );
 }
 
 #[tokio::test]
@@ -6238,12 +6258,19 @@ async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths(
         .tools;
 
     for tools in [&contract_tools, &listed] {
-        let annotations = tools
+        let descriptor = tools
             .iter()
             .find(|tool| tool.name.as_ref() == "annotated.read")
-            .and_then(|tool| tool.annotations.as_ref())
+            .expect("upstream downstream descriptor");
+        let annotations = descriptor
+            .annotations
+            .as_ref()
             .expect("upstream annotations on downstream descriptor");
         assert_eq!(annotations, &expected);
+        let serialized = serde_json::to_value(descriptor).unwrap();
+        let expected_security = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
+        assert_eq!(serialized["securitySchemes"], expected_security);
+        assert_eq!(serialized["_meta"]["securitySchemes"], expected_security);
     }
     assert_eq!(listed, contract_tools);
 }

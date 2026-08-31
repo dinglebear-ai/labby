@@ -621,6 +621,29 @@ impl UpstreamPool {
         self
     }
 
+    fn oauth_lifecycle_epoch(&self) -> Option<u64> {
+        self.oauth_client_cache
+            .as_ref()
+            .map(OauthClientCache::lifecycle_epoch)
+    }
+
+    async fn oauth_publication_guard(
+        &self,
+        expected_epoch: Option<u64>,
+    ) -> anyhow::Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        let Some(expected_epoch) = expected_epoch else {
+            return Ok(None);
+        };
+        let guard = self.oauth_invalidation_barrier.clone().read_owned().await;
+        if self.oauth_lifecycle_epoch() == Some(expected_epoch) {
+            Ok(Some(guard))
+        } else {
+            Err(anyhow::anyhow!(
+                "OAuth credentials changed while the upstream connection was being built"
+            ))
+        }
+    }
+
     #[must_use]
     pub fn with_runtime_origin(mut self, origin: Option<String>) -> Self {
         self.runtime_origin = origin;

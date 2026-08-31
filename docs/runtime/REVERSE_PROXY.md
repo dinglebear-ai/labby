@@ -29,9 +29,13 @@ front of that listener and configure public MCP routes in Labby.
 - Use read/write/idle timeouts suitable for long-lived Streamable HTTP and SSE.
 - Forward `/.well-known/oauth-protected-resource/<route>` to Labby.
 
-Labby intentionally uses `Host` for protected-route lookup by default. Do not rely
-on spoofable `X-Forwarded-Host` unless a future trusted-proxy mode explicitly
-enables it.
+Labby intentionally uses `Host` for protected-route lookup by default. If a
+proxy cannot preserve that authority, `[api].trust_forwarded_headers = true`
+makes the first `X-Forwarded-Host` value authoritative for protected-route and
+route-metadata selection. This is safe only when the Labby listener is not
+directly reachable by clients and every trusted proxy overwrites the inbound
+header. It does not enable trust for `X-Forwarded-Proto` or forwarded client-IP
+headers. Prefer preserving `Host` and leaving the option at its default `false`.
 
 ## nginx or SWAG
 

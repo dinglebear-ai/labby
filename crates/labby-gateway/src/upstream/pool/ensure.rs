@@ -172,7 +172,10 @@ impl UpstreamPool {
             );
             return Ok(true);
         }
-        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
+        let lifecycle_epoch = config
+            .oauth
+            .as_ref()
+            .and_then(|_| self.oauth_lifecycle_epoch());
         if self.has_healthy_tools_for_upstream(&config.name).await {
             self.refresh_ui_resource_cache_for_healthy_upstream_if_needed(config)
                 .await;
@@ -236,6 +239,7 @@ impl UpstreamPool {
         };
         let tool_count = tools.len();
         let supports_skills = peer_declares_skills(&conn.peer);
+        let _oauth_publication = self.oauth_publication_guard(lifecycle_epoch).await?;
         self.install_connected_tools(config, conn, tools, Some(supports_skills))
             .await?;
         if let Some(subject) = subject {
@@ -273,7 +277,6 @@ impl UpstreamPool {
         oauth_subject: Option<&str>,
         connector: TestUpstreamConnector,
     ) -> anyhow::Result<bool> {
-        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
         if !config.enabled {
             return Ok(false);
         }

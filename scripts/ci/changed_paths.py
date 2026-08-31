@@ -35,6 +35,27 @@ def any_match(paths: list[str], predicate: Callable[[str], bool]) -> bool:
     return any(predicate(path) for path in paths)
 
 
+def is_auth_conformance_input(path: str) -> bool:
+    """Inputs whose changes must execute the dated auth conformance job."""
+    return path in {
+        "conformance/auth-requirements.json",
+        "conformance/mcp-auth-coverage-manifest.json",
+        "conformance/mcp-auth-normative.json",
+        "conformance/openai-auth-normative.json",
+        "conformance/vendor-rmcp-provenance.json",
+        "scripts/ci/test_auth_spec_matrix.py",
+    } or starts(path, "vendor/rmcp-3.1.0-labby/") or starts(
+        path,
+        "scripts/ci/mcp_auth_",
+        "scripts/ci/openai-auth-",
+        "scripts/ci/refresh_mcp_auth_",
+        "scripts/ci/refresh_openai_auth_",
+        "scripts/ci/publish_mcp_auth_",
+        "scripts/ci/check_vendor_rmcp_",
+        "scripts/ci/auth_backup_restore_",
+    )
+
+
 def classify(event: str, paths: list[str]) -> dict[str, bool]:
     if event in {"schedule", "workflow_dispatch"}:
         return {key: True for key in OUTPUT_KEYS}
@@ -45,6 +66,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     workflow = any_match(
         paths,
         lambda p: starts(p, ".github/workflows/", ".github/actions/")
+        or is_auth_conformance_input(p)
         or p
         in {
             ".github/actionlint.yaml",
@@ -56,6 +78,11 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/mcp_upstream_drift.py",
             "scripts/ci/test_mcp_upstream_drift.py",
             "conformance/upstream-baseline.json",
+            "conformance/auth-requirements.json",
+            "conformance/mcp-auth-normative.json",
+            "scripts/ci/test_auth_spec_matrix.py",
+            "scripts/ci/refresh_mcp_auth_denominator.py",
+            "scripts/ci/auth_backup_restore_drill.py",
             "crates/labby/tests/ci_changed_paths.rs",
         },
     )
@@ -98,6 +125,9 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             ".cargo/",
         )
     )
+    vendored_rust_sources = any_match(
+        paths, lambda p: starts(p, "vendor/rmcp-3.1.0-labby/")
+    )
     rust_manifests = any_match(
         paths,
         lambda p: p
@@ -111,15 +141,16 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "deny.toml",
         },
     )
-    rust_compile = rust_sources or rust_manifests
+    rust_compile = rust_sources or vendored_rust_sources or rust_manifests
     # Dependency, lockfile, toolchain, and build-policy changes can alter test
     # compilation and runtime behavior just as directly as a Rust source edit.
-    rust_test = rust_sources or rust_manifests
+    rust_test = rust_sources or vendored_rust_sources or rust_manifests
+    rust_test = rust_test or any_match(paths, is_auth_conformance_input)
     security = any_match(
         paths,
         lambda p: p in {"Cargo.lock", "deny.toml"} or starts(p, ".cargo/"),
     )
-    security = security or rust_sources
+    security = security or rust_sources or vendored_rust_sources
     docs_check = docs_check or rust_sources
     docker_inputs = any_match(
         paths,

@@ -216,15 +216,20 @@ impl GatewayManager {
         upstream: &str,
         subject: &str,
         reason: &'static str,
+        writer_held: bool,
     ) -> OAuthSessionInvalidation {
         let oauth_barrier = self
             .oauth_client_cache
             .as_ref()
             .map(|cache| cache.invalidation_barrier());
-        let _guard = match oauth_barrier {
-            Some(barrier) => Some(barrier.write_owned().await),
-            None => None,
+        let _guard = match (writer_held, oauth_barrier) {
+            (true, _) => None,
+            (false, Some(barrier)) => Some(barrier.write_owned().await),
+            (false, None) => None,
         };
+        if !writer_held && let Some(cache) = &self.oauth_client_cache {
+            cache.advance_lifecycle_epoch();
+        }
         let invalidated = match self.current_pool_sync() {
             Some(pool) => {
                 pool.invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
@@ -256,6 +261,7 @@ impl GatewayManager {
         &self,
         upstream: &str,
         reason: &'static str,
+        writer_held: bool,
     ) -> OAuthSessionInvalidation {
         let config = self.config.read().await;
         let shared_upstreams = Self::google_provider_upstream_names(&config);
@@ -264,10 +270,14 @@ impl GatewayManager {
             .oauth_client_cache
             .as_ref()
             .map(|cache| cache.invalidation_barrier());
-        let _guard = match oauth_barrier {
-            Some(barrier) => Some(barrier.write_owned().await),
-            None => None,
+        let _guard = match (writer_held, oauth_barrier) {
+            (true, _) => None,
+            (false, Some(barrier)) => Some(barrier.write_owned().await),
+            (false, None) => None,
         };
+        if !writer_held && let Some(cache) = &self.oauth_client_cache {
+            cache.advance_lifecycle_epoch();
+        }
         let invalidated = match self.current_pool_sync() {
             Some(pool) => {
                 pool.invalidate_oauth_upstream_sessions_guarded(&shared_upstreams, reason)
@@ -309,7 +319,11 @@ impl GatewayManager {
         &self,
     ) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
         match &self.oauth_client_cache {
-            Some(cache) => Some(cache.invalidation_barrier().write_owned().await),
+            Some(cache) => {
+                let guard = cache.invalidation_barrier().write_owned().await;
+                cache.advance_lifecycle_epoch();
+                Some(guard)
+            }
             None => None,
         }
     }
@@ -419,11 +433,25 @@ impl GatewayManager {
         code: &str,
         state: &str,
     ) -> Result<(), ToolError> {
+        self.complete_upstream_authorization_callback_with_issuer(
+            upstream, subject, code, state, None,
+        )
+        .await
+    }
+
+    pub async fn complete_upstream_authorization_callback_with_issuer(
+        &self,
+        upstream: &str,
+        subject: &str,
+        code: &str,
+        state: &str,
+        issuer: Option<&str>,
+    ) -> Result<(), ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "callback")?;
 
         manager
-            .complete_authorization_callback(subject, code, state)
+            .complete_authorization_callback_with_issuer(subject, code, state, issuer)
             .await
             .map_err(|e| {
                 tracing::warn!(
@@ -451,11 +479,16 @@ impl GatewayManager {
         );
 
         if manager.credential_source_label() == "google_provider" {
-            self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace")
+            self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace", false)
                 .await;
         } else {
-            self.invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.replace")
-                .await;
+            self.invalidate_subject_oauth_runtime(
+                upstream,
+                subject,
+                "oauth.credentials.replace",
+                false,
+            )
+            .await;
         }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
@@ -553,6 +586,7 @@ impl GatewayManager {
                             upstream,
                             subject,
                             "oauth.credentials.refresh",
+                            false,
                         )
                         .await;
                         // Fire-and-forget: rediscovery is a full reload that can
@@ -715,6 +749,14 @@ impl GatewayManager {
     ) -> Result<labby_auth::types::GoogleProviderInvalidation, ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "google_revoke")?;
+        let lifecycle_guard = match &self.oauth_client_cache {
+            Some(cache) => {
+                let guard = cache.invalidation_barrier().write_owned().await;
+                cache.advance_lifecycle_epoch();
+                Some(guard)
+            }
+            None => None,
+        };
         let invalidation = manager
             .revoke_shared_google_credential()
             .await
@@ -731,8 +773,9 @@ impl GatewayManager {
             })?;
         self.invalidate_oauth_status_discovery(upstream, None).await;
         let sessions = self
-            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke")
+            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke", true)
             .await;
+        drop(lifecycle_guard);
         tracing::info!(
             service = "upstream_oauth",
             action = "google_revoke",
@@ -758,24 +801,39 @@ impl GatewayManager {
     ) -> Result<(), ToolError> {
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "clear")?;
+        let lifecycle_guard = match &self.oauth_client_cache {
+            Some(cache) => {
+                let guard = cache.invalidation_barrier().write_owned().await;
+                cache.advance_lifecycle_epoch();
+                Some(guard)
+            }
+            None => None,
+        };
 
-        manager.clear_credentials(subject).await.map_err(|e| {
-            tracing::warn!(
-                service = "upstream_oauth",
-                action = "clear",
-                upstream,
-                kind = e.kind(),
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream oauth clear: failed to clear credentials"
-            );
-            tool_error_from_oauth(e)
-        })?;
+        let clear_result = manager.clear_credentials(subject).await;
+        // Invalidation is deliberately unconditional once a clear attempt has
+        // crossed the lifecycle barrier. Even if persistence reports a partial
+        // or uncertain failure, no already-built client/session may continue
+        // using authority that might have been deleted.
         self.invalidate_oauth_status_discovery(upstream, Some(subject))
             .await;
 
         let sessions = self
-            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear")
+            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear", true)
             .await;
+        drop(lifecycle_guard);
+        if let Err(error) = clear_result {
+            tracing::warn!(
+                service = "upstream_oauth",
+                action = "clear",
+                upstream,
+                kind = error.kind(),
+                invalidated_sessions = sessions.total(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "upstream oauth clear: persistence failed; live clients were invalidated defensively"
+            );
+            return Err(tool_error_from_oauth(error));
+        }
         tracing::info!(
             service = "upstream_oauth",
             action = "clear",

@@ -32,7 +32,10 @@ pub async fn authorization_server_metadata(
         authorization_endpoint: format!("{base}/authorize"),
         token_endpoint: format!("{base}/token"),
         revocation_endpoint: format!("{base}/revoke"),
-        registration_endpoint: format!("{base}/register"),
+        registration_endpoint: state
+            .config
+            .enable_dynamic_registration
+            .then(|| format!("{base}/register")),
         native_callback_endpoint: Some(native_callback_endpoint(&state)),
         // Keep the legacy field absent so pre-v2 Palette releases safely fall
         // back to loopback rather than polling caller-controlled `state`.
@@ -73,10 +76,17 @@ pub async fn protected_resource_metadata(
     State(state): State<AuthState>,
 ) -> Json<ProtectedResourceMetadata> {
     let base = public_base_url(&state);
+    let scopes_supported = state
+        .config
+        .scopes_supported
+        .iter()
+        .filter(|scope| scope.as_str() != "offline_access")
+        .cloned()
+        .collect();
     Json(ProtectedResourceMetadata {
         resource: canonical_resource_url(&state),
         authorization_servers: vec![base],
-        scopes_supported: state.config.scopes_supported.clone(),
+        scopes_supported,
         bearer_methods_supported: vec!["header".to_string()],
     })
 }
@@ -125,7 +135,9 @@ mod tests {
 
     use crate::routes::router;
 
-    use super::super::authorize::tests::test_auth_state;
+    use super::super::authorize::tests::{
+        test_auth_config, test_auth_state, test_auth_state_with_config,
+    };
 
     #[tokio::test]
     async fn authorization_server_metadata_exposes_lab_endpoints() {
@@ -144,7 +156,16 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["issuer"], "https://lab.example.com");
+        assert_eq!(
+            json["authorization_endpoint"],
+            "https://lab.example.com/authorize"
+        );
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
+        assert_eq!(
+            json["code_challenge_methods_supported"],
+            serde_json::json!(["S256"])
+        );
         assert_eq!(
             json["authorization_response_iss_parameter_supported"], true,
             "RFC 9207 issuer binding must remain the default"
@@ -163,6 +184,27 @@ mod tests {
             json["revocation_endpoint"],
             "https://lab.example.com/revoke"
         );
+    }
+
+    #[tokio::test]
+    async fn authorization_server_metadata_omits_unmounted_registration_endpoint() {
+        let mut config = test_auth_config();
+        config.enable_dynamic_registration = false;
+        let app = crate::routes::bearer_only_router(test_auth_state_with_config(config).await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("registration_endpoint").is_none());
     }
 
     #[tokio::test]
@@ -203,7 +245,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorization_server_metadata_supports_explicit_codex_issuer_compatibility() {
+    async fn authorization_server_metadata_disables_issuer_binding_in_compatibility_mode() {
         use crate::authorize::tests::{test_auth_config, test_auth_state_with_config};
 
         let mut config = test_auth_config();
@@ -247,6 +289,16 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["resource"], "https://lab.example.com/mcp");
+        assert_eq!(
+            json["authorization_servers"],
+            serde_json::json!(["https://lab.example.com"])
+        );
+        assert_eq!(
+            json["scopes_supported"],
+            serde_json::json!(["lab:read", "lab", "lab:admin"]),
+            "root discovery must lead with the least-privilege read scope"
+        );
+        assert!(json["resource"].as_str().unwrap().starts_with("https://"));
     }
 
     #[tokio::test]
@@ -273,7 +325,11 @@ mod tests {
             token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
                 "metadata-test-provider-key",
             )),
-            scopes_supported: vec!["syslog:read".to_string(), "syslog:admin".to_string()],
+            scopes_supported: vec![
+                "syslog:read".to_string(),
+                "offline_access".to_string(),
+                "syslog:admin".to_string(),
+            ],
             resource_path: "/syslog/mcp".to_string(),
             ..AuthConfig::default()
         };
@@ -297,6 +353,14 @@ mod tests {
         assert_eq!(
             json["scopes_supported"],
             serde_json::json!(["syslog:read", "syslog:admin"])
+        );
+        assert!(
+            json["scopes_supported"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|scope| scope != "offline_access"),
+            "refresh-token policy is not a protected-resource scope requirement"
         );
     }
 }

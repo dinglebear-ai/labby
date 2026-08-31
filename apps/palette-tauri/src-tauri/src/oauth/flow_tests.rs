@@ -88,6 +88,24 @@ fn require_secure_url_allows_https_and_loopback_http_only() {
 }
 
 #[test]
+fn native_authorization_url_must_match_discovered_authorization_origin() {
+    let expected = "https://axon.example.com/authorize?client_id=palette";
+    assert!(validate_native_authorization_url(expected, expected).is_ok());
+    for untrusted in [
+        "file:///etc/passwd",
+        "labby-helper://run?command=whoami",
+        "http://axon.example.com/authorize",
+        "https://evil.example.com/authorize",
+        "https://user:pass@axon.example.com/authorize",
+    ] {
+        assert!(
+            validate_native_authorization_url(untrusted, expected).is_err(),
+            "{untrusted} must not reach the desktop opener"
+        );
+    }
+}
+
+#[test]
 fn authorize_url_carries_all_required_pkce_params() {
     let url = build_authorize_url(
         &meta(),

@@ -45,7 +45,7 @@ use crate::app_manifest::{
     SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_DATA_API_PREFIX,
 };
 
-use super::router_middleware::{derive_actor_key, lab_auth_deriver, parse_bearer_token};
+use super::router_middleware::{derive_actor_key, lab_auth_deriver};
 
 use super::app_routes::{
     apps_launcher_page, apps_manifest, labby_app_host_js, server_logs_app_page,
@@ -130,8 +130,9 @@ async fn app_auth_state_with_protected_routes(
 
 async fn auth_authorization_server_metadata(
     State(state): State<AppState>,
-) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(labby_auth::metadata::authorization_server_metadata(State(app_auth_state(&state)?)).await)
+) -> Result<Json<labby_auth::types::AuthorizationServerMetadata>, LabAuthError> {
+    let auth_state = app_auth_state(&state)?;
+    Ok(labby_auth::metadata::authorization_server_metadata(State(auth_state)).await)
 }
 
 async fn auth_protected_resource_metadata(
@@ -139,10 +140,12 @@ async fn auth_protected_resource_metadata(
     request: Request<Body>,
 ) -> Result<axum::response::Response, LabAuthError> {
     #[cfg(feature = "gateway")]
-    if let (Some(manager), Some(host)) = (state.gateway_manager.as_ref(), request_host(&request))
-        && let Some(route) = manager
-            .resolve_protected_route_metadata(&host, request.uri().path())
-            .await
+    if let (Some(manager), Some(host)) = (
+        state.gateway_manager.as_ref(),
+        request_host(&request, state.config.api.trust_forwarded_headers),
+    ) && let Some(route) = manager
+        .resolve_protected_route_metadata(&host, request.uri().path())
+        .await
     {
         tracing::info!(
             host = %host,
@@ -191,7 +194,7 @@ async fn protected_route_resource_metadata(
     let Some(manager) = state.gateway_manager.as_ref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Some(host) = request_host(&request) else {
+    let Some(host) = request_host(&request, state.config.api.trust_forwarded_headers) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let path = request.uri().path();
@@ -359,19 +362,35 @@ fn auth_error_response_with_challenge(
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(" ");
+    let metadata_url = quoted_challenge_value(metadata_url);
+    let scope = quoted_challenge_value(&scope);
     let www_auth = format!("Bearer resource_metadata=\"{metadata_url}\", scope=\"{scope}\"");
-    if let Ok(value) = HeaderValue::from_str(&www_auth) {
-        response
-            .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, value);
-    }
+    let value = HeaderValue::from_str(&www_auth)
+        .expect("Bearer challenge serializer emits header-safe ASCII");
+    response
+        .headers_mut()
+        .insert(header::WWW_AUTHENTICATE, value);
     response
 }
 
-fn request_host(request: &Request<Body>) -> Option<String> {
-    request
-        .headers()
-        .get("x-forwarded-host")
+fn quoted_challenge_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'\\' => encoded.push_str("\\\\"),
+            b'"' => encoded.push_str("\\\""),
+            0x20..=0x7e => encoded.push(char::from(byte)),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn request_host(request: &Request<Body>, trust_forwarded_headers: bool) -> Option<String> {
+    let forwarded = trust_forwarded_headers
+        .then(|| request.headers().get("x-forwarded-host"))
+        .flatten();
+    forwarded
         .or_else(|| request.headers().get(header::HOST))
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(',').next())
@@ -406,7 +425,7 @@ async fn authenticate_protected_route_request(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(parse_bearer_token);
+        .and_then(labby_auth::parse_bearer_token);
     let Some(token) = auth_header else {
         tracing::warn!(
             route = %route.name,
@@ -587,15 +606,17 @@ async fn authenticate_protected_route_request(
         })
         .into_response();
         let scope = required_scopes.join(" ");
+        let scope = quoted_challenge_value(&scope);
+        let metadata_url = quoted_challenge_value(&route_resource_metadata_url(route));
         let challenge = format!(
             "Bearer error=\"insufficient_scope\", scope=\"{scope}\", resource_metadata=\"{}\"",
-            route_resource_metadata_url(route)
+            metadata_url
         );
-        if let Ok(value) = HeaderValue::from_str(&challenge) {
-            response
-                .headers_mut()
-                .insert(header::WWW_AUTHENTICATE, value);
-        }
+        let value = HeaderValue::from_str(&challenge)
+            .expect("Bearer challenge serializer emits header-safe ASCII");
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, value);
         return Err(response);
     }
     let subject_id = labby_auth::util::fingerprint(&claims.sub);
@@ -1791,9 +1812,10 @@ async fn protected_mcp_intercept(
     if is_public_relay_reserved_path(request.uri().path()) {
         return Ok(next.run(request).await);
     }
-    let route = if let (Some(manager), Some(host)) =
-        (state.gateway_manager.as_ref(), request_host(&request))
-    {
+    let route = if let (Some(manager), Some(host)) = (
+        state.gateway_manager.as_ref(),
+        request_host(&request, state.config.api.trust_forwarded_headers),
+    ) {
         manager
             .resolve_protected_route(&host, request.uri().path())
             .await
@@ -2672,6 +2694,186 @@ mod tests {
 
     use super::*;
 
+    /// One representative dispatch route for every registry-backed HTTP service.
+    ///
+    /// The registry is the denominator: adding a service without classifying its
+    /// HTTP exposure makes this test fail. `lab_admin` is the sole reviewed
+    /// MCP-only service. Every other entry must resolve to a mounted route and be
+    /// rejected by the shared authentication layer before its handler runs.
+    fn registry_http_auth_probe(service: &str) -> Option<(Method, String)> {
+        let path = match service {
+            "lab_admin" => return None,
+            "fs" => "/v1/fs/list".to_string(),
+            name @ ("doctor" | "gateway" | "server_logs" | "setup" | "skills" | "snippets") => {
+                format!("/v1/{name}")
+            }
+            unknown => panic!(
+                "registered service `{unknown}` has no reviewed HTTP auth probe; add its mounted dispatch route or explicitly classify it as MCP-only"
+            ),
+        };
+        let method = if service == "fs" {
+            Method::GET
+        } else {
+            Method::POST
+        };
+        Some((method, path))
+    }
+
+    #[tokio::test]
+    async fn every_inventoried_customer_or_write_http_route_authenticates_before_dispatch() {
+        let registry = crate::registry::build_default_registry();
+        let state = AppState::from_registry(registry.clone());
+
+        for service in registry.services() {
+            let Some((method, path)) = registry_http_auth_probe(service.name) else {
+                assert_eq!(service.name, "lab_admin", "only lab_admin is MCP-only");
+                continue;
+            };
+            let response = build_router_with_bearer(
+                state.clone(),
+                Some("registry-denominator-secret".into()),
+                None,
+            )
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help","params":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "OAI-CLAUSE-001: registry-backed HTTP service `{}` at `{path}` reached routing without authentication",
+                service.name
+            );
+        }
+
+        let service_names = registry
+            .services()
+            .iter()
+            .map(|service| service.name.to_string())
+            .collect::<Vec<_>>();
+        let route_inventory = crate::docs::routes::build_route_docs(&service_names);
+        const SERVICE_PLACEHOLDER: &str = "{service}";
+        const PATH_PLACEHOLDER: &str = "{path}";
+        for route in route_inventory
+            .iter()
+            .filter(|route| route.auth_required && route.handler_group != "mcp")
+        {
+            let path = route
+                .path
+                .replace(SERVICE_PLACEHOLDER, "gateway")
+                .replace("{email}", "user%40example.com")
+                .replace("{machine_id}", "machine-1")
+                .replace("{suffix}", "callback")
+                .replace("{name}", "default")
+                .replace(PATH_PLACEHOLDER, "mcp");
+            let method = Method::from_bytes(route.method.as_bytes()).unwrap();
+            let response = build_router_with_bearer(
+                state.clone(),
+                Some("route-denominator-secret".into()),
+                None,
+            )
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(&path)
+                    .header(header::HOST, "lab.example.com")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"help","params":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            let status = response.status();
+            // These three browser-session endpoints intentionally self-manage
+            // authentication instead of using the bearer middleware: login is
+            // absent without OAuth, session returns only an anonymous marker,
+            // and unauthenticated logout is an idempotent no-op.
+            match route.path.as_str() {
+                "/auth/login" => {
+                    assert_eq!(
+                        status,
+                        StatusCode::NOT_FOUND,
+                        "login is unavailable without OAuth"
+                    );
+                    continue;
+                }
+                "/auth/session" => {
+                    assert_eq!(status, StatusCode::OK);
+                    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap();
+                    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body["authenticated"], false);
+                    assert!(body["user"].is_null());
+                    continue;
+                }
+                "/auth/logout" => {
+                    assert_eq!(status, StatusCode::NO_CONTENT);
+                    continue;
+                }
+                _ => {}
+            }
+            let unavailable_without_runtime =
+                route.runtime_condition.as_deref().is_some_and(|condition| {
+                    condition == crate::docs::routes::OAUTH_MODE_ONLY
+                        || condition == crate::docs::routes::BOOTSTRAP_OWNER_RUNTIME_CONDITION
+                        || condition == crate::docs::routes::DEV_RUNTIME_CONDITION
+                        || condition == crate::docs::routes::GATEWAY_RUNTIME_CONDITION
+                        || condition == crate::docs::routes::FS_RUNTIME_CONDITION
+                });
+            assert!(
+                status == StatusCode::UNAUTHORIZED
+                    || (status == StatusCode::NOT_FOUND && unavailable_without_runtime),
+                "OAI-CLAUSE-001: inventoried sensitive route {} {} did not authenticate before dispatch (status={}, group={}, runtime_condition={:?})",
+                route.method,
+                route.path,
+                status,
+                route.handler_group,
+                route.runtime_condition
+            );
+        }
+    }
+
+    #[test]
+    fn forwarded_host_requires_explicit_trusted_proxy_configuration() {
+        let request = Request::builder()
+            .uri("/mcp")
+            .header(header::HOST, "localhost:8765")
+            .header("x-forwarded-host", "protected.example")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            request_host(&request, false).as_deref(),
+            Some("localhost:8765")
+        );
+        assert_eq!(
+            request_host(&request, true).as_deref(),
+            Some("protected.example")
+        );
+    }
+
+    #[test]
+    fn bearer_challenge_escapes_quoted_parameters() {
+        assert_eq!(quoted_challenge_value("a\"b\\c"), "a\\\"b\\\\c");
+        assert_eq!(quoted_challenge_value("a,b\n☃"), "a,b%0A%E2%98%83");
+        let response = auth_error_response_with_challenge(
+            "missing",
+            "https://bad.example/meta\n☃",
+            &["lab:read,bad\r\nnext".to_string()],
+        );
+        let challenge = response.headers()[header::WWW_AUTHENTICATE]
+            .to_str()
+            .expect("serialized challenge is ASCII");
+        assert!(challenge.contains("%0A%E2%98%83"));
+        assert!(challenge.contains("lab:read,bad%0D%0Anext"));
+    }
+
     #[test]
     fn every_route_backstop_is_derived_from_configured_deadlines() {
         // The backstop must never fire before the deadline it wraps, on ANY
@@ -2977,6 +3179,7 @@ mod tests {
     #[tokio::test]
     async fn shared_auth_layer_preserves_canonical_contract_for_v1_and_mcp() {
         let auth_state = test_lab_auth_state().await;
+        let jwt = issue_test_lab_token(&auth_state);
         let mcp_router = Router::new().route("/mcp", get(|| async { StatusCode::OK }));
         let app = build_router(
             AppState::new(),
@@ -2986,6 +3189,7 @@ mod tests {
             &[],
         );
 
+        let mut challenges = Vec::new();
         for (path, authorization) in [
             ("/v1/setup/actions", None),
             ("/v1/setup/actions", Some("Bearer invalid")),
@@ -2999,6 +3203,61 @@ mod tests {
             let response = app
                 .clone()
                 .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            challenges.push(
+                response.headers()[header::WWW_AUTHENTICATE]
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            );
+            assert_canonical_auth_failure(response).await;
+        }
+        assert_eq!(challenges[0], challenges[2]);
+        assert_eq!(challenges[1], challenges[3]);
+
+        for (path, token) in [
+            ("/v1/setup/actions", "secret-token"),
+            ("/mcp", "secret-token"),
+            ("/v1/setup/actions", jwt.as_str()),
+            ("/mcp", jwt.as_str()),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{path} rejected valid auth"
+            );
+        }
+
+        let session = seed_browser_session(&Arc::new(test_lab_auth_state().await)).await;
+        for path in ["/v1/setup/actions", "/mcp"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header(
+                            header::COOKIE,
+                            format!(
+                                "{}={}",
+                                labby_auth::session::BROWSER_SESSION_COOKIE_NAME,
+                                session.session_id
+                            ),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
             assert_canonical_auth_failure(response).await;
@@ -4402,7 +4661,7 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(header.contains("resource_metadata="));
-        assert!(header.contains("scope=\"lab lab:admin\""));
+        assert!(header.contains("scope=\"lab:read lab lab:admin\""));
     }
 
     #[tokio::test]
@@ -4435,6 +4694,43 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["issuer"], "https://lab.example.com");
         assert_eq!(json["token_endpoint"], "https://lab.example.com/token");
+    }
+
+    #[tokio::test]
+    async fn disabled_dynamic_registration_is_neither_advertised_nor_mounted() {
+        let auth_state = test_lab_auth_state().await;
+        assert!(!auth_state.config.enable_dynamic_registration);
+        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+        let metadata = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(metadata.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(json.get("registration_endpoint").is_none());
+
+        let register = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(register.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -4600,6 +4896,10 @@ mod tests {
         assert_eq!(root_body, compatibility_body);
         let json: serde_json::Value = serde_json::from_slice(&root_body).unwrap();
         assert_eq!(json["resource"], "https://mcp.example.com/telemetry");
+        assert_eq!(
+            json["authorization_servers"],
+            serde_json::json!(["https://lab.example.com"])
+        );
     }
 
     #[cfg(feature = "gateway")]

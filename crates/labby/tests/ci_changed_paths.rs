@@ -14,6 +14,105 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+#[test]
+fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
+    let action =
+        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
+            .expect("read setup-rust-kache action");
+
+    let fallback = action
+        .split("- name: Select writable Rust homes")
+        .nth(1)
+        .and_then(|section| section.split("\n    - name: Install Rust").next())
+        .expect("writable Rust homes step must run before toolchain installation");
+    for contract in [
+        "[ ! -w \"$rustup_home\" ]",
+        "rustup_home=\"$RUNNER_TEMP/rustup\"",
+        "[ ! -w \"$cargo_home\" ]",
+        "cargo_home=\"$RUNNER_TEMP/cargo\"",
+        "echo \"RUSTUP_HOME=$rustup_home\"",
+        "echo \"CARGO_HOME=$cargo_home\"",
+        "echo \"$cargo_home/bin\" >> \"$GITHUB_PATH\"",
+    ] {
+        assert!(
+            fallback.contains(contract),
+            "writable Rust home fallback must retain `{contract}`"
+        );
+    }
+}
+
+#[test]
+fn action_managed_kache_fails_open_when_its_daemon_has_no_remote() {
+    let action =
+        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
+            .expect("read setup-rust-kache action");
+
+    let health = action
+        .split("- name: Verify action-managed Kache remote")
+        .nth(1)
+        .and_then(|section| {
+            section
+                .split("\n    # Fork PRs (and any run without shared MinIO credentials)")
+                .next()
+        })
+        .expect("action-managed Kache must be verified before compilation");
+    for contract in [
+        "stats=\"$(kache stats 2>&1 || true)\"",
+        "kache daemon restart || true",
+        "for _attempt in {1..10}",
+        "if remote_matches <<<\"$stats\"",
+        "echo \"RUSTC_WRAPPER=\"",
+        "echo \"CARGO_BUILD_RUSTC_WRAPPER=\"",
+        "echo \"usable=false\" >> \"$GITHUB_OUTPUT\"",
+    ] {
+        assert!(
+            health.contains(contract),
+            "unhealthy action-managed Kache must fail open via `{contract}`"
+        );
+    }
+
+    assert!(
+        action
+            .matches("steps.kache-action-health.outputs.usable == 'false'")
+            .count()
+            >= 2,
+        "an unhealthy Kache daemon must select both the safe cache fallback and bare Cargo"
+    );
+}
+
+#[test]
+fn rustfmt_lane_selects_writable_rust_homes_before_toolchain_install() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    let fmt = workflow
+        .split("  fmt:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  deny:\n").next())
+        .expect("Format job must remain present");
+
+    let homes = fmt
+        .split("- name: Select writable Rust homes for rustfmt")
+        .nth(1)
+        .and_then(|section| {
+            section
+                .split("\n      - name: Install Rust toolchain with rustfmt")
+                .next()
+        })
+        .expect("rustfmt lane must select writable homes before rustup runs");
+    for contract in [
+        "rustup_home=\"$RUNNER_TEMP/rustup\"",
+        "cargo_home=\"$RUNNER_TEMP/cargo\"",
+        "echo \"RUSTUP_HOME=$rustup_home\"",
+        "echo \"CARGO_HOME=$cargo_home\"",
+        "echo \"$cargo_home/bin\" >> \"$GITHUB_PATH\"",
+    ] {
+        assert!(
+            homes.contains(contract),
+            "rustfmt writable-home guard must retain `{contract}`"
+        );
+    }
+}
+
 fn classify(event: &str, files: &[&str]) -> HashMap<String, String> {
     let temp_dir = std::env::temp_dir().join(format!(
         "lab-ci-paths-{}-{}-{}",
@@ -343,6 +442,43 @@ fn secondary_workflow_changes_enable_only_their_own_categories() {
 }
 
 #[test]
+fn auth_matrix_changes_route_to_conformance() {
+    for path in [
+        "conformance/auth-requirements.json",
+        "conformance/mcp-auth-coverage-manifest.json",
+        "scripts/ci/test_auth_spec_matrix.py",
+        "conformance/mcp-auth-normative.json",
+        "conformance/openai-auth-normative.json",
+        "conformance/vendor-rmcp-provenance.json",
+        "scripts/ci/refresh_mcp_auth_denominator.py",
+        "scripts/ci/refresh_openai_auth_denominator.py",
+        "scripts/ci/publish_mcp_auth_disposition.py",
+        "scripts/ci/openai-auth-conformance.sh",
+        "scripts/ci/check_vendor_rmcp_provenance.py",
+        "scripts/ci/auth_backup_restore_drill.py",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["workflow"], "true", "{path}");
+        assert_eq!(out["rust_test"], "true", "{path}");
+    }
+}
+
+#[test]
+fn vendored_rmcp_changes_run_compile_test_security_and_conformance() {
+    for path in [
+        "vendor/rmcp-3.1.0-labby/Cargo.toml",
+        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "vendor/rmcp-3.1.0-labby/tests/test_tool_security_schemes.rs",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["workflow"], "true", "{path}");
+        assert_eq!(out["rust_compile"], "true", "{path}");
+        assert_eq!(out["rust_test"], "true", "{path}");
+        assert_eq!(out["security"], "true", "{path}");
+    }
+}
+
+#[test]
 fn release_workflow_changes_enable_the_release_contract() {
     for path in [
         ".github/workflows/release.yml",
@@ -577,17 +713,39 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let extracted_lint = clippy_job
         .find("cargo clippy --workspace --exclude labby --all-features")
         .expect("extracted workspace Clippy command");
+    let clippy_test_graph_warm = clippy_job
+        .find("--test architecture_boundaries --locked -- -D warnings")
+        .expect("Clippy test dependency graph warm-up command");
+    let clippy_all_targets = clippy_job
+        .find("cargo clippy -p labby --all-features --all-targets --locked")
+        .expect("all-target Labby Clippy command");
     assert!(
         clippy_warm < extracted_lint,
         "Clippy must warm Labby and Labby Gateway normal targets before any extracted all-target lint fan-out"
     );
     assert!(
-        clippy_job.contains("cargo clippy -p labby --all-features --all-targets --locked"),
-        "Clippy must preserve all-target coverage after warming ordinary Labby targets"
+        extracted_lint < clippy_test_graph_warm && clippy_test_graph_warm < clippy_all_targets,
+        "Clippy must warm the dev-dependency feature graph in isolation before its all-target pass"
     );
     assert!(
         !clippy_job.contains("-j 1"),
         "Clippy must not change Cargo job count because that changes native build-script NUM_JOBS"
+    );
+
+    let msrv_job = workflow
+        .split("  msrv:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  codemode-runner-smoke:").next())
+        .expect("msrv job");
+    let gateway_msrv_warm = msrv_job
+        .find("cargo +1.97.1 check -p labby-gateway --all-features")
+        .expect("gateway MSRV test-target warm-up command");
+    let workspace_msrv = msrv_job
+        .find("cargo +1.97.1 check --workspace --all-features --all-targets --locked")
+        .expect("required workspace MSRV command");
+    assert!(
+        msrv_job.contains("--all-targets --locked") && gateway_msrv_warm < workspace_msrv,
+        "MSRV must warm the gateway test target before preserving the exact required workspace command"
     );
 
     let mcp_regressions = workflow

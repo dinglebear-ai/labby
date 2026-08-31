@@ -886,3 +886,26 @@ pub(super) fn runtime_origin_label(
 
     Some("gateway-managed".to_string())
 }
+
+#[cfg(test)]
+mod conformance_tests {
+    use super::configured_custom_headers;
+
+    #[test]
+    fn configured_headers_cannot_transit_an_inbound_authorization_token() {
+        let mut config = super::super::testsupport::test_upstream_config();
+        config.name = "oauth-upstream".to_string();
+        config.url = Some("https://upstream.example/mcp".to_string());
+        config.headers.insert(
+            "aUtHoRiZaTiOn".to_string(),
+            "Bearer inbound-token".to_string(),
+        );
+
+        let error = configured_custom_headers(&config).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must use bearer_token_env or OAuth")
+        );
+    }
+}

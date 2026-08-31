@@ -14,16 +14,6 @@ pub(super) fn lab_auth_deriver(
     })
 }
 
-pub(crate) fn parse_bearer_token(header_value: &str) -> Option<String> {
-    let mut parts = header_value.split_whitespace();
-    let scheme = parts.next()?;
-    let token = parts.next()?;
-    if parts.next().is_some() || !scheme.eq_ignore_ascii_case("bearer") {
-        return None;
-    }
-    Some(token.to_string())
-}
-
 pub(super) fn derive_actor_key(
     deriver: Option<&crate::observability::activity::ActorKeyDeriver>,
     subject: &str,
@@ -31,16 +21,4 @@ pub(super) fn derive_actor_key(
     deriver
         .and_then(|deriver| deriver.derive_subject(subject))
         .map(crate::observability::activity::ActorKey::into_arc)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bearer_parser_rejects_ambiguous_headers() {
-        assert_eq!(parse_bearer_token("Bearer secret"), Some("secret".into()));
-        assert_eq!(parse_bearer_token("bearer secret extra"), None);
-        assert_eq!(parse_bearer_token("Basic secret"), None);
-    }
 }

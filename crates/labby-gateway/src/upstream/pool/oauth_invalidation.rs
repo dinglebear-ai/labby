@@ -1,6 +1,7 @@
 //! Coordinated invalidation of live connections authenticated with upstream OAuth credentials.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::UpstreamPool;
 
@@ -22,6 +23,29 @@ impl OAuthSessionInvalidation {
 }
 
 impl UpstreamPool {
+    pub(super) async fn drain_oauth_client_capacity_evictions(&self) {
+        let Some(cache) = &self.oauth_client_cache else {
+            return;
+        };
+        let victims = cache.take_capacity_evictions();
+        if victims.is_empty() {
+            return;
+        }
+        let barrier = Arc::clone(&self.oauth_invalidation_barrier)
+            .write_owned()
+            .await;
+        cache.advance_lifecycle_epoch();
+        for (upstream, subject) in victims {
+            self.invalidate_oauth_subject_sessions_guarded(
+                &upstream,
+                &subject,
+                "oauth.client_cache.capacity",
+            )
+            .await;
+        }
+        drop(barrier);
+    }
+
     pub async fn invalidate_oauth_subject_sessions(
         &self,
         upstream: &str,
@@ -29,6 +53,9 @@ impl UpstreamPool {
         reason: &'static str,
     ) -> OAuthSessionInvalidation {
         let _barrier = self.oauth_invalidation_barrier.write().await;
+        if let Some(cache) = &self.oauth_client_cache {
+            cache.advance_lifecycle_epoch();
+        }
         self.invalidate_oauth_subject_sessions_guarded(upstream, subject, reason)
             .await
     }
@@ -83,14 +110,19 @@ impl UpstreamPool {
             relay_connections: relay_connections.len(),
             task_routes,
         };
-        let subject_shutdown = async {
+        let subject_upstream = upstream.to_string();
+        let subject_shutdown = async move {
             if let Some(connection) = subject_connection {
-                connection._connection.shutdown(upstream, reason).await;
+                connection
+                    ._connection
+                    .shutdown(&subject_upstream, reason)
+                    .await;
             }
         };
-        let generic_shutdown = async {
+        let generic_upstream = upstream.to_string();
+        let generic_shutdown = async move {
             if let Some(connection) = generic_connection {
-                connection.shutdown(upstream, reason).await;
+                connection.shutdown(&generic_upstream, reason).await;
             }
         };
         let relay_shutdown = futures::future::join_all(relay_connections.into_iter().map(
@@ -98,7 +130,15 @@ impl UpstreamPool {
                 connection._connection.shutdown(&name, reason).await;
             },
         ));
-        tokio::join!(generic_shutdown, subject_shutdown, relay_shutdown);
+        // Peer shutdown can perform transport I/O. Keep it outside the global
+        // credential writer span: all publication-capable cache entries have
+        // already been detached above, so shutdown is cleanup, not fencing.
+        let shutdown_barrier = Arc::clone(&self.oauth_invalidation_barrier);
+        tokio::spawn(async move {
+            let after_writer = shutdown_barrier.read().await;
+            drop(after_writer);
+            tokio::join!(generic_shutdown, subject_shutdown, relay_shutdown);
+        });
         counts
     }
 
@@ -109,6 +149,9 @@ impl UpstreamPool {
         reason: &'static str,
     ) -> OAuthSessionInvalidation {
         let _barrier = self.oauth_invalidation_barrier.write().await;
+        if let Some(cache) = &self.oauth_client_cache {
+            cache.advance_lifecycle_epoch();
+        }
         self.invalidate_oauth_upstream_sessions_guarded(upstreams, reason)
             .await
     }
@@ -190,7 +233,14 @@ impl UpstreamPool {
                 connection._connection.shutdown(&name, reason).await;
             },
         ));
-        tokio::join!(generic_shutdown, subject_shutdown, relay_shutdown);
+        // See the subject-scoped path above: detach under the lifecycle writer,
+        // then let transport shutdown proceed after the caller releases it.
+        let shutdown_barrier = Arc::clone(&self.oauth_invalidation_barrier);
+        tokio::spawn(async move {
+            let after_writer = shutdown_barrier.read().await;
+            drop(after_writer);
+            tokio::join!(generic_shutdown, subject_shutdown, relay_shutdown);
+        });
         counts
     }
 }

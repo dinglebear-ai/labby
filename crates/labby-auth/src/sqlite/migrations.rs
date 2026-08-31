@@ -7,6 +7,10 @@ use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
+    run_migrations_inner(conn, None)
+}
+
+fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> {
     let current: i64 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .map_err(sqlite_error)?;
@@ -167,9 +171,16 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
                    subject TEXT PRIMARY KEY,
                    epoch INTEGER NOT NULL,
                    updated_at INTEGER NOT NULL
-                 );
-                 PRAGMA user_version = 9;",
+                 );",
             )
+            .map_err(sqlite_error)?;
+        if fault == Some("v9_after_table") {
+            return Err(AuthError::Storage(
+                "injected v9 migration fault".to_string(),
+            ));
+        }
+        transaction
+            .execute_batch("PRAGMA user_version = 9;")
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
@@ -181,6 +192,11 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
             "native_poll_token_hash",
             "TEXT",
         )?;
+        if fault == Some("v10_after_column") {
+            return Err(AuthError::Storage(
+                "injected v10 migration fault".to_string(),
+            ));
+        }
         transaction
             .execute_batch(
                 "DROP TABLE IF EXISTS native_authorization_results;
@@ -189,9 +205,16 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
                    code TEXT NOT NULL,
                    created_at INTEGER NOT NULL,
                    expires_at INTEGER NOT NULL
-                 );
-                 PRAGMA user_version = 10;",
+                 );",
             )
+            .map_err(sqlite_error)?;
+        if fault == Some("v10_after_table") {
+            return Err(AuthError::Storage(
+                "injected v10 migration fault".to_string(),
+            ));
+        }
+        transaction
+            .execute_batch("PRAGMA user_version = 10;")
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
@@ -210,9 +233,46 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
                    expires_at INTEGER NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS idx_refresh_token_replays_expiry
-                   ON refresh_token_replays(expires_at);
-                 PRAGMA user_version = 11;",
+                   ON refresh_token_replays(expires_at);",
             )
+            .map_err(sqlite_error)?;
+        if fault == Some("v11_after_table") {
+            return Err(AuthError::Storage(
+                "injected v11 migration fault".to_string(),
+            ));
+        }
+        transaction
+            .execute_batch("PRAGMA user_version = 11;")
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+    }
+    if current < 12 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        add_column_if_missing(
+            &transaction,
+            "upstream_oauth_state",
+            "expected_issuer",
+            "TEXT",
+        )?;
+        if fault == Some("v12_after_expected_issuer") {
+            return Err(AuthError::Storage(
+                "injected v12 migration fault".to_string(),
+            ));
+        }
+        add_column_if_missing(
+            &transaction,
+            "upstream_oauth_state",
+            "require_issuer",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            &transaction,
+            "upstream_oauth_state",
+            "requested_scopes_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        transaction
+            .execute_batch("PRAGMA user_version = 12;")
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }
@@ -225,6 +285,11 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     // migration even if the binding column was not durably installed.
     add_column_if_missing(conn, "browser_sessions", "project_binding_json", "TEXT")?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn run_migrations_with_fault(conn: &Connection, fault: &str) -> Result<(), AuthError> {
+    run_migrations_inner(conn, Some(fault))
 }
 
 fn repair_falsely_stamped_v8(conn: &Connection) -> Result<(), AuthError> {

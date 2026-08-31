@@ -15,8 +15,8 @@ use crate::path_safety::{
 use super::ArtifactError;
 use super::library::{LibrarySnapshot, MAX_LIBRARY_STATE_BYTES};
 use super::local_io::{
-    SnapshotFile, ensure_private_dir, materialize_tree, prepare_empty_internal_dir, read_json,
-    revision_dir, storage_key, write_json_atomic,
+    SnapshotFile, ensure_private_dir, materialize_tree, normalize_verified_macos_var_alias,
+    prepare_empty_internal_dir, read_json, revision_dir, storage_key, write_json_atomic,
 };
 use super::model::{
     ARTIFACT_INTERCHANGE_SCHEMA, ArtifactInterchange, ArtifactLicenseState, ArtifactProvenance,
@@ -749,6 +749,33 @@ mod tests {
             error,
             ArtifactError::UnsafePath("store_root_relative")
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn store_accepts_private_root_below_verified_macos_var_alias() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+
+        assert!(store.root().starts_with("/private/var"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_rejects_arbitrary_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let data = tempdir().unwrap();
+        let actual = data.path().join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        let alias = data.path().join("alias");
+        symlink(&actual, &alias).unwrap();
+
+        assert!(matches!(
+            ArtifactStore::new(alias.join("store")),
+            Err(ArtifactError::UnsafePath("store_symlink"))
+        ));
+        assert!(!actual.join("store").exists());
     }
 
     #[cfg(unix)]

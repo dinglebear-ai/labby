@@ -52,6 +52,18 @@ use crate::upstream::http_client::{
 };
 use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
+mod discovery;
+
+pub use discovery::discover_published_metadata;
+use discovery::{
+    DynamicClientRegistrationUse, extract_state_param, google_offline_access_url,
+    is_known_split_endpoint_origin, url_origin,
+};
+#[cfg(test)]
+use discovery::{
+    ProtectedResourceMetadata, authorization_metadata_candidates, bounded_authorization_servers,
+};
+
 use crate::upstream::types::{
     BeginAuthorization, GoogleCredentialBrokerStatus, OAuthEgressKind, OauthError,
 };
@@ -191,7 +203,7 @@ impl UpstreamOauthManager {
             .find_upstream_oauth_credentials(&self.upstream.name, subject)
             .await
             .map(|opt| opt.is_some())
-            .map_err(|e| OauthError::Internal(e.to_string()))
+            .map_err(OauthError::Storage)
     }
 
     /// Begin the authorization flow.
@@ -221,7 +233,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: failed to create authorization manager"
@@ -239,7 +251,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: AS metadata discovery failed"
@@ -249,21 +261,20 @@ impl UpstreamOauthManager {
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             issuer = metadata.issuer.as_deref().unwrap_or("<none>"),
             "upstream oauth: AS metadata ready"
         );
 
         self.verify_google_provider_issuer(&metadata)?;
-        self.verify_s256(&metadata.code_challenge_methods_supported)
-            .inspect_err(|e| {
-                tracing::warn!(
-                    upstream = %self.upstream.name,
-                    subject,
-                    kind = e.kind(),
-                    "upstream oauth: S256 PKCE verification failed"
-                );
-            })?;
+        Self::verify_s256(&metadata.code_challenge_methods_supported).inspect_err(|e| {
+            tracing::warn!(
+                upstream = %self.upstream.name,
+                subject_id = %crate::util::fingerprint(subject),
+                kind = e.kind(),
+                "upstream oauth: S256 PKCE verification failed"
+            );
+        })?;
         manager.set_metadata(metadata);
 
         let client_cfg = self
@@ -277,7 +288,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: client config resolution failed"
@@ -288,7 +299,7 @@ impl UpstreamOauthManager {
         manager.configure_client(client_cfg).map_err(|e| {
             tracing::warn!(
                 upstream = %self.upstream.name,
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 kind = "internal_error",
                 error = %e,
                 "upstream oauth: client configuration failed"
@@ -299,7 +310,7 @@ impl UpstreamOauthManager {
         let authorization_url = manager.get_authorization_url(&scopes).await.map_err(|e| {
             tracing::warn!(
                 upstream = %self.upstream.name,
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 kind = "internal_error",
                 error = %e,
                 "upstream oauth: authorization URL generation failed"
@@ -311,7 +322,7 @@ impl UpstreamOauthManager {
         let _csrf = extract_state_param(&authorization_url).ok_or_else(|| {
             tracing::warn!(
                 upstream = %self.upstream.name,
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 kind = "internal_error",
                 "upstream oauth: authorization URL missing state parameter"
             );
@@ -320,7 +331,7 @@ impl UpstreamOauthManager {
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: authorization started"
         );
@@ -339,6 +350,17 @@ impl UpstreamOauthManager {
         code: &str,
         csrf_token: &str,
     ) -> Result<(), OauthError> {
+        self.complete_authorization_callback_with_issuer(subject, code, csrf_token, None)
+            .await
+    }
+
+    pub async fn complete_authorization_callback_with_issuer(
+        &self,
+        subject: &str,
+        code: &str,
+        csrf_token: &str,
+        issuer: Option<&str>,
+    ) -> Result<(), OauthError> {
         let started = std::time::Instant::now();
 
         let auth_manager = self
@@ -350,7 +372,7 @@ impl UpstreamOauthManager {
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = e.kind(),
                     error = %e,
                     "upstream oauth: failed to build configured authorization manager for token exchange"
@@ -359,13 +381,13 @@ impl UpstreamOauthManager {
             })?;
 
         auth_manager
-            .exchange_code_for_token(code, csrf_token)
+            .exchange_code_for_token_with_issuer(code, csrf_token, issuer)
             .await
             .map_err(|e| {
                 let mapped = map_auth_error(e);
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = mapped.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
                     "upstream oauth: token exchange failed"
@@ -375,7 +397,7 @@ impl UpstreamOauthManager {
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: authorization completed, tokens stored"
         );
@@ -407,7 +429,7 @@ impl UpstreamOauthManager {
             .sqlite
             .revoke_google_provider_credential(account.as_deref())
             .await
-            .map_err(|error| OauthError::Internal(error.to_string()))?;
+            .map_err(OauthError::Storage)?;
         tracing::info!(
             upstream = %self.upstream.name,
             invalidated = invalidation.invalidated,
@@ -428,36 +450,22 @@ impl UpstreamOauthManager {
         }
         self.refresh_failures.clear(&self.upstream.name, subject);
         self.sqlite
-            .delete_upstream_oauth_credentials(&self.upstream.name, subject)
+            .clear_upstream_oauth_identity(&self.upstream.name, subject)
             .await
             .map_err(|e| {
                 tracing::warn!(
                     upstream = %self.upstream.name,
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     kind = "internal_error",
                     error = %e,
-                    "upstream oauth: failed to delete credentials from store"
+                    "upstream oauth: failed to atomically clear credentials and dynamic registration"
                 );
-                OauthError::Internal(e.to_string())
-            })?;
-
-        self.sqlite
-            .delete_dynamic_client_registration(&self.upstream.name, subject)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    upstream = %self.upstream.name,
-                    subject,
-                    kind = "internal_error",
-                    error = %e,
-                    "upstream oauth: failed to delete dynamic client registration"
-                );
-                OauthError::Internal(e.to_string())
+                OauthError::Storage(e)
             })?;
 
         info!(
             upstream = %self.upstream.name,
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             "upstream oauth: credentials and dynamic registration cleared"
         );
 
@@ -509,8 +517,6 @@ impl UpstreamOauthManager {
         transport: AuthClientTransport,
     ) -> Result<AuthorizationManager, OauthError> {
         let started = std::time::Instant::now();
-        let lock = self.acquire_refresh_lock(subject).await?;
-        let _guard = lock.lock().await;
         self.preflight_shared_google_credential().await?;
 
         let mut manager = self
@@ -523,7 +529,7 @@ impl UpstreamOauthManager {
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     scope = %self.oauth_scope_label(),
                     kind = e.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
@@ -536,7 +542,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "internal_error",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -551,7 +557,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "oauth_needs_reauth",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -559,9 +565,10 @@ impl UpstreamOauthManager {
                 "upstream oauth: no stored credentials for auth client{}",
                 transport.suffix()
             );
-            return Err(OauthError::NeedsReauth(format!(
-                "no stored credentials for upstream '{}' subject '{subject}'",
-                self.upstream.name
+            return Err(OauthError::NeedsReauth(missing_identity_message(
+                &self.upstream.name,
+                subject,
+                "stored credentials",
             )));
         }
 
@@ -581,14 +588,14 @@ impl UpstreamOauthManager {
         }
 
         if refresh_due
-            && self
+            && let Some(recent_error) = self
                 .refresh_failures
-                .recently_failed(&self.upstream.name, subject)
+                .recent_error(&self.upstream.name, subject)
         {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "oauth_needs_reauth",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -596,21 +603,35 @@ impl UpstreamOauthManager {
                 "upstream oauth: token refresh skipped, recently failed{}",
                 transport.suffix()
             );
-            return Err(OauthError::NeedsReauth(format!(
-                "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
-                self.upstream.name
-            )));
+            return Err(recent_error);
         }
 
-        if let Err(error) = manager.get_access_token().await {
-            let mapped = self.map_refresh_error_and_maybe_invalidate(error).await;
+        let access_result = if refresh_due {
+            let (_, result) = self
+                .locks
+                .run_shared(&self.upstream.name, subject, || async {
+                    match manager.get_access_token().await {
+                        Ok(_) => Ok(()),
+                        Err(error) => Err(self.map_refresh_error_and_maybe_invalidate(error).await),
+                    }
+                })
+                .await;
+            result
+        } else {
+            manager
+                .get_access_token()
+                .await
+                .map(|_| ())
+                .map_err(map_auth_error)
+        };
+        if let Err(mapped) = access_result {
             if refresh_due {
                 self.refresh_failures
-                    .record_failure(&self.upstream.name, subject);
+                    .record_failure(&self.upstream.name, subject, &mapped);
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     scope = %self.oauth_scope_label(),
                     kind = mapped.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
@@ -622,12 +643,20 @@ impl UpstreamOauthManager {
             return Err(mapped);
         }
 
+        if refresh_due {
+            manager.initialize_from_store().await.map_err(|error| {
+                OauthError::Internal(format!("reload refreshed credential from store: {error}"))
+            })?;
+            self.reconfigure_client_after_store_init(&mut manager, subject)
+                .await?;
+        }
+
         self.refresh_failures.clear(&self.upstream.name, subject);
         if refresh_due {
             tracing::info!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 elapsed_ms = started.elapsed().as_millis(),
                 fallback = "none",
@@ -665,7 +694,7 @@ impl UpstreamOauthManager {
             tracing::debug!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 elapsed_ms = started.elapsed().as_millis(),
                 coalesced = true,
@@ -673,23 +702,20 @@ impl UpstreamOauthManager {
             );
             return Ok(false);
         }
-        if self
+        if let Some(recent_error) = self
             .refresh_failures
-            .recently_failed(&self.upstream.name, subject)
+            .recent_error(&self.upstream.name, subject)
         {
             tracing::debug!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 elapsed_ms = started.elapsed().as_millis(),
                 cooldown = true,
                 "upstream oauth: status refresh skipped during failure cooldown"
             );
-            return Err(OauthError::NeedsReauth(format!(
-                "upstream '{}' subject '{subject}' refresh failed recently; skipping retry until cooldown elapses",
-                self.upstream.name
-            )));
+            return Err(recent_error);
         }
 
         let mut manager = self
@@ -702,7 +728,7 @@ impl UpstreamOauthManager {
                 tracing::warn!(
                     upstream = %self.upstream.name,
                     provider = %self.oauth_provider_label(),
-                    subject,
+                    subject_id = %crate::util::fingerprint(subject),
                     scope = %self.oauth_scope_label(),
                     kind = e.kind(),
                     elapsed_ms = started.elapsed().as_millis(),
@@ -714,7 +740,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 kind = "internal_error",
                 elapsed_ms = started.elapsed().as_millis(),
@@ -725,31 +751,40 @@ impl UpstreamOauthManager {
         })?;
 
         if !initialized {
-            return Err(OauthError::NeedsReauth(format!(
-                "no stored credentials for upstream '{}' subject '{subject}'",
-                self.upstream.name
+            return Err(OauthError::NeedsReauth(missing_identity_message(
+                &self.upstream.name,
+                subject,
+                "stored credentials",
             )));
         }
 
         self.reconfigure_client_after_store_init(&mut manager, subject)
             .await?;
 
-        if let Err(error) = manager.refresh_token().await {
-            let mapped = self.map_refresh_error_and_maybe_invalidate(error).await;
+        let (executed, refresh_result) = self
+            .locks
+            .run_shared(&self.upstream.name, subject, || async {
+                match manager.refresh_token().await {
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(self.map_refresh_error_and_maybe_invalidate(error).await),
+                }
+            })
+            .await;
+        if let Err(mapped) = refresh_result {
             self.refresh_failures
-                .record_failure(&self.upstream.name, subject);
+                .record_failure(&self.upstream.name, subject, &mapped);
             return Err(mapped);
         }
         self.refresh_failures.clear(&self.upstream.name, subject);
         tracing::info!(
             upstream = %self.upstream.name,
             provider = %self.oauth_provider_label(),
-            subject,
+            subject_id = %crate::util::fingerprint(subject),
             scope = %self.oauth_scope_label(),
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth: status refresh succeeded"
         );
-        Ok(true)
+        Ok(executed)
     }
 
     pub async fn credential_row(
@@ -782,7 +817,7 @@ impl UpstreamOauthManager {
         self.sqlite
             .find_upstream_oauth_credentials(&self.upstream.name, subject)
             .await
-            .map_err(|e| OauthError::Internal(e.to_string()))
+            .map_err(OauthError::Storage)
     }
 
     #[allow(dead_code)]
@@ -794,7 +829,7 @@ impl UpstreamOauthManager {
         self.sqlite
             .find_upstream_oauth_state_subject(&self.upstream.name, csrf_token, now)
             .await
-            .map_err(|e| OauthError::Internal(e.to_string()))
+            .map_err(OauthError::Storage)
     }
 
     /// Look up the stored dynamic `client_id` for `subject`, if any.
@@ -810,7 +845,7 @@ impl UpstreamOauthManager {
         self.sqlite
             .find_dynamic_client_registration(&self.upstream.name, subject)
             .await
-            .map_err(|e| OauthError::Internal(e.to_string()))
+            .map_err(OauthError::Storage)
     }
 
     // ---- private helpers ----
@@ -859,7 +894,7 @@ impl UpstreamOauthManager {
 
         let metadata = self.get_or_discover_metadata(&mut manager).await?;
         self.verify_google_provider_issuer(&metadata)?;
-        self.verify_s256(&metadata.code_challenge_methods_supported)?;
+        Self::verify_s256(&metadata.code_challenge_methods_supported)?;
         manager.set_metadata(metadata);
 
         let client_cfg = self
@@ -879,7 +914,7 @@ impl UpstreamOauthManager {
             return Ok(());
         }
         let issuer = metadata.issuer.as_deref().unwrap_or_default();
-        if issuer.trim_end_matches('/') != "https://accounts.google.com" {
+        if issuer != "https://accounts.google.com" {
             return Err(OauthError::IssuerMismatch(format!(
                 "google_provider credential source requires issuer 'https://accounts.google.com', received '{issuer}'"
             )));
@@ -1004,19 +1039,7 @@ impl UpstreamOauthManager {
         &self,
         error: rmcp::transport::AuthError,
     ) -> OauthError {
-        let terminal = match &error {
-            rmcp::transport::AuthError::AuthorizationRequired
-            | rmcp::transport::AuthError::TokenRefreshRejected(_) => true,
-            rmcp::transport::AuthError::TokenRefreshFailed(message) => {
-                let message = message.to_ascii_lowercase();
-                message.contains("invalid_grant")
-                    || message.contains("invalid refresh token")
-                    || message.contains("refresh token has been revoked")
-                    || message.contains("refresh token expired")
-            }
-            _ => false,
-        };
-        let mapped = map_auth_error(error);
+        let (terminal, mapped) = map_refresh_error(error);
         if terminal
             && self
                 .oauth_config()
@@ -1101,7 +1124,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 seconds_until_expiry = state.seconds_until_expiry,
                 refresh_token_present = state.refresh_token_present,
@@ -1120,7 +1143,7 @@ impl UpstreamOauthManager {
             tracing::info!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 seconds_until_expiry = state.seconds_until_expiry,
                 elapsed_ms,
@@ -1130,7 +1153,7 @@ impl UpstreamOauthManager {
             tracing::warn!(
                 upstream = %self.upstream.name,
                 provider = %self.oauth_provider_label(),
-                subject,
+                subject_id = %crate::util::fingerprint(subject),
                 scope = %self.oauth_scope_label(),
                 seconds_until_expiry = state.seconds_until_expiry,
                 kind = "oauth_needs_reauth",
@@ -1243,7 +1266,7 @@ impl UpstreamOauthManager {
         Ok(())
     }
 
-    fn verify_s256(&self, methods: &Option<Vec<String>>) -> Result<(), OauthError> {
+    fn verify_s256(methods: &Option<Vec<String>>) -> Result<(), OauthError> {
         match methods {
             Some(methods) if methods.iter().any(|m| m == "S256") => Ok(()),
             Some(methods) => Err(OauthError::UnsupportedMethod(format!(
@@ -1304,7 +1327,7 @@ impl UpstreamOauthManager {
                             .sqlite
                             .find_upstream_oauth_credentials(&self.upstream.name, subject)
                             .await
-                            .map_err(|e| OauthError::Internal(e.to_string()))?
+                            .map_err(OauthError::Storage)?
                         {
                             let mut cfg =
                                 OAuthClientConfig::new(row.client_id, self.redirect_uri.as_str());
@@ -1312,9 +1335,10 @@ impl UpstreamOauthManager {
                             return Ok(cfg);
                         }
 
-                        return Err(OauthError::NeedsReauth(format!(
-                            "no stored credentials for upstream '{}' subject '{subject}'",
-                            self.upstream.name
+                        return Err(OauthError::NeedsReauth(missing_identity_message(
+                            &self.upstream.name,
+                            subject,
+                            "stored credentials",
                         )));
                     }
                     DynamicClientRegistrationUse::CompleteAuthorization => {
@@ -1326,7 +1350,7 @@ impl UpstreamOauthManager {
                             .sqlite
                             .find_dynamic_client_registration(&self.upstream.name, subject)
                             .await
-                            .map_err(|e| OauthError::Internal(e.to_string()))?
+                            .map_err(OauthError::Storage)?
                         {
                             let mut cfg =
                                 OAuthClientConfig::new(client_id, self.redirect_uri.as_str());
@@ -1334,9 +1358,10 @@ impl UpstreamOauthManager {
                             return Ok(cfg);
                         }
 
-                        return Err(OauthError::NeedsReauth(format!(
-                            "no dynamic client registration for upstream '{}' subject '{subject}'",
-                            self.upstream.name
+                        return Err(OauthError::NeedsReauth(missing_identity_message(
+                            &self.upstream.name,
+                            subject,
+                            "dynamic client registration",
                         )));
                     }
                     DynamicClientRegistrationUse::BeginAuthorization => {}
@@ -1353,14 +1378,14 @@ impl UpstreamOauthManager {
                 self.sqlite
                     .save_dynamic_client_registration(&self.upstream.name, subject, &cfg.client_id)
                     .await
-                    .map_err(|e| OauthError::Internal(e.to_string()))?;
+                    .map_err(OauthError::Storage)?;
 
                 // Read back the persisted value to use the DB-canonical client_id.
                 let canonical_client_id = self
                     .sqlite
                     .find_dynamic_client_registration(&self.upstream.name, subject)
                     .await
-                    .map_err(|e| OauthError::Internal(e.to_string()))?
+                    .map_err(OauthError::Storage)?
                     .ok_or_else(|| {
                         OauthError::Internal(
                             "dynamic registration saved but read-back returned nothing".to_string(),
@@ -1395,325 +1420,6 @@ impl UpstreamOauthManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DynamicClientRegistrationUse {
-    BeginAuthorization,
-    CompleteAuthorization,
-    StoredCredentials,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProtectedResourceMetadata {
-    #[serde(default)]
-    resource: Option<String>,
-    #[serde(default)]
-    authorization_server: Option<String>,
-    #[serde(default)]
-    authorization_servers: Option<Vec<String>>,
-}
-
-/// Fetch published OAuth metadata without applying rmcp's discovery-URL
-/// issuer equality check.
-///
-/// Labby validates issuer and endpoint origins itself in
-/// `verify_issuer_binding`, including the explicitly allowed Google split
-/// token endpoint. rmcp 3 validates the issuer against the metadata URL while
-/// fetching, which would reject that policy before Labby can apply it.
-pub async fn discover_published_metadata(
-    upstream_url: &str,
-) -> Result<Option<AuthorizationMetadata>, OauthError> {
-    tokio::time::timeout(
-        OAUTH_METADATA_DISCOVERY_TIMEOUT,
-        discover_published_metadata_inner(upstream_url),
-    )
-    .await
-    .map_err(|_| OauthError::Egress {
-        kind: OAuthEgressKind::Timeout,
-        message: "OAuth metadata discovery exceeded its overall deadline".to_string(),
-    })?
-}
-
-async fn discover_published_metadata_inner(
-    upstream_url: &str,
-) -> Result<Option<AuthorizationMetadata>, OauthError> {
-    let upstream = url::Url::parse(upstream_url).map_err(|error| OauthError::Egress {
-        kind: OAuthEgressKind::ValidationFailed,
-        message: format!("invalid upstream OAuth URL: {error}"),
-    })?;
-    let client = TrustedOriginOAuthHttpClient::new(upstream_url)?;
-    let mut first_error = None;
-
-    for metadata_url in protected_resource_metadata_candidates(&upstream) {
-        let Some(resource_metadata) = fetch_metadata::<ProtectedResourceMetadata>(
-            &client,
-            metadata_url.clone(),
-            "protected-resource",
-            &mut first_error,
-        )
-        .await?
-        else {
-            continue;
-        };
-        if resource_metadata
-            .resource
-            .as_deref()
-            .is_some_and(|resource| resource != upstream.as_str())
-        {
-            return Err(OauthError::ResourceMismatch(
-                "protected-resource metadata does not match the configured upstream resource"
-                    .to_string(),
-            ));
-        }
-
-        let authorization_servers = bounded_authorization_servers(resource_metadata)?;
-
-        for authorization_server in authorization_servers {
-            let server_url = match resolve_authorization_server_url(
-                &metadata_url,
-                authorization_server.trim(),
-            ) {
-                Ok(url) => url,
-                Err(error) => {
-                    remember_metadata_error(
-                        &mut first_error,
-                        OauthError::Egress {
-                            kind: OAuthEgressKind::ValidationFailed,
-                            message: format!("invalid OAuth authorization server URL: {error}"),
-                        },
-                    );
-                    continue;
-                }
-            };
-            for authorization_metadata_url in authorization_metadata_candidates(&server_url) {
-                if let Some(metadata) = fetch_metadata::<AuthorizationMetadata>(
-                    &client,
-                    authorization_metadata_url,
-                    "authorization",
-                    &mut first_error,
-                )
-                .await?
-                {
-                    return Ok(Some(metadata));
-                }
-            }
-        }
-    }
-
-    for authorization_metadata_url in authorization_metadata_candidates(&upstream) {
-        if let Some(metadata) = fetch_metadata::<AuthorizationMetadata>(
-            &client,
-            authorization_metadata_url,
-            "authorization",
-            &mut first_error,
-        )
-        .await?
-        {
-            return Ok(Some(metadata));
-        }
-    }
-
-    first_error.map_or(Ok(None), Err)
-}
-
-async fn fetch_metadata<T: DeserializeOwned>(
-    client: &TrustedOriginOAuthHttpClient,
-    url: url::Url,
-    metadata_kind: &str,
-    first_error: &mut Option<OauthError>,
-) -> Result<Option<T>, OauthError> {
-    let response = match client.get(url).await {
-        Ok(response) => response,
-        Err(error) => {
-            remember_or_return_metadata_error(first_error, error)?;
-            return Ok(None);
-        }
-    };
-    if metadata_not_found(&response) {
-        return Ok(None);
-    }
-    if !response.status().is_success() {
-        remember_metadata_error(first_error, metadata_http_error(response.status()));
-        return Ok(None);
-    }
-    match serde_json::from_slice(response.body()) {
-        Ok(metadata) => Ok(Some(metadata)),
-        Err(error) => {
-            remember_metadata_error(first_error, invalid_metadata_error(metadata_kind, error));
-            Ok(None)
-        }
-    }
-}
-
-fn bounded_authorization_servers(
-    metadata: ProtectedResourceMetadata,
-) -> Result<Vec<String>, OauthError> {
-    let mut servers = metadata.authorization_servers.unwrap_or_default();
-    if let Some(server) = metadata.authorization_server {
-        servers.insert(0, server);
-    }
-    let mut seen = std::collections::HashSet::new();
-    servers.retain(|server| seen.insert(server.trim().to_string()));
-    if servers.len() > MAX_AUTHORIZATION_SERVERS {
-        return Err(OauthError::Egress {
-            kind: OAuthEgressKind::ValidationFailed,
-            message: format!(
-                "OAuth protected-resource metadata lists {} authorization servers; maximum is {MAX_AUTHORIZATION_SERVERS}",
-                servers.len()
-            ),
-        });
-    }
-    Ok(servers)
-}
-
-fn remember_metadata_error(first_error: &mut Option<OauthError>, error: OauthError) {
-    first_error.get_or_insert(error);
-}
-
-fn remember_or_return_metadata_error(
-    first_error: &mut Option<OauthError>,
-    error: OauthError,
-) -> Result<(), OauthError> {
-    if terminal_metadata_error(&error) {
-        return Err(error);
-    }
-    remember_metadata_error(first_error, error);
-    Ok(())
-}
-
-fn terminal_metadata_error(error: &OauthError) -> bool {
-    matches!(error, OauthError::Egress { kind, .. } if kind.is_terminal_discovery())
-}
-
-fn metadata_not_found(response: &oauth2::HttpResponse) -> bool {
-    matches!(response.status().as_u16(), 404 | 410)
-}
-
-fn metadata_http_error(status: oauth2::http::StatusCode) -> OauthError {
-    OauthError::Egress {
-        kind: OAuthEgressKind::UpstreamError,
-        message: format!("OAuth metadata returned HTTP {status}"),
-    }
-}
-
-fn invalid_metadata_error(kind: &str, error: serde_json::Error) -> OauthError {
-    OauthError::Egress {
-        kind: OAuthEgressKind::ValidationFailed,
-        message: format!("invalid OAuth {kind} metadata: {error}"),
-    }
-}
-
-fn protected_resource_metadata_candidates(upstream: &url::Url) -> Vec<url::Url> {
-    let trimmed = upstream
-        .path()
-        .trim_start_matches('/')
-        .trim_end_matches('/');
-    let paths = if trimmed.is_empty() {
-        vec!["/.well-known/oauth-protected-resource".to_string()]
-    } else {
-        vec![
-            format!("/.well-known/oauth-protected-resource/{trimmed}"),
-            format!("/{trimmed}/.well-known/oauth-protected-resource"),
-            "/.well-known/oauth-protected-resource".to_string(),
-        ]
-    };
-
-    paths
-        .into_iter()
-        .map(|path| {
-            let mut candidate = upstream.clone();
-            candidate.set_query(None);
-            candidate.set_fragment(None);
-            candidate.set_path(&path);
-            candidate
-        })
-        .collect()
-}
-
-fn authorization_metadata_candidates(server: &url::Url) -> Vec<url::Url> {
-    if server.path().contains("/.well-known/") {
-        return vec![server.clone()];
-    }
-
-    [
-        "/.well-known/oauth-authorization-server",
-        "/.well-known/openid-configuration",
-    ]
-    .into_iter()
-    .map(|path| {
-        let mut candidate = server.clone();
-        candidate.set_query(None);
-        candidate.set_fragment(None);
-        candidate.set_path(path);
-        candidate
-    })
-    .collect()
-}
-
-fn resolve_authorization_server_url(
-    metadata_url: &url::Url,
-    authorization_server: &str,
-) -> Result<url::Url, url::ParseError> {
-    url::Url::parse(authorization_server).or_else(|_| metadata_url.join(authorization_server))
-}
-
-/// Return the normalized origin (scheme + "://" + lowercased host + optional explicit port)
-/// of a URL, or `None` if the URL is invalid or has no host.
-///
-/// This is stricter than a host-only comparison: it rejects URLs that share a host
-/// but differ in scheme or port (e.g. http vs https, or :80 vs :8080).
-fn url_origin(s: &str) -> Option<String> {
-    let u = url::Url::parse(s).ok()?;
-    let host = u.host_str()?.to_ascii_lowercase();
-    let scheme = u.scheme();
-    match u.port() {
-        Some(port) => Some(format!("{scheme}://{host}:{port}")),
-        None => Some(format!("{scheme}://{host}")),
-    }
-}
-
-fn is_known_split_endpoint_origin(issuer_origin: &str, endpoint_origin: &str) -> bool {
-    issuer_origin == "https://accounts.google.com"
-        && endpoint_origin == "https://oauth2.googleapis.com"
-}
-
-fn extract_state_param(url: &str) -> Option<String> {
-    let parsed = url::Url::parse(url).ok()?;
-    parsed
-        .query_pairs()
-        .find(|(k, _)| k == "state")
-        .map(|(_, v)| v.into_owned())
-}
-
-fn google_offline_access_url(url: &str) -> Result<String, OauthError> {
-    let mut parsed = url::Url::parse(url).map_err(|error| {
-        OauthError::Internal(format!("authorization url generated invalid URL: {error}"))
-    })?;
-    let is_google_authorize = parsed
-        .host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("accounts.google.com"));
-    if !is_google_authorize {
-        return Ok(url.to_string());
-    }
-
-    let existing: std::collections::HashSet<String> = parsed
-        .query_pairs()
-        .map(|(key, _)| key.into_owned())
-        .collect();
-    {
-        let mut query = parsed.query_pairs_mut();
-        if !existing.contains("access_type") {
-            query.append_pair("access_type", "offline");
-        }
-        if !existing.contains("prompt") {
-            query.append_pair("prompt", "consent");
-        }
-        if !existing.contains("include_granted_scopes") {
-            query.append_pair("include_granted_scopes", "true");
-        }
-    }
-    Ok(parsed.into())
-}
-
 struct TokenRefreshState {
     seconds_until_expiry: i64,
     refresh_token_present: bool,
@@ -1742,6 +1448,39 @@ fn now_unix() -> Result<i64, OauthError> {
         .map(|duration| duration.as_secs() as i64)
 }
 
+fn missing_identity_message(upstream: &str, subject: &str, identity: &str) -> String {
+    format!(
+        "no {identity} for upstream '{upstream}' actor '{}'",
+        crate::util::fingerprint(subject)
+    )
+}
+
+fn map_refresh_error(error: rmcp::transport::AuthError) -> (bool, OauthError) {
+    let terminal = match &error {
+        rmcp::transport::AuthError::AuthorizationRequired
+        | rmcp::transport::AuthError::TokenRefreshRejected(_) => true,
+        rmcp::transport::AuthError::TokenRefreshFailed(message) => {
+            let message = message.to_ascii_lowercase();
+            message.contains("invalid_grant")
+                || message.contains("invalid refresh token")
+                || message.contains("refresh token has been revoked")
+                || message.contains("refresh token expired")
+        }
+        _ => false,
+    };
+    if terminal {
+        (true, map_auth_error(error))
+    } else {
+        (
+            false,
+            OauthError::Egress {
+                kind: OAuthEgressKind::UpstreamError,
+                message: error.to_string(),
+            },
+        )
+    }
+}
+
 fn map_auth_error(e: rmcp::transport::AuthError) -> OauthError {
     match e {
         rmcp::transport::AuthError::AuthorizationRequired => {
@@ -1754,6 +1493,17 @@ fn map_auth_error(e: rmcp::transport::AuthError) -> OauthError {
         rmcp::transport::AuthError::TokenRefreshRejected(msg) => {
             OauthError::NeedsReauth(format!("refresh token rejected: {msg}"))
         }
+        rmcp::transport::AuthError::AuthorizationServerMismatch {
+            expected_issuer,
+            received_issuer,
+        } => OauthError::IssuerMismatch(format!(
+            "expected authorization server issuer `{expected_issuer}`, received `{received_issuer}`"
+        )),
+        rmcp::transport::AuthError::AuthorizationServerMissingIssuer { expected_issuer } => {
+            OauthError::IssuerMismatch(format!(
+                "authorization response is missing required issuer `{expected_issuer}`"
+            ))
+        }
         other => OauthError::Internal(other.to_string()),
     }
 }
@@ -1762,9 +1512,11 @@ fn map_auth_error(e: rmcp::transport::AuthError) -> OauthError {
 mod url_tests {
     use super::{
         MAX_AUTHORIZATION_SERVERS, ProtectedResourceMetadata, UpstreamOauthManager,
-        bounded_authorization_servers, discover_published_metadata, google_offline_access_url,
-        map_auth_error,
+        authorization_metadata_candidates, bounded_authorization_servers,
+        discover_published_metadata, google_offline_access_url, map_auth_error, map_refresh_error,
+        missing_identity_message,
     };
+    use crate::upstream::types::OauthError;
     use labby_runtime::gateway_config::{
         UpstreamConfig, UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
     };
@@ -1776,7 +1528,44 @@ mod url_tests {
         let error = map_auth_error(rmcp_client::transport::AuthError::TokenRefreshRejected(
             "invalid_grant".to_string(),
         ));
-        assert!(matches!(error, super::OauthError::NeedsReauth(_)));
+        assert!(matches!(error, OauthError::NeedsReauth(_)));
+    }
+
+    #[test]
+    fn user_visible_identity_errors_never_include_raw_subjects() {
+        let sentinel = "raw-subject-sentinel@example.com";
+        let message = missing_identity_message("calendar", sentinel, "stored credentials");
+        assert!(!message.contains(sentinel));
+        assert!(message.contains(&crate::util::fingerprint(sentinel)));
+    }
+
+    #[test]
+    fn transient_refresh_failure_preserves_typed_egress_kind() {
+        let (terminal, error) =
+            map_refresh_error(rmcp_client::transport::AuthError::TokenRefreshFailed(
+                "provider temporarily unavailable".to_string(),
+            ));
+        assert!(!terminal);
+        assert!(matches!(error, OauthError::Egress { .. }));
+        assert_eq!(error.kind(), "upstream_error");
+    }
+
+    #[test]
+    fn callback_issuer_errors_preserve_issuer_mismatch_kind() {
+        for error in [
+            rmcp_client::transport::AuthError::AuthorizationServerMismatch {
+                expected_issuer: "https://auth.example".to_string(),
+                received_issuer: "https://evil.example".to_string(),
+            },
+            rmcp_client::transport::AuthError::AuthorizationServerMissingIssuer {
+                expected_issuer: "https://auth.example".to_string(),
+            },
+        ] {
+            assert!(matches!(
+                map_auth_error(error),
+                OauthError::IssuerMismatch(_)
+            ));
+        }
     }
 
     #[test]
@@ -1799,6 +1588,74 @@ mod url_tests {
         };
         let error = bounded_authorization_servers(excessive).unwrap_err();
         assert_eq!(error.kind(), "validation_failed");
+    }
+
+    #[test]
+    fn authorization_metadata_candidates_preserve_issuer_path_and_priority() {
+        let issuer = url::Url::parse("https://auth.example/tenant").unwrap();
+        let candidates = authorization_metadata_candidates(&issuer);
+        assert_eq!(
+            candidates.iter().map(url::Url::as_str).collect::<Vec<_>>(),
+            vec![
+                "https://auth.example/.well-known/oauth-authorization-server/tenant",
+                "https://auth.example/.well-known/openid-configuration/tenant",
+                "https://auth.example/tenant/.well-known/openid-configuration",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn published_metadata_rejects_issuer_not_identical_to_selected_server() {
+        let server = MockServer::start().await;
+        let upstream = format!("{}/mcp", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-protected-resource/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resource": upstream,
+                "authorization_servers": [format!("{}/issuer", server.uri())]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server/issuer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": format!("{}/issuer/", server.uri()),
+                "authorization_endpoint": format!("{}/authorize", server.uri()),
+                "token_endpoint": format!("{}/token", server.uri()),
+                "code_challenge_methods_supported": ["S256"]
+            })))
+            .mount(&server)
+            .await;
+
+        let error = discover_published_metadata(&upstream).await.unwrap_err();
+        assert!(matches!(error, OauthError::IssuerMismatch(_)));
+    }
+
+    #[tokio::test]
+    async fn published_metadata_rejects_google_shaped_document_for_non_google_selected_issuer() {
+        let server = MockServer::start().await;
+        let upstream = format!("{}/mcp", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-protected-resource/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resource": upstream,
+                "authorization_servers": [format!("{}/selected", server.uri())]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server/selected"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": "https://accounts.google.com",
+                "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+                "token_endpoint": "https://oauth2.googleapis.com/token",
+                "code_challenge_methods_supported": ["S256"]
+            })))
+            .mount(&server)
+            .await;
+
+        let error = discover_published_metadata(&upstream).await.unwrap_err();
+        assert!(matches!(error, OauthError::IssuerMismatch(_)));
     }
 
     #[tokio::test]
@@ -1854,7 +1711,7 @@ mod url_tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "issuer": server.uri(),
+                "issuer": format!("{}/mcp", server.uri()),
                 "authorization_endpoint": format!("{}/authorize", server.uri()),
                 "token_endpoint": format!("{}/token", server.uri()),
                 "code_challenge_methods_supported": ["S256"]
@@ -1957,5 +1814,24 @@ mod url_tests {
             params.get("include_granted_scopes").map(|v| v.as_ref()),
             Some("false")
         );
+    }
+
+    #[test]
+    fn pkce_validation_accepts_advertised_s256() {
+        assert!(UpstreamOauthManager::verify_s256(&Some(vec!["S256".to_string()])).is_ok());
+    }
+
+    #[test]
+    fn pkce_validation_rejects_advertised_non_s256_methods() {
+        let error = UpstreamOauthManager::verify_s256(&Some(vec!["plain".to_string()]))
+            .expect_err("plain PKCE must be refused");
+        assert_eq!(error.kind(), "oauth_unsupported_method");
+    }
+
+    #[test]
+    fn pkce_validation_rejects_missing_method_metadata() {
+        let error = UpstreamOauthManager::verify_s256(&None)
+            .expect_err("missing PKCE metadata must be refused");
+        assert_eq!(error.kind(), "oauth_unsupported_method");
     }
 }

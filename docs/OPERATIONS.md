@@ -45,6 +45,32 @@ Recovery guidance:
 - deleting `auth.db` removes registered clients, pending authorization requests, authorization codes, and refresh tokens
 - if you back up either file, back up both together to preserve a coherent auth state snapshot
 
+Do not copy a live `auth.db` file by itself: WAL-mode writes may still reside in
+`auth.db-wal`. Take a SQLite online backup, or stop Labby cleanly and copy the
+database, signing key, and any access-control database as one encrypted,
+access-controlled snapshot. Restore into an isolated `LABBY_HOME`, restore the
+original owner and secret-file permissions, run SQLite integrity checks, and
+exercise login, token validation, refresh, and revocation before returning the
+instance to service. Treat a backup containing both the database and signing
+key as credential material; define retention and destruction accordingly.
+The snapshot must also preserve the provider-token encryption key configured by
+`LABBY_TOKEN_ENCRYPTION_KEY` (or its secret-manager version), separately
+encrypted under the backup recovery key. Without it, persisted Google provider
+credentials are intentionally unrecoverable. CI runs
+`scripts/ci/auth_backup_restore_drill.py` on every auth conformance change to
+exercise the documented stopped-service recovery path against Labby's real auth
+schema: it copies one database/signing/provider-key recovery set, reopens the
+restored database with the restored provider key, decrypts persisted provider
+credentials, and validates a pre-backup JWT with the restored signing key.
+Production operations should separately automate encrypted snapshots, SQLite
+integrity checks, restoration into an isolated `LABBY_HOME`, login, refresh,
+revocation, and retention/destruction checks on a regular schedule.
+
+For subject containment, revoke that subject's browser/provider credentials and
+dependent Labby grants, drain its initialized upstream peers, and verify the
+count-only `session.invalidate` audit event. Signing-key removal is a global
+last resort, not a substitute for subject-scoped revocation.
+
 ## Browser-Local OAuth Callback Forwarding
 
 Some MCP clients can pin the OAuth callback port but still redirect the browser to
@@ -338,6 +364,49 @@ Expected job split:
 - publishing after successful release builds
 
 Live service integration tests are intentionally excluded from normal CI.
+Rust coverage is a required pull-request and push gate for Rust changes. Its
+aggregate floors complement, but do not replace, the MCP conformance job's
+authoritative auth requirement matrix and focused auth contract tests.
+
+## OAuth Conformance Rollout
+
+Treat authentication changes as a staged security rollout. Before production,
+run the complete MCP normative denominator, OpenAI authentication denominator,
+repository auth tests, documentation checks, and the backup/restore drill. Then
+deploy to trusted testers and prove the real ChatGPT callback/CIMD flow, root
+`lab:read` discovery, execution step-up, refresh, revocation, and fail-closed
+destructive behavior without elicitation. Expand the rollout only after those
+wire behaviors and redacted observability signals are stable.
+
+The MCP Inspector and Labby's Code Mode Inspector are useful staged diagnostics,
+not conformance authorities. Use them to inspect metadata, catalog visibility,
+scope challenges, and structured errors. Do not paste bearer tokens, OAuth
+codes, client assertions, refresh tokens, or provider credentials into an
+Inspector capture, issue, or report. The executable conformance matrices and
+their pinned provenance remain the release evidence.
+
+## OAuth Connector Incident Triage
+
+Classify the failing layer before retrying:
+
+1. Verify protected-resource and authorization-server metadata from the public
+   edge and origin. A missing `/register` request can be an edge/WAF block; a
+   metadata-advertised but unmounted route is an origin capability defect.
+2. Separate proxy 5xx/timeouts from Labby authorization status codes. Check DNS,
+   TLS, Google token, and JWKS phases rather than treating them as one timeout.
+3. Treat Google `invalid_grant` as reauthorization-required. Verify the
+   compare-and-delete invalidation counts and `session.invalidate` peer-drain
+   counts before declaring containment complete.
+4. Treat refresh-token replay as a security signal, not a transient retry.
+   Stop automatic retry loops, preserve redacted correlation IDs, and inspect
+   the subject/client/resource tuple.
+5. After recovery, repeat metadata, authorization callback, token rotation,
+   audience, insufficient-scope, and protected MCP request probes.
+
+Alerting should group bounded rates and latency by `action`, `phase`, `kind`,
+provider, and status without logging tokens, codes, email addresses, or raw
+subjects. Alert on sustained provider/JWKS failures, refresh replay, incomplete
+credential invalidation, and peer-drain failures.
 
 ## Release Process
 

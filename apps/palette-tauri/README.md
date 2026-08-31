@@ -114,20 +114,22 @@ When a valid OAuth credential exists for the active server, it takes precedence
 over the static token. If OAuth is unavailable or expired, the bridge falls back
 to the static token when configured.
 
-OAuth refreshes are single-flight. A rotated token is published to the in-memory
-cache only after `oauth.json` has been durably replaced; a persistence failure
-retains the prior session and is surfaced as a recoverable action error. Sign-out
-revokes the server-side refresh grant before deleting local credentials, and
-retains the local file when revocation fails so the user can retry safely.
+OAuth refreshes are single-flight. Access and refresh tokens live in the
+operating system credential vault; `oauth.json` contains only non-secret
+metadata and the vault account identifier. A rotated token is published to the
+in-memory cache only after both the vault secret and metadata are durable. If
+the metadata write fails, the prior vault value is restored; if rollback also
+fails, the bridge reports that credential state is uncertain instead of
+pretending the old session is intact.
 
-Both `oauth.json` and `settings.json` may contain secrets. Writes use an atomic
-replace operation that overwrites correctly on Windows. Unix files are created
-with mode `0600`; on Windows the app config directory gets an explicit,
-inheritance-disabled ACL granting access only to the current user before any
-temporary or destination file is created. The authoritative Windows DACL also
-retains the required local SYSTEM and Administrators principals, removes every
-pre-existing inherited or explicit ACE, and is re-applied before credentials
-are read so a permissive legacy file cannot remain silently trusted.
+Legacy plaintext `oauth.json` credentials are migrated only after the vault
+write succeeds. Sign-out revokes the server-side refresh grant before removing
+the vault entry and metadata, and retains local credentials when revocation
+fails so the user can retry safely. Vault read, write, or delete failures are
+recoverable action errors and must be resolved through the platform credential
+manager; deleting `oauth.json` alone does not erase its associated vault entry.
+`settings.json` can still contain the optional static bearer token and retains
+the restricted atomic-write and platform ACL protections.
 
 ## Schema Validation
 

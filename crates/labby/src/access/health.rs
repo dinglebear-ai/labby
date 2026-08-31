@@ -440,7 +440,7 @@ mod tests {
     async fn bootstrapped_store_is_ready() {
         use labby_auth::{Authenticator, VerifiedIdentity};
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let store = super::super::store::AccessStore::open(path.clone())
             .await
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn missing_store_is_observational() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
 
         assert_eq!(
@@ -487,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn current_schema_inspection_is_exactly_observational() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let store = super::super::store::AccessStore::open(path.clone())
             .await
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn v1_store_is_not_migrated_or_mutated() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let connection = Connection::open(&path).unwrap();
         connection
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn newer_schema_is_distinct_and_unchanged() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let connection = Connection::open(&path).unwrap();
         connection.pragma_update(None, "user_version", 999).unwrap();
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn malformed_v1_store_is_corrupt_not_uninitialized() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let connection = Connection::open(&path).unwrap();
         connection
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn existing_sidecar_prevents_opening_store() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         std::fs::write(&path, b"not opened").unwrap();
         let wal = sidecar_path(&path, "-wal");
@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn live_rollback_journal_transaction_is_refused_without_mutation() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let mut writer = Connection::open(&path).unwrap();
         writer
@@ -696,7 +696,7 @@ mod tests {
     async fn live_wal_store_is_inspected_without_sidecar_mutation() {
         use labby_auth::{Authenticator, VerifiedIdentity};
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let store = super::super::store::AccessStore::open(path.clone())
             .await
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn symlink_is_insecure_and_target_is_not_opened() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = super::super::test_support::secure_tempdir();
         let path = secure_path(&directory);
         let target = directory.path().join("target.db");
         std::fs::write(&target, b"not sqlite").unwrap();

@@ -1144,13 +1144,8 @@ impl UpstreamPool {
                 message: downstream_cancelled("downstream request was already cancelled"),
             }));
         }
-        // Keep credential invalidation outside the complete OAuth relay call,
-        // including the relay-cache -> task-route ownership transfer. Without
-        // this outer reader a revocation writer can remove the relay entry,
-        // scan an empty task map, and then let task registration publish a
-        // credential-backed route after revocation has returned.
-        let _oauth_lifecycle = if subject.is_some() {
-            Some(self.oauth_invalidation_barrier.read().await)
+        let oauth_epoch = if subject.is_some() {
+            self.oauth_lifecycle_epoch()
         } else {
             None
         };
@@ -1371,6 +1366,14 @@ impl UpstreamPool {
                         message,
                     }));
                 }
+                let _oauth_publication = match self.oauth_publication_guard(oauth_epoch).await {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        return Some(Err(super::CapabilityCallError::Other {
+                            message: error.to_string(),
+                        }));
+                    }
+                };
                 let result = self
                     .register_task_response(&relay_key, caller_subject, task_authorization, result)
                     .await;
@@ -2001,9 +2004,6 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
-        // One shared reader/writer invariant covers subject, relay, task, and
-        // OAuth-client publication. Credential invalidation is the sole writer.
-        let _oauth_lifecycle = self.oauth_invalidation_barrier.read().await;
         self.acquire_or_connect_relay_guarded(config, subject, downstream, session_id, capabilities)
             .await
     }
@@ -2023,6 +2023,7 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        let lifecycle_epoch = subject.and_then(|_| self.oauth_lifecycle_epoch());
         // `subject` (the OAuth identity, `None` on the raw path) is part of the
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
@@ -2145,6 +2146,14 @@ impl UpstreamPool {
         };
         let peer = conn.peer.clone();
         let generation = conn.runtime.generation;
+        let _oauth_publication = match self.oauth_publication_guard(lifecycle_epoch).await {
+            Ok(guard) => guard,
+            Err(_) => {
+                conn.shutdown(&config.name, "relay.oauth_epoch.changed")
+                    .await;
+                return None;
+            }
+        };
         // Enforce the LRU cap BEFORE inserting so a burst of unique sessions
         // cannot push the live-peer count past the bound; shut evicted peers
         // down off-lock.
