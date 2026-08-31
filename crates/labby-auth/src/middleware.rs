@@ -650,84 +650,7 @@ async fn authenticate(
             .await
             .map_err(|_| project_session_unavailable_response(layer))?
             .ok_or_else(|| auth_error_response("invalid project session", layer))?;
-        let binding = session
-            .project_binding
-            .as_ref()
-            .ok_or_else(|| auth_error_response("invalid project session", layer))?;
-        if !matches!(
-            *request.method(),
-            Method::GET | Method::HEAD | Method::OPTIONS
-        ) {
-            let csrf = request
-                .headers()
-                .get(session::BROWSER_CSRF_HEADER_NAME)
-                .and_then(|value| value.to_str().ok());
-            if csrf != Some(session.csrf_token.as_str()) {
-                return Err(csrf_error_response("missing or invalid csrf token"));
-            }
-        }
-        let revalidator = layer
-            .project_session_revalidator
-            .as_ref()
-            .ok_or_else(|| project_session_unavailable_response(layer))?;
-        let grant = match revalidator.revalidate(binding).await {
-            Ok(grant) => grant,
-            Err(ProjectSessionRevalidationError::Denied) => {
-                let _revocation_result = session_state
-                    .store
-                    .revoke_browser_session(&session.session_id)
-                    .await;
-                return Err(auth_error_response(
-                    "project session is no longer authorized",
-                    layer,
-                ));
-            }
-            Err(ProjectSessionRevalidationError::Unavailable) => {
-                return Err(project_session_unavailable_response(layer));
-            }
-        };
-        if !binding_matches_grant(binding, &grant) {
-            let _revocation_result = session_state
-                .store
-                .revoke_browser_session(&session.session_id)
-                .await;
-            return Err(auth_error_response(
-                "project session authorization binding changed",
-                layer,
-            ));
-        }
-        let identity = VerifiedIdentity::local_credential_with_issuer(
-            Authenticator::BrowserSession,
-            binding.issuer.clone(),
-            binding.source_credential_id.clone(),
-        )
-        .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
-        let auth = AuthContext {
-            actor_key: derive_actor_key(layer.actor_key_deriver.as_deref(), &binding.principal_id),
-            sub: binding.principal_id.clone(),
-            scopes: grant.scopes.clone(),
-            issuer: binding.issuer.clone(),
-            via_session: true,
-            csrf_token: Some(session.csrf_token),
-            email: None,
-        };
-        if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
-            return Err(response);
-        }
-        request.extensions_mut().insert(identity);
-        request.extensions_mut().insert(ProductCredentialGrant {
-            issuer: binding.issuer.clone(),
-            subject: binding.subject.clone(),
-            credential_id: binding.source_credential_id.clone(),
-            credential_generation: binding.source_credential_generation,
-            scopes: binding.scopes.clone(),
-            resource: binding.resource.clone(),
-            audience: binding.audience.clone(),
-            expires_at: binding.source_credential_expires_at,
-        });
-        request.extensions_mut().insert(grant);
-        request.extensions_mut().insert(auth);
-        return Ok(request);
+        return authorize_project_session(layer, request, &session_state.store, session).await;
     }
 
     if layer.allow_session_cookie
@@ -737,84 +660,12 @@ async fn authenticate(
     {
         match auth_state.store.find_browser_session(&session_id).await {
             Ok(Some(session)) => {
-                if !matches!(
-                    *request.method(),
-                    Method::GET | Method::HEAD | Method::OPTIONS
-                ) {
-                    let csrf = request
-                        .headers()
-                        .get(session::BROWSER_CSRF_HEADER_NAME)
-                        .and_then(|value| value.to_str().ok());
-                    if csrf != Some(session.csrf_token.as_str()) {
-                        return Err(csrf_error_response("missing or invalid csrf token"));
-                    }
+                if !session_csrf_valid(&request, &session) {
+                    return Err(csrf_error_response("missing or invalid csrf token"));
                 }
-
-                if let Some(binding) = session.project_binding.as_ref() {
-                    let revalidator = layer
-                        .project_session_revalidator
-                        .as_ref()
-                        .ok_or_else(|| project_session_unavailable_response(layer))?;
-                    let grant = match revalidator.revalidate(binding).await {
-                        Ok(grant) => grant,
-                        Err(ProjectSessionRevalidationError::Denied) => {
-                            let _revocation_result = auth_state
-                                .store
-                                .revoke_browser_session(&session.session_id)
-                                .await;
-                            return Err(auth_error_response(
-                                "project session is no longer authorized",
-                                layer,
-                            ));
-                        }
-                        Err(ProjectSessionRevalidationError::Unavailable) => {
-                            return Err(project_session_unavailable_response(layer));
-                        }
-                    };
-                    if !binding_matches_grant(binding, &grant) {
-                        let _revocation_result = auth_state
-                            .store
-                            .revoke_browser_session(&session.session_id)
-                            .await;
-                        return Err(auth_error_response(
-                            "project session authorization binding changed",
-                            layer,
-                        ));
-                    }
-                    let identity = VerifiedIdentity::local_credential_with_issuer(
-                        Authenticator::BrowserSession,
-                        binding.issuer.clone(),
-                        binding.source_credential_id.clone(),
-                    )
-                    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
-                    let actor_key =
-                        derive_actor_key(layer.actor_key_deriver.as_deref(), &binding.principal_id);
-                    let auth = AuthContext {
-                        actor_key,
-                        sub: binding.principal_id.clone(),
-                        scopes: grant.scopes.clone(),
-                        issuer: binding.issuer.clone(),
-                        via_session: true,
-                        csrf_token: Some(session.csrf_token),
-                        email: None,
-                    };
-                    if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
-                        return Err(response);
-                    }
-                    request.extensions_mut().insert(identity);
-                    request.extensions_mut().insert(ProductCredentialGrant {
-                        issuer: binding.issuer.clone(),
-                        subject: binding.subject.clone(),
-                        credential_id: binding.source_credential_id.clone(),
-                        credential_generation: binding.source_credential_generation,
-                        scopes: binding.scopes.clone(),
-                        resource: binding.resource.clone(),
-                        audience: binding.audience.clone(),
-                        expires_at: binding.source_credential_expires_at,
-                    });
-                    request.extensions_mut().insert(grant);
-                    request.extensions_mut().insert(auth);
-                    return Ok(request);
+                if session.project_binding.is_some() {
+                    return authorize_project_session(layer, request, &auth_state.store, session)
+                        .await;
                 }
 
                 let identity = VerifiedIdentity::external(
@@ -876,6 +727,91 @@ async fn authenticate(
         },
         layer,
     ))
+}
+
+async fn authorize_project_session(
+    layer: &AuthLayerInner,
+    mut request: Request<Body>,
+    store: &crate::sqlite::SqliteStore,
+    session: crate::types::BrowserSessionRow,
+) -> Result<Request<Body>, Response> {
+    let binding = session
+        .project_binding
+        .as_ref()
+        .ok_or_else(|| auth_error_response("invalid project session", layer))?;
+    if !session_csrf_valid(&request, &session) {
+        return Err(csrf_error_response("missing or invalid csrf token"));
+    }
+    let revalidator = layer
+        .project_session_revalidator
+        .as_ref()
+        .ok_or_else(|| project_session_unavailable_response(layer))?;
+    let grant = match revalidator.revalidate(binding).await {
+        Ok(grant) => grant,
+        Err(ProjectSessionRevalidationError::Denied) => {
+            let _revocation_result = store.revoke_browser_session(&session.session_id).await;
+            return Err(auth_error_response(
+                "project session is no longer authorized",
+                layer,
+            ));
+        }
+        Err(ProjectSessionRevalidationError::Unavailable) => {
+            return Err(project_session_unavailable_response(layer));
+        }
+    };
+    if !binding_matches_grant(binding, &grant) {
+        let _revocation_result = store.revoke_browser_session(&session.session_id).await;
+        return Err(auth_error_response(
+            "project session authorization binding changed",
+            layer,
+        ));
+    }
+    let identity = VerifiedIdentity::local_credential_with_issuer(
+        Authenticator::BrowserSession,
+        binding.issuer.clone(),
+        binding.source_credential_id.clone(),
+    )
+    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
+    let auth = AuthContext {
+        actor_key: derive_actor_key(layer.actor_key_deriver.as_deref(), &binding.principal_id),
+        sub: binding.principal_id.clone(),
+        scopes: grant.scopes.clone(),
+        issuer: binding.issuer.clone(),
+        via_session: true,
+        csrf_token: Some(session.csrf_token),
+        email: None,
+    };
+    if let Some(response) = insufficient_scope_response(layer, &auth.scopes) {
+        return Err(response);
+    }
+    request.extensions_mut().insert(identity);
+    request.extensions_mut().insert(ProductCredentialGrant {
+        issuer: binding.issuer.clone(),
+        subject: binding.subject.clone(),
+        credential_id: binding.source_credential_id.clone(),
+        credential_generation: binding.source_credential_generation,
+        scopes: binding.scopes.clone(),
+        resource: binding.resource.clone(),
+        audience: binding.audience.clone(),
+        expires_at: binding.source_credential_expires_at,
+    });
+    request.extensions_mut().insert(grant);
+    request.extensions_mut().insert(auth);
+    Ok(request)
+}
+
+fn session_csrf_valid(request: &Request<Body>, session: &crate::types::BrowserSessionRow) -> bool {
+    if matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) {
+        return true;
+    }
+    let csrf = request
+        .headers()
+        .get(session::BROWSER_CSRF_HEADER_NAME)
+        .and_then(|value| value.to_str().ok());
+    csrf == Some(session.csrf_token.as_str())
 }
 
 fn binding_matches_grant(binding: &ProjectSessionBinding, grant: &BoundAccessGrant) -> bool {
@@ -2072,7 +2008,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn project_session_is_revalidated_on_every_request_and_exposes_bound_grant() {
+    async fn valid_project_session_survives_more_than_raw_credential_attempt_budget() {
         let state = Arc::new(test_auth_state().await);
         let binding = project_binding();
         let session = crate::types::BrowserSessionRow {
@@ -2111,11 +2047,12 @@ mod tests {
                 ),
             )
             .route_layer(
-                AuthLayer::from_state(state)
+                AuthLayer::from_state(Arc::clone(&state))
                     .with_allow_session_cookie(true)
                     .with_project_session_revalidator(revalidator),
             );
-        for _ in 0..2 {
+        const REQUESTS: usize = 32;
+        for _ in 0..REQUESTS {
             let response = app
                 .clone()
                 .oneshot(
@@ -2129,7 +2066,16 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
         }
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), REQUESTS);
+        assert!(
+            state
+                .store
+                .find_browser_session("project-session")
+                .await
+                .unwrap()
+                .is_some(),
+            "ordinary revalidation must not consume a raw-secret attempt budget or revoke the session"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2292,6 +2238,15 @@ mod tests {
         for response in <[_; 4]>::from((first, second, third, fourth)) {
             assert_eq!(response.unwrap().status(), StatusCode::UNAUTHORIZED);
         }
+        assert!(
+            state
+                .store
+                .find_browser_session("race-session")
+                .await
+                .unwrap()
+                .is_none(),
+            "a genuine live-authority denial must revoke the stored session"
+        );
 
         let mut drifted = bound_grant(&binding);
         drifted.project_policy_epoch += 1;

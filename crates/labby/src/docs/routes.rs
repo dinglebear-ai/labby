@@ -1,8 +1,8 @@
 use super::types::RouteDoc;
 use crate::api::route_registry::{RouteAuth, build_route_descriptors};
 
-pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
-    build_route_descriptors(service_names)
+pub fn build_route_docs() -> Vec<RouteDoc> {
+    build_route_descriptors()
         .into_iter()
         .map(|route| {
             let session_cookie_allowed =
@@ -50,10 +50,6 @@ pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
         .collect()
 }
 
-pub fn service_has_action_api_route(service: &str) -> bool {
-    !matches!(service, "lab_admin" | "doctor" | "setup")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,13 +60,13 @@ mod tests {
 
     #[test]
     fn route_docs_do_not_include_non_http_service_dispatch_routes() {
-        let routes = build_route_docs(&["lab_admin".to_string()]);
+        let routes = build_route_docs();
         assert!(!routes.iter().any(|route| route.path == "/v1/lab_admin"));
     }
 
     #[test]
     fn session_mutation_routes_require_csrf() {
-        let routes = build_route_docs(&["server_logs".to_string()]);
+        let routes = build_route_docs();
         let service = routes
             .iter()
             .find(|route| route.method == "POST" && route.path == "/v1/server_logs")
@@ -88,7 +84,7 @@ mod tests {
 
     #[test]
     fn browser_session_auth_is_not_projected_as_master_admin() {
-        let routes = build_route_docs(&[]);
+        let routes = build_route_docs();
         for path in ["/auth/session", APPS_LAUNCHER_ROUTE] {
             let route = routes.iter().find(|route| route.path == path).unwrap();
             assert!(route.auth_required);
@@ -106,7 +102,7 @@ mod tests {
 
     #[test]
     fn bootstrap_proof_routes_have_distinct_hardened_contract() {
-        let routes = build_route_docs(&[]);
+        let routes = build_route_docs();
         for path in [
             "/auth/bootstrap/consume",
             "/auth/bootstrap/status",
@@ -129,7 +125,7 @@ mod tests {
 
     #[test]
     fn aliases_are_explicit_runtime_truth() {
-        let routes = build_route_docs(&[]);
+        let routes = build_route_docs();
         let launcher = routes
             .iter()
             .find(|route| route.path == APPS_LAUNCHER_ROUTE)
@@ -144,7 +140,7 @@ mod tests {
 
     #[test]
     fn operator_app_routes_are_documented() {
-        let routes = build_route_docs(&["server_logs".to_string()]);
+        let routes = build_route_docs();
         for (method, path) in [
             ("GET", APPS_MANIFEST_API_ROUTE),
             ("GET", SERVER_LOGS_QUERY_API_ROUTE),
@@ -164,12 +160,11 @@ mod tests {
 
     #[test]
     fn descriptor_keys_are_an_exact_set() {
-        let services = ["server_logs".to_string()];
-        let descriptor_keys = build_route_descriptors(&services)
+        let descriptor_keys = build_route_descriptors()
             .into_iter()
             .map(|route| (route.method.to_string(), route.path))
             .collect::<std::collections::BTreeSet<_>>();
-        let doc_keys = build_route_docs(&services)
+        let doc_keys = build_route_docs()
             .into_iter()
             .map(|route| (route.method, route.path))
             .collect::<std::collections::BTreeSet<_>>();

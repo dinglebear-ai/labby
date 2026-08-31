@@ -42,6 +42,50 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
   }, { csrfToken, service, name, params })
 }
 
+async function addGatewayThroughUi(page: Page, name: string) {
+  await page.getByRole('button', { name: 'Add Server', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Add server' })
+  await dialog.getByLabel('Name').fill(name)
+  await dialog.getByLabel('URL').fill('http://127.0.0.1:9/mcp')
+  const mutation = page.waitForResponse((response) =>
+    response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/gateway',
+  { timeout: 10_000 })
+  await dialog.getByRole('button', { name: 'Add server', exact: true }).click()
+  const response = await mutation
+  assert.equal(response.status(), 200, `UI gateway.add returned ${response.status()}: ${await response.text()}`)
+  await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(async (error) => {
+    throw new Error(`add-server dialog remained open: ${await dialog.innerText()}`, { cause: error })
+  })
+  const serverLink = page.locator('a:visible').filter({ hasText: name }).first()
+  await assert.doesNotReject(serverLink.waitFor({ state: 'visible', timeout: 10_000 }))
+  const href = await serverLink.getAttribute('href')
+  const id = new URL(href ?? '', 'http://loopback.invalid').searchParams.get('id')
+  assert.ok(id, 'new server link must expose its stable identifier')
+  return id
+}
+
+async function stageProtectedRouteThroughUi(page: Page, name: string) {
+  await page.goto('/settings/surfaces/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+  const panel = page.locator('[data-protected-routes-panel]')
+  await panel.getByLabel('Name').fill(name)
+  await panel.getByLabel('Public host').fill('browser.invalid')
+  await panel.getByLabel('Public path').fill('/mcp')
+  await panel.getByLabel('Loadout').click()
+  await page.getByRole('option', { name: 'production', exact: true }).click()
+  await panel.getByRole('button', { name: 'Add route', exact: true }).click()
+  await assert.doesNotReject(panel.getByText(name, { exact: true }).first().waitFor({ state: 'visible', timeout: 10_000 }))
+  await assert.doesNotReject(panel.getByText(/saved for restart/i).waitFor({ state: 'visible', timeout: 10_000 }))
+}
+
+async function removeProtectedRouteThroughUi(page: Page, name: string) {
+  const panel = page.locator('[data-protected-routes-panel]')
+  const removeButton = panel.getByRole('button', { name: `Remove protected route ${name}` })
+  await removeButton.click()
+  // Removing a just-staged add cancels it outright; removing an already
+  // mounted route instead leaves a restart-required tombstone.
+  await assert.doesNotReject(removeButton.waitFor({ state: 'hidden', timeout: 10_000 }))
+}
+
 test('embedded Gateway Admin completes a real backend journey', {
   concurrency: false,
   skip: liveEnabled ? false : 'outer supervisor did not supply LABBY_LIVE_BROWSER_DESCRIPTOR',
@@ -68,14 +112,29 @@ test('embedded Gateway Admin completes a real backend journey', {
     }
     await context.tracing.start({ screenshots: false, snapshots: false, sources: false })
     const page = await context.newPage()
+    // The outer supervisor owns the authenticated browser fixture and its
+    // CSRF material. Attach that material at the transport boundary so UI
+    // controls exercise their real action mapping without an out-of-band
+    // /auth/session probe rotating the fixture token.
+    await page.route('**/v1/**', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue()
+      return route.continue({
+        headers: { ...route.request().headers(), 'x-csrf-token': csrfToken },
+      })
+    })
     const evidence = observeLivePage(page, descriptor.base_url)
     let failure: unknown
     const ownedName = `browser-${descriptor.run_id.toLowerCase()}`
+    let ownedGatewayId = ownedName
     const ownedRoute = `${ownedName}-route`
+    let ownedRouteRemoved = false
     const cleanupFailures: string[] = []
     try {
       progress('health-session-catalog')
-      for (const route of ['/health', '/auth/session', '/v1/catalog']) {
+      // Do not probe /auth/session out of band: that endpoint rotates CSRF
+      // material, and the UI bootstrap must remain the sole browser-session
+      // reader for this context.
+      for (const route of ['/health', '/v1/catalog']) {
         const response = await page.request.get(route)
         progress(`${route}:${response.status()}`)
         assert.ok(response.ok(), `${route} returned ${response.status()}`)
@@ -95,30 +154,20 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.equal(evidence.pageErrors.length, 0)
       assert.equal(evidence.cspViolations.length, 0)
 
-      const added = await action(page, csrfToken, 'gateway', 'gateway.add', {
-        spec: { name: ownedName, url: 'http://127.0.0.1:9/mcp' },
-      })
-      progress(`gateway-add:${added.status}:auth=${added.sessionAuthenticated}:csrf=${added.csrfLength}`)
-      assert.equal(added.status, 200, JSON.stringify(added.body))
-      progress('gateway-added')
+      ownedGatewayId = await addGatewayThroughUi(page, ownedName)
+      progress('gateway-added-through-ui')
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 })
       progress('page-reloaded')
-      const persisted = await action(page, csrfToken, 'gateway', 'gateway.get', { name: ownedName })
+      const persisted = await action(page, csrfToken, 'gateway', 'gateway.server.get', { id: ownedGatewayId })
       progress(`gateway-get:${persisted.status}`)
       assert.equal(persisted.status, 200)
+      assert.ok(await page.locator('a:visible').filter({ hasText: ownedName }).first().isVisible())
 
-      const staged = await action(page, csrfToken, 'gateway', 'gateway.protected_route.stage_add', {
-        route: {
-          name: ownedRoute, enabled: true, public_host: 'browser.invalid',
-          public_path: '/mcp', upstream: null, backend_url: '', scopes: [],
-          target: { kind: 'gateway_subset', loadout: 'production' },
-        },
-      })
-      progress(`protected-route-stage:${staged.status}:${JSON.stringify(staged.body)}`)
-      assert.equal(staged.status, 200, JSON.stringify(staged.body))
-      assert.equal(staged.body.restart_required, true)
-      progress('protected-route-staged')
-      assert.match(JSON.stringify(staged.body), /restart/i)
+      await stageProtectedRouteThroughUi(page, ownedRoute)
+      progress('protected-route-staged-through-ui')
+      await removeProtectedRouteThroughUi(page, ownedRoute)
+      ownedRouteRemoved = true
+      progress('protected-route-removed-through-ui')
 
       // A real rapid duplicate reaches backend serialization; the UI must not
       // turn it into two successful state transitions.
@@ -147,9 +196,9 @@ test('embedded Gateway Admin completes a real backend journey', {
       throw error
     } finally {
       for (const [name, operation] of [
-        [ownedRoute, 'gateway.protected_route.stage_remove'],
+        ...(!ownedRouteRemoved ? [[ownedRoute, 'gateway.protected_route.stage_remove'] as const] : []),
         [`${ownedName}-duplicate`, 'gateway.remove'],
-        [ownedName, 'gateway.remove'],
+        [ownedGatewayId, 'gateway.remove'],
       ] as const) {
         const result = await action(page, csrfToken, 'gateway', operation, { name }).catch((error) => ({ status: 0, body: String(error) }))
         progress(`cleanup:${operation}:${result.status}`)

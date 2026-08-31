@@ -3,9 +3,62 @@
 #[path = "support/lib.rs"]
 mod support;
 
-use std::time::Duration;
+use std::{
+    process::Command,
+    time::{Duration, Instant},
+};
 
 use support::LiveLabbyBuilder;
+
+#[test]
+fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
+    let run_root = tempfile::tempdir().expect("temporary parent");
+    let owned_root = run_root.path().join("cleanup-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let started = Instant::now();
+    let status = Command::new("bash")
+        .arg(script)
+        .arg("pr")
+        .arg("1")
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_CLEANUP_SELFTEST", "1")
+        .status()
+        .expect("cleanup self-test starts");
+
+    assert!(status.success(), "cleanup self-test failed: {status}");
+    assert!(started.elapsed() < Duration::from_secs(8));
+    let report = std::fs::read_to_string(owned_root.join("artifacts/cleanup-selftest.json"))
+        .expect("cleanup report");
+    assert!(
+        report.contains("\"owned_children_absent\":true"),
+        "{report}"
+    );
+}
+
+#[test]
+fn orchestration_secret_scan_detects_nested_retained_canary() {
+    let run_root = tempfile::tempdir().expect("temporary parent");
+    let owned_root = run_root.path().join("secret-scan-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let status = Command::new("bash")
+        .arg(script)
+        .arg("pr")
+        .arg("1")
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_SECRET_SCAN_SELFTEST", "1")
+        .status()
+        .expect("secret scan self-test starts");
+
+    assert!(status.success(), "secret scan self-test failed: {status}");
+    let report = std::fs::read_to_string(owned_root.join("artifacts/secret-scan-selftest.json"))
+        .expect("secret scan report");
+    assert!(
+        report.contains("\"retained_secret_detected\":true"),
+        "{report}"
+    );
+}
 
 #[tokio::test]
 async fn boots_real_binary_reports_both_readiness_contracts_and_cleans_up() {
@@ -105,7 +158,7 @@ async fn occupied_port_is_refused_without_touching_the_foreign_listener() {
 
 #[tokio::test]
 async fn readiness_timeout_is_bounded_and_cleans_the_spawned_process() {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let failure = match LiveLabbyBuilder::new()
         .ready_path("/does-not-exist")
         .readiness_deadline(Duration::from_millis(500))

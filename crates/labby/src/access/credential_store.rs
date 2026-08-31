@@ -430,27 +430,52 @@ impl AccessStore {
         reason: String,
         now: i64,
     ) -> AccessStoreResult<MutationOutcome> {
+        self.tombstone_access_artifacts(
+            installation_id,
+            vec![(kind, public_id, digest, generation)],
+            reason,
+            now,
+        )
+        .await
+    }
+
+    pub(crate) async fn tombstone_access_artifacts(
+        &self,
+        installation_id: String,
+        artifacts: Vec<(String, String, [u8; 32], i64)>,
+        reason: String,
+        now: i64,
+    ) -> AccessStoreResult<MutationOutcome> {
         validate_id(&installation_id)?;
-        validate_id(&public_id)?;
         validate_id(&reason)?;
-        if !matches!(
-            kind.as_str(),
-            "prepare" | "proof" | "credential" | "session_source"
-        ) || generation <= 0
+        if artifacts.is_empty()
+            || artifacts.iter().any(|(kind, public_id, _, generation)| {
+                validate_id(public_id).is_err()
+                    || !matches!(
+                        kind.as_str(),
+                        "prepare" | "proof" | "credential" | "session_source"
+                    )
+                    || *generation <= 0
+            })
         {
             return Err(AccessStoreError::InvalidBootstrapInput);
         }
         self.with_connection(move|connection|{
             let transaction=connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(map_sqlite_error)?;
-            let changed=transaction.execute("INSERT INTO access_tombstones(tombstone_id,installation_id,artifact_kind,public_id,canonical_digest,artifact_generation,reason_code,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(installation_id,artifact_kind,public_id) DO NOTHING",params![format!("tombstone:{kind}:{public_id}:{generation}"),installation_id,kind,public_id,digest.as_slice(),generation,reason,now]).map_err(map_sqlite_error)?;
-            if kind=="proof"{transaction.execute("UPDATE bootstrap_proofs SET status='tombstoned',revoked_at=?1,updated_at=?1 WHERE proof_id=?2 AND status!='consumed'",params![now,public_id]).map_err(map_sqlite_error)?;}
-            if kind=="credential"{transaction.execute("UPDATE project_credentials SET status='tombstoned',revoked_at=?1,revocation_generation=revocation_generation+1,updated_at=?1 WHERE credential_id=?2 AND status!='tombstoned'",params![now,public_id]).map_err(map_sqlite_error)?;}
-            if changed==0 {
-                let exact:bool=transaction.query_row("SELECT artifact_generation=?4 AND reason_code=?5 AND canonical_digest=?6 FROM access_tombstones WHERE installation_id=?1 AND artifact_kind=?2 AND public_id=?3",params![installation_id,kind,public_id,generation,reason,digest.as_slice()],|r|r.get(0)).map_err(map_sqlite_error)?;
-                if !exact{return Err(AccessStoreError::BootstrapConflict)}
+            let mut any_changed = false;
+            for (kind, public_id, digest, generation) in artifacts {
+                let changed=transaction.execute("INSERT INTO access_tombstones(tombstone_id,installation_id,artifact_kind,public_id,canonical_digest,artifact_generation,reason_code,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(installation_id,artifact_kind,public_id) DO NOTHING",params![format!("tombstone:{kind}:{public_id}:{generation}"),installation_id,kind,public_id,digest.as_slice(),generation,reason,now]).map_err(map_sqlite_error)?;
+                if kind=="proof"{transaction.execute("UPDATE bootstrap_proofs SET status='tombstoned',revoked_at=?1,updated_at=?1 WHERE proof_id=?2 AND status!='consumed'",params![now,public_id]).map_err(map_sqlite_error)?;}
+                if kind=="credential"{transaction.execute("UPDATE project_credentials SET status='tombstoned',revoked_at=?1,revocation_generation=revocation_generation+1,updated_at=?1 WHERE credential_id=?2 AND status!='tombstoned'",params![now,public_id]).map_err(map_sqlite_error)?;}
+                if changed==0 {
+                    let exact:bool=transaction.query_row("SELECT artifact_generation=?4 AND reason_code=?5 AND canonical_digest=?6 FROM access_tombstones WHERE installation_id=?1 AND artifact_kind=?2 AND public_id=?3",params![installation_id,kind,public_id,generation,reason,digest.as_slice()],|r|r.get(0)).map_err(map_sqlite_error)?;
+                    if !exact{return Err(AccessStoreError::BootstrapConflict)}
+                } else {
+                    any_changed = true;
+                }
             }
             transaction.commit().map_err(map_sqlite_error)?;
-            Ok(if changed==0{MutationOutcome::AlreadyApplied}else{MutationOutcome::Created})
+            Ok(if any_changed{MutationOutcome::Created}else{MutationOutcome::AlreadyApplied})
         }).await
     }
 }
@@ -969,6 +994,85 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_tombstones_roll_back_together_and_retry_exactly() {
+        let (_directory, store) = store().await;
+        store.activate_bootstrap_proof(activation()).await.unwrap();
+        store.consume_bootstrap_proof(consumption()).await.unwrap();
+        store
+            .with_connection(|connection| {
+                connection
+                    .execute_batch(
+                        "CREATE TEMP TRIGGER fail_proof_tombstone BEFORE INSERT ON access_tombstones WHEN NEW.artifact_kind='proof' BEGIN SELECT RAISE(ABORT, 'injected proof failure'); END;",
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        let artifacts = vec![
+            ("credential".into(), "credential-1".into(), [5; 32], 1),
+            ("proof".into(), "proof-1".into(), [3; 32], 1),
+            ("prepare".into(), "prepare-1".into(), [8; 32], 1),
+        ];
+        assert!(
+            store
+                .tombstone_access_artifacts(
+                    "installation-1".into(),
+                    artifacts.clone(),
+                    "cleanup".into(),
+                    50,
+                )
+                .await
+                .is_err()
+        );
+        let count: i64 = store
+            .with_connection(|connection| {
+                connection
+                    .query_row("SELECT count(*) FROM access_tombstones", [], |row| {
+                        row.get(0)
+                    })
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "a failed batch must not retain an early tombstone"
+        );
+        store
+            .with_connection(|connection| {
+                connection
+                    .execute_batch("DROP TRIGGER fail_proof_tombstone")
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .tombstone_access_artifacts(
+                    "installation-1".into(),
+                    artifacts.clone(),
+                    "cleanup".into(),
+                    50,
+                )
+                .await
+                .unwrap(),
+            MutationOutcome::Created
+        );
+        assert_eq!(
+            store
+                .tombstone_access_artifacts(
+                    "installation-1".into(),
+                    artifacts,
+                    "cleanup".into(),
+                    50,
+                )
+                .await
+                .unwrap(),
+            MutationOutcome::AlreadyApplied
         );
     }
 }

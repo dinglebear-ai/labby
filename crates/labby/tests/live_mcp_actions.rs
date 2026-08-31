@@ -2,6 +2,8 @@
 
 #[path = "support/action_matrix.rs"]
 mod action_matrix;
+#[path = "support/action_scenarios.rs"]
+mod action_scenarios;
 #[path = "support/evidence.rs"]
 mod evidence;
 #[path = "support/live_identity.rs"]
@@ -19,7 +21,7 @@ mod support {
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use action_matrix::{ScenarioKind, ScenarioOwner, Surface, intents};
+use action_matrix::{EvidenceLevel, ScenarioKind, ScenarioOwner, Surface, intents};
 use mcp_action_runner::BuiltinMcpRunner;
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
@@ -65,6 +67,29 @@ fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
         assert!(plans.insert(intent.key(), disposition).is_none());
         assert!(!intent.scenario_id.is_empty());
         assert!(!intent.fixture_params.fixture.is_empty());
+        let evidence = match intent.scenario_kind {
+            ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
+            ScenarioKind::LiveInvoke => EvidenceLevel::LiveSuccess,
+            ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated => {
+                EvidenceLevel::LiveStateTransition
+            }
+            ScenarioKind::ConditionalOptional => EvidenceLevel::RouterReachable,
+            ScenarioKind::ExternalOptional | ScenarioKind::ExcludedWithReason => {
+                EvidenceLevel::LiveErrorPath
+            }
+        };
+        action_scenarios::ActionOutcome {
+            key: intent.key(),
+            surface: Surface::Mcp,
+            disposition: action_scenarios::disposition(intent),
+            evidence,
+            owner: intent.scenario_owner,
+            outcome_kind: disposition.to_owned(),
+            recovery: "bounded_plan".into(),
+            side_effects: "owned_by_scenario".into(),
+            canary_free: true,
+        }
+        .record();
     }
     assert_eq!(plans.len(), 146);
 }

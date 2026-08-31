@@ -38,22 +38,15 @@ fn every_cli_classification_has_exactly_one_execution_or_contract_plan() {
         .filter(|intent| intent.applicable_surfaces.contains(&Surface::Cli))
         .map(|intent| {
             let executed = grouped_execution.contains(intent.key().as_str());
-            let evidence = if executed {
-                if matches!(
-                    intent.scenario_kind,
-                    ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated
-                ) {
+            let evidence = match intent.scenario_kind {
+                ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
+                ScenarioKind::LiveInvoke => EvidenceLevel::LiveSuccess,
+                ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated => {
                     EvidenceLevel::LiveStateTransition
-                } else {
-                    EvidenceLevel::LiveSuccess
                 }
-            } else {
-                match intent.scenario_kind {
-                    ScenarioKind::ConditionalOptional => EvidenceLevel::RouterReachable,
-                    ScenarioKind::ExternalOptional | ScenarioKind::ExcludedWithReason => {
-                        EvidenceLevel::LiveErrorPath
-                    }
-                    _ => EvidenceLevel::MetadataOnly,
+                ScenarioKind::ConditionalOptional => EvidenceLevel::RouterReachable,
+                ScenarioKind::ExternalOptional | ScenarioKind::ExcludedWithReason => {
+                    EvidenceLevel::LiveErrorPath
                 }
             };
             ActionOutcome {
@@ -85,6 +78,9 @@ fn every_cli_classification_has_exactly_one_execution_or_contract_plan() {
         })
         .collect::<Vec<_>>();
     assert_eq!(outcomes.len(), action_matrix::EXPECTED_CLI_ACTIONS);
+    for outcome in &outcomes {
+        outcome.record();
+    }
     assert!(outcomes.iter().all(|outcome| {
         outcome.surface == Surface::Cli
             && !outcome.outcome_kind.is_empty()

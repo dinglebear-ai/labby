@@ -298,6 +298,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             };
             assert_eq!(outcome.surface, Surface::Api);
             assert_eq!(outcome.disposition, action_scenarios::disposition(intent));
+            outcome.record();
             outcomes.insert(intent.key(), outcome);
         }
 

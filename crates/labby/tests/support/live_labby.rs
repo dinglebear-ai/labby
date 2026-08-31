@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::future::Future;
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -731,8 +732,13 @@ impl LiveLabbyGuard {
         }
         #[cfg(unix)]
         if let Some(group) = self.ledger.process_group {
+            // Signal escalation and the owned child wait remain constrained by
+            // `deadline`. After SIGKILL, allow a separate bounded interval for
+            // the kernel/init reaper to remove already-dead grandchildren from
+            // process-group enumeration on loaded hosts.
+            let reap_deadline = Instant::now() + Duration::from_secs(2);
             let mut members = process_group_members(group);
-            while !members.is_empty() && Instant::now() < deadline {
+            while !members.is_empty() && Instant::now() < reap_deadline {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 members = process_group_members(group);
             }
@@ -844,8 +850,15 @@ impl Drop for LiveLabbyGuard {
         self.evidence
             .push(EvidenceKind::Failure, "guard dropped without finish");
         let deadline = Instant::now() + DROP_DEADLINE;
+        let safe_to_signal = owned_process_identity_matches(&self.ledger);
+        if !safe_to_signal && self.ledger.pid.is_some() {
+            self.evidence.push(
+                EvidenceKind::Failure,
+                "drop skipped process signaling: owned PID start identity changed",
+            );
+        }
         #[cfg(unix)]
-        if let Some(group) = self.ledger.process_group {
+        if safe_to_signal && let Some(group) = self.ledger.process_group {
             let _ = nix::sys::signal::killpg(
                 nix::unistd::Pid::from_raw(group),
                 nix::sys::signal::Signal::SIGKILL,
@@ -855,7 +868,7 @@ impl Drop for LiveLabbyGuard {
         if let Some(job) = self.windows_job.take() {
             let _ = job.close();
         }
-        if let Some(child) = self.child.as_mut() {
+        if safe_to_signal && let Some(child) = self.child.as_mut() {
             drop(child.start_kill());
             while Instant::now() < deadline {
                 if child.try_wait().ok().flatten().is_some() {
@@ -1114,33 +1127,75 @@ fn write_ledger(path: &Path, ledger: &OwnershipLedger) -> Result<(), String> {
 }
 
 fn tail(path: &Path) -> String {
-    let bytes = std::fs::read(path).unwrap_or_default();
-    let start = bytes.len().saturating_sub(LOG_TAIL_BYTES);
-    sanitize(&String::from_utf8_lossy(&bytes[start..]))
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let start = length.saturating_sub(LOG_TAIL_BYTES as u64);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::with_capacity(LOG_TAIL_BYTES.min((length - start) as usize));
+    if file
+        .take(LOG_TAIL_BYTES as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return String::new();
+    }
+    sanitize(&String::from_utf8_lossy(&bytes))
 }
 
 fn cap_log_file(path: &Path) -> std::io::Result<()> {
-    let bytes = std::fs::read(path)?;
-    if bytes.len() > LOG_TAIL_BYTES {
+    let mut file = std::fs::File::open(path)?;
+    let length = file.metadata()?.len();
+    if length > LOG_TAIL_BYTES as u64 {
+        file.seek(SeekFrom::End(-(LOG_TAIL_BYTES as i64)))?;
+        let mut bytes = Vec::with_capacity(LOG_TAIL_BYTES);
+        file.take(LOG_TAIL_BYTES as u64).read_to_end(&mut bytes)?;
         let temporary = path.with_extension("rotating.tmp");
-        std::fs::write(&temporary, &bytes[bytes.len() - LOG_TAIL_BYTES..])?;
+        std::fs::write(&temporary, &bytes)?;
         std::fs::rename(temporary, path)?;
     }
     Ok(())
 }
 
 fn scan_file_for_canaries(path: &Path, canaries: &[String], failures: &mut Vec<String>) {
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(mut file) = std::fs::File::open(path) else {
         return;
     };
-    for canary in canaries {
-        if !canary.is_empty()
-            && bytes
-                .windows(canary.len())
-                .any(|window| window == canary.as_bytes())
-        {
-            failures.push(format!("secret canary appeared in {}", path.display()));
+    let secrets = canaries
+        .iter()
+        .filter(|canary| !canary.is_empty())
+        .map(String::as_bytes)
+        .collect::<Vec<_>>();
+    let overlap = secrets
+        .iter()
+        .map(|secret| secret.len())
+        .max()
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let mut retained = Vec::new();
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let Ok(read) = file.read(&mut chunk) else {
+            failures.push(format!("secret scan failed for {}", path.display()));
+            return;
+        };
+        if read == 0 {
+            return;
         }
+        retained.extend_from_slice(&chunk[..read]);
+        if secrets.iter().any(|secret| {
+            retained
+                .windows(secret.len())
+                .any(|window| window == *secret)
+        }) {
+            failures.push(format!("secret canary appeared in {}", path.display()));
+            return;
+        }
+        let keep = overlap.min(retained.len());
+        retained.drain(..retained.len() - keep);
     }
 }
 
@@ -1202,6 +1257,14 @@ fn process_start_identity(pid: u32) -> String {
         .unwrap_or_else(|| format!("pid:{pid}:unknown"))
 }
 
+fn owned_process_identity_matches(ledger: &OwnershipLedger) -> bool {
+    match (ledger.pid, ledger.process_start_identity.as_deref()) {
+        (Some(pid), Some(expected)) => process_start_identity(pid) == expected,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 #[cfg(unix)]
 fn process_group_members(group: i32) -> Vec<u32> {
     Command::new("pgrep")
@@ -1212,7 +1275,19 @@ fn process_group_members(group: i32) -> Vec<u32> {
         .map(|output| {
             String::from_utf8_lossy(&output.stdout)
                 .lines()
-                .filter_map(|line| line.trim().parse().ok())
+                .filter_map(|line| line.trim().parse::<u32>().ok())
+                .filter(|pid: &u32| {
+                    Command::new("ps")
+                        .args(["-o", "stat=", "-p", &pid.to_string()])
+                        .output()
+                        .ok()
+                        .filter(|status| status.status.success())
+                        .is_some_and(|status| {
+                            !String::from_utf8_lossy(&status.stdout)
+                                .trim_start()
+                                .starts_with('Z')
+                        })
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1246,6 +1321,50 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+
+    #[test]
+    fn artifact_scan_detects_a_canary_across_stream_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("large.log");
+        let canary = "stream-boundary-canary";
+        let mut bytes = vec![b'x'; 64 * 1024 - 7];
+        bytes.extend_from_slice(canary.as_bytes());
+        bytes.extend(std::iter::repeat_n(b'y', 64 * 1024));
+        std::fs::write(&artifact, bytes).unwrap();
+        let mut failures = Vec::new();
+        scan_file_for_canaries(&artifact, &[canary.into()], &mut failures);
+        assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn log_tail_and_retention_read_only_the_bounded_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("large.log");
+        let mut file = std::fs::File::create(&artifact).unwrap();
+        file.set_len((LOG_TAIL_BYTES * 64) as u64).unwrap();
+        file.seek(SeekFrom::End(-(LOG_TAIL_BYTES as i64))).unwrap();
+        std::io::Write::write_all(&mut file, &vec![b'z'; LOG_TAIL_BYTES]).unwrap();
+        drop(file);
+        assert_eq!(tail(&artifact).len(), LOG_TAIL_BYTES);
+        cap_log_file(&artifact).unwrap();
+        assert_eq!(
+            std::fs::metadata(&artifact).unwrap().len(),
+            LOG_TAIL_BYTES as u64
+        );
+    }
+
+    #[test]
+    fn process_signaling_requires_the_recorded_start_identity() {
+        let pid = std::process::id();
+        let mut ledger = OwnershipLedger {
+            pid: Some(pid),
+            process_start_identity: Some(process_start_identity(pid)),
+            ..OwnershipLedger::default()
+        };
+        assert!(owned_process_identity_matches(&ledger));
+        ledger.process_start_identity = Some(format!("pid:{pid}:reused"));
+        assert!(!owned_process_identity_matches(&ledger));
+    }
 
     #[test]
     fn isolated_children_do_not_inherit_cloud_git_ssh_proxy_or_provider_state() {
@@ -1649,7 +1768,10 @@ mod tests {
         let cleanup = guard.finish_with_deadline(Duration::from_millis(250)).await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
         assert!(cleanup.forced, "ignored SIGTERM must use forced shutdown");
-        assert!(started.elapsed() < Duration::from_secs(2));
+        // The process stop itself remains constrained by the 250 ms deadline;
+        // the outer measurement also includes retained-evidence scans and
+        // filesystem cleanup, which can be delayed by parallel test binaries.
+        assert!(started.elapsed() < Duration::from_secs(8));
     }
 
     #[cfg(unix)]

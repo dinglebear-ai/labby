@@ -55,6 +55,61 @@ fn project_catalog_cache() -> &'static tokio::sync::Mutex<VecDeque<CachedProject
     CACHE.get_or_init(|| tokio::sync::Mutex::new(VecDeque::new()))
 }
 
+#[cfg(feature = "gateway")]
+fn project_catalog_build_lock() -> &'static tokio::sync::Mutex<()> {
+    static BUILD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    BUILD_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[cfg(feature = "gateway")]
+async fn cached_project_catalog(
+    manager: &Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    key: &str,
+) -> Option<CatalogProjection> {
+    let mut cache = project_catalog_cache().lock().await;
+    let now = Instant::now();
+    cache.retain(|entry| entry.expires_at > now && entry.manager.upgrade().is_some());
+    let position = cache.iter().position(|entry| {
+        entry.key == key
+            && entry
+                .manager
+                .upgrade()
+                .is_some_and(|cached| Arc::ptr_eq(&cached, manager))
+    })?;
+    let entry = cache.remove(position).expect("cache position exists");
+    let projection = entry.projection.clone();
+    cache.push_back(entry);
+    Some(projection)
+}
+
+#[cfg(feature = "gateway")]
+async fn store_project_catalog(
+    manager: &Arc<crate::dispatch::gateway::manager::GatewayManager>,
+    key: String,
+    projection: CatalogProjection,
+) {
+    let mut cache = project_catalog_cache().lock().await;
+    let now = Instant::now();
+    cache.retain(|entry| {
+        entry.expires_at > now
+            && entry.manager.upgrade().is_some()
+            && !(entry.key == key
+                && entry
+                    .manager
+                    .upgrade()
+                    .is_some_and(|cached| Arc::ptr_eq(&cached, manager)))
+    });
+    while cache.len() >= PROJECT_CATALOG_CACHE_CAPACITY {
+        cache.pop_front();
+    }
+    cache.push_back(CachedProjectCatalog {
+        manager: Arc::downgrade(manager),
+        key,
+        expires_at: now + PROJECT_CATALOG_CACHE_TTL,
+        projection,
+    });
+}
+
 fn startup_id() -> &'static str {
     STARTUP_ID.get_or_init(|| {
         std::time::SystemTime::now()
@@ -248,20 +303,7 @@ async fn project_catalog(
         return Err(ProjectCatalogError::Denied);
     }
     let cache_key = project_catalog_cache_key(&current);
-    let cached = {
-        let mut cache = project_catalog_cache().lock().await;
-        let now = Instant::now();
-        cache.retain(|entry| entry.expires_at > now && entry.manager.upgrade().is_some());
-        let position = cache.iter().position(|entry| {
-            entry.key == cache_key
-                && entry
-                    .manager
-                    .upgrade()
-                    .is_some_and(|cached| Arc::ptr_eq(&cached, manager))
-        });
-        position.and_then(|position| cache.remove(position))
-    };
-    if let Some(entry) = cached {
+    if let Some(projection) = cached_project_catalog(manager, &cache_key).await {
         let after = adapter
             .resolve(source)
             .await
@@ -269,8 +311,20 @@ async fn project_catalog(
         if after != current {
             return Err(ProjectCatalogError::Denied);
         }
-        let projection = entry.projection.clone();
-        project_catalog_cache().lock().await.push_back(entry);
+        return Ok(projection);
+    }
+    // Serialize cache fills and recheck after waiting. This prevents a cold-key
+    // request burst from duplicating the expensive runtime catalog projection.
+    // Hits never wait on this lock.
+    let _fill_guard = project_catalog_build_lock().lock().await;
+    if let Some(projection) = cached_project_catalog(manager, &cache_key).await {
+        let after = adapter
+            .resolve(source)
+            .await
+            .map_err(map_catalog_resolution_error)?;
+        if after != current {
+            return Err(ProjectCatalogError::Denied);
+        }
         return Ok(projection);
     }
     let identity = VerifiedIdentity::local_credential_with_issuer(
@@ -328,16 +382,7 @@ async fn project_catalog(
                 )
             }),
     ));
-    let mut cache = project_catalog_cache().lock().await;
-    if cache.len() == PROJECT_CATALOG_CACHE_CAPACITY {
-        cache.pop_front();
-    }
-    cache.push_back(CachedProjectCatalog {
-        manager: Arc::downgrade(manager),
-        key: cache_key,
-        expires_at: Instant::now() + PROJECT_CATALOG_CACHE_TTL,
-        projection: projection.clone(),
-    });
+    store_project_catalog(manager, cache_key, projection.clone()).await;
     Ok(projection)
 }
 
@@ -443,6 +488,31 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use tower::ServiceExt;
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn concurrent_cache_fills_are_single_flight() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..32 {
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            tasks.spawn(async move {
+                let _guard = super::project_catalog_build_lock().lock().await;
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(current, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.expect("fill task");
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+    }
 
     use crate::api::router::build_router_with_bearer;
     use crate::api::state::AppState;

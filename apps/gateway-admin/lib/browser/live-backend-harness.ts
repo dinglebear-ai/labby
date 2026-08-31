@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createReadStream } from 'node:fs'
-import { chmod, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import type { Browser, BrowserContext, Page, Request } from 'playwright'
@@ -15,6 +15,7 @@ export type LiveBackendDescriptor = {
   version: 1
   run_id: string
   base_url: string
+  run_root: string
   storage_state_path: string
   csrf_state_path: string
   evidence_dir: string
@@ -45,22 +46,51 @@ function ownedAbsolutePath(value: unknown, field: string) {
   return path.resolve(value)
 }
 
+function isStrictDescendant(root: string, candidate: string) {
+  const relative = path.relative(root, candidate)
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
+async function canonicalOwnedPath(root: string, value: unknown, field: string, kind: 'file' | 'directory') {
+  const canonicalRoot = await realpath(root)
+  const resolved = ownedAbsolutePath(value, field)
+  const metadata = await lstat(resolved)
+  assert.ok(!metadata.isSymbolicLink(), `${field} must not be a symlink`)
+  assert.equal(kind === 'file' ? metadata.isFile() : metadata.isDirectory(), true, `${field} must be a ${kind}`)
+  const canonical = await realpath(resolved)
+  assert.ok(isStrictDescendant(canonicalRoot, canonical), `${field} must be below the run-owned root`)
+  return canonical
+}
+
 export async function readLiveDescriptor(): Promise<LiveBackendDescriptor | null> {
   const descriptorPath = process.env[LIVE_DESCRIPTOR_ENV]
   if (!descriptorPath) return null
-  const resolved = ownedAbsolutePath(descriptorPath, LIVE_DESCRIPTOR_ENV)
+  return readLiveDescriptorAt(descriptorPath)
+}
+
+export async function readLiveDescriptorAt(descriptorPath: string): Promise<LiveBackendDescriptor> {
+  const unresolvedDescriptor = ownedAbsolutePath(descriptorPath, LIVE_DESCRIPTOR_ENV)
+  const descriptorMetadata = await lstat(unresolvedDescriptor)
+  assert.ok(!descriptorMetadata.isSymbolicLink(), 'descriptor must not be a symlink')
+  assert.ok(descriptorMetadata.isFile(), 'descriptor must be a file')
+  const resolved = await realpath(unresolvedDescriptor)
   const parsed = JSON.parse(await readFile(resolved, 'utf8')) as Partial<LiveBackendDescriptor>
   assert.equal(parsed.version, 1)
   assert.match(parsed.run_id ?? '', /^[A-Za-z0-9_-]{8,80}$/)
+  const unresolvedRoot = ownedAbsolutePath(parsed.run_root, 'run_root')
+  const rootMetadata = await lstat(unresolvedRoot)
+  assert.ok(!rootMetadata.isSymbolicLink() && rootMetadata.isDirectory(), 'run_root must be a real directory')
+  const runRoot = await realpath(unresolvedRoot)
+  assert.ok(isStrictDescendant(runRoot, resolved), 'descriptor must be below the run-owned root')
   const url = new URL(parsed.base_url ?? '')
   assert.equal(url.protocol, 'http:', 'live browser backend must be loopback HTTP')
   assert.ok(['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname))
   assert.equal(url.username, '')
   assert.equal(url.password, '')
   assert.equal(url.pathname, '/')
-  const evidenceDir = ownedAbsolutePath(parsed.evidence_dir, 'evidence_dir')
-  const storageStatePath = ownedAbsolutePath(parsed.storage_state_path, 'storage_state_path')
-  const csrfStatePath = ownedAbsolutePath(parsed.csrf_state_path, 'csrf_state_path')
+  const evidenceDir = await canonicalOwnedPath(runRoot, parsed.evidence_dir, 'evidence_dir', 'directory')
+  const storageStatePath = await canonicalOwnedPath(runRoot, parsed.storage_state_path, 'storage_state_path', 'file')
+  const csrfStatePath = await canonicalOwnedPath(runRoot, parsed.csrf_state_path, 'csrf_state_path', 'file')
   const descriptorStat = await stat(resolved)
   const storageStateStat = await stat(storageStatePath)
   const csrfStateStat = await stat(csrfStatePath)
@@ -68,13 +98,14 @@ export async function readLiveDescriptor(): Promise<LiveBackendDescriptor | null
   assert.equal(storageStateStat.mode & 0o077, 0, 'storage state must be mode 0600')
   assert.equal(csrfStateStat.mode & 0o077, 0, 'CSRF state must be mode 0600')
   assert.ok(storageStatePath !== resolved, 'descriptor cannot double as credential state')
-  const scanSecretsPath = ownedAbsolutePath(parsed.scan_secrets_path, 'scan_secrets_path')
+  const scanSecretsPath = await canonicalOwnedPath(runRoot, parsed.scan_secrets_path, 'scan_secrets_path', 'file')
   const scanSecretsStat = await stat(scanSecretsPath)
   assert.equal(scanSecretsStat.mode & 0o077, 0, 'scan secrets must be mode 0600')
   return {
     version: 1,
     run_id: parsed.run_id!,
     base_url: url.toString().replace(/\/$/, ''),
+    run_root: runRoot,
     storage_state_path: storageStatePath,
     csrf_state_path: csrfStatePath,
     evidence_dir: evidenceDir,
@@ -154,9 +185,10 @@ export async function captureFailureEvidence(options: {
   error: unknown
 }) {
   const { context, page, descriptor, evidence } = options
-  await mkdir(descriptor.evidence_dir, { recursive: true, mode: 0o700 })
-  await chmod(descriptor.evidence_dir, 0o700)
-  const prefix = path.join(descriptor.evidence_dir, `browser-${descriptor.run_id}`)
+  const evidenceDir = await canonicalOwnedPath(descriptor.run_root, descriptor.evidence_dir, 'evidence_dir', 'directory')
+  const invocationDir = await mkdtemp(path.join(evidenceDir, `browser-${descriptor.run_id}-`))
+  await chmod(invocationDir, 0o700)
+  const prefix = path.join(invocationDir, 'failure')
   const screenshot = `${prefix}.png`
   const trace = `${prefix}.trace.zip`
   await page.screenshot({ path: screenshot, fullPage: true }).catch(() => undefined)
@@ -175,8 +207,9 @@ export async function captureFailureEvidence(options: {
   try {
     for (const artifact of artifacts) await scanArtifact(artifact, secrets)
   } catch (error) {
-    await Promise.all((await readdir(descriptor.evidence_dir)).map((name) =>
-      rm(path.join(descriptor.evidence_dir, name), { force: true, recursive: true })))
+    // This invocation owns only its mkdtemp directory. Never traverse or
+    // remove sibling evidence, even if a decoy was present before the run.
+    await rm(invocationDir, { force: true, recursive: true })
     throw error
   }
 }

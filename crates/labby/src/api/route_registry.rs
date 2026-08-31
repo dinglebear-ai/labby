@@ -310,7 +310,7 @@ fn join(prefix: &str, path: &str) -> String {
 
 /// Assemble the complete static route-pattern inventory from the same local
 /// descriptor functions used by runtime route groups.
-pub fn build_route_descriptors(_service_names: &[String]) -> Vec<RouteDescriptor> {
+pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
     use crate::app_manifest::{
         APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
         SERVER_LOGS_BROWSER_ROUTE,
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn compiled_feature_shape_has_expected_conditional_groups() {
-        let routes = build_route_descriptors(&[]);
+        let routes = build_route_descriptors();
         let paths = routes
             .iter()
             .map(|route| route.path.as_str())
@@ -632,7 +632,7 @@ mod tests {
                 .contains("not mounted")
         );
         assert!(
-            validate_mounted_inventory(&[required, extra], &build_route_descriptors(&[]))
+            validate_mounted_inventory(&[required, extra], &build_route_descriptors())
                 .unwrap_err()
                 .contains("missing from inventory")
         );

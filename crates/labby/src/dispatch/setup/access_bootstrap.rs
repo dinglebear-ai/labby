@@ -412,34 +412,28 @@ async fn tombstone_and_cleanup_owned(
     let store = AccessStore::open(paths.access_db()).await?;
     let now = unix_seconds()?;
     store
-        .tombstone_access_artifact(
+        .tombstone_access_artifacts(
             journal.installation_id.clone(),
-            "credential".into(),
-            journal.credential_id.clone(),
-            digest32(&journal.credential_digest_hex)?,
-            1,
-            reason.into(),
-            now,
-        )
-        .await?;
-    store
-        .tombstone_access_artifact(
-            journal.installation_id.clone(),
-            "proof".into(),
-            journal.proof_id.clone(),
-            digest32(&journal.proof_digest_hex)?,
-            1,
-            reason.into(),
-            now,
-        )
-        .await?;
-    store
-        .tombstone_access_artifact(
-            journal.installation_id.clone(),
-            "prepare".into(),
-            journal.prepare_id.clone(),
-            Sha256::digest(journal.prepare_id.as_bytes()).into(),
-            1,
+            vec![
+                (
+                    "credential".into(),
+                    journal.credential_id.clone(),
+                    digest32(&journal.credential_digest_hex)?,
+                    1,
+                ),
+                (
+                    "proof".into(),
+                    journal.proof_id.clone(),
+                    digest32(&journal.proof_digest_hex)?,
+                    1,
+                ),
+                (
+                    "prepare".into(),
+                    journal.prepare_id.clone(),
+                    Sha256::digest(journal.prepare_id.as_bytes()).into(),
+                    1,
+                ),
+            ],
             reason.into(),
             now,
         )

@@ -263,7 +263,11 @@ executable packaged binary. Its version and SHA-256 identity are recorded; the
 release tier does not substitute `cargo run` for the packaged product identity.
 Reproduction commands contain placeholders rather than credentials. Run roots,
 browser state, traces, logs, and reports are disposable, permission-restricted,
-bounded, and recursively secret-scanned before retention.
+and bounded. Each live fixture scans its actual generated credentials and seeded
+secret canaries before deleting its owned root. The outer CI supervisor also
+injects a run-specific scan-only secret and recursively scans every retained
+file for that value before publishing evidence; symlinks and oversized retained
+files fail the evidence audit.
 
 The live browser job consumes prebuilt Gateway Admin assets and a supervisor-
 created `LABBY_LIVE_BROWSER_DESCRIPTOR`; Playwright owns Chromium only. The

@@ -72,6 +72,15 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
                 "absolute shard deadline expired while correlating route evidence".to_string(),
             ),
         }
+        if failures.is_empty() {
+            for (case, route) in route_cases()
+                .expect("route recipes for evidence")
+                .iter()
+                .zip(&expected_evidence)
+            {
+                record_route_outcome(case, route);
+            }
+        }
     }
 
     let diagnostics = guard.diagnostics(failures.first().map(String::as_str));
@@ -86,6 +95,34 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
         "route matrix failures:\n{}\n{diagnostics}",
         failures.join("\n")
     );
+}
+
+fn record_route_outcome(case: &RouteCase, evidence: &ExpectedRouteEvidence) {
+    let Some(directory) = std::env::var_os("LABBY_E2E_CASE_DIR") else {
+        return;
+    };
+    use sha2::Digest as _;
+    let case_id = format!("route::{}", case.key());
+    let event = serde_json::json!({
+        "schema_version": 1,
+        "run_id": std::env::var("LABBY_E2E_RUN_ID").expect("route evidence run id"),
+        "seed": std::env::var("LABBY_E2E_SEED").expect("route evidence seed"),
+        "build_identity": std::env::var("LABBY_E2E_BUILD_IDENTITY").expect("route evidence build"),
+        "case_id": case_id,
+        "kind": "route",
+        "achieved_evidence": if evidence.conditional_404 { "DeclaredConditionalAbsence" } else { "MountedHandler" },
+        "handler_success": !evidence.conditional_404,
+        "denial_only": false,
+        "outcome_kind": if evidence.conditional_404 { "declared_conditional_absence" } else { "mounted_handler" },
+        "cleanup_ok": true,
+    });
+    let directory = std::path::Path::new(&directory);
+    std::fs::create_dir_all(directory).expect("create route evidence directory");
+    let name = hex::encode(sha2::Sha256::digest(case_id.as_bytes()));
+    let target = directory.join(format!("{name}.json"));
+    let temporary = directory.join(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, serde_json::to_vec(&event).unwrap()).unwrap();
+    std::fs::rename(temporary, target).unwrap();
 }
 
 #[derive(Debug)]

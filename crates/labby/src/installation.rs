@@ -152,15 +152,6 @@ enum LifecycleOwner {
     Offline,
 }
 
-impl std::fmt::Display for LifecycleOwner {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Daemon => "daemon",
-            Self::Offline => "offline operation",
-        })
-    }
-}
-
 impl LifecycleOwner {
     const fn as_str(self) -> &'static str {
         match self {

@@ -2188,12 +2188,6 @@ pub(crate) fn build_router_with_external_auth(
         );
     }
 
-    let route_service_names = state
-        .registry
-        .services()
-        .iter()
-        .map(|service| service.name.to_string())
-        .collect::<Vec<_>>();
     let v1 = build_v1_router(&state, protected_route_auth_configured);
 
     let x_request_id = HeaderName::from_static("x-request-id");
@@ -2477,8 +2471,7 @@ pub(crate) fn build_router_with_external_auth(
     };
     route_group = route_group.merge(app_routes);
 
-    let declared_descriptors =
-        crate::api::route_registry::build_route_descriptors(&route_service_names);
+    let declared_descriptors = crate::api::route_registry::build_route_descriptors();
     crate::api::route_registry::validate_mounted_inventory(
         &route_group.descriptors,
         &declared_descriptors,

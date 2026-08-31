@@ -141,6 +141,7 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
             "version": 1,
             "run_id": format!("browser-{}", ulid::Ulid::new()),
             "base_url": browser_base,
+            "run_root": fixture_root,
             "storage_state_path": storage_state,
             "csrf_state_path": csrf_state,
             "evidence_dir": evidence_dir,

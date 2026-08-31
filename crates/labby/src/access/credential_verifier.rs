@@ -457,16 +457,10 @@ impl ProjectSessionRevalidator for AccessCredentialAdapter {
         binding: &'a ProjectSessionBinding,
     ) -> ProjectSessionRevalidationFuture<'a> {
         Box::pin(async move {
-            self.admit_credential_attempt(&binding.source_credential_id)
-                .await
-                .map_err(|error| match error {
-                    ProductCredentialVerificationError::Denied => {
-                        ProjectSessionRevalidationError::Denied
-                    }
-                    ProductCredentialVerificationError::Unavailable => {
-                        ProjectSessionRevalidationError::Unavailable
-                    }
-                })?;
+            // The raw credential's secret was admitted and verified before this
+            // session was minted. Revalidation proves the stored binding still
+            // matches live authority; it is not another untrusted secret guess
+            // and must not consume the brute-force attempt budget.
             let bound = self
                 .resolve_binding(binding.source_credential_id.clone(), None)
                 .await
@@ -579,6 +573,44 @@ fn to_u64(value: i64) -> rusqlite::Result<u64> {
 mod tests {
     use super::*;
 
+    struct DeniedLiveAuthority;
+
+    impl LiveAuthority for DeniedLiveAuthority {
+        fn resolve<'a>(&'a self, _: &'a StoredBinding) -> LiveAuthorityFuture<'a> {
+            Box::pin(async { Err(LiveAuthorityError::Denied) })
+        }
+    }
+
+    async fn ready_runtime() -> (tempfile::TempDir, AccessRuntime) {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let path = directory.path().canonicalize().unwrap().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        store
+            .bootstrap_owner(
+                super::super::bootstrap::BootstrapOwnerInput::new(
+                    labby_auth::VerifiedIdentity::local_credential(
+                        labby_auth::Authenticator::StaticBearer,
+                        "static-bearer:credential-verifier-test",
+                    )
+                    .unwrap(),
+                    "Local",
+                    "Default",
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+        (directory, runtime)
+    }
+
     fn stored() -> StoredBinding {
         StoredBinding {
             installation_id: "install".into(),
@@ -641,6 +673,50 @@ mod tests {
         assert!(!bool::from(
             credential_digest(&parsed).ct_eq(&credential_digest(&other))
         ));
+    }
+
+    #[tokio::test]
+    async fn invalid_raw_credentials_are_throttled_after_sixteen_attempts() {
+        let (_directory, runtime) = ready_runtime().await;
+        let live: Arc<dyn LiveAuthority> = Arc::new(DeniedLiveAuthority);
+        let adapter = AccessCredentialAdapter::new(runtime.clone(), live);
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0xA5; 32]);
+        let credential = ProductCredential::parse(&format!(
+            "{PRODUCT_CREDENTIAL_PREFIX}missing-credential_{encoded}"
+        ))
+        .unwrap();
+
+        for _ in 0..17 {
+            assert!(matches!(
+                adapter.verify(&credential).await,
+                Err(ProductCredentialVerificationError::Denied)
+            ));
+        }
+
+        let store = runtime.store().await.unwrap();
+        let (attempts, rate_limited_events): (i64, i64) = store
+            .with_connection(|connection| {
+                Ok((
+                    connection
+                        .query_row(
+                            "SELECT attempts FROM access_admission_buckets WHERE admission_class='credential_peer'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(super::super::store::map_sqlite_error)?,
+                    connection
+                        .query_row(
+                            "SELECT count(*) FROM access_security_events WHERE event_kind='credential_verify' AND reason_code='rate_limited'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .map_err(super::super::store::map_sqlite_error)?,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(attempts, 16);
+        assert_eq!(rate_limited_events, 1);
     }
 
     #[tokio::test]

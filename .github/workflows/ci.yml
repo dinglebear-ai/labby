@@ -441,6 +441,13 @@ jobs:
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
+      - name: Select exclusive live E2E run root
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_root="${RUNNER_TEMP}/labby-live-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          test ! -e "$run_root"
+          printf 'LABBY_E2E_RUN_ROOT=%s\n' "$run_root" >> "$GITHUB_ENV"
       - name: Run bounded hermetic product E2E shards
         env:
           CARGO_BUILD_JOBS: "2"
@@ -450,8 +457,8 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: labby-live-e2e-${{ github.run_id }}
-          path: /tmp/labby-live-e2e.*/artifacts/
+          name: labby-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/labby-live-e2e-${{ github.run_id }}-${{ github.run_attempt }}-live-e2e-core/artifacts/
           if-no-files-found: error
           retention-days: 3
 

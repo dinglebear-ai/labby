@@ -67,6 +67,47 @@ impl ActionOutcome {
             && !self.side_effects.is_empty()
             && self.canary_free
     }
+
+    pub(crate) fn record(&self) {
+        let Some(directory) = std::env::var_os("LABBY_E2E_CASE_DIR") else {
+            return;
+        };
+        let run_id = std::env::var("LABBY_E2E_RUN_ID").expect("run id for case evidence");
+        let seed = std::env::var("LABBY_E2E_SEED").expect("seed for case evidence");
+        let build_identity =
+            std::env::var("LABBY_E2E_BUILD_IDENTITY").expect("build identity for case evidence");
+        let event = json!({
+            "schema_version": 1,
+            "run_id": run_id,
+            "seed": seed,
+            "build_identity": build_identity,
+            "case_id": format!("action::{:?}::{}", self.surface, self.key),
+            "kind": "action",
+            "achieved_evidence": format!("{:?}", self.evidence),
+            "handler_success": matches!(self.evidence, EvidenceLevel::LiveSuccess | EvidenceLevel::LiveStateTransition),
+            "denial_only": self.evidence == EvidenceLevel::LiveErrorPath
+                && self.outcome_kind.to_ascii_lowercase().contains("den"),
+            "outcome_kind": self.outcome_kind,
+            "cleanup_ok": self.canary_free,
+        });
+        write_case_event(&directory, &event);
+    }
+}
+
+fn write_case_event(directory: &std::ffi::OsStr, event: &Value) {
+    use sha2::Digest as _;
+    let directory = Path::new(directory);
+    std::fs::create_dir_all(directory).expect("create case evidence directory");
+    let id = event["case_id"].as_str().expect("case id");
+    let name = hex::encode(sha2::Sha256::digest(id.as_bytes()));
+    let target = directory.join(format!("{name}.json"));
+    let temporary = directory.join(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(
+        &temporary,
+        serde_json::to_vec(event).expect("serialize case event"),
+    )
+    .expect("write case evidence");
+    std::fs::rename(temporary, target).expect("publish case evidence");
 }
 
 pub(crate) fn disposition(intent: &CaseIntent) -> Disposition {
@@ -107,6 +148,12 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         fixtures.keys().cloned().collect::<BTreeSet<_>>(),
         expected_services
     );
+    let catalog: Vec<crate::action_matrix::CatalogAction> =
+        serde_json::from_str(ACTION_CATALOG).expect("action catalog");
+    let catalog_by_action = catalog
+        .iter()
+        .map(|entry| ((entry.service.as_str(), entry.action.as_str()), entry))
+        .collect::<BTreeMap<_, _>>();
     for (service, fixture) in &fixtures {
         let intents = crate::action_matrix::intents()
             .iter()
@@ -136,12 +183,9 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
                 .keys()
                 .all(|action| action_keys.contains(action))
         );
-        let catalog: Vec<crate::action_matrix::CatalogAction> =
-            serde_json::from_str(ACTION_CATALOG).expect("action catalog");
         for (action, values) in &fixture.action_params {
-            let metadata = catalog
-                .iter()
-                .find(|entry| entry.service == *service && entry.action == *action)
+            let metadata = catalog_by_action
+                .get(&(service.as_str(), action.as_str()))
                 .expect("fixture override action metadata");
             let metadata_keys = metadata
                 .params
