@@ -16,6 +16,7 @@ pub mod jwt;
 pub mod metadata;
 #[cfg(feature = "http-axum")]
 pub mod middleware;
+pub mod project_session;
 #[cfg(feature = "http-axum")]
 mod remote;
 pub mod resource_registry;
@@ -42,8 +43,11 @@ pub use verified_identity::{
 pub use auth_context::{AuthContext, auth_context, www_authenticate_value};
 #[cfg(feature = "http-axum")]
 pub use middleware::{
-    ActorKeyDeriver, AuthLayer, AuthService, RequiredScopes, parse_bearer_token, tokens_equal,
+    ActorKeyDeriver, AuthLayer, AuthService, ProductAccessGrantResolutionFuture,
+    ProductAccessGrantResolver, ProjectSessionRevalidationError, ProjectSessionRevalidationFuture,
+    ProjectSessionRevalidator, RequiredScopes, parse_bearer_token, tokens_equal,
 };
+pub use types::ProjectSessionBinding;
 
 #[cfg(test)]
 pub mod test_support;

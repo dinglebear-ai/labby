@@ -1,0 +1,1 @@
+{"service":"fs","api_path":"/v1/fs","cli_probe":null,"can_mutate":false,"success_action":"fs.list","invalid_action":"schema","policy_action":"fs.preview","workflow":[],"parameters":{"action":"help","path":"fixture.txt"},"action_params":{}}

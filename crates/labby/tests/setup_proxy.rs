@@ -1,12 +1,14 @@
 use std::process::Command;
 
+#[path = "support/lib.rs"]
+mod support;
+
 fn command(home: &std::path::Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
-    command
-        .env("HOME", home)
-        .env("LABBY_HOME", home.join(".labby"))
-        .env("LABBY_LOG_DIR", home.join("logs"));
-    command
+    // `isolated_command` deliberately redirects temporary files into the test
+    // home. tempfile requires that TMPDIR already exist, just as a real login
+    // environment's system temporary directory does.
+    std::fs::create_dir_all(home.join("tmp")).expect("create isolated TMPDIR");
+    support::isolated_command(home)
 }
 
 #[test]

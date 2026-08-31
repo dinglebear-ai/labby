@@ -2036,6 +2036,7 @@ dependencies = [
 name = "labby-primitives"
 version = "1.14.1"
 dependencies = [
+ "base64 0.22.1",
  "thiserror 2.0.18",
  "url",
 ]

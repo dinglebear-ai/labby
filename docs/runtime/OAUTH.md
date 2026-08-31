@@ -73,6 +73,38 @@ Startup also fails if:
 - `LABBY_AUTH_ADMIN_EMAIL` is missing — fail-closed default so no Google account can authenticate without explicit permission
 - the auth database or signing key has insecure file permissions
 
+## Owner bootstrap and project-bound credentials
+
+Labby supports two separate first-owner flows:
+
+- `POST /v1/access/bootstrap-owner` remains the Google-backed browser flow. It
+  requires the authenticated browser session, CSRF token, `lab:admin`, the
+  canonical external identity, and an email matching
+  `LABBY_AUTH_ADMIN_EMAIL`.
+- `labby setup access-bootstrap` is the direct-local operator flow documented
+  in [Local access bootstrap](../guides/LOCAL_ACCESS_BOOTSTRAP.md). Eligibility
+  comes only from a one-time 256-bit proof prepared offline while the
+  installation is pristine. Loopback location by itself grants nothing.
+
+The local flow binds the first owner, default Project, already-published
+Loadout, protected route, resource, audience, ordered scopes, installation
+generation, and client-generated credential digest in one access-store
+transaction. It does not depend on OAuth being configured. Its consume,
+status, and cleanup routes accept `X-Labby-Bootstrap-Proof` only from a direct
+loopback or Unix peer, reject forwarded authority, return uniform
+non-enumerating denials, and set private no-store/no-referrer response headers.
+
+Issued `lby_pc_v1_...` product credentials are distinct from OAuth access
+tokens and from `LABBY_MCP_HTTP_TOKEN`. Every request revalidates the source
+credential, project membership, policy epochs, published Loadout/route
+generations, resource, audience, and scopes. Revocation therefore immediately
+denies both the credential and browser sessions derived from it, even if
+best-effort session-row cleanup has not completed.
+
+`POST /token` continues to exchange OAuth grants only; it never consumes a
+bootstrap proof or issues a project credential. Never edit the access database,
+forge credential rows, or treat loopback reachability as bootstrap authority.
+
 ## Registration and Authorize Flow
 
 OAuth mode exposes:

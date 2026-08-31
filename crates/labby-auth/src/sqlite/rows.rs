@@ -54,6 +54,18 @@ pub(super) fn row_to_authorization_code(
 pub(super) fn row_to_browser_session(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<BrowserSessionRow> {
+    let binding_json: Option<String> = row.get(6)?;
+    let project_binding = binding_json
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()?;
     Ok(BrowserSessionRow {
         session_id: row.get(0)?,
         subject: row.get(1)?,
@@ -61,6 +73,7 @@ pub(super) fn row_to_browser_session(
         csrf_token: row.get(3)?,
         created_at: row.get(4)?,
         expires_at: row.get(5)?,
+        project_binding,
     })
 }
 

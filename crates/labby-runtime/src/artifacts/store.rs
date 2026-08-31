@@ -125,14 +125,9 @@ impl ArtifactStore {
         if !root.is_absolute() {
             return Err(ArtifactError::UnsafePath("store_root_relative"));
         }
-        let root = normalize_verified_macos_var_alias(root)
-            .map_err(|_| ArtifactError::UnsafePath("store_symlink"))?;
-        let root = root.as_path();
-        validate_store_creation_ancestor(root)?;
-        reject_existing_symlinks_in_path(root)
-            .map_err(|_| ArtifactError::UnsafePath("store_symlink"))?;
-        ensure_private_dir(root)?;
-        let root = canonicalize_and_reject_write_path(root)
+        let root = canonical_store_creation_target(root)?;
+        ensure_private_dir(&root)?;
+        let root = canonicalize_and_reject_write_path(&root)
             .map_err(|_| ArtifactError::UnsafePath("store_root"))?;
         ensure_private_dir(&root.join("artifacts"))?;
         ensure_private_dir(&root.join("locks"))?;
@@ -663,18 +658,24 @@ fn cleanup_recovery_dir(path: &Path, artifact_id: &str, kind: &str) {
     }
 }
 
-fn validate_store_creation_ancestor(root: &Path) -> Result<(), ArtifactError> {
+fn canonical_store_creation_target(root: &Path) -> Result<PathBuf, ArtifactError> {
     let mut probe = root;
     while !probe.exists() {
         probe = probe
             .parent()
             .ok_or(ArtifactError::UnsafePath("store_root"))?;
     }
-    reject_existing_symlinks_in_path(probe)
-        .map_err(|_| ArtifactError::UnsafePath("store_symlink"))?;
-    canonicalize_and_reject_write_path(probe)
+    // Validate the caller-controlled boundary component itself, then
+    // canonicalize it. Platform-managed aliases above that boundary (notably
+    // macOS `/var` -> `/private/var`) are not part of the artifact root and
+    // must not make an otherwise private temp/store directory unsafe.
+    reject_symlink(probe).map_err(|_| ArtifactError::UnsafePath("store_symlink"))?;
+    let canonical_probe = canonicalize_and_reject_write_path(probe)
         .map_err(|_| ArtifactError::UnsafePath("store_root"))?;
-    Ok(())
+    let suffix = root
+        .strip_prefix(probe)
+        .map_err(|_| ArtifactError::UnsafePath("store_root"))?;
+    Ok(canonical_probe.join(suffix))
 }
 
 pub(crate) struct MutationLock {

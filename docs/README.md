@@ -14,7 +14,8 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Service model](./dev/SERVICES.md) — the current registered service inventory and onboarding rules.
 - [CLI](./surfaces/CLI.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
 - [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
-- [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — design and implementation work product; only the separately documented owner-bootstrap route is a current product capability.
+- [Local access bootstrap](./guides/LOCAL_ACCESS_BOOTSTRAP.md) — offline proof preparation, direct-local consume, recovery, revocation, and cleanup.
+- [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
 - [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — active specification, contract, implementation plan, and progress tracker for universal Skills access.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.

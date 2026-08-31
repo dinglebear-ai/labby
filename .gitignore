@@ -54,7 +54,6 @@ backups/
 .full-review-archive-*
 .bivvy
 .broadcastr/
-.superpowers/
 .codex
 .gemini
 settings.local.json

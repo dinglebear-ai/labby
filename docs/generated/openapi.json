@@ -13,6 +13,230 @@
     "version": "0.3.2"
   },
   "paths": {
+    "/auth/bootstrap/cleanup": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Tombstone and clean an exact bootstrap prepare",
+        "description": "Direct-local proof-authenticated operation. Unknown, malformed, expired, or mismatched proofs receive one uniform non-enumerating denial. Responses are private, no-store and no-referrer.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapPrepareIdRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Metadata-only operation outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapProofMetadataResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Uniform bootstrap proof denial",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Bootstrap service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "LabbyBootstrapProof": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "tombstone before exact-file cleanup; exact retry idempotent"
+      }
+    },
+    "/auth/bootstrap/consume": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Consume an offline-prepared bootstrap proof",
+        "description": "Direct-local proof-authenticated operation. Unknown, malformed, expired, or mismatched proofs receive one uniform non-enumerating denial. Responses are private, no-store and no-referrer.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapProofConsumeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Metadata-only operation outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapProofMetadataResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Uniform bootstrap proof denial",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Bootstrap service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "LabbyBootstrapProof": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "atomic owner and credential creation; exact retry idempotent"
+      }
+    },
+    "/auth/bootstrap/status": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Read bootstrap prepare status",
+        "description": "Direct-local proof-authenticated operation. Unknown, malformed, expired, or mismatched proofs receive one uniform non-enumerating denial. Responses are private, no-store and no-referrer.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapPrepareIdRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Metadata-only operation outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapProofMetadataResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Uniform bootstrap proof denial",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Bootstrap service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "LabbyBootstrapProof": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "none_expected"
+      }
+    },
+    "/auth/local-session": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Create a source-bound local browser session",
+        "responses": {
+          "201": {
+            "description": "Source-bound browser session metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalSessionResponseDoc"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "source-bound browser session creation"
+      },
+      "delete": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Revoke the current local browser session",
+        "responses": {
+          "204": {
+            "description": "Browser session revoked and cookie cleared"
+          }
+        },
+        "security": [
+          {
+            "browser_session": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "browser session revocation"
+      }
+    },
     "/health": {
       "get": {
         "tags": [
@@ -159,6 +383,100 @@
             "browser_session": []
           }
         ]
+      }
+    },
+    "/v1/access/credentials": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Issue a narrower project credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialIssueRequestDoc"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Credential metadata only; plaintext credential secrets are never returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialMetadataResponseDoc"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "credential creation; exact retry idempotent"
+      }
+    },
+    "/v1/access/credentials/self": {
+      "get": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Introspect the exact source credential",
+        "responses": {
+          "200": {
+            "description": "Exact active credential binding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialSelfResponseDoc"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "none_expected"
+      }
+    },
+    "/v1/access/credentials/{credential_id}": {
+      "delete": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Revoke a project credential",
+        "responses": {
+          "200": {
+            "description": "Idempotent revocation outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutationMetadataResponseDoc"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-failure-disclosure": "uniform non-enumerating denial",
+        "x-labby-side-effects": "immediate credential revocation; exact retry idempotent"
       }
     },
     "/v1/apps/manifest": {
@@ -1968,6 +2286,104 @@
           }
         }
       },
+      "BootstrapPrepareIdRequest": {
+        "type": "object",
+        "required": [
+          "prepare_id"
+        ],
+        "properties": {
+          "prepare_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BootstrapProofConsumeRequest": {
+        "type": "object",
+        "required": [
+          "version",
+          "installation_id",
+          "canonical_issuer",
+          "organization_name",
+          "project_name",
+          "subject",
+          "loadout_id",
+          "route_id",
+          "resource",
+          "scopes",
+          "ttl_seconds",
+          "credential_id",
+          "idempotency_key"
+        ],
+        "properties": {
+          "canonical_issuer": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "installation_id": {
+            "type": "string"
+          },
+          "loadout_id": {
+            "type": "string"
+          },
+          "organization_name": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "BootstrapProofMetadataResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "prepare_id"
+        ],
+        "properties": {
+          "credential_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prepare_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "CodeModeToolDescribeRequest": {
         "type": "object",
         "required": [
@@ -2161,6 +2577,146 @@
           },
           "truncated": {
             "type": "boolean"
+          }
+        }
+      },
+      "CredentialIssueRequestDoc": {
+        "type": "object",
+        "required": [
+          "credential_id",
+          "credential_digest_hex",
+          "project_id",
+          "route_id",
+          "resource",
+          "audience",
+          "scopes",
+          "expires_at",
+          "idempotency_key"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "credential_digest_hex": {
+            "type": "string"
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CredentialMetadataResponseDoc": {
+        "type": "object",
+        "required": [
+          "status",
+          "credential_id",
+          "credential_generation",
+          "expires_at"
+        ],
+        "properties": {
+          "credential_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "CredentialSelfResponseDoc": {
+        "type": "object",
+        "required": [
+          "status",
+          "credential_id",
+          "credential_generation",
+          "installation_id",
+          "organization_id",
+          "project_id",
+          "loadout_id",
+          "route_id",
+          "resource",
+          "audience",
+          "scopes",
+          "expires_at",
+          "revocation_generation"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string"
+          },
+          "credential_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "credential_id": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "installation_id": {
+            "type": "string"
+          },
+          "loadout_id": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "revocation_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "route_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "status": {
+            "type": "string"
           }
         }
       },
@@ -3495,6 +4051,39 @@
           }
         }
       },
+      "LocalSessionResponseDoc": {
+        "type": "object",
+        "required": [
+          "csrf_token",
+          "expires_at"
+        ],
+        "properties": {
+          "csrf_token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "MutationMetadataResponseDoc": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "credential_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "Server_logsActionRequest": {
         "type": "object",
         "required": [
@@ -4157,6 +4746,11 @@
       }
     },
     "securitySchemes": {
+      "LabbyBootstrapProof": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Labby-Bootstrap-Proof"
+      },
       "bearer_auth": {
         "type": "http",
         "scheme": "bearer",

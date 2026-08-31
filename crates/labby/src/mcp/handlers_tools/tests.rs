@@ -961,7 +961,7 @@ fn request_context_with_elicitation(
 }
 
 #[tokio::test]
-async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
+async fn destructive_builtin_uses_single_use_bound_mrtr_elicitation() {
     DESTRUCTIVE_DISPATCH_COUNT_MRTR.store(0, Ordering::SeqCst);
     let server = test_server(
         destructive_test_registry(destructive_counting_dispatch_mrtr),
@@ -990,10 +990,13 @@ async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
     let CallToolResponse::InputRequired(input_required) = first else {
         panic!("destructive call must return input_required");
     };
-    assert!(input_required.request_state.is_none());
+    let request_state = input_required
+        .request_state
+        .expect("destructive challenge has server-owned state");
     assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 0);
 
     let mut retry = destructive_request();
+    retry.request_state = Some(request_state);
     retry.input_responses = Some(BTreeMap::from([(
         "destructive_confirmation".to_string(),
         serde_json::json!({"action": "accept", "content": {"confirm": true}}),
@@ -1001,13 +1004,102 @@ async fn destructive_builtin_uses_stateless_mrtr_elicitation() {
     let second = running
         .service()
         .call_tool(
-            retry,
+            retry.clone(),
             request_context_with_elicitation(running.peer().clone()),
         )
         .await
         .expect("completed retry");
     assert!(matches!(second, CallToolResponse::Complete(_)));
     assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 1);
+
+    let replay = running
+        .service()
+        .call_tool(
+            retry,
+            request_context_with_elicitation(running.peer().clone()),
+        )
+        .await
+        .expect("replay receives a protocol result");
+    let CallToolResponse::Complete(replay) = replay else {
+        panic!("replay denial must be a complete error result");
+    };
+    assert_eq!(replay.is_error, Some(true));
+    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn destructive_confirmation_cannot_cross_mcp_sessions_and_is_burned() {
+    DESTRUCTIVE_DISPATCH_COUNT_MRTR.store(0, Ordering::SeqCst);
+    let first_server = test_server(
+        destructive_test_registry(destructive_counting_dispatch_mrtr),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Info,
+    );
+    let mut second_server = test_server(
+        destructive_test_registry(destructive_counting_dispatch_mrtr),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Info,
+    );
+    second_server.relay_session_id = 1;
+    let (first_transport, _first_client) = tokio::io::duplex(64);
+    let first = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        first_server,
+        first_transport,
+        None,
+    );
+    let (second_transport, _second_client) = tokio::io::duplex(64);
+    let second = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        second_server,
+        second_transport,
+        None,
+    );
+
+    let CallToolResponse::InputRequired(challenge) = first
+        .service()
+        .call_tool(
+            destructive_request(),
+            request_context_with_elicitation(first.peer().clone()),
+        )
+        .await
+        .expect("challenge")
+    else {
+        panic!("destructive call must return input_required");
+    };
+    let mut retry = destructive_request();
+    retry.request_state = challenge.request_state;
+    retry.input_responses = Some(BTreeMap::from([(
+        "destructive_confirmation".to_string(),
+        serde_json::json!({"action": "accept", "content": {"confirm": true}}),
+    )]));
+
+    let cross_session = second
+        .service()
+        .call_tool(
+            retry.clone(),
+            request_context_with_elicitation(second.peer().clone()),
+        )
+        .await
+        .expect("cross-session denial");
+    let CallToolResponse::Complete(cross_session) = cross_session else {
+        panic!("cross-session retry must be denied");
+    };
+    assert_eq!(cross_session.is_error, Some(true));
+
+    let burned = first
+        .service()
+        .call_tool(
+            retry,
+            request_context_with_elicitation(first.peer().clone()),
+        )
+        .await
+        .expect("burned-state denial");
+    let CallToolResponse::Complete(burned) = burned else {
+        panic!("burned retry must be denied");
+    };
+    assert_eq!(burned.is_error, Some(true));
+    assert_eq!(DESTRUCTIVE_DISPATCH_COUNT_MRTR.load(Ordering::SeqCst), 0);
 }
 
 #[test]

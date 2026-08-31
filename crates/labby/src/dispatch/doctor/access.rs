@@ -47,6 +47,10 @@ fn project(health: AccessHealth) -> Finding {
             Severity::Warn,
             "Access store needs initialization or owner bootstrap before access enforcement.",
         ),
+        AccessHealthStatus::Prepared => finding(
+            Severity::Warn,
+            "Access bootstrap is prepared; start Labby and consume the one-time proof.",
+        ),
         AccessHealthStatus::Insecure => finding(
             Severity::Fail,
             "Access store path or permissions are insecure; secure the state directory and store files.",

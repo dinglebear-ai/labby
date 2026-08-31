@@ -764,6 +764,11 @@ impl UpstreamPool {
         self.request_timeout
     }
 
+    /// Configured wall-clock budget for an MRTR-capable relayed request.
+    pub fn relay_timeout(&self) -> Duration {
+        self.relay_timeout
+    }
+
     /// Whether a call-usage recorder is wired for this pool. `usage_store`
     /// itself is `pub(super)` (only visible to `pool/` descendant modules,
     /// e.g. `pool/usage_record.rs`); this accessor is the sanctioned way for

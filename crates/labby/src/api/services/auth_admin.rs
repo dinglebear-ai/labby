@@ -18,7 +18,7 @@ use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{Json, Router, routing};
+use axum::{Json, routing};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -141,13 +141,37 @@ fn no_store(response: Response) -> Response {
 
 // ── route registration ────────────────────────────────────────────────────────
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new()
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = descriptors().into_iter();
+    RouteGroup::empty()
         .route(
-            "/",
-            routing::get(list_allowed_emails).post(add_allowed_email),
+            descriptors.next().unwrap(),
+            routing::get(list_allowed_emails),
         )
-        .route("/{email}", routing::delete(delete_allowed_email))
+        .route(
+            descriptors.next().unwrap(),
+            routing::post(add_allowed_email),
+        )
+        .route(
+            descriptors.next().unwrap(),
+            routing::delete(delete_allowed_email),
+        )
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new("GET", "/", "list_allowed_emails", "auth", RouteAuth::V1),
+        RouteDescriptor::new("POST", "/", "add_allowed_email", "auth", RouteAuth::V1),
+        RouteDescriptor::new(
+            "DELETE",
+            "/{email}",
+            "delete_allowed_email",
+            "auth",
+            RouteAuth::V1,
+        ),
+    ]
 }
 
 // ── handlers ──────────────────────────────────────────────────────────────────

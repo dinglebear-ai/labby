@@ -3,6 +3,7 @@ use serde_json::Value;
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, require_str};
 use crate::dispatch::lab_admin::catalog::ACTIONS;
+use crate::dispatch::lab_admin::params::audit_services;
 
 /// Top-level dispatch for the `lab_admin` tool.
 ///
@@ -62,6 +63,51 @@ async fn dispatch_inner(action: &str, params: Value) -> Result<Value, ToolError>
         "schema" => {
             let a = require_str(&params, "action")?;
             action_schema(ACTIONS, a)
+        }
+        "onboarding.audit" => {
+            let requested = audit_services(&params)?;
+            let registry = crate::registry::build_docs_registry();
+            let reports = requested
+                .iter()
+                .map(|name| {
+                    let service = registry.services().iter().find(|service| service.name == name);
+                    match service {
+                        Some(service) => serde_json::json!({
+                            "service": name,
+                            "registered": true,
+                            "status": service.status,
+                            "actions": service.actions.iter().map(|action| action.name).collect::<Vec<_>>(),
+                            "checks": {
+                                "registered": true,
+                                "available": service.status == "available",
+                                "action_catalog_nonempty": !service.actions.is_empty(),
+                            },
+                            "passed": service.status == "available" && !service.actions.is_empty(),
+                        }),
+                        None => serde_json::json!({
+                            "service": name,
+                            "registered": false,
+                            "status": "missing",
+                            "actions": [],
+                            "checks": {
+                                "registered": false,
+                                "available": false,
+                                "action_catalog_nonempty": false,
+                            },
+                            "passed": false,
+                        }),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let passed = reports
+                .iter()
+                .filter(|report| report["passed"] == true)
+                .count();
+            Ok(serde_json::json!({
+                "ok": passed == reports.len(),
+                "summary": {"requested": reports.len(), "passed": passed, "failed": reports.len() - passed},
+                "services": reports,
+            }))
         }
         unknown => Err(ToolError::UnknownAction {
             message: format!("unknown action `lab_admin.{unknown}`"),

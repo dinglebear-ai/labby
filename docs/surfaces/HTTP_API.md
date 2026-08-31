@@ -1,7 +1,7 @@
 ---
-title: "HTTP API"
-created: "2026-08-28"
-updated: "2026-08-30"
+title: "HTTP API Surface"
+created: "2026-08-27"
+updated: "2026-08-31"
 ---
 
 # HTTP API

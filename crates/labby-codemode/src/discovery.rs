@@ -83,7 +83,10 @@ pub fn search_visible_tools(
     validate_bytes("query", query, QUERY_MAX_BYTES)?;
     let tokens = tokens(query);
     let limit = limit.clamp(1, 50);
-    let mut candidates = Vec::with_capacity(limit);
+    // The response contract caps this collection at 50 entries. Reserve the
+    // fixed contract maximum instead of propagating the caller-derived value
+    // into an allocation, even after clamping.
+    let mut candidates = Vec::with_capacity(50);
     let mut total = 0_usize;
     for (index, entry) in entries.iter().enumerate() {
         if entry.kind != CodeModeCatalogKind::Tool || !discovery_entry_visible(entry, scope) {

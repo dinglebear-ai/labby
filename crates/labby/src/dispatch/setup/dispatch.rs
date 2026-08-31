@@ -1253,6 +1253,9 @@ mod tests {
         let original = "# keep me\n[mcp]\nport = 8765\n[plugin_owned]\nfuture = \"keep\"\n";
         std::fs::write(&config_path, original).expect("write config");
         crate::config::set_test_config_toml_path(Some(config_path.clone()));
+        let lab_dir = temp.path().join("lab-home");
+        std::fs::create_dir_all(&lab_dir).expect("lab dir");
+        crate::dispatch::helpers::set_test_lab_home(Some(lab_dir));
 
         // Pin an empty Lab home. Without this the dispatch loads the developer's
         // real `~/.labby/.env`, and on any machine that actually runs Labby that
@@ -1313,6 +1316,7 @@ mod tests {
                 .contains("port = 8766")
         );
 
+        crate::dispatch::helpers::set_test_lab_home(None);
         crate::config::set_test_config_toml_path(None);
     }
 

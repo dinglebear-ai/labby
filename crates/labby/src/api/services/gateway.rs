@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, header},
     response::IntoResponse,
@@ -16,11 +16,41 @@ use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_wi
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::error::ToolError;
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/", post(handle))
-        .route("/codemode/tools/search", post(search_tools))
-        .route("/codemode/tools/describe", post(describe_tool))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), post(handle))
+        .route(descriptors.next().unwrap(), post(search_tools))
+        .route(descriptors.next().unwrap(), post(describe_tool))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new("POST", "/", "handle", "gateway", RouteAuth::V1),
+        RouteDescriptor::new(
+            "POST",
+            "/codemode/tools/search",
+            "search_tools",
+            "gateway",
+            RouteAuth::V1,
+        ),
+        RouteDescriptor::new(
+            "POST",
+            "/codemode/tools/describe",
+            "describe_tool",
+            "gateway",
+            RouteAuth::V1,
+        ),
+    ]
+    .into_iter()
+    .map(|route| {
+        route
+            .feature("gateway")
+            .when("mounted only when API authentication is configured")
+    })
+    .collect()
 }
 
 #[derive(Deserialize)]
@@ -431,6 +461,7 @@ mod tests {
     fn gateway_routes_with_auth_context(manager: Arc<GatewayManager>, auth: AuthContext) -> Router {
         let state = AppState::from_registry(build_default_registry()).with_gateway_manager(manager);
         super::routes(state.clone())
+            .router
             .layer(Extension(auth))
             .with_state(state)
     }

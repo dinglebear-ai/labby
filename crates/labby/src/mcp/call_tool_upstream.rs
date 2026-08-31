@@ -533,49 +533,74 @@ impl LabMcpServer {
             // it — but only for the pooled path, else a relayed connect failure
             // would be counted twice.
             let used_relay = relay_config.is_some();
-            let call_outcome: Option<Result<CallToolResponse, UpstreamCallFailure>> =
-                match (relay_config, relay_capabilities) {
-                    (Some(config), Some(capabilities)) => {
-                        tracing::debug!(
-                            surface = "mcp",
-                            service,
-                            action = upstream_action,
-                            tool = %service,
-                            upstream = %upstream_name,
-                            route = "relayed",
-                            "proxying to upstream over relayed dedicated connection"
-                        );
-                        call_tool_relayed_on_fresh_stack(
-                            Arc::clone(&pool),
-                            config,
-                            None,
-                            upstream_params,
-                            context.peer.clone(),
-                            context.id.clone(),
-                            relay_cancellation_token(context),
-                            self.relay_session_id,
-                            capabilities,
-                            self.request_subject(context).map(str::to_owned),
-                            self.route_scope.task_authorization(),
-                        )
-                        .await
-                        .map(|result| result.map_err(UpstreamCallFailure::classified))
+            let call_outcome: Option<Result<CallToolResponse, UpstreamCallFailure>> = match (
+                relay_config,
+                relay_capabilities,
+            ) {
+                (Some(config), Some(capabilities)) => {
+                    tracing::debug!(
+                    surface = "mcp",
+                    service,
+                    action = upstream_action,
+                    tool = %service,
+                    upstream = %upstream_name,
+                    route = "relayed",
+                    "proxying to upstream over relayed dedicated connection"
+                    );
+                    let cancellation = relay_cancellation_token(context);
+                    let cancellation_token = cancellation.clone();
+                    let relay_timeout = pool.relay_timeout();
+                    let call = call_tool_relayed_on_fresh_stack(
+                        Arc::clone(&pool),
+                        config,
+                        None,
+                        upstream_params,
+                        context.peer.clone(),
+                        context.id.clone(),
+                        cancellation,
+                        self.relay_session_id,
+                        capabilities,
+                        self.request_subject(context).map(str::to_owned),
+                        self.route_scope.task_authorization(),
+                    );
+                    tokio::pin!(call);
+                    tokio::select! {
+                        // At the deadline the timeout classification wins over
+                        // the cancellation result produced while the relay is
+                        // tearing down. An explicit cancellation that arrives
+                        // before the deadline still completes `call` first and
+                        // retains its `cancelled` classification.
+                        biased;
+                        () = tokio::time::sleep(relay_timeout) => {
+                            cancellation_token.cancel();
+                            drop(tokio::time::timeout(
+                                std::time::Duration::from_secs(2),
+                                &mut call,
+                            ).await);
+                            Some(Err(UpstreamCallFailure::classified(
+                                CapabilityCallError::Timeout {
+                                    message: format!("upstream `{upstream_name}` relay request timed out"),
+                                },
+                            )))
+                        }
+                        result = &mut call => result.map(|result| result.map_err(UpstreamCallFailure::classified)),
                     }
-                    // The pooled path carries the same cancellation token as the
-                    // relayed one above. Without it a downstream client that
-                    // disconnects (or whose request the HTTP transport times
-                    // out) leaves this call running to completion unheard, and
-                    // the upstream is never told to stop — so a client that
-                    // retries can execute a side-effecting tool twice.
-                    _ => pool
-                        .call_tool_once_classified(
-                            &upstream_name,
-                            upstream_params,
-                            Some(&relay_cancellation_token(context)),
-                        )
-                        .await
-                        .map(|result| result.map_err(UpstreamCallFailure::classified)),
-                };
+                }
+                // The pooled path carries the same cancellation token as the
+                // relayed one above. Without it a downstream client that
+                // disconnects (or whose request the HTTP transport times
+                // out) leaves this call running to completion unheard, and
+                // the upstream is never told to stop — so a client that
+                // retries can execute a side-effecting tool twice.
+                _ => pool
+                    .call_tool_once_classified(
+                        &upstream_name,
+                        upstream_params,
+                        Some(&relay_cancellation_token(context)),
+                    )
+                    .await
+                    .map(|result| result.map_err(UpstreamCallFailure::classified)),
+            };
 
             match call_outcome {
                 Some(Ok(result)) => {

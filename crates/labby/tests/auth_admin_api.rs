@@ -192,6 +192,7 @@ impl Harness {
             csrf_token: csrf.to_string(),
             created_at: 1,
             expires_at: i64::MAX,
+            project_binding: None,
         };
         self.auth_state
             .store
@@ -496,6 +497,7 @@ async fn delete_allowed_email_revokes_subject_session_and_refresh_grants() {
         csrf_token: "csrf-removed".to_string(),
         created_at: 1,
         expires_at: i64::MAX,
+        project_binding: None,
     };
     h.auth_state
         .store
@@ -520,6 +522,7 @@ async fn delete_allowed_email_revokes_subject_session_and_refresh_grants() {
                 csrf_token: format!("csrf-{session_id}"),
                 created_at: 1,
                 expires_at: i64::MAX,
+                project_binding: None,
             })
             .await
             .unwrap();

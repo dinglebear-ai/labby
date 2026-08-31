@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{ConnectInfo, State},
     http::HeaderMap,
     routing::post,
@@ -31,8 +31,18 @@ async fn dispatch_at_api_boundary(
     crate::dispatch::skills::dispatch_with_context(registry, action, params).await
 }
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", post(handle))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    RouteGroup::empty().route(descriptors().remove(0), post(handle))
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new("POST", "/", "handle", "skills", RouteAuth::V1)
+            .feature("skills")
+            .when("mounted only when API authentication is configured"),
+    ]
 }
 
 #[cfg(all(test, feature = "skills"))]
@@ -455,7 +465,7 @@ mod tests {
 
     fn app(auth: Option<AuthContext>) -> Router {
         let state = AppState::from_registry(crate::registry::build_default_registry());
-        let app = super::routes(state.clone()).with_state(state);
+        let app = super::routes(state.clone()).router.with_state(state);
         match auth {
             Some(auth) => app.layer(Extension(auth)),
             None => app,

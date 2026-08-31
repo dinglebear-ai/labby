@@ -7,6 +7,7 @@ use rusqlite::{Connection, ErrorCode, OpenFlags};
 pub(crate) enum AccessHealthStatus {
     Missing,
     Uninitialized,
+    Prepared,
     Ready,
     Insecure,
     Corrupt,
@@ -35,13 +36,19 @@ pub(crate) fn inspect_health(path: &Path) -> AccessHealth {
     if !valid_store_path(path) {
         return AccessHealth::new(AccessHealthStatus::Insecure, "use_secure_access_store_path");
     }
-    let checked_path = match super::store::validated_access_path(path) {
-        Ok(path) => path,
-        Err(()) => {
-            return AccessHealth::new(AccessHealthStatus::Insecure, "remove_path_symlink");
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A missing store is observational setup state. Creation still
+            // validates and, where appropriate, creates the restrictive owned
+            // parent before writing anything.
+            return AccessHealth::new(AccessHealthStatus::Missing, "initialize_access_store");
+        }
+        Err(error) => {
+            warn_health_io("store_metadata", &error);
+            return AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store_file");
         }
     };
-    let path = checked_path.as_path();
     let Some(parent) = path.parent() else {
         return AccessHealth::new(AccessHealthStatus::Insecure, "use_secure_access_store_path");
     };
@@ -59,16 +66,6 @@ pub(crate) fn inspect_health(path: &Path) -> AccessHealth {
         }
     }
 
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return AccessHealth::new(AccessHealthStatus::Missing, "initialize_access_store");
-        }
-        Err(error) => {
-            warn_health_io("store_metadata", &error);
-            return AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store_file");
-        }
-    };
     if !secure_store_file(&metadata) {
         return AccessHealth::new(AccessHealthStatus::Insecure, "secure_access_store_file");
     }
@@ -99,7 +96,10 @@ pub(crate) fn inspect_health(path: &Path) -> AccessHealth {
                 .map_err(|error| classify_sqlite_error(&error))
         })
     } else {
-        Connection::open_with_flags(path, flags).map_err(|error| classify_sqlite_error(&error))
+        canonical_store_path(path).and_then(|canonical_path| {
+            Connection::open_with_flags(canonical_path, flags)
+                .map_err(|error| classify_sqlite_error(&error))
+        })
     } {
         Ok(connection) => connection,
         Err(health) => return health,
@@ -134,11 +134,24 @@ pub(crate) fn inspect_health(path: &Path) -> AccessHealth {
 }
 
 fn immutable_uri(path: &Path) -> Result<url::Url, AccessHealth> {
-    let mut uri = url::Url::from_file_path(path).map_err(|()| {
+    let canonical_path = canonical_store_path(path)?;
+    let mut uri = url::Url::from_file_path(canonical_path).map_err(|()| {
         AccessHealth::new(AccessHealthStatus::Insecure, "use_secure_access_store_path")
     })?;
     uri.query_pairs_mut().append_pair("immutable", "1");
     Ok(uri)
+}
+
+fn canonical_store_path(path: &Path) -> Result<PathBuf, AccessHealth> {
+    let parent = path.parent().ok_or_else(|| {
+        AccessHealth::new(AccessHealthStatus::Insecure, "use_secure_access_store_path")
+    })?;
+    let canonical_path = std::fs::canonicalize(parent)
+        .map_err(|_| {
+            AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store_parent")
+        })?
+        .join("access.db");
+    Ok(canonical_path)
 }
 
 fn valid_store_path(path: &Path) -> bool {
@@ -242,10 +255,20 @@ fn inspect_connection(connection: &Connection) -> AccessHealth {
                 |row| row.get::<_, i64>(0),
             );
             match generation {
-                Ok(0) => AccessHealth::new(
-                    AccessHealthStatus::Uninitialized,
-                    "bootstrap_access_store_owner",
-                ),
+                Ok(0) => match connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM bootstrap_proofs WHERE status = 'active')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                ) {
+                    Ok(true) => {
+                        AccessHealth::new(AccessHealthStatus::Prepared, "consume_bootstrap_proof")
+                    }
+                    Ok(false) => AccessHealth::new(
+                        AccessHealthStatus::Uninitialized,
+                        "bootstrap_access_store_owner",
+                    ),
+                    Err(error) => classify_sqlite_error(&error),
+                },
                 Ok(1) => AccessHealth::new(AccessHealthStatus::Ready, "ready"),
                 Ok(_) => AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store"),
                 Err(error) => classify_sqlite_error(&error),

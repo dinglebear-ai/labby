@@ -4,12 +4,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     body::{Body, Bytes},
     extract::{Path, State},
     http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post, put},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -25,31 +25,144 @@ use crate::oauth::public_relay::{
     suffix_after_machine,
 };
 
-pub fn public_routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/healthz", get(healthz))
-        .route("/callback/{machine_id}", get(callback).post(callback))
-        .route(
-            "/callback/{machine_id}/{*suffix}",
-            get(callback).post(callback),
-        )
+pub fn public_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = public_descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), get(healthz))
+        .route(descriptors.next().unwrap(), get(callback))
+        .route(descriptors.next().unwrap(), post(callback))
+        .route(descriptors.next().unwrap(), get(callback))
+        .route(descriptors.next().unwrap(), post(callback))
 }
 
-pub fn admin_routes(_state: AppState) -> Router<AppState> {
-    Router::new()
+pub(crate) fn public_descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new(
+            "GET",
+            "/healthz",
+            "healthz",
+            "oauth_relay",
+            RouteAuth::Public,
+        ),
+        RouteDescriptor::new(
+            "GET",
+            "/callback/{machine_id}",
+            "callback",
+            "oauth_relay",
+            RouteAuth::Public,
+        ),
+        RouteDescriptor::new(
+            "POST",
+            "/callback/{machine_id}",
+            "callback",
+            "oauth_relay",
+            RouteAuth::Public,
+        ),
+        RouteDescriptor::new(
+            "GET",
+            "/callback/{machine_id}/{*suffix}",
+            "callback",
+            "oauth_relay",
+            RouteAuth::Public,
+        ),
+        RouteDescriptor::new(
+            "POST",
+            "/callback/{machine_id}/{*suffix}",
+            "callback",
+            "oauth_relay",
+            RouteAuth::Public,
+        ),
+    ]
+}
+
+pub fn admin_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = admin_descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), get(list_machines))
         .route(
+            descriptors.next().unwrap(),
+            post(upsert_machine_without_path),
+        )
+        .route(descriptors.next().unwrap(), get(get_machine))
+        .route(descriptors.next().unwrap(), put(upsert_machine_with_path))
+        .route(descriptors.next().unwrap(), delete(remove_machine))
+        .route(descriptors.next().unwrap(), post(disable_machine))
+        .route(descriptors.next().unwrap(), post(enable_machine))
+        .route(descriptors.next().unwrap(), post(import_registry))
+}
+
+pub(crate) fn admin_descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    let condition = "mounted only when API authentication is configured; requires lab:admin";
+    vec![
+        RouteDescriptor::new(
+            "GET",
             "/machines",
-            get(list_machines).post(upsert_machine_without_path),
+            "list_machines",
+            "oauth_relay",
+            RouteAuth::V1,
         )
-        .route(
+        .when(condition),
+        RouteDescriptor::new(
+            "POST",
+            "/machines",
+            "upsert_machine_without_path",
+            "oauth_relay",
+            RouteAuth::V1,
+        )
+        .when(condition),
+        RouteDescriptor::new(
+            "GET",
             "/machines/{machine_id}",
-            get(get_machine)
-                .put(upsert_machine_with_path)
-                .delete(remove_machine),
+            "get_machine",
+            "oauth_relay",
+            RouteAuth::V1,
         )
-        .route("/machines/{machine_id}/disable", post(disable_machine))
-        .route("/machines/{machine_id}/enable", post(enable_machine))
-        .route("/import", post(import_registry))
+        .when(condition),
+        RouteDescriptor::new(
+            "PUT",
+            "/machines/{machine_id}",
+            "upsert_machine_with_path",
+            "oauth_relay",
+            RouteAuth::V1,
+        )
+        .when(condition),
+        RouteDescriptor::new(
+            "DELETE",
+            "/machines/{machine_id}",
+            "remove_machine",
+            "oauth_relay",
+            RouteAuth::V1,
+        )
+        .when(condition),
+        RouteDescriptor::new(
+            "POST",
+            "/machines/{machine_id}/disable",
+            "disable_machine",
+            "oauth_relay",
+            RouteAuth::V1,
+        )
+        .when(condition),
+        RouteDescriptor::new(
+            "POST",
+            "/machines/{machine_id}/enable",
+            "enable_machine",
+            "oauth_relay",
+            RouteAuth::V1,
+        )
+        .when(condition),
+        RouteDescriptor::new(
+            "POST",
+            "/import",
+            "import_registry",
+            "oauth_relay",
+            RouteAuth::V1,
+        )
+        .when(condition),
+    ]
 }
 
 /// Shallow health probe for the unauthenticated public callback surface.
@@ -937,7 +1050,7 @@ mod tests {
     #[tokio::test]
     async fn oauth_relay_admin_requires_lab_admin_scope() {
         let (_dir, state) = test_state().await;
-        let app = admin_routes(state.clone()).with_state(state.clone());
+        let app = admin_routes(state.clone()).router.with_state(state.clone());
 
         let unauthenticated = app
             .clone()
@@ -952,6 +1065,7 @@ mod tests {
         assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
 
         let read_only = admin_routes(state.clone())
+            .router
             .layer(Extension(read_only_auth_context()))
             .with_state(state.clone())
             .oneshot(
@@ -965,6 +1079,7 @@ mod tests {
         assert_eq!(read_only.status(), StatusCode::FORBIDDEN);
 
         let admin = admin_routes(state.clone())
+            .router
             .layer(Extension(admin_auth_context()))
             .with_state(state)
             .oneshot(
@@ -985,6 +1100,7 @@ mod tests {
             "devhost": "http://100.99.0.1:38935/callback/devhost"
         });
         let response = admin_routes(state.clone())
+            .router
             .layer(Extension(admin_auth_context()))
             .with_state(state)
             .oneshot(
@@ -1019,6 +1135,7 @@ mod tests {
             "bad": "http://127.0.0.1:38935/callback/bad"
         });
         let response = admin_routes(state.clone())
+            .router
             .layer(Extension(admin_auth_context()))
             .with_state(state)
             .oneshot(
@@ -1051,6 +1168,7 @@ mod tests {
     async fn oauth_relay_admin_rejects_invalid_import_schema_as_caller_error() {
         let (_dir, state) = test_state().await;
         let response = admin_routes(state.clone())
+            .router
             .layer(Extension(admin_auth_context()))
             .with_state(state)
             .oneshot(
@@ -1071,6 +1189,7 @@ mod tests {
     async fn oauth_relay_admin_mutation_flow_updates_live_registry() {
         let (_dir, state) = test_state().await;
         let app = admin_routes(state.clone())
+            .router
             .layer(Extension(admin_auth_context()))
             .with_state(state.clone());
 
@@ -1117,6 +1236,7 @@ mod tests {
         assert_eq!(disable.status(), StatusCode::OK);
 
         let callback_while_disabled = public_routes(state.clone())
+            .router
             .with_state(state.clone())
             .oneshot(
                 Request::builder()
@@ -1241,6 +1361,7 @@ mod tests {
             .unwrap();
         std::fs::write(manager.store().path(), "{not valid json").unwrap();
         let response = public_routes(state.clone())
+            .router
             .with_state(state)
             .oneshot(
                 Request::builder()
@@ -1314,7 +1435,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let app = public_routes(state.clone()).with_state(state);
+        let app = public_routes(state.clone()).router.with_state(state);
 
         let unknown = app
             .clone()
@@ -1376,7 +1497,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let app = public_routes(state.clone()).with_state(state);
+        let app = public_routes(state.clone()).router.with_state(state);
 
         let chunk = Bytes::from(vec![0u8; 4096]);
         let chunk_count = PUBLIC_REQUEST_BODY_LIMIT_BYTES / 4096 + 4;
@@ -1414,7 +1535,7 @@ mod tests {
             .unwrap();
         let _permit_one = manager.acquire_forward_permit(&machine).await.unwrap();
         let _permit_two = manager.acquire_forward_permit(&machine).await.unwrap();
-        let app = public_routes(state.clone()).with_state(state);
+        let app = public_routes(state.clone()).router.with_state(state);
 
         let response = app
             .oneshot(
@@ -1684,6 +1805,7 @@ mod tests {
                 .await
                 .unwrap();
             let app = admin_routes(state.clone())
+                .router
                 .layer(Extension(admin_auth_context()))
                 .with_state(state);
 

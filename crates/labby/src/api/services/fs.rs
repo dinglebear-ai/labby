@@ -10,7 +10,7 @@
 //! `api/router.rs::build_router`), so no per-route auth wiring is needed.
 
 use axum::{
-    Json, Router,
+    Json,
     body::Body,
     extract::{Query, State},
     http::{HeaderName, HeaderValue, StatusCode, header},
@@ -37,22 +37,45 @@ use crate::dispatch::error::ToolError;
 ///
 /// `Cache-Control: no-store` remains response-specific (only preview needs
 /// it) and is set inline on the 200 response.
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new()
-        .route("/list", get(handle_list))
-        .route("/preview", get(handle_preview))
-        .layer(SetResponseHeaderLayer::overriding(
-            HeaderName::from_static("x-content-type-options"),
-            HeaderValue::from_static("nosniff"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            HeaderName::from_static("x-frame-options"),
-            HeaderValue::from_static("DENY"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static("default-src 'none'; sandbox"),
-        ))
+pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::RouteGroup;
+    let mut descriptors = descriptors().into_iter();
+    RouteGroup::empty()
+        .route(descriptors.next().unwrap(), get(handle_list))
+        .route(descriptors.next().unwrap(), get(handle_preview))
+        .map_router(|router| {
+            router.layer(SetResponseHeaderLayer::overriding(
+                HeaderName::from_static("x-content-type-options"),
+                HeaderValue::from_static("nosniff"),
+            ))
+        })
+        .map_router(|router| {
+            router.layer(SetResponseHeaderLayer::overriding(
+                HeaderName::from_static("x-frame-options"),
+                HeaderValue::from_static("DENY"),
+            ))
+        })
+        .map_router(|router| {
+            router.layer(SetResponseHeaderLayer::overriding(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("default-src 'none'; sandbox"),
+            ))
+        })
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+    vec![
+        RouteDescriptor::new("GET", "/list", "handle_list", "fs", RouteAuth::V1),
+        RouteDescriptor::new("GET", "/preview", "handle_preview", "fs", RouteAuth::V1),
+    ]
+    .into_iter()
+    .map(|route| {
+        route
+            .feature("fs")
+            .when("mounted only when fs is registered and protected HTTP publication is safe")
+    })
+    .collect()
 }
 
 #[derive(Debug, Deserialize)]
