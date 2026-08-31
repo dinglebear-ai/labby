@@ -2662,6 +2662,9 @@ mod tests {
             subject: "alice".to_string(),
             csrf_token: "csrf-1".to_string(),
             pkce_verifier: "verifier-1".to_string(),
+            expected_issuer: None,
+            require_issuer: false,
+            requested_scopes: Vec::new(),
             created_at: now,
             expires_at: now + 300,
         }
@@ -2732,6 +2735,9 @@ mod tests {
             subject: "alice".to_string(),
             csrf_token: "csrf-expired".to_string(),
             pkce_verifier: "verifier-expired".to_string(),
+            expected_issuer: None,
+            require_issuer: false,
+            requested_scopes: Vec::new(),
             created_at: now - 400,
             expires_at: now - 10,
         };
