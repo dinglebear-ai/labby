@@ -39,6 +39,10 @@ export type LiveBrowserEvidence = {
   cspViolations: string[]
 }
 
+type CaptureOutcome =
+  | { status: 'captured'; path: string }
+  | { status: 'failed'; error: string }
+
 function ownedAbsolutePath(value: unknown, field: string) {
   if (typeof value !== 'string') throw new TypeError(`${field} must be a string`)
   assert.ok(path.isAbsolute(value), `${field} must be absolute`)
@@ -191,19 +195,28 @@ export async function captureFailureEvidence(options: {
   const prefix = path.join(invocationDir, 'failure')
   const screenshot = `${prefix}.png`
   const trace = `${prefix}.trace.zip`
-  await page.screenshot({ path: screenshot, fullPage: true }).catch(() => undefined)
-  await context.tracing.stop({ path: trace }).catch(() => undefined)
+  const screenshotOutcome: CaptureOutcome = await page.screenshot({ path: screenshot, fullPage: true })
+    .then(() => ({ status: 'captured' as const, path: screenshot }))
+    .catch((error: unknown) => ({ status: 'failed' as const, error: renderError(error) }))
+  const traceOutcome: CaptureOutcome = await context.tracing.stop({ path: trace })
+    .then(() => ({ status: 'captured' as const, path: trace }))
+    .catch((error: unknown) => ({ status: 'failed' as const, error: renderError(error) }))
   const report = {
     run_id: descriptor.run_id,
     error: options.error instanceof Error ? options.error.message : String(options.error),
     evidence,
+    captures: { screenshot: screenshotOutcome, trace: traceOutcome },
   }
   const reportPath = `${prefix}.json`
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
   const secrets = (await readFile(descriptor.scan_secrets_path, 'utf8'))
     .split('\n').filter(Boolean).map((value) => Buffer.from(value))
   assert.ok(secrets.length > 0, 'scan-only secret set must not be empty')
-  const artifacts = [reportPath, screenshot, trace]
+  const artifacts = [
+    reportPath,
+    ...(screenshotOutcome.status === 'captured' ? [screenshotOutcome.path] : []),
+    ...(traceOutcome.status === 'captured' ? [traceOutcome.path] : []),
+  ]
   try {
     for (const artifact of artifacts) await scanArtifact(artifact, secrets)
   } catch (error) {
@@ -212,11 +225,28 @@ export async function captureFailureEvidence(options: {
     await rm(invocationDir, { force: true, recursive: true })
     throw error
   }
+  const captureFailures = [screenshotOutcome, traceOutcome]
+    .filter((outcome): outcome is Extract<CaptureOutcome, { status: 'failed' }> => outcome.status === 'failed')
+  if (captureFailures.length > 0) {
+    throw new AggregateError(
+      captureFailures.map((outcome) => new Error(outcome.error)),
+      'browser failure evidence capture was incomplete',
+    )
+  }
 }
 
-async function scanArtifact(artifact: string, secrets: Buffer[]) {
-  const metadata = await stat(artifact).catch(() => null)
-  if (!metadata) return
+function renderError(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
+}
+
+export async function scanArtifact(artifact: string, secrets: Buffer[], optional = false) {
+  let metadata: Awaited<ReturnType<typeof stat>>
+  try {
+    metadata = await stat(artifact)
+  } catch (error) {
+    if (optional && (error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
   if (metadata.size > MAX_ARTIFACT_BYTES) throw new Error(`${path.basename(artifact)} exceeded artifact cap`)
   const overlap = Math.max(...secrets.map((secret) => secret.length), 1) - 1
   let tail = Buffer.alloc(0)

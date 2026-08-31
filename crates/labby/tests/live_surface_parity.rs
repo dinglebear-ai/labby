@@ -47,7 +47,6 @@ fn every_current_multi_surface_service_has_a_parity_partition() {
             "doctor",
             "fs",
             "gateway",
-            "lab_admin",
             "server_logs",
             "setup",
             "skills",
@@ -96,7 +95,7 @@ async fn one_public_identity_has_equivalent_api_browser_and_mcp_discovery() {
     )
     .await
     .expect("CLI shared-state observation");
-    action_scenarios::assert_json_or_help(&cli, "parity gateway.list");
+    action_scenarios::assert_success_json(&cli, "parity gateway.list");
     assert_eq!(
         identity.protected_mcp_initialize().await.unwrap(),
         StatusCode::OK

@@ -2,6 +2,12 @@
 
 #[path = "support/action_matrix.rs"]
 mod action_matrix;
+#[path = "support/action_scenarios.rs"]
+mod action_scenarios;
+#[path = "support/evidence.rs"]
+mod evidence;
+#[path = "support/live_labby.rs"]
+mod live_labby;
 #[path = "support/route_matrix.rs"]
 mod route_matrix;
 
@@ -118,6 +124,22 @@ fn validate_event_semantics(event: &CaseEvent) -> Result<(), String> {
     Ok(())
 }
 
+fn is_accepted_dedicated_contract(
+    key: &str,
+    surface: action_matrix::Surface,
+    event: &CaseEvent,
+) -> bool {
+    event.achieved_evidence == "LiveErrorPath"
+        && event
+            .outcome_kind
+            .strip_prefix("dedicated_contract:")
+            .and_then(|details| details.rsplit_once(':'))
+            .is_some_and(|(reason, error_kind)| {
+                action_scenarios::dedicated_contract_reason_for(key, surface) == Some(reason)
+                    && action_scenarios::dedicated_contract_accepts_for(key, surface, error_kind)
+            })
+}
+
 fn load_case_events() -> BTreeMap<String, CaseEvent> {
     let mut events = BTreeMap::new();
     for entry in fs::read_dir(required("LABBY_E2E_CASE_DIR")).expect("case evidence dir") {
@@ -187,8 +209,8 @@ fn exact_catalog_join_emits_versioned_coverage_report() {
                             evidence_rank(&event.achieved_evidence).unwrap_or_else(|| {
                                 panic!("unknown evidence {}", event.achieved_evidence)
                             });
-                        let dedicated_contract = event.achieved_evidence == "LiveErrorPath"
-                            && event.outcome_kind.starts_with("dedicated_contract:");
+                        let dedicated_contract =
+                            is_accepted_dedicated_contract(&key, *surface, &event);
                         assert!(
                             achieved >= intent.minimum_evidence as u8 || dedicated_contract,
                             "{} evidence {} is below {:?}",
@@ -356,7 +378,9 @@ fn exact_catalog_join_emits_versioned_coverage_report() {
 
 #[cfg(test)]
 mod tests {
-    use super::{CaseEvent, take_required_event, validate_event_semantics};
+    use super::{
+        CaseEvent, is_accepted_dedicated_contract, take_required_event, validate_event_semantics,
+    };
     use std::collections::BTreeMap;
 
     fn event(id: &str, handler_success: bool, denial_only: bool) -> CaseEvent {
@@ -387,5 +411,31 @@ mod tests {
         assert!(validate_event_semantics(&denial).is_ok());
         let mislabeled = event("action::Api::setup:install", true, true);
         assert!(validate_event_semantics(&mislabeled).is_err());
+    }
+
+    #[test]
+    fn dedicated_contract_requires_the_exact_action_reason_and_error_kind() {
+        let mut accepted = event("action::Mcp::gateway:gateway.clients.list", false, false);
+        accepted.outcome_kind =
+            "dedicated_contract:catalog_dispatch_mismatch:unknown_action".into();
+        assert!(is_accepted_dedicated_contract(
+            "gateway:gateway.clients.list",
+            crate::action_matrix::Surface::Api,
+            &accepted
+        ));
+
+        let mut arbitrary = accepted.clone();
+        arbitrary.outcome_kind =
+            "dedicated_contract:catalog_dispatch_mismatch:internal_error".into();
+        assert!(!is_accepted_dedicated_contract(
+            "gateway:gateway.clients.list",
+            crate::action_matrix::Surface::Api,
+            &arbitrary
+        ));
+        assert!(!is_accepted_dedicated_contract(
+            "gateway:gateway.get",
+            crate::action_matrix::Surface::Api,
+            &accepted
+        ));
     }
 }

@@ -259,7 +259,20 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             } else {
                 EvidenceLevel::LiveErrorPath
             };
-            let dedicated = action_scenarios::dedicated_contract_reason(&intent.key());
+            let error_kind = error
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("ok");
+            let dedicated =
+                action_scenarios::dedicated_contract_reason_for(&intent.key(), Surface::Api)
+                    .filter(|_| {
+                        !status.is_success()
+                            && action_scenarios::dedicated_contract_accepts_for(
+                                &intent.key(),
+                                Surface::Api,
+                                error_kind,
+                            )
+                    });
             let outcome = ActionOutcome {
                 key: intent.key(),
                 surface: Surface::Api,
@@ -267,14 +280,8 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                 evidence,
                 owner: intent.scenario_owner,
                 outcome_kind: dedicated.map_or_else(
-                    || {
-                        error
-                            .get("kind")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("ok")
-                            .to_string()
-                    },
-                    |reason| format!("dedicated_contract:{reason}"),
+                    || error_kind.to_string(),
+                    |reason| format!("dedicated_contract:{reason}:{error_kind}"),
                 ),
                 recovery: error
                     .get("recovery")
@@ -309,7 +316,11 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             .filter(|intent| {
                 let outcome = &outcomes[&intent.key()];
                 !outcome.satisfies(intent)
-                    && !(action_scenarios::dedicated_contract_reason(&intent.key()).is_some()
+                    && !(action_scenarios::dedicated_contract_reason_for(
+                        &intent.key(),
+                        Surface::Api,
+                    )
+                    .is_some()
                         && outcome.evidence == EvidenceLevel::LiveErrorPath
                         && outcome.outcome_kind.starts_with("dedicated_contract:"))
             })
@@ -382,7 +393,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         )
         .await
         .unwrap();
-        action_scenarios::assert_json_or_help(&cli_get, "cross-surface snippets.get");
+        action_scenarios::assert_success_json(&cli_get, "cross-surface snippets.get");
         let (remove_status, _) = post_action(
             &client,
             &guard.connection().base_url,
@@ -420,7 +431,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         )
         .await
         .unwrap();
-        action_scenarios::assert_json_or_help(&cli_create, "reverse snippets.create");
+        action_scenarios::assert_success_json(&cli_create, "reverse snippets.create");
         let (api_get_status, api_get_body) = post_action(
             &client,
             &guard.connection().base_url,
@@ -442,7 +453,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         )
         .await
         .unwrap();
-        action_scenarios::assert_json_or_help(&cli_remove, "reverse snippets.remove");
+        action_scenarios::assert_success_json(&cli_remove, "reverse snippets.remove");
         let (api_absent_status, api_absent_body) = post_action(
             &client,
             &guard.connection().base_url,

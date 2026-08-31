@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, realpath, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -9,6 +9,7 @@ import type { Browser, BrowserContext, Page } from 'playwright'
 import {
   captureFailureEvidence,
   readLiveDescriptorAt,
+  scanArtifact,
   type LiveBackendDescriptor,
   type LiveBrowserEvidence,
 } from './live-backend-harness.ts'
@@ -94,6 +95,44 @@ test('failed secret scan deletes only invocation-created evidence and preserves 
     error: new Error('expected failure'),
   }), /contained scan-only secret material/)
   assert.equal(await readFile(decoy, 'utf8'), 'must survive')
+})
+
+test('capture failures are recorded in the retained report and reject the operation', async () => {
+  const fixture = await descriptorFixture()
+  const evidence: LiveBrowserEvidence = {
+    requests: [], console: [], pageErrors: [], failedRequests: [], cspViolations: [],
+  }
+  const page = {
+    screenshot: async () => { throw new Error('screenshot backend unavailable') },
+  } as unknown as Page
+  const context = {
+    tracing: { stop: async () => { throw new Error('trace already stopped') } },
+  } as unknown as BrowserContext
+
+  await assert.rejects(captureFailureEvidence({
+    browser: {} as Browser,
+    context,
+    page,
+    descriptor: fixture.descriptor,
+    evidence,
+    error: new Error('journey failed'),
+  }), /browser failure evidence capture was incomplete/)
+
+  const [invocation] = await readdir(fixture.evidenceDir)
+  assert.ok(invocation)
+  const report = JSON.parse(await readFile(path.join(fixture.evidenceDir, invocation, 'failure.json'), 'utf8'))
+  assert.deepEqual(report.captures, {
+    screenshot: { status: 'failed', error: 'screenshot backend unavailable' },
+    trace: { status: 'failed', error: 'trace already stopped' },
+  })
+})
+
+test('artifact scanning tolerates only an explicitly optional missing file', async () => {
+  const fixture = await descriptorFixture()
+  const missing = path.join(fixture.runRoot, 'missing-artifact')
+  await assert.rejects(scanArtifact(missing, [Buffer.from('secret-canary')]), { code: 'ENOENT' })
+  await assert.doesNotReject(scanArtifact(missing, [Buffer.from('secret-canary')], true))
+  await assert.rejects(scanArtifact(fixture.evidenceDir, [Buffer.from('secret-canary')]), /EISDIR|illegal operation/)
 })
 
 test('CI uploads only the exclusive current run-attempt evidence directory', async () => {

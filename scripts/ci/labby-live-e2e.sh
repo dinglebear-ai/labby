@@ -19,34 +19,113 @@ secret_registry="$run_root/scan-secrets.txt"
 evidence_canary="LABBY_E2E_RETAINED_SECRET_${run_id}_$(shasum -a 256 <<<"$run_id:$seed:$$" | awk '{print $1}')"
 printf '%s\n' "$evidence_canary" >"$secret_registry"; chmod 600 "$secret_registry"
 export LABBY_E2E_RETAINED_SECRET="$evidence_canary"
-primary=0; cleanup=0; evidence=0; active_pids=(); owned_groups=()
+primary=0; cleanup=0; evidence=0; active_pids=(); owned_groups=(); group_seq=0
+touch "$run_root/process-groups.tsv" "$run_root/process-group-members.tsv"
 group_alive() { kill -0 -- "-$1" 2>/dev/null; }
-group_identity_matches() { expected="$(awk -F '\t' -v group="$1" '$1 == group { print $2; exit }' "$run_root/process-groups.tsv" 2>/dev/null)"; current="$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//')"; [ -n "$expected" ] && [ "$current" = "$expected" ]; }
+register_group() { printf '%s\t%s\t%s\n' "$1" "$(ps -o lstart= -p "$1" | sed 's/^ *//')" "$2" >>"$run_root/process-groups.tsv"; }
+refresh_group_members() {
+  group="$1"
+  for member in $(ps -axo pid=,pgid= | awk -v group="$group" '$2 == group { print $1 }'); do
+    printf '%s\t%s\t%s\n' "$group" "$member" "$(ps -o lstart= -p "$member" 2>/dev/null | sed 's/^ *//')" >>"$run_root/process-group-members.tsv"
+  done
+}
+group_identity_matches() {
+  expected="$(awk -F '\t' -v group="$1" '$1 == group { print $2; exit }' "$run_root/process-groups.tsv" 2>/dev/null)"
+  token="$(awk -F '\t' -v group="$1" '$1 == group { print $3; exit }' "$run_root/process-groups.tsv" 2>/dev/null)"
+  current="$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//')"
+  [ -n "$expected" ] && [ "$current" = "$expected" ] && return 0
+  while IFS=$'\t' read -r recorded_group member member_start; do
+    [ "$recorded_group" = "$1" ] || continue
+    current="$(ps -o lstart= -p "$member" 2>/dev/null | sed 's/^ *//')"
+    [ -n "$member_start" ] && [ "$current" = "$member_start" ] && return 0
+  done <"$run_root/process-group-members.tsv" 2>/dev/null || true
+  [ -n "$token" ] || return 1
+  for member in $(ps -axo pid=,pgid= | awk -v group="$1" '$2 == group { print $1 }'); do
+    ps eww -p "$member" -o command= 2>/dev/null | tr ' ' '\n' | grep -Fqx "LABBY_E2E_GROUP_TOKEN=$token" && return 0
+  done
+  return 1
+}
+group_has_listener() {
+  group="$1"
+  for pid in $(ps -axo pid=,pgid= | awk -v group="$group" '$2 == group { print $1 }'); do
+    lsof -nP -a -p "$pid" -iTCP -sTCP:LISTEN 2>/dev/null | grep -q . && return 0
+  done
+  return 1
+}
 terminate_children() {
-  for group in "${active_pids[@]:-}"; do group_identity_matches "$group" && kill -TERM -- "-$group" 2>/dev/null || { group_alive "$group" && cleanup=1 || true; }; done
+  for group in "${owned_groups[@]:-}"; do group_identity_matches "$group" && kill -TERM -- "-$group" 2>/dev/null || { group_alive "$group" && cleanup=1 || true; }; done
   deadline=$((SECONDS + 3))
   while [ "$SECONDS" -lt "$deadline" ]; do
-    alive=0; for group in "${active_pids[@]:-}"; do group_alive "$group" && alive=1; done
+    alive=0; for group in "${owned_groups[@]:-}"; do group_alive "$group" && alive=1; done
     [ "$alive" -eq 0 ] && break
     sleep 0.05
   done
-  for group in "${active_pids[@]:-}"; do group_identity_matches "$group" && group_alive "$group" && kill -KILL -- "-$group" 2>/dev/null || true; done
+  for group in "${owned_groups[@]:-}"; do group_identity_matches "$group" && group_alive "$group" && kill -KILL -- "-$group" 2>/dev/null || true; done
   for pid in "${active_pids[@]:-}"; do wait "$pid" 2>/dev/null || true; done
   active_pids=()
 }
-finish() { status=$?; terminate_children; find "$run_root" -type l -print -quit | grep -q . && cleanup=1 || true; printf '{"primary":%s,"cleanup":%s,"evidence":%s}\n' "$primary" "$cleanup" "$evidence" >"$run_root/artifacts/status.json"; [ "$status" -eq 0 ] && [ "$primary" -eq 0 ] && [ "$cleanup" -eq 0 ] && [ "$evidence" -eq 0 ]; }
-trap finish EXIT INT TERM HUP
+finish() {
+  status=$?
+  trap - EXIT
+  [ "$status" -eq 0 ] || primary=1
+  terminate_children
+  find "$run_root" -type l -print -quit | grep -q . && cleanup=1 || true
+  printf '{"primary":%s,"cleanup":%s,"evidence":%s}\n' "$primary" "$cleanup" "$evidence" >"$run_root/artifacts/status.json"
+  if [ "$status" -eq 0 ] && { [ "$primary" -ne 0 ] || [ "$cleanup" -ne 0 ] || [ "$evidence" -ne 0 ]; }; then status=1; fi
+  exit "$status"
+}
+cancel() { trap - INT TERM HUP; exit "$1"; }
+trap finish EXIT
+trap 'cancel 130' INT
+trap 'cancel 143' TERM
+trap 'cancel 129' HUP
+if [ "${LABBY_E2E_SIGNAL_SELFTEST:-0}" = 1 ]; then
+  set -m
+  group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
+  LABBY_E2E_GROUP_TOKEN="$group_token" bash -c 'trap "" TERM; while :; do sleep 1; done' &
+  pid="$!"; active_pids+=("$pid"); owned_groups+=("$pid")
+  register_group "$pid" "$group_token"
+  printf '%s\n' "$pid" >"$run_root/signal-selftest.ready"
+  wait "$pid"
+fi
+if [ "${LABBY_E2E_EXIT_FAILURE_SELFTEST:-0}" = 1 ]; then cleanup=1; exit 0; fi
+if [ "${LABBY_E2E_LISTENER_SELFTEST:-0}" = 1 ]; then
+  set -m
+  group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
+  LABBY_E2E_GROUP_TOKEN="$group_token" python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(); time.sleep(30)' &
+  pid="$!"; active_pids+=("$pid"); owned_groups+=("$pid")
+  register_group "$pid" "$group_token"
+  deadline=$((SECONDS + 3)); while ! group_has_listener "$pid" && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.05; done
+  detected=false; group_has_listener "$pid" && detected=true
+  printf '{"schema_version":1,"owned_listener_detected":%s}\n' "$detected" >"$run_root/artifacts/listener-selftest.json"
+  [ "$detected" = true ] || evidence=1
+  exit 0
+fi
 if [ "${LABBY_E2E_CLEANUP_SELFTEST:-0}" = 1 ]; then
   set -m
-  bash -c 'trap "" TERM; (trap "" TERM; while :; do sleep 1; done) & wait' &
+  group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
+  LABBY_E2E_GROUP_TOKEN="$group_token" bash -c 'trap "" TERM; (trap "" TERM; while :; do sleep 1; done) & wait' &
   pid="$!"
   active_pids+=("$pid")
   owned_groups+=("$pid")
-  printf '%s\t%s\n' "$pid" "$(ps -o lstart= -p "$pid" | sed 's/^ *//')" >>"$run_root/process-groups.tsv"
+  register_group "$pid" "$group_token"
   sleep 0.1
   terminate_children
   group_alive "$pid" && cleanup=1 || true
   printf '{"schema_version":1,"owned_children_absent":%s}\n' "$([ "$cleanup" -eq 0 ] && echo true || echo false)" >"$run_root/artifacts/cleanup-selftest.json"
+  [ "$cleanup" -eq 0 ]
+  exit 0
+fi
+if [ "${LABBY_E2E_RETAINED_GROUP_SELFTEST:-0}" = 1 ]; then
+  set -m
+  group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
+  LABBY_E2E_GROUP_TOKEN="$group_token" bash -c '(trap "" TERM; while :; do sleep 1; done) & printf "%s\n" "$!" >"$LABBY_E2E_RUN_ROOT/retained-child.pid"' &
+  pid="$!"; active_pids+=("$pid"); owned_groups+=("$pid"); register_group "$pid" "$group_token"
+  wait "$pid"; active_pids=(); refresh_group_members "$pid"
+  deadline=$((SECONDS + 3)); while [ ! -s "$run_root/retained-child.pid" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.05; done
+  terminate_children
+  group_alive "$pid" && cleanup=1 || true
+  printf '{"schema_version":1,"retained_group_absent":%s}\n' "$([ "$cleanup" -eq 0 ] && echo true || echo false)" >"$run_root/artifacts/retained-group-selftest.json"
   [ "$cleanup" -eq 0 ]
   exit 0
 fi
@@ -72,7 +151,28 @@ fi
 case "$LABBY_E2E_BINARY" in /*) ;; *) exit 64;; esac; [ -x "$LABBY_E2E_BINARY" ]
 build_id="$(shasum -a 256 "$LABBY_E2E_BINARY" | awk '{print $1}')"; binary_version="$($LABBY_E2E_BINARY --version)"; export LABBY_E2E_BUILD_IDENTITY="$build_id"
 printf '{"schema_version":1,"run_id":"%s","seed":"%s","build_identity":"%s","binary":"%s","binary_version":"%s","assets":"prebuilt"}\n' "$run_id" "$seed" "$build_id" "$LABBY_E2E_BINARY" "$binary_version" >"$run_root/build-manifest.json"; chmod a-w "$run_root/build-manifest.json"
-if [ "$tier" = repeat10 ]; then for repeat_seed in 1 2 3 4 5 6 7 8 9 10; do LABBY_E2E_PREBUILT=1 LABBY_E2E_BINARY="$LABBY_E2E_BINARY" "$0" pr "$repeat_seed"; done; exit 0; fi
+if [ "$tier" = repeat10 ]; then
+  mkdir "$run_root/repeats"
+  summaries=""
+  for repeat_seed in 1 2 3 4 5 6 7 8 9 10; do
+    child_root="$run_root/repeats/seed-$repeat_seed"
+    LABBY_E2E_RUN_ROOT="$child_root" LABBY_E2E_PREBUILT=1 LABBY_E2E_BINARY="$LABBY_E2E_BINARY" "$0" pr "$repeat_seed"
+    coverage_sha="$(awk '{print $1}' "$child_root/artifacts/coverage.json.sha256")"
+    [ -z "$summaries" ] || summaries="$summaries,"
+    summaries="$summaries{\"seed\":$repeat_seed,\"coverage_sha256\":\"$coverage_sha\"}"
+  done
+  printf '{"schema_version":1,"run_id":"%s","build_identity":"%s","repeats":[%s]}\n' "$run_id" "$build_id" "$summaries" >"$run_root/artifacts/repeat10.json"
+  # Child runs have each completed their own residual audit. Audit the bounded
+  # aggregate tree after the parent evidence has been retained as well.
+  find "$run_root" -type l -print -quit | grep -q . && cleanup=1 || true
+  find "$run_root" -type f -size +33554432c -print -quit | grep -q . && evidence=1 || true
+  secret_canary_absent=true; grep -R -a -F -f "$secret_registry" --exclude="$(basename "$secret_registry")" "$run_root" 2>/dev/null | grep -q . && { secret_canary_absent=false; evidence=1; } || true
+  rm -f "$secret_registry"
+  printf '{"schema_version":1,"owned_children_absent":true,"owned_listeners_absent":true,"symlinks_absent":%s,"bounded_files":%s,"secret_canary_absent":%s}\n' "$([ "$cleanup" -eq 0 ] && echo true || echo false)" "$([ "$evidence" -eq 0 ] && echo true || echo false)" "$secret_canary_absent" >"$run_root/artifacts/residual-audit.json"
+  printf '{"primary":%s,"cleanup":%s,"evidence":%s}\n' "$primary" "$cleanup" "$evidence" >"$run_root/artifacts/status.json"
+  [ "$cleanup" -eq 0 ] && [ "$evidence" -eq 0 ]
+  exit 0
+fi
 
 shards=(contracts live-http-cli-api live-http-observability live-http-ipv6 live-mcp-parity live-identity-protected-restart)
 if [ "$tier" = nightly ] || [ "$tier" = manual ] || [ "$tier" = release ]; then shards+=(browser-live fault-qualification); fi
@@ -87,26 +187,28 @@ run_shard() {
     live-http-ipv6) cargo test -p labby --all-features --test live_http_ipv6 --locked -- --test-threads=1 >"$log" 2>&1;;
     live-mcp-parity) cargo test -p labby --all-features --test live_mcp_actions --test live_surface_parity --locked -- --test-threads=1 >"$log" 2>&1;;
     live-identity-protected-restart) cargo test -p labby --all-features --test live_identity_bootstrap --test live_protected_routes --test live_restart_persistence --locked -- --test-threads=1 >"$log" 2>&1;;
-    browser-live) node_bin="$(command -v node)"; case "$node_bin" in */mise/shims/*) node_bin="$(mise which node)";; esac; PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" LABBY_NODE_BIN="$node_bin" LABBY_LIVE_BROWSER_RUN=1 LABBY_LIVE_BROWSER_ASSETS_DIR="${LABBY_LIVE_BROWSER_ASSETS_DIR:-$repo_root/apps/gateway-admin/out}" cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >"$log" 2>&1;;
+    browser-live) node_bin="$(command -v node)"; case "$node_bin" in */mise/shims/*) node_bin="$(mise which node)";; esac; PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" LABBY_NODE_BIN="$node_bin" LABBY_LIVE_BROWSER_RUN=1 LABBY_LIVE_BROWSER_NIGHTLY="$([ "$tier" = nightly ] && echo true || echo false)" LABBY_LIVE_BROWSER_ASSETS_DIR="${LABBY_LIVE_BROWSER_ASSETS_DIR:-$repo_root/apps/gateway-admin/out}" cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >"$log" 2>&1;;
     fault-qualification) LABBY_E2E_FAULT_REPORT="$run_root/artifacts/fault-qualification.json" cargo test -p labby --all-features --test e2e_fault_qualification --locked -- --test-threads=1 >"$log" 2>&1;;
   esac && complete "$shard" "$log"
 }
-if [ "$tier" = collision ]; then set -m; for shard in "${shards[@]}"; do run_shard "$shard" & pid="$!"; active_pids+=("$pid"); owned_groups+=("$pid"); printf '%s\t%s\n' "$pid" "$(ps -o lstart= -p "$pid" | sed 's/^ *//')" >>"$run_root/process-groups.tsv"; done; for pid in "${active_pids[@]}"; do wait "$pid" || primary=1; done; active_pids=(); set +m; else for shard in "${shards[@]}"; do run_shard "$shard" || { primary=1; tail -c 12000 "$run_root/$shard.log" >&2 || true; exit 1; }; done; fi
+if [ "$tier" = collision ]; then set -m; for shard in "${shards[@]}"; do group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"; LABBY_E2E_GROUP_TOKEN="$group_token" run_shard "$shard" & pid="$!"; active_pids+=("$pid"); owned_groups+=("$pid"); register_group "$pid" "$group_token"; done; for pid in "${active_pids[@]}"; do wait "$pid" || primary=1; refresh_group_members "$pid"; done; active_pids=(); set +m; else for shard in "${shards[@]}"; do run_shard "$shard" || { primary=1; tail -c 12000 "$run_root/$shard.log" >&2 || true; exit 1; }; done; fi
 [ "$primary" -eq 0 ] || exit 1
+# Audit before producing any aggregate artifact that claims this run passed.
 symlinks_absent=true; find "$run_root" -type l -print -quit | grep -q . && { symlinks_absent=false; cleanup=1; } || true
 owned_children_absent=true; for group in "${owned_groups[@]:-}"; do group_alive "$group" && { owned_children_absent=false; cleanup=1; }; done
+owned_listeners_absent=true; for group in "${owned_groups[@]:-}"; do group_has_listener "$group" && { owned_listeners_absent=false; cleanup=1; }; done
 oversized_absent=true; find "$run_root" -type f -size +33554432c -print -quit | grep -q . && { oversized_absent=false; evidence=1; } || true
 secret_canary_absent=true; grep -R -a -F -f "$secret_registry" --exclude="$(basename "$secret_registry")" "$run_root" 2>/dev/null | grep -q . && { secret_canary_absent=false; evidence=1; } || true
 rm -f "$secret_registry"
-printf '{"schema_version":1,"owned_children_absent":%s,"owned_listeners_absent":%s,"symlinks_absent":%s,"bounded_files":%s,"secret_canary_absent":%s}\n' "$owned_children_absent" "$owned_children_absent" "$symlinks_absent" "$oversized_absent" "$secret_canary_absent" >"$run_root/artifacts/residual-audit.json"
+printf '{"schema_version":1,"owned_children_absent":%s,"owned_listeners_absent":%s,"symlinks_absent":%s,"bounded_files":%s,"secret_canary_absent":%s}\n' "$owned_children_absent" "$owned_listeners_absent" "$symlinks_absent" "$oversized_absent" "$secret_canary_absent" >"$run_root/artifacts/residual-audit.json"
 [ "$cleanup" -eq 0 ] && [ "$evidence" -eq 0 ] || exit 1
 if [ "$tier" = collision ]; then
   printf '{"schema_version":1,"run_id":"%s","seed":"%s","build_identity":"%s","status":"passed","shards":["live-http-cli-api-a","live-http-cli-api-b"]}\n' "$run_id" "$seed" "$build_id" >"$run_root/artifacts/collision.json"
-  echo "live E2E collision passed: $run_root/artifacts/collision.json"
-  exit 0
+else
+  LABBY_E2E_DECLARED_SHARDS="$(IFS=,; echo "${shards[*]}")"; export LABBY_E2E_DECLARED_SHARDS
+  export LABBY_E2E_SHARD_DIR="$run_root/shards" LABBY_E2E_REPORT="$run_root/artifacts/coverage.json" LABBY_E2E_CLEANUP_STATUS=passed LABBY_E2E_EVIDENCE_STATUS=passed
+  cargo test -p labby --all-features --test e2e_coverage_report --locked -- --exact
+  shasum -a 256 "$run_root/artifacts/coverage.json" >"$run_root/artifacts/coverage.json.sha256"
 fi
-LABBY_E2E_DECLARED_SHARDS="$(IFS=,; echo "${shards[*]}")"; export LABBY_E2E_DECLARED_SHARDS
-export LABBY_E2E_SHARD_DIR="$run_root/shards" LABBY_E2E_REPORT="$run_root/artifacts/coverage.json" LABBY_E2E_CLEANUP_STATUS=passed LABBY_E2E_EVIDENCE_STATUS=passed
-cargo test -p labby --all-features --test e2e_coverage_report --locked -- --exact
-shasum -a 256 "$run_root/artifacts/coverage.json" >"$run_root/artifacts/coverage.json.sha256"
-echo "live E2E $tier passed: $run_root/artifacts/coverage.json"
+printf '{"primary":%s,"cleanup":%s,"evidence":%s}\n' "$primary" "$cleanup" "$evidence" >"$run_root/artifacts/status.json"
+if [ "$tier" = collision ]; then echo "live E2E collision passed: $run_root/artifacts/collision.json"; else echo "live E2E $tier passed: $run_root/artifacts/coverage.json"; fi

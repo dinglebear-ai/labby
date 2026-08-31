@@ -34,6 +34,24 @@ struct IssueResponse {
     expires_at: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SecurityAdmission {
+    Admitted,
+    RateLimited,
+    StoreUnavailable,
+}
+
+fn classify_security_admission<E>(
+    global: Result<bool, E>,
+    peer: Result<bool, E>,
+) -> SecurityAdmission {
+    match (global, peer) {
+        (Ok(true), Ok(true)) => SecurityAdmission::Admitted,
+        (Ok(_), Ok(_)) => SecurityAdmission::RateLimited,
+        (Err(_), _) | (_, Err(_)) => SecurityAdmission::StoreUnavailable,
+    }
+}
+
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::RouteGroup;
     let mut descriptors = descriptors().into_iter().skip(1);
@@ -102,31 +120,34 @@ async fn issue(
     let now = labby_auth::util::now_unix();
     let global: [u8; 32] = Sha256::digest(b"labby-credential-issue-global-v1").into();
     let target: [u8; 32] = Sha256::digest(source.credential_id.as_bytes()).into();
-    let admitted = state
+    let global_admission = state
         .access_runtime
         .admit_security_operation("credential_global".into(), global, now, 60, 64)
-        .await
-        .ok()
-        == Some(true)
-        && state
-            .access_runtime
-            .admit_security_operation("credential_peer".into(), target, now, 60, 16)
-            .await
-            .ok()
-            == Some(true);
-    if !admitted {
-        let _ = state
-            .access_runtime
-            .record_security_event(
-                "credential_issue".into(),
-                "deny".into(),
-                "rate_limited".into(),
+        .await;
+    let peer_admission = state
+        .access_runtime
+        .admit_security_operation("credential_peer".into(), target, now, 60, 16)
+        .await;
+    match classify_security_admission(global_admission, peer_admission) {
+        SecurityAdmission::Admitted => {}
+        SecurityAdmission::RateLimited => {
+            audit_denial(&state, "credential_issue", "rate_limited", target).await;
+            return denied();
+        }
+        SecurityAdmission::StoreUnavailable => {
+            tracing::warn!(
+                phase = "credential_admission",
+                "credential admission store unavailable"
+            );
+            audit_denial(
+                &state,
+                "credential_issue",
+                "admission_store_unavailable",
                 target,
-                None,
-                now,
             )
             .await;
-        return denied();
+            return unavailable();
+        }
     }
     if !valid_mutation_csrf(&headers, &auth) {
         audit_denial(&state, "credential_issue", "csrf_denied", target).await;
@@ -330,20 +351,27 @@ async fn audit_denial(
     reason: &'static str,
     target: [u8; 32],
 ) {
-    if state
-        .access_runtime
-        .record_security_event(
-            event_kind.into(),
-            "deny".into(),
-            reason.into(),
-            target,
-            None,
-            labby_auth::util::now_unix(),
-        )
-        .await
-        .is_err()
-    {
+    observe_audit_result(
+        state
+            .access_runtime
+            .record_security_event(
+                event_kind.into(),
+                "deny".into(),
+                reason.into(),
+                target,
+                None,
+                labby_auth::util::now_unix(),
+            )
+            .await,
+    );
+}
+
+fn observe_audit_result<E>(result: Result<(), E>) -> bool {
+    if result.is_err() {
         tracing::warn!(phase = "security_audit", "security event unavailable");
+        false
+    } else {
+        true
     }
 }
 
@@ -514,6 +542,46 @@ mod tests {
         assert!(!canonical_scopes(&["lab:read".into(), "lab:read".into()]));
     }
 
+    #[test]
+    fn credential_admission_distinguishes_allow_limit_and_store_failure() {
+        assert_eq!(
+            classify_security_admission::<()>(Ok(true), Ok(true)),
+            SecurityAdmission::Admitted
+        );
+        assert_eq!(
+            classify_security_admission::<()>(Ok(false), Ok(true)),
+            SecurityAdmission::RateLimited
+        );
+        assert_eq!(
+            classify_security_admission(Err::<bool, _>(()), Ok(true)),
+            SecurityAdmission::StoreUnavailable
+        );
+        assert_eq!(
+            classify_security_admission(Ok(true), Err::<bool, _>(())),
+            SecurityAdmission::StoreUnavailable
+        );
+    }
+
+    #[test]
+    fn audit_storage_failures_are_not_silently_discarded() {
+        assert!(observe_audit_result::<()>(Ok(())));
+        assert!(!observe_audit_result(Err::<(), _>(())))
+    }
+
+    #[test]
+    fn infrastructure_and_denial_responses_do_not_enumerate_credentials() {
+        let denial = denied();
+        let infrastructure = unavailable();
+        assert_eq!(denial.status(), StatusCode::NOT_FOUND);
+        assert_eq!(infrastructure.status(), StatusCode::SERVICE_UNAVAILABLE);
+        for response in [denial, infrastructure] {
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn missing_or_mixed_authority_and_browser_csrf_fail_before_store_mutation() {
         let missing = self_introspect(State(AppState::new()), None, None, None).await;
@@ -547,5 +615,35 @@ mod tests {
         )
         .await;
         assert_eq!(browser_without_csrf.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn credential_admission_store_failure_is_service_unavailable() {
+        let (auth, source, bound) = grants();
+        let expires_at = labby_auth::util::now_unix() + 300;
+        let response = issue(
+            State(AppState::new()),
+            HeaderMap::new(),
+            Some(Extension(auth)),
+            Some(Extension(source)),
+            Some(Extension(bound.clone())),
+            Ok(Json(IssueRequest {
+                credential_id: "credential-2".into(),
+                credential_digest_hex: "07".repeat(32),
+                project_id: bound.project_id,
+                route_id: bound.route_id,
+                resource: bound.resource,
+                audience: bound.audience,
+                scopes: bound.scopes,
+                expires_at,
+                idempotency_key: "issue-credential-2".into(),
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
     }
 }

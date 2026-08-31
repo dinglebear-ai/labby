@@ -254,6 +254,33 @@ fn live_e2e_orchestrator_binds_release_binary_and_verifiable_evidence() {
     assert!(script.contains("live-http-ipv6"));
     assert!(script.contains("residual-audit.json"));
     assert!(!script.contains("\"signature\""));
+    assert!(script.contains("child_root=\"$run_root/repeats/seed-$repeat_seed\""));
+    assert!(script.contains("LABBY_E2E_RUN_ROOT=\"$child_root\""));
+    assert!(script.contains("repeat10.json"));
+    assert!(script.contains("group_has_listener"));
+    assert!(script.contains("trap 'cancel 143' TERM"));
+    assert!(script.contains(
+        "LABBY_LIVE_BROWSER_NIGHTLY=\"$([ \"$tier\" = nightly ] && echo true || echo false)\""
+    ));
+    let coverage = script
+        .rfind("coverage.json.sha256")
+        .expect("final coverage checksum");
+    let retained_scan = script
+        .rfind("grep -R -a -F -f")
+        .expect("final retained scan");
+    assert!(
+        retained_scan < coverage,
+        "retained scan must pass before coverage and checksum claim success"
+    );
+}
+
+#[test]
+fn live_e2e_ci_routes_scheduled_and_manual_events_to_extended_tiers() {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
+    assert!(workflow.contains("github.event_name == 'schedule' && 'nightly'"));
+    assert!(workflow.contains("github.event_name == 'workflow_dispatch' && 'manual'"));
+    assert!(workflow.contains("labby-live-e2e.sh \"$LABBY_E2E_TIER\""));
 }
 
 #[test]

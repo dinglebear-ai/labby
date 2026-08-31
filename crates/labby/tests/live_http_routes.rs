@@ -103,6 +103,8 @@ fn record_route_outcome(case: &RouteCase, evidence: &ExpectedRouteEvidence) {
     };
     use sha2::Digest as _;
     let case_id = format!("route::{}", case.key());
+    let (achieved_evidence, handler_success, denial_only, outcome_kind) =
+        classify_route_outcome(evidence.status, evidence.conditional_404);
     let event = serde_json::json!({
         "schema_version": 1,
         "run_id": std::env::var("LABBY_E2E_RUN_ID").expect("route evidence run id"),
@@ -110,10 +112,10 @@ fn record_route_outcome(case: &RouteCase, evidence: &ExpectedRouteEvidence) {
         "build_identity": std::env::var("LABBY_E2E_BUILD_IDENTITY").expect("route evidence build"),
         "case_id": case_id,
         "kind": "route",
-        "achieved_evidence": if evidence.conditional_404 { "DeclaredConditionalAbsence" } else { "MountedHandler" },
-        "handler_success": !evidence.conditional_404,
-        "denial_only": false,
-        "outcome_kind": if evidence.conditional_404 { "declared_conditional_absence" } else { "mounted_handler" },
+        "achieved_evidence": achieved_evidence,
+        "handler_success": handler_success,
+        "denial_only": denial_only,
+        "outcome_kind": outcome_kind,
         "cleanup_ok": true,
     });
     let directory = std::path::Path::new(&directory);
@@ -125,6 +127,45 @@ fn record_route_outcome(case: &RouteCase, evidence: &ExpectedRouteEvidence) {
     std::fs::rename(temporary, target).unwrap();
 }
 
+fn classify_route_outcome(
+    status: StatusCode,
+    conditional_404: bool,
+) -> (&'static str, bool, bool, &'static str) {
+    let denial_only = matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN);
+    let handler_success = status.is_success();
+    let labels = if conditional_404 {
+        ("LiveErrorPath", "declared_conditional_absence")
+    } else if handler_success {
+        ("LiveSuccess", "handler_success")
+    } else if denial_only {
+        ("RouterReachable", "authorization_denial")
+    } else {
+        ("LiveErrorPath", "mounted_error_path")
+    };
+    (labels.0, handler_success, denial_only, labels.1)
+}
+
+#[test]
+fn route_outcomes_do_not_confuse_auth_denial_with_handler_success() {
+    assert_eq!(
+        classify_route_outcome(StatusCode::UNAUTHORIZED, false),
+        ("RouterReachable", false, true, "authorization_denial")
+    );
+    assert_eq!(
+        classify_route_outcome(StatusCode::OK, false),
+        ("LiveSuccess", true, false, "handler_success")
+    );
+    assert_eq!(
+        classify_route_outcome(StatusCode::NOT_FOUND, true),
+        (
+            "LiveErrorPath",
+            false,
+            false,
+            "declared_conditional_absence"
+        )
+    );
+}
+
 #[derive(Debug)]
 struct ExpectedRouteEvidence {
     request_id: String,
@@ -132,6 +173,7 @@ struct ExpectedRouteEvidence {
     group: String,
     handler: String,
     conditional_404: bool,
+    status: StatusCode,
 }
 
 async fn probe(
@@ -207,6 +249,7 @@ async fn probe(
         group: case.descriptor.handler_group.clone(),
         handler: case.descriptor.handler_identity.clone(),
         conditional_404: case.permits_runtime_absence() && status == StatusCode::NOT_FOUND,
+        status,
     })
 }
 

@@ -130,7 +130,7 @@ export function sortSkillsRows(rows: UpstreamSkillsRow[]): UpstreamSkillsRow[] {
 }
 
 export function isSkillsParticipant(row: UpstreamSkillsRow): boolean {
-  return row.enabled && row.supports_skills !== false
+  return row.enabled && row.supports_skills === true
 }
 
 export function skillsReadiness(rows: UpstreamSkillsRow[]): SkillsReadiness {

@@ -1,12 +1,20 @@
 use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
-use rmcp::model::{CallToolRequestParams, CallToolResult, PaginatedRequestParams};
-use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RunningService};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, ElicitRequestParams,
+    ElicitResult, ElicitationAction, ElicitationCapability, ElicitationSchema,
+    FormElicitationCapability, Implementation, PaginatedRequestParams, PrimitiveSchemaDefinition,
+    ProtocolVersion,
+};
+use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RequestContext, RunningService};
+use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
+use rmcp::{ClientHandler, ErrorData, RoleClient};
 
 use crate::support::{CleanupResult, LiveLabbyBuilder, LiveLabbyGuard};
 
@@ -19,6 +27,84 @@ pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TEST_TOKEN: &str = "live-mcp-action-matrix-token";
 const _: () = assert!(MAX_CONCURRENCY > 0 && MAX_CONCURRENCY <= 4);
 const _: () = assert!(MAX_OUTSTANDING >= MAX_CONCURRENCY && MAX_OUTSTANDING <= 8);
+
+#[derive(Clone, Default)]
+struct ExactDestructiveConfirmationClient {
+    expected_messages: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl ExactDestructiveConfirmationClient {
+    fn expect(&self, service: &str, action: &str) -> String {
+        let message = format!(
+            "Action `{service}.{action}` is destructive and cannot be undone. Set `confirm` to true to proceed."
+        );
+        self.expected_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(message.clone());
+        message
+    }
+
+    fn clear(&self, message: &str) {
+        self.expected_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(message);
+    }
+}
+
+impl ClientHandler for ExactDestructiveConfirmationClient {
+    fn get_info(&self) -> ClientInfo {
+        ClientInfo::new(
+            ClientCapabilities::builder()
+                .enable_elicitation_with(
+                    ElicitationCapability::new().with_form(FormElicitationCapability::new()),
+                )
+                .build(),
+            Implementation::new("labby-live-e2e", "1.0.0"),
+        )
+        .with_protocol_version(ProtocolVersion::V_2026_07_28)
+    }
+
+    async fn create_elicitation(
+        &self,
+        request: ElicitRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<ElicitResult, ErrorData> {
+        let ElicitRequestParams::FormElicitationParams {
+            message,
+            requested_schema,
+            ..
+        } = request
+        else {
+            return Err(ErrorData::invalid_params(
+                "only destructive form confirmation is accepted",
+                None,
+            ));
+        };
+        let expected_schema = ElicitationSchema::builder()
+            .required_property(
+                "confirm",
+                PrimitiveSchemaDefinition::Boolean(rmcp::model::BooleanSchema::default()),
+            )
+            .build()
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        if requested_schema != expected_schema
+            || !self
+                .expected_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&message)
+        {
+            return Err(ErrorData::invalid_params(
+                "unexpected destructive confirmation request",
+                None,
+            ));
+        }
+        Ok(ElicitResult::new(ElicitationAction::Accept)
+            .with_content(serde_json::json!({"confirm": true})))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IdentityTuple {
@@ -69,10 +155,12 @@ impl IdentityTuple {
 
 pub(crate) struct BuiltinMcpRunner {
     guard: Option<LiveLabbyGuard>,
-    service: Option<RunningService<rmcp::RoleClient, ()>>,
+    service: Option<RunningService<RoleClient, ExactDestructiveConfirmationClient>>,
+    confirmation_client: ExactDestructiveConfirmationClient,
     identity: IdentityTuple,
     concurrency: tokio::sync::Semaphore,
     outstanding: tokio::sync::Semaphore,
+    stdio_process: Option<(u32, String)>,
 }
 
 fn capped_http_client() -> BodyCappedHttpClient {
@@ -94,6 +182,34 @@ impl BuiltinMcpRunner {
         Self::start_with_config(Some("[code_mode]\nenabled = true\n")).await
     }
 
+    pub(crate) async fn start_stdio(command: std::process::Command) -> Result<Self, String> {
+        let transport = TokioChildProcess::new(tokio::process::Command::from(command))
+            .map_err(|error| error.to_string())?;
+        let stdio_process = transport.id().map(|pid| (pid, process_start_identity(pid)));
+        let confirmation_client = ExactDestructiveConfirmationClient::default();
+        let service = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            confirmation_client.clone().serve_with_lifecycle(
+                transport,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            ),
+        )
+        .await
+        .map_err(|_| "stdio MCP initialize timed out".to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Self {
+            guard: None,
+            service: Some(service),
+            confirmation_client,
+            identity: IdentityTuple::local_admin(),
+            concurrency: tokio::sync::Semaphore::new(MAX_CONCURRENCY),
+            outstanding: tokio::sync::Semaphore::new(MAX_OUTSTANDING),
+            stdio_process,
+        })
+    }
+
     async fn start_with_config(config_text: Option<&str>) -> Result<Self, String> {
         drop(rustls::crypto::ring::default_provider().install_default());
         let mut builder = LiveLabbyBuilder::new().env("LABBY_MCP_HTTP_TOKEN", TEST_TOKEN);
@@ -105,12 +221,13 @@ impl BuiltinMcpRunner {
         let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
         config.auth_header = Some(TEST_TOKEN.to_string());
         let worker = StreamableHttpClientWorker::new(capped_http_client(), config);
+        let confirmation_client = ExactDestructiveConfirmationClient::default();
         let service = tokio::time::timeout(
             REQUEST_TIMEOUT,
-            ().serve_with_lifecycle(
+            confirmation_client.clone().serve_with_lifecycle(
                 worker,
                 ClientLifecycleMode::Discover {
-                    preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
                 },
             ),
         )
@@ -120,9 +237,11 @@ impl BuiltinMcpRunner {
         Ok(Self {
             guard: Some(guard),
             service: Some(service),
+            confirmation_client,
             identity: IdentityTuple::local_admin(),
             concurrency: tokio::sync::Semaphore::new(MAX_CONCURRENCY),
             outstanding: tokio::sync::Semaphore::new(MAX_OUTSTANDING),
+            stdio_process: None,
         })
     }
 
@@ -154,12 +273,13 @@ impl BuiltinMcpRunner {
             BodyCappedHttpClient::new(http_client, MAX_RESPONSE_BYTES),
             config,
         );
+        let confirmation_client = ExactDestructiveConfirmationClient::default();
         let service = tokio::time::timeout(
             REQUEST_TIMEOUT,
-            ().serve_with_lifecycle(
+            confirmation_client.clone().serve_with_lifecycle(
                 worker,
                 ClientLifecycleMode::Discover {
-                    preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
                 },
             ),
         )
@@ -169,9 +289,11 @@ impl BuiltinMcpRunner {
         Ok(Self {
             guard: None,
             service: Some(service),
+            confirmation_client,
             identity,
             concurrency: tokio::sync::Semaphore::new(MAX_CONCURRENCY),
             outstanding: tokio::sync::Semaphore::new(MAX_OUTSTANDING),
+            stdio_process: None,
         })
     }
 
@@ -260,31 +382,77 @@ impl BuiltinMcpRunner {
             .expect("object")
             .clone();
         let request = CallToolRequestParams::new(service.to_string()).with_arguments(arguments);
+        let expected_confirmation = self.confirmation_client.expect(service, action);
         let result = tokio::time::timeout_at(
             deadline,
             self.service
                 .as_ref()
                 .expect("runner active")
-                .peer()
                 .call_tool(request),
         )
         .await
-        .map_err(|_| "tools/call timed out".to_string())?
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "tools/call timed out".to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()));
+        self.confirmation_client.clear(&expected_confirmation);
+        let result = result?;
         Ok(result)
     }
 
     pub(crate) async fn finish(mut self) -> CleanupResult {
-        if let Some(service) = self.service.take() {
-            drop(tokio::time::timeout(REQUEST_TIMEOUT, service.cancel()).await);
+        let cancellation_failure = if let Some(service) = self.service.take() {
+            match tokio::time::timeout(REQUEST_TIMEOUT, service.cancel()).await {
+                Ok(Ok(_)) => None,
+                Ok(Err(error)) => Some(format!("MCP cancellation failed: {error}")),
+                Err(_) => Some(format!("MCP cancellation exceeded {REQUEST_TIMEOUT:?}")),
+            }
+        } else {
+            None
+        };
+        let mut cleanup = match self.guard.take() {
+            Some(guard) => guard.finish().await,
+            None => CleanupResult::default(),
+        };
+        if let Some(error) = cancellation_failure {
+            cleanup.failures.push(error);
         }
-        self.guard.take().expect("runner active").finish().await
+        if let Some((pid, identity)) = self.stdio_process.take()
+            && !wait_for_process_exit(pid, &identity).await
+        {
+            cleanup.failures.push(format!(
+                "stdio MCP child {pid} retained its original process identity after cancellation"
+            ));
+        }
+        cleanup
     }
 
     pub(crate) async fn disconnect(mut self) {
         if let Some(service) = self.service.take() {
             drop(tokio::time::timeout(REQUEST_TIMEOUT, service.cancel()).await);
         }
+    }
+}
+
+fn process_start_identity(pid: u32) -> String {
+    std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|identity| !identity.is_empty())
+        .unwrap_or_else(|| "absent".to_string())
+}
+
+async fn wait_for_process_exit(pid: u32, identity: &str) -> bool {
+    let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+    loop {
+        if process_start_identity(pid) != identity {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -317,5 +485,20 @@ mod tests {
         let queued = tokio::time::timeout_at(deadline, concurrency.acquire()).await;
         assert!(queued.is_err());
         drop(held);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_process_identity_observes_actual_termination() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("owned child");
+        let pid = child.id().expect("child pid");
+        let identity = process_start_identity(pid);
+        assert_ne!(identity, "absent");
+        child.kill().await.expect("kill owned child");
+        child.wait().await.expect("reap owned child");
+        assert!(wait_for_process_exit(pid, &identity).await);
     }
 }

@@ -5,6 +5,7 @@ mod support;
 
 use std::{
     process::Command,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -37,6 +38,32 @@ fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
 }
 
 #[test]
+fn orchestration_cleanup_reaps_retained_group_after_leader_exits() {
+    let run_root = tempfile::tempdir().expect("temporary parent");
+    let owned_root = run_root.path().join("retained-group-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let status = Command::new("bash")
+        .arg(script)
+        .args(["pr", "1"])
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_RETAINED_GROUP_SELFTEST", "1")
+        .status()
+        .expect("retained group self-test starts");
+
+    assert!(
+        status.success(),
+        "retained group self-test failed: {status}"
+    );
+    let report = std::fs::read_to_string(owned_root.join("artifacts/retained-group-selftest.json"))
+        .expect("retained group report");
+    assert!(
+        report.contains("\"retained_group_absent\":true"),
+        "{report}"
+    );
+}
+
+#[test]
 fn orchestration_secret_scan_detects_nested_retained_canary() {
     let run_root = tempfile::tempdir().expect("temporary parent");
     let owned_root = run_root.path().join("secret-scan-selftest");
@@ -56,6 +83,88 @@ fn orchestration_secret_scan_detects_nested_retained_canary() {
         .expect("secret scan report");
     assert!(
         report.contains("\"retained_secret_detected\":true"),
+        "{report}"
+    );
+}
+
+#[test]
+fn orchestration_cancellation_exits_with_signal_status_and_reaps_children() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let owned_root = parent.path().join("signal-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let mut child = Command::new("bash")
+        .arg(script)
+        .arg("pr")
+        .arg("1")
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_SIGNAL_SELFTEST", "1")
+        .spawn()
+        .expect("signal self-test starts");
+    let ready = owned_root.join("signal-selftest.ready");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ready.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let owned_pid = std::fs::read_to_string(&ready).expect("signal self-test readiness");
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let status = child.wait().expect("signal self-test exits");
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "unexpected cancellation status: {status}"
+    );
+    assert!(
+        !Command::new("kill")
+            .args(["-0", owned_pid.trim()])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[test]
+fn orchestration_exit_cleanup_failure_overrides_success() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let owned_root = parent.path().join("exit-failure-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let status = Command::new("bash")
+        .arg(script)
+        .args(["pr", "1"])
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_EXIT_FAILURE_SELFTEST", "1")
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(1));
+    let report = std::fs::read_to_string(owned_root.join("artifacts/status.json")).unwrap();
+    assert!(report.contains("\"cleanup\":1"), "{report}");
+}
+
+#[test]
+fn orchestration_listener_audit_is_independent_and_detects_a_listener() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let owned_root = parent.path().join("listener-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let status = Command::new("bash")
+        .arg(script)
+        .args(["pr", "1"])
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_LISTENER_SELFTEST", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "listener self-test failed: {status}");
+    let report =
+        std::fs::read_to_string(owned_root.join("artifacts/listener-selftest.json")).unwrap();
+    assert!(
+        report.contains("\"owned_listener_detected\":true"),
         "{report}"
     );
 }
@@ -287,7 +396,7 @@ fn sigterm_drives_supervised_cleanup_to_completion() {
             Instant::now() < deadline,
             "signal supervisor did not become ready"
         );
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
     }
     nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap()),
@@ -301,7 +410,7 @@ fn sigterm_drives_supervised_cleanup_to_completion() {
             break;
         }
         assert!(Instant::now() < deadline, "signal supervisor cleanup hung");
-        std::thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(20));
     }
     let owned_root =
         std::path::PathBuf::from(String::from_utf8(std::fs::read(marker).unwrap()).unwrap());

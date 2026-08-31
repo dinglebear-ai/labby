@@ -28,6 +28,14 @@ const PREAUTH_PEER_LIMIT: i64 = 16;
 static PREAUTH: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_PREAUTH_CONCURRENCY)));
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdmissionFailure {
+    ConcurrencyLimit,
+    GlobalStore,
+    PeerStore,
+    ServiceUnavailable,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PrepareIdRequest {
@@ -97,13 +105,14 @@ async fn consume(
     headers: HeaderMap,
     request: Result<Json<AccessBootstrapManifest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let Some((service, proof, _permit)) = admit(&state, peer, &headers).await else {
+    let Some((service, proof, _permit)) = admitted_or_log(admit(&state, peer, &headers).await)
+    else {
         return denied();
     };
     let Ok(Json(manifest)) = request else {
         return denied();
     };
-    finish(service.consume(&proof, manifest).await)
+    finish("consume", service.consume(&proof, manifest).await)
 }
 
 async fn status(
@@ -131,7 +140,8 @@ async fn operate(
     request: Result<Json<PrepareIdRequest>, axum::extract::rejection::JsonRejection>,
     cleanup: bool,
 ) -> Response {
-    let Some((service, proof, _permit)) = admit(&state, peer, &headers).await else {
+    let Some((service, proof, _permit)) = admitted_or_log(admit(&state, peer, &headers).await)
+    else {
         return denied();
     };
     let Ok(Json(request)) = request else {
@@ -145,19 +155,37 @@ async fn operate(
     } else {
         service.status(&proof, &request.prepare_id).await
     };
-    finish(result)
+    finish(if cleanup { "cleanup" } else { "status" }, result)
+}
+
+type Admission = (
+    Arc<dyn AccessBootstrapProofService>,
+    String,
+    tokio::sync::OwnedSemaphorePermit,
+);
+
+fn admitted_or_log(result: Result<Option<Admission>, AdmissionFailure>) -> Option<Admission> {
+    match result {
+        Ok(admission) => admission,
+        Err(failure) => {
+            tracing::warn!(
+                phase = "bootstrap_proof_admission",
+                ?failure,
+                "bootstrap proof admission infrastructure unavailable"
+            );
+            None
+        }
+    }
 }
 
 async fn admit(
     state: &AppState,
     peer: Option<SocketAddr>,
     headers: &HeaderMap,
-) -> Option<(
-    Arc<dyn AccessBootstrapProofService>,
-    String,
-    tokio::sync::OwnedSemaphorePermit,
-)> {
-    let permit = Arc::clone(&PREAUTH).try_acquire_owned().ok()?;
+) -> Result<Option<Admission>, AdmissionFailure> {
+    let permit = Arc::clone(&PREAUTH)
+        .try_acquire_owned()
+        .map_err(|_| AdmissionFailure::ConcurrencyLimit)?;
     let now = labby_auth::util::now_unix();
     let global: [u8; 32] = Sha256::digest(b"labby-proof-global-v1").into();
     let peer_fingerprint: [u8; 32] = Sha256::digest(
@@ -175,7 +203,7 @@ async fn admit(
             PREAUTH_GLOBAL_LIMIT,
         )
         .await
-        .ok()?;
+        .map_err(|_| AdmissionFailure::GlobalStore)?;
     let peer_admitted = state
         .access_runtime
         .admit_security_operation(
@@ -186,9 +214,9 @@ async fn admit(
             PREAUTH_PEER_LIMIT,
         )
         .await
-        .ok()?;
+        .map_err(|_| AdmissionFailure::PeerStore)?;
     if !global_admitted || !peer_admitted {
-        let _ = state
+        if state
             .access_runtime
             .record_security_event(
                 "proof".into(),
@@ -198,8 +226,15 @@ async fn admit(
                 Some(peer_fingerprint),
                 now,
             )
-            .await;
-        return None;
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                phase = "bootstrap_proof_audit",
+                "bootstrap proof security event unavailable"
+            );
+        }
+        return Ok(None);
     }
     if peer.is_some_and(|peer| !peer.ip().is_loopback())
         || state
@@ -209,17 +244,22 @@ async fn admit(
         || has_forwarding_headers(headers)
         || !literal_origin_matches_host(headers)
     {
-        return None;
+        return Ok(None);
     }
-    let proof = headers.get(PROOF_HEADER)?.to_str().ok()?;
+    let Some(proof) = headers
+        .get(PROOF_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Ok(None);
+    };
     if !valid_proof(proof) {
-        return None;
+        return Ok(None);
     }
-    Some((
-        state.access_bootstrap_proof.clone()?,
-        proof.to_owned(),
-        permit,
-    ))
+    let service = state
+        .access_bootstrap_proof
+        .clone()
+        .ok_or(AdmissionFailure::ServiceUnavailable)?;
+    Ok(Some((service, proof.to_owned(), permit)))
 }
 
 fn valid_proof(proof: &str) -> bool {
@@ -285,10 +325,18 @@ fn valid_public_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-fn finish(result: Result<ProofMetadata, ProofServiceError>) -> Response {
+fn finish(operation: &'static str, result: Result<ProofMetadata, ProofServiceError>) -> Response {
     match result {
         Ok(metadata) => secure((StatusCode::OK, Json(metadata)).into_response()),
-        Err(_) => denied(),
+        Err(ProofServiceError::Denied) => denied(),
+        Err(ProofServiceError::Unavailable) => {
+            tracing::warn!(
+                phase = "bootstrap_proof_service",
+                operation,
+                "bootstrap proof service unavailable"
+            );
+            denied()
+        }
     }
 }
 
@@ -465,7 +513,7 @@ mod tests {
     #[test]
     fn errors_are_uniform_and_hardened() {
         for error in [ProofServiceError::Denied, ProofServiceError::Unavailable] {
-            let response = finish(Err(error));
+            let response = finish("test", Err(error));
             assert_eq!(response.status(), StatusCode::FORBIDDEN);
             assert_eq!(
                 response.headers()[header::CACHE_CONTROL],
@@ -477,6 +525,18 @@ mod tests {
                     .headers()
                     .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN)
             );
+        }
+    }
+
+    #[test]
+    fn admission_failures_remain_non_enumerating() {
+        for failure in [
+            AdmissionFailure::ConcurrencyLimit,
+            AdmissionFailure::GlobalStore,
+            AdmissionFailure::PeerStore,
+            AdmissionFailure::ServiceUnavailable,
+        ] {
+            assert!(admitted_or_log(Err(failure)).is_none());
         }
     }
 
@@ -509,6 +569,21 @@ mod tests {
             State(state),
             DirectPeer(Some("127.0.0.1:42000".parse().unwrap())),
             request_headers,
+            Ok(Json(manifest())),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(service.0.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn admission_store_failure_is_denied_before_orchestration() {
+        let service = Arc::new(MockService(AtomicUsize::new(0)));
+        let state = AppState::new().with_access_bootstrap_proof(service.clone());
+        let response = consume(
+            State(state),
+            DirectPeer(Some("127.0.0.1:42000".parse().unwrap())),
+            headers(),
             Ok(Json(manifest())),
         )
         .await;

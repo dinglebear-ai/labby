@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn rejects_noncanonical_ids_lengths_alphabets_and_padding() {
         let valid_secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7_u8; 32]);
-        for invalid in [
+        for (case_index, invalid) in [
             format!("{PRODUCT_CREDENTIAL_PREFIX}_{valid_secret}"),
             format!("{PRODUCT_CREDENTIAL_PREFIX}bad_id_{valid_secret}"),
             format!(
@@ -241,10 +241,13 @@ mod tests {
             ),
             format!("{PRODUCT_CREDENTIAL_PREFIX}id_{valid_secret}="),
             format!("{PRODUCT_CREDENTIAL_PREFIX}id_{}!", &valid_secret[..42]),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             assert!(
                 ProductCredential::parse(&invalid).is_err(),
-                "accepted {invalid}"
+                "accepted noncanonical credential case {case_index}"
             );
         }
     }

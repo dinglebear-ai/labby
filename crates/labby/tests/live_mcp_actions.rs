@@ -21,7 +21,7 @@ mod support {
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use action_matrix::{EvidenceLevel, ScenarioKind, ScenarioOwner, Surface, intents};
+use action_matrix::{EvidenceLevel, ScenarioKind, Surface, intents};
 use mcp_action_runner::BuiltinMcpRunner;
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
@@ -49,6 +49,279 @@ fn result_text(result: &rmcp::model::CallToolResult) -> String {
         .join("\n")
 }
 
+fn result_error_kind(text: &str) -> Option<String> {
+    fn find_kind(value: &serde_json::Value) -> Option<&str> {
+        value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                value
+                    .as_object()
+                    .and_then(|object| object.values().find_map(find_kind))
+            })
+    }
+
+    serde_json::from_str(text)
+        .ok()
+        .as_ref()
+        .and_then(find_kind)
+        .map(str::to_owned)
+}
+
+async fn assert_mcp_transition_readback(
+    runner: &BuiltinMcpRunner,
+    intent: &action_matrix::CaseIntent,
+    mutation_text: &str,
+) -> bool {
+    let key = intent.key();
+    let key_for_read = key.as_str();
+    let read = |service: &'static str, action: &'static str, params: serde_json::Value| async move {
+        let result = runner
+            .call(
+                service,
+                action,
+                params.as_object().cloned().expect("readback params object"),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{key_for_read} readback wire failure: {error}"));
+        (result.is_error != Some(true), result_text(&result))
+    };
+
+    match key.as_str() {
+        "gateway:gateway.add" | "gateway:gateway.update" => {
+            let (ok, text) = read(
+                "gateway",
+                "gateway.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                ok && text.contains("matrix-owned"),
+                "{key} readback: {text}"
+            );
+            if key.ends_with("update") {
+                assert!(
+                    text.contains("127.0.0.1:10"),
+                    "{key} patch was not observable: {text}"
+                );
+            }
+            true
+        }
+        "gateway:gateway.code_mode.set" => {
+            let (ok, text) = read("gateway", "gateway.code_mode.get", serde_json::json!({})).await;
+            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            assert_eq!(
+                result_error_kind(mutation_text),
+                None,
+                "{key} returned an error-shaped success"
+            );
+            true
+        }
+        "gateway:gateway.loadout.add"
+        | "gateway:gateway.loadout.patch"
+        | "gateway:gateway.loadout.update" => {
+            let (ok, text) = read(
+                "gateway",
+                "gateway.loadout.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                ok && text.contains("matrix-owned"),
+                "{key} readback: {text}"
+            );
+            true
+        }
+        "gateway:gateway.loadout.remove" => {
+            let (ok, text) = read(
+                "gateway",
+                "gateway.loadout.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                !ok && text.contains("not_found"),
+                "{key} absence proof: {text}"
+            );
+            true
+        }
+        "gateway:gateway.remove" => {
+            let (ok, text) = read(
+                "gateway",
+                "gateway.get",
+                serde_json::json!({"name":"matrix-remove-owned"}),
+            )
+            .await;
+            assert!(
+                !ok && text.contains("not_found"),
+                "{key} absence proof: {text}"
+            );
+            true
+        }
+        "gateway:gateway.mcp.disable"
+        | "gateway:gateway.mcp.enable"
+        | "gateway:gateway.mcp.restart" => {
+            let (ok, text) = read(
+                "gateway",
+                "gateway.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                ok && text.contains("matrix-owned"),
+                "{key} readback: {text}"
+            );
+            true
+        }
+        "gateway:gateway.protected_route.add" | "gateway:gateway.protected_route.update" => {
+            let (ok, text) = read(
+                "gateway",
+                "gateway.protected_route.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                ok && text.contains("matrix-owned"),
+                "{key} readback: {text}"
+            );
+            true
+        }
+        "gateway:gateway.protected_route.remove" => {
+            let (ok, text) = read(
+                "gateway",
+                "gateway.protected_route.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                !ok && text.contains("not_found"),
+                "{key} absence proof: {text}"
+            );
+            true
+        }
+        "gateway:gateway.reload" => {
+            assert!(
+                mutation_text.contains("completed") && mutation_text.contains("true"),
+                "{key} did not prove reload completion: {mutation_text}"
+            );
+            true
+        }
+        "snippets:snippets.create" => {
+            let (ok, text) = read(
+                "snippets",
+                "snippets.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                ok && text.contains("matrix-owned"),
+                "{key} readback: {text}"
+            );
+            true
+        }
+        "snippets:snippets.remove" => {
+            let (ok, text) = read(
+                "snippets",
+                "snippets.get",
+                serde_json::json!({"name":"matrix-owned"}),
+            )
+            .await;
+            assert!(
+                !ok && text.contains("not_found"),
+                "{key} absence proof: {text}"
+            );
+            true
+        }
+        "setup:draft.set" => {
+            let (ok, text) = read("setup", "draft.get", serde_json::json!({})).await;
+            assert!(ok && text.contains("LABBY_LOG"), "{key} readback: {text}");
+            true
+        }
+        "setup:draft.discard" => {
+            let (ok, text) = read("setup", "draft.get", serde_json::json!({})).await;
+            assert!(
+                ok && !text.contains("LABBY_LOG"),
+                "{key} absence proof: {text}"
+            );
+            true
+        }
+        "setup:draft.commit" | "setup:finalize" | "setup:repair" | "setup:settings.update" => {
+            let (ok, text) = read("setup", "state", serde_json::json!({})).await;
+            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            true
+        }
+        "setup:plugin_hook" | "setup:plugin_sync" => {
+            let (ok, text) = read("setup", "plugin_export", serde_json::json!({})).await;
+            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            true
+        }
+        _ => false,
+    }
+}
+
+async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matrix::CaseIntent) {
+    let prerequisite = match intent.key().as_str() {
+        "setup:draft.commit" => Some((
+            "draft.set",
+            serde_json::json!({"entries": [{
+                "key": "LABBY_LOG",
+                "value": "labby=debug"
+            }]}),
+        )),
+        "gateway:gateway.remove" => Some((
+            "gateway.add",
+            serde_json::json!({"spec": {
+                "name": "matrix-remove-owned",
+                "url": "http://127.0.0.1:9/mcp"
+            }}),
+        )),
+        "gateway:gateway.loadout.update" => Some((
+            "gateway.loadout.add",
+            serde_json::json!({"loadout": {
+                "name": "matrix-owned",
+                "upstreams": ["matrix-owned"],
+                "services": []
+            }}),
+        )),
+        "gateway:gateway.protected_route.update" => Some((
+            "gateway.protected_route.add",
+            serde_json::json!({"route": {
+                "name": "matrix-owned",
+                "enabled": true,
+                "public_host": "matrix.invalid",
+                "public_path": "/matrix-owned",
+                "upstream": "matrix-owned",
+                "backend_url": "",
+                "scopes": []
+            }}),
+        )),
+        _ => None,
+    };
+    let Some((action, params)) = prerequisite else {
+        return;
+    };
+    let service = if intent.service == "setup" {
+        "setup"
+    } else {
+        "gateway"
+    };
+    let result = runner
+        .call(
+            service,
+            action,
+            params.as_object().cloned().expect("prerequisite params"),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{} prerequisite wire failure: {error}", intent.key()));
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "{} prerequisite failed: {}",
+        intent.key(),
+        result_text(&result)
+    );
+}
+
 #[test]
 fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
     let cases = mcp_intents();
@@ -67,29 +340,6 @@ fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
         assert!(plans.insert(intent.key(), disposition).is_none());
         assert!(!intent.scenario_id.is_empty());
         assert!(!intent.fixture_params.fixture.is_empty());
-        let evidence = match intent.scenario_kind {
-            ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
-            ScenarioKind::LiveInvoke => EvidenceLevel::LiveSuccess,
-            ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated => {
-                EvidenceLevel::LiveStateTransition
-            }
-            ScenarioKind::ConditionalOptional => EvidenceLevel::RouterReachable,
-            ScenarioKind::ExternalOptional | ScenarioKind::ExcludedWithReason => {
-                EvidenceLevel::LiveErrorPath
-            }
-        };
-        action_scenarios::ActionOutcome {
-            key: intent.key(),
-            surface: Surface::Mcp,
-            disposition: action_scenarios::disposition(intent),
-            evidence,
-            owner: intent.scenario_owner,
-            outcome_kind: disposition.to_owned(),
-            recovery: "bounded_plan".into(),
-            side_effects: "owned_by_scenario".into(),
-            canary_free: true,
-        }
-        .record();
     }
     assert_eq!(plans.len(), 146);
 }
@@ -208,17 +458,21 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     let runner = BuiltinMcpRunner::start().await.expect("live MCP runner");
     let expected = mcp_intents()
         .into_iter()
-        .filter(|intent| intent.scenario_owner == ScenarioOwner::SurfaceActionRunner)
         // lab_admin is intentionally local-only and therefore cannot be
         // exercised through the HTTP MCP route owned by this runner.
         .filter(|intent| intent.service != "lab_admin")
         .collect::<Vec<_>>();
-    assert_eq!(expected.len(), 59);
+    assert_eq!(expected.len(), 143);
 
     let mut consumed = BTreeSet::new();
     for intent in expected {
+        prepare_mcp_transition(&runner, intent).await;
+        let params = action_scenarios::fixture_params(intent)
+            .as_object()
+            .cloned()
+            .expect("fixture params are an object");
         let result = runner
-            .call(&intent.service, &intent.action, serde_json::Map::new())
+            .call(&intent.service, &intent.action, params)
             .await
             .unwrap_or_else(|error| panic!("{} wire failure: {error}", intent.key()));
         let text = result_text(&result);
@@ -232,10 +486,146 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             "{} reflected the bearer secret",
             intent.key()
         );
+        let succeeded = result.is_error != Some(true);
+        let transition_observed = succeeded
+            && matches!(
+                intent.scenario_kind,
+                ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated
+            )
+            && assert_mcp_transition_readback(&runner, intent, &text).await;
+        let evidence = if succeeded {
+            match intent.scenario_kind {
+                ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
+                ScenarioKind::LiveInvoke => EvidenceLevel::LiveSuccess,
+                ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated => {
+                    if transition_observed {
+                        EvidenceLevel::LiveStateTransition
+                    } else {
+                        EvidenceLevel::LiveSuccess
+                    }
+                }
+                ScenarioKind::ConditionalOptional => EvidenceLevel::RouterReachable,
+                ScenarioKind::ExternalOptional | ScenarioKind::ExcludedWithReason => {
+                    EvidenceLevel::LiveSuccess
+                }
+            }
+        } else {
+            EvidenceLevel::LiveErrorPath
+        };
+        let error_kind = (!succeeded)
+            .then(|| result_error_kind(&text))
+            .flatten()
+            .unwrap_or_else(|| "mcp_error".to_owned());
+        let dedicated = (!succeeded)
+            .then(|| action_scenarios::dedicated_contract_reason_for(&intent.key(), Surface::Mcp))
+            .flatten()
+            .filter(|_| {
+                action_scenarios::dedicated_contract_accepts_for(
+                    &intent.key(),
+                    Surface::Mcp,
+                    &error_kind,
+                )
+            });
+        action_scenarios::ActionOutcome {
+            key: intent.key(),
+            surface: Surface::Mcp,
+            disposition: action_scenarios::disposition(intent),
+            evidence,
+            owner: intent.scenario_owner,
+            outcome_kind: dedicated.map_or_else(
+                || {
+                    if succeeded {
+                        "live_result"
+                    } else {
+                        &error_kind
+                    }
+                    .to_owned()
+                },
+                |reason| format!("dedicated_contract:{reason}:{error_kind}"),
+            ),
+            recovery: "isolated_runner".into(),
+            side_effects: if succeeded {
+                "owned_state"
+            } else {
+                "none_observed"
+            }
+            .into(),
+            canary_free: !text.contains(action_scenarios::SECRET_CANARY),
+        }
+        .record();
         assert!(consumed.insert(intent.key()), "duplicate action execution");
     }
-    assert_eq!(consumed.len(), 59);
+    assert_eq!(consumed.len(), 143);
 
+    let cleanup = runner.finish().await;
+    assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
+}
+
+#[tokio::test]
+async fn local_stdio_executes_all_lab_admin_intents_before_recording_evidence() {
+    let root = tempfile::tempdir().expect("local stdio MCP root");
+    std::fs::create_dir_all(root.path().join("tmp")).unwrap();
+    let mut command = support::isolated_command(root.path());
+    command.env("LABBY_ADMIN_ENABLED", "1").arg("mcp");
+    let runner = BuiltinMcpRunner::start_stdio(command)
+        .await
+        .expect("local stdio MCP runner");
+    let tools = runner.list_tool_names().await.expect("stdio tools/list");
+    assert!(
+        tools.contains("lab_admin"),
+        "local-only tool missing: {tools:?}"
+    );
+
+    let intents = mcp_intents()
+        .into_iter()
+        .filter(|intent| intent.service == "lab_admin")
+        .collect::<Vec<_>>();
+    assert_eq!(intents.len(), 3);
+    let mut consumed = BTreeSet::new();
+    for intent in intents {
+        let params = action_scenarios::fixture_params(intent)
+            .as_object()
+            .cloned()
+            .expect("fixture params are an object");
+        let result = runner
+            .call("lab_admin", &intent.action, params)
+            .await
+            .unwrap_or_else(|error| panic!("{} stdio wire failure: {error}", intent.key()));
+        let text = result_text(&result);
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "{} stdio execution failed: {text}",
+            intent.key()
+        );
+        assert!(
+            !text.trim().is_empty(),
+            "{} returned no evidence",
+            intent.key()
+        );
+        assert!(!text.contains(action_scenarios::SECRET_CANARY));
+
+        action_scenarios::ActionOutcome {
+            key: intent.key(),
+            surface: Surface::Mcp,
+            disposition: action_scenarios::disposition(intent),
+            evidence: match intent.scenario_kind {
+                ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
+                ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated => {
+                    EvidenceLevel::LiveSuccess
+                }
+                _ => EvidenceLevel::LiveSuccess,
+            },
+            owner: intent.scenario_owner,
+            outcome_kind: "live_stdio_result".into(),
+            recovery: "isolated_stdio_runner".into(),
+            side_effects: "owned_state".into(),
+            canary_free: true,
+        }
+        .record();
+        assert!(consumed.insert(intent.key()), "duplicate stdio execution");
+    }
+    assert_eq!(consumed.len(), 3);
     let cleanup = runner.finish().await;
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
 }

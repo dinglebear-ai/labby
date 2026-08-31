@@ -1698,13 +1698,15 @@ impl LabMcpServer {
             .collect::<Vec<_>>();
         let material = serde_json::json!({
             "service": service, "action": action, "arguments": request.arguments,
-            "request_meta": request.meta,
             "issuer": auth.map(|value| value.issuer.as_str()),
             "subject": auth.map(|value| value.sub.as_str()),
             "actor": auth.and_then(|value| value.actor_key.as_deref()),
             "scopes": auth.map(|value| value.scopes.as_slice()),
             "transport": self.transport_label,
-            "mcp_session": self.relay_session_id,
+            // Streamable HTTP constructs a fresh LabMcpServer per POST, so its
+            // relay id is request-scoped rather than session-scoped. Binding it
+            // would reject the protocol-mandated input_required retry.
+            "mcp_session": (self.transport_label != "http").then_some(self.relay_session_id),
             "route": format!("{:?}", self.route_scope), "catalog": catalog,
         });
         let binding = labby_runtime::artifacts::canonical_json::digest(&material)
@@ -1714,7 +1716,7 @@ impl LabMcpServer {
             "subject": auth.map(|value| value.sub.as_str()),
             "actor": auth.and_then(|value| value.actor_key.as_deref()),
             "transport": self.transport_label,
-            "mcp_session": self.relay_session_id,
+            "mcp_session": (self.transport_label != "http").then_some(self.relay_session_id),
             "route": format!("{:?}", self.route_scope),
         });
         let owner = labby_runtime::artifacts::canonical_json::digest(&owner_material)

@@ -96,11 +96,23 @@ impl ActionOutcome {
 
 fn write_case_event(directory: &std::ffi::OsStr, event: &Value) {
     use sha2::Digest as _;
+    static EVENT_WRITE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _event_write = EVENT_WRITE_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let directory = Path::new(directory);
     std::fs::create_dir_all(directory).expect("create case evidence directory");
     let id = event["case_id"].as_str().expect("case id");
     let name = hex::encode(sha2::Sha256::digest(id.as_bytes()));
     let target = directory.join(format!("{name}.json"));
+    if let Ok(existing) = std::fs::read(&target)
+        && let Ok(existing) = serde_json::from_slice::<Value>(&existing)
+        && evidence_rank(existing["achieved_evidence"].as_str().unwrap_or_default())
+            > evidence_rank(event["achieved_evidence"].as_str().unwrap_or_default())
+    {
+        return;
+    }
     let temporary = directory.join(format!(".{name}.{}.tmp", std::process::id()));
     std::fs::write(
         &temporary,
@@ -108,6 +120,20 @@ fn write_case_event(directory: &std::ffi::OsStr, event: &Value) {
     )
     .expect("write case evidence");
     std::fs::rename(temporary, target).expect("publish case evidence");
+}
+
+fn evidence_rank(value: &str) -> u8 {
+    match value {
+        "MetadataOnly" => 0,
+        "RouterReachable" => 1,
+        "LiveErrorPath" => 2,
+        "LiveSuccess" => 3,
+        "LiveStateTransition" => 4,
+        "LiveRestartPersistence" => 5,
+        "CrossSurfaceParity" => 6,
+        "PackagedArtifactVerified" => 7,
+        _ => 0,
+    }
 }
 
 pub(crate) fn disposition(intent: &CaseIntent) -> Disposition {
@@ -271,6 +297,18 @@ pub(crate) fn assert_json_or_help(output: &Output, context: &str) {
     );
 }
 
+pub(crate) fn assert_success_json(output: &Output, context: &str) -> Value {
+    assert_sanitized(&output.stdout, context);
+    assert_sanitized(&output.stderr, context);
+    assert!(
+        output.status.success(),
+        "{context} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("{context} did not return JSON: {error}"))
+}
+
 pub(crate) fn action_request(intent: &CaseIntent) -> Value {
     json!({"action": intent.action, "params": fixture_params(intent)})
 }
@@ -302,35 +340,173 @@ pub(crate) fn services_for(surface: Surface) -> BTreeSet<String> {
 }
 
 pub(crate) fn dedicated_contract_reason(key: &str) -> Option<&'static str> {
+    dedicated_contract(key).map(|(reason, _)| reason)
+}
+
+pub(crate) fn dedicated_contract_reason_for(key: &str, surface: Surface) -> Option<&'static str> {
+    dedicated_contract_for(key, surface).map(|(reason, _)| reason)
+}
+
+fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
     match key {
-        "gateway:gateway.clients.list" => Some("catalog_dispatch_mismatch"),
-        "gateway:gateway.enrich.apply" | "gateway:gateway.enrich.preview" => {
-            Some("requires_live_catalog_suggestion")
+        "gateway:gateway.clients.list" => Some(("catalog_dispatch_mismatch", "unknown_action")),
+        "gateway:gateway.enrich.apply" => {
+            Some(("requires_live_catalog_suggestion", "stale_suggestion"))
+        }
+        "gateway:gateway.enrich.preview" => {
+            Some(("requires_live_catalog_suggestion", "invalid_param"))
+        }
+        "gateway:gateway.import" => {
+            Some(("requires_external_client_import_artifact", "invalid_param"))
         }
         key if key.starts_with("gateway:gateway.import") => {
-            Some("requires_external_client_import_artifact")
+            Some(("requires_external_client_import_artifact", "not_found"))
         }
-        key if key.starts_with("gateway:gateway.loadout.stage_") => {
-            Some("requires_mounted_publication_restart_generation")
+        "gateway:gateway.loadout.stage_patch" => Some((
+            "requires_mounted_publication_restart_generation",
+            "not_found",
+        )),
+        key if key.starts_with("gateway:gateway.loadout.stage_") => Some((
+            "requires_mounted_publication_restart_generation",
+            "invalid_param",
+        )),
+        "gateway:gateway.oauth.google_revoke" => {
+            Some(("requires_stored_google_grant", "not_found"))
         }
-        "gateway:gateway.oauth.google_revoke" => Some("requires_stored_google_grant"),
-        key if key.starts_with("gateway:gateway.protected_route.stage_") => {
-            Some("requires_mounted_publication_restart_generation")
+        "gateway:gateway.oauth.clear"
+        | "gateway:gateway.oauth.start"
+        | "gateway:gateway.oauth.status"
+        | "gateway:gateway.oauth.wait" => Some(("requires_configured_oauth_upstream", "not_found")),
+        "gateway:gateway.oauth.probe" => {
+            Some(("requires_reachable_oauth_provider", "invalid_param"))
         }
+        "gateway:gateway.oauth.resource_lease.create"
+        | "gateway:gateway.oauth.resource_lease.release"
+        | "gateway:gateway.oauth.resource_lease.renew" => {
+            Some(("requires_oauth_resource_authority", "auth_failed"))
+        }
+        key if key.starts_with("gateway:gateway.protected_route.stage_") => Some((
+            "requires_mounted_publication_restart_generation",
+            "invalid_param",
+        )),
         key if key.starts_with("gateway:gateway.service_config.") => {
-            Some("requires_configured_external_builtin_api")
+            Some(("requires_configured_external_builtin_api", "invalid_param"))
         }
         key if key.starts_with("gateway:gateway.virtual_server.") => {
-            Some("requires_migration_created_virtual_server")
+            Some(("requires_migration_created_virtual_server", "not_found"))
         }
-        "setup:plugin.install" | "setup:plugin.uninstall" => {
-            Some("requires_configured_external_plugin_service")
-        }
+        "setup:plugin.install"
+        | "setup:plugin.uninstall"
+        | "setup:install_plugin"
+        | "setup:uninstall_plugin" => Some((
+            "requires_configured_external_plugin_service",
+            "unknown_service",
+        )),
         "setup:settings.config.update" | "setup:settings.env.update" => {
-            Some("typed_compare_and_swap_contract_probed")
+            Some(("typed_compare_and_swap_contract_probed", "invalid_param"))
         }
-        "skills:skills.get" | "skills:skills.read" => Some("requires_indexed_packaged_skill"),
-        "snippets:snippets.promote" => Some("requires_real_code_mode_execution_record"),
+        "skills:skills.get" | "skills:skills.read" => {
+            Some(("requires_indexed_packaged_skill", "not_found"))
+        }
+        "snippets:snippets.promote" => Some((
+            "requires_real_code_mode_execution_record",
+            "unknown_execution",
+        )),
+        "snippets:snippets.test" => Some(("requires_existing_snippet_test_target", "not_found")),
         _ => None,
+    }
+}
+
+pub(crate) fn dedicated_contract_accepts(key: &str, error_kind: &str) -> bool {
+    dedicated_contract(key).is_some_and(|(_, expected_kind)| error_kind == expected_kind)
+}
+
+pub(crate) fn dedicated_contract_accepts_for(
+    key: &str,
+    surface: Surface,
+    error_kind: &str,
+) -> bool {
+    dedicated_contract_for(key, surface)
+        .is_some_and(|(_, expected_kind)| error_kind == expected_kind)
+}
+
+fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
+        return Some((
+            "requires_mounted_publication_restart_generation",
+            "invalid_param",
+        ));
+    }
+    if surface == Surface::Mcp {
+        return match key {
+            "setup:bootstrap" => Some(("requires_host_bootstrap_authority", "forbidden")),
+            "setup:plugin_connectivity" => {
+                Some(("requires_host_plugin_connectivity_authority", "forbidden"))
+            }
+            "setup:proxy.configure" => {
+                Some(("requires_host_proxy_configuration_authority", "forbidden"))
+            }
+            _ => dedicated_contract(key),
+        };
+    }
+    dedicated_contract(key)
+}
+
+#[cfg(test)]
+mod dedicated_contract_tests {
+    use super::{dedicated_contract, dedicated_contract_accepts, dedicated_contract_reason};
+
+    #[test]
+    fn every_dedicated_contract_accepts_only_its_exact_error_kind() {
+        let rejected_kinds = [
+            "internal_error",
+            "invalid_param",
+            "not_found",
+            "conflict",
+            "precondition_failed",
+            "stale_suggestion",
+            "unknown_execution",
+            "config_error",
+            "unknown_service",
+            "unknown_action",
+            "auth_failed",
+        ];
+        let mappings = crate::action_matrix::intents()
+            .iter()
+            .filter_map(|intent| {
+                let key = intent.key();
+                dedicated_contract(&key).map(|contract| (key, contract))
+            })
+            .collect::<Vec<_>>();
+        assert!(!mappings.is_empty(), "dedicated contract mappings");
+
+        for (key, (reason, expected_kind)) in mappings {
+            assert_eq!(dedicated_contract_reason(&key), Some(reason), "{key}");
+            assert!(
+                dedicated_contract_accepts(&key, expected_kind),
+                "{key} must accept its exact fixture error {expected_kind}"
+            );
+            for rejected in rejected_kinds {
+                if rejected != expected_kind {
+                    assert!(
+                        !dedicated_contract_accepts(&key, rejected),
+                        "{key} unexpectedly accepted {rejected} for {reason}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unmapped_actions_and_arbitrary_errors_are_rejected() {
+        assert_eq!(dedicated_contract_reason("gateway:gateway.get"), None);
+        assert!(!dedicated_contract_accepts(
+            "gateway:gateway.get",
+            "not_found"
+        ));
+        assert!(!dedicated_contract_accepts(
+            "gateway:gateway.clients.list",
+            "arbitrary_error"
+        ));
     }
 }

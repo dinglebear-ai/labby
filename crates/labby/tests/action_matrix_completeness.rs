@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use support::action_matrix::{
     CatalogAction, EXPECTED_ACTIONS, EXPECTED_API_ACTIONS, EXPECTED_CLI_ACTIONS,
     EXPECTED_MCP_ACTIONS, EXPECTED_SHARED_CLI_MCP_API_ACTIONS, EXPECTED_WEB_ACTIONS, EvidenceLevel,
-    PersistenceClass, ScenarioKind, ScenarioOwner, catalog_map, intent_map, intent_map_from,
-    intents, validate_intent_shape,
+    PersistenceClass, ScenarioKind, ScenarioOwner, Surface, catalog_map, intent_map,
+    intent_map_from, intents, validate_intent_shape,
 };
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
@@ -187,7 +187,18 @@ fn aliases_inherit_the_canonical_scenario_and_policy() {
             alias_action.required_scopes,
             canonical_action.required_scopes
         );
-        assert_eq!(alias_action.surfaces(), canonical_action.surfaces());
+        // Compatibility aliases are transport spellings, not independent CLI or
+        // Web UI bindings. Those adapter projections are intentionally allowed
+        // to differ from the canonical action.
+        let without_adapter_aliases = |mut surfaces: BTreeSet<Surface>| {
+            surfaces.remove(&Surface::Cli);
+            surfaces.remove(&Surface::WebUi);
+            surfaces
+        };
+        assert_eq!(
+            without_adapter_aliases(alias_action.surfaces()),
+            without_adapter_aliases(canonical_action.surfaces())
+        );
     }
 }
 
@@ -446,8 +457,8 @@ fn security_invariants_are_independent_of_execution_intent() {
     );
     for action in local_only {
         assert!(
-            action.surface_availability.cli && action.surface_availability.mcp,
-            "{}: local-only operations remain available to local CLI/MCP adapters",
+            !action.surface_availability.cli && action.surface_availability.mcp,
+            "{}: local-only operations remain available only to their registered local MCP adapter",
             action.key()
         );
         assert!(
@@ -474,12 +485,7 @@ fn security_invariants_are_independent_of_execution_intent() {
                 || intent.fixture_params.fixture.starts_with("isolated_"),
             "{key}: fixture may not use developer state or ambient credentials"
         );
-        for surface in [
-            support::action_matrix::Surface::Cli,
-            support::action_matrix::Surface::Mcp,
-            support::action_matrix::Surface::Api,
-            support::action_matrix::Surface::WebUi,
-        ] {
+        for surface in [Surface::Cli, Surface::Mcp, Surface::Api, Surface::WebUi] {
             let discovered = catalog_by_key[key].surfaces().contains(&surface);
             assert_eq!(
                 intent.applicable_surfaces.contains(&surface),

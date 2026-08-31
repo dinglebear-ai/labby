@@ -452,7 +452,8 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           LABBY_E2E_SEED: "1"
-        run: scripts/ci/labby-live-e2e.sh pr "$LABBY_E2E_SEED"
+          LABBY_E2E_TIER: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && 'manual' || 'pr' }}
+        run: scripts/ci/labby-live-e2e.sh "$LABBY_E2E_TIER" "$LABBY_E2E_SEED"
       - name: Upload concise live E2E evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

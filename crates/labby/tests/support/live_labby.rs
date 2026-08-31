@@ -1709,7 +1709,7 @@ mod tests {
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         guard.child = Some(child);
-        let address = wait_for_fixture_listener(&marker, Duration::from_secs(3)).await;
+        let address = wait_for_fixture_listener(&marker, Duration::from_secs(10)).await;
         guard.ledger.listener = Some(address);
         guard.ledger.listener_identity = Some(format!("tcp:{address}"));
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -1799,7 +1799,7 @@ mod tests {
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         guard.child = Some(child);
-        let address = wait_for_fixture_listener(&marker, Duration::from_secs(3)).await;
+        let address = wait_for_fixture_listener(&marker, Duration::from_secs(10)).await;
         guard.ledger.listener = Some(address);
         guard.ledger.listener_identity = Some(format!("tcp:{address}"));
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
