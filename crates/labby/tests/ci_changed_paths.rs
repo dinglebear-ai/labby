@@ -41,6 +41,38 @@ fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
     }
 }
 
+#[test]
+fn action_managed_kache_fails_open_when_its_daemon_has_no_remote() {
+    let action =
+        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
+            .expect("read setup-rust-kache action");
+
+    let health = action
+        .split("- name: Verify action-managed Kache remote")
+        .nth(1)
+        .and_then(|section| {
+            section.split("\n    # Fork PRs (and any run without shared MinIO credentials)").next()
+        })
+        .expect("action-managed Kache must be verified before compilation");
+    for contract in [
+        "stats=\"$(kache stats 2>&1 || true)\"",
+        "'$1 == \"Remote:\" && $2 == expected && NF == 2",
+        "echo \"RUSTC_WRAPPER=\"",
+        "echo \"CARGO_BUILD_RUSTC_WRAPPER=\"",
+        "echo \"usable=false\" >> \"$GITHUB_OUTPUT\"",
+    ] {
+        assert!(
+            health.contains(contract),
+            "unhealthy action-managed Kache must fail open via `{contract}`"
+        );
+    }
+
+    assert!(
+        action.matches("steps.kache-action-health.outputs.usable == 'false'").count() >= 2,
+        "an unhealthy Kache daemon must select both the safe cache fallback and bare Cargo"
+    );
+}
+
 fn classify(event: &str, files: &[&str]) -> HashMap<String, String> {
     let temp_dir = std::env::temp_dir().join(format!(
         "lab-ci-paths-{}-{}-{}",
