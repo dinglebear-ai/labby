@@ -672,17 +672,39 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let extracted_lint = clippy_job
         .find("cargo clippy --workspace --exclude labby --all-features")
         .expect("extracted workspace Clippy command");
+    let clippy_test_graph_warm = clippy_job
+        .find("--test architecture_boundaries --locked -- -D warnings")
+        .expect("Clippy test dependency graph warm-up command");
+    let clippy_all_targets = clippy_job
+        .find("cargo clippy -p labby --all-features --all-targets --locked")
+        .expect("all-target Labby Clippy command");
     assert!(
         clippy_warm < extracted_lint,
         "Clippy must warm Labby and Labby Gateway normal targets before any extracted all-target lint fan-out"
     );
     assert!(
-        clippy_job.contains("cargo clippy -p labby --all-features --all-targets --locked"),
-        "Clippy must preserve all-target coverage after warming ordinary Labby targets"
+        extracted_lint < clippy_test_graph_warm && clippy_test_graph_warm < clippy_all_targets,
+        "Clippy must warm the dev-dependency feature graph in isolation before its all-target pass"
     );
     assert!(
         !clippy_job.contains("-j 1"),
         "Clippy must not change Cargo job count because that changes native build-script NUM_JOBS"
+    );
+
+    let msrv_job = workflow
+        .split("  msrv:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  codemode-runner-smoke:").next())
+        .expect("msrv job");
+    let gateway_msrv_warm = msrv_job
+        .find("cargo +1.97.1 check -p labby-gateway --all-features")
+        .expect("gateway MSRV test-target warm-up command");
+    let workspace_msrv = msrv_job
+        .find("cargo +1.97.1 check --workspace --all-features --all-targets --locked")
+        .expect("required workspace MSRV command");
+    assert!(
+        msrv_job.contains("--all-targets --locked") && gateway_msrv_warm < workspace_msrv,
+        "MSRV must warm the gateway test target before preserving the exact required workspace command"
     );
 
     let mcp_regressions = workflow

@@ -531,6 +531,14 @@ jobs:
         uses: ./.github/actions/setup-rust-kache
         with:
           toolchain: "1.97.1"
+      - name: Warm gateway MSRV test target
+        # The workspace all-target pass can otherwise compile the large
+        # labby-gateway lib-test target alongside Labby's targets and cross
+        # the shared runner memory ceiling. Keep the required command below
+        # unchanged; this pass only makes its largest test target reusable.
+        run: >-
+          cargo +1.97.1 check -p labby-gateway --all-features
+          --all-targets --locked
       - run: cargo +1.97.1 check --workspace --all-features --all-targets --locked
 
   codemode-runner-smoke:
@@ -767,6 +775,13 @@ jobs:
         run: >-
           cargo clippy --workspace --exclude labby --all-features
           --all-targets --locked -- -D warnings
+      - name: Warm Labby Clippy test dependency graph
+        # Selecting one integration test enables the same dev-dependency
+        # feature graph as the all-target pass while keeping that large normal
+        # library compile isolated from the remaining test targets.
+        run: >-
+          cargo clippy -p labby --all-features
+          --test architecture_boundaries --locked -- -D warnings
       - name: Lint all Labby targets
         run: >-
           cargo clippy -p labby --all-features --all-targets --locked
