@@ -51,11 +51,8 @@ anyhow = { workspace = true, optional = true }
 oauth2 = { version = "5.0", default-features = false, optional = true }
 
 [dependencies.rmcp-client]
-# Keep this direct optional alias synchronized with the workspace rmcp fork pin.
 package = "rmcp"
-version = "=3.1.4"
-git = "https://github.com/jmagar/rust-sdk"
-rev = "e3bc6c71f5ee6d708fa79f860280a96788ebdf27"
+version = "=3.1.0"
 default-features = false
 features = ["client", "auth", "transport-streamable-http-client-reqwest"]
 optional = true
