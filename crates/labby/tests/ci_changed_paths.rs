@@ -244,6 +244,19 @@ fn frontend_changes_enable_web_release_and_container_without_rust_tests() {
 }
 
 #[test]
+fn live_e2e_orchestrator_binds_release_binary_and_verifiable_evidence() {
+    let script = fs::read_to_string(repo_root().join("scripts/ci/labby-live-e2e.sh"))
+        .expect("read live E2E orchestrator");
+    assert!(script.contains("export LABBY_E2E_BINARY="));
+    assert!(script.contains("LABBY_RELEASE_BINARY"));
+    assert!(script.contains("live-identity-protected-restart"));
+    assert!(script.contains("live-http-observability"));
+    assert!(script.contains("live-http-ipv6"));
+    assert!(script.contains("residual-audit.json"));
+    assert!(!script.contains("\"signature\""));
+}
+
+#[test]
 fn explicit_policy_files_route_to_the_right_checks() {
     let actionlint = classify("pull_request", &[".github/actionlint.yaml"]);
     assert_eq!(actionlint["workflow"], "true");
@@ -397,6 +410,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     );
     for required in [
         "gateway-admin-browser",
+        "live-e2e-core",
         "codemode-runner-smoke",
         "mcp-regressions",
         "palette-web",

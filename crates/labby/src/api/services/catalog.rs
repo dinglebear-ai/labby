@@ -9,22 +9,51 @@
 //! { "services": [{ "name": "gateway-alpha", "description": "...", "actions": [...] }] }
 //! ```
 
-use std::sync::OnceLock;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, OnceLock, Weak};
+use std::time::{Duration, Instant};
 
 use axum::{
     Json,
-    extract::State,
+    body::Body,
+    extract::{Extension, State},
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
+use bytes::Bytes;
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
+
+use labby_primitives::product_credential::{BoundAccessGrant, ProductCredentialGrant};
 
 use crate::api::state::AppState;
 
 /// Startup nonce: nanoseconds since UNIX epoch, set once at first request.
 static STARTUP_ID: OnceLock<String> = OnceLock::new();
+const PROJECT_CATALOG_CACHE_CAPACITY: usize = 128;
+const PROJECT_CATALOG_CACHE_TTL: Duration = Duration::from_mins(1);
+
+#[derive(Clone)]
+struct CatalogProjection {
+    services: Vec<crate::catalog::ServiceCatalog>,
+    body: Bytes,
+    etag: String,
+}
+
+#[cfg(feature = "gateway")]
+struct CachedProjectCatalog {
+    manager: Weak<crate::dispatch::gateway::manager::GatewayManager>,
+    key: String,
+    expires_at: Instant,
+    projection: CatalogProjection,
+}
+
+#[cfg(feature = "gateway")]
+fn project_catalog_cache() -> &'static tokio::sync::Mutex<VecDeque<CachedProjectCatalog>> {
+    static CACHE: OnceLock<tokio::sync::Mutex<VecDeque<CachedProjectCatalog>>> = OnceLock::new();
+    CACHE.get_or_init(|| tokio::sync::Mutex::new(VecDeque::new()))
+}
 
 fn startup_id() -> &'static str {
     STARTUP_ID.get_or_init(|| {
@@ -70,11 +99,16 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
 /// `GET /v1/catalog` — serializes the enabled-service slice of the startup catalog.
 ///
 /// Includes `Cache-Control` and `ETag` headers so browsers and SWR clients can
-/// skip redundant fetches.  The ETag is `"<startup_id>-<service_count>"` — cheap
-/// to compute and changes on every server restart or service-set change.
+/// skip redundant fetches. The ETag binds the server startup and projected
+/// response content, so equal-sized Loadouts cannot share stale validators.
 /// Supports conditional `If-None-Match` requests; returns `304 Not Modified`
 /// when the ETag matches.
-async fn get_catalog(State(state): State<AppState>, req_headers: HeaderMap) -> impl IntoResponse {
+async fn get_catalog(
+    State(state): State<AppState>,
+    bound: Option<Extension<BoundAccessGrant>>,
+    source: Option<Extension<ProductCredentialGrant>>,
+    req_headers: HeaderMap,
+) -> impl IntoResponse {
     let start = Instant::now();
 
     tracing::info!(
@@ -84,16 +118,27 @@ async fn get_catalog(State(state): State<AppState>, req_headers: HeaderMap) -> i
         "dispatch start"
     );
 
-    // Filter to only services present in enabled_services (those whose
-    // required env vars were set at startup).
-    let services: Vec<&crate::catalog::ServiceCatalog> = state
-        .catalog
-        .services
-        .iter()
-        .filter(|svc| state.enabled_services.contains(&svc.name))
-        .collect();
-
-    let etag = format!("\"{}-{}\"", startup_id(), services.len());
+    let projection = match bound {
+        Some(Extension(bound)) => {
+            let Some(Extension(source)) = source else {
+                return catalog_error(StatusCode::UNAUTHORIZED, "catalog authorization denied");
+            };
+            match project_catalog(&state, &source, &bound).await {
+                Ok(projection) => projection,
+                Err(ProjectCatalogError::Denied) => {
+                    return catalog_error(StatusCode::UNAUTHORIZED, "catalog authorization denied");
+                }
+                Err(ProjectCatalogError::Unavailable) => {
+                    return catalog_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "project catalog is unavailable",
+                    );
+                }
+            }
+        }
+        None => catalog_projection(enabled_catalog(&state)),
+    };
+    let etag = projection.etag.clone();
 
     // Build shared response headers (used for both 200 and 304).
     let mut resp_headers = HeaderMap::new();
@@ -106,6 +151,12 @@ async fn get_catalog(State(state): State<AppState>, req_headers: HeaderMap) -> i
     resp_headers.insert(
         header::ETAG,
         etag.parse().expect("etag is always a valid header value"),
+    );
+    resp_headers.insert(
+        header::VARY,
+        "authorization, cookie"
+            .parse()
+            .expect("static Vary value is always valid"),
     );
 
     // Conditional GET: return 304 if the client already has this version.
@@ -122,11 +173,266 @@ async fn get_catalog(State(state): State<AppState>, req_headers: HeaderMap) -> i
         service = "catalog",
         action = "list",
         elapsed_ms = start.elapsed().as_millis(),
-        count = services.len(),
+        count = projection.services.len(),
         "dispatch ok"
     );
 
-    (resp_headers, Json(json!({ "services": services }))).into_response()
+    resp_headers.insert(
+        header::CONTENT_TYPE,
+        "application/json".parse().expect("static content type"),
+    );
+    (resp_headers, Body::from(projection.body)).into_response()
+}
+
+fn catalog_projection(services: Vec<crate::catalog::ServiceCatalog>) -> CatalogProjection {
+    let body = serde_json::to_vec(&json!({ "services": services }))
+        .expect("catalog types always serialize");
+    let digest = hex::encode(Sha256::digest(&body));
+    CatalogProjection {
+        services,
+        body: body.into(),
+        etag: format!("\"{}-{}\"", startup_id(), &digest[..16]),
+    }
+}
+
+fn enabled_catalog(state: &AppState) -> Vec<crate::catalog::ServiceCatalog> {
+    state
+        .catalog
+        .services
+        .iter()
+        .filter(|service| state.enabled_services.contains(&service.name))
+        .cloned()
+        .collect()
+}
+
+fn catalog_error(status: StatusCode, message: &'static str) -> axum::response::Response {
+    let kind = match status {
+        StatusCode::SERVICE_UNAVAILABLE => "service_unavailable",
+        StatusCode::INTERNAL_SERVER_ERROR => "internal",
+        _ => "auth_failed",
+    };
+    (status, Json(json!({ "kind": kind, "message": message }))).into_response()
+}
+
+#[derive(Clone, Copy)]
+enum ProjectCatalogError {
+    Denied,
+    Unavailable,
+}
+
+#[cfg(feature = "gateway")]
+async fn project_catalog(
+    state: &AppState,
+    source: &ProductCredentialGrant,
+    bound: &BoundAccessGrant,
+) -> Result<CatalogProjection, ProjectCatalogError> {
+    use labby_auth::{Authenticator, ProductAccessGrantResolver as _, VerifiedIdentity};
+
+    use crate::access::{Permission, ProjectRuntimeMcpCatalogError};
+
+    let Some(adapter) = state.access_credential_adapter.as_ref() else {
+        return Err(ProjectCatalogError::Unavailable);
+    };
+    let Some(manager) = state.gateway_manager.as_ref() else {
+        return Err(ProjectCatalogError::Unavailable);
+    };
+    let current = adapter.resolve(source).await.map_err(|error| match error {
+        labby_primitives::product_credential::ProductCredentialVerificationError::Denied => {
+            ProjectCatalogError::Denied
+        }
+        labby_primitives::product_credential::ProductCredentialVerificationError::Unavailable => {
+            ProjectCatalogError::Unavailable
+        }
+    })?;
+    if &current != bound {
+        return Err(ProjectCatalogError::Denied);
+    }
+    let cache_key = project_catalog_cache_key(&current);
+    let cached = {
+        let mut cache = project_catalog_cache().lock().await;
+        let now = Instant::now();
+        cache.retain(|entry| entry.expires_at > now && entry.manager.upgrade().is_some());
+        let position = cache.iter().position(|entry| {
+            entry.key == cache_key
+                && entry
+                    .manager
+                    .upgrade()
+                    .is_some_and(|cached| Arc::ptr_eq(&cached, manager))
+        });
+        position.and_then(|position| cache.remove(position))
+    };
+    if let Some(entry) = cached {
+        let after = adapter
+            .resolve(source)
+            .await
+            .map_err(map_catalog_resolution_error)?;
+        if after != current {
+            return Err(ProjectCatalogError::Denied);
+        }
+        let projection = entry.projection.clone();
+        project_catalog_cache().lock().await.push_back(entry);
+        return Ok(projection);
+    }
+    let identity = VerifiedIdentity::local_credential_with_issuer(
+        Authenticator::ProductCredential,
+        current.issuer.clone(),
+        current.credential_id.clone(),
+    )
+    .map_err(|_| ProjectCatalogError::Denied)?;
+    let context = crate::access::project_runtime_mcp_catalog_context(
+        &state.access_runtime,
+        manager,
+        identity,
+        current.project_id.clone(),
+        Permission::AssetDiscover,
+    )
+    .await
+    .map_err(|error| match error {
+        ProjectRuntimeMcpCatalogError::ProjectAccessUnavailable => ProjectCatalogError::Denied,
+        ProjectRuntimeMcpCatalogError::RuntimeUnavailable
+        | ProjectRuntimeMcpCatalogError::AccessUnavailable
+        | ProjectRuntimeMcpCatalogError::CatalogUnavailable
+        | ProjectRuntimeMcpCatalogError::SnapshotUnstable => ProjectCatalogError::Unavailable,
+    })?;
+    let access = context.access();
+    let same_principal = access.principal_id == current.principal_id;
+    let same_organization = access.organization_id == current.organization_id;
+    let same_project = access.project_id == current.project_id;
+    let same_loadout = access.loadout_name == current.loadout_id;
+    if !(same_principal && same_organization && same_project && same_loadout) {
+        return Err(ProjectCatalogError::Denied);
+    }
+    let after = adapter
+        .resolve(source)
+        .await
+        .map_err(map_catalog_resolution_error)?;
+    if after != current {
+        return Err(ProjectCatalogError::Denied);
+    }
+    let projection = catalog_projection(project_catalog_projection(
+        state,
+        &current.scopes,
+        context
+            .catalog()
+            .services()
+            .services()
+            .iter()
+            .map(|service| {
+                (
+                    service.name(),
+                    service
+                        .actions()
+                        .iter()
+                        .map(|action| action.name())
+                        .collect::<HashSet<_>>(),
+                )
+            }),
+    ));
+    let mut cache = project_catalog_cache().lock().await;
+    if cache.len() == PROJECT_CATALOG_CACHE_CAPACITY {
+        cache.pop_front();
+    }
+    cache.push_back(CachedProjectCatalog {
+        manager: Arc::downgrade(manager),
+        key: cache_key,
+        expires_at: Instant::now() + PROJECT_CATALOG_CACHE_TTL,
+        projection: projection.clone(),
+    });
+    Ok(projection)
+}
+
+#[cfg(feature = "gateway")]
+fn map_catalog_resolution_error(
+    error: labby_primitives::product_credential::ProductCredentialVerificationError,
+) -> ProjectCatalogError {
+    match error {
+        labby_primitives::product_credential::ProductCredentialVerificationError::Denied => {
+            ProjectCatalogError::Denied
+        }
+        labby_primitives::product_credential::ProductCredentialVerificationError::Unavailable => {
+            ProjectCatalogError::Unavailable
+        }
+    }
+}
+
+#[cfg(feature = "gateway")]
+fn project_catalog_cache_key(bound: &BoundAccessGrant) -> String {
+    let mut scopes = bound.scopes.clone();
+    scopes.sort_unstable();
+    let material = json!({
+        "installation": bound.installation_id,
+        "issuer": bound.issuer,
+        "subject": bound.subject,
+        "principal": bound.principal_id,
+        "organization": bound.organization_id,
+        "project": bound.project_id,
+        "loadout": bound.loadout_id,
+        "loadout_generation": bound.loadout_generation,
+        "assignment_generation": bound.assignment_generation,
+        "catalog_generation": bound.catalog_generation,
+        "route": bound.route_id,
+        "route_generation": bound.route_generation,
+        "membership_epoch": bound.membership_epoch,
+        "organization_policy_epoch": bound.organization_policy_epoch,
+        "project_policy_epoch": bound.project_policy_epoch,
+        "credential": bound.credential_id,
+        "credential_generation": bound.credential_generation,
+        "scopes": scopes,
+        "resource": bound.resource,
+        "audience": bound.audience,
+        "expires_at": bound.expires_at,
+        "requires_admin": bound.requires_admin,
+        "destructive": bound.destructive,
+    });
+    hex::encode(Sha256::digest(
+        serde_json::to_vec(&material).expect("cache key material serializes"),
+    ))
+}
+
+#[cfg(not(feature = "gateway"))]
+async fn project_catalog(
+    _state: &AppState,
+    _source: &ProductCredentialGrant,
+    _bound: &BoundAccessGrant,
+) -> Result<CatalogProjection, ProjectCatalogError> {
+    Err(ProjectCatalogError::Unavailable)
+}
+
+fn project_catalog_projection<'a>(
+    state: &AppState,
+    scopes: &[String],
+    published: impl IntoIterator<Item = (&'a str, HashSet<&'a str>)>,
+) -> Vec<crate::catalog::ServiceCatalog> {
+    let published = published.into_iter().collect::<HashMap<_, _>>();
+    let can_read = scopes
+        .iter()
+        .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin"));
+    let is_admin = scopes.iter().any(|scope| scope == "lab:admin");
+    state
+        .catalog
+        .services
+        .iter()
+        .filter_map(|service| {
+            let actions = published.get(service.name.as_str())?;
+            if !state.enabled_services.contains(&service.name) {
+                return None;
+            }
+            let mut service = service.clone();
+            service.actions.retain(|action| {
+                actions.contains(action.name.as_str())
+                    && can_read
+                    && (!action.requires_admin || is_admin)
+                    && action.required_scopes.iter().all(|required| {
+                        scopes.iter().any(|scope| scope == required)
+                            || (required == "lab:read"
+                                && scopes
+                                    .iter()
+                                    .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")))
+                    })
+            });
+            Some(service)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -268,6 +574,53 @@ mod tests {
         assert_eq!(param["required"], false);
     }
 
+    #[test]
+    fn project_projection_intersects_enabled_published_services_and_actions() {
+        let mut gateway = make_service("gateway");
+        gateway.actions.push(ActionEntry {
+            name: "admin.delete".to_string(),
+            description: "admin".to_string(),
+            destructive: true,
+            requires_admin: true,
+            required_scopes: vec!["lab:admin".to_string()],
+            params: vec![],
+            returns: "()".to_string(),
+        });
+        let state = test_state_with_catalog(
+            vec![gateway, make_service("setup"), make_service("disabled")],
+            HashSet::from(["gateway".to_string(), "setup".to_string()]),
+        );
+
+        let published = [
+            ("gateway", HashSet::from(["health.list", "admin.delete"])),
+            ("disabled", HashSet::from(["health.list"])),
+        ];
+        let projected =
+            super::project_catalog_projection(&state, &["lab:read".to_string()], published.clone());
+
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].name, "gateway");
+        assert_eq!(projected[0].actions.len(), 1);
+        assert_eq!(projected[0].actions[0].name, "health.list");
+        assert!(!projected[0].actions[0].requires_admin);
+
+        let execute =
+            super::project_catalog_projection(&state, &["lab".to_string()], published.clone());
+        assert_eq!(execute[0].actions.len(), 1);
+        assert_eq!(execute[0].actions[0].name, "health.list");
+
+        let admin =
+            super::project_catalog_projection(&state, &["lab:admin".to_string()], published);
+        assert_eq!(
+            admin[0]
+                .actions
+                .iter()
+                .map(|action| action.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["health.list", "admin.delete"]
+        );
+    }
+
     // ── Issue 5: auth gate ────────────────────────────────────────────────────
     //
     // `GET /v1/catalog` sits behind the bearer-token middleware added by
@@ -361,6 +714,10 @@ mod tests {
             cc.contains("private"),
             "Cache-Control should contain 'private'"
         );
+        assert_eq!(
+            response.headers().get(header::VARY).unwrap(),
+            "authorization, cookie"
+        );
         assert!(
             cc.contains("max-age=60"),
             "Cache-Control should contain 'max-age=60'"
@@ -390,14 +747,18 @@ mod tests {
             .expect("ETag header must be present")
             .to_str()
             .unwrap();
-        // ETag format: "<startup_id>-<count>" (quoted, count=1 for one enabled service)
+        // ETag binds the server startup and projected response content without
+        // embedding caller identity material.
         assert!(
             etag.starts_with('"'),
             "ETag must be a quoted string, got: {etag}"
         );
+        let (_, fingerprint) = etag.trim_matches('"').rsplit_once('-').unwrap();
+        assert_eq!(fingerprint.len(), 16);
         assert!(
-            etag.ends_with("-1\""),
-            "ETag should end with the service count, got: {etag}"
+            fingerprint
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
         );
     }
 

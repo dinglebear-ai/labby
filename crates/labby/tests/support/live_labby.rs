@@ -16,6 +16,12 @@ const DEFAULT_DEADLINE: Duration = Duration::from_secs(20);
 const LOG_TAIL_BYTES: usize = 32 * 1024;
 const DROP_DEADLINE: Duration = Duration::from_secs(3);
 
+fn labby_binary() -> PathBuf {
+    std::env::var_os("LABBY_E2E_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_labby")))
+}
+
 struct RevocationGuard {
     revoke: Box<dyn FnMut() -> Result<(), String> + Send>,
     is_absent: Box<dyn Fn() -> Result<bool, String> + Send>,
@@ -82,6 +88,7 @@ pub(crate) struct LiveLabbyBuilder {
     extra_env: BTreeMap<OsString, OsString>,
     args: Vec<OsString>,
     port: Option<u16>,
+    bind_ip: std::net::IpAddr,
     ready_path: String,
     config: Option<String>,
     fail_evidence_writes: bool,
@@ -95,6 +102,7 @@ impl Default for LiveLabbyBuilder {
             extra_env: BTreeMap::new(),
             args: Vec::new(),
             port: None,
+            bind_ip: std::net::Ipv4Addr::LOCALHOST.into(),
             ready_path: "/ready".to_string(),
             config: None,
             fail_evidence_writes: false,
@@ -125,6 +133,11 @@ impl LiveLabbyBuilder {
 
     pub(crate) fn port(mut self, port: u16) -> Self {
         self.port = Some(port);
+        self
+    }
+
+    pub(crate) fn bind_ip(mut self, bind_ip: std::net::IpAddr) -> Self {
+        self.bind_ip = bind_ip;
         self
     }
 
@@ -202,10 +215,10 @@ impl LiveLabbyBuilder {
             }
 
             let address = if let Some(port) = self.port {
-                SocketAddr::from(([127, 0, 0, 1], port))
+                SocketAddr::new(self.bind_ip, port)
             } else {
-                let listener =
-                    TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+                let listener = TcpListener::bind(SocketAddr::new(self.bind_ip, 0))
+                    .map_err(|error| error.to_string())?;
                 let address = listener.local_addr().map_err(|error| error.to_string())?;
                 drop(listener);
                 address
@@ -246,13 +259,13 @@ impl LiveLabbyBuilder {
                 (key.contains("CANARY") || key.contains("SECRET") || key.contains("TOKEN"))
                     .then(|| value.to_string_lossy().into_owned())
             }));
-            let mut command = TokioCommand::new(env!("CARGO_BIN_EXE_labby"));
+            let mut command = TokioCommand::new(labby_binary());
             command
                 .env_clear()
                 .args([
                     "serve",
                     "--host",
-                    "127.0.0.1",
+                    &address.ip().to_string(),
                     "--port",
                     &address.port().to_string(),
                 ])
@@ -395,13 +408,13 @@ impl LiveLabbyGuard {
             .open(&self.stderr_path)
             .map_err(|error| error.to_string())?;
         let recipe = &self.restart;
-        let mut command = TokioCommand::new(env!("CARGO_BIN_EXE_labby"));
+        let mut command = TokioCommand::new(labby_binary());
         command
             .env_clear()
             .args([
                 "serve",
                 "--host",
-                "127.0.0.1",
+                &recipe.address.ip().to_string(),
                 "--port",
                 &recipe.address.port().to_string(),
             ])
@@ -807,7 +820,7 @@ impl LiveLabbyGuard {
         format!(
             "run={} command={} version={} binary_sha256={} address={} primary={} stdout_tail={} stderr_tail={} health_ready_history={:?} process_inventory={:?} process_pid={:?} process_group={:?} generation={}",
             self.identity.run_id,
-            env!("CARGO_BIN_EXE_labby"),
+            labby_binary().display(),
             self.identity.binary_version,
             self.identity.binary_sha256,
             self.descriptor.base_url,
@@ -911,7 +924,7 @@ impl Drop for LiveLabbyGuard {
 }
 
 pub(crate) fn isolated_command(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
+    let mut command = Command::new(labby_binary());
     command
         .env_clear()
         .env("HOME", home)
@@ -1001,9 +1014,13 @@ fn build_identity() -> Result<RunIdentity, String> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| u64::from_le_bytes(run_id.as_bytes()[..8].try_into().unwrap()));
-    let binary = std::fs::read(env!("CARGO_BIN_EXE_labby")).map_err(|error| error.to_string())?;
+    let binary_path = labby_binary();
+    if !binary_path.is_absolute() {
+        return Err("LABBY_E2E_BINARY must be absolute".into());
+    }
+    let binary = std::fs::read(&binary_path).map_err(|error| error.to_string())?;
     let binary_sha256 = hex::encode(Sha256::digest(binary));
-    let binary_version = Command::new(env!("CARGO_BIN_EXE_labby"))
+    let binary_version = Command::new(&binary_path)
         .arg("--version")
         .output()
         .ok()
@@ -1598,10 +1615,16 @@ mod tests {
             .stop_process(Instant::now() + Duration::from_secs(5))
             .await
             .unwrap();
+        let ready = guard.root.join("ignore-term.ready");
         let mut command = TokioCommand::new("/bin/sh");
         command
             .env_clear()
-            .args(["-c", "trap '' TERM; while :; do sleep 1; done"])
+            .args([
+                "-c",
+                "trap '' TERM; : > \"$1\"; while :; do sleep 1; done",
+                "ignore-term-fixture",
+            ])
+            .arg(&ready)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1613,6 +1636,15 @@ mod tests {
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         guard.child = Some(child);
+        // The full nextest workspace runs this shared support proof from several
+        // integration binaries concurrently. Reserve enough bounded time for
+        // the shell to be scheduled and install its signal trap on a loaded CI
+        // host before exercising forced termination.
+        let readiness_deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < readiness_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready.exists(), "ignore-TERM fixture did not become ready");
         let started = Instant::now();
         let cleanup = guard.finish_with_deadline(Duration::from_millis(250)).await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);

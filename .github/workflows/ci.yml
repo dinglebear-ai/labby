@@ -361,6 +361,7 @@ jobs:
               libxfixes3 \
               libxkbcommon0 \
               libxrandr2
+
           else
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -424,6 +425,35 @@ jobs:
           });
           NODE
       - run: pnpm test:browser
+
+  live-e2e-core:
+    name: Live E2E core
+    runs-on: ci-pool-rust
+    timeout-minutes: 25
+    needs: [changes, frontend-assets]
+    if: ${{ needs.changes.outputs.rust_test == 'true' || needs.changes.outputs.web == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Download immutable Gateway Admin assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: gateway-admin-out
+          path: apps/gateway-admin/out
+      - name: Run bounded hermetic product E2E shards
+        env:
+          CARGO_BUILD_JOBS: "2"
+          LABBY_E2E_SEED: "1"
+        run: scripts/ci/labby-live-e2e.sh pr "$LABBY_E2E_SEED"
+      - name: Upload concise live E2E evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: labby-live-e2e-${{ github.run_id }}
+          path: /tmp/labby-live-e2e.*/artifacts/
+          if-no-files-found: error
+          retention-days: 3
 
   fmt:
     name: Format
@@ -1336,6 +1366,7 @@ jobs:
       - actionlint
       - frontend-assets
       - gateway-admin-browser
+      - live-e2e-core
       - fmt
       - deny
       - msrv
@@ -1402,6 +1433,7 @@ jobs:
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
           require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
+          require_success_or_skipped live-e2e-core "${{ needs.live-e2e-core.result }}"
           require_success_or_skipped fmt "${{ needs.fmt.result }}"
           require_success_or_skipped deny "${{ needs.deny.result }}"
           require_success_or_skipped msrv "${{ needs.msrv.result }}"

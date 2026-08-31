@@ -1682,7 +1682,46 @@ impl LabMcpServer {
             .and_then(|arguments| arguments.get("action"))
             .and_then(Value::as_str)
             .unwrap_or("call_tool");
-        match crate::mcp::elicitation::destructive_confirmation(request, service, action) {
+        let auth = auth_context_from_extensions(&context.extensions);
+        let catalog = self
+            .registry
+            .services()
+            .iter()
+            .flat_map(|entry| {
+                entry.actions.iter().map(move |candidate| {
+                    format!(
+                        "{}:{}:{}:{}",
+                        entry.name, candidate.name, candidate.requires_admin, candidate.destructive
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let material = serde_json::json!({
+            "service": service, "action": action, "arguments": request.arguments,
+            "request_meta": request.meta,
+            "issuer": auth.map(|value| value.issuer.as_str()),
+            "subject": auth.map(|value| value.sub.as_str()),
+            "actor": auth.and_then(|value| value.actor_key.as_deref()),
+            "scopes": auth.map(|value| value.scopes.as_slice()),
+            "transport": self.transport_label,
+            "mcp_session": self.relay_session_id,
+            "route": format!("{:?}", self.route_scope), "catalog": catalog,
+        });
+        let binding = labby_runtime::artifacts::canonical_json::digest(&material)
+            .unwrap_or_else(|_| "invalid-confirmation-binding".to_string());
+        let owner_material = serde_json::json!({
+            "issuer": auth.map(|value| value.issuer.as_str()),
+            "subject": auth.map(|value| value.sub.as_str()),
+            "actor": auth.and_then(|value| value.actor_key.as_deref()),
+            "transport": self.transport_label,
+            "mcp_session": self.relay_session_id,
+            "route": format!("{:?}", self.route_scope),
+        });
+        let owner = labby_runtime::artifacts::canonical_json::digest(&owner_material)
+            .unwrap_or_else(|_| "invalid-confirmation-owner".to_string());
+        match crate::mcp::elicitation::destructive_confirmation(
+            request, service, action, &binding, &owner,
+        ) {
             crate::mcp::elicitation::DestructiveConfirmation::Proceed => None,
             crate::mcp::elicitation::DestructiveConfirmation::InputRequired(result) => {
                 Some(CallToolResponse::InputRequired(result))

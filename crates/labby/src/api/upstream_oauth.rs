@@ -96,7 +96,8 @@ pub(crate) fn well_known_descriptors() -> Vec<crate::api::route_registry::RouteD
             "upstream_oauth",
             RouteAuth::Public,
         )
-        .feature("gateway"),
+        .feature("gateway")
+        .when("returns metadata only when upstream OAuth is configured"),
     ]
 }
 

@@ -17,6 +17,7 @@
     "test:unit": "node scripts/run-unit-tests.mjs",
     "test:install-script": "node --test scripts/*.test.mjs",
     "test:browser": "node --test --experimental-strip-types lib/browser/**/*.test.ts",
+    "test:browser:live": "node --test --test-concurrency=1 --experimental-strip-types lib/browser/live-backend.browser.test.ts",
     "test:bundle": "node scripts/check-route-bundle-budgets.mjs"
   },
   "dependencies": {

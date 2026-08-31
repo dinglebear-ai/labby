@@ -54,6 +54,9 @@ rustdoc-audit:
 test-integration:
     cargo nextest run --workspace --all-features --run-ignored ignored-only
 
+live-e2e tier="pr" seed="1":
+    scripts/ci/labby-live-e2e.sh "{{tier}}" "{{seed}}"
+
 # Lint
 lint: skill-drift rust-toolchain-sync module-reachability
     # --all-targets so tests/examples/benches are linted too. Without it the
@@ -352,14 +355,6 @@ dev: dev-container
 
 # Backward-compatible alias for explicit Docker debug smoke.
 dev-debug: dev-container-debug
-
-# Verify Docker ACP provider config, provider health, and a minimal Codex ACP prompt.
-acp-smoke *ARGS:
-    scripts/acp-smoke-check {{ARGS}}
-
-# Verify a public OAuth-protected MCP route through the deployed reverse proxy.
-protected-mcp-smoke *ARGS:
-    scripts/protected-mcp-smoke {{ARGS}}
 
 # Rebuild static Labby web assets served by labby serve
 web-build:

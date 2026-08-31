@@ -1,0 +1,1 @@
+{"service":"lab_admin","api_path":null,"cli_probe":["--help"],"can_mutate":false,"success_action":"onboarding.audit","invalid_action":"schema","policy_action":null,"workflow":[],"parameters":{"action":"help","services":["doctor"]},"action_params":{}}

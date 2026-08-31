@@ -70,7 +70,7 @@
     "handler_group": "upstream_oauth",
     "handler_identity": "oauth_client_metadata",
     "feature": "gateway",
-    "runtime_condition": null,
+    "runtime_condition": "returns metadata only when upstream OAuth is configured",
     "auth_required": false,
     "bearer_only": false,
     "bootstrap_proof": false,

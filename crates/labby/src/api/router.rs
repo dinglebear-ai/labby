@@ -35,6 +35,10 @@ use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::upstream::auth::configured_bearer_token;
 use labby_auth::AuthLayer;
 use labby_auth::error::AuthError as LabAuthError;
+#[cfg(feature = "gateway")]
+use labby_primitives::product_credential::{
+    BoundAccessGrant, ProductCredentialSelection, select_product_credential,
+};
 
 use crate::app_manifest::{
     APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
@@ -385,13 +389,16 @@ fn route_resource_metadata_url(route: &crate::config::ProtectedMcpRouteConfig) -
 }
 
 struct AuthenticatedProtectedRoute {
-    claims: labby_auth::jwt::AccessClaims,
+    identity: Option<labby_auth::VerifiedIdentity>,
+    transport: Option<crate::mcp::bound_access::TransportCredentialBinding>,
+    product_bound: Option<BoundAccessGrant>,
 }
 
 async fn authenticate_protected_route_request(
     request: &mut Request<Body>,
     route: &crate::config::ProtectedMcpRouteConfig,
     auth_state: Option<&labby_auth::state::AuthState>,
+    product_adapter: Option<&crate::access::AccessCredentialAdapter>,
     actor_key_deriver: Option<&crate::observability::activity::ActorKeyDeriver>,
 ) -> Result<AuthenticatedProtectedRoute, axum::response::Response> {
     let resource = route.public_resource();
@@ -414,6 +421,103 @@ async fn authenticate_protected_route_request(
             &route.scopes,
         ));
     };
+    match select_product_credential(&token) {
+        ProductCredentialSelection::Malformed(_) => {
+            return Err(auth_error_response_with_challenge(
+                "invalid bearer token",
+                &route_resource_metadata_url(route),
+                &route.scopes,
+            ));
+        }
+        ProductCredentialSelection::Parsed(credential) => {
+            let Some(adapter) = product_adapter else {
+                return Err(auth_error_response_with_challenge(
+                    "invalid bearer token",
+                    &route_resource_metadata_url(route),
+                    &route.scopes,
+                ));
+            };
+            let effective_target = route.effective_target();
+            let (project_id, loadout_id) = match &effective_target {
+                ProtectedMcpRouteEffectiveTarget::GatewaySubset(target) => {
+                    (target.project_id.as_deref(), target.loadout.as_deref())
+                }
+                _ => {
+                    return Err(auth_error_response_with_challenge(
+                        "invalid bearer token",
+                        &route_resource_metadata_url(route),
+                        &route.scopes,
+                    ));
+                }
+            };
+            let verified = adapter
+                .bind_protected_route(
+                    &credential,
+                    crate::access::ProtectedCredentialRequirements {
+                        route_id: &route.name,
+                        resource: &resource,
+                        project_id,
+                        loadout_id,
+                        scopes: &route.scopes,
+                    },
+                )
+                .await
+                .map_err(|_| {
+                    auth_error_response_with_challenge(
+                        "invalid bearer token",
+                        &route_resource_metadata_url(route),
+                        &route.scopes,
+                    )
+                })?;
+            let source = verified.source;
+            let bound = verified.bound;
+            let identity = labby_auth::VerifiedIdentity::local_credential_with_issuer(
+                labby_auth::Authenticator::ProductCredential,
+                bound.issuer.clone(),
+                bound.credential_id.clone(),
+            )
+            .map_err(|_| {
+                auth_error_response_with_challenge(
+                    "invalid authenticated identity",
+                    &route_resource_metadata_url(route),
+                    &route.scopes,
+                )
+            })?;
+            let auth = labby_auth::AuthContext {
+                actor_key: derive_actor_key(actor_key_deriver, &bound.principal_id),
+                sub: bound.principal_id.clone(),
+                scopes: bound.scopes.clone(),
+                issuer: bound.issuer.clone(),
+                via_session: false,
+                csrf_token: None,
+                email: None,
+            };
+            let transport = crate::mcp::bound_access::validated_product_transport_binding(
+                &bound.issuer,
+                &bound.credential_id,
+                bound.credential_generation,
+                bound.expires_at,
+                std::time::SystemTime::now(),
+            )
+            .map_err(|_| {
+                auth_error_response_with_challenge(
+                    "invalid bearer token",
+                    &route_resource_metadata_url(route),
+                    &route.scopes,
+                )
+            })?;
+            request.extensions_mut().insert(identity.clone());
+            request.extensions_mut().insert(source);
+            request.extensions_mut().insert(bound.clone());
+            request.extensions_mut().insert(auth);
+            return Ok(AuthenticatedProtectedRoute {
+                identity: Some(identity),
+                transport: Some(transport),
+                product_bound: Some(bound),
+            });
+        }
+        ProductCredentialSelection::NotProductCredential => {}
+    }
     let Some(auth_state) = auth_state else {
         tracing::error!(
             route = %route.name,
@@ -516,7 +620,43 @@ async fn authenticate_protected_route_request(
         granted_scopes = ?granted,
         "protected MCP route bearer and scope validation accepted"
     );
-    Ok(AuthenticatedProtectedRoute { claims })
+    let requires_project_binding = matches!(
+        route.effective_target(),
+        ProtectedMcpRouteEffectiveTarget::GatewaySubset(target)
+            if target.project_id.is_some()
+    );
+    let identity = requires_project_binding
+        .then(|| labby_auth::verified_identity_from_access_claims(&claims, &auth_state.config))
+        .transpose()
+        .map_err(|_| {
+            auth_error_response_with_challenge(
+                "invalid authenticated identity",
+                &route_resource_metadata_url(route),
+                &route.scopes,
+            )
+        })?;
+    let transport = requires_project_binding
+        .then(|| {
+            crate::mcp::bound_access::validate_transport_credential_binding(
+                &claims.iss,
+                &claims.jti,
+                claims.exp,
+                std::time::SystemTime::now(),
+            )
+        })
+        .transpose()
+        .map_err(|_| {
+            auth_error_response_with_challenge(
+                "invalid bearer token",
+                &route_resource_metadata_url(route),
+                &route.scopes,
+            )
+        })?;
+    Ok(AuthenticatedProtectedRoute {
+        identity,
+        transport,
+        product_bound: None,
+    })
 }
 
 #[cfg(feature = "gateway")]
@@ -1513,6 +1653,7 @@ async fn protected_mcp_route_entry(
         &mut request,
         &route,
         state.oauth_state.as_deref(),
+        state.access_credential_adapter.as_deref(),
         state.actor_key_deriver.as_deref(),
     )
     .await
@@ -1522,67 +1663,21 @@ async fn protected_mcp_route_entry(
     };
     if let ProtectedMcpRouteEffectiveTarget::GatewaySubset(target) = route.effective_target() {
         if let Some(project_id) = target.project_id.as_deref() {
-            // `authenticate_protected_route_request` already rejects a route with no
-            // OAuth state, so this is unreachable — but the invariant lives in a
-            // different function, and a panic in a request handler is a poor way to
-            // discover it drifted.
-            let Some(oauth) = state.oauth_state.as_ref() else {
-                tracing::error!(
-                    surface = "api",
-                    route = %route.name,
-                    resource = %route.public_resource(),
-                    "protected MCP route authenticated without OAuth state"
-                );
+            let identity = authenticated
+                .identity
+                .clone()
+                .expect("project-bound route authentication validates identity");
+            if authenticated
+                .product_bound
+                .as_ref()
+                .is_some_and(|bound| bound.project_id != project_id)
+            {
                 return auth_error_response_with_challenge(
-                    "invalid authenticated identity",
+                    "invalid bearer token",
                     &route_resource_metadata_url(&route),
                     &route.scopes,
                 );
-            };
-            let identity = match labby_auth::verified_identity_from_access_claims(
-                &authenticated.claims,
-                &oauth.config,
-            ) {
-                Ok(identity) => identity,
-                Err(error) => {
-                    tracing::warn!(
-                        surface = "api",
-                        route = %route.name,
-                        resource = %route.public_resource(),
-                        project_id,
-                        error = %error,
-                        "protected MCP route rejected: identity not derivable from access claims"
-                    );
-                    return auth_error_response_with_challenge(
-                        "invalid authenticated identity",
-                        &route_resource_metadata_url(&route),
-                        &route.scopes,
-                    );
-                }
-            };
-            let credential = match crate::mcp::bound_access::validate_transport_credential_binding(
-                &authenticated.claims.iss,
-                &authenticated.claims.jti,
-                authenticated.claims.exp,
-                std::time::SystemTime::now(),
-            ) {
-                Ok(credential) => credential,
-                Err(error) => {
-                    tracing::warn!(
-                        surface = "api",
-                        route = %route.name,
-                        resource = %route.public_resource(),
-                        project_id,
-                        error = %error,
-                        "protected MCP route rejected: transport credential binding invalid"
-                    );
-                    return auth_error_response_with_challenge(
-                        "invalid bearer token",
-                        &route_resource_metadata_url(&route),
-                        &route.scopes,
-                    );
-                }
-            };
+            }
             request.extensions_mut().insert(identity.clone());
             let binding = match state.gateway_manager.as_ref() {
                 Some(manager) => match crate::mcp::bound_access::bind_access_context(
@@ -1597,7 +1692,9 @@ async fn protected_mcp_route_entry(
                 {
                     Ok(core) => match crate::mcp::bound_access::TransportBoundAccessContext::new(
                         core,
-                        credential,
+                        authenticated
+                            .transport
+                            .expect("project-bound route authentication validates transport"),
                         std::time::SystemTime::now(),
                     ) {
                         Ok(binding) => Ok(binding),
@@ -1711,9 +1808,31 @@ async fn protected_mcp_intercept(
             path = %request.uri().path(),
             "protected MCP route matched"
         );
-        return Ok(protected_mcp_route_entry(state, request, route).await);
+        let mut response = protected_mcp_route_entry(state, request, route).await;
+        response
+            .extensions_mut()
+            .insert(crate::api::route_observability::RuntimeMatchedRoute(
+                "/{runtime_protected_mcp_route}",
+            ));
+        return Ok(response);
     }
     Ok(next.run(request).await)
+}
+
+async fn reject_ambiguous_request_target(
+    request: Request<Body>,
+    next: Next,
+) -> axum::response::Response {
+    let path = request.uri().path();
+    let encoded = path.to_ascii_lowercase();
+    let has_dot_segment = path.split('/').any(|segment| matches!(segment, "." | ".."));
+    let has_encoded_separator =
+        encoded.contains("%2e") || encoded.contains("%2f") || encoded.contains("%5c");
+
+    if has_dot_segment || has_encoded_separator {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    next.run(request).await
 }
 
 fn is_public_relay_reserved_path(path: &str) -> bool {
@@ -1892,10 +2011,12 @@ fn build_v1_router(
             services::access_bootstrap::routes(state.clone()),
         );
     }
-    v1 = v1.nest(
-        "/access/credentials",
-        services::access_credentials::routes(state.clone()),
-    );
+    v1 = v1
+        .merge(services::access_credentials::issue_routes(state.clone()))
+        .nest(
+            "/access/credentials",
+            services::access_credentials::routes(state.clone()),
+        );
 
     #[cfg(feature = "fs")]
     if state
@@ -2368,6 +2489,10 @@ pub(crate) fn build_router_with_external_auth(
     // proxying is mounted as an inner middleware below so intercepted responses
     // still pass through the shared request-id/trace/timeout/compression/CORS
     // stack.
+    let route_observability = crate::api::route_observability::RouteObservability::new(
+        &route_group.descriptors,
+        declared_descriptors,
+    );
     let mut router = route_group.router;
     if state.web_assets_enabled() {
         router = router.fallback(crate::api::web::serve_web_request);
@@ -2382,6 +2507,12 @@ pub(crate) fn build_router_with_external_auth(
         protected_proxy_state,
         protected_mcp_intercept,
     ));
+    // Route evidence is outermost of the protected MCP interceptor so auth
+    // denials are correlated just like ordinary Axum route outcomes.
+    let router = router.layer(axum::middleware::from_fn_with_state(
+        route_observability,
+        crate::api::route_observability::record_matched_route,
+    ));
     router
         .layer(build_cors_layer(config_cors_origins))
         .layer(CompressionLayer::new())
@@ -2389,6 +2520,10 @@ pub(crate) fn build_router_with_external_auth(
             request_timeout_state,
             request_timeout,
         ))
+        // This must remain the outermost request layer so the original target
+        // is checked before matchit's dot-segment normalization can select a
+        // valid route such as `/health`.
+        .layer(axum::middleware::from_fn(reject_ambiguous_request_target))
         // PropagateRequestId echoes the id back in the response header.
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         // TraceLayer reads x-request-id set by SetRequestId (outermost).
@@ -2625,6 +2760,39 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.is_array(), "body should be a JSON array of actions");
+    }
+
+    #[tokio::test]
+    async fn security_oracle_kills_a_composition_with_outer_auth_omitted() {
+        let state = AppState::new();
+        let app = build_router_with_bearer(state, None, None);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/setup/actions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "kill fixture must be open"
+        );
+        let descriptor = crate::api::route_registry::RouteDescriptor::new(
+            "GET",
+            "/v1/{service}/actions",
+            "service_actions",
+            "services",
+            crate::api::route_registry::RouteAuth::V1,
+        );
+        assert!(
+            crate::api::route_registry::verify_auth_invariant(&descriptor, response.status())
+                .is_err(),
+            "independent security oracle did not kill omitted auth middleware"
+        );
     }
 
     #[tokio::test]

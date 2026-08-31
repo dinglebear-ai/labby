@@ -1,0 +1,1 @@
+{"service":"skills","api_path":"/v1/skills","cli_probe":["skills","list","--json"],"can_mutate":false,"success_action":"skills.list","invalid_action":"schema","policy_action":null,"workflow":[],"parameters":{"action":"help","query":"matrix","uri":"lab://skills/matrix-missing"},"action_params":{}}

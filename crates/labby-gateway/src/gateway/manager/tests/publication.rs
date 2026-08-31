@@ -1983,7 +1983,7 @@ async fn loadout_service_catalog_applies_alias_visibility_policy_and_metadata() 
 }
 
 #[tokio::test]
-async fn loadout_service_catalog_hides_absent_disabled_and_expose_tools_false() {
+async fn loadout_service_catalog_publishes_direct_services_and_hides_disabled_aliases() {
     let dir = tempfile::tempdir().expect("tempdir");
     let manager = GatewayManager::new(
         dir.path().join("config.toml"),
@@ -2034,13 +2034,19 @@ async fn loadout_service_catalog_hides_absent_disabled_and_expose_tools_false() 
             .services()
             .is_empty()
     );
-    assert!(
-        manager
-            .published_loadout_service_catalog_snapshot("absent")
-            .await
-            .expect("absent")
-            .services()
-            .is_empty()
+    let direct = manager
+        .published_loadout_service_catalog_snapshot("absent")
+        .await
+        .expect("direct built-in service");
+    assert_eq!(direct.services().len(), 1);
+    assert_eq!(direct.services()[0].name(), "deploy");
+    assert_eq!(
+        direct.services()[0]
+            .actions()
+            .iter()
+            .map(|action| action.name())
+            .collect::<Vec<_>>(),
+        vec!["a.action", "z.action"]
     );
     assert_eq!(
         manager

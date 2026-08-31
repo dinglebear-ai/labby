@@ -30,7 +30,7 @@ pub(crate) use credential_store::{
 #[allow(unused_imports)]
 pub(crate) use credential_verifier::{
     AccessCredentialAdapter, LiveAuthority, LiveAuthorityError, LiveAuthorityFuture,
-    LiveAuthoritySnapshot, StoredBinding,
+    LiveAuthoritySnapshot, ProtectedCredentialRequirements, StoredBinding, VerifiedProductBinding,
 };
 #[allow(unused_imports)]
 pub(crate) use domain::{Permission, ProjectRole};

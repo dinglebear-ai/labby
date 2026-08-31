@@ -129,6 +129,31 @@ pub struct RouteGroup {
     pub descriptors: Vec<RouteDescriptor>,
 }
 
+#[cfg(test)]
+pub(crate) fn verify_auth_invariant(
+    descriptor: &RouteDescriptor,
+    status: axum::http::StatusCode,
+) -> Result<(), String> {
+    let protected = !matches!(
+        descriptor.auth,
+        RouteAuth::Public | RouteAuth::OAuthProtocol
+    );
+    if protected
+        && !matches!(
+            status,
+            axum::http::StatusCode::UNAUTHORIZED
+                | axum::http::StatusCode::FORBIDDEN
+                | axum::http::StatusCode::NOT_FOUND
+        )
+    {
+        return Err(format!(
+            "protected route {} {} accepted an unauthenticated request with {status}",
+            descriptor.method, descriptor.path
+        ));
+    }
+    Ok(())
+}
+
 impl RouteGroup {
     #[must_use]
     pub fn empty() -> Self {

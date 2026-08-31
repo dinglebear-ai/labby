@@ -1,0 +1,1 @@
+{"service":"server_logs","api_path":"/v1/server_logs","cli_probe":["logs","--help"],"can_mutate":false,"success_action":"help","invalid_action":"schema","policy_action":"server_logs.query","workflow":[],"parameters":{"action":"help"},"action_params":{}}

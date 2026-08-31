@@ -236,6 +236,40 @@ Rules:
 - docs must not claim live-tested status unless that testing actually happened
 - implementation counts and file references must stay aligned with code
 
+## Live End-to-End Qualification
+
+The catalog-driven product suite is separate from MCP protocol conformance. Run
+the bounded hermetic PR tier with:
+
+```bash
+just live-e2e pr 1
+```
+
+`nightly` adds the one-worker live browser lane, `collision` runs two isolated
+copies of the stateful HTTP/CLI/API shard, and `repeat10` executes the hermetic
+PR tier ten times with seeds 1 through 10.
+`manual` is the credential-free operator tier. External-provider probes remain
+informational and require their own explicitly supplied credentials.
+
+Every run writes a schema-versioned coverage report that joins every registered
+action and route to its classification, scenario, surfaces, minimum evidence,
+and explicit exclusions. Each declared shard must produce a run-bound content
+hash bound to the run seed and binary identity; aggregation recomputes every
+hash from its bounded owned log, and missing shard output fails. Primary,
+cleanup, and evidence-retention failures are reported independently.
+
+Release qualification requires `LABBY_RELEASE_BINARY` to name an absolute,
+executable packaged binary. Its version and SHA-256 identity are recorded; the
+release tier does not substitute `cargo run` for the packaged product identity.
+Reproduction commands contain placeholders rather than credentials. Run roots,
+browser state, traces, logs, and reports are disposable, permission-restricted,
+bounded, and recursively secret-scanned before retention.
+
+The live browser job consumes prebuilt Gateway Admin assets and a supervisor-
+created `LABBY_LIVE_BROWSER_DESCRIPTOR`; Playwright owns Chromium only. The
+outer supervisor owns Labby, loopback ports, browser-session storage state,
+fixtures, evidence roots, and teardown.
+
 ## Ownership Summary
 
 - `labby-apis` owns SDK tests

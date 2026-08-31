@@ -316,6 +316,18 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         return run_stdio_bridge(live).await;
     }
 
+    // A real daemon owns the installation lifecycle before observing/opening
+    // any durable access state. Thin-client stdio bridges return above and do
+    // not contend with the daemon that owns this lock.
+    let installation_paths = crate::installation::InstallationPaths::resolve()
+        .context("resolve canonical Labby installation root")?;
+    let _installation_lifecycle =
+        crate::installation::InstallationLifecycleLock::acquire_daemon(&installation_paths)
+            .context("acquire Labby daemon lifecycle lock")?;
+    crate::dispatch::setup::access_bootstrap::reconcile_daemon_prepares(&installation_paths)
+        .await
+        .context("reconcile access-bootstrap prepare journal before serving")?;
+
     let access_runtime = match access_db_path() {
         Ok(path) => Arc::new(AccessRuntime::initialize(path).await),
         Err(_) => {
@@ -369,6 +381,22 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         resource_registry.clone(),
     )
     .await?;
+    #[cfg(feature = "gateway")]
+    let bootstrap_policy = Arc::new(
+        crate::dispatch::access_bootstrap::GatewayBootstrapPolicyAuthority::new(
+            gateway_manager.as_ref().clone(),
+            access_runtime.as_ref().clone(),
+        ),
+    );
+    #[cfg(feature = "gateway")]
+    let access_credential_adapter = access_runtime.credential_adapter(bootstrap_policy.clone());
+    #[cfg(feature = "gateway")]
+    let access_bootstrap_proof = Arc::new(
+        crate::dispatch::access_bootstrap::DaemonAccessBootstrapProofService::new(
+            access_runtime.as_ref().clone(),
+            bootstrap_policy,
+        ),
+    );
     #[cfg(not(feature = "gateway"))]
     reject_protected_routes_without_gateway(config)?;
     if stdio_mode {
@@ -523,6 +551,20 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     } else {
         None
     };
+    let project_session_state = if let Some(oauth_state) = oauth_state.as_ref() {
+        labby_auth::project_session::ProjectSessionState::from_store(
+            oauth_state.store.clone(),
+            "__Host-labby-session",
+        )
+        .expect("the fixed project session cookie name has a __Host- prefix")
+    } else {
+        labby_auth::project_session::ProjectSessionState::open(
+            auth_config.sqlite_path.clone(),
+            "__Host-labby-session",
+        )
+        .await
+        .context("initialize project session store")?
+    };
 
     let web_assets_dir = resolve_web_assets_dir(&config.web);
     let embedded_web_assets_enabled =
@@ -534,6 +576,13 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .with_config(config.clone())
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_http_bind_host(host.clone());
+    #[cfg(feature = "gateway")]
+    {
+        state = state
+            .with_access_credential_adapter(access_credential_adapter)
+            .with_access_bootstrap_proof(access_bootstrap_proof);
+    }
+    state = state.with_project_session_state(project_session_state);
     #[cfg(feature = "skills")]
     if let Some(skill_library_runtime) = skill_library_runtime {
         state = state

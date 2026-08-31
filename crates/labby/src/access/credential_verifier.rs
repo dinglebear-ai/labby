@@ -153,16 +153,67 @@ pub(crate) struct AccessCredentialAdapter {
     live: Arc<dyn LiveAuthority>,
 }
 
+pub(crate) struct ProtectedCredentialRequirements<'a> {
+    pub(crate) route_id: &'a str,
+    pub(crate) resource: &'a str,
+    pub(crate) project_id: Option<&'a str>,
+    pub(crate) loadout_id: Option<&'a str>,
+    pub(crate) scopes: &'a [String],
+}
+
+pub(crate) struct VerifiedProductBinding {
+    pub(crate) source: ProductCredentialGrant,
+    pub(crate) bound: BoundAccessGrant,
+}
+
 impl AccessCredentialAdapter {
     pub(crate) fn new(runtime: AccessRuntime, live: Arc<dyn LiveAuthority>) -> Self {
         Self { runtime, live }
     }
 
-    async fn resolve_binding(
+    /// Verify a product credential and bind it to one exact protected route.
+    /// Transport adapters select the credential and map the typed denial; all
+    /// authority tuple comparisons remain here beside live grant resolution.
+    pub(crate) async fn bind_protected_route(
         &self,
-        credential_id: String,
-        digest: Option<[u8; 32]>,
-    ) -> Result<BoundAccessGrant, ProductCredentialVerificationError> {
+        credential: &ProductCredential,
+        required: ProtectedCredentialRequirements<'_>,
+    ) -> Result<VerifiedProductBinding, ProductCredentialVerificationError> {
+        let source = self.verify(credential).await?;
+        let bound = self.resolve(&source).await?;
+        let target_matches = required
+            .project_id
+            .is_none_or(|project| project == bound.project_id)
+            && required
+                .loadout_id
+                .is_none_or(|loadout| loadout == bound.loadout_id);
+        let source_matches = source.issuer == bound.issuer
+            && source.subject == bound.subject
+            && source.credential_id == bound.credential_id
+            && source.credential_generation == bound.credential_generation
+            && source.scopes == bound.scopes
+            && source.resource == bound.resource
+            && source.audience == bound.audience
+            && source.expires_at == bound.expires_at;
+        let scopes_match = required
+            .scopes
+            .iter()
+            .all(|scope| bound.scopes.iter().any(|granted| granted == scope));
+        if !target_matches
+            || !source_matches
+            || bound.route_id != required.route_id
+            || bound.resource != required.resource
+            || !scopes_match
+        {
+            return Err(ProductCredentialVerificationError::Denied);
+        }
+        Ok(VerifiedProductBinding { source, bound })
+    }
+
+    async fn admit_credential_attempt(
+        &self,
+        credential_id: &str,
+    ) -> Result<(), ProductCredentialVerificationError> {
         let now = i64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -182,20 +233,36 @@ impl AccessCredentialAdapter {
             .admit_security_operation("credential_peer".into(), target, now, 60, 16)
             .await
             .map_err(|_| ProductCredentialVerificationError::Unavailable)?;
-        if !global_admitted || !target_admitted {
-            let _ = self
-                .runtime
-                .record_security_event(
-                    "credential_verify".into(),
-                    "deny".into(),
-                    "rate_limited".into(),
-                    target,
-                    None,
-                    now,
-                )
-                .await;
-            return Err(ProductCredentialVerificationError::Denied);
+        if global_admitted && target_admitted {
+            return Ok(());
         }
+        let _ = self
+            .runtime
+            .record_security_event(
+                "credential_verify".into(),
+                "deny".into(),
+                "rate_limited".into(),
+                target,
+                None,
+                now,
+            )
+            .await;
+        Err(ProductCredentialVerificationError::Denied)
+    }
+
+    async fn resolve_binding(
+        &self,
+        credential_id: String,
+        digest: Option<[u8; 32]>,
+    ) -> Result<BoundAccessGrant, ProductCredentialVerificationError> {
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| ProductCredentialVerificationError::Unavailable)?
+                .as_secs(),
+        )
+        .map_err(|_| ProductCredentialVerificationError::Unavailable)?;
+        let target: [u8; 32] = Sha256::digest(credential_id.as_bytes()).into();
         let pool = self.runtime.credential_reads().await.map_err(|_| {
             tracing::warn!(phase = "runtime_pool", "credential resolution unavailable");
             ProductCredentialVerificationError::Unavailable
@@ -314,7 +381,15 @@ fn live_matches(live: &LiveAuthoritySnapshot, stored: &StoredBinding) -> bool {
         && live.route_generation == stored.route_generation
         && live.resource == stored.resource
         && live.audience == stored.audience
-        && live.scopes == stored.scopes
+        // Issued credentials may be equal-or-narrower than their source. The
+        // live route is the authority ceiling; requiring exact equality here
+        // made every legitimately narrowed credential unverifiable before the
+        // route-level scope check could return a stable insufficient-scope
+        // denial.
+        && stored
+            .scopes
+            .iter()
+            .all(|scope| live.scopes.iter().any(|granted| granted == scope))
 }
 
 impl ProductCredentialVerifier for AccessCredentialAdapter {
@@ -324,6 +399,8 @@ impl ProductCredentialVerifier for AccessCredentialAdapter {
     ) -> ProductCredentialVerificationFuture<'a> {
         Box::pin(async move {
             let digest = credential_digest(credential);
+            self.admit_credential_attempt(credential.credential_id())
+                .await?;
             let bound = self
                 .resolve_binding(credential.credential_id().to_owned(), Some(digest))
                 .await?;
@@ -380,6 +457,16 @@ impl ProjectSessionRevalidator for AccessCredentialAdapter {
         binding: &'a ProjectSessionBinding,
     ) -> ProjectSessionRevalidationFuture<'a> {
         Box::pin(async move {
+            self.admit_credential_attempt(&binding.source_credential_id)
+                .await
+                .map_err(|error| match error {
+                    ProductCredentialVerificationError::Denied => {
+                        ProjectSessionRevalidationError::Denied
+                    }
+                    ProductCredentialVerificationError::Unavailable => {
+                        ProjectSessionRevalidationError::Unavailable
+                    }
+                })?;
             let bound = self
                 .resolve_binding(binding.source_credential_id.clone(), None)
                 .await
@@ -611,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn live_authority_comparison_is_exact_for_every_bound_dimension() {
+    fn live_authority_comparison_is_exact_except_for_narrower_credential_scopes() {
         let binding = stored();
         let expected = live(&binding);
         assert!(live_matches(&expected, &binding));
@@ -624,12 +711,16 @@ mod tests {
             Box::new(|v| v.route_generation += 1),
             Box::new(|v| v.resource.push('x')),
             Box::new(|v| v.audience.push('x')),
-            Box::new(|v| v.scopes.push("lab:admin".into())),
         ];
         for mutate in mutations {
             let mut changed = expected.clone();
             mutate(&mut changed);
             assert!(!live_matches(&changed, &binding));
         }
+        let mut authority_ceiling = expected.clone();
+        authority_ceiling.scopes.push("lab:admin".into());
+        assert!(live_matches(&authority_ceiling, &binding));
+        authority_ceiling.scopes = vec!["lab:admin".into()];
+        assert!(!live_matches(&authority_ceiling, &binding));
     }
 }

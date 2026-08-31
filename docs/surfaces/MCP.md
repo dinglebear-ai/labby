@@ -169,7 +169,11 @@ credential.
 
 When the client supports elicitation, destructive service actions use the shared
 2026-07-28 MRTR confirmation flow: the dispatcher returns `input_required` and
-validates the answer from the retried request's `inputResponses`.
+validates the answer from the retried request's `inputResponses` together with
+Labby's opaque, protocol-standard `requestState`. The state is short-lived,
+single-use, and server-bound to the canonical action, normalized params,
+authenticated caller, transport/session, route, and catalog security metadata;
+mismatched, expired, or replayed confirmations fail closed.
 
 When the client does **not** support form elicitation, the dispatcher executes
 normally. There is no `params.confirm`, `--yes`, or header equivalent on the MCP

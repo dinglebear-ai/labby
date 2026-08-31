@@ -36,11 +36,31 @@ struct IssueResponse {
 
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::RouteGroup;
-    let mut descriptors = descriptors().into_iter();
+    let mut descriptors = descriptors().into_iter().skip(1);
     RouteGroup::empty()
-        .route(descriptors.next().unwrap(), routing::post(issue))
         .route(descriptors.next().unwrap(), routing::get(self_introspect))
         .route(descriptors.next().unwrap(), routing::delete(revoke))
+}
+
+/// Axum nested routers do not make a child `"/"` route reachable at the
+/// parent's exact prefix. Mount credential issuance explicitly in the v1
+/// parent so the documented `/v1/access/credentials` contract is real while
+/// keeping self-introspection and revocation in the child router.
+pub(crate) fn issue_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor, RouteGroup};
+    RouteGroup::empty().route(
+        RouteDescriptor::new(
+            "POST",
+            "/access/credentials",
+            "credential_issue",
+            "access",
+            RouteAuth::V1,
+        )
+        .private_no_store()
+        .non_enumerating()
+        .side_effects("credential creation; exact retry idempotent"),
+        routing::post(issue),
+    )
 }
 
 pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
@@ -483,7 +503,6 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                ("POST", "/".into()),
                 ("GET", "/self".into()),
                 ("DELETE", "/{credential_id}".into())
             ]

@@ -1530,27 +1530,30 @@ fn build_service_snapshot(
             .map(|service| (service.name(), service))
             .collect::<std::collections::BTreeMap<_, _>>();
         for member in &loadout.services {
-            let Some(server) = resolve_virtual_server_member(virtual_servers, member) else {
+            let server = resolve_virtual_server_member(virtual_servers, member);
+            let service_name = server.map_or(member.as_str(), |server| server.service.as_str());
+            let Some(service) = by_name.get(service_name) else {
                 continue;
             };
-            let Some(service) = by_name.get(server.service.as_str()) else {
-                continue;
-            };
-            let projected =
-                match super::views::mcp_service_policy_for_config(virtual_servers, member) {
-                    super::views::McpServicePolicy::Absent
-                    | super::views::McpServicePolicy::Hidden => continue,
-                    super::views::McpServicePolicy::Unrestricted => (*service).clone(),
-                    super::views::McpServicePolicy::Allowlisted(actions) => {
-                        let allowed = actions
-                            .iter()
-                            .map(String::as_str)
-                            .collect::<std::collections::BTreeSet<_>>();
-                        PublishedService::from_filtered_actions(service, |action| {
-                            matches!(action, "help" | "schema") || allowed.contains(action)
-                        })
+            let projected = match server {
+                None => (*service).clone(),
+                Some(_) => {
+                    match super::views::mcp_service_policy_for_config(virtual_servers, member) {
+                        super::views::McpServicePolicy::Absent
+                        | super::views::McpServicePolicy::Hidden => continue,
+                        super::views::McpServicePolicy::Unrestricted => (*service).clone(),
+                        super::views::McpServicePolicy::Allowlisted(actions) => {
+                            let allowed = actions
+                                .iter()
+                                .map(String::as_str)
+                                .collect::<std::collections::BTreeSet<_>>();
+                            PublishedService::from_filtered_actions(service, |action| {
+                                matches!(action, "help" | "schema") || allowed.contains(action)
+                            })
+                        }
                     }
-                };
+                }
+            };
             if selected
                 .insert(
                     projected.name().to_string(),
@@ -1573,9 +1576,7 @@ fn resolve_virtual_server_member<'a>(
     virtual_servers: &'a [VirtualServerConfig],
     member: &str,
 ) -> Option<&'a VirtualServerConfig> {
-    virtual_servers
-        .iter()
-        .find(|server| server.service == member || server.id == member)
+    virtual_servers.iter().find(|server| server.id == member)
 }
 
 struct RoutePublicationObservation {
@@ -1635,10 +1636,9 @@ fn project_route_snapshot(
         .map_err(|_| ProjectRoutePublicationError::Unavailable)?;
     let mut effective_service_names = std::collections::BTreeSet::new();
     for member in &effective.services {
-        let Some(server) = resolve_virtual_server_member(virtual_servers, member) else {
-            continue;
-        };
-        if !effective_service_names.insert(server.service.as_str()) {
+        let service_name = resolve_virtual_server_member(virtual_servers, member)
+            .map_or(member.as_str(), |server| server.service.as_str());
+        if !effective_service_names.insert(service_name.to_string()) {
             return Err(ProjectRoutePublicationError::Unavailable);
         }
     }
@@ -1652,7 +1652,7 @@ fn project_route_snapshot(
         effective_service_names: std::sync::Arc::from(
             effective_service_names
                 .into_iter()
-                .map(std::sync::Arc::from)
+                .map(std::sync::Arc::<str>::from)
                 .collect::<Vec<_>>(),
         ),
     })

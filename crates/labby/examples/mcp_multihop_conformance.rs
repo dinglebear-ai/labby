@@ -633,6 +633,7 @@ fn force_full_reload_on_next_request(home: &Path, timeout_ms: u64) -> Result<()>
     let raw = std::fs::read_to_string(&path)?;
     let mut config: LabConfig = toml::from_str(&raw)?;
     config.upstream_request_timeout_ms = Some(timeout_ms);
+    config.upstream_relay_timeout_ms = Some(timeout_ms);
     std::fs::write(path, toml::to_string(&config)?)?;
     Ok(())
 }
@@ -745,6 +746,41 @@ async fn wait_for_marker(path: &Path) -> Result<()> {
     })
     .await
     .with_context(|| format!("timed out waiting for marker {}", path.display()))?;
+    Ok(())
+}
+
+async fn verify_nested_timeout(
+    peer: &Peer<RoleClient>,
+    root_home: &Path,
+    cancellable_name: &str,
+    cancellation_started: &Path,
+    cancellation_observed: &Path,
+) -> Result<()> {
+    std::fs::remove_file(cancellation_started).ok();
+    std::fs::remove_file(cancellation_observed).ok();
+    force_full_reload_on_next_request(root_home, 500)?;
+    call_service_action(peer, "gateway", "gateway.reload").await?;
+    let timeout_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        peer.call_tool_once(CallToolRequestParams::new(cancellable_name.to_owned())),
+    )
+    .await
+    .context("nested timeout request exceeded terminal bound")??;
+    let CallToolResponse::Complete(timeout_result) = timeout_result else {
+        anyhow::bail!("nested timeout did not return a complete error");
+    };
+    ensure!(timeout_result.is_error == Some(true));
+    let timeout_text = timeout_result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|text| text.text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ensure!(timeout_text.contains("\"kind\":\"timeout\""));
+    wait_for_marker(cancellation_started).await?;
+    wait_for_marker(cancellation_observed).await?;
+    force_full_reload_on_next_request(root_home, 30_003)?;
+    call_service_action(peer, "gateway", "gateway.reload").await?;
     Ok(())
 }
 
@@ -890,6 +926,7 @@ async fn run_driver() -> Result<()> {
         .arg("--port")
         .arg(middle_port.to_string())
         .env("HOME", &middle_home)
+        .env("LABBY_HOME", middle_home.join(".config/labby"))
         .env("LABBY_AUTH_MODE", "bearer")
         .env("LABBY_MCP_HTTP_TOKEN", middle_token)
         .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
@@ -915,6 +952,7 @@ async fn run_driver() -> Result<()> {
             "MULTIHOP_MIDDLE_TOKEN",
         ),
     )?;
+    force_full_reload_on_next_request(&root_home, 500)?;
 
     let transport = TokioChildProcess::new(Command::new(&labby_bin).configure(|command| {
         command
@@ -924,6 +962,7 @@ async fn run_driver() -> Result<()> {
             .arg("mcp")
             .arg("--stdio")
             .env("HOME", &root_home)
+            .env("LABBY_HOME", root_home.join(".config/labby"))
             .env("LABBY_CODE_MODE_JOURNAL_DISABLED", "1")
             .env("LABBY_GATEWAY_USAGE_DISABLED", "1")
             .env("MULTIHOP_MIDDLE_TOKEN", middle_token)
@@ -1091,7 +1130,7 @@ async fn run_driver() -> Result<()> {
     let cancellation_started = marker_dir.join("cancellation-started");
     let cancellation_observed = marker_dir.join("cancellation-observed");
     let cancellation_request = ClientRequest::CallToolRequest(CallToolRequest::new(
-        CallToolRequestParams::new(cancellable_name),
+        CallToolRequestParams::new(cancellable_name.clone()),
     ));
     let cancellation_handle = peer
         .send_cancellable_request(cancellation_request, PeerRequestOptions::no_options())
@@ -1101,6 +1140,15 @@ async fn run_driver() -> Result<()> {
         .cancel(Some("multi-hop cancellation check".to_string()))
         .await?;
     wait_for_marker(&cancellation_observed).await?;
+
+    verify_nested_timeout(
+        &peer,
+        &root_home,
+        &cancellable_name,
+        &cancellation_started,
+        &cancellation_observed,
+    )
+    .await?;
 
     let prompts = peer.list_all_prompts().await?;
     ensure!(
