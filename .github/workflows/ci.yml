@@ -840,6 +840,9 @@ jobs:
           node-version: "22"
       - name: Install Rust and kache
         uses: ./.github/actions/setup-rust-kache
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: cargo:cargo-nextest
       - name: Verify Labby auth core and extension contracts
         run: cargo test -p labby-auth --all-features --locked
       - name: Verify authoritative auth requirement matrix
