@@ -69,7 +69,7 @@
 
 use std::{borrow::Cow, sync::Arc};
 
-use crate::service::{RxJsonRpcMessage, ServiceRole, TxJsonRpcMessage};
+use crate::service::{RawRxJsonRpcMessage, RxJsonRpcMessage, ServiceRole, TxJsonRpcMessage};
 
 pub mod sink_stream;
 
@@ -144,6 +144,47 @@ where
 
     /// Receive a message from the transport, this operation is sequential.
     fn receive(&mut self) -> impl Future<Output = Option<RxJsonRpcMessage<R>>> + Send;
+
+    /// Whether this transport preserves response result bodies as raw JSON.
+    ///
+    /// Typed extension requests require this capability. Existing transports
+    /// default to `false` because decoding into the role response union can
+    /// irreversibly discard extension fields.
+    fn preserves_raw_responses() -> bool {
+        false
+    }
+
+    /// Receive a message while preserving the raw JSON-RPC result value.
+    ///
+    /// Transports should override this method when they can retain the raw
+    /// response body. The default preserves compatibility for existing custom
+    /// transports, but an extension result already decoded through the role's
+    /// response union cannot recover information discarded by that union.
+    fn receive_raw(&mut self) -> impl Future<Output = Option<RawRxJsonRpcMessage<R>>> + Send {
+        async move {
+            self.receive().await.map(|message| match message {
+                crate::model::JsonRpcMessage::Request(request) => {
+                    crate::model::JsonRpcMessage::Request(request)
+                }
+                crate::model::JsonRpcMessage::Response(response) => {
+                    crate::model::JsonRpcMessage::Response(crate::model::JsonRpcResponse {
+                        jsonrpc: response.jsonrpc,
+                        id: response.id,
+                        result: serde_json::to_value(response.result).unwrap_or_else(|error| {
+                            tracing::error!(%error, "failed to serialize peer response");
+                            serde_json::Value::Null
+                        }),
+                    })
+                }
+                crate::model::JsonRpcMessage::Notification(notification) => {
+                    crate::model::JsonRpcMessage::Notification(notification)
+                }
+                crate::model::JsonRpcMessage::Error(error) => {
+                    crate::model::JsonRpcMessage::Error(error)
+                }
+            })
+        }
+    }
 
     /// Close the transport
     fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send;

@@ -15,7 +15,9 @@ use tokio_util::{
 use super::{IntoTransport, Transport};
 use crate::{
     model::ErrorData,
-    service::{RxJsonRpcMessage, ServiceRole, TxJsonRpcMessage},
+    service::{
+        RawRxJsonRpcMessage, RxJsonRpcMessage, ServiceRole, TxJsonRpcMessage, decode_peer_response,
+    },
 };
 
 #[non_exhaustive]
@@ -104,6 +106,10 @@ where
 {
     type Error = std::io::Error;
 
+    fn preserves_raw_responses() -> bool {
+        true
+    }
+
     fn send(
         &mut self,
         item: TxJsonRpcMessage<Role>,
@@ -123,6 +129,18 @@ where
     }
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<Role>> {
+        loop {
+            let message = self.receive_raw().await?;
+            match decode_peer_response::<Role>(message) {
+                Ok(message) => return Some(message),
+                Err(error) => {
+                    tracing::debug!(%error, "Ignoring response with invalid result shape")
+                }
+            }
+        }
+    }
+
+    async fn receive_raw(&mut self) -> Option<RawRxJsonRpcMessage<Role>> {
         loop {
             // `read_until` is not cancellation-safe on its own, and `receive` is
             // polled inside a `select!` in the service loop: an in-progress line
@@ -155,7 +173,7 @@ where
                     self.line_buf.clear();
                     continue;
                 }
-                try_parse_with_compatibility::<RxJsonRpcMessage<Role>>(line, "receive")
+                try_parse_with_compatibility::<RawRxJsonRpcMessage<Role>>(line, "receive")
             };
             self.line_buf.clear();
             match parsed {

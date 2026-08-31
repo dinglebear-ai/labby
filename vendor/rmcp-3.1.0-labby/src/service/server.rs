@@ -82,6 +82,8 @@ impl ServiceRole for RoleServer {
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum ServerInitializeError {
+    #[error("failed to deserialize initialization response: {0}")]
+    ResponseDeserialization(#[source] serde_json::Error),
     #[error("expect initialized request, but received: {0:?}")]
     ExpectedInitializeRequest(Option<ClientJsonRpcMessage>),
 
@@ -436,10 +438,12 @@ async fn expect_next_message<T>(
 where
     T: Transport<RoleServer>,
 {
-    transport
-        .receive()
+    let message = transport
+        .receive_raw()
         .await
-        .ok_or_else(|| ServerInitializeError::ConnectionClosed(context.to_string()))
+        .ok_or_else(|| ServerInitializeError::ConnectionClosed(context.to_string()))?;
+    super::decode_peer_response::<RoleServer>(message)
+        .map_err(ServerInitializeError::ResponseDeserialization)
 }
 
 pub async fn serve_server_with_ct<S, T, E, A>(
@@ -481,6 +485,16 @@ pub(crate) fn negotiate_protocol_version(
         );
         server_fallback
     }
+}
+
+fn missing_request_metadata_error(missing: &[&str]) -> ErrorData {
+    ErrorData::invalid_params(
+        format!(
+            "request _meta is missing or has malformed required fields: {}",
+            missing.join(", ")
+        ),
+        None,
+    )
 }
 
 async fn serve_server_with_ct_inner<S, T>(
@@ -528,11 +542,22 @@ where
     let initialize_request = match request {
         ClientRequest::InitializeRequest(request) => request,
         mut request => {
-            if !request
+            let missing_metadata = request
                 .get_meta()
-                .missing_required_keys(&ProtocolVersion::V_2026_07_28)
-                .is_empty()
-            {
+                .missing_required_keys(&ProtocolVersion::V_2026_07_28);
+            if !missing_metadata.is_empty() {
+                transport
+                    .send(ServerJsonRpcMessage::error(
+                        missing_request_metadata_error(&missing_metadata),
+                        Some(id.clone()),
+                    ))
+                    .await
+                    .map_err(|error| {
+                        ServerInitializeError::transport::<T>(
+                            error,
+                            "sending pre-init metadata error response",
+                        )
+                    })?;
                 return Err(ServerInitializeError::ExpectedInitializeRequest(Some(
                     ClientJsonRpcMessage::request(request, id),
                 )));
