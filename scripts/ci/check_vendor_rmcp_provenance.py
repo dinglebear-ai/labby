@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
-import subprocess
 import tarfile
 import tempfile
 import urllib.request
@@ -27,14 +27,20 @@ def diff_bytes(upstream: Path, patches: list[dict]) -> bytes:
     chunks = []
     for patch in patches:
         relative = patch["path"]
-        before = Path("/dev/null") if patch.get("upstream_absent") else upstream / relative
-        completed = subprocess.run(
-            ["diff", "-u", "--label", f"a/{relative}", "--label", f"b/{relative}", str(before), str(VENDOR / relative)],
-            capture_output=True, check=False,
+        before = b"" if patch.get("upstream_absent") else (upstream / relative).read_bytes()
+        after = (VENDOR / relative).read_bytes()
+        chunks.extend(
+            difflib.diff_bytes(
+                difflib.unified_diff,
+                before.splitlines(keepends=True),
+                after.splitlines(keepends=True),
+                fromfile=f"a/{relative}".encode(),
+                tofile=f"b/{relative}".encode(),
+                lineterm=b"\n",
+            )
         )
-        if completed.returncode != 1:
+        if before == after:
             raise SystemExit(f"expected a documented diff for {relative}")
-        chunks.append(completed.stdout)
     return b"".join(chunks)
 
 
@@ -85,7 +91,10 @@ def main() -> None:
 
         actual_diff = hashlib.sha256(diff_bytes(upstream, manifest["patches"])).hexdigest()
         if actual_diff != manifest["unified_diff_sha256"]:
-            raise SystemExit("vendored rmcp unified patch checksum mismatch")
+            raise SystemExit(
+                "vendored rmcp unified patch checksum mismatch: "
+                f"expected {manifest['unified_diff_sha256']}, observed {actual_diff}"
+            )
     print(f"vendored rmcp provenance passed: {len(manifest['patches'])} explicit patches")
 
 

@@ -267,6 +267,8 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
             provenance_checker,
         )
         self.assertIn('archive_url = f"{TRUSTED_ARCHIVE_PREFIX}{commit}.tar.gz"', provenance_checker)
+        self.assertIn("difflib.diff_bytes", provenance_checker)
+        self.assertNotIn("subprocess.run", provenance_checker)
         self.assertRegex(provenance["upstream_commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(provenance["upstream_archive_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(provenance["unified_diff_sha256"], r"^[0-9a-f]{64}$")

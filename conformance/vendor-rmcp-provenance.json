@@ -2,7 +2,7 @@
   "upstream_commit": "c9c3e518ce94b8d715519657c88195515978bda4",
   "upstream_archive_sha256": "f29835a3b9124d72234c05b7f2ca331841c6303d9f7b5e094842191897d6da25",
   "crate_path": "crates/rmcp",
-  "unified_diff_sha256": "370a174402ec78369b54af4805bb5d31289afac070a23a8da484dbb058a7f651",
+  "unified_diff_sha256": "d9bfc3ae045d912424960b7705da42fc87bc6266d8f16aaf8988bf9043332b02",
   "patches": [
     {
       "path": "Cargo.toml",
