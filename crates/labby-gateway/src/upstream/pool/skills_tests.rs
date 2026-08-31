@@ -606,6 +606,30 @@ async fn skills_get_treats_invalid_params_as_not_a_skill() {
     assert!(answer.is_none());
 }
 
+#[tokio::test]
+async fn skills_get_reports_a_malformed_typed_result_with_upstream_context() {
+    let server =
+        SkillsServer::new(vec![json!({ "skills": [] })]).with_get(json!("not a skill entry"));
+    let pool = catalog_pool_with_server("up", server).await;
+
+    let error = pool
+        .fetch_upstream_skill(
+            "up",
+            &peer_for(&pool, "up").await,
+            "skill://up/malformed/SKILL.md",
+            None,
+        )
+        .await
+        .expect_err("a malformed typed skills/get result must fail");
+
+    assert!(error.contains("upstream `up`"), "{error}");
+    assert!(
+        error.contains("skills/get returned a malformed result"),
+        "{error}"
+    );
+    assert!(!error.contains("skills/get failed"), "{error}");
+}
+
 #[cfg(feature = "skills")]
 fn provider_id(name: &str) -> SkillProviderId {
     SkillProviderId::new(labby_runtime::skills::SkillProviderKind::McpUpstream, name)
