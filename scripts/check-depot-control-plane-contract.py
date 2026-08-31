@@ -15,7 +15,7 @@ REQUIRED_ROUTES = {
     "POST /api/artifacts/exact",
     "GET /api/artifacts/components/:artifact_id/:revision_id/:component_id",
 }
-REQUIRED_FLOWS = {"bootstrap", "bazaarBrowse", "artifactDetail", "sendToLabby"}
+REQUIRED_FLOWS = {"bootstrap", "bazaarBrowse", "artifactDetail"}
 DISABLED_MOUNTS = {"staticBearerBrowser", "webUiAuthDisabled", "noAuth", "syntheticDevelopment"}
 
 
@@ -33,6 +33,8 @@ def main() -> None:
         fail("required flow missing")
     if any(data["flows"][name]["status"] != "supported" for name in REQUIRED_FLOWS):
         fail("operational flow is not supported")
+    if data["flows"]["sendToLabby"]["status"] != "deferred":
+        fail("exact import advertised before its typed contract is implemented")
     if any(data["mountPolicy"].get(name) != "disabled" for name in DISABLED_MOUNTS):
         fail("unsafe browser auth mode is enabled")
     if data["actorPolicy"].get("serviceCredential") != "read-only-unless-explicitly-approved":

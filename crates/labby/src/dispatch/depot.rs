@@ -5,9 +5,11 @@ use std::{env, sync::Arc, time::Duration};
 use reqwest::{Client, StatusCode, Url};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
 
-const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_INTERACTIVE_REQUESTS: usize = 16;
 
 #[derive(Clone)]
 pub struct DepotClient {
@@ -15,6 +17,7 @@ pub struct DepotClient {
     base_url: Option<Url>,
     token: Option<Arc<str>>,
     enabled: bool,
+    interactive: Arc<Semaphore>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +62,7 @@ impl DepotClient {
             base_url,
             token,
             enabled,
+            interactive: Arc::new(Semaphore::new(MAX_INTERACTIVE_REQUESTS)),
         }
     }
 
@@ -67,7 +71,10 @@ impl DepotClient {
         DepotStatus {
             configured: self.base_url.is_some() && self.token.is_some(),
             enabled: self.enabled,
-            mutation_authority: self.enabled && self.base_url.is_some() && self.token.is_some(),
+            // A configured shared service credential is read-only. Mutation
+            // authority requires negotiated actor/epoch/capability support,
+            // which this first compatibility slice does not yet implement.
+            mutation_authority: false,
             max_response_bytes: MAX_RESPONSE_BYTES,
         }
     }
@@ -100,45 +107,6 @@ impl DepotClient {
         .await
     }
 
-    pub async fn upload(
-        &self,
-        upload_id: &str,
-        bytes: Vec<u8>,
-        actor: &str,
-    ) -> Result<Value, DepotError> {
-        if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 || !upload_id.starts_with("upl_") {
-            return Err(DepotError::UnsupportedOperation);
-        }
-        if !self.enabled {
-            return Err(DepotError::Disabled);
-        }
-        let base = self.base_url.as_ref().ok_or(DepotError::Unconfigured)?;
-        let token = self.token.as_ref().ok_or(DepotError::Unconfigured)?;
-        let url = base
-            .join(&format!("uploads/{upload_id}"))
-            .map_err(|_| DepotError::Unconfigured)?;
-        let response = self
-            .http
-            .put(url)
-            .bearer_auth(token.as_ref())
-            .header("content-type", "application/octet-stream")
-            .header("x-labby-actor", actor)
-            .body(bytes)
-            .send()
-            .await
-            .map_err(|_| DepotError::Unavailable)?;
-        let status = response.status();
-        let body: Value = response
-            .json()
-            .await
-            .map_err(|_| DepotError::InvalidResponse)?;
-        if status.is_success() {
-            Ok(body)
-        } else {
-            Err(DepotError::Upstream(status, body))
-        }
-    }
-
     async fn request(
         &self,
         method: reqwest::Method,
@@ -149,6 +117,11 @@ impl DepotClient {
         if !self.enabled {
             return Err(DepotError::Disabled);
         }
+        let _permit = self
+            .interactive
+            .acquire()
+            .await
+            .map_err(|_| DepotError::Unavailable)?;
         let base = self.base_url.as_ref().ok_or(DepotError::Unconfigured)?;
         let token = self.token.as_ref().ok_or(DepotError::Unconfigured)?;
         let url = base.join(path).map_err(|_| DepotError::Unconfigured)?;
@@ -161,54 +134,40 @@ impl DepotClient {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let mut response = request.send().await.map_err(|_| DepotError::Unavailable)?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
-        {
+        let response = request.send().await.map_err(|_| DepotError::Unavailable)?;
+        decode_response(response).await
+    }
+}
+
+async fn decode_response(mut response: reqwest::Response) -> Result<Value, DepotError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(DepotError::ResponseTooLarge);
+    }
+    let status = response.status();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| DepotError::Unavailable)?
+    {
+        if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
             return Err(DepotError::ResponseTooLarge);
         }
-        let status = response.status();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| DepotError::Unavailable)?
-        {
-            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                return Err(DepotError::ResponseTooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|_| DepotError::InvalidResponse)?;
-        if status.is_success() {
-            Ok(value)
-        } else {
-            Err(DepotError::Upstream(status, value))
-        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| DepotError::InvalidResponse)?;
+    if status.is_success() {
+        Ok(value)
+    } else {
+        Err(DepotError::Upstream(status, value))
     }
 }
 
 fn allowed_operation(operation: &str) -> bool {
-    matches!(
-        operation,
-        "depot.artifacts.list"
-            | "depot.artifacts.get"
-            | "depot.artifacts.intake_candidate"
-            | "depot.artifacts.follow"
-            | "depot.artifacts.fork"
-            | "depot.artifacts.set_publication"
-            | "depot.artifacts.set_license"
-            | "depot.uploads.create"
-            | "depot.uploads.get"
-            | "depot.uploads.delete"
-            | "depot.ingest.start"
-            | "depot.ingest.list"
-            | "depot.ingest.get"
-            | "depot.ingest.cancel"
-            | "depot.ingest.retry"
-    )
+    matches!(operation, "depot.artifacts.list" | "depot.artifacts.get")
 }
 
 pub fn error_body(error: &DepotError) -> Value {
@@ -232,7 +191,8 @@ mod tests {
     #[test]
     fn operation_allowlist_excludes_generic_and_destructive_unknowns() {
         assert!(allowed_operation("depot.artifacts.list"));
-        assert!(allowed_operation("depot.ingest.start"));
+        assert!(allowed_operation("depot.artifacts.get"));
+        assert!(!allowed_operation("depot.ingest.start"));
         assert!(!allowed_operation("depot.artifacts.delete"));
         assert!(!allowed_operation("depot.admin.execute"));
     }

@@ -16,21 +16,16 @@ Set these only on the Labby server process:
 
 The browser calls only `/v1/depot/*` on Labby. Labby uses one pooled HTTP client
 with a five-second connect timeout, fifteen-second request timeout, no redirects,
-and a 2 MiB JSON response ceiling. Archive uploads are separately capped at 64
-MiB and flow through a principal-owned Depot upload slot.
+a 1 MiB JSON response ceiling, and at most sixteen concurrent interactive
+requests.
 
 ## Authority and supported operations
 
-Mutations require a verified Labby identity and `lab` or `lab:admin`. Depot then
-independently evaluates the bearer credential's deployment, audience, scopes,
-delegated actor, and resource policy. The UI exposes only the pinned allowlist:
-bounded artifact list/detail, candidate intake, exact fork, follow, publication,
-license, upload-slot, and durable ingest job operations. Unknown operations,
-generic authoring, delete/archive, Marketplace, Registry, and Phabby are absent.
-
-Artifact lifecycle writes include `expectedRevision`; stale screens receive the
-Depot `revision_conflict` response and must reload. Exact skill transfer reuses
-`skill_library.import` with source, artifact, and immutable revision IDs.
+The first compatibility slice is read-only and exposes only bounded artifact
+list and detail. A configured service credential does not establish mutation
+authority. Intake, fork, follow, publication, license, uploads, ingest jobs, and
+exact Skill Library import stay absent until Labby negotiates their operation
+fingerprints, delegated actor policy, authority epoch, and typed import contract.
 
 ## Static routes and accessibility
 
@@ -49,8 +44,8 @@ Before enabling a canary:
 4. Exercise two distinct users against real Labby and Depot processes; verify cross-user replay, stale revision, cursor-generation, cancellation, oversized response/upload, and outage cases fail closed.
 5. Confirm browser network traffic has only the Labby origin and cleanup leaves no uploads, jobs, credentials, or child processes.
 
-Canary one Labby instance and watch Depot latency, rejection, response-limit,
-upload cleanup, and job terminal-state metrics. Roll back immediately by removing
+Canary one Labby instance and watch Depot latency, rejection, and response-limit
+metrics. Roll back immediately by removing
 `LABBY_DEPOT_ENABLED=1` and restarting Labby. This is independent of Depot and
 does not remove or disable Labby-only routes. Frontend assets and the Labby
 binary must be deployed and rolled back as one versioned unit.

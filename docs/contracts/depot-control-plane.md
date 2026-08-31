@@ -43,13 +43,12 @@ The first release contains only:
 
 1. session and compatibility bootstrap;
 2. bounded Artifact list and bounded current-revision detail;
-3. operator-configured connection status and explicit local destination;
-4. exact immutable revision export consumed by the existing
-   `skill_library.import` use case.
+3. operator-configured connection status.
 
-Create/ingest, lifecycle management, jobs/uploads, and browser credential
-administration are expansion capabilities. Each is absent until its manifest
-entry is `supported` and its required operation schemas pass drift checks.
+Exact import, create/ingest, lifecycle management, jobs/uploads, and browser
+credential administration are expansion capabilities. Each is absent until its
+manifest entry is `supported` and its required operation schemas pass drift
+checks.
 
 ## Bounded transport
 

@@ -31,24 +31,8 @@ export async function depotStatus(signal?: AbortSignal): Promise<DepotStatus> {
   return (await parse<{ depot: DepotStatus }>(response)).depot
 }
 
-export async function depotSession(signal?: AbortSignal) {
-  return parse<Record<string, unknown>>(await fetch('/v1/depot/session', { credentials: 'same-origin', signal }))
-}
-
 export async function depotCall<T>(operation: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   const init = gatewayRequestInit(operation, params, undefined, signal)
   init.body = JSON.stringify({ operation, params })
   return parse<T>(await fetch('/v1/depot/operations', init))
-}
-
-export async function importDepotSkill(params: Record<string, unknown>) {
-  const init = gatewayRequestInit('skill_library.import', params)
-  return parse(await fetch('/v1/skills', init))
-}
-
-export async function depotUpload(uploadId: string, file: File) {
-  const response = await fetch(`/v1/depot/uploads/${encodeURIComponent(uploadId)}`, {
-    method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/octet-stream' }, body: file,
-  })
-  return parse<Record<string, unknown>>(response)
 }

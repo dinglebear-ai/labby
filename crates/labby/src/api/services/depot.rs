@@ -1,7 +1,6 @@
 use axum::{
     Extension, Json,
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::State,
     http::StatusCode,
     routing::{get, post},
 };
@@ -10,7 +9,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::api::{
-    oauth::AuthContext,
     route_registry::{RouteAuth, RouteDescriptor, RouteGroup},
     state::AppState,
 };
@@ -34,10 +32,6 @@ pub fn routes(_state: AppState) -> RouteGroup {
             get(operations),
         )
         .route(routes.next().expect("call descriptor"), post(call))
-        .route(
-            routes.next().expect("upload descriptor"),
-            axum::routing::put(upload).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
-        )
 }
 
 pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
@@ -50,15 +44,6 @@ pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
         RouteDescriptor::new("POST", "/operations", "call", "depot", RouteAuth::V1)
             .private_no_store()
             .side_effects("bounded canonical Depot operation"),
-        RouteDescriptor::new(
-            "PUT",
-            "/uploads/{upload_id}",
-            "upload",
-            "depot",
-            RouteAuth::V1,
-        )
-        .private_no_store()
-        .side_effects("bounded principal-owned Depot upload"),
     ]
 }
 
@@ -67,50 +52,24 @@ async fn status(State(state): State<AppState>) -> Json<Value> {
 }
 
 fn actor(
-    state: &AppState,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<String, (StatusCode, Json<Value>)> {
     identity.map_or_else(
         || {
-            if state.web_ui_auth_disabled {
-                Ok("development-web-ui".to_owned())
-            } else {
-                Err((
-                    StatusCode::FORBIDDEN,
-                    Json(json!({"error":"verified_identity_required"})),
-                ))
-            }
+            Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({"error":"verified_identity_required"})),
+            ))
         },
         |Extension(value)| Ok(value.safe_fingerprint().to_string()),
     )
-}
-
-fn require_admin(
-    state: &AppState,
-    auth: Option<Extension<AuthContext>>,
-) -> Result<(), (StatusCode, Json<Value>)> {
-    if state.web_ui_auth_disabled {
-        return Ok(());
-    }
-    if auth.is_some_and(|Extension(ctx)| {
-        ctx.scopes
-            .iter()
-            .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin"))
-    }) {
-        Ok(())
-    } else {
-        Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error":"lab_admin_required"})),
-        ))
-    }
 }
 
 async fn session(
     State(state): State<AppState>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let actor = actor(&state, identity)?;
+    let actor = actor(identity)?;
     state
         .depot
         .session(&actor)
@@ -123,7 +82,7 @@ async fn operations(
     State(state): State<AppState>,
     identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let actor = actor(&state, identity)?;
+    let actor = actor(identity)?;
     state
         .depot
         .operations(&actor)
@@ -134,32 +93,13 @@ async fn operations(
 
 async fn call(
     State(state): State<AppState>,
-    auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
     Json(request): Json<OperationRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    require_admin(&state, auth)?;
-    let actor = actor(&state, identity)?;
+    let actor = actor(identity)?;
     state
         .depot
         .call(&request.operation, request.params, &actor)
-        .await
-        .map(Json)
-        .map_err(map_error)
-}
-
-async fn upload(
-    State(state): State<AppState>,
-    Path(upload_id): Path<String>,
-    auth: Option<Extension<AuthContext>>,
-    identity: Option<Extension<VerifiedIdentity>>,
-    bytes: Bytes,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    require_admin(&state, auth)?;
-    let actor = actor(&state, identity)?;
-    state
-        .depot
-        .upload(&upload_id, bytes.to_vec(), &actor)
         .await
         .map(Json)
         .map_err(map_error)
