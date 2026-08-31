@@ -6030,9 +6030,7 @@ mod tests {
 
         assert!(
             urls.iter().any(|u| u.as_str() == canonical_oauth_fallback),
-            "Expected discovery URLs to include canonical OAuth fallback '{}', but got: {:?}",
-            canonical_oauth_fallback,
-            urls.iter().map(|u| u.as_str()).collect::<Vec<_>>()
+            "expected discovery URLs to include the canonical OAuth fallback"
         );
     }
 

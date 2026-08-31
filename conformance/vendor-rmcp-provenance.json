@@ -2,7 +2,7 @@
   "upstream_commit": "c9c3e518ce94b8d715519657c88195515978bda4",
   "upstream_archive_sha256": "f29835a3b9124d72234c05b7f2ca331841c6303d9f7b5e094842191897d6da25",
   "crate_path": "crates/rmcp",
-  "unified_diff_sha256": "d9bfc3ae045d912424960b7705da42fc87bc6266d8f16aaf8988bf9043332b02",
+  "unified_diff_sha256": "224bcb94bed69f7f95f7fa48128a5d9041e64838a7a6ee7f1d9c7e969b03b083",
   "patches": [
     {
       "path": "Cargo.toml",
@@ -21,7 +21,7 @@
     },
     {
       "path": "src/transport/auth.rs",
-      "patched_sha256": "56548cd2f3e2dc671821378c8458cc73ad14c457a41b0b799b70f719512fbd39",
+      "patched_sha256": "a63bbe58ee8c7185e5d5a12b2c3cfc8f191d5644319c90883f3a9fcfabe1ccbf",
       "obligation": "Compare authorization metadata issuer identifiers exactly as required by RFC 9207; reject untrusted callback error fields and issuer-unbound credentials; prove OAuth client requests use the Bearer header without query-token leakage; and cover scope-upgrade, resource-identifier, expired-token, and DCR-failure behavior."
     },
     {
