@@ -58,7 +58,9 @@ fn action_managed_kache_fails_open_when_its_daemon_has_no_remote() {
         .expect("action-managed Kache must be verified before compilation");
     for contract in [
         "stats=\"$(kache stats 2>&1 || true)\"",
-        "'$1 == \"Remote:\" && $2 == expected && NF == 2",
+        "kache daemon restart || true",
+        "for _attempt in {1..10}",
+        "if remote_matches <<<\"$stats\"",
         "echo \"RUSTC_WRAPPER=\"",
         "echo \"CARGO_BUILD_RUSTC_WRAPPER=\"",
         "echo \"usable=false\" >> \"$GITHUB_OUTPUT\"",

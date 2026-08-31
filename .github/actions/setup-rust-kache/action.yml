@@ -196,11 +196,13 @@ runs:
         bucket="${KACHE_S3_BUCKET:-kache}"
         prefix="${KACHE_S3_PREFIX:-rust}"
         expected_remote="s3://$bucket/$prefix"
+        remote_matches() {
+          awk -v expected="$expected_remote" \
+            '$1 == "Remote:" && $2 == expected && NF == 2 { found = 1 } END { exit !found }'
+        }
         stats="$(kache stats 2>&1 || true)"
         printf '%s\n' "$stats"
-        if awk -v expected="$expected_remote" \
-          '$1 == "Remote:" && $2 == expected && NF == 2 { found = 1 } END { exit !found }' \
-          <<<"$stats"; then
+        if remote_matches <<<"$stats"; then
           echo "usable=true" >> "$GITHUB_OUTPUT"
           exit 0
         fi
@@ -208,10 +210,25 @@ runs:
         # kache-action can attach to a daemon left behind by an earlier job.
         # The daemon's watched configuration wins over the current process
         # configuration, so a stale daemon with no remote makes every rustc
-        # invocation fail even though action setup itself succeeded. Cache is
-        # an optimization: fail open to bare Cargo for this job and let the
-        # GitHub Actions cache provide a safe fallback.
-        echo "::warning::Kache daemon is not connected to $expected_remote; using bare Cargo"
+        # invocation fail even though action setup itself succeeded. Restart
+        # once so the daemon inherits this job's validated S3 configuration.
+        echo "::warning::Kache daemon is not connected to $expected_remote; restarting it"
+        kache daemon restart || true
+        for _attempt in {1..10}; do
+          sleep 1
+          stats="$(kache stats 2>&1 || true)"
+          if remote_matches <<<"$stats"; then
+            printf '%s\n' "$stats"
+            echo "usable=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        done
+
+        # Cache is an optimization. If repair did not converge, fail open to
+        # bare Cargo for this job and let the GitHub Actions cache provide a
+        # safe fallback.
+        printf '%s\n' "$stats"
+        echo "::warning::Kache daemon still is not connected to $expected_remote; using bare Cargo"
         {
           echo "RUSTC_WRAPPER="
           echo "CARGO_BUILD_RUSTC_WRAPPER="
