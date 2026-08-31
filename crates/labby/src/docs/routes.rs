@@ -1,78 +1,397 @@
 use super::types::RouteDoc;
-use crate::api::route_registry::{RouteAuth, build_route_descriptors};
+use crate::app_manifest::{
+    APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
+    SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_QUERY_API_ROUTE,
+};
 
-pub fn build_route_docs() -> Vec<RouteDoc> {
-    build_route_descriptors()
-        .into_iter()
-        .map(|route| {
-            let session_cookie_allowed =
-                matches!(route.auth, RouteAuth::V1 | RouteAuth::BrowserSession);
-            let auth_required = matches!(
-                route.auth,
-                RouteAuth::V1
-                    | RouteAuth::BearerOnly
-                    | RouteAuth::BrowserSession
-                    | RouteAuth::BootstrapProof
-            );
-            RouteDoc {
-                method: route.method.to_string(),
-                path: route.path,
-                aliases: route.aliases,
-                surface: "api".to_string(),
-                handler_group: route.mount.to_string(),
-                handler_identity: route.handler.to_string(),
-                feature: route.feature.map(str::to_string),
-                runtime_condition: route.runtime_condition.map(str::to_string),
-                auth_required,
-                bearer_only: route.auth == RouteAuth::BearerOnly,
-                bootstrap_proof: route.auth == RouteAuth::BootstrapProof,
-                session_cookie_allowed,
-                csrf_required: session_cookie_allowed
-                    && !matches!(route.method, "GET" | "HEAD" | "OPTIONS"),
-                host_validation: route.host_validation,
-                // Browser-session routes are authenticated UI adapters, not
-                // master/admin API routes. Keep this axis independent from
-                // authentication and CSRF posture.
-                master_only: matches!(route.auth, RouteAuth::V1 | RouteAuth::BearerOnly),
-                cache_posture: if route.cache_posture != "route-defined" {
-                    route.cache_posture
-                } else if route.auth == RouteAuth::Public {
-                    "route-defined"
-                } else {
-                    "not cacheable"
-                }
-                .to_string(),
-                failure_disclosure: route.failure_disclosure.to_string(),
-                side_effects: route.side_effects.to_string(),
-                notes: route.handler.replace('_', " "),
-            }
-        })
-        .collect()
+pub(crate) const OAUTH_MODE_ONLY: &str = "OAuth mode only";
+pub(crate) const BOOTSTRAP_OWNER_RUNTIME_CONDITION: &str = "OAuth mode only; handler requires a browser session, middleware-derived VerifiedIdentity, lab:admin, and the configured admin email; bearer, MCP, CLI, stdio, and loopback identity bypasses are rejected";
+pub(crate) const DEV_RUNTIME_CONDITION: &str = "development/mockup routes";
+pub(crate) const GATEWAY_RUNTIME_CONDITION: &str =
+    "mounted only when the gateway runtime is configured";
+pub(crate) const FS_RUNTIME_CONDITION: &str =
+    "mounted only when fs is enabled and /v1 auth is configured if LABBY_WEB_UI_AUTH_DISABLED=true";
+
+pub fn build_route_docs(service_names: &[String]) -> Vec<RouteDoc> {
+    let mut routes = vec![
+        public("GET", "/health", "health", "liveness probe"),
+        public(
+            "GET",
+            "/healthz",
+            "oauth_relay",
+            "public OAuth callback relay shallow health",
+        ),
+        public("GET", "/ready", "health", "readiness probe"),
+        public(
+            "GET",
+            "/callback/{machine_id}",
+            "oauth_relay",
+            "public OAuth callback relay",
+        ),
+        public(
+            "POST",
+            "/callback/{machine_id}",
+            "oauth_relay",
+            "public OAuth callback relay",
+        ),
+        public(
+            "GET",
+            "/callback/{machine_id}/{suffix}",
+            "oauth_relay",
+            "public OAuth callback relay suffix path",
+        ),
+        public(
+            "POST",
+            "/callback/{machine_id}/{suffix}",
+            "oauth_relay",
+            "public OAuth callback relay suffix path",
+        ),
+        auth(
+            "GET",
+            "/v1/openapi.json",
+            "openapi",
+            "OpenAPI JSON document",
+        ),
+        auth(
+            "GET",
+            "/v1/docs",
+            "openapi",
+            "Scalar OpenAPI documentation UI",
+        ),
+        auth(
+            "GET",
+            concat!("/v1/", "{service}", "/actions"),
+            "services",
+            "service action metadata",
+        ),
+        auth(
+            "GET",
+            APPS_MANIFEST_API_ROUTE,
+            "apps",
+            "operator app manifest",
+        ),
+        auth(
+            "GET",
+            SERVER_LOGS_QUERY_API_ROUTE,
+            "apps",
+            "server logs app data query",
+        ),
+        auth("POST", "/v1/gateway", "gateway", "gateway action dispatch"),
+        auth(
+            "POST",
+            "/v1/gateway/codemode/tools/search",
+            "gateway",
+            "admin Code Mode tool search",
+        ),
+        auth(
+            "POST",
+            "/v1/gateway/codemode/tools/describe",
+            "gateway",
+            "admin Code Mode tool description",
+        ),
+        auth(
+            "GET",
+            "/v1/auth/allowed-emails",
+            "auth",
+            "list OAuth email allowlist",
+        ),
+        auth(
+            "POST",
+            "/v1/auth/allowed-emails",
+            "auth",
+            "add OAuth email allowlist entry",
+        ),
+        auth(
+            "DELETE",
+            "/v1/auth/allowed-emails/{email}",
+            "auth",
+            "remove OAuth email allowlist entry",
+        ),
+        RouteDoc {
+            runtime_condition: Some(BOOTSTRAP_OWNER_RUNTIME_CONDITION.to_string()),
+            ..auth(
+                "POST",
+                "/v1/access/bootstrap-owner",
+                "access",
+                "explicit one-time access owner bootstrap; returns only created or already_applied",
+            )
+        },
+        host_validated_auth("POST", "/v1/doctor", "doctor", "doctor action dispatch"),
+        relay_admin(
+            "GET",
+            "/v1/oauth/relay/machines",
+            "list public OAuth callback relay machines",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines",
+            "register public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "GET",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "get public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "PUT",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "update public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "DELETE",
+            "/v1/oauth/relay/machines/{machine_id}",
+            "remove public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines/{machine_id}/disable",
+            "disable public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/machines/{machine_id}/enable",
+            "enable public OAuth callback relay machine",
+        ),
+        relay_admin(
+            "POST",
+            "/v1/oauth/relay/import",
+            "import public OAuth callback relay registry",
+        ),
+        host_validated_auth("POST", "/v1/setup", "setup", "setup action dispatch"),
+        gateway_runtime_auth(
+            "GET",
+            "/v1/gateway/oauth/status",
+            "upstream_oauth",
+            "upstream OAuth status",
+        ),
+        gateway_runtime_auth(
+            "POST",
+            "/v1/gateway/oauth/start",
+            "upstream_oauth",
+            "start upstream OAuth flow",
+        ),
+        gateway_runtime_auth(
+            "POST",
+            "/v1/gateway/oauth/cancel",
+            "upstream_oauth",
+            "cancel upstream OAuth flow",
+        ),
+        gateway_runtime_auth(
+            "POST",
+            "/v1/gateway/oauth/google/revoke",
+            "upstream_oauth",
+            "revoke the shared Google provider credential",
+        ),
+        public(
+            "GET",
+            "/auth/upstream/callback",
+            "upstream_oauth",
+            "browser callback for upstream OAuth",
+        ),
+        public(
+            "GET",
+            "/.well-known/oauth-client",
+            "upstream_oauth",
+            "upstream OAuth client metadata",
+        ),
+        public(
+            "GET",
+            "/gateway/oauth/result",
+            "upstream_oauth",
+            "browser OAuth completion page",
+        ),
+        oauth(
+            "GET",
+            "/.well-known/oauth-authorization-server",
+            "oauth metadata",
+        ),
+        oauth(
+            "GET",
+            "/.well-known/oauth-protected-resource",
+            "OAuth protected-resource metadata",
+        ),
+        oauth("GET", "/jwks", "OAuth JWKS"),
+        oauth("POST", "/register", "OAuth dynamic client registration"),
+        oauth("GET", "/authorize", "OAuth authorization endpoint"),
+        oauth("POST", "/token", "OAuth token endpoint"),
+        bearer_only("POST", "/mcp", "mcp", "MCP streamable HTTP endpoint"),
+        bearer_only("GET", "/mcp", "mcp", "MCP streamable HTTP endpoint"),
+        browser("GET", "/auth/login", "oauth", "browser login redirect"),
+        browser(
+            "GET",
+            "/auth/session",
+            "oauth",
+            "browser session introspection",
+        ),
+        browser("POST", "/auth/logout", "oauth", "browser session logout"),
+        browser("GET", APPS_LAUNCHER_ROUTE, "apps", "operator app launcher"),
+        browser(
+            "GET",
+            SERVER_LOGS_BROWSER_ROUTE,
+            "apps",
+            "server logs app page",
+        ),
+        public(
+            "GET",
+            LABBY_APP_HOST_JS_ROUTE,
+            "apps",
+            "shared app host bridge asset",
+        ),
+        public(
+            "GET",
+            "/auth/google/callback",
+            "oauth",
+            "Google OAuth callback",
+        ),
+        dev("GET", "/dev/mockup", "development mockup"),
+        dev("GET", "/dev/mockup/{name}", "named development mockup"),
+    ];
+
+    for service in service_names {
+        if !service_has_action_api_route(service) {
+            continue;
+        }
+        let mut route = auth(
+            "POST",
+            &format!("/v1/{service}"),
+            "services",
+            "service action dispatch",
+        );
+        if service == "fs" {
+            route.runtime_condition = Some(FS_RUNTIME_CONDITION.to_string());
+            route.feature = Some("fs".to_string());
+        }
+        routes.push(route);
+    }
+
+    routes.sort_by(|a, b| {
+        (a.path.as_str(), a.method.as_str()).cmp(&(b.path.as_str(), b.method.as_str()))
+    });
+    routes
+}
+
+fn base(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    let session_cookie_allowed = true;
+    RouteDoc {
+        method: method.to_string(),
+        path: path.to_string(),
+        surface: "api".to_string(),
+        handler_group: group.to_string(),
+        feature: None,
+        runtime_condition: None,
+        auth_required: true,
+        bearer_only: false,
+        session_cookie_allowed,
+        csrf_required: csrf_required(method, session_cookie_allowed),
+        host_validation: false,
+        master_only: true,
+        cache_posture: "not cacheable".to_string(),
+        notes: notes.to_string(),
+    }
+}
+
+fn auth(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    base(method, path, group, notes)
+}
+
+fn host_validated_auth(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        host_validation: true,
+        ..auth(method, path, group, notes)
+    }
+}
+
+fn gateway_runtime_auth(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        runtime_condition: Some(GATEWAY_RUNTIME_CONDITION.to_string()),
+        ..auth(method, path, group, notes)
+    }
+}
+
+fn relay_admin(method: &str, path: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        runtime_condition: Some(
+            "mounted only when /v1 auth is configured; handler requires lab:admin".to_string(),
+        ),
+        ..auth(method, path, "oauth_relay", notes)
+    }
+}
+
+fn bearer_only(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        bearer_only: true,
+        session_cookie_allowed: false,
+        csrf_required: false,
+        ..auth(method, path, group, notes)
+    }
+}
+
+fn public(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        auth_required: false,
+        session_cookie_allowed: false,
+        csrf_required: false,
+        master_only: false,
+        ..base(method, path, group, notes)
+    }
+}
+
+fn oauth(method: &str, path: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        session_cookie_allowed: false,
+        csrf_required: false,
+        ..public(method, path, "oauth", notes)
+    }
+}
+
+fn browser(method: &str, path: &str, group: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        runtime_condition: Some(OAUTH_MODE_ONLY.to_string()),
+        auth_required: true,
+        session_cookie_allowed: true,
+        csrf_required: csrf_required(method, true),
+        ..public(method, path, group, notes)
+    }
+}
+
+fn dev(method: &str, path: &str, notes: &str) -> RouteDoc {
+    RouteDoc {
+        runtime_condition: Some(DEV_RUNTIME_CONDITION.to_string()),
+        auth_required: true,
+        session_cookie_allowed: true,
+        csrf_required: csrf_required(method, true),
+        ..base(method, path, "dev", notes)
+    }
+}
+
+fn csrf_required(method: &str, session_cookie_allowed: bool) -> bool {
+    session_cookie_allowed && !matches!(method, "GET" | "HEAD" | "OPTIONS")
+}
+
+pub fn service_has_action_api_route(service: &str) -> bool {
+    !matches!(service, "lab_admin" | "doctor" | "setup")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_manifest::{
-        APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
-        SERVER_LOGS_BROWSER_ROUTE, SERVER_LOGS_QUERY_API_ROUTE,
-    };
 
     #[test]
     fn route_docs_do_not_include_non_http_service_dispatch_routes() {
-        let routes = build_route_docs();
+        let routes = build_route_docs(&["lab_admin".to_string()]);
         assert!(!routes.iter().any(|route| route.path == "/v1/lab_admin"));
     }
 
     #[test]
     fn session_mutation_routes_require_csrf() {
-        let routes = build_route_docs();
+        let routes = build_route_docs(&["server_logs".to_string()]);
         let service = routes
             .iter()
             .find(|route| route.method == "POST" && route.path == "/v1/server_logs")
             .unwrap();
         assert!(service.session_cookie_allowed);
         assert!(service.csrf_required);
+
         let mcp = routes
             .iter()
             .find(|route| route.method == "POST" && route.path == "/mcp")
@@ -83,64 +402,29 @@ mod tests {
     }
 
     #[test]
-    fn browser_session_auth_is_not_projected_as_master_admin() {
-        let routes = build_route_docs();
-        for path in ["/auth/session", APPS_LAUNCHER_ROUTE] {
-            let route = routes.iter().find(|route| route.path == path).unwrap();
-            assert!(route.auth_required);
-            assert!(route.session_cookie_allowed);
-            assert!(!route.master_only);
-        }
-        let logout = routes
+    fn access_bootstrap_documents_the_browser_only_gate() {
+        let routes = build_route_docs(&[]);
+        let route = routes
             .iter()
-            .find(|route| route.path == "/auth/logout")
+            .find(|route| route.method == "POST" && route.path == "/v1/access/bootstrap-owner")
             .unwrap();
-        assert!(logout.csrf_required);
-        assert!(!logout.master_only);
-        assert_eq!(logout.cache_posture, "not cacheable");
-    }
-
-    #[test]
-    fn bootstrap_proof_routes_have_distinct_hardened_contract() {
-        let routes = build_route_docs();
-        for path in [
-            "/auth/bootstrap/consume",
-            "/auth/bootstrap/status",
-            "/auth/bootstrap/cleanup",
+        assert!(route.auth_required);
+        assert!(route.session_cookie_allowed);
+        assert!(route.csrf_required);
+        let condition = route.runtime_condition.as_deref().unwrap_or("");
+        for expected in [
+            "VerifiedIdentity",
+            "lab:admin",
+            "configured admin email",
+            "bearer",
         ] {
-            let route = routes.iter().find(|route| route.path == path).unwrap();
-            assert!(route.auth_required);
-            assert!(route.bootstrap_proof);
-            assert!(!route.bearer_only);
-            assert!(!route.session_cookie_allowed);
-            assert_eq!(route.cache_posture, "private, no-store");
-            assert_eq!(route.failure_disclosure, "uniform non-enumerating denial");
+            assert!(condition.contains(expected), "missing gate {expected}");
         }
-        let status = routes
-            .iter()
-            .find(|route| route.path == "/auth/bootstrap/status")
-            .unwrap();
-        assert_eq!(status.side_effects, "none_expected");
-    }
-
-    #[test]
-    fn aliases_are_explicit_runtime_truth() {
-        let routes = build_route_docs();
-        let launcher = routes
-            .iter()
-            .find(|route| route.path == APPS_LAUNCHER_ROUTE)
-            .unwrap();
-        assert_eq!(launcher.aliases, [format!("{APPS_LAUNCHER_ROUTE}/")]);
-        let mockup = routes
-            .iter()
-            .find(|route| route.path == "/dev/mockup")
-            .unwrap();
-        assert_eq!(mockup.aliases, ["/dev/mockup/"]);
     }
 
     #[test]
     fn operator_app_routes_are_documented() {
-        let routes = build_route_docs();
+        let routes = build_route_docs(&["server_logs".to_string()]);
         for (method, path) in [
             ("GET", APPS_MANIFEST_API_ROUTE),
             ("GET", SERVER_LOGS_QUERY_API_ROUTE),
@@ -159,15 +443,31 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_keys_are_an_exact_set() {
-        let descriptor_keys = build_route_descriptors()
-            .into_iter()
-            .map(|route| (route.method.to_string(), route.path))
-            .collect::<std::collections::BTreeSet<_>>();
-        let doc_keys = build_route_docs()
-            .into_iter()
-            .map(|route| (route.method, route.path))
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(descriptor_keys, doc_keys);
+    fn public_relay_routes_have_expected_auth_docs() {
+        let routes = build_route_docs(&[]);
+        let callback = routes
+            .iter()
+            .find(|route| route.method == "GET" && route.path == "/callback/{machine_id}")
+            .unwrap();
+        assert_eq!(callback.handler_group, "oauth_relay");
+        assert!(!callback.auth_required);
+        assert!(!callback.session_cookie_allowed);
+        assert!(!callback.csrf_required);
+
+        let admin = routes
+            .iter()
+            .find(|route| route.method == "POST" && route.path == "/v1/oauth/relay/import")
+            .unwrap();
+        assert_eq!(admin.handler_group, "oauth_relay");
+        assert!(admin.auth_required);
+        assert!(admin.session_cookie_allowed);
+        assert!(admin.csrf_required);
+        assert!(
+            admin
+                .runtime_condition
+                .as_deref()
+                .unwrap_or("")
+                .contains("lab:admin")
+        );
     }
 }
