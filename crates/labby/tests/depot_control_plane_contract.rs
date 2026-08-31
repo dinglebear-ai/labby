@@ -1,8 +1,7 @@
 use serde_json::Value;
 
-const MANIFEST: &str = include_str!(
-    "../../../docs/contracts/fixtures/depot-control-plane/compatibility-v1.json"
-);
+const MANIFEST: &str =
+    include_str!("../../../docs/contracts/fixtures/depot-control-plane/compatibility-v1.json");
 
 #[test]
 fn operational_depot_contract_is_fail_closed_and_bounded() {

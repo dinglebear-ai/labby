@@ -4,6 +4,7 @@ import {
   Cable,
   FileCode2,
   Boxes,
+  Warehouse,
   GitBranch,
   LayoutDashboard,
   SearchCode,
@@ -91,6 +92,13 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
     id: 'Catalog',
     label: 'Catalog',
     items: [
+      {
+        id: 'Depot',
+        label: 'Depot',
+        href: '/depot',
+        icon: Warehouse,
+        tooltipDetail: 'artifacts, ingestion and lifecycle',
+      },
       {
         id: 'Tools',
         label: 'Tools',
