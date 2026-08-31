@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use labby_primitives::plugin::{EnvVar, PluginMeta};
 use serde::Deserialize;
 
-use super::routes::build_route_docs;
+use super::routes::{build_route_docs, service_has_action_api_route};
 use super::types::{
     ConfigDoc, DocsProjection, EnvDoc, FeatureClass, FeatureDoc, FeatureMatrix, FeatureMismatch,
     ServiceDoc, ServiceExposure, SurfaceAvailability,
@@ -38,7 +38,12 @@ pub fn build_docs_projection(repo_root: &Path) -> Result<DocsProjection> {
     let proxy_config_reference = build_proxy_config_reference();
     let env_reference = build_env_reference(&service_catalog);
     let action_catalog = super::action_catalog::build_action_catalog(services);
-    let api_routes = build_route_docs();
+    let api_route_services = service_catalog
+        .iter()
+        .filter(|service| service.surfaces.api && service_has_action_api_route(&service.name))
+        .map(|service| service.name.clone())
+        .collect::<Vec<_>>();
+    let api_routes = build_route_docs(&api_route_services);
     #[cfg(feature = "api-docs")]
     let openapi_json =
         Arc::unwrap_or_clone(build_openapi_spec(services).context("failed to build OpenAPI spec")?);
