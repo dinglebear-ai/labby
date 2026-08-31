@@ -58,6 +58,10 @@ pub fn build_route_docs(_service_names: &[String]) -> Vec<RouteDoc> {
         .collect()
 }
 
+pub fn service_has_action_api_route(service: &str) -> bool {
+    !matches!(service, "lab_admin" | "doctor" | "setup")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,7 +152,7 @@ mod tests {
 
     #[test]
     fn operator_app_routes_are_documented() {
-        let routes = build_route_docs();
+        let routes = build_route_docs(&[]);
         for (method, path) in [
             ("GET", APPS_MANIFEST_API_ROUTE),
             ("GET", SERVER_LOGS_QUERY_API_ROUTE),
