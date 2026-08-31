@@ -6,7 +6,6 @@
 //! `pub(super)` so the pool module and the sibling `connect_stdio` module can
 //! call them across the module boundary.
 
-use rmcp::service::RawRxJsonRpcMessage;
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::ffi::OsString;
@@ -28,7 +27,7 @@ use rmcp::model::{
     JsonRpcMessage, ProgressNotificationParam, ServerNotification, ServerRequest,
     TaskStatusNotificationParams,
 };
-use rmcp::service::{ClientServiceExt, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{ClientServiceExt, RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
 };
