@@ -612,6 +612,7 @@ mod tests {
         assert_eq!(clone.resource_registry().lease_count(), 1);
     }
 
+    #[cfg(feature = "http-axum")]
     #[tokio::test(flavor = "current_thread")]
     async fn auth_state_initialization_logs_redact_configuration_metadata() {
         let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;

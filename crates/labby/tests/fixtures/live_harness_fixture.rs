@@ -1,5 +1,7 @@
 #![allow(clippy::panic)]
 
+//! Tiny HTTP fixture used by the live-process harness tests.
+
 use std::io::Write as _;
 use std::net::TcpListener;
 use std::path::PathBuf;
