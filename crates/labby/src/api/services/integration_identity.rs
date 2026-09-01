@@ -4,7 +4,7 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, extract::State, routing::get};
 use labby_auth::config::AuthMode;
 use serde::Serialize;
 
@@ -47,8 +47,35 @@ struct IntegrationStreams {
     resume: &'static str,
 }
 
-pub fn routes() -> Router<AppState> {
-    Router::new().route("/identity", get(identity))
+pub fn routes() -> crate::api::route_registry::RouteGroup {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor, RouteGroup};
+
+    RouteGroup::empty().route(
+        RouteDescriptor::new(
+            "GET",
+            "/identity",
+            "integration_identity",
+            "integration",
+            RouteAuth::V1,
+        )
+        .when("mounted only when API authentication is configured"),
+        get(identity),
+    )
+}
+
+pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
+    use crate::api::route_registry::{RouteAuth, RouteDescriptor};
+
+    vec![
+        RouteDescriptor::new(
+            "GET",
+            "/identity",
+            "integration_identity",
+            "integration",
+            RouteAuth::V1,
+        )
+        .when("mounted only when API authentication is configured"),
+    ]
 }
 
 async fn identity(State(state): State<AppState>) -> Json<IntegrationIdentity> {

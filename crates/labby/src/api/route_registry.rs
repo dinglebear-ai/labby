@@ -443,6 +443,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         "/v1/access/credentials",
         crate::api::services::access_credentials::descriptors(),
     ));
+    routes.extend(prefixed(
+        "/v1/integration",
+        crate::api::services::integration_identity::descriptors(),
+    ));
 
     #[cfg(feature = "skills")]
     routes.extend(prefixed(
