@@ -73,6 +73,11 @@ const PROACTIVE_REFRESH_WINDOW_SECS: i64 = 30;
 const MAX_AUTHORIZATION_SERVERS: usize = 8;
 const OAUTH_METADATA_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
+fn bounded_scope_label(scopes: &[String]) -> String {
+    let scope_id = crate::util::fingerprint(&scopes.join(" "));
+    format!("count={};id={scope_id}", scopes.len())
+}
+
 #[derive(Clone, Copy)]
 enum AuthClientTransport {
     Default,
@@ -1106,13 +1111,14 @@ impl UpstreamOauthManager {
     }
 
     fn oauth_scope_label(&self) -> String {
-        self.upstream
+        let scopes = self
+            .upstream
             .oauth
             .as_ref()
             .and_then(|cfg| cfg.scopes.as_ref())
-            .filter(|scopes| !scopes.is_empty())
-            .map(|scopes| scopes.join(" "))
-            .unwrap_or_else(|| "<none>".to_string())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        bounded_scope_label(scopes)
     }
 
     fn oauth_provider_label(&self) -> String {
@@ -1537,6 +1543,16 @@ mod url_tests {
         let message = missing_identity_message("calendar", sentinel, "stored credentials");
         assert!(!message.contains(sentinel));
         assert!(message.contains(&crate::util::fingerprint(sentinel)));
+    }
+
+    #[test]
+    fn oauth_scope_log_label_is_bounded_and_redacted() {
+        let sentinel = "sentinel-upstream-oauth-scope-secret";
+        let label = super::bounded_scope_label(&[sentinel.to_string(), "second-scope".to_string()]);
+
+        assert!(!label.contains(sentinel), "{label}");
+        assert!(label.starts_with("count=2;id="), "{label}");
+        assert_eq!(label.len(), "count=2;id=".len() + 12);
     }
 
     #[test]

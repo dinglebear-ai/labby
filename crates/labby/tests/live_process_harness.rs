@@ -38,6 +38,39 @@ fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
 }
 
 #[test]
+fn outer_supervisor_kills_wedged_cleanup_before_post_deadline_mutation() {
+    let run_root = tempfile::tempdir().expect("temporary parent");
+    let owned_root = run_root.path().join("wedged-cleanup-selftest");
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/ci/labby-live-e2e.sh");
+    let started = Instant::now();
+    let status = Command::new("bash")
+        .arg(script)
+        .args(["pr", "1"])
+        .env("LABBY_E2E_RUN_ROOT", &owned_root)
+        .env("LABBY_E2E_WEDGED_SHARD_SELFTEST", "1")
+        .env("LABBY_E2E_SHARD_TIMEOUT_SECONDS", "1")
+        .env("LABBY_E2E_RUN_TIMEOUT_SECONDS", "5")
+        .env("LABBY_E2E_PREBUILT", "1")
+        .env("LABBY_E2E_BINARY", "/usr/bin/true")
+        .status()
+        .expect("wedged-cleanup self-test starts");
+
+    assert!(
+        !status.success(),
+        "a watchdog-killed shard must fail qualification: {status}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(8));
+    let marker = owned_root.join("post-deadline-mutation");
+    assert!(!marker.exists());
+    thread::sleep(Duration::from_secs(2));
+    assert!(
+        !marker.exists(),
+        "terminated shard mutated after supervisor returned"
+    );
+}
+
+#[test]
 fn orchestration_cleanup_reaps_retained_group_after_leader_exits() {
     let run_root = tempfile::tempdir().expect("temporary parent");
     let owned_root = run_root.path().join("retained-group-selftest");

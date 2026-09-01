@@ -27,8 +27,8 @@ fn labby_binary() -> PathBuf {
 }
 
 struct RevocationGuard {
-    revoke: Box<dyn FnMut() -> Result<(), String> + Send>,
-    is_absent: Box<dyn Fn() -> Result<bool, String> + Send>,
+    command: Command,
+    absent_paths: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -505,13 +505,13 @@ impl LiveLabbyGuard {
     pub(crate) fn register_credential_session(
         &mut self,
         session: impl Into<String>,
-        revoke: impl FnMut() -> Result<(), String> + Send + 'static,
-        is_absent: impl Fn() -> Result<bool, String> + Send + 'static,
+        command: Command,
+        absent_paths: Vec<PathBuf>,
     ) {
         self.ledger.credential_sessions.push(session.into());
         self.revocations.push(RevocationGuard {
-            revoke: Box::new(revoke),
-            is_absent: Box::new(is_absent),
+            command,
+            absent_paths,
         });
         drop(write_ledger(&self.manifest_path, &self.ledger));
     }
@@ -547,25 +547,17 @@ impl LiveLabbyGuard {
         }
         let revocation_count = self.revocations.len();
         let mut revocations = std::mem::take(&mut self.revocations);
-        match run_cleanup_blocking(absolute, "credential/session cleanup", move || {
+        match run_cleanup_blocking(absolute, "credential/session cleanup", move |deadline| {
             let mut failures = Vec::new();
             for revoke in &mut revocations {
                 if Instant::now() >= absolute {
                     failures.push("credential/session cleanup deadline exhausted".into());
                     break;
                 }
-                if let Err(error) = (revoke.revoke)() {
+                if let Err(error) = run_owned_command(&mut revoke.command, deadline) {
                     failures.push(format!("credential/session revocation failed: {error}"));
-                } else {
-                    match (revoke.is_absent)() {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            failures.push("credential/session remained after revocation".into())
-                        }
-                        Err(error) => failures.push(format!(
-                            "credential/session absence verification failed: {error}"
-                        )),
-                    }
+                } else if revoke.absent_paths.iter().any(|path| path.exists()) {
+                    failures.push("credential/session remained after revocation".into())
                 }
             }
             failures
@@ -585,25 +577,16 @@ impl LiveLabbyGuard {
         let stdout_path = self.stdout_path.clone();
         let stderr_path = self.stderr_path.clone();
         let canaries = self.secret_canaries.clone();
-        match run_cleanup_blocking(absolute, "artifact retention and secret scan", move || {
-            let mut failures = Vec::new();
-            for path in [&stdout_path, &stderr_path] {
-                if Instant::now() >= absolute {
-                    failures.push("artifact cleanup deadline exhausted".into());
-                    break;
-                }
-                if let Err(error) = cap_log_file(path) {
-                    failures.push(format!("log retention failed: {error}"));
-                }
-                scan_file_for_canaries(path, &canaries, &mut failures);
-            }
-            cap_log_tree_bounded(&root.join("logs"), &mut failures, absolute);
-            scan_artifact_tree_bounded(&root, &canaries, &mut failures, absolute);
-            failures
-        })
-        .await
-        {
-            Ok(failures) => result.failures.extend(failures),
+        let artifact_cleanup = run_cleanup_blocking(
+            absolute,
+            "artifact retention and secret scan",
+            move |deadline| {
+                run_artifact_cleanup_helper(&root, &stdout_path, &stderr_path, &canaries, deadline)
+            },
+        );
+        match artifact_cleanup.await {
+            Ok(Ok(failures)) => result.failures.extend(failures),
+            Ok(Err(error)) => result.failures.push(error),
             Err(error) => result.failures.push(error),
         }
         if TcpListener::bind(self.ledger.listener.expect("listener recorded")).is_err() {
@@ -637,12 +620,12 @@ impl LiveLabbyGuard {
         }
         self.finalized = true;
         let owns_root = self.root_guard.is_some();
-        if let Some(root_guard) = self.root_guard.take()
-            && let Err(error) = root_guard.close()
-        {
-            result
-                .failures
-                .push(format!("owned root deletion failed: {error}"));
+        if let Some(root_guard) = self.root_guard.take() {
+            if let Err(error) = root_guard.close() {
+                result
+                    .failures
+                    .push(format!("owned root deletion failed: {error}"));
+            }
         }
         if owns_root && self.root.exists() {
             result.failures.push(format!(
@@ -897,12 +880,17 @@ impl Drop for LiveLabbyGuard {
             }
         }
         for revoke in &mut self.revocations {
-            if let Err(error) = (revoke.revoke)() {
+            if Instant::now() >= deadline {
+                self.evidence
+                    .push(EvidenceKind::Failure, "drop revocation deadline exhausted");
+                break;
+            }
+            if let Err(error) = run_owned_command(&mut revoke.command, deadline) {
                 self.evidence.push(
                     EvidenceKind::Failure,
                     format!("drop revocation failed: {error}"),
                 );
-            } else if !matches!((revoke.is_absent)(), Ok(true)) {
+            } else if revoke.absent_paths.iter().any(|path| path.exists()) {
                 self.evidence.push(
                     EvidenceKind::Failure,
                     "drop revocation absence verification failed",
@@ -1269,14 +1257,23 @@ fn scan_artifact_tree_bounded(
     failures: &mut Vec<String>,
     deadline: Instant,
 ) {
-    let mut pending = vec![(root.to_path_buf(), 0_usize)];
-    let mut files = 0_usize;
     let mut budget = ScanBudget {
         deadline,
         bytes_remaining: CLEANUP_MAX_BYTES,
     };
+    scan_artifact_tree_with_budget(root, canaries, failures, &mut budget);
+}
+
+fn scan_artifact_tree_with_budget(
+    root: &Path,
+    canaries: &[String],
+    failures: &mut Vec<String>,
+    budget: &mut ScanBudget,
+) {
+    let mut pending = vec![(root.to_path_buf(), 0_usize)];
+    let mut files = 0_usize;
     while let Some((path, depth)) = pending.pop() {
-        if Instant::now() >= deadline {
+        if Instant::now() >= budget.deadline {
             failures.push("artifact scan deadline exhausted".into());
             return;
         }
@@ -1305,7 +1302,7 @@ fn scan_artifact_tree_bounded(
                 ));
                 return;
             }
-            scan_file_for_canaries_bounded(&path, canaries, failures, &mut budget);
+            scan_file_for_canaries_bounded(&path, canaries, failures, budget);
             if failures.last().is_some_and(|failure| {
                 failure.contains("byte cap exceeded") || failure.contains("scan deadline exhausted")
             }) {
@@ -1367,31 +1364,180 @@ fn cap_log_tree_bounded(root: &Path, failures: &mut Vec<String>, deadline: Insta
 async fn run_cleanup_blocking<T>(
     deadline: Instant,
     label: &'static str,
-    operation: impl FnOnce() -> T + Send + 'static,
+    operation: impl FnOnce(Instant) -> T + Send + 'static,
 ) -> Result<T, String>
 where
     T: Send + 'static,
 {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
+    if deadline <= Instant::now() {
         return Err(format!("{label} deadline exhausted"));
     }
-    let mut worker = tokio::task::spawn_blocking(operation);
-    match tokio::time::timeout(remaining, &mut worker).await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(format!("{label} worker failed: {error}")),
-        Err(_) => {
-            // `spawn_blocking` cannot be cancelled once it starts. Retain and join
-            // ownership after the reporting deadline so cleanup can never return
-            // while a detached worker is still mutating caller-owned state.
-            match worker.await {
-                Ok(_) => Err(format!("{label} deadline exhausted")),
-                Err(error) => Err(format!(
-                    "{label} deadline exhausted; worker failed: {error}"
-                )),
+    // Inner cleanup is cooperative and joined: it never detaches mutation work.
+    // The documented `labby-live-e2e.sh` process-group supervisor is the hard
+    // wall-clock boundary because an in-process future cannot interrupt a
+    // blocked filesystem syscall. The real-shard watchdog regression proves a
+    // stuck test process is killed before it can mutate after supervision ends.
+    let received = tokio::task::spawn_blocking(move || operation(deadline))
+        .await
+        .map_err(|error| format!("{label} worker failed: {error}"))?;
+    Ok(received)
+}
+
+fn run_owned_command(command: &mut Command, deadline: Instant) -> Result<(), String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let mut post_spawn_errors = Vec::new();
+    #[cfg(windows)]
+    let owned_job = match child.id().map(labby_winjob::JobObject::assign).transpose() {
+        Ok(job) => job,
+        Err(error) => {
+            post_spawn_errors.push(format!("cleanup helper job assignment failed: {error}"));
+            None
+        }
+    };
+    #[cfg(not(windows))]
+    let owned_job = OwnedCleanupJob;
+    if !post_spawn_errors.is_empty() {
+        terminate_and_reap_owned_child(&mut child, owned_job, &mut post_spawn_errors);
+        return Err(format!(
+            "cleanup helper post-spawn setup failed; helper killed and reaped: {}",
+            post_spawn_errors.join("; ")
+        ));
+    }
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return status
+                    .success()
+                    .then_some(())
+                    .ok_or_else(|| format!("cleanup helper exited with {status}"));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                post_spawn_errors.push(format!("cleanup helper status poll failed: {error}"));
+                terminate_and_reap_owned_child(&mut child, owned_job, &mut post_spawn_errors);
+                return Err(format!(
+                    "cleanup helper polling failed; helper killed and reaped: {}",
+                    post_spawn_errors.join("; ")
+                ));
             }
         }
+        if Instant::now() >= deadline {
+            let mut termination_errors = Vec::new();
+            terminate_and_reap_owned_child(&mut child, owned_job, &mut termination_errors);
+            let detail = if termination_errors.is_empty() {
+                String::new()
+            } else {
+                format!("; termination errors: {}", termination_errors.join("; "))
+            };
+            return Err(format!(
+                "cleanup helper deadline exhausted; helper killed and reaped{detail}"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[cfg(windows)]
+type OwnedCleanupJob = Option<labby_winjob::JobObject>;
+#[cfg(not(windows))]
+struct OwnedCleanupJob;
+
+fn unassigned_cleanup_job() -> OwnedCleanupJob {
+    #[cfg(windows)]
+    {
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        OwnedCleanupJob
+    }
+}
+
+fn terminate_and_reap_owned_child(
+    child: &mut std::process::Child,
+    owned_job: OwnedCleanupJob,
+    errors: &mut Vec<String>,
+) {
+    #[cfg(unix)]
+    if let Err(error) = nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    ) {
+        errors.push(format!("cleanup helper process-group kill failed: {error}"));
+    }
+    #[cfg(windows)]
+    if let Some(job) = owned_job {
+        if let Err(error) = job.close() {
+            errors.push(format!("cleanup helper job termination failed: {error}"));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = owned_job;
+    if let Err(error) = child.kill() {
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => errors.push(format!("cleanup helper direct kill failed: {error}")),
+        }
+    }
+    let reap_deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(error) => {
+                errors.push(format!("cleanup helper reap failed: {error}"));
+                std::process::abort();
+            }
+        }
+        if Instant::now() >= reap_deadline {
+            // Returning would permit a mutation-capable helper to outlive its
+            // owner, so fail-stop this disposable integration-test process.
+            std::process::abort();
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn run_artifact_cleanup_helper(
+    root: &Path,
+    stdout_path: &Path,
+    stderr_path: &Path,
+    canaries: &[String],
+    deadline: Instant,
+) -> Result<Vec<String>, String> {
+    let control = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let canaries_path = control.path().join("canaries.json");
+    let response_path = control.path().join("response.json");
+    std::fs::write(
+        &canaries_path,
+        serde_json::to_vec(canaries).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let mut command = Command::new(std::env::current_exe().map_err(|error| error.to_string())?);
+    command
+        .args([
+            "artifact_cleanup_helper_entrypoint",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("LABBY_ARTIFACT_HELPER_ROOT", root)
+        .env("LABBY_ARTIFACT_HELPER_STDOUT", stdout_path)
+        .env("LABBY_ARTIFACT_HELPER_STDERR", stderr_path)
+        .env("LABBY_ARTIFACT_HELPER_CANARIES", &canaries_path)
+        .env("LABBY_ARTIFACT_HELPER_RESPONSE", &response_path);
+    run_owned_command(&mut command, deadline)?;
+    let response = std::fs::read(&response_path).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&response).map_err(|error| error.to_string())
 }
 
 fn process_start_identity(pid: u32) -> String {
@@ -1475,6 +1621,35 @@ mod tests {
     };
 
     #[test]
+    #[ignore = "one-shot artifact cleanup subprocess entrypoint"]
+    fn artifact_cleanup_helper_entrypoint() {
+        let root = PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_ROOT").unwrap());
+        let stdout_path = PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_STDOUT").unwrap());
+        let stderr_path = PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_STDERR").unwrap());
+        let canaries_path =
+            PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_CANARIES").unwrap());
+        let response_path =
+            PathBuf::from(std::env::var_os("LABBY_ARTIFACT_HELPER_RESPONSE").unwrap());
+        let canaries: Vec<String> =
+            serde_json::from_slice(&std::fs::read(canaries_path).unwrap()).unwrap();
+        let deadline = Instant::now() + DEFAULT_DEADLINE;
+        let mut failures = Vec::new();
+        let mut scan_budget = ScanBudget {
+            deadline,
+            bytes_remaining: CLEANUP_MAX_BYTES,
+        };
+        for path in [&stdout_path, &stderr_path] {
+            if let Err(error) = cap_log_file(path) {
+                failures.push(format!("log retention failed: {error}"));
+            }
+            scan_file_for_canaries_bounded(path, &canaries, &mut failures, &mut scan_budget);
+        }
+        cap_log_tree_bounded(&root.join("logs"), &mut failures, deadline);
+        scan_artifact_tree_with_budget(&root, &canaries, &mut failures, &mut scan_budget);
+        std::fs::write(response_path, serde_json::to_vec(&failures).unwrap()).unwrap();
+    }
+
+    #[test]
     fn artifact_scan_detects_a_canary_across_stream_chunks() {
         let temp = tempfile::tempdir().unwrap();
         let artifact = temp.path().join("large.log");
@@ -1521,7 +1696,7 @@ mod tests {
         let cleanup = run_cleanup_blocking(
             Instant::now() + Duration::from_secs(1),
             "blocking proof",
-            || {
+            |_| {
                 std::thread::sleep(Duration::from_millis(50));
                 42
             },
@@ -1532,27 +1707,109 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn timed_out_blocking_cleanup_is_joined_before_return() {
-        let mutated = Arc::new(AtomicBool::new(false));
-        let worker_mutated = Arc::clone(&mutated);
-        let result = run_cleanup_blocking(
+    async fn deadline_aware_cleanup_settles_before_return() {
+        let settled = Arc::new(AtomicBool::new(false));
+        let worker_settled = Arc::clone(&settled);
+        let mutations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_mutations = Arc::clone(&mutations);
+        run_cleanup_blocking(
             Instant::now() + Duration::from_millis(5),
             "owned timeout proof",
-            move || {
-                std::thread::sleep(Duration::from_millis(30));
-                worker_mutated.store(true, Ordering::SeqCst);
+            move |deadline| {
+                while Instant::now() < deadline {
+                    worker_mutations.fetch_add(1, Ordering::SeqCst);
+                    std::hint::spin_loop();
+                }
+                worker_settled.store(true, Ordering::SeqCst);
             },
         )
-        .await;
+        .await
+        .unwrap();
 
-        assert_eq!(
-            result.unwrap_err(),
-            "owned timeout proof deadline exhausted"
-        );
+        assert!(settled.load(Ordering::SeqCst));
+        let after_return = mutations.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(mutations.load(Ordering::SeqCst), after_return);
+    }
+
+    #[test]
+    fn non_cooperative_cleanup_helper_is_killed_reaped_and_cannot_mutate_later() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("post-deadline-mutation");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("trap '' TERM; sleep 0.20; touch -- \"$1\"")
+            .arg("sh")
+            .arg(&marker);
+
+        let error = run_owned_command(&mut command, Instant::now() + Duration::from_millis(20))
+            .unwrap_err();
+
+        assert!(error.contains("killed and reaped"), "{error}");
+        assert!(!marker.exists());
+        std::thread::sleep(Duration::from_millis(300));
         assert!(
-            mutated.load(Ordering::SeqCst),
-            "the timeout must retain ownership until the blocking worker settles"
+            !marker.exists(),
+            "killed helper mutated after cleanup returned"
         );
+    }
+
+    #[test]
+    fn containment_failure_still_falls_back_to_direct_kill_and_bounded_reap() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("post-settlement-mutation");
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 0.20; touch -- \"$1\"")
+            .arg("sh")
+            .arg(&marker)
+            .spawn()
+            .unwrap();
+        let mut errors = vec!["injected process-group termination failure".to_owned()];
+
+        terminate_and_reap_owned_child(&mut child, unassigned_cleanup_job(), &mut errors);
+
+        assert_eq!(errors, ["injected process-group termination failure"]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !marker.exists(),
+            "fallback-killed helper mutated after reap"
+        );
+    }
+
+    fn assert_injected_post_spawn_failure_settles(label: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("post-settlement-mutation");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("sleep 0.20; touch -- \"$1\"")
+            .arg("sh")
+            .arg(&marker);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().unwrap();
+        let mut errors = vec![label.to_owned()];
+
+        terminate_and_reap_owned_child(&mut child, unassigned_cleanup_job(), &mut errors);
+
+        assert!(errors.iter().any(|error| error == label), "{errors:?}");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "spawned helper mutated after settlement");
+    }
+
+    #[test]
+    fn post_spawn_setup_failure_is_killed_and_reaped_before_return() {
+        assert_injected_post_spawn_failure_settles("injected post-spawn setup failure");
+    }
+
+    #[test]
+    fn child_status_poll_failure_is_killed_and_reaped_before_return() {
+        assert_injected_post_spawn_failure_settles("injected child status poll failure");
     }
 
     #[test]
@@ -1594,6 +1851,32 @@ mod tests {
             failures
                 .iter()
                 .any(|failure| failure.contains("deadline exhausted")),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
+    fn direct_and_recursive_artifact_scans_share_one_byte_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let direct = temp.path().join("stdout.log");
+        let tree = temp.path().join("artifacts");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::write(&direct, b"123456").unwrap();
+        std::fs::write(tree.join("later.log"), b"789").unwrap();
+        let mut failures = Vec::new();
+        let mut budget = ScanBudget {
+            deadline: Instant::now() + Duration::from_secs(1),
+            bytes_remaining: 8,
+        };
+
+        scan_file_for_canaries_bounded(&direct, &[], &mut failures, &mut budget);
+        scan_artifact_tree_with_budget(&tree, &[], &mut failures, &mut budget);
+
+        assert_eq!(budget.bytes_remaining, 0);
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("byte cap exceeded")),
             "{failures:?}"
         );
     }
@@ -1730,24 +2013,19 @@ mod tests {
 
     #[tokio::test]
     async fn credential_sessions_are_revoked_instead_of_only_forgotten() {
-        let revoked = Arc::new(AtomicBool::new(false));
-        let observed = Arc::clone(&revoked);
-        let verified = Arc::clone(&revoked);
         let mut guard = LiveLabbyBuilder::new().start().await.expect("live labby");
-        guard.register_credential_session(
-            "synthetic-session",
-            move || {
-                observed.store(true, Ordering::SeqCst);
-                Ok(())
-            },
-            move || Ok(verified.load(Ordering::SeqCst)),
-        );
+        let marker = guard.root.join("synthetic-session");
+        std::fs::write(&marker, b"present").unwrap();
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("rm -f -- \"$1\"")
+            .arg("sh")
+            .arg(&marker);
+        guard.register_credential_session("synthetic-session", command, vec![marker.clone()]);
         let cleanup = guard.finish().await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
-        assert!(
-            revoked.load(Ordering::SeqCst),
-            "revocation guard was not invoked"
-        );
+        assert!(!marker.exists(), "revocation helper was not invoked");
     }
 
     #[tokio::test]

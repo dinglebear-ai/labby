@@ -238,8 +238,7 @@ impl<'a> GoogleRequestTrace<'a> {
             provider = "google",
             operation,
             method,
-            host = endpoint.host_str().unwrap_or_default(),
-            path = endpoint.path(),
+            endpoint_id = %fingerprint(endpoint.as_str()),
             "request.start"
         );
         Self {
@@ -255,8 +254,7 @@ impl<'a> GoogleRequestTrace<'a> {
             provider = "google",
             operation = self.operation,
             method = self.method,
-            host = self.endpoint.host_str().unwrap_or_default(),
-            path = self.endpoint.path(),
+            endpoint_id = %fingerprint(self.endpoint.as_str()),
             status = status.as_u16(),
             elapsed_ms = self.started.elapsed().as_millis(),
             "request.finish"
@@ -269,11 +267,16 @@ impl<'a> GoogleRequestTrace<'a> {
                 provider = "google",
                 operation = self.operation,
                 method = self.method,
-                host = self.endpoint.host_str().unwrap_or_default(),
-                path = self.endpoint.path(),
+                endpoint_id = %fingerprint(self.endpoint.as_str()),
                 status = status.as_u16(),
                 elapsed_ms = self.started.elapsed().as_millis(),
-                error = %error,
+                error_is_builder = error.is_builder(),
+                error_is_request = error.is_request(),
+                error_is_redirect = error.is_redirect(),
+                error_is_timeout = error.is_timeout(),
+                error_is_connect = error.is_connect(),
+                error_is_body = error.is_body(),
+                error_is_decode = error.is_decode(),
                 "request.error"
             );
         } else {
@@ -281,10 +284,15 @@ impl<'a> GoogleRequestTrace<'a> {
                 provider = "google",
                 operation = self.operation,
                 method = self.method,
-                host = self.endpoint.host_str().unwrap_or_default(),
-                path = self.endpoint.path(),
+                endpoint_id = %fingerprint(self.endpoint.as_str()),
                 elapsed_ms = self.started.elapsed().as_millis(),
-                error = %error,
+                error_is_builder = error.is_builder(),
+                error_is_request = error.is_request(),
+                error_is_redirect = error.is_redirect(),
+                error_is_timeout = error.is_timeout(),
+                error_is_connect = error.is_connect(),
+                error_is_body = error.is_body(),
+                error_is_decode = error.is_decode(),
                 "request.error"
             );
         }
@@ -307,12 +315,13 @@ async fn read_json_response<T: DeserializeOwned>(
     errors: GoogleRequestErrors,
 ) -> Result<T, AuthError> {
     let response = request.send().await.map_err(|error| {
-        let auth_error = AuthError::Network(format!("{}: {error}", errors.transport_context));
+        let auth_error = AuthError::Network(errors.transport_context.to_string());
         trace.error(None, &error);
         warn!(
             provider = "google",
-            error = %error,
             kind = auth_error.kind(),
+            error_is_timeout = error.is_timeout(),
+            error_is_connect = error.is_connect(),
             "{}",
             errors.transport_log
         );
@@ -332,7 +341,7 @@ async fn read_json_response<T: DeserializeOwned>(
                 retry_after_ms: retry_after_ms.unwrap_or(1_000),
             }
         } else if status.is_server_error() {
-            AuthError::Server(format!("{}: {error}", errors.status_context))
+            AuthError::Server(format!("{}: {status}", errors.status_context))
         } else if errors.invalid_grant_requires_reauth
             && response
                 .json::<GoogleTokenErrorResponse>()
@@ -343,13 +352,13 @@ async fn read_json_response<T: DeserializeOwned>(
                 "google refresh token is expired or revoked; reauthorization required".to_string(),
             )
         } else {
-            AuthError::AuthFailed(format!("{}: {error}", errors.status_context))
+            AuthError::AuthFailed(format!("{}: {status}", errors.status_context))
         };
         trace.error(Some(status), &error);
         warn!(
             provider = "google",
-            error = %error,
             kind = auth_error.kind(),
+            status = status.as_u16(),
             "{}",
             errors.status_log
         );
@@ -357,11 +366,11 @@ async fn read_json_response<T: DeserializeOwned>(
     }
     trace.finish(status);
     response.json::<T>().await.map_err(|error| {
-        let auth_error = AuthError::Decode(format!("{}: {error}", errors.decode_context));
+        let auth_error = AuthError::Decode(errors.decode_context.to_string());
         warn!(
             provider = "google",
-            error = %error,
             kind = auth_error.kind(),
+            error_is_decode = error.is_decode(),
             "{}",
             errors.decode_log
         );
@@ -451,8 +460,9 @@ impl GoogleProvider {
         debug!(
             provider = "google",
             oauth_state_id = %fingerprint(&request.state),
-            scope = %scope,
-            redirect_uri = %self.redirect_uri,
+            scope_count = self.scopes.len(),
+            scope_id = %fingerprint(&scope),
+            redirect_uri_id = %fingerprint(self.redirect_uri.as_str()),
             "oauth upstream authorize URL constructed"
         );
         Ok(url)
@@ -467,7 +477,7 @@ impl GoogleProvider {
         info!(
             provider = "google",
             oauth_code_id = %fingerprint(code),
-            redirect_uri = %self.redirect_uri,
+            redirect_uri_id = %fingerprint(self.redirect_uri.as_str()),
             "oauth upstream code exchange started"
         );
         let payload: GoogleTokenResponse = read_json_response(
@@ -651,7 +661,8 @@ impl GoogleProvider {
 
         debug!(
             provider = "google",
-            kid, "google jwks cache miss for token key id; refreshing"
+            kid_id = %fingerprint(kid),
+            "google jwks cache miss for token key id; refreshing"
         );
         self.refresh_jwks()
             .await?
@@ -708,20 +719,33 @@ impl GoogleProvider {
             .await
             .map_err(|error| {
                 trace.error(None, &error);
-                warn!(provider = "google", error = %error, "google jwks request failed");
-                AuthError::Storage(format!("fetch google jwks: {error}"))
+                warn!(
+                    provider = "google",
+                    error_is_timeout = error.is_timeout(),
+                    error_is_connect = error.is_connect(),
+                    "google jwks request failed"
+                );
+                AuthError::Storage("fetch google jwks request failed".to_string())
             })?;
         let status = response.status();
         let ttl = google_jwks_ttl(response.headers());
         let response = response.error_for_status().map_err(|error| {
             trace.error(Some(status), &error);
-            warn!(provider = "google", error = %error, "google jwks request returned error status");
-            AuthError::Storage(format!("google jwks endpoint error: {error}"))
+            warn!(
+                provider = "google",
+                status = status.as_u16(),
+                "google jwks request returned error status"
+            );
+            AuthError::Storage(format!("google jwks endpoint returned {status}"))
         })?;
         trace.finish(status);
         let jwks = response.json::<GoogleJwks>().await.map_err(|error| {
-            warn!(provider = "google", error = %error, "google jwks payload unreadable");
-            AuthError::Storage(format!("decode google jwks response: {error}"))
+            warn!(
+                provider = "google",
+                error_is_decode = error.is_decode(),
+                "google jwks payload unreadable"
+            );
+            AuthError::Storage("decode google jwks response".to_string())
         })?;
 
         *cache = Some(CachedGoogleJwks {
@@ -866,6 +890,92 @@ mod tests {
         assert!(url.as_str().contains("access_type=offline"));
         assert!(url.as_str().contains("prompt=consent"));
         assert!(url.as_str().contains("code_challenge="));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn google_operation_logs_redact_oauth_configuration_metadata() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let server = MockServer::start().await;
+        let redirect_sentinel = "sentinel-redirect.example";
+        let scope_sentinel = "sentinel-google-scope-secret";
+        let endpoint_host_sentinel = "sentinel-google-endpoint.example";
+        let endpoint_path_sentinel = "sentinel-google-error-path";
+        let endpoint_query_sentinel = "sentinel-google-error-query";
+        let kid_sentinel = "sentinel-google-kid-secret";
+        let mut provider = GoogleProvider::new(
+            "client-id".to_string(),
+            "client-secret".to_string(),
+            Url::parse(&format!(
+                "https://{redirect_sentinel}/callback?tenant=sentinel-tenant-secret"
+            ))
+            .unwrap(),
+        )
+        .unwrap()
+        .with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server
+                .uri()
+                .parse::<Url>()
+                .unwrap()
+                .join(&format!(
+                    "/{endpoint_path_sentinel}?tenant={endpoint_query_sentinel}"
+                ))
+                .unwrap(),
+        )
+        .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
+        provider.scopes = vec![scope_sentinel.to_string()];
+
+        Mock::given(method("GET"))
+            .and(path("/certs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [] })))
+            .mount(&server)
+            .await;
+
+        provider.authorize_url(&sample_request()).unwrap();
+        let exchange_error = provider
+            .exchange_code("code", "verifier")
+            .await
+            .expect_err("unconfigured sentinel token endpoint returns an error");
+        let kid_error = provider
+            .find_jwk_for_kid(kid_sentinel)
+            .await
+            .expect_err("empty sentinel JWKS has no matching key");
+        let synthetic_endpoint = Url::parse(&format!(
+            "https://{endpoint_host_sentinel}/{endpoint_path_sentinel}?tenant={endpoint_query_sentinel}"
+        ))
+        .unwrap();
+        let trace = super::GoogleRequestTrace::start("sentinel", "GET", &synthetic_endpoint);
+        trace.finish(reqwest::StatusCode::OK);
+
+        let logs = crate::test_support::captured_logs(buf);
+        for sentinel in [
+            redirect_sentinel,
+            "sentinel-tenant-secret",
+            scope_sentinel,
+            endpoint_host_sentinel,
+            endpoint_path_sentinel,
+            endpoint_query_sentinel,
+            kid_sentinel,
+        ] {
+            assert!(
+                !logs.contains(sentinel),
+                "OAuth configuration metadata leaked into logs: {sentinel}\n{logs}"
+            );
+            assert!(
+                !exchange_error.to_string().contains(sentinel),
+                "OAuth configuration metadata leaked into exchange error: {sentinel}: {exchange_error}"
+            );
+            assert!(
+                !kid_error.to_string().contains(sentinel),
+                "OAuth configuration metadata leaked into JWKS error: {sentinel}: {kid_error}"
+            );
+        }
+        assert!(logs.contains("scope_count"), "{logs}");
+        assert!(logs.contains("redirect_uri_id"), "{logs}");
+        assert!(logs.contains("endpoint_id"), "{logs}");
+        assert!(logs.contains("kid_id"), "{logs}");
+        assert!(!logs.contains("\"error\":"), "{logs}");
     }
 
     #[test]

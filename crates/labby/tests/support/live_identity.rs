@@ -220,23 +220,20 @@ impl LiveIdentity {
         // revocations. Register the shipped offline recovery path so timeout or
         // panic teardown still revokes this run's exact prepare and removes its
         // secret outputs before the caller-owned installation disappears.
-        let recovery_root = root.clone();
-        let recovery_prepare_id = prepare_id.clone();
-        let absent_root = root.clone();
+        let mut recovery = installation_command(&root);
+        recovery.args([
+            "setup",
+            "access-bootstrap",
+            "recover",
+            "--prepare-id",
+            &prepare_id,
+            "--revoke",
+            "--json",
+        ]);
         guard.register_credential_session(
             format!("bootstrap:{prepare_id}:{credential_id}"),
-            move || {
-                if !recovery_root.join("credential.txt").exists()
-                    && !recovery_root.join("proof.json").exists()
-                {
-                    return Ok(());
-                }
-                recover(&recovery_root, &recovery_prepare_id, true).map(drop)
-            },
-            move || {
-                Ok(!absent_root.join("credential.txt").exists()
-                    && !absent_root.join("proof.json").exists())
-            },
+            recovery,
+            vec![root.join("credential.txt"), root.join("proof.json")],
         );
         Ok(Self {
             guard: Some(guard),

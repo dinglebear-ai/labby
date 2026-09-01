@@ -716,9 +716,7 @@ pub async fn callback(
         authorization_response_has_code = has_code,
         authorization_response_has_state = has_state,
         authorization_response_has_issuer = has_issuer,
-        redirect_scheme = redirect_uri.scheme(),
-        redirect_host = redirect_uri.host_str(),
-        redirect_path = redirect_uri.path(),
+        redirect_uri_id = %fingerprint(redirect_uri.as_str()),
         "oauth callback authorization response prepared"
     );
 
@@ -3166,6 +3164,8 @@ pub mod tests {
         }
 
         async fn oauth_client_callback_location(codex_issuer_compatibility: bool) -> Url {
+            const CLIENT_REDIRECT_URI: &str =
+                "https://sentinel-client-redirect.example/sentinel-callback-path";
             let mut config = test_auth_config();
             config.admin_email = "admin@example.com".to_string();
             config.codex_issuer_compatibility = codex_issuer_compatibility;
@@ -3176,7 +3176,7 @@ pub mod tests {
                 .store
                 .register_client(RegisteredClient {
                     client_id: "client".to_string(),
-                    redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
+                    redirect_uris: vec![CLIENT_REDIRECT_URI.to_string()],
                     created_at: now_unix(),
                     token_endpoint_auth_method: "none".to_string(),
                     token_endpoint_auth_methods: Vec::new(),
@@ -3201,7 +3201,7 @@ pub mod tests {
                 .insert_authorization_request(AuthorizationRequestRow {
                     state: "oauth-state".to_string(),
                     client_id: "client".to_string(),
-                    redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
+                    redirect_uri: CLIENT_REDIRECT_URI.to_string(),
                     client_state: "client-xyz".to_string(),
                     native_poll_token_hash: None,
                     resource: "https://lab.example.com/mcp".to_string(),
@@ -3287,13 +3287,17 @@ pub mod tests {
                 "client-xyz",
                 "iss=https%3A%2F%2Flab.example.com",
                 redirect.as_str(),
+                "sentinel-client-redirect.example",
+                "sentinel-callback-path",
             ] {
                 assert!(
                     !logs.contains(secret),
                     "OAuth redirect secret leaked into debug logs: {secret}\n{logs}"
                 );
             }
-            assert!(logs.contains("\"redirect_path\":\"/callback\""), "{logs}");
+            assert!(logs.contains("\"redirect_uri_id\":"), "{logs}");
+            assert!(!logs.contains("\"redirect_host\":"), "{logs}");
+            assert!(!logs.contains("\"redirect_path\":"), "{logs}");
         }
 
         /// Email not in admin or allowed_users must be rejected in the browser-login

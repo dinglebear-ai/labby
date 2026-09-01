@@ -60,7 +60,18 @@ terminate_children() {
     [ "$alive" -eq 0 ] && break
     sleep 0.05
   done
-  for group in "${owned_groups[@]:-}"; do group_identity_matches "$group" && group_alive "$group" && kill -KILL -- "-$group" 2>/dev/null || true; done
+  for group in "${owned_groups[@]:-}"; do
+    if group_identity_matches "$group" && group_alive "$group"; then
+      kill -KILL -- "-$group" 2>/dev/null || { cleanup=1; group_alive "$group" && return 70 || true; }
+    fi
+  done
+  reap_deadline=$((SECONDS + 2))
+  while [ "$SECONDS" -lt "$reap_deadline" ]; do
+    alive=0; for group in "${owned_groups[@]:-}"; do group_alive "$group" && alive=1; done
+    [ "$alive" -eq 0 ] && break
+    sleep 0.05
+  done
+  for group in "${owned_groups[@]:-}"; do group_alive "$group" && { cleanup=1; return 70; } || true; done
   for pid in "${active_pids[@]:-}"; do wait "$pid" 2>/dev/null || true; done
   active_pids=()
 }
@@ -189,9 +200,48 @@ run_shard() {
     live-identity-protected-restart) cargo test -p labby --all-features --test live_identity_bootstrap --test live_protected_routes --test live_restart_persistence --locked -- --test-threads=1 >"$log" 2>&1;;
     browser-live) node_bin="$(command -v node)"; case "$node_bin" in */mise/shims/*) node_bin="$(mise which node)";; esac; PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" LABBY_NODE_BIN="$node_bin" LABBY_LIVE_BROWSER_RUN=1 LABBY_LIVE_BROWSER_NIGHTLY="$([ "$tier" = nightly ] && echo true || echo false)" LABBY_LIVE_BROWSER_ASSETS_DIR="${LABBY_LIVE_BROWSER_ASSETS_DIR:-$repo_root/apps/gateway-admin/out}" cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >"$log" 2>&1;;
     fault-qualification) LABBY_E2E_FAULT_REPORT="$run_root/artifacts/fault-qualification.json" cargo test -p labby --all-features --test e2e_fault_qualification --locked -- --test-threads=1 >"$log" 2>&1;;
+    wedged-cleanup-selftest) bash -c 'trap "" TERM; sleep 6; touch -- "$LABBY_E2E_WEDGED_MARKER"; while :; do sleep 1; done' >"$log" 2>&1;;
   esac && complete "$shard" "$log"
 }
-if [ "$tier" = collision ]; then set -m; for shard in "${shards[@]}"; do group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"; LABBY_E2E_GROUP_TOKEN="$group_token" run_shard "$shard" & pid="$!"; active_pids+=("$pid"); owned_groups+=("$pid"); register_group "$pid" "$group_token"; done; for pid in "${active_pids[@]}"; do wait "$pid" || primary=1; refresh_group_members "$pid"; done; active_pids=(); set +m; else for shard in "${shards[@]}"; do run_shard "$shard" || { primary=1; tail -c 12000 "$run_root/$shard.log" >&2 || true; exit 1; }; done; fi
+start_owned_shard() {
+  shard="$1"; group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
+  LABBY_E2E_GROUP_TOKEN="$group_token" run_shard "$shard" & last_pid="$!"
+  active_pids+=("$last_pid"); owned_groups+=("$last_pid"); register_group "$last_pid" "$group_token"
+}
+wait_owned_shard() {
+  pid="$1"; shard="$2"; limit="${LABBY_E2E_SHARD_TIMEOUT_SECONDS:-900}"
+  case "$limit" in *[!0-9]*|'') return 64;; esac
+  shard_deadline=$((SECONDS + limit))
+  [ "$shard_deadline" -le "$run_deadline" ] || shard_deadline="$run_deadline"
+  while group_alive "$pid" && [ "$SECONDS" -lt "$shard_deadline" ]; do sleep 0.05; done
+  if group_alive "$pid"; then
+    primary=1
+    if ! group_identity_matches "$pid"; then cleanup=1; return 70; fi
+    kill -TERM -- "-$pid" 2>/dev/null || cleanup=1
+    grace_deadline=$((SECONDS + 3)); while group_alive "$pid" && [ "$SECONDS" -lt "$grace_deadline" ]; do sleep 0.05; done
+    if group_alive "$pid"; then kill -KILL -- "-$pid" 2>/dev/null || { cleanup=1; return 70; }; fi
+    reap_deadline=$((SECONDS + 2)); while group_alive "$pid" && [ "$SECONDS" -lt "$reap_deadline" ]; do sleep 0.05; done
+    group_alive "$pid" && { cleanup=1; return 70; }
+    wait "$pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid" || return $?
+}
+if [ "${LABBY_E2E_WEDGED_SHARD_SELFTEST:-0}" = 1 ]; then
+  shards=(wedged-cleanup-selftest)
+  export LABBY_E2E_WEDGED_MARKER="$run_root/post-deadline-mutation"
+fi
+run_limit="${LABBY_E2E_RUN_TIMEOUT_SECONDS:-7200}"
+case "$run_limit" in *[!0-9]*|'') exit 64;; esac
+run_deadline=$((SECONDS + run_limit))
+set -m
+if [ "$tier" = collision ]; then
+  shard_pids=(); for shard in "${shards[@]}"; do start_owned_shard "$shard"; shard_pids+=("$last_pid:$shard"); done
+  for entry in "${shard_pids[@]}"; do pid="${entry%%:*}"; shard="${entry#*:}"; wait_owned_shard "$pid" "$shard" || primary=1; refresh_group_members "$pid"; done
+else
+  for shard in "${shards[@]}"; do start_owned_shard "$shard"; wait_owned_shard "$last_pid" "$shard" || { primary=1; tail -c 12000 "$run_root/$shard.log" >&2 || true; break; }; done
+fi
+active_pids=(); set +m
 [ "$primary" -eq 0 ] || exit 1
 # Audit before producing any aggregate artifact that claims this run passed.
 symlinks_absent=true; find "$run_root" -type l -print -quit | grep -q . && { symlinks_absent=false; cleanup=1; } || true

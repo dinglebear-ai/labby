@@ -42,6 +42,7 @@ export type LiveBrowserEvidence = {
 
 type CaptureOutcome =
   | { status: 'captured'; path: string }
+  | { status: 'discarded'; reason: string }
   | { status: 'failed'; error: string }
 
 function ownedAbsolutePath(value: unknown, field: string) {
@@ -133,7 +134,11 @@ function safePathname(raw: string, baseUrl: string) {
 
 export function observeLivePage(page: Page, baseUrl: string): LiveBrowserEvidence {
   const evidence: LiveBrowserEvidence = {
-    requests: [], console: [], pageErrors: [], failedRequests: [], cspViolations: [],
+    requests: [],
+    console: [],
+    pageErrors: [],
+    failedRequests: [],
+    cspViolations: [],
   }
   const pending = new WeakMap<Request, number>()
   let retainedBytes = 0
@@ -146,13 +151,21 @@ export function observeLivePage(page: Page, baseUrl: string): LiveBrowserEvidenc
   page.on('request', (request) => {
     if (!request.url().startsWith(baseUrl)) return
     if (evidence.requests.length >= MAX_EVIDENCE_EVENTS) return
-    pending.set(request, evidence.requests.push({ method: request.method(), path: safePathname(request.url(), baseUrl) }) - 1)
+    pending.set(
+      request,
+      evidence.requests.push({
+        method: request.method(),
+        path: safePathname(request.url(), baseUrl),
+      }) - 1,
+    )
   })
   page.on('response', (response) => {
     const index = pending.get(response.request())
     if (index !== undefined) evidence.requests[index]!.status = response.status()
   })
-  page.on('requestfailed', (request) => retain(evidence.failedRequests, `${request.method()} ${safePathname(request.url(), baseUrl)}`))
+  page.on('requestfailed', (request) =>
+    retain(evidence.failedRequests, `${request.method()} ${safePathname(request.url(), baseUrl)}`),
+  )
   page.on('console', (message) => {
     const rendered = `${message.type()}: ${message.text()}`
     retain(evidence.console, rendered)
@@ -201,7 +214,9 @@ export async function withAbsoluteDeadline<T>(
       let drainTimer: NodeJS.Timeout | undefined
       await Promise.race([
         settled,
-        new Promise<void>((resolve) => { drainTimer = setTimeout(resolve, drainGraceMs) }),
+        new Promise<void>((resolve) => {
+          drainTimer = setTimeout(resolve, drainGraceMs)
+        }),
       ])
       if (drainTimer) clearTimeout(drainTimer)
     }
@@ -211,25 +226,89 @@ export async function withAbsoluteDeadline<T>(
 export async function launchBrowserWithAbort<T extends Pick<Browser, 'close'>>(
   signal: AbortSignal,
   launch: () => Promise<T>,
-): Promise<{ browser: T; detachAbort: () => void }> {
+): Promise<{
+  browser: T
+  closeOnce: () => Promise<void>
+  detachAbort: () => void
+}> {
   const browser = await launch()
   let closePromise: Promise<void> | undefined
-  const closeBrowser = () => {
-    closePromise ??= browser.close().then(() => undefined, () => undefined)
+  const closeOnce = () => {
+    closePromise ??= browser.close().then(() => undefined)
     return closePromise
   }
-  const abortBrowser = () => { void closeBrowser() }
+  const abortBrowser = () => {
+    void closeOnce().catch(() => undefined)
+  }
   signal.addEventListener('abort', abortBrowser, { once: true })
 
   // An abort can occur while launch() is pending. Registering the listener
   // after launch is not sufficient because AbortSignal does not replay events.
   if (signal.aborted) {
-    await closeBrowser()
+    await closeOnce().catch(() => undefined)
     signal.throwIfAborted()
   }
   return {
     browser,
+    closeOnce,
     detachAbort: () => signal.removeEventListener('abort', abortBrowser),
+  }
+}
+
+export async function useBrowserWithAbort<T extends Pick<Browser, 'close'>, R>(
+  signal: AbortSignal,
+  launch: () => Promise<T>,
+  operation: (browser: T) => Promise<R>,
+): Promise<R> {
+  const { browser, closeOnce, detachAbort } = await launchBrowserWithAbort(signal, launch)
+  let primaryError: unknown
+  try {
+    return await operation(browser)
+  } catch (error) {
+    primaryError = error
+    throw error
+  } finally {
+    try {
+      await closeOnce()
+    } catch (closeError) {
+      if (primaryError === undefined) throw closeError
+    } finally {
+      detachAbort()
+    }
+  }
+}
+
+export async function runBrowserCleanupIfActive(
+  signal: AbortSignal,
+  deferred: () => void,
+  cleanup: (mayContinue: () => boolean) => Promise<void>,
+): Promise<boolean> {
+  let recordedDeferral = false
+  const mayContinue = () => {
+    if (!signal.aborted) return true
+    if (!recordedDeferral) {
+      recordedDeferral = true
+      deferred()
+    }
+    return false
+  }
+  if (!mayContinue()) return false
+  await cleanup(mayContinue)
+  return true
+}
+
+async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) signal.throwIfAborted()
+  let detach = () => undefined
+  const aborted = new Promise<never>((_, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('operation aborted'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    detach = () => signal.removeEventListener('abort', onAbort)
+  })
+  try {
+    return await Promise.race([operation, aborted])
+  } finally {
+    detach()
   }
 }
 
@@ -240,51 +319,102 @@ export async function captureFailureEvidence(options: {
   descriptor: LiveBackendDescriptor
   evidence: LiveBrowserEvidence
   error: unknown
+  signal?: AbortSignal
 }) {
   const { context, page, descriptor, evidence } = options
-  const evidenceDir = await canonicalOwnedPath(descriptor.run_root, descriptor.evidence_dir, 'evidence_dir', 'directory')
-  const invocationDir = await mkdtemp(path.join(evidenceDir, `browser-${descriptor.run_id}-`))
-  await chmod(invocationDir, 0o700)
-  const prefix = path.join(invocationDir, 'failure')
-  const screenshot = `${prefix}.png`
-  const trace = `${prefix}.trace.zip`
-  const screenshotOutcome: CaptureOutcome = await page.screenshot({ path: screenshot, fullPage: true })
-    .then(() => ({ status: 'captured' as const, path: screenshot }))
-    .catch((error: unknown) => ({ status: 'failed' as const, error: renderError(error) }))
-  const traceOutcome: CaptureOutcome = await context.tracing.stop({ path: trace })
-    .then(() => ({ status: 'captured' as const, path: trace }))
-    .catch((error: unknown) => ({ status: 'failed' as const, error: renderError(error) }))
-  const report = {
-    run_id: descriptor.run_id,
-    error: options.error instanceof Error ? options.error.message : String(options.error),
-    evidence,
-    captures: { screenshot: screenshotOutcome, trace: traceOutcome },
-  }
-  const reportPath = `${prefix}.json`
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
-  const secrets = (await readFile(descriptor.scan_secrets_path, 'utf8'))
-    .split('\n').filter(Boolean).map((value) => Buffer.from(value))
-  assert.ok(secrets.length > 0, 'scan-only secret set must not be empty')
-  const artifacts = [
-    reportPath,
-    ...(screenshotOutcome.status === 'captured' ? [screenshotOutcome.path] : []),
-    ...(traceOutcome.status === 'captured' ? [traceOutcome.path] : []),
-  ]
+  const localController = options.signal ? undefined : new AbortController()
+  const signal = options.signal ?? localController!.signal
+  const localDeadline = localController
+    ? setTimeout(() => localController.abort(new Error('failure evidence deadline exceeded')), LIVE_DEADLINE_MS)
+    : undefined
   try {
-    for (const artifact of artifacts) await scanArtifact(artifact, secrets)
-  } catch (error) {
-    // This invocation owns only its mkdtemp directory. Never traverse or
-    // remove sibling evidence, even if a decoy was present before the run.
-    await rm(invocationDir, { force: true, recursive: true })
-    throw error
-  }
-  const captureFailures = [screenshotOutcome, traceOutcome]
-    .filter((outcome): outcome is Extract<CaptureOutcome, { status: 'failed' }> => outcome.status === 'failed')
-  if (captureFailures.length > 0) {
-    throw new AggregateError(
-      captureFailures.map((outcome) => new Error(outcome.error)),
-      'browser failure evidence capture was incomplete',
+    signal.throwIfAborted()
+    const evidenceDir = await canonicalOwnedPath(
+      descriptor.run_root,
+      descriptor.evidence_dir,
+      'evidence_dir',
+      'directory',
     )
+    signal.throwIfAborted()
+    const invocationDir = await mkdtemp(path.join(evidenceDir, `browser-${descriptor.run_id}-`))
+    // The invocation directory is beneath the run-owned root. If abort wins
+    // here, leave it untouched for the outer supervisor rather than starting a
+    // competing removal mutation after ownership has transferred.
+    signal.throwIfAborted()
+    await chmod(invocationDir, 0o700)
+    signal.throwIfAborted()
+    const prefix = path.join(invocationDir, 'failure')
+    const screenshot = `${prefix}.png`
+    const trace = `${prefix}.trace.zip`
+    const screenshotOutcome: CaptureOutcome = await withAbort(page.screenshot({ fullPage: true }), signal)
+      .then(async (bytes) => {
+        signal.throwIfAborted()
+        await writeFile(screenshot, bytes, { mode: 0o600, signal })
+        signal.throwIfAborted()
+        return { status: 'captured' as const, path: screenshot }
+      })
+      .catch((error: unknown) => ({
+        status: 'failed' as const,
+        error: renderError(error),
+      }))
+    signal.throwIfAborted()
+    // Playwright cannot return trace bytes. Never give a cancellable operation
+    // a path it could mutate after our deadline has returned.
+    const traceOutcome: CaptureOutcome = await withAbort(context.tracing.stop(), signal)
+      .then(() => ({ status: 'discarded' as const, reason: 'discarded to preserve deadline ownership' }))
+      .catch((error: unknown) => ({
+        status: 'failed' as const,
+        error: renderError(error),
+      }))
+    signal.throwIfAborted()
+    const report = {
+      run_id: descriptor.run_id,
+      error: options.error instanceof Error ? options.error.message : String(options.error),
+      evidence,
+      captures: { screenshot: screenshotOutcome, trace: traceOutcome },
+    }
+    const reportPath = `${prefix}.json`
+    signal.throwIfAborted()
+    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, {
+      mode: 0o600,
+      signal,
+    })
+    signal.throwIfAborted()
+    const secrets = (await readFile(descriptor.scan_secrets_path, { encoding: 'utf8', signal }))
+      .split('\n')
+      .filter(Boolean)
+      .map((value) => Buffer.from(value))
+    signal.throwIfAborted()
+    assert.ok(secrets.length > 0, 'scan-only secret set must not be empty')
+    const artifacts = [
+      reportPath,
+      ...(screenshotOutcome.status === 'captured' ? [screenshotOutcome.path] : []),
+      ...(traceOutcome.status === 'captured' ? [traceOutcome.path] : []),
+    ]
+    try {
+      for (const artifact of artifacts) {
+        signal.throwIfAborted()
+        await scanArtifact(artifact, secrets, { signal })
+      }
+    } catch (error) {
+      // This invocation owns only its mkdtemp directory. Never traverse or
+      // remove sibling evidence, even if a decoy was present before the run.
+      // Once the shared journey deadline has fired, the outer Rust supervisor
+      // owns final removal. Do not start another filesystem mutation after abort.
+      if (!signal.aborted) await rm(invocationDir, { force: true, recursive: true })
+      throw error
+    }
+    const captureFailures = [screenshotOutcome, traceOutcome].filter(
+      (outcome): outcome is Extract<CaptureOutcome, { status: 'failed' }> => outcome.status === 'failed',
+    )
+    if (captureFailures.length > 0) {
+      throw new AggregateError(
+        captureFailures.map((outcome) => new Error(outcome.error)),
+        'browser failure evidence capture was incomplete',
+      )
+    }
+  } finally {
+    if (localDeadline) clearTimeout(localDeadline)
   }
 }
 
@@ -292,7 +422,20 @@ function renderError(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
-export async function scanArtifact(artifact: string, secrets: Buffer[], optional = false) {
+export type ScanArtifactOptions = {
+  optional?: boolean
+  timeoutMs?: number
+  signal?: AbortSignal
+  openStream?: (artifact: string, signal: AbortSignal) => AsyncIterable<Buffer>
+}
+
+export async function scanArtifact(artifact: string, secrets: Buffer[], options: ScanArtifactOptions = {}) {
+  const {
+    optional = false,
+    timeoutMs = LIVE_DEADLINE_MS,
+    signal: externalSignal,
+    openStream = (streamArtifact, signal) => createReadStream(streamArtifact, { highWaterMark: 64 * 1024, signal }),
+  } = options
   let metadata: Awaited<ReturnType<typeof stat>>
   try {
     metadata = await stat(artifact)
@@ -303,11 +446,30 @@ export async function scanArtifact(artifact: string, secrets: Buffer[], optional
   if (metadata.size > MAX_ARTIFACT_BYTES) throw new Error(`${path.basename(artifact)} exceeded artifact cap`)
   const overlap = Math.max(...secrets.map((secret) => secret.length), 1) - 1
   let tail = Buffer.alloc(0)
-  for await (const chunk of createReadStream(artifact, { highWaterMark: 64 * 1024 })) {
-    const combined = Buffer.concat([tail, chunk as Buffer])
-    if (secrets.some((secret) => combined.includes(secret))) {
-      throw new Error(`${path.basename(artifact)} contained scan-only secret material`)
+  let streamedBytes = 0
+  const controller = externalSignal ? undefined : new AbortController()
+  const signal = externalSignal ?? controller!.signal
+  const deadline =
+    controller && timeoutMs !== undefined
+      ? setTimeout(() => controller.abort(new Error('artifact scan deadline exceeded')), timeoutMs)
+      : undefined
+  try {
+    if (signal.aborted) signal.throwIfAborted()
+    for await (const chunk of openStream(artifact, signal)) {
+      streamedBytes += chunk.length
+      if (streamedBytes > MAX_ARTIFACT_BYTES) {
+        throw new Error(`${path.basename(artifact)} exceeded artifact cap while streaming`)
+      }
+      const combined = Buffer.concat([tail, chunk as Buffer])
+      if (secrets.some((secret) => combined.includes(secret))) {
+        throw new Error(`${path.basename(artifact)} contained scan-only secret material`)
+      }
+      tail = overlap === 0 ? Buffer.alloc(0) : combined.subarray(Math.max(0, combined.length - overlap))
     }
-    tail = overlap === 0 ? Buffer.alloc(0) : combined.subarray(Math.max(0, combined.length - overlap))
+  } catch (error) {
+    if (signal.aborted) throw new Error(`${path.basename(artifact)} artifact scan deadline exceeded`, { cause: error })
+    throw error
+  } finally {
+    if (deadline) clearTimeout(deadline)
   }
 }
