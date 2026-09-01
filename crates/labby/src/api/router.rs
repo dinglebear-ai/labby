@@ -2380,7 +2380,7 @@ pub(crate) fn build_router_with_external_auth(
     if let Some(auth_state) = auth_state.as_ref() {
         let _ = auth_state;
         let mut descriptors = crate::api::route_registry::oauth_protocol_descriptors().into_iter();
-        let auth_routes = crate::api::route_registry::RouteGroup::empty()
+        let mut auth_routes = crate::api::route_registry::RouteGroup::empty()
             .route(
                 descriptors.next().unwrap(),
                 get(auth_authorization_server_metadata),
@@ -2394,19 +2394,22 @@ pub(crate) fn build_router_with_external_auth(
                 get(auth_protected_resource_metadata),
             )
             .route(descriptors.next().unwrap(), get(auth_jwks))
-            .route(descriptors.next().unwrap(), post(auth_register))
             .route(descriptors.next().unwrap(), get(auth_authorize))
             .route(descriptors.next().unwrap(), get(auth_browser_login))
             .route(descriptors.next().unwrap(), get(auth_callback))
             .route(descriptors.next().unwrap(), get(auth_native_callback))
             .route(descriptors.next().unwrap(), post(auth_native_poll))
             .route(descriptors.next().unwrap(), post(auth_token))
-            .route(descriptors.next().unwrap(), post(auth_revoke))
-            .map_router(|router| {
-                router.layer(axum::middleware::from_fn(
-                    labby_auth::routes::auth_dispatch_observability,
-                ))
-            });
+            .route(descriptors.next().unwrap(), post(auth_revoke));
+        let register_descriptor = descriptors.next().unwrap();
+        if auth_state.config.enable_dynamic_registration {
+            auth_routes = auth_routes.route(register_descriptor, post(auth_register));
+        }
+        let auth_routes = auth_routes.map_router(|router| {
+            router.layer(axum::middleware::from_fn(
+                labby_auth::routes::auth_dispatch_observability,
+            ))
+        });
         route_group = route_group.merge(auth_routes);
         #[cfg(feature = "gateway")]
         {

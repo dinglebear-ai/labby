@@ -16,6 +16,9 @@ use super::evidence::{EvidenceKind, RunEvidence, sanitize};
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(20);
 const LOG_TAIL_BYTES: usize = 32 * 1024;
 const DROP_DEADLINE: Duration = Duration::from_secs(3);
+const CLEANUP_MAX_FILES: usize = 4_096;
+const CLEANUP_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const CLEANUP_MAX_DEPTH: usize = 32;
 
 fn labby_binary() -> PathBuf {
     std::env::var_os("LABBY_E2E_BINARY")
@@ -542,51 +545,67 @@ impl LiveLabbyGuard {
                     .push(format!("unsafe owned lock path: {}", lock.display()));
             }
         }
-        for revoke in &mut self.revocations {
-            if let Err(error) = (revoke.revoke)() {
-                result
-                    .failures
-                    .push(format!("credential/session revocation failed: {error}"));
-            } else {
-                match (revoke.is_absent)() {
-                    Ok(true) => {}
-                    Ok(false) => result
-                        .failures
-                        .push("credential/session remained after revocation".into()),
-                    Err(error) => result.failures.push(format!(
-                        "credential/session absence verification failed: {error}"
-                    )),
+        let revocation_count = self.revocations.len();
+        let mut revocations = std::mem::take(&mut self.revocations);
+        match run_cleanup_blocking(absolute, "credential/session cleanup", move || {
+            let mut failures = Vec::new();
+            for revoke in &mut revocations {
+                if Instant::now() >= absolute {
+                    failures.push("credential/session cleanup deadline exhausted".into());
+                    break;
+                }
+                if let Err(error) = (revoke.revoke)() {
+                    failures.push(format!("credential/session revocation failed: {error}"));
+                } else {
+                    match (revoke.is_absent)() {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            failures.push("credential/session remained after revocation".into())
+                        }
+                        Err(error) => failures.push(format!(
+                            "credential/session absence verification failed: {error}"
+                        )),
+                    }
                 }
             }
+            failures
+        })
+        .await
+        {
+            Ok(failures) => result.failures.extend(failures),
+            Err(error) => result.failures.push(error),
         }
-        if self.revocations.len() != self.ledger.credential_sessions.len() {
+        if revocation_count != self.ledger.credential_sessions.len() {
             result
                 .failures
                 .push("credential/session ledger has no matching revocation guard".into());
         }
-        self.revocations.clear();
         self.ledger.credential_sessions.clear();
-        for path in [&self.stdout_path, &self.stderr_path] {
-            if let Err(error) = cap_log_file(path) {
-                result
-                    .failures
-                    .push(format!("log retention failed: {error}"));
-            }
-            let bytes = std::fs::read(path).unwrap_or_default();
-            for canary in &self.secret_canaries {
-                if !canary.is_empty()
-                    && bytes
-                        .windows(canary.len())
-                        .any(|window| window == canary.as_bytes())
-                {
-                    result
-                        .failures
-                        .push(format!("secret canary appeared in {}", path.display()));
+        let root = self.root.clone();
+        let stdout_path = self.stdout_path.clone();
+        let stderr_path = self.stderr_path.clone();
+        let canaries = self.secret_canaries.clone();
+        match run_cleanup_blocking(absolute, "artifact retention and secret scan", move || {
+            let mut failures = Vec::new();
+            for path in [&stdout_path, &stderr_path] {
+                if Instant::now() >= absolute {
+                    failures.push("artifact cleanup deadline exhausted".into());
+                    break;
                 }
+                if let Err(error) = cap_log_file(path) {
+                    failures.push(format!("log retention failed: {error}"));
+                }
+                scan_file_for_canaries(path, &canaries, &mut failures);
             }
+            cap_log_tree_bounded(&root.join("logs"), &mut failures, absolute);
+            scan_artifact_tree_bounded(&root, &canaries, &mut failures, absolute);
+            failures
+        })
+        .await
+        {
+            Ok(failures) => result.failures.extend(failures),
+            Err(error) => result.failures.push(error),
         }
-        cap_log_tree(&self.root.join("logs"), &mut result.failures);
-        scan_artifact_tree(&self.root, &self.secret_canaries, &mut result.failures);
         if TcpListener::bind(self.ledger.listener.expect("listener recorded")).is_err() {
             result
                 .failures
@@ -1161,6 +1180,24 @@ fn cap_log_file(path: &Path) -> std::io::Result<()> {
 }
 
 fn scan_file_for_canaries(path: &Path, canaries: &[String], failures: &mut Vec<String>) {
+    let mut budget = ScanBudget {
+        deadline: Instant::now() + DEFAULT_DEADLINE,
+        bytes_remaining: u64::MAX,
+    };
+    scan_file_for_canaries_bounded(path, canaries, failures, &mut budget);
+}
+
+struct ScanBudget {
+    deadline: Instant,
+    bytes_remaining: u64,
+}
+
+fn scan_file_for_canaries_bounded(
+    path: &Path,
+    canaries: &[String],
+    failures: &mut Vec<String>,
+    budget: &mut ScanBudget,
+) {
     let Ok(mut file) = std::fs::File::open(path) else {
         return;
     };
@@ -1178,13 +1215,36 @@ fn scan_file_for_canaries(path: &Path, canaries: &[String], failures: &mut Vec<S
     let mut retained = Vec::new();
     let mut chunk = [0_u8; 64 * 1024];
     loop {
-        let Ok(read) = file.read(&mut chunk) else {
+        if Instant::now() >= budget.deadline {
+            failures.push(format!(
+                "secret scan deadline exhausted at {}",
+                path.display()
+            ));
+            return;
+        }
+        // Read at most one byte beyond the remaining allowance. That detects an
+        // over-budget file from bytes actually returned by the filesystem without
+        // trusting sparse-file metadata or buffering the file as a whole.
+        let read_limit = budget
+            .bytes_remaining
+            .saturating_add(1)
+            .min(chunk.len() as u64) as usize;
+        let Ok(read) = file.read(&mut chunk[..read_limit]) else {
             failures.push(format!("secret scan failed for {}", path.display()));
             return;
         };
         if read == 0 {
             return;
         }
+        if read as u64 > budget.bytes_remaining {
+            budget.bytes_remaining = 0;
+            failures.push(format!(
+                "artifact scan byte cap exceeded while reading {}",
+                path.display()
+            ));
+            return;
+        }
+        budget.bytes_remaining -= read as u64;
         retained.extend_from_slice(&chunk[..read]);
         if secrets.iter().any(|secret| {
             retained
@@ -1200,8 +1260,33 @@ fn scan_file_for_canaries(path: &Path, canaries: &[String], failures: &mut Vec<S
 }
 
 fn scan_artifact_tree(root: &Path, canaries: &[String], failures: &mut Vec<String>) {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(path) = pending.pop() {
+    scan_artifact_tree_bounded(root, canaries, failures, Instant::now() + DEFAULT_DEADLINE);
+}
+
+fn scan_artifact_tree_bounded(
+    root: &Path,
+    canaries: &[String],
+    failures: &mut Vec<String>,
+    deadline: Instant,
+) {
+    let mut pending = vec![(root.to_path_buf(), 0_usize)];
+    let mut files = 0_usize;
+    let mut budget = ScanBudget {
+        deadline,
+        bytes_remaining: CLEANUP_MAX_BYTES,
+    };
+    while let Some((path, depth)) = pending.pop() {
+        if Instant::now() >= deadline {
+            failures.push("artifact scan deadline exhausted".into());
+            return;
+        }
+        if depth > CLEANUP_MAX_DEPTH {
+            failures.push(format!(
+                "artifact scan depth cap exceeded at {}",
+                path.display()
+            ));
+            continue;
+        }
         let Ok(metadata) = std::fs::symlink_metadata(&path) else {
             continue;
         };
@@ -1210,17 +1295,46 @@ fn scan_artifact_tree(root: &Path, canaries: &[String], failures: &mut Vec<Strin
         }
         if metadata.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&path) {
-                pending.extend(entries.flatten().map(|entry| entry.path()));
+                pending.extend(entries.flatten().map(|entry| (entry.path(), depth + 1)));
             }
         } else if metadata.is_file() {
-            scan_file_for_canaries(&path, canaries, failures);
+            files += 1;
+            if files > CLEANUP_MAX_FILES {
+                failures.push(format!(
+                    "artifact scan resource cap exceeded (files={files})"
+                ));
+                return;
+            }
+            scan_file_for_canaries_bounded(&path, canaries, failures, &mut budget);
+            if failures.last().is_some_and(|failure| {
+                failure.contains("byte cap exceeded") || failure.contains("scan deadline exhausted")
+            }) {
+                return;
+            }
         }
     }
 }
 
 fn cap_log_tree(root: &Path, failures: &mut Vec<String>) {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(path) = pending.pop() {
+    cap_log_tree_bounded(root, failures, Instant::now() + DEFAULT_DEADLINE);
+}
+
+fn cap_log_tree_bounded(root: &Path, failures: &mut Vec<String>, deadline: Instant) {
+    let mut pending = vec![(root.to_path_buf(), 0_usize)];
+    let mut files = 0_usize;
+    let mut bytes = 0_u64;
+    while let Some((path, depth)) = pending.pop() {
+        if Instant::now() >= deadline {
+            failures.push("log retention deadline exhausted".into());
+            return;
+        }
+        if depth > CLEANUP_MAX_DEPTH {
+            failures.push(format!(
+                "log retention depth cap exceeded at {}",
+                path.display()
+            ));
+            continue;
+        }
         let Ok(metadata) = std::fs::symlink_metadata(&path) else {
             continue;
         };
@@ -1229,15 +1343,53 @@ fn cap_log_tree(root: &Path, failures: &mut Vec<String>) {
         }
         if metadata.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&path) {
-                pending.extend(entries.flatten().map(|entry| entry.path()));
+                pending.extend(entries.flatten().map(|entry| (entry.path(), depth + 1)));
             }
-        } else if metadata.is_file()
-            && let Err(error) = cap_log_file(&path)
-        {
-            failures.push(format!(
-                "log retention failed for {}: {error}",
-                path.display()
-            ));
+        } else if metadata.is_file() {
+            files += 1;
+            bytes = bytes.saturating_add(metadata.len());
+            if files > CLEANUP_MAX_FILES || bytes > CLEANUP_MAX_BYTES {
+                failures.push(format!(
+                    "log retention resource cap exceeded (files={files}, bytes={bytes})"
+                ));
+                return;
+            }
+            if let Err(error) = cap_log_file(&path) {
+                failures.push(format!(
+                    "log retention failed for {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+async fn run_cleanup_blocking<T>(
+    deadline: Instant,
+    label: &'static str,
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(format!("{label} deadline exhausted"));
+    }
+    let mut worker = tokio::task::spawn_blocking(operation);
+    match tokio::time::timeout(remaining, &mut worker).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(format!("{label} worker failed: {error}")),
+        Err(_) => {
+            // `spawn_blocking` cannot be cancelled once it starts. Retain and join
+            // ownership after the reporting deadline so cleanup can never return
+            // while a detached worker is still mutating caller-owned state.
+            match worker.await {
+                Ok(_) => Err(format!("{label} deadline exhausted")),
+                Err(error) => Err(format!(
+                    "{label} deadline exhausted; worker failed: {error}"
+                )),
+            }
         }
     }
 }
@@ -1334,6 +1486,116 @@ mod tests {
         let mut failures = Vec::new();
         scan_file_for_canaries(&artifact, &[canary.into()], &mut failures);
         assert_eq!(failures.len(), 1);
+    }
+
+    #[test]
+    fn recursive_cleanup_enforces_depth_and_deadline_budgets() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut nested = temp.path().to_path_buf();
+        for index in 0..=CLEANUP_MAX_DEPTH {
+            nested = nested.join(index.to_string());
+            std::fs::create_dir(&nested).unwrap();
+        }
+        std::fs::write(nested.join("beyond-budget.log"), b"safe").unwrap();
+
+        let mut failures = Vec::new();
+        scan_artifact_tree_bounded(
+            temp.path(),
+            &[],
+            &mut failures,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(failures.iter().any(|failure| failure.contains("depth cap")));
+
+        failures.clear();
+        cap_log_tree_bounded(temp.path(), &mut failures, Instant::now());
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("deadline exhausted"))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_cleanup_work_does_not_stall_the_async_executor() {
+        let cleanup = run_cleanup_blocking(
+            Instant::now() + Duration::from_secs(1),
+            "blocking proof",
+            || {
+                std::thread::sleep(Duration::from_millis(50));
+                42
+            },
+        );
+        let tick = tokio::time::sleep(Duration::from_millis(5));
+        let (value, ()) = tokio::join!(cleanup, tick);
+        assert_eq!(value.unwrap(), 42);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn timed_out_blocking_cleanup_is_joined_before_return() {
+        let mutated = Arc::new(AtomicBool::new(false));
+        let worker_mutated = Arc::clone(&mutated);
+        let result = run_cleanup_blocking(
+            Instant::now() + Duration::from_millis(5),
+            "owned timeout proof",
+            move || {
+                std::thread::sleep(Duration::from_millis(30));
+                worker_mutated.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            "owned timeout proof deadline exhausted"
+        );
+        assert!(
+            mutated.load(Ordering::SeqCst),
+            "the timeout must retain ownership until the blocking worker settles"
+        );
+    }
+
+    #[test]
+    fn artifact_scan_enforces_actual_byte_budget_inside_a_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("over-budget.log");
+        std::fs::write(&artifact, b"ninebytes").unwrap();
+        let mut failures = Vec::new();
+        let mut budget = ScanBudget {
+            deadline: Instant::now() + Duration::from_secs(1),
+            bytes_remaining: 8,
+        };
+
+        scan_file_for_canaries_bounded(&artifact, &[], &mut failures, &mut budget);
+
+        assert_eq!(budget.bytes_remaining, 0);
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("byte cap exceeded")),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
+    fn artifact_scan_checks_deadline_during_file_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("deadline.log");
+        std::fs::write(&artifact, b"safe").unwrap();
+        let mut failures = Vec::new();
+        let mut budget = ScanBudget {
+            deadline: Instant::now(),
+            bytes_remaining: CLEANUP_MAX_BYTES,
+        };
+
+        scan_file_for_canaries_bounded(&artifact, &[], &mut failures, &mut budget);
+
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("deadline exhausted")),
+            "{failures:?}"
+        );
     }
 
     #[test]

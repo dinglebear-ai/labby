@@ -7,6 +7,7 @@ import type { Browser, BrowserContext, Page, Request } from 'playwright'
 
 export const LIVE_DESCRIPTOR_ENV = 'LABBY_LIVE_BROWSER_DESCRIPTOR'
 export const LIVE_DEADLINE_MS = 90_000
+export const DEADLINE_DRAIN_GRACE_MS = 1_000
 export const MAX_EVIDENCE_EVENTS = 512
 export const MAX_EVIDENCE_TEXT_BYTES = 256 * 1024
 export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
@@ -168,15 +169,67 @@ export function assertCanaryFree(value: unknown, canaries: string[], label: stri
   assert.ok(!/x-csrf-token\s*[:=]/i.test(rendered), `${label} leaked CSRF metadata`)
 }
 
-export async function withAbsoluteDeadline<T>(operation: Promise<T>, label: string): Promise<T> {
+export async function withAbsoluteDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  label: string,
+  timeoutMs = LIVE_DEADLINE_MS,
+  drainGraceMs = DEADLINE_DRAIN_GRACE_MS,
+): Promise<T> {
+  const controller = new AbortController()
+  const running = Promise.resolve().then(() => operation(controller.signal))
   let timer: NodeJS.Timeout | undefined
+  let timedOut = false
   try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} exceeded ${LIVE_DEADLINE_MS}ms`)), LIVE_DEADLINE_MS) }),
+    const value = await Promise.race([
+      running,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true
+          controller.abort(new Error(`${label} exceeded ${timeoutMs}ms`))
+          reject(controller.signal.reason)
+        }, timeoutMs)
+      }),
     ])
+    return value
   } finally {
     if (timer) clearTimeout(timer)
+    if (timedOut) {
+      // Keep a rejection handler attached even when an operation ignores its
+      // AbortSignal. Cleanup gets a short grace period, but a non-cooperative
+      // dependency cannot extend the caller's absolute deadline forever.
+      const settled = running.catch(() => undefined)
+      let drainTimer: NodeJS.Timeout | undefined
+      await Promise.race([
+        settled,
+        new Promise<void>((resolve) => { drainTimer = setTimeout(resolve, drainGraceMs) }),
+      ])
+      if (drainTimer) clearTimeout(drainTimer)
+    }
+  }
+}
+
+export async function launchBrowserWithAbort<T extends Pick<Browser, 'close'>>(
+  signal: AbortSignal,
+  launch: () => Promise<T>,
+): Promise<{ browser: T; detachAbort: () => void }> {
+  const browser = await launch()
+  let closePromise: Promise<void> | undefined
+  const closeBrowser = () => {
+    closePromise ??= browser.close().then(() => undefined, () => undefined)
+    return closePromise
+  }
+  const abortBrowser = () => { void closeBrowser() }
+  signal.addEventListener('abort', abortBrowser, { once: true })
+
+  // An abort can occur while launch() is pending. Registering the listener
+  // after launch is not sufficient because AbortSignal does not replay events.
+  if (signal.aborted) {
+    await closeBrowser()
+    signal.throwIfAborted()
+  }
+  return {
+    browser,
+    detachAbort: () => signal.removeEventListener('abort', abortBrowser),
   }
 }
 

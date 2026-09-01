@@ -7,6 +7,7 @@ import { chromium, request as playwrightRequest, type Page } from 'playwright'
 import {
   assertCanaryFree,
   captureFailureEvidence,
+  launchBrowserWithAbort,
   observeLivePage,
   readPrivateCsrf,
   readLiveDescriptor,
@@ -95,9 +96,12 @@ test('embedded Gateway Admin completes a real backend journey', {
   assert.ok(descriptor)
   const csrfToken = await readPrivateCsrf(descriptor)
   progress('descriptor-read')
-  await withAbsoluteDeadline((async () => {
+  await withAbsoluteDeadline(async (signal) => {
     progress('chromium-launch-start')
-    const browser = await chromium.launch({ headless: true })
+    const { browser, detachAbort } = await launchBrowserWithAbort(
+      signal,
+      () => chromium.launch({ headless: true }),
+    )
     progress('chromium-launched')
     let context: import('playwright').BrowserContext | undefined
     try {
@@ -217,10 +221,11 @@ test('embedded Gateway Admin completes a real backend journey', {
       }
       if (!failure) await context.close()
       else await context.close().catch(() => undefined)
+      detachAbort()
       await browser.close()
       if (!failure) assert.deepEqual(cleanupFailures, [], `live browser cleanup failed: ${cleanupFailures.join(', ')}`)
     }
-  })(), 'live Gateway Admin journey')
+  }, 'live Gateway Admin journey')
 })
 
 test('nightly mobile viewport has no overflow and essential landmarks', {

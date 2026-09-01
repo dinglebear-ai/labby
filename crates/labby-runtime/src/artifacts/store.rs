@@ -15,8 +15,8 @@ use crate::path_safety::{
 use super::ArtifactError;
 use super::library::{LibrarySnapshot, MAX_LIBRARY_STATE_BYTES};
 use super::local_io::{
-    SnapshotFile, ensure_private_dir, materialize_tree, normalize_verified_macos_var_alias,
-    prepare_empty_internal_dir, read_json, revision_dir, storage_key, write_json_atomic,
+    SnapshotFile, ensure_private_dir, materialize_tree, prepare_empty_internal_dir, read_json,
+    revision_dir, storage_key, write_json_atomic,
 };
 use super::model::{
     ARTIFACT_INTERCHANGE_SCHEMA, ArtifactInterchange, ArtifactLicenseState, ArtifactProvenance,

@@ -139,6 +139,10 @@ impl Command {
 }
 
 /// Dispatch a parsed [`Cli`] to the correct handler.
+// The command match contains the full clap command tree, so the generated
+// async state machine exceeds Clippy's conservative stack-frame threshold.
+// Keep this exception local to the one-shot CLI dispatcher.
+#[allow(clippy::large_stack_frames)]
 pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
     let format = cli.format();
     match cli.command {

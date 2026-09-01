@@ -8,11 +8,48 @@ import type { Browser, BrowserContext, Page } from 'playwright'
 
 import {
   captureFailureEvidence,
+  launchBrowserWithAbort,
   readLiveDescriptorAt,
   scanArtifact,
+  withAbsoluteDeadline,
   type LiveBackendDescriptor,
   type LiveBrowserEvidence,
 } from './live-backend-harness.ts'
+
+test('absolute deadline aborts and drains the timed-out operation', async () => {
+  let settled = false
+  let observedAbort = false
+  await assert.rejects(withAbsoluteDeadline(async (signal) => {
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => {
+      observedAbort = true
+      setTimeout(resolve, 10)
+    }, { once: true }))
+    settled = true
+  }, 'cooperative operation', 5), /cooperative operation exceeded 5ms/)
+  assert.equal(observedAbort, true)
+  assert.equal(settled, true, 'deadline must drain cooperative teardown before returning')
+})
+
+test('absolute deadline returns after bounded grace when operation never settles', async () => {
+  const started = performance.now()
+  await assert.rejects(withAbsoluteDeadline(async () => {
+    await new Promise<never>(() => undefined)
+  }, 'non-cooperative operation', 5, 10), /non-cooperative operation exceeded 5ms/)
+  assert.ok(performance.now() - started < 200, 'non-cooperative operation must not defeat the deadline')
+})
+
+test('browser produced after abort during launch is closed before use', async () => {
+  const controller = new AbortController()
+  let resolveLaunch!: (browser: Pick<Browser, 'close'>) => void
+  const launch = new Promise<Pick<Browser, 'close'>>((resolve) => { resolveLaunch = resolve })
+  let closes = 0
+  const pending = launchBrowserWithAbort(controller.signal, () => launch)
+  controller.abort(new Error('launch deadline expired'))
+  resolveLaunch({ close: async () => { closes += 1 } })
+
+  await assert.rejects(pending, /launch deadline expired/)
+  assert.equal(closes, 1)
+})
 
 async function privateFile(filePath: string, value: string) {
   await writeFile(filePath, value, { mode: 0o600 })

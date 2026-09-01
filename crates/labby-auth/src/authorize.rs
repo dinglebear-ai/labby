@@ -77,7 +77,7 @@ pub async fn authorize(
         .await?
         .ok_or_else(|| {
             warn!(
-                client_id = %query.client_id,
+                client_id = %fingerprint(&query.client_id),
                 client_state_id = %client_state_id,
                 "oauth authorize rejected: unknown client_id"
             );
@@ -89,7 +89,7 @@ pub async fn authorize(
         .any(|uri| uri == &query.redirect_uri)
     {
         warn!(
-            client_id = %query.client_id,
+            client_id = %fingerprint(&query.client_id),
             redirect_uri_id = %fingerprint(&query.redirect_uri),
             client_state_id = %client_state_id,
             "oauth authorize rejected: redirect URI does not match registered client"
@@ -128,17 +128,17 @@ pub async fn authorize(
         }
     };
     info!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
-        resource = %resource,
-        requested_scope = %query.scope,
-        normalized_scope = %scope,
+        resource_id = %fingerprint(&resource),
+        requested_scope_id = %fingerprint(&query.scope),
+        normalized_scope_id = %fingerprint(&scope),
         "oauth authorize request received"
     );
     if query.code_challenge_method != "S256" {
         warn!(
-            client_id = %query.client_id,
+            client_id = %fingerprint(&query.client_id),
             client_state_id = %client_state_id,
             code_challenge_method = %query.code_challenge_method,
             "oauth authorize rejected: unsupported PKCE method"
@@ -226,12 +226,12 @@ pub async fn authorize(
         force_consent,
     })?;
     info!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
         oauth_state_id = %oauth_state_id,
-        resource = %resource,
-        scope = %scope,
+        resource_id = %fingerprint(&resource),
+        scope_id = %fingerprint(&scope),
         provider = "google",
         allowed_email_count = allowed_emails.len(),
         provider_credential_present = sole_account_has_credential,
@@ -239,7 +239,7 @@ pub async fn authorize(
         "oauth authorize request redirected to upstream provider"
     );
     debug!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         oauth_state_id = %oauth_state_id,
         provider_authorization_endpoint = %sanitized_authorization_endpoint(&location),
         "oauth authorize redirect URL generated"
@@ -352,12 +352,12 @@ pub async fn callback(
             AuthError::InvalidGrant("authorization state is invalid or expired".to_string())
         })?;
     info!(
-        client_id = %request.client_id,
+        client_id = %fingerprint(&request.client_id),
         redirect_uri_id = %fingerprint(&request.redirect_uri),
         oauth_state_id = %oauth_state_id,
         client_state_id = %fingerprint(&request.client_state),
-        resource = %request.resource,
-        scope = %request.scope,
+        resource_id = %fingerprint(&request.resource),
+        scope_id = %fingerprint(&request.scope),
         "oauth callback state redeemed"
     );
     macro_rules! callback_try {
@@ -506,7 +506,7 @@ pub async fn callback(
         (existing.refresh_token.clone(), true)
     } else {
         warn!(
-            client_id = %request.client_id,
+            client_id = %fingerprint(&request.client_id),
             oauth_state_id = %oauth_state_id,
             subject_id = %subject_id,
             kind = "oauth_needs_reauth",
@@ -576,7 +576,7 @@ pub async fn callback(
             "server_error"
         );
         warn!(
-            client_id = %request.client_id,
+            client_id = %fingerprint(&request.client_id),
             oauth_state_id = %oauth_state_id,
             subject_id = %subject_id,
             observed_provider_generation = ?existing_credential.as_ref().map(|row| row.generation),
@@ -596,7 +596,7 @@ pub async fn callback(
         );
     }
     info!(
-        client_id = %request.client_id,
+        client_id = %fingerprint(&request.client_id),
         oauth_state_id = %oauth_state_id,
         subject_id = %subject_id,
         provider_credential_present = true,
@@ -646,9 +646,9 @@ pub async fn callback(
     info!(
         auth_code_id = %auth_code_id,
         oauth_state_id = %oauth_state_id,
-        client_id = %request_client_id,
-        resource = %request_resource,
-        scope = %request_scope,
+        client_id = %fingerprint(&request_client_id),
+        resource_id = %fingerprint(&request_resource),
+        scope_id = %fingerprint(&request_scope),
         redirect_uri_id = %fingerprint(&request.redirect_uri),
         "oauth callback issued local authorization code"
     );
@@ -712,7 +712,7 @@ pub async fn callback(
     info!(
         auth_code_id = %auth_code_id,
         oauth_state_id = %oauth_state_id,
-        client_id = %request_client_id,
+        client_id = %fingerprint(&request_client_id),
         authorization_response_has_code = has_code,
         authorization_response_has_state = has_state,
         authorization_response_has_issuer = has_issuer,
@@ -1719,6 +1719,34 @@ pub mod tests {
         );
         assert!(logs.contains("\"oauth_state_id\":"), "{logs}");
         assert!(!logs.contains("\"location\":"), "{logs}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_authorize_logs_redact_attacker_controlled_values() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let app = router(test_auth_state_with_registered_client().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=state&scope=sentinel-scope-secret&resource=https%3A%2F%2Fsentinel-resource.example%2Fmcp%3Fcredential%3Dresource-secret&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let logs = crate::test_support::captured_logs(buf);
+        for sentinel in [
+            "sentinel-scope-secret",
+            "sentinel-resource.example",
+            "resource-secret",
+        ] {
+            assert!(
+                !logs.contains(sentinel),
+                "OAuth value leaked into logs: {sentinel}\n{logs}"
+            );
+        }
     }
 
     #[tokio::test]

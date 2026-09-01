@@ -527,7 +527,6 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
             "auth_protected_resource_metadata",
         ),
         ("GET", "/jwks", "auth_jwks"),
-        ("POST", "/register", "auth_register"),
         ("GET", "/authorize", "auth_authorize"),
         ("GET", "/auth/login", "auth_browser_login"),
         ("GET", "/auth/google/callback", "auth_callback"),
@@ -543,6 +542,16 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
     })
     .collect::<Vec<_>>()
     .into_iter()
+    .chain(Some(
+        RouteDescriptor::new(
+            "POST",
+            "/register",
+            "auth_register",
+            "oauth",
+            RouteAuth::OAuthProtocol,
+        )
+        .when("mounted only when OAuth and dynamic client registration are configured"),
+    ))
     .chain({
         #[cfg(feature = "gateway")]
         {

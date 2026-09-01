@@ -757,12 +757,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_store_has_exact_v2_schema_and_security_pragmas() {
+    async fn fresh_store_has_current_schema_and_security_pragmas() {
         let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let store = AccessStore::open(path).await.unwrap();
 
-        assert_eq!(store.pragma_for_test("user_version").await.unwrap(), "2");
+        assert_eq!(
+            store.pragma_for_test("user_version").await.unwrap(),
+            super::super::migrations::SCHEMA_VERSION.to_string()
+        );
         assert_eq!(store.pragma_for_test("journal_mode").await.unwrap(), "wal");
         assert_eq!(store.pragma_for_test("synchronous").await.unwrap(), "2");
         assert_eq!(store.pragma_for_test("foreign_keys").await.unwrap(), "1");
@@ -770,13 +773,21 @@ mod tests {
         assert_eq!(
             store.tables_for_test().await.unwrap(),
             vec![
+                "access_admission_buckets",
                 "access_audit",
+                "access_installations",
                 "access_metadata",
+                "access_security_events",
+                "access_tombstones",
+                "bootstrap_proofs",
+                "credential_idempotency",
                 "organizations",
                 "principal_links",
                 "principals",
+                "project_credentials",
                 "project_loadouts",
                 "project_memberships",
+                "project_policy_publications",
                 "projects",
             ]
         );
@@ -812,15 +823,17 @@ mod tests {
         let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 3).unwrap();
+        let newer_version = super::super::migrations::SCHEMA_VERSION + 1;
+        connection
+            .pragma_update(None, "user_version", newer_version)
+            .unwrap();
         drop(connection);
         restrict_permissions(&path).unwrap();
         assert!(matches!(
             AccessStore::open(path.clone()).await,
-            Err(AccessStoreError::UnsupportedSchema {
-                found: 3,
-                supported: 2
-            })
+            Err(AccessStoreError::UnsupportedSchema { found, supported })
+                if found == newer_version
+                    && supported == super::super::migrations::SCHEMA_VERSION
         ));
     }
 
@@ -853,7 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canonical_v1_migrates_to_v2_and_preserves_revision() {
+    async fn canonical_v1_migrates_to_current_schema_and_preserves_revision() {
         let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
@@ -882,7 +895,10 @@ mod tests {
         restrict_permissions(&path).unwrap();
 
         let store = AccessStore::open(path).await.unwrap();
-        assert_eq!(store.pragma_for_test("user_version").await.unwrap(), "2");
+        assert_eq!(
+            store.pragma_for_test("user_version").await.unwrap(),
+            super::super::migrations::SCHEMA_VERSION.to_string()
+        );
         assert_eq!(store.metadata_for_test().await.unwrap().2, 9);
         assert_eq!(
             store.bootstrap_metadata_for_test().await.unwrap(),

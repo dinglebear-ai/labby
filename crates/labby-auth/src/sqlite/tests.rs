@@ -1889,6 +1889,7 @@ fn sample_refresh_token(client_id: &str, refresh_token: &str) -> RefreshTokenRow
 async fn browser_session_round_trip_succeeds() {
     let store = temp_store().await;
     let row = BrowserSessionRow {
+        project_binding: None,
         session_id: "sess_123".into(),
         subject: "user_1".into(),
         email: Some("jmagar@example.com".into()),
@@ -2220,6 +2221,7 @@ async fn clearing_upstream_identity_rolls_back_when_registration_delete_fails() 
 async fn revoking_browser_session_removes_it() {
     let store = temp_store().await;
     let row = BrowserSessionRow {
+        project_binding: None,
         session_id: "sess_123".into(),
         subject: "user_1".into(),
         email: None,
