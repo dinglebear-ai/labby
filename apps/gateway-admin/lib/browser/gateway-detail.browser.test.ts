@@ -594,7 +594,7 @@ test('browser bridge operator flow approves pairing and grants exact page consen
   await assert.doesNotReject(() => page.getByText('Example tools').waitFor())
   const consent = page.getByRole('switch', { name: 'Enable tool execution for Example tools' })
   await consent.click()
-  await assert.doesNotReject(() => page.getByText('Execution enabled').waitFor())
+  await assert.doesNotReject(() => page.getByText('Execution enabled', { exact: true }).waitFor())
   assert.equal(approved, true)
   assert.equal(enabled, true)
   assert.ok((await page.locator('body').evaluate((body) => body.scrollWidth <= body.clientWidth)))

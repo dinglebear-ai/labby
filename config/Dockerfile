@@ -41,6 +41,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/labby/Cargo.toml      crates/labby/Cargo.toml
 COPY crates/labby-apis/Cargo.toml crates/labby-apis/Cargo.toml
 COPY crates/labby-auth/Cargo.toml crates/labby-auth/Cargo.toml
+COPY crates/labby-browser/Cargo.toml crates/labby-browser/Cargo.toml
 COPY crates/labby-runtime/Cargo.toml crates/labby-runtime/Cargo.toml
 COPY crates/labby-codemode/Cargo.toml crates/labby-codemode/Cargo.toml
 COPY crates/labby-gateway/Cargo.toml crates/labby-gateway/Cargo.toml
@@ -60,6 +61,7 @@ RUN mkdir -p \
       crates/labby/src \
       crates/labby-apis/src \
       crates/labby-auth/src \
+      crates/labby-browser/src \
       crates/labby-runtime/src \
       crates/labby-codemode/src \
       crates/labby-gateway/src \
@@ -79,6 +81,7 @@ RUN mkdir -p \
       crates/labby/src/lib.rs \
       crates/labby-apis/src/lib.rs \
       crates/labby-auth/src/lib.rs \
+      crates/labby-browser/src/lib.rs \
       crates/labby-runtime/src/lib.rs \
       crates/labby-codemode/src/lib.rs \
       crates/labby-gateway/src/lib.rs \
@@ -90,6 +93,7 @@ RUN mkdir -p \
  && cargo clean -p labby \
  && cargo clean -p labby-apis \
  && cargo clean -p labby-auth \
+ && cargo clean -p labby-browser \
  && cargo clean -p labby-runtime \
  && cargo clean -p labby-codemode \
  && cargo clean -p labby-gateway \
