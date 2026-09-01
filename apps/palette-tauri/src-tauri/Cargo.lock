@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "labby-palette-tauri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "atomicwrites",
@@ -1753,6 +1753,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

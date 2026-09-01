@@ -7,9 +7,8 @@
  * env field for stdio, and Resources / Prompts proxy switches.
  *
  * It is backed by the real `createGateway` mutation — nothing here is a mock.
- * The mock's "Full Dialog" escape hatch is deliberately absent: the full add
- * dialog lives in `components/gateway/**` and exposes no cross-component
- * trigger.
+ * "Full Dialog" hands off to the real gateway editor on `/gateways`; the
+ * compact "Add & Probe" path remains backed by the same create mutation.
  */
 
 import { useState } from 'react'
@@ -31,9 +30,11 @@ const AUTH_PILLS: Array<{ key: PaletteAddAuth; label: string }> = [
 
 export function PaletteAddServer({
   isSubmitting,
+  onOpenFullDialog,
   onSubmit,
 }: {
   isSubmitting: boolean
+  onOpenFullDialog: () => void
   onSubmit: (input: CreateGatewayInput) => void
 }) {
   const [name, setName] = useState('')
@@ -178,6 +179,9 @@ export function PaletteAddServer({
           onToggle={() => setProxyPrompts((value) => !value)}
         />
         <span className="pal-grow" />
+        <button type="button" className="pal-btn" onClick={onOpenFullDialog}>
+          Full Dialog
+        </button>
         <button
           type="button"
           className="pal-btn"

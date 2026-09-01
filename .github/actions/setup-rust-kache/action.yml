@@ -22,6 +22,18 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Isolate mutable Rust tool homes
+      shell: bash
+      run: |
+        set -euo pipefail
+        cargo_home="${RUNNER_TEMP}/cargo-home"
+        rustup_home="${RUNNER_TEMP}/rustup-home"
+        mkdir -p "$cargo_home" "$rustup_home"
+        {
+          echo "CARGO_HOME=$cargo_home"
+          echo "RUSTUP_HOME=$rustup_home"
+        } >> "$GITHUB_ENV"
+
     - name: Install Linux build prerequisites
       if: runner.os == 'Linux'
       shell: bash

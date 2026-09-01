@@ -1,13 +1,13 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useDeferredValue, useMemo, useState, type ReactNode } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity,
   ArrowLeft,
   Cable,
   Download,
-  Plus,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -150,6 +150,9 @@ export interface GatewayListViewProps {
 }
 
 export function GatewayListContent() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const addServerRequested = searchParams.get('add') === '1'
   const { data: gateways, isLoading, error } = useGateways()
   const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, enableGateway, disableGateway } =
     useGatewayMutations()
@@ -181,6 +184,16 @@ export function GatewayListContent() {
   const [cleanupSummaryByGatewayId, setCleanupSummaryByGatewayId] = useState<
     Record<string, { preview?: CleanupHistoryEntry; cleanup?: CleanupHistoryEntry }>
   >({})
+
+  useEffect(() => {
+    if (!addServerRequested) return
+
+    setEditingGateway(null)
+    setFormOpen(true)
+    const url = new URL(window.location.href)
+    url.searchParams.delete('add')
+    router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false })
+  }, [addServerRequested, router])
 
   const items = useMemo(() => gateways ?? [], [gateways])
 
@@ -708,27 +721,6 @@ export function GatewayListView({
                 <SlidersHorizontal className="size-3.5" />
               </Button>
             ) : null}
-            <Button
-              onClick={onCreate}
-              className={cn(
-                gatewayActionTone('accent'),
-                'hidden border px-4 text-aurora-text-primary hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex',
-              )}
-            >
-              <Plus className="mr-2 size-4" />
-              Add Server
-            </Button>
-            <Button
-              onClick={onCreate}
-              size="icon"
-              className={cn(
-                gatewayActionTone('accent'),
-                'size-9 border sm:hidden',
-              )}
-              aria-label="Add server"
-            >
-              <Plus className="size-3.5" />
-            </Button>
           </div>
         }
       />
@@ -840,24 +832,27 @@ export function GatewayListView({
           </div>
 
           <div className="grid gap-4">
-            <div data-gateway-filters="all-viewports">
+            <div
+              data-gateway-filters={showToolsView ? 'all-viewports' : 'compact-viewports'}
+              className={cn(!showToolsView && 'min-[1101px]:hidden')}
+            >
               <GatewayFilters
-              mode={showToolsView ? 'tools' : 'gateways'}
-              search={activeSearch}
-              gatewayFilters={{
-                status: gatewayFilters.status,
-                source: gatewayFilters.source,
-                transport: gatewayFilters.transport,
-              }}
-              toolFilters={toolFilters}
-              gatewayOptions={gatewayOptions}
-              mobileSheetOpen={mobileSheetOpen}
-              onMobileSheetOpenChange={onMobileSheetOpenChange}
-              onSearchChange={onSearchChange}
-              onGatewayFilterToggle={onGatewayFilterToggle}
-              onToolFilterToggle={onToolFilterToggle}
-              onExposureChange={onExposureChange}
-              onClearFilters={onClearFilters}
+                mode={showToolsView ? 'tools' : 'gateways'}
+                search={activeSearch}
+                gatewayFilters={{
+                  status: gatewayFilters.status,
+                  source: gatewayFilters.source,
+                  transport: gatewayFilters.transport,
+                }}
+                toolFilters={toolFilters}
+                gatewayOptions={gatewayOptions}
+                mobileSheetOpen={mobileSheetOpen}
+                onMobileSheetOpenChange={onMobileSheetOpenChange}
+                onSearchChange={onSearchChange}
+                onGatewayFilterToggle={onGatewayFilterToggle}
+                onToolFilterToggle={onToolFilterToggle}
+                onExposureChange={onExposureChange}
+                onClearFilters={onClearFilters}
               />
             </div>
 

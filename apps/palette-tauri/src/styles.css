@@ -500,6 +500,16 @@ textarea {
   box-shadow: 0 0 6px var(--aurora-accent-primary);
 }
 
+.endpoint-status-message {
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--aurora-error);
+  font-size: var(--aurora-type-caption);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .axon-divider {
   width: 1px;
   height: 26px;

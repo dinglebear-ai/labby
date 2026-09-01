@@ -45,6 +45,7 @@ import {
   removeGatewayDescription,
 } from './gateway-confirmations'
 import { AppHeader } from '@/components/app-header'
+import { MockSurfaceBadge } from '@/components/console/mock-surface-badge'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
@@ -90,6 +91,8 @@ import {
   DetailTabBar,
   DetailTabTrigger,
   DetailTabsList,
+  GATEWAY_DETAIL_TAB_LABELS,
+  type GatewayDetailTab,
 } from './gateway-detail-tabs'
 
 const GatewayFormDialog = dynamic(
@@ -239,7 +242,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [exposureSaveError, setExposureSaveError] = useState<string | null>(null)
   const [inventorySearch, setInventorySearch] = useState('')
   const [inventoryFilter, setInventoryFilter] = useState<'all' | 'tools' | 'resources' | 'prompts'>('all')
-  const [activeTab, setActiveTab] = useState<'catalog' | 'runtime' | 'config' | 'settings' | 'warnings'>('catalog')
+  const [activeTab, setActiveTab] = useState<GatewayDetailTab>('overview')
   const [testResult, setTestResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof testGateway>> } | null>(null)
   const [cleanupResult, setCleanupResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof cleanupGateway>> } | null>(null)
   const [hasMounted, setHasMounted] = useState(false)
@@ -886,7 +889,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             </div>
           </div>
         ) : null}
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'catalog' | 'runtime' | 'config' | 'settings' | 'warnings')} className="space-y-4">
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as GatewayDetailTab)} className="space-y-4">
           {/*
             Header card — the mock's gateway detail *page* header, re-measured
             2026-08-14. Reaching it means clicking the server *name* (an <a> in
@@ -896,10 +899,11 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             Three bands, all ported: the title row (8px status dot with a 3px
             halo, 25px display name, neutral chips) with a right-aligned meta
             lane; the full-bleed stat strip, `2fr repeat(n, minmax(120px,1fr))`
-            over a --gw0-0_30 wash; and the full-bleed tab bar. Our tab set is
-            not the mock's — theirs is Overview · Variables · Catalog ·
-            Activity · Routes · Logs, ours is whatever the gateway API can back
-            — but the tab chrome now is the mock's, measured off its live DOM.
+            over a --gw0-0_30 wash; and the full-bleed tab bar. The visible tab
+            contract now matches the mock exactly: Overview · Variables ·
+            Catalog · Activity · Routes · Logs. Activity is the only fixture
+            surface and carries explicit mock labeling; the other tabs map
+            existing gateway state and controls into the reference structure.
 
             Deviation: the mock's header card is sticky (`top: -186px`), ours
             is not. The endpoint is not printed here because the mock does not
@@ -1024,7 +1028,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     <>
                       <HeaderMetaDot />
                       <DetailWarnPill
-                        onClick={() => setActiveTab('settings')}
+                        onClick={() => setActiveTab('routes')}
                         aria-label="OAuth"
                         title="This server authenticates with OAuth"
                         style={{ height: 22, padding: '0 8px', borderRadius: 7 }}
@@ -1040,7 +1044,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <DetailWarnPill
-                            onClick={() => setActiveTab('warnings')}
+                            onClick={() => setActiveTab('logs')}
                             aria-label={`Open warnings (${gateway.warnings.length})`}
                             style={{ height: 22, padding: '0 8px', borderRadius: 7 }}
                           >
@@ -1142,9 +1146,19 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             <DetailTabBar>
               <DetailTabsList aria-label="Server detail sections">
                 <DetailTabTrigger
+                  value="overview"
+                  active={activeTab === 'overview'}
+                  label={GATEWAY_DETAIL_TAB_LABELS.overview}
+                />
+                <DetailTabTrigger
+                  value="variables"
+                  active={activeTab === 'variables'}
+                  label={GATEWAY_DETAIL_TAB_LABELS.variables}
+                />
+                <DetailTabTrigger
                   value="catalog"
                   active={activeTab === 'catalog'}
-                  label="Catalog"
+                  label={GATEWAY_DETAIL_TAB_LABELS.catalog}
                   count={
                     gateway.discovery.tools.length +
                     gateway.discovery.resources.length +
@@ -1152,28 +1166,24 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   }
                 />
                 <DetailTabTrigger
-                  value="runtime"
-                  active={activeTab === 'runtime'}
-                  label="Runtime"
-                  count={gateway.status.likely_stale_count ?? 0}
+                  value="activity"
+                  active={activeTab === 'activity'}
+                  label={GATEWAY_DETAIL_TAB_LABELS.activity}
+                  count={<span className="inline-flex items-center gap-1">1K <span className="text-[7px] tracking-wider">MOCK</span></span>}
                 />
-                <DetailTabTrigger value="config" active={activeTab === 'config'} label="Config" />
                 <DetailTabTrigger
-                  value="settings"
-                  active={activeTab === 'settings'}
-                  label="Settings"
-                  /* gateway enabled + expose resources + expose prompts + lab surfaces */
+                  value="routes"
+                  active={activeTab === 'routes'}
+                  label={GATEWAY_DETAIL_TAB_LABELS.routes}
                   count={3 + surfaceEntries.length}
                 />
-                {gateway.warnings.length > 0 && (
-                  <DetailTabTrigger
-                    value="warnings"
-                    active={activeTab === 'warnings'}
-                    tone="warn"
-                    label="Warnings"
-                    count={gateway.warnings.length}
-                  />
-                )}
+                <DetailTabTrigger
+                  value="logs"
+                  active={activeTab === 'logs'}
+                  tone={gateway.warnings.length > 0 ? 'warn' : 'default'}
+                  label={GATEWAY_DETAIL_TAB_LABELS.logs}
+                  count={gateway.warnings.length > 0 ? gateway.warnings.length : undefined}
+                />
               </DetailTabsList>
               <DetailCapabilityCluster />
             </DetailTabBar>
@@ -1246,7 +1256,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                             type="button"
                             variant="outline"
                             size="icon"
-                            onClick={() => setActiveTab('warnings')}
+                            onClick={() => setActiveTab('logs')}
                             className="size-8 rounded-full border-aurora-warn/30 bg-aurora-warn/10 text-aurora-warn hover:bg-aurora-warn/14 hover:text-aurora-warn"
                             aria-label={`Open warnings (${gateway.warnings.length})`}
                             title={`Open warnings (${gateway.warnings.length})`}
@@ -1369,10 +1379,49 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             </div>
           </TabsContent>
 
-          <TabsContent value="config">
+          <TabsContent value="activity">
+            <DetailCard
+              padding="0"
+              data-mock-region="gateway-detail-activity"
+              aria-label="Gateway activity mock data"
+            >
+              <div className="flex flex-wrap items-center gap-3 border-b border-aurora-border-default/55 px-5 py-3">
+                <Activity className="size-4 text-aurora-accent-pink" />
+                <div>
+                  <h2 className="text-sm font-semibold text-aurora-text-primary">Recent Calls</h2>
+                  <p className="mt-0.5 text-[10.5px] text-aurora-text-muted">Illustrative until per-server call history is available.</p>
+                </div>
+                <MockSurfaceBadge className="ml-auto" />
+              </div>
+              <div className="aurora-scrollbar overflow-x-auto">
+                <div className="min-w-[650px]">
+                  <div className="grid grid-cols-[72px_minmax(150px,1fr)_minmax(150px,1fr)_70px_58px] gap-3 border-b border-aurora-border-default/45 px-5 py-2 text-[9px] font-bold uppercase tracking-[0.12em] text-aurora-text-muted">
+                    <span>When</span><span>Tool</span><span>Client</span><span>Latency</span><span>Result</span>
+                  </div>
+                  {[
+                    ['4m ago', 'list_items_3', 'claude-code · jmagar', '99ms', 'OK'],
+                    ['12m ago', 'get_item_3', 'claude-desktop · jmagar', '91ms', 'OK'],
+                    ['20m ago', 'search_3', 'axon-runner', '16ms', 'OK'],
+                    ['23m ago', 'create_item_3', 'codex · jmagar', '251ms', 'Error'],
+                    ['31m ago', 'list_items', 'claude-code · jmagar', '111ms', 'OK'],
+                  ].map(([when, tool, client, latency, result]) => (
+                    <div key={`${when}-${tool}`} className="grid grid-cols-[72px_minmax(150px,1fr)_minmax(150px,1fr)_70px_58px] gap-3 border-t border-aurora-border-default/40 px-5 py-3 first:border-t-0">
+                      <span className="text-[10px] text-aurora-text-muted">{when}</span>
+                      <span className="font-mono text-[10.5px] font-semibold text-aurora-text-primary">{tool}</span>
+                      <span className="text-[10.5px] text-aurora-text-muted">{client}</span>
+                      <span className="font-mono text-[10px] text-aurora-text-secondary">{latency}</span>
+                      <span className={result === 'OK' ? 'text-[10px] font-semibold text-aurora-success' : 'text-[10px] font-semibold text-aurora-error'}>{result}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </DetailCard>
+          </TabsContent>
+
+          <TabsContent value="variables">
             <DetailCard padding="16px 20px 18px">
               <div className="mb-4">
-                <h2 className="text-lg font-semibold">Client Configuration</h2>
+                <h2 className="text-lg font-semibold">Variables &amp; Client Configuration</h2>
                 <p className="text-sm text-aurora-text-muted mt-1">
                   Add this JSON block to your MCP client configuration to connect to this server.
                 </p>
@@ -1401,10 +1450,10 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             </DetailCard>
           </TabsContent>
 
-          <TabsContent value="settings">
+          <TabsContent value="routes">
             <DetailCard padding="16px 20px 18px" className="space-y-5">
               <div>
-                <h2 className="text-lg font-semibold">Server settings</h2>
+                <h2 className="text-lg font-semibold">Routes &amp; Exposure</h2>
                 <p className="mt-1 text-sm text-aurora-text-muted">
                   Control server availability, exposure of MCP resources and prompts, and individual lab surface toggles.
                 </p>
@@ -1518,10 +1567,10 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             </DetailCard>
           </TabsContent>
 
-          <TabsContent value="runtime">
+          <TabsContent value="overview">
             <DetailCard padding="16px 20px 18px" className="space-y-5">
               <div>
-                <h2 className="text-lg font-semibold">Runtime details</h2>
+                <h2 className="text-lg font-semibold">Overview</h2>
                 <p className="text-sm text-aurora-text-muted mt-1">
                   Live process metadata comes from the active server pool. If the server restarted, orphaned upstream
                   processes are reconciled from the persisted runtime snapshot and shown here as stale runtime state.
@@ -1699,8 +1748,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             </DetailCard>
           </TabsContent>
 
-          {gateway.warnings.length > 0 && (
-            <TabsContent value="warnings">
+          <TabsContent value="logs">
+            {gateway.warnings.length > 0 ? (
               <DetailCard padding="16px 20px 18px">
                 <h2 className="text-lg font-semibold mb-4">Server Warnings</h2>
                 <div className="space-y-2">
@@ -1723,8 +1772,20 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   ))}
                 </div>
               </DetailCard>
-            </TabsContent>
-          )}
+            ) : (
+              <DetailCard padding="16px 20px 18px">
+                <div className="flex items-start gap-3">
+                  <span className="mt-1 size-2 shrink-0 rounded-full bg-aurora-success" />
+                  <div>
+                    <h2 className="text-lg font-semibold">No reported warnings</h2>
+                    <p className="mt-1 text-sm text-aurora-text-muted">
+                      This server has no current warning entries. Use “View in Logs” for the connected server-log stream.
+                    </p>
+                  </div>
+                </div>
+              </DetailCard>
+            )}
+          </TabsContent>
         </Tabs>
       </div>
 

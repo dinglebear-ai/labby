@@ -142,6 +142,7 @@ test('gateway manage tools flow persists after a full reload in mock preview', {
   })
   await page.reload({ waitUntil: 'networkidle' })
 
+  await page.getByRole('tab', { name: /Catalog/ }).click()
   await page.getByRole('button', { name: 'Tools', exact: true }).click()
   await page.getByRole('button', { name: 'Manage tools', exact: true }).click()
   await page.locator('#select-all-visible').click()
@@ -155,6 +156,7 @@ test('gateway manage tools flow persists after a full reload in mock preview', {
 
   await page.reload({ waitUntil: 'networkidle' })
 
+  await page.getByRole('tab', { name: /Catalog/ }).click()
   await page.getByRole('button', { name: 'Tools', exact: true }).click()
   await assert.doesNotReject(() =>
     page.getByRole('button', { name: 'Manage tools', exact: true }).waitFor(),
@@ -188,6 +190,7 @@ test('gateway detail uses a compact summary and endpoint control in mock preview
       page.locator('[title="http://localhost:3001/mcp"]'),
     ).waitFor(),
   )
+  await page.getByRole('tab', { name: /Catalog/ }).click()
   await page.getByRole('button', { name: 'Tools', exact: true }).click()
   await assert.doesNotReject(() =>
     page.getByRole('button', { name: 'Manage tools', exact: true }).waitFor(),
@@ -289,7 +292,7 @@ test('clicking a server name from the gateway list loads its detail page', { con
   await githubRow.getByRole('link', { name: 'github-server', exact: true }).click()
   await page.waitForURL((url) => url.pathname === '/gateway/' && url.searchParams.get('id') === 'gw-2')
   await assert.doesNotReject(() => page.getByText('12/12').first().waitFor())
-  await assert.doesNotReject(() => page.getByRole('button', { name: 'Tools', exact: true }).waitFor())
+  await assert.doesNotReject(() => page.getByRole('tab', { name: /Overview/ }).waitFor())
 })
 
 test('mobile gateway cards are touch-sized, overflow-free, and open server detail', { concurrency: false }, async (t) => {
@@ -313,7 +316,7 @@ test('mobile gateway cards are touch-sized, overflow-free, and open server detai
 
   await open.click()
   await page.waitForURL((url) => url.pathname === '/gateway/' && Boolean(url.searchParams.get('id')))
-  await assert.doesNotReject(() => page.getByRole('button', { name: 'Tools', exact: true }).waitFor())
+  await assert.doesNotReject(() => page.getByRole('tab', { name: /Overview/ }).waitFor())
 
   const detailOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
   assert.equal(detailOverflow, false)
@@ -368,7 +371,7 @@ test('gateway detail disable flow shows confirmation, persists disabled state, a
   })
   await page.reload({ waitUntil: 'networkidle' })
 
-  await page.getByRole('tab', { name: /Settings/ }).click()
+  await page.getByRole('tab', { name: /Routes/ }).click()
   const enabledSwitch = page.getByRole('switch', { name: 'Server enabled' })
   await assert.doesNotReject(() => enabledSwitch.waitFor())
   assert.equal(await enabledSwitch.getAttribute('aria-checked'), 'true')
@@ -462,8 +465,10 @@ test('stale Loadouts clients hard-navigate after a new static build is deployed'
   await buildApplication('browser-skew-replacement')
   await page.unroute('**/*', blockFlightPrefetch)
   await Promise.all([
-    page.waitForURL('**/snippets/', { waitUntil: 'networkidle' }),
-    page.getByRole('link', { name: 'Snippets' }).click(),
+    page.waitForURL((url) => url.pathname.replace(/\/$/, '') === '/logs', {
+      waitUntil: 'domcontentloaded',
+    }),
+    page.getByRole('link', { name: /Logs/ }).click(),
   ])
 
   const staleDocumentSurvived = await page.evaluate(

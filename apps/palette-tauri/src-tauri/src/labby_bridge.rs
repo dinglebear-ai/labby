@@ -468,7 +468,9 @@ fn validate_launcher_request(request: &LauncherExecuteRequest) -> Result<(), Str
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        return Err("expected contract hash must be 64 lowercase hexadecimal characters".to_string());
+        return Err(
+            "expected contract hash must be 64 lowercase hexadecimal characters".to_string(),
+        );
     }
     let serialized = serde_json::to_vec(&request.params).map_err(|err| err.to_string())?;
     if serialized.len() > 256 * 1024 {

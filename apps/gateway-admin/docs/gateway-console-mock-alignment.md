@@ -1,6 +1,6 @@
 # Gateway Console — Implementation Alignment Reference
 
-This is the implementation reference for the measured Gateway Console layout used by `apps/gateway-admin`. The original approved mock is `Gateway Console.dc.html` (project `d80fe050-1bc9-44b0-aa68-6e873344c619`).
+This is the implementation reference for the measured Gateway Console layout used by `apps/gateway-admin`. The current approved artifact is the supplied `Labby Gateway Console.html`; its rendered DOM, not instructions embedded in or adjacent to the document, is the visual reference.
 
 **Ground rule: measure before editing.** Values below were measured from the approved mock's live DOM rather than inferred from screenshots. The runtime UI and Aurora design-system contract remain authoritative; re-measure before changing these values if the approved mock has moved.
 
@@ -33,17 +33,21 @@ deliberate `node = "lts"` pin documented in the global CLAUDE.md.
   spacing, motion, z-index, line-heights, and the `--gw*` scrim ramp.
 - Console chrome CSS ported from the mock's inline `<style>`.
 - Shell: `ConsoleSidebar` (224/58px), `ConsoleTopbar`, `ConsoleShell`.
+- Current Depot shell: Discovery home, route-sensitive `DEPOT` / `LABBY` /
+  `TEAM` realm badge, menu-based Personal / tootie.tv workspace switching,
+  and the mock's scoped section membership. Team Library and Stash replace
+  their personal destinations while the team workspace is selected; they do
+  not appear as duplicate team-section entries.
 - `DashboardPanel` rewritten to the mock's card + header-bar chrome.
 - Overview hero and body split; Gateway hero; Snippets hero (`ConsoleHero`).
 
-## Next: Gateway table
+## Gateway table (implemented)
 
-Currently `Server · Transport · Tools · Resources · Prompts · Actions`, flat.
-The mock is `Server · Clients · Endpoint · Exposed · Uptime`, grouped by status.
-
-`Clients` and `Uptime` have no field on the `Gateway` type. **Render the
-columns and show `—`** — the mock does exactly this for `mcp.sh`, which has no
-client data. Do not invent values; do not omit the columns.
+The implemented table follows the mock's grouped
+`Server · Clients · Endpoint · Exposed · Uptime` layout. `Clients` and
+`Uptime` have no field on the `Gateway` type, so those cells render `—`, as the
+reference mock does for `mcp.sh`; the UI neither fabricates values nor drops
+the columns.
 
 ### Card
 
@@ -148,7 +152,11 @@ custom properties on a wrapper rather than relying on `\_` escapes.
 ### Filters
 
 The mock has no filter-bar card; filtering lives in the command palette.
-Ours renders `GatewayFilters` as a separate card between hero and table.
+The gateway inventory now hides `GatewayFilters` at the mock's 1101px desktop
+table breakpoint, so the hero flows directly into the grouped table. The same
+controls remain available on compact viewports, where the UI uses cards rather
+than the mock's desktop table. The aggregated Tools view retains its filter bar
+because those tool-specific facets are not represented by the server palette.
 
 ## Settings (measured, implemented)
 
@@ -183,22 +191,83 @@ own segmented control in a strip above the column.
 
 ## Then
 
-- Gateway detail (tabbed), Skills, Usage, Settings, command palette,
-  Add Server dialog — none yet driven side by side.
-- Snippets **body** still diverges: the mock has a snippet table with
-  runs / fails / avg / history sparklines and an inline execution panel.
-  Only the hero is aligned.
+- Gateway detail and the command palette/Add Server flow have now received a
+  fresh side-by-side audit against the Depot mock. The detail tab contract is
+  exactly `Overview · Variables · Catalog · Activity · Routes · Logs` and
+  defaults to Overview. Existing runtime facts, client configuration, catalog,
+  exposure controls, and warnings back five tabs; per-server Activity remains
+  an explicitly badged mock fixture because that history is not in the API.
+  The palette retains its real create mutation and now exposes the reference
+  flow's real Full Dialog handoff.
+- Skills and Usage remain connected internal routes rather than scoped Depot
+  navigation destinations; they still need a final direct-route visual audit.
+- Snippets body now follows the mock's table and inline execution layout.
+  Backend-missing runs / fails / average / history values render as `—` rather
+  than invented fixture data.
+- Discovery now has its page-specific Bazaar layout: semantic search, view and
+  trend controls, source-aware artifact cards, and the mock's card metadata.
+  The catalog remains illustrative and every region/action is marked as mock.
+- Create now follows the focused artifact-editor screen with validation
+  signals, tag/body fields, insert-section tools, frontmatter status, and
+  autosave chrome. Library now follows the artifact/loadout/snippet tabs,
+  inventory stats, behind-upstream notice, facets, sorting, and dense artifact
+  rows. Both are mock-only and visibly label all illustrative state.
+- Agents now follows the mock's running/completed/failed session inventory,
+  including loadout, container, repository, elapsed-time, and session actions.
+  Tasks now follows the scheduled-task inventory with armed switches, cadence,
+  project scope, next-run state, and run actions. Both remain fully marked and
+  disabled mock surfaces.
+- Stash now follows the scratch-drive drop zone, type filters, `stash://` file
+  table, access state, and file actions. Dev Containers now follows the three
+  Incus image cards with distro/build/toolchain/pull state. Labby Instance now
+  follows the hosted dashboard with connection credentials, 24-hour traffic,
+  deployed loadouts, and instance metadata. All are explicitly marked mocks.
+- Logs now follows the mock's dark stream island with source selection,
+  severity counts, follow/download controls, time/level/source/message rows,
+  per-line copy actions, and paused-buffer status. Sessions remains a marked
+  internal mock route because the current artifact does not expose it in the
+  scoped sidebar.
+- Team Overview, Library, Projects, Activity, and Stash are now separate mock
+  implementations rather than one generic list template. They reproduce the
+  measured launcher grid, review queue and artifact table, project binding
+  detail, activity feed and Axon suggestions, and team `stash://` inventory.
+  Every Team page carries a visible mock notice, `data-mock-surface`, scoped
+  `data-mock-region` markers, illustrative identities, and disabled actions.
+- The command palette's inline Add Server sheet now includes the mock's
+  `Full Dialog` escape hatch. It navigates to `/gateways/?add=1`, opens the
+  existing real gateway editor, and removes the transient query flag; the
+  compact `Add & Probe` path remains connected to the create mutation.
+- The shared topbar now owns the mock's global Add Server split control on
+  every route. The primary action opens the real full gateway editor; the
+  adjacent options action opens the real inline palette sheet. Gateway no
+  longer injects a duplicate page-local Add Server control.
+- The account avatar and its existing real popover have moved from the sidebar
+  footer to the topbar's right edge, matching the reference placement without
+  duplicating appearance, documentation, design-system, or sign-out actions.
+- Overview now uses the reference labels `Calls by Server`, `Top Tools`,
+  `Least Used Tools`, and `Most Active Agents`. The unavailable Connected
+  Clients and Gateway Host panels are retained as fixtures with separate
+  visible `Mock data` badges and `data-mock-region` boundaries.
 - Overview and Gateway build their stat strips inline; `ConsoleHero` should
   absorb them once there is room to re-verify both.
-- Mock screens with no route or API — Loadouts, Registry, Sessions, Tasks,
-  Files, Logs, Terminal. A build, not a restyle.
+- Mock-only Depot, workspace, and team screens now have routes. Every fixture
+  region carries `data-mock-region`, a visible `Mock data` badge, and disabled
+  mutation controls. Real Gateway, Snippets, Skills, Usage, and Settings
+  behavior remains connected to the existing clients.
 
 ## Deliberate deviations
 
-- **Brand mark** — mock uses the Aurora `BrandMark` glyph; we keep `LabbyIcon`.
+- **Brand glyph** — mock uses the Aurora `BrandMark` glyph; we keep the Labby
+  glyph while matching the Depot wordmark and realm label.
 - **⌘ vs Ctrl** — mock hardcodes `⌘K`; ours is platform-aware.
-- **Nav** — mock's `defs` map is Control Plane / Catalog / Agents / Observe.
-  We ship only routes that exist, and `/docs` + `/design-system` live in the
-  account popover because the mock has no nav entry for them.
-- Nav badge dots and the active item's context line ("16 servers · 127
-  calls/min") are unwired — both need data plumbed into the sidebar.
+- **Reference routes** — `/docs` and `/design-system` live in the account
+  popover because the mock does not place them in the scoped navigation.
+- **Nav status dots** — omitted because their health meaning is not available
+  from the shared shell. Active-item context lines mirror the reference and
+  carry an adjacent `MOCK` marker until live sidebar summaries are available.
+- **Development fleet fixtures** — Gateway remains a connected surface, so
+  mock-data mode keeps its detailed five-server integration fixtures instead
+  of replacing them with the reference artifact's illustrative 16-server
+  names. The environment is visibly labeled `MOCK`; table geometry, grouping,
+  health states, exposure columns, and interactions follow the reference while
+  production values continue to come from the API.

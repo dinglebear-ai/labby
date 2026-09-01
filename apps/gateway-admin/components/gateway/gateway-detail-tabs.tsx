@@ -5,6 +5,17 @@ import * as TabsPrimitive from '@radix-ui/react-tabs'
 
 import { DETAIL_NO_DATA } from './gateway-detail-chrome'
 
+export const GATEWAY_DETAIL_TAB_LABELS = {
+  overview: 'Overview',
+  variables: 'Variables',
+  catalog: 'Catalog',
+  activity: 'Activity',
+  routes: 'Routes',
+  logs: 'Logs',
+} as const
+
+export type GatewayDetailTab = keyof typeof GATEWAY_DETAIL_TAB_LABELS
+
 /**
  * Header-card chrome for the Gateway detail *page* — tab bar, attached stat
  * strip, and the overview key/value card.
@@ -30,9 +41,9 @@ import { DETAIL_NO_DATA } from './gateway-detail-chrome'
  * seventh `files` tab exists in the mock's state machine but is not in
  * `dTabDefs` — it is only reachable from the topbar's "Generate skill" action.
  *
- * We do not ship the mock's tab set: ours is driven by what the gateway API
- * actually returns (see `gateway-detail-content.tsx`). What is ported here is
- * the *chrome* — geometry, type, colour, and the count-badge treatment.
+ * The detail page now ships this exact visible tab contract. Real gateway
+ * state backs Overview, Variables, Catalog, Routes, and Logs. Activity remains
+ * a visibly marked fixture until the API exposes per-server call history.
  *
  * Every literal below was read off the mock. Re-measure rather than adjusting
  * by eye.

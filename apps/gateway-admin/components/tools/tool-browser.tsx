@@ -167,7 +167,7 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && error.retry && <Button variant="ghost" size="sm" onClick={error.retry}>Retry</Button>}</div>}
     <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
       <section aria-label="Tool results" className="space-y-3">
-        <p className="text-xs text-aurora-text-muted">{summary}</p>
+        <p className="text-xs text-aurora-text-muted" aria-live="polite">{summary}</p>
         {results.map((hit) => <button key={hit.id} type="button" onClick={() => void selectTool(hit)} className="block w-full rounded-xl border border-aurora-border-default bg-aurora-panel-medium p-4 text-left transition hover:border-aurora-accent-primary/50 hover:bg-aurora-panel-strong">
           <div className="flex items-center justify-between gap-3"><code className="text-sm font-semibold text-aurora-accent-primary">{hit.path}</code><Safety safety={hit.safety} /></div>
           <p className="mt-2 line-clamp-2 text-sm text-aurora-text-secondary">{hit.description || 'No description provided.'}</p>
