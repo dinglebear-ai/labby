@@ -28,7 +28,27 @@ fn labby_binary() -> PathBuf {
 
 struct RevocationGuard {
     command: Command,
-    absent_paths: Vec<PathBuf>,
+    absent_paths: NonEmptyAbsencePaths,
+}
+
+#[derive(Debug)]
+struct NonEmptyAbsencePaths {
+    first: PathBuf,
+    rest: Vec<PathBuf>,
+}
+
+impl NonEmptyAbsencePaths {
+    fn try_from_paths(mut paths: Vec<PathBuf>) -> Result<Self, String> {
+        if paths.is_empty() {
+            return Err("credential/session revocation requires absence evidence".into());
+        }
+        let first = paths.remove(0);
+        Ok(Self { first, rest: paths })
+    }
+
+    fn any_exists(&self) -> bool {
+        self.first.exists() || self.rest.iter().any(|path| path.exists())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -507,13 +527,15 @@ impl LiveLabbyGuard {
         session: impl Into<String>,
         command: Command,
         absent_paths: Vec<PathBuf>,
-    ) {
+    ) -> Result<(), String> {
+        let absent_paths = NonEmptyAbsencePaths::try_from_paths(absent_paths)?;
         self.ledger.credential_sessions.push(session.into());
         self.revocations.push(RevocationGuard {
             command,
             absent_paths,
         });
         drop(write_ledger(&self.manifest_path, &self.ledger));
+        Ok(())
     }
 
     async fn finish_inner(&mut self, timeout: Duration) -> CleanupResult {
@@ -556,7 +578,7 @@ impl LiveLabbyGuard {
                 }
                 if let Err(error) = run_owned_command(&mut revoke.command, deadline) {
                     failures.push(format!("credential/session revocation failed: {error}"));
-                } else if revoke.absent_paths.iter().any(|path| path.exists()) {
+                } else if revoke.absent_paths.any_exists() {
                     failures.push("credential/session remained after revocation".into())
                 }
             }
@@ -890,7 +912,7 @@ impl Drop for LiveLabbyGuard {
                     EvidenceKind::Failure,
                     format!("drop revocation failed: {error}"),
                 );
-            } else if revoke.absent_paths.iter().any(|path| path.exists()) {
+            } else if revoke.absent_paths.any_exists() {
                 self.evidence.push(
                     EvidenceKind::Failure,
                     "drop revocation absence verification failed",
@@ -1393,18 +1415,30 @@ fn run_owned_command(command: &mut Command, deadline: Instant) -> Result<(), Str
         use std::os::unix::process::CommandExt as _;
         command.process_group(0);
     }
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let child = command.spawn().map_err(|error| error.to_string())?;
+    run_spawned_owned_child(child, deadline, assign_cleanup_job, |child| {
+        child.try_wait()
+    })
+}
+
+fn run_spawned_owned_child<A, P>(
+    mut child: std::process::Child,
+    deadline: Instant,
+    assign_job: A,
+    mut poll: P,
+) -> Result<(), String>
+where
+    A: FnOnce(u32) -> Result<OwnedCleanupJob, String>,
+    P: FnMut(&mut std::process::Child) -> std::io::Result<Option<std::process::ExitStatus>>,
+{
     let mut post_spawn_errors = Vec::new();
-    #[cfg(windows)]
-    let owned_job = match child.id().map(labby_winjob::JobObject::assign).transpose() {
+    let owned_job = match assign_job(child.id()) {
         Ok(job) => job,
         Err(error) => {
             post_spawn_errors.push(format!("cleanup helper job assignment failed: {error}"));
-            None
+            unassigned_cleanup_job()
         }
     };
-    #[cfg(not(windows))]
-    let owned_job = OwnedCleanupJob;
     if !post_spawn_errors.is_empty() {
         terminate_and_reap_owned_child(&mut child, owned_job, &mut post_spawn_errors);
         return Err(format!(
@@ -1413,7 +1447,7 @@ fn run_owned_command(command: &mut Command, deadline: Instant) -> Result<(), Str
         ));
     }
     loop {
-        match child.try_wait() {
+        match poll(&mut child) {
             Ok(Some(status)) => {
                 return status
                     .success()
@@ -1450,6 +1484,18 @@ fn run_owned_command(command: &mut Command, deadline: Instant) -> Result<(), Str
 type OwnedCleanupJob = Option<labby_winjob::JobObject>;
 #[cfg(not(windows))]
 struct OwnedCleanupJob;
+
+#[cfg(windows)]
+fn assign_cleanup_job(pid: u32) -> Result<OwnedCleanupJob, String> {
+    labby_winjob::JobObject::assign(pid)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn assign_cleanup_job(_pid: u32) -> Result<OwnedCleanupJob, String> {
+    Ok(OwnedCleanupJob)
+}
 
 fn unassigned_cleanup_job() -> OwnedCleanupJob {
     #[cfg(windows)]
@@ -1778,7 +1824,12 @@ mod tests {
         );
     }
 
-    fn assert_injected_post_spawn_failure_settles(label: &str) {
+    enum InjectedPostSpawnFailure {
+        Assignment,
+        Poll,
+    }
+
+    fn assert_injected_post_spawn_failure_settles(failure: InjectedPostSpawnFailure) {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("post-settlement-mutation");
         let mut command = Command::new("sh");
@@ -1792,24 +1843,37 @@ mod tests {
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
         }
-        let mut child = command.spawn().unwrap();
-        let mut errors = vec![label.to_owned()];
+        let child = command.spawn().unwrap();
+        let error = match failure {
+            InjectedPostSpawnFailure::Assignment => run_spawned_owned_child(
+                child,
+                Instant::now() + Duration::from_secs(1),
+                |_| Err("injected post-spawn setup failure".to_owned()),
+                |child| child.try_wait(),
+            ),
+            InjectedPostSpawnFailure::Poll => run_spawned_owned_child(
+                child,
+                Instant::now() + Duration::from_secs(1),
+                |_| Ok(unassigned_cleanup_job()),
+                |_| Err(std::io::Error::other("injected child status poll failure")),
+            ),
+        }
+        .unwrap_err();
 
-        terminate_and_reap_owned_child(&mut child, unassigned_cleanup_job(), &mut errors);
-
-        assert!(errors.iter().any(|error| error == label), "{errors:?}");
+        assert!(error.contains("helper killed and reaped"), "{error}");
+        assert!(error.contains("injected"), "{error}");
         std::thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "spawned helper mutated after settlement");
     }
 
     #[test]
     fn post_spawn_setup_failure_is_killed_and_reaped_before_return() {
-        assert_injected_post_spawn_failure_settles("injected post-spawn setup failure");
+        assert_injected_post_spawn_failure_settles(InjectedPostSpawnFailure::Assignment);
     }
 
     #[test]
     fn child_status_poll_failure_is_killed_and_reaped_before_return() {
-        assert_injected_post_spawn_failure_settles("injected child status poll failure");
+        assert_injected_post_spawn_failure_settles(InjectedPostSpawnFailure::Poll);
     }
 
     #[test]
@@ -2022,10 +2086,18 @@ mod tests {
             .arg("rm -f -- \"$1\"")
             .arg("sh")
             .arg(&marker);
-        guard.register_credential_session("synthetic-session", command, vec![marker.clone()]);
+        guard
+            .register_credential_session("synthetic-session", command, vec![marker.clone()])
+            .unwrap();
         let cleanup = guard.finish().await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
         assert!(!marker.exists(), "revocation helper was not invoked");
+    }
+
+    #[test]
+    fn credential_session_requires_absence_evidence_before_registration() {
+        let error = NonEmptyAbsencePaths::try_from_paths(vec![]).unwrap_err();
+        assert!(error.contains("requires absence evidence"), "{error}");
     }
 
     #[tokio::test]

@@ -40,10 +40,9 @@ export type LiveBrowserEvidence = {
   cspViolations: string[]
 }
 
-type CaptureOutcome =
-  | { status: 'captured'; path: string }
-  | { status: 'discarded'; reason: string }
-  | { status: 'failed'; error: string }
+type CaptureFailure = { status: 'failed'; error: string }
+type ScreenshotCaptureOutcome = { status: 'captured'; path: string } | CaptureFailure
+type TraceCaptureOutcome = { status: 'discarded'; reason: string } | CaptureFailure
 
 function ownedAbsolutePath(value: unknown, field: string) {
   if (typeof value !== 'string') throw new TypeError(`${field} must be a string`)
@@ -272,6 +271,7 @@ export async function useBrowserWithAbort<T extends Pick<Browser, 'close'>, R>(
       await closeOnce()
     } catch (closeError) {
       if (primaryError === undefined) throw closeError
+      throw new AggregateError([primaryError, closeError], 'browser operation and cleanup both failed')
     } finally {
       detachAbort()
     }
@@ -282,7 +282,7 @@ export async function runBrowserCleanupIfActive(
   signal: AbortSignal,
   deferred: () => void,
   cleanup: (mayContinue: () => boolean) => Promise<void>,
-): Promise<boolean> {
+): Promise<void> {
   let recordedDeferral = false
   const mayContinue = () => {
     if (!signal.aborted) return true
@@ -292,9 +292,8 @@ export async function runBrowserCleanupIfActive(
     }
     return false
   }
-  if (!mayContinue()) return false
+  if (!mayContinue()) return
   await cleanup(mayContinue)
-  return true
 }
 
 async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -345,8 +344,7 @@ export async function captureFailureEvidence(options: {
     signal.throwIfAborted()
     const prefix = path.join(invocationDir, 'failure')
     const screenshot = `${prefix}.png`
-    const trace = `${prefix}.trace.zip`
-    const screenshotOutcome: CaptureOutcome = await withAbort(page.screenshot({ fullPage: true }), signal)
+    const screenshotOutcome: ScreenshotCaptureOutcome = await withAbort(page.screenshot({ fullPage: true }), signal)
       .then(async (bytes) => {
         signal.throwIfAborted()
         await writeFile(screenshot, bytes, { mode: 0o600, signal })
@@ -360,7 +358,7 @@ export async function captureFailureEvidence(options: {
     signal.throwIfAborted()
     // Playwright cannot return trace bytes. Never give a cancellable operation
     // a path it could mutate after our deadline has returned.
-    const traceOutcome: CaptureOutcome = await withAbort(context.tracing.stop(), signal)
+    const traceOutcome: TraceCaptureOutcome = await withAbort(context.tracing.stop(), signal)
       .then(() => ({ status: 'discarded' as const, reason: 'discarded to preserve deadline ownership' }))
       .catch((error: unknown) => ({
         status: 'failed' as const,
@@ -386,11 +384,7 @@ export async function captureFailureEvidence(options: {
       .map((value) => Buffer.from(value))
     signal.throwIfAborted()
     assert.ok(secrets.length > 0, 'scan-only secret set must not be empty')
-    const artifacts = [
-      reportPath,
-      ...(screenshotOutcome.status === 'captured' ? [screenshotOutcome.path] : []),
-      ...(traceOutcome.status === 'captured' ? [traceOutcome.path] : []),
-    ]
+    const artifacts = [reportPath, ...(screenshotOutcome.status === 'captured' ? [screenshotOutcome.path] : [])]
     try {
       for (const artifact of artifacts) {
         signal.throwIfAborted()
@@ -405,7 +399,7 @@ export async function captureFailureEvidence(options: {
       throw error
     }
     const captureFailures = [screenshotOutcome, traceOutcome].filter(
-      (outcome): outcome is Extract<CaptureOutcome, { status: 'failed' }> => outcome.status === 'failed',
+      (outcome): outcome is CaptureFailure => outcome.status === 'failed',
     )
     if (captureFailures.length > 0) {
       throw new AggregateError(

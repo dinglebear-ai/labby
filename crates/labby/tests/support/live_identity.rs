@@ -234,7 +234,7 @@ impl LiveIdentity {
             format!("bootstrap:{prepare_id}:{credential_id}"),
             recovery,
             vec![root.join("credential.txt"), root.join("proof.json")],
-        );
+        )?;
         Ok(Self {
             guard: Some(guard),
             owned,

@@ -1323,6 +1323,10 @@ fn resolve_auth_with_env(
 
     auth_config::AuthConfigBuilder::new()
         .env_prefix("LABBY")
+        // Labby is the canonical interactive MCP gateway and intentionally
+        // supports RFC 7591 registration for ChatGPT/Claude connectors. Keep
+        // the reusable auth crate closed by default; opt this product in here.
+        .enable_dynamic_registration(true)
         .build_from_sources(merged)
         .map_err(anyhow::Error::from)
 }
@@ -2704,6 +2708,10 @@ future = "keep"
 
         let resolved = resolve_oauth_fixture(&cfg);
 
+        assert!(
+            resolved.enable_dynamic_registration,
+            "canonical Labby must explicitly opt into connector DCR"
+        );
         assert_eq!(
             resolved.allowed_client_redirect_uris,
             vec![

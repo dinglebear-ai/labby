@@ -138,8 +138,9 @@ test('browser abort and finalization share one close operation', async () => {
 
 test('browser close failure does not replace the primary operation error', async () => {
   const controller = new AbortController()
-  await assert.rejects(
-    useBrowserWithAbort(
+  let combined: AggregateError | undefined
+  try {
+    await useBrowserWithAbort(
       controller.signal,
       async () => ({
         close: async () => {
@@ -149,8 +150,17 @@ test('browser close failure does not replace the primary operation error', async
       async () => {
         throw new Error('primary journey failed')
       },
-    ),
-    /primary journey failed/,
+    )
+    assert.fail('operation unexpectedly succeeded')
+  } catch (error) {
+    assert.ok(error instanceof AggregateError)
+    combined = error
+  }
+  assert.ok(combined)
+  assert.match(combined.message, /browser operation and cleanup both failed/)
+  assert.deepEqual(
+    combined.errors.map((error) => (error instanceof Error ? error.message : String(error))),
+    ['primary journey failed', 'close failed'],
   )
   await assert.rejects(
     useBrowserWithAbort(
@@ -172,7 +182,7 @@ test('aborted browser cleanup is deferred without starting mutations', async () 
   let deferrals = 0
   let mutations = 0
 
-  const cleaned = await runBrowserCleanupIfActive(
+  await runBrowserCleanupIfActive(
     controller.signal,
     () => {
       deferrals += 1
@@ -182,7 +192,6 @@ test('aborted browser cleanup is deferred without starting mutations', async () 
     },
   )
 
-  assert.equal(cleaned, false)
   assert.equal(deferrals, 1)
   assert.equal(mutations, 0, 'an aborted journey must leave owned-root cleanup to the outer supervisor')
 })
@@ -192,7 +201,7 @@ test('active browser cleanup executes exactly once', async () => {
   let deferrals = 0
   let mutations = 0
 
-  const cleaned = await runBrowserCleanupIfActive(
+  await runBrowserCleanupIfActive(
     controller.signal,
     () => {
       deferrals += 1
@@ -202,7 +211,6 @@ test('active browser cleanup executes exactly once', async () => {
     },
   )
 
-  assert.equal(cleaned, true)
   assert.equal(deferrals, 0)
   assert.equal(mutations, 1)
 })
@@ -212,7 +220,7 @@ test('aborted nightly journey does not start context cleanup', async () => {
   controller.abort(new Error('nightly journey deadline expired'))
   let contextCloses = 0
 
-  const cleaned = await runBrowserCleanupIfActive(
+  await runBrowserCleanupIfActive(
     controller.signal,
     () => undefined,
     async () => {
@@ -220,7 +228,6 @@ test('aborted nightly journey does not start context cleanup', async () => {
     },
   )
 
-  assert.equal(cleaned, false)
   assert.equal(contextCloses, 0)
 })
 
@@ -231,7 +238,7 @@ test('abort during cleanup prevents every later mutation without throwing', asyn
   let laterMutations = 0
   let contextCloses = 0
 
-  const cleaned = await runBrowserCleanupIfActive(
+  await runBrowserCleanupIfActive(
     controller.signal,
     () => {
       deferrals += 1
@@ -248,7 +255,6 @@ test('abort during cleanup prevents every later mutation without throwing', asyn
     },
   )
 
-  assert.equal(cleaned, true, 'cleanup started before the deadline')
   assert.equal(firstMutations, 1)
   assert.equal(laterMutations, 0)
   assert.equal(contextCloses, 0)

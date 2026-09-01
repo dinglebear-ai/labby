@@ -116,6 +116,11 @@ OAuth mode exposes:
 - `POST /native/poll`
 - `POST /token`
 
+The reusable `labby-auth` crate keeps dynamic client registration disabled by
+default so headless consumers must opt in deliberately. The canonical Labby
+product explicitly enables it; therefore its OAuth deployment mounts and
+advertises `POST /register` without an additional operator setting.
+
 Registration rules in the initial launch:
 
 - loopback redirect URIs are always accepted

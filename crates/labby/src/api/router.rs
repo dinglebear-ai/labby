@@ -4700,9 +4700,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabled_dynamic_registration_is_neither_advertised_nor_mounted() {
+    async fn canonical_labby_dynamic_registration_is_advertised_and_mounted() {
         let auth_state = test_lab_auth_state().await;
-        assert!(!auth_state.config.enable_dynamic_registration);
+        assert!(auth_state.config.enable_dynamic_registration);
         let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
         let metadata = app
             .clone()
@@ -4720,7 +4720,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(json.get("registration_endpoint").is_none());
+        assert_eq!(
+            json["registration_endpoint"],
+            "https://lab.example.com/register"
+        );
 
         let register = app
             .oneshot(
@@ -4733,7 +4736,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(register.status(), StatusCode::NOT_FOUND);
+        assert_ne!(register.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -6245,6 +6248,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
+            enable_dynamic_registration: true,
             ..labby_auth::config::AuthConfig::default()
         };
         labby_auth::state::AuthState::new(config).await.unwrap()
