@@ -45,24 +45,72 @@ pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::RouteGroup;
     let mut descriptors = descriptors().into_iter();
     RouteGroup::empty()
-        .route(descriptors.next().expect("catalog descriptor"), get(catalog))
+        .route(
+            descriptors.next().expect("catalog descriptor"),
+            get(catalog),
+        )
         .route(descriptors.next().expect("search descriptor"), get(search))
         .route(descriptors.next().expect("schema descriptor"), get(schema))
-        .route(descriptors.next().expect("descriptor descriptor"), get(descriptor))
-        .route(descriptors.next().expect("execute descriptor"), post(execute))
-        .route(descriptors.next().expect("delegation descriptor"), post(agent_delegation))
-        .route(descriptors.next().expect("context descriptor"), post(agent_context))
-        .route(descriptors.next().expect("approval descriptor"), post(agent_approval))
-        .route(descriptors.next().expect("agent execute descriptor"), post(agent_execute))
-        .route(descriptors.next().expect("agent status descriptor"), get(agent_status))
-        .route(descriptors.next().expect("agent cancel descriptor"), post(agent_cancel))
-        .route(descriptors.next().expect("loadout list descriptor"), get(execution_loadout_list))
-        .route(descriptors.next().expect("loadout create descriptor"), post(execution_loadout_create))
-        .route(descriptors.next().expect("loadout get descriptor"), get(execution_loadout_get))
-        .route(descriptors.next().expect("loadout patch descriptor"), axum::routing::patch(execution_loadout_patch))
-        .route(descriptors.next().expect("loadout preview descriptor"), post(execution_loadout_preview))
-        .route(descriptors.next().expect("loadout activate descriptor"), post(execution_loadout_activate))
-        .route(descriptors.next().expect("loadout rollback descriptor"), post(execution_loadout_rollback))
+        .route(
+            descriptors.next().expect("descriptor descriptor"),
+            get(descriptor),
+        )
+        .route(
+            descriptors.next().expect("execute descriptor"),
+            post(execute),
+        )
+        .route(
+            descriptors.next().expect("delegation descriptor"),
+            post(agent_delegation),
+        )
+        .route(
+            descriptors.next().expect("context descriptor"),
+            post(agent_context),
+        )
+        .route(
+            descriptors.next().expect("approval descriptor"),
+            post(agent_approval),
+        )
+        .route(
+            descriptors.next().expect("agent execute descriptor"),
+            post(agent_execute),
+        )
+        .route(
+            descriptors.next().expect("agent status descriptor"),
+            get(agent_status),
+        )
+        .route(
+            descriptors.next().expect("agent cancel descriptor"),
+            post(agent_cancel),
+        )
+        .route(
+            descriptors.next().expect("loadout list descriptor"),
+            get(execution_loadout_list),
+        )
+        .route(
+            descriptors.next().expect("loadout create descriptor"),
+            post(execution_loadout_create),
+        )
+        .route(
+            descriptors.next().expect("loadout get descriptor"),
+            get(execution_loadout_get),
+        )
+        .route(
+            descriptors.next().expect("loadout patch descriptor"),
+            axum::routing::patch(execution_loadout_patch),
+        )
+        .route(
+            descriptors.next().expect("loadout preview descriptor"),
+            post(execution_loadout_preview),
+        )
+        .route(
+            descriptors.next().expect("loadout activate descriptor"),
+            post(execution_loadout_activate),
+        )
+        .route(
+            descriptors.next().expect("loadout rollback descriptor"),
+            post(execution_loadout_rollback),
+        )
 }
 
 pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> {
@@ -82,10 +130,26 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
         ("GET", "/execution-loadouts", "execution_loadout_list"),
         ("POST", "/execution-loadouts", "execution_loadout_create"),
         ("GET", "/execution-loadouts/{id}", "execution_loadout_get"),
-        ("PATCH", "/execution-loadouts/{id}", "execution_loadout_patch"),
-        ("POST", "/execution-loadouts/{id}/preview", "execution_loadout_preview"),
-        ("POST", "/execution-loadouts/{id}/activate", "execution_loadout_activate"),
-        ("POST", "/execution-loadouts/{id}/rollback", "execution_loadout_rollback"),
+        (
+            "PATCH",
+            "/execution-loadouts/{id}",
+            "execution_loadout_patch",
+        ),
+        (
+            "POST",
+            "/execution-loadouts/{id}/preview",
+            "execution_loadout_preview",
+        ),
+        (
+            "POST",
+            "/execution-loadouts/{id}/activate",
+            "execution_loadout_activate",
+        ),
+        (
+            "POST",
+            "/execution-loadouts/{id}/rollback",
+            "execution_loadout_rollback",
+        ),
     ]
     .into_iter()
     .map(|(method, path, handler)| {
