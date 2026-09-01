@@ -34,6 +34,7 @@ mod cache_repair;
 mod capability;
 mod capability_call;
 mod catalog_pagination;
+mod catalog_publication;
 mod checked_call;
 mod completion;
 mod connect;
@@ -77,6 +78,7 @@ mod resources_exposure_tests;
 mod resources_list;
 mod resources_read;
 mod skills;
+mod skills_exposure;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills::OperatorSkillRejection;
 #[cfg(feature = "skills")]
