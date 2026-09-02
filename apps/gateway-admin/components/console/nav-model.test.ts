@@ -36,3 +36,18 @@ test('consoleNavItems is the flattened consoleNavSections in section order', () 
     flat.map((item) => item.id),
   )
 })
+
+test('Depot and Workspace navigation match the unified product information architecture', () => {
+  const depot = consoleNavSections.find((section) => section.id === 'Depot')
+  const workspace = consoleNavSections.find((section) => section.id === 'Workspace')
+
+  assert.deepEqual(depot?.items.map((item) => item.label), ['Discover', 'Create', 'Library'])
+  assert.deepEqual(workspace?.items.map((item) => item.label), [
+    'Agents',
+    'Tasks',
+    'Stash',
+    'Dev Containers',
+  ])
+  assert.equal(consoleNavItems.some((item) => item.label === 'Loadouts'), false)
+  assert.equal(consoleNavItems.some((item) => item.label === 'Snippets'), false)
+})

@@ -97,9 +97,9 @@ export function DepotPageContent() {
   }, [])
 
   return <>
-    <AppHeader breadcrumbs={[{ label: 'Depot' }, ...(selectedId ? [{ label: selectedId }] : [])]} />
+    <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Discover' }, ...(selectedId ? [{ label: selectedId }] : [])]} />
     <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME}>
-      <ConsoleHero eyebrow="Unified control plane" title="Depot Bazaar" pulse={{ color: state.status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: state.status?.enabled ? 'connected through Labby' : 'disabled' }} actions={<Button variant="outline" size="sm" onClick={() => void load(activeQuery)} disabled={state.loading}>{state.loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}Refresh</Button>} stats={[
+      <ConsoleHero eyebrow="Depot · Bazaar" title="Discover" pulse={{ color: state.status?.enabled ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: state.status?.enabled ? 'connected through Labby' : 'disabled' }} actions={<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => void load(activeQuery)} disabled={state.loading}>{state.loading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}Refresh</Button><Button size="sm" asChild><a href="/create">Create artifact</a></Button></div>} stats={[
         { label: activeQuery ? 'Search results' : 'Artifacts loaded', value: state.total === undefined ? state.artifacts.length : `${state.artifacts.length} / ${state.total}`, icon: <Archive size={12}/> },
         { label: 'Authority', value: 'Read only', icon: <ShieldCheck size={12}/> },
         { label: 'Page limit', value: 50, icon: <Box size={12}/> },

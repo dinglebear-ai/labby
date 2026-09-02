@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
+import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { ConsoleHero } from '@/components/console/console-hero'
 import { Button } from '@/components/ui/button'
 import {
@@ -433,7 +434,7 @@ export function SnippetsPageContent() {
   return (
     <>
       <AppHeader
-        breadcrumbs={[{ label: 'Snippets' }]}
+        breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }, { label: 'Snippets' }]}
         actions={
           <Button size="sm" onClick={() => setCreateOpen(true)}>
             <Plus className="size-4" />
@@ -443,6 +444,7 @@ export function SnippetsPageContent() {
       />
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
         <div className={AURORA_PAGE_FRAME}>
+          <LibraryTabs active="snippets" />
           {/* Hero — the mock's eyebrow + title + action cluster with the stat
               strip welded to the card's bottom edge, not floating cards. */}
           <ConsoleHero

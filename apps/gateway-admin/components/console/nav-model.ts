@@ -1,9 +1,12 @@
 import {
   Activity,
-  BookOpen,
   Cable,
-  FileCode2,
-  Boxes,
+  CirclePlus,
+  Clock3,
+  Container,
+  Bot,
+  Inbox,
+  Logs,
   Warehouse,
   GitBranch,
   LayoutDashboard,
@@ -12,27 +15,10 @@ import {
 } from 'lucide-react'
 
 /**
- * Sidebar information architecture, mirroring the Gateway Console mock's
- * `defs` map. The mock declares exactly four sections:
- *
- *   Control Plane · Overview, Gateway, Loadouts
- *   Catalog       · Registry, Snippets
- *   Agents        · Sessions, Tasks
- *   Observe       · Files, Logs, Terminal
- *
- * with Settings pinned below the list. Section labels and ordering here match
- * that exactly. Two deliberate deviations, both forced by what this app
- * actually has:
- *
- *   - Registry, Sessions, Tasks, Files, Logs and Terminal are omitted. They
- *     have no route and no backing API, and shipping them would mean dead nav
- *     entries. Loadouts is now a real gateway-backed route.
- *   - Skills (`/skills`) and Usage (`/usage`) are real routes with no mock
- *     counterpart, so they sit in the mock section they belong to rather than
- *     in a section the mock never had.
- *
- * `/docs` and `/design-system` are NOT top-level nav. The mock has no such
- * items; they live in the account popover instead.
+ * Unified Labby + Depot information architecture. Depot owns Discover,
+ * Create, and Library; Loadouts and Snippets are Library tabs rather than
+ * parallel sidebar products. Workspace collects the agent-facing execution
+ * surfaces, while operational telemetry remains under Observe.
  */
 
 export type ConsoleNavItem = {
@@ -80,52 +66,53 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         tooltipDetail: 'upstream MCP servers',
       },
       {
-        id: 'Loadouts',
-        label: 'Loadouts',
-        href: '/loadouts',
-        icon: Boxes,
-        tooltipDetail: 'reusable gateway capability projections',
+        id: 'Logs',
+        label: 'Logs',
+        href: '/logs',
+        icon: Logs,
+        tooltipDetail: 'live control-plane and upstream events',
       },
     ],
   },
   {
-    id: 'Catalog',
-    label: 'Catalog',
+    id: 'Depot',
+    label: 'Depot',
     items: [
       {
-        id: 'Depot',
-        label: 'Depot',
+        id: 'Discover',
+        label: 'Discover',
         href: '/depot',
-        icon: Warehouse,
-        tooltipDetail: 'artifacts, ingestion and lifecycle',
-      },
-      {
-        id: 'Tools',
-        label: 'Tools',
-        href: '/tools',
         icon: SearchCode,
-        tooltipDetail: 'live Code Mode catalog',
+        tooltipDetail: 'search the Depot Bazaar',
       },
       {
-        id: 'Snippets',
-        label: 'Snippets',
-        href: '/snippets',
-        icon: FileCode2,
-        tooltipDetail: 'Code Mode snippets',
+        id: 'Create',
+        label: 'Create',
+        href: '/create',
+        icon: CirclePlus,
+        tooltipDetail: 'author artifacts and bundles',
       },
       {
-        id: 'Skills',
-        label: 'Skills',
-        href: '/skills',
-        icon: BookOpen,
-        tooltipDetail: 'generated SKILL.md catalog',
+        id: 'Library',
+        label: 'Library',
+        href: '/library',
+        icon: Warehouse,
+        tooltipDetail: 'artifacts, loadouts and snippets',
       },
     ],
   },
   {
-    id: 'Observe',
-    label: 'Observe',
+    id: 'Workspace',
+    label: 'Workspace',
     items: [
+      { id: 'Agents', label: 'Agents', href: '/agents', icon: Bot },
+      { id: 'Tasks', label: 'Tasks', href: '/tasks', icon: Clock3 },
+      { id: 'Stash', label: 'Stash', href: '/stash', icon: Inbox },
+      { id: 'Dev Containers', label: 'Dev Containers', href: '/dev-containers', icon: Container },
+    ],
+  },
+  {
+    id: 'Observe', label: 'Observe', items: [
       {
         id: 'Usage',
         label: 'Usage',
@@ -186,5 +173,8 @@ export function sectionOf(itemId: string): string | undefined {
 
 export function isNavItemActive(href: string, pathname: string): boolean {
   if (href === '/') return pathname === '/'
+  if (href === '/library') return ['/library', '/loadouts', '/snippets'].some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`),
+  )
   return pathname === href || pathname.startsWith(`${href}/`)
 }

@@ -6,6 +6,7 @@ import { BookOpen, Boxes, Cable, Loader2, Pencil, Plus, ShieldCheck, Trash2, Wre
 import { toast } from 'sonner'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
+import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { ConsoleHero, type ConsoleHeroStat } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
@@ -57,8 +58,9 @@ export function LoadoutsPageContent() {
   ]
 
   return <>
-    <AppHeader breadcrumbs={[{ label: 'Loadouts' }]} />
+    <AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }, { label: 'Loadouts' }]} />
     <div className={cn(AURORA_PAGE_SHELL, 'flex-1')}><div className={AURORA_PAGE_FRAME}>
+      <LibraryTabs active="loadouts" />
       <ConsoleHero eyebrow="Control Plane" pulse={loadouts.length ? { color: 'var(--aurora-success)', label: loadouts.length + ' configured' } : undefined} title="Loadouts" stats={stats} actions={<Button size="sm" onClick={() => { setEditing(null); setFormOpen(true) }}><Plus className="size-4" />Add Loadout</Button>} />
       <DashboardPanel title="Reusable capability projections" icon={<ShieldCheck className="size-4" />} action={<Button variant="outline" size="sm" asChild><Link href="/gateway">Mount on a route</Link></Button>}><p className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>Loadouts define reusable projections; they do not create an endpoint by themselves. Mount one on an enabled protected MCP route to make it callable. Per-upstream exposure policies remain enforced underneath.</p></DashboardPanel>
       {protectedRoutesError && <div role="alert" className="rounded-lg border border-destructive/35 bg-destructive/10 px-3 py-2 text-sm text-aurora-text-primary">Could not verify protected route mounts. Editing and removal are disabled to prevent applying the wrong update mode. {getErrorMessage(protectedRoutesError, 'Protected routes failed to load')}</div>}
