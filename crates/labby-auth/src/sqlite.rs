@@ -1394,8 +1394,8 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert!(stored_access.starts_with("enc:"));
-        assert!(stored_refresh.starts_with("enc:"));
+        assert!(stored_access.starts_with("enc2:"));
+        assert!(stored_refresh.starts_with("enc2:"));
         assert!(!stored_access.contains("sensitive-access-token"));
         assert!(!stored_refresh.contains("sensitive-refresh-token"));
         drop(conn);
@@ -1543,8 +1543,8 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert!(after.0.starts_with("enc:"));
-        assert!(after.1.starts_with("enc:"));
+        assert!(after.0.starts_with("enc2:"));
+        assert!(after.1.starts_with("enc2:"));
     }
 
     #[tokio::test]

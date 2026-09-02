@@ -134,6 +134,7 @@ labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-
 wiremock.workspace = true
 proptest = "1"
 tracing-core = "0.1"
+walkdir = "2"
 
 [lib]
 path = "src/lib.rs"

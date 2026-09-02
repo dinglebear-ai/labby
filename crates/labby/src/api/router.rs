@@ -3,7 +3,9 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "gateway")]
+use std::time::Instant;
 
 #[cfg(feature = "api-docs")]
 use axum::response::Html;
