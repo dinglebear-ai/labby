@@ -2023,15 +2023,15 @@ mod tests {
 
     fn maximal_materialized(name: &str) -> MaterializedSkill {
         let mut logical = Vec::with_capacity(crate::skills::limits::MAX_RESOURCES_PER_SKILL);
+        let bytes_per_resource = crate::skills::limits::MAX_SKILL_TOTAL_BYTES as usize
+            / crate::skills::limits::MAX_RESOURCES_PER_SKILL;
         let mut skill_md = format!("---\nname: {name}\ndescription: Maximal\n---\n");
-        skill_md.push_str(
-            &"x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES - skill_md.len()),
-        );
+        skill_md.push_str(&"x".repeat(bytes_per_resource - skill_md.len()));
         logical.push(LogicalSkillFile::new("SKILL.md", skill_md));
         for index in 1..crate::skills::limits::MAX_RESOURCES_PER_SKILL {
             logical.push(LogicalSkillFile::new(
                 format!("resource-{index:02}.txt"),
-                "x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES),
+                "x".repeat(bytes_per_resource),
             ));
         }
         materialize_logical_skill(name, logical, ArtifactProvenance::default()).unwrap()
@@ -2187,7 +2187,7 @@ mod tests {
         let candidate = maximal_materialized("maximal");
         assert_eq!(
             candidate.resources.values().map(Vec::len).sum::<usize>(),
-            super::super::validation::MAX_SKILL_PACKAGE_BYTES
+            crate::skills::limits::MAX_SKILL_TOTAL_BYTES as usize
         );
         let artifact_id = candidate.interchange.descriptor.id.clone();
         let revision_id = candidate.interchange.revision.id.clone();
