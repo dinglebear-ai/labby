@@ -122,14 +122,15 @@ export default function OverviewPage() {
           />
         ) : null}
 
-        {/* Telemetry split — the mock's 2fr content column beside a rail.
-            Left column auto-fits at 250px so the wide panels span it. */}
+        {/* Primary telemetry uses the full canvas. The three compact breakdowns
+            form a rail below it instead of leaving an empty right-hand column
+            whenever the charts and fan-out insights are taller. */}
         <div
           data-ovouter="1"
           data-mobile-stack="1"
           style={{
             display: 'grid',
-            gridTemplateColumns: 'minmax(0, 2fr) minmax(260px, 1fr)',
+            gridTemplateColumns: 'minmax(0, 1fr)',
             gap: 12,
             alignItems: 'start',
           }}
@@ -194,7 +195,16 @@ export default function OverviewPage() {
             )}
           </div>
 
-          <div style={{ display: 'grid', gap: 12, minWidth: 0, alignItems: 'start' }}>
+          <div
+            data-mobile-stack="1"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+              gap: 12,
+              minWidth: 0,
+              alignItems: 'start',
+            }}
+          >
             {metrics ? (
               <>
                 <MostActivePanel
