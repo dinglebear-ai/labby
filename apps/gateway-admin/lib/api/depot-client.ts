@@ -15,8 +15,24 @@ export type DepotArtifact = {
   title?: string
   description?: string
   currentRevisionId?: string
+  contentDigest?: string
+  revisionCount?: number
+  descriptor?: {
+    id?: string
+    kind?: string
+    namespace?: string
+    name?: string
+    title?: string
+    description?: string
+  }
+  currentRevision?: {
+    id?: string
+    contentDigest?: string
+    createdAt?: string
+    components?: Array<{ id?: string; kind?: string; path?: string; mediaType?: string; size?: number }>
+  }
   publication?: { state?: string; visibility?: string; distribution?: string }
-  license?: { reviewState?: string; takedownState?: string }
+  license?: { redistribution?: string; reviewState?: string; takedownState?: string }
   lineage?: { following?: boolean; upstreamArtifactId?: string }
 }
 

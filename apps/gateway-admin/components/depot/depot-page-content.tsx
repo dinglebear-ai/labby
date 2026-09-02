@@ -1,8 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'next/navigation'
-import { Archive, Box, Loader2, RefreshCw, Search, ShieldCheck, X } from 'lucide-react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { Archive, ArrowLeft, Box, Check, Copy, FileText, Loader2, RefreshCw, Search, ShieldCheck, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { AppHeader } from '@/components/app-header'
@@ -17,12 +17,17 @@ import { depotCall, depotStatus, type DepotArtifact, type DepotStatus } from '@/
 type LoadState = { loading: boolean; error?: string; status?: DepotStatus; artifacts: DepotArtifact[]; cursor?: string; total?: number }
 
 export function DepotPageContent() {
+  const router = useRouter()
+  const pathname = usePathname()
   const searchParams = useSearchParams()
   const selectedId = searchParams.get('artifact')?.trim()
-  const [query, setQuery] = useState('')
-  const [activeQuery, setActiveQuery] = useState('')
+  const initialQuery = searchParams.get('q')?.trim() ?? ''
+  const [query, setQuery] = useState(initialQuery)
+  const [activeQuery, setActiveQuery] = useState(initialQuery)
   const [state, setState] = useState<LoadState>({ loading: true, artifacts: [] })
   const [detail, setDetail] = useState<DepotArtifact | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [copied, setCopied] = useState<string>()
 
   const load = useCallback(async (searchQuery: string, cursor?: string, signal?: AbortSignal) => {
     setState((current) => ({
@@ -50,11 +55,18 @@ export function DepotPageContent() {
     const timer = window.setTimeout(() => {
       const nextQuery = query.trim()
       setActiveQuery(nextQuery)
+      const params = new URLSearchParams(window.location.search)
+      if ((params.get('q')?.trim() ?? '') !== nextQuery) {
+        if (nextQuery) params.set('q', nextQuery)
+        else params.delete('q')
+        params.delete('artifact')
+        router.replace(`${pathname}${params.size ? `?${params}` : ''}`, { scroll: false })
+      }
       void load(nextQuery, undefined, controller.signal)
     }, query ? 300 : 0)
 
     return () => { window.clearTimeout(timer); controller.abort() }
-  }, [load, query])
+  }, [load, pathname, query, router])
   const loadDetail = useCallback(async (artifactId: string, signal?: AbortSignal) => {
     const response = await depotCall<{ result?: { artifact?: DepotArtifact } }>('depot.artifacts.get', { artifactId }, signal)
     setDetail(response.result?.artifact ?? null)
@@ -62,10 +74,27 @@ export function DepotPageContent() {
   useEffect(() => {
     if (!selectedId) { setDetail(null); return }
     const controller = new AbortController()
+    setDetailLoading(true)
     void loadDetail(selectedId, controller.signal)
       .catch((error) => { if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : String(error)) })
+      .finally(() => { if (!controller.signal.aborted) setDetailLoading(false) })
     return () => controller.abort()
   }, [loadDetail, selectedId])
+
+  const artifactHref = useCallback((artifactId?: string) => {
+    const params = new URLSearchParams()
+    if (activeQuery) params.set('q', activeQuery)
+    if (artifactId) params.set('artifact', artifactId)
+    return `${pathname}${params.size ? `?${params}` : ''}`
+  }, [activeQuery, pathname])
+
+  const copyValue = useCallback(async (label: string, value?: string) => {
+    if (!value) return
+    await navigator.clipboard.writeText(value)
+    setCopied(label)
+    toast.success(`${label} copied`)
+    window.setTimeout(() => setCopied((current) => current === label ? undefined : current), 1_500)
+  }, [])
 
   return <>
     <AppHeader breadcrumbs={[{ label: 'Depot' }, ...(selectedId ? [{ label: selectedId }] : [])]} />
@@ -76,6 +105,28 @@ export function DepotPageContent() {
         { label: 'Page limit', value: 50, icon: <Box size={12}/> },
       ]}/>
       {state.error ? <DashboardPanel title="Depot unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}. Labby-only routes remain available.</p></DashboardPanel> : null}
+      {selectedId ? <DashboardPanel title="Artifact inspection" icon={<Box className="size-4"/>} action={<Button variant="outline" size="sm" asChild><a href={artifactHref()}><ArrowLeft className="size-4"/>Back to results</a></Button>}>
+        {detailLoading ? <p className="flex items-center gap-2 py-8 text-sm text-aurora-text-muted"><Loader2 className="size-4 animate-spin"/>Loading artifact…</p> : detail ? <div className="space-y-5">
+          <div><div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-semibold text-aurora-text-primary">{detail.title || detail.name || selectedId}</h2><Badge variant="outline">{detail.kind ?? detail.descriptor?.kind ?? 'artifact'}</Badge><Badge variant="outline">{detail.publication?.visibility ?? 'private'}</Badge></div><p className="mt-2 max-w-4xl text-sm leading-6 text-aurora-text-muted">{detail.description ?? detail.descriptor?.description ?? 'No description supplied.'}</p></div>
+          <dl className="grid gap-px overflow-hidden rounded-aurora-1 border border-aurora-border-subtle bg-aurora-border-subtle sm:grid-cols-2 xl:grid-cols-4">
+            {([
+              ['Namespace', detail.namespace ?? detail.descriptor?.namespace],
+              ['Publication', detail.publication?.state],
+              ['Distribution', detail.publication?.distribution],
+              ['License review', detail.license?.reviewState],
+              ['Redistribution', detail.license?.redistribution],
+              ['Revisions', detail.revisionCount?.toString()],
+              ['Components', detail.currentRevision?.components?.length.toString()],
+              ['Revision date', detail.currentRevision?.createdAt],
+            ] satisfies Array<[string, string | undefined]>).map(([label, value]) => <div key={label} className="bg-aurora-panel-medium px-3 py-2.5"><dt className="text-[11px] font-bold uppercase tracking-[0.12em] text-aurora-text-muted">{label}</dt><dd className="mt-1 truncate text-sm text-aurora-text-primary" title={value}>{value || 'Not supplied'}</dd></div>)}
+          </dl>
+          <div className="grid gap-3 xl:grid-cols-2">
+            {([['Artifact ID', detail.id ?? detail.descriptor?.id ?? selectedId], ['Revision ID', detail.currentRevisionId ?? detail.currentRevision?.id], ['Content digest', detail.contentDigest ?? detail.currentRevision?.contentDigest]] satisfies Array<[string, string | undefined]>).map(([label, value]) => <div key={label} className="flex min-w-0 items-center justify-between gap-3 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-medium px-3 py-2"><div className="min-w-0"><div className="text-[11px] font-bold uppercase tracking-[0.12em] text-aurora-text-muted">{label}</div><code className="block truncate pt-1 text-xs text-aurora-text-primary" title={value}>{value || 'Not supplied'}</code></div>{value ? <Button variant="ghost" size="icon-sm" aria-label={`Copy ${label}`} onClick={() => void copyValue(label, value)}>{copied === label ? <Check className="size-4 text-aurora-success"/> : <Copy className="size-4"/>}</Button> : null}</div>)}
+          </div>
+          {detail.currentRevision?.components?.length ? <div><h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-aurora-text-primary"><FileText className="size-4"/>Components</h3><div className="divide-y divide-aurora-border-subtle rounded-aurora-1 border border-aurora-border-subtle">{detail.currentRevision.components.map((component, index) => <div key={component.id ?? `${component.path}-${index}`} className="flex items-center justify-between gap-3 px-3 py-2 text-xs"><code className="min-w-0 truncate text-aurora-text-primary">{component.path ?? component.id ?? `Component ${index + 1}`}</code><span className="shrink-0 text-aurora-text-muted">{component.mediaType ?? component.kind ?? 'file'}{component.size === undefined ? '' : ` · ${component.size.toLocaleString()} B`}</span></div>)}</div></div> : null}
+          <p className="text-xs text-aurora-text-muted">This catalog connection is read-only. Publishing and import controls appear only after Labby and Depot negotiate delegated mutation authority.</p>
+        </div> : <p className="py-8 text-sm text-aurora-text-muted">Artifact details are unavailable.</p>}
+      </DashboardPanel> : null}
       <DashboardPanel title="Browse immutable artifacts" icon={<Search className="size-4"/>} action={<div className="relative"><Search aria-hidden="true" className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted"/><Input aria-label="Search all Bazaar artifacts" className="h-8 w-[min(20rem,70vw)] px-8" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search name, kind, namespace…"/>{query ? <button type="button" aria-label="Clear Bazaar search" className="absolute right-2 top-1/2 -translate-y-1/2 rounded-aurora-1 p-1 text-aurora-text-muted transition-colors hover:bg-aurora-surface-muted hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2" onClick={() => setQuery('')}><X className="size-3.5"/></button> : null}</div>}>
         <p className="pb-3 text-xs text-aurora-text-muted">Depot artifacts are published catalog entries. Connected MCP gateways remain available under Gateways and are not automatically published here.</p>
         <div className="flex min-h-7 items-center justify-between gap-3 border-b border-aurora-border-subtle pb-2 text-xs text-aurora-text-muted" aria-live="polite">
@@ -83,16 +134,12 @@ export function DepotPageContent() {
           {activeQuery && !state.loading ? <button type="button" className="font-medium text-aurora-accent-primary hover:underline focus-visible:outline-none focus-visible:ring-2" onClick={() => setQuery('')}>Show all</button> : null}
         </div>
         <div className="divide-y divide-aurora-border-subtle">
-          {state.artifacts.map((artifact) => { const id = artifact.id ?? 'unknown'; const label = artifact.title || artifact.name || id; return <a key={id} href={`/depot?artifact=${encodeURIComponent(id)}`} className="group flex min-h-16 items-start justify-between gap-4 rounded-aurora-1 px-2 py-3 transition-colors hover:bg-aurora-surface-muted focus-visible:outline-none focus-visible:ring-2"><div className="min-w-0"><div className="truncate font-medium text-aurora-text-primary">{label}</div><div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-aurora-text-muted"><span>{artifact.namespace}/{artifact.name}</span><span aria-hidden="true">·</span><code className="max-w-72 truncate" title={id}>{id}</code></div>{artifact.description ? <p className="mt-1.5 line-clamp-2 max-w-3xl text-xs leading-5 text-aurora-text-muted">{artifact.description}</p> : null}</div><div className="flex shrink-0 items-center gap-1.5"><Badge variant="outline">{artifact.kind ?? 'artifact'}</Badge><Badge variant="outline">{artifact.publication?.visibility ?? 'private'}</Badge></div></a> })}
+          {state.artifacts.map((artifact) => { const id = artifact.id ?? 'unknown'; const label = artifact.title || artifact.name || id; return <a key={id} href={artifactHref(id)} aria-current={selectedId === id ? 'page' : undefined} className="group flex min-h-16 items-start justify-between gap-4 rounded-aurora-1 px-2 py-3 transition-colors hover:bg-aurora-surface-muted focus-visible:outline-none focus-visible:ring-2 aria-[current=page]:bg-aurora-surface-muted"><div className="min-w-0"><div className="truncate font-medium text-aurora-text-primary">{label}</div><div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-aurora-text-muted"><span>{artifact.namespace}/{artifact.name}</span><span aria-hidden="true">·</span><code className="max-w-72 truncate" title={id}>{id}</code></div>{artifact.description ? <p className="mt-1.5 line-clamp-2 max-w-3xl text-xs leading-5 text-aurora-text-muted">{artifact.description}</p> : null}</div><div className="flex shrink-0 items-center gap-1.5"><Badge variant="outline">{artifact.kind ?? 'artifact'}</Badge><Badge variant="outline">{artifact.publication?.visibility ?? 'private'}</Badge></div></a> })}
           {state.loading && state.artifacts.length === 0 ? <p className="flex items-center justify-center gap-2 py-8 text-sm text-aurora-text-muted"><Loader2 className="size-4 animate-spin"/>Searching Bazaar…</p> : null}
           {!state.loading && state.artifacts.length === 0 ? <p className="py-8 text-center text-sm text-aurora-text-muted">{activeQuery ? `No Bazaar artifacts match “${activeQuery}”.` : 'No artifacts are published in Bazaar.'}</p> : null}
         </div>
         {state.cursor ? <Button variant="outline" onClick={() => void load(activeQuery, state.cursor)} disabled={state.loading}>{state.loading ? <Loader2 className="size-4 animate-spin"/> : null}Load more</Button> : null}
       </DashboardPanel>
-      {detail && selectedId ? <DashboardPanel title="Artifact detail" icon={<Box className="size-4"/>}>
-        <h2 className="text-lg font-semibold">{detail.name ?? selectedId}</h2><p className="text-sm text-aurora-text-muted">{detail.description ?? 'No description supplied.'}</p><code className="break-all text-xs">{detail.currentRevisionId}</code>
-        <p className="text-xs text-aurora-text-muted">Mutation and exact-import controls remain unavailable until Labby negotiates a compatible delegated authority epoch with Depot.</p>
-      </DashboardPanel> : null}
     </div></div>
   </>
 }
