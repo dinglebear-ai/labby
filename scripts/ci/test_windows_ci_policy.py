@@ -4,6 +4,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOW_DIR = ROOT / ".github" / "workflows"
 
 
 def job_block(workflow: str, job: str, next_job: str) -> str:
@@ -40,6 +41,12 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertNotIn("      - palette-windows\n", block)
         self.assertNotIn("needs.test-windows.result", block)
         self.assertNotIn("needs.palette-windows.result", block)
+
+    def test_repository_workflows_use_hosted_runners(self) -> None:
+        for path in WORKFLOW_DIR.glob("*.y*ml"):
+            workflow = path.read_text(encoding="utf-8")
+            self.assertNotIn("runs-on: ci-pool-", workflow, path)
+            self.assertNotIn("runs-on: self-hosted", workflow, path)
 
 
 if __name__ == "__main__":
