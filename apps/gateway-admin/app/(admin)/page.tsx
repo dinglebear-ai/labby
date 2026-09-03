@@ -73,19 +73,26 @@ function ReorderableOverview({ cards }: { cards: Array<{ id: string; content: Re
   const ids = cards.map((card) => card.id)
   const [order, setOrder] = useState(ids)
   const [dragging, setDragging] = useState<string | null>(null)
+  const [storageWarning, setStorageWarning] = useState(false)
 
   useEffect(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem(OVERVIEW_ORDER_KEY) ?? '[]') as string[]
       if (saved.length) setOrder([...saved.filter((id) => ids.includes(id)), ...ids.filter((id) => !saved.includes(id))])
-    } catch { /* keep the default layout */ }
+    } catch {
+      setStorageWarning(true)
+    }
   // The card identities are stable for the lifetime of this dashboard.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const commit = (next: string[]) => {
     setOrder(next)
-    window.localStorage.setItem(OVERVIEW_ORDER_KEY, JSON.stringify(next))
+    try {
+      window.localStorage.setItem(OVERVIEW_ORDER_KEY, JSON.stringify(next))
+    } catch {
+      setStorageWarning(true)
+    }
   }
   const move = (id: string, delta: number) => {
     const from = order.indexOf(id)
@@ -104,7 +111,7 @@ function ReorderableOverview({ cards }: { cards: Array<{ id: string; content: Re
   }
 
   return <section aria-label="Customizable overview cards">
-    <p className="mb-2 flex items-center gap-1.5 text-[10px] text-aurora-text-muted"><GripVertical className="size-3"/>Drag cards to arrange your overview. The order is saved on this device.</p>
+    <p className="mb-2 flex items-center gap-1.5 text-[10px] text-aurora-text-muted"><GripVertical className="size-3"/>{storageWarning ? 'Layout changes work for this session but could not be saved on this device.' : 'Drag cards to arrange your overview. The order is saved on this device.'}</p>
     <div className="grid items-start gap-3 xl:grid-cols-2">
       {order.map((id) => {
         const card = cards.find((item) => item.id === id)

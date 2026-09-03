@@ -759,7 +759,7 @@ export function GatewayTable({
         <div className="min-w-0 justify-self-center">
           <span
             className="grid grid-cols-[40px_40px_40px_40px] items-center gap-x-1.5"
-            title={`Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count} · skills ${exposedSkills}/${discoveredSkills}`}
+            title={status.catalog_warming ? 'Capability catalog is warming' : `Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count} · skills ${exposedSkills}/${discoveredSkills}`}
           >
             <span
               className={cn(
@@ -769,7 +769,7 @@ export function GatewayTable({
             >
               <Wrench className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Tools:</span>
-              {status.discovered_tool_count === 0 ? EM_DASH : status.exposed_tool_count}
+              {status.catalog_warming ? '…' : status.discovered_tool_count === 0 ? EM_DASH : status.exposed_tool_count}
             </span>
             <span
               className={cn(

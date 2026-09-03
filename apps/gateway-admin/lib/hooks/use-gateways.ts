@@ -1,6 +1,7 @@
 'use client'
 
 import useSWR, { mutate } from 'swr'
+import { toast } from 'sonner'
 import { gatewayApi } from '@/lib/api/gateway-client'
 import {
   getMockGatewayFallback,
@@ -393,7 +394,7 @@ export function useGateways(enabled = true) {
   const catalogWarm = useSWR(
     enabled && !USE_MOCK_DATA ? '/gateway-catalog-warm' : null,
     () => gatewayApi.refreshStatus(),
-    { revalidateOnFocus: false, shouldRetryOnError: false },
+    { revalidateOnFocus: false, shouldRetryOnError: true, errorRetryCount: 2, errorRetryInterval: 5_000 },
   )
   const runtimeKey = !USE_MOCK_DATA
     ? gatewaysRuntimeRequestKey(enabled, true, configured.data)
@@ -404,6 +405,7 @@ export function useGateways(enabled = true) {
     () => hydrateGatewayRuntime(configured.data ?? []),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   )
+  const catalogIsStillWarming = (runtime.data ?? configured.data ?? []).some((gateway) => gateway.status?.catalog_warming)
 
   useEffect(() => {
     if (!enabled || catalogWarm.isLoading || catalogWarm.error) return
@@ -412,19 +414,27 @@ export function useGateways(enabled = true) {
       if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
     }
     refreshCatalogView()
-    const first = window.setTimeout(refreshCatalogView, 8_000)
-    const second = window.setTimeout(refreshCatalogView, 20_000)
+    const interval = window.setInterval(refreshCatalogView, 5_000)
+    const stop = window.setTimeout(() => {
+      if (catalogIsStillWarming) {
+        toast.warning('Tool catalog discovery is still running; updates will continue in the background.')
+      } else {
+        window.clearInterval(interval)
+      }
+    }, 60_000)
     return () => {
-      window.clearTimeout(first)
-      window.clearTimeout(second)
+      window.clearInterval(interval)
+      window.clearTimeout(stop)
     }
-  }, [catalogWarm.error, catalogWarm.isLoading, enabled, runtimeCacheId])
+  }, [catalogIsStillWarming, catalogWarm.error, catalogWarm.isLoading, enabled, runtimeCacheId])
 
   return {
     ...configured,
     data: runtime.data ?? configured.data,
     error: configured.error,
     runtimeError: runtime.error,
+    catalogWarmError: catalogWarm.error,
+    retryCatalogWarm: catalogWarm.mutate,
     isLoading: configured.isLoading,
     isValidating: configured.isValidating || runtime.isValidating,
   }

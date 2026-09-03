@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { LocalBrandMark } from './brand-marks'
 
 const containers = [
   ['Ready', 'platform-base', 'Ubuntu 24.04', 'Node · Python · Rust · Docker', '38 pulls'],
@@ -35,21 +36,6 @@ const initiallySelected: Record<number, string[]> = {
   3: ['ripgrep', 'fd-find'], 5: ['project-a-loadout'], 6: ['tootie-tv/labby'],
 }
 
-const brandSlugs: Record<string, string> = {
-  'Ubuntu 24.04': 'ubuntu', 'Debian 12': 'debian', 'Arch Linux': 'archlinux',
-  'Fedora 41': 'fedora', 'Alpine 3.21': 'alpinelinux', openSUSE: 'opensuse',
-  'Node.js': 'nodedotjs', Python: 'python', Rust: 'rust', Go: 'go', Bun: 'bun', Deno: 'deno',
-  Docker: 'docker', PostgreSQL: 'postgresql', Ruby: 'ruby', PHP: 'php',
-  'Claude Code': 'anthropic', Codex: 'openai', 'Gemini CLI': 'googlegemini',
-  'Copilot CLI': 'githubcopilot', Aider: 'python', OpenCode: 'opencode',
-  ripgrep: 'rust', 'fd-find': 'rust', 'build-essential': 'debian', jq: 'json', tmux: 'tmux', neovim: 'neovim',
-}
-
-function BrandMark({ name }: { name: string }) {
-  const slug = brandSlugs[name]
-  return <span className="grid size-8 shrink-0 place-items-center overflow-hidden rounded-aurora-1 bg-black p-1.5 text-xs font-black text-white">{slug ? <img src={`https://cdn.simpleicons.org/${slug}/ffffff`} alt="" className="size-full object-contain"/> : name.slice(0,2).toUpperCase()}</span>
-}
-
 function ToggleRow({ label, detail, initial = true }: { label: string; detail: string; initial?: boolean }) {
   const [on, setOn] = useState(initial)
   return <button type="button" onClick={() => setOn(!on)} className="flex w-full items-center gap-4 rounded-aurora-1 bg-aurora-panel-low px-4 py-3 text-left">
@@ -66,8 +52,6 @@ function ContainerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
     const next = step === 0 ? [value] : values.includes(value) ? values.filter((item) => item !== value) : [...values, value]
     return { ...current, [step]: next }
   })
-  const finish = () => { onOpenChange(false); setStep(0) }
-
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="h-[min(720px,calc(100vh-2rem))] gap-0 border-aurora-border-strong bg-aurora-panel-medium p-0 sm:max-w-[1080px]" showCloseButton>
       <DialogTitle className="sr-only">New container</DialogTitle><DialogDescription className="sr-only">Configure a reusable development container.</DialogDescription>
@@ -81,11 +65,11 @@ function ContainerWizard({ open, onOpenChange }: { open: boolean; onOpenChange: 
           <div className="min-h-0 flex-1 overflow-auto p-5">
             {step === 4 ? <div className="mx-auto max-w-2xl space-y-3"><ToggleRow label="Join the team tailnet" detail="Containers authenticate with an OAuth client — no auth key to paste or rotate."/><ToggleRow label="Outbound web access" detail="Registries, GitHub and package mirrors. Off means a fully sealed build."/><ToggleRow label="LAN access" detail="Reach hosts on the local subnet. Off by default for team images." initial={false}/><ToggleRow label="Nested Docker" detail="Runs dockerd inside the system container for compose-based workflows."/></div> : <>
               {step === 3 ? <div className="mb-3 flex items-center justify-between gap-3"><div className="flex gap-1">{['apt','npm','PyPI','Homebrew','cargo','GH Release'].map((item, index) => <Badge key={item} variant={index ? 'outline' : 'default'}>{item}</Badge>)}</div><label className="relative"><Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-aurora-text-muted"/><input aria-label="Search packages" className="h-8 rounded-aurora-1 border border-aurora-border-default bg-aurora-page-bg pl-8 text-xs" placeholder="Search apt…"/></label></div> : null}
-              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{(options[step as keyof typeof options] ?? []).map((item) => { const active = (selected[step] ?? []).includes(item); return <button data-hovercard="1" type="button" key={item} onClick={() => toggle(item)} className={cn('flex min-h-14 items-center gap-3 rounded-aurora-1 border bg-aurora-panel-low px-3 text-left transition-[transform,border-color,box-shadow,background] active:translate-y-px', active ? 'border-aurora-accent-primary bg-aurora-selected-bg shadow-[0_0_0_1px_var(--aurora-accent-primary)]' : 'border-transparent hover:-translate-y-0.5 hover:border-aurora-border-strong')}><BrandMark name={item}/><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{item}</strong><small className="text-aurora-text-muted">{step === 0 ? 'base image' : step === 6 ? 'repository' : 'available'}</small></span>{active ? <span className="grid size-5 shrink-0 place-items-center rounded-full bg-aurora-accent-primary text-aurora-page-bg"><Check className="size-3"/></span> : null}</button>})}</div>
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">{(options[step as keyof typeof options] ?? []).map((item) => { const active = (selected[step] ?? []).includes(item); return <button data-hovercard="1" type="button" key={item} onClick={() => toggle(item)} className={cn('flex min-h-14 items-center gap-3 rounded-aurora-1 border bg-aurora-panel-low px-3 text-left transition-[transform,border-color,box-shadow,background] active:translate-y-px', active ? 'border-aurora-accent-primary bg-aurora-selected-bg shadow-[0_0_0_1px_var(--aurora-accent-primary)]' : 'border-transparent hover:-translate-y-0.5 hover:border-aurora-border-strong')}><LocalBrandMark name={item}/><span className="min-w-0 flex-1"><strong className="block truncate text-sm">{item}</strong><small className="text-aurora-text-muted">{step === 0 ? 'base image' : step === 6 ? 'repository' : 'available'}</small></span>{active ? <span className="grid size-5 shrink-0 place-items-center rounded-full bg-aurora-accent-primary text-aurora-page-bg"><Check className="size-3"/></span> : null}</button>})}</div>
               {step === 6 ? <label className="mt-4 block rounded-aurora-1 bg-aurora-panel-low p-3 text-sm font-semibold">Dotfiles repository<input defaultValue="github.com/tootie-tv/dotfiles" className="mt-1 h-9 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-page-bg px-3 font-mono text-xs"/></label> : null}
             </>}
           </div>
-          <footer className="flex items-center justify-between border-t border-aurora-border-default bg-aurora-panel-strong px-5 py-3"><span className="text-[11px] text-aurora-text-muted">Step {step + 1} of 7 · Ubuntu 24.04 · 3 toolchains · 2 agents</span><div className="flex gap-2"><Button variant="outline" disabled={step === 0} onClick={() => setStep(step - 1)}><ChevronLeft/>Back</Button>{step < 6 ? <Button variant="outline" onClick={() => setStep(step + 1)}>Next<ChevronRight/></Button> : <Button onClick={finish}><Container/>Build Image</Button>}</div></footer>
+          <footer className="flex items-center justify-between border-t border-aurora-border-default bg-aurora-panel-strong px-5 py-3"><span className="text-[11px] text-aurora-text-muted">{step < 6 ? `Step ${step + 1} of 7 · Ubuntu 24.04 · 3 toolchains · 2 agents` : 'Container creation is not connected to a runtime yet.'}</span><div className="flex gap-2"><Button variant="outline" disabled={step === 0} onClick={() => setStep(step - 1)}><ChevronLeft/>Back</Button>{step < 6 ? <Button variant="outline" onClick={() => setStep(step + 1)}>Next<ChevronRight/></Button> : <Button disabled title="Container creation is unavailable"><Container/>Build unavailable</Button>}</div></footer>
         </div>
       </div>
     </DialogContent>
@@ -99,14 +83,14 @@ export function DevContainersPageContent() {
   const cards = containers.map(([status, name, distro, tools, foot]) => (
     <section data-hovercard="1" key={name} className={view === 'cards' ? 'rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium p-5' : 'grid gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_180px_2fr_auto] md:items-center'}>
       <div className="flex justify-between gap-3"><h2 className="font-semibold text-aurora-text-primary">{name}</h2>{view === 'cards' ? <Badge variant="outline">{status}</Badge> : null}</div>
-      <div className={view === 'cards' ? 'mt-4 flex items-center gap-3' : 'flex items-center gap-3'}><BrandMark name={distro}/><p className="text-sm text-aurora-text-muted">{distro}</p></div>
-      <div className={view === 'cards' ? 'mt-5 flex flex-wrap items-center gap-2 text-xs text-aurora-accent-primary' : 'flex flex-wrap items-center gap-2 text-xs text-aurora-accent-primary'}><Container size={15}/>{tools.split(' · ').map((tool) => <span key={tool} className="inline-flex items-center gap-1 rounded-aurora-1 bg-aurora-page-bg/50 px-2 py-1">{view === 'cards' ? <BrandMark name={tool}/> : null}{tool}</span>)}</div>
+      <div className={view === 'cards' ? 'mt-4 flex items-center gap-3' : 'flex items-center gap-3'}><LocalBrandMark name={distro}/><p className="text-sm text-aurora-text-muted">{distro}</p></div>
+      <div className={view === 'cards' ? 'mt-5 flex flex-wrap items-center gap-2 text-xs text-aurora-accent-primary' : 'flex flex-wrap items-center gap-2 text-xs text-aurora-accent-primary'}><Container size={15}/>{tools.split(' · ').map((tool) => <span key={tool} className="inline-flex items-center gap-1 rounded-aurora-1 bg-aurora-page-bg/50 px-2 py-1">{view === 'cards' ? <LocalBrandMark name={tool}/> : null}{tool}</span>)}</div>
       <div className={view === 'cards' ? 'mt-5 border-t border-aurora-border-subtle pt-3 text-xs text-aurora-text-muted' : 'text-xs text-aurora-text-muted'}>{view === 'list' ? <Badge variant="outline" className="mr-2">{status}</Badge> : null}{foot}</div>
     </section>
   ))
   return <>
     <ConsoleHero eyebrow="Workspace · Incus" title="Dev Containers" pulse={{color:'var(--aurora-success)'}} actions={<div className="flex items-center gap-2"><div className="flex rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5">{modes.map(([Icon,label,mode])=><button key={mode} type="button" aria-label={`${label} view`} title={`${label} view`} aria-pressed={view===mode} onClick={()=>setView(mode)} className="rounded p-1.5 text-aurora-text-muted hover:text-aurora-text-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-primary"><Icon className="size-3.5"/></button>)}</div><Button onClick={() => setOpen(true)}><CirclePlus/>New container</Button></div>}/>
-    {view === 'table' ? <div className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium"><table className="w-full text-left text-sm"><thead className="border-b border-aurora-border-subtle text-[10px] uppercase tracking-[.14em] text-aurora-text-muted"><tr><th className="px-4 py-3">Container</th><th>Distro</th><th>Toolchains</th><th>Status</th><th>Activity</th></tr></thead><tbody>{containers.map(([status,name,distro,tools,foot])=><tr key={name} className="border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-4 py-3 font-semibold text-aurora-text-primary">{name}</td><td><span className="flex items-center gap-2"><BrandMark name={distro}/>{distro}</span></td><td className="text-aurora-text-muted">{tools}</td><td><Badge variant="outline">{status}</Badge></td><td className="text-aurora-text-muted">{foot}</td></tr>)}</tbody></table></div> : <div className={view === 'cards' ? 'grid gap-4 xl:grid-cols-3' : 'divide-y divide-aurora-border-subtle overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium'}>{cards}</div>}
+    {view === 'table' ? <div className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium"><table className="w-full text-left text-sm"><thead className="border-b border-aurora-border-subtle text-[10px] uppercase tracking-[.14em] text-aurora-text-muted"><tr><th className="px-4 py-3">Container</th><th>Distro</th><th>Toolchains</th><th>Status</th><th>Activity</th></tr></thead><tbody>{containers.map(([status,name,distro,tools,foot])=><tr key={name} className="border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-4 py-3 font-semibold text-aurora-text-primary">{name}</td><td><span className="flex items-center gap-2"><LocalBrandMark name={distro}/>{distro}</span></td><td className="text-aurora-text-muted">{tools}</td><td><Badge variant="outline">{status}</Badge></td><td className="text-aurora-text-muted">{foot}</td></tr>)}</tbody></table></div> : <div className={view === 'cards' ? 'grid gap-4 xl:grid-cols-3' : 'divide-y divide-aurora-border-subtle overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium'}>{cards}</div>}
     <ContainerWizard open={open} onOpenChange={setOpen}/>
   </>
 }

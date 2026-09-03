@@ -1036,6 +1036,7 @@ test('normalizeServerView treats catalog warming as advisory for a connected gat
   assert.equal(gateway.status.connected, true)
   assert.equal(gateway.status.healthy, true)
   assert.equal(gateway.status.last_error, undefined)
+  assert.equal(gateway.status.catalog_warming, true)
   assert.deepEqual(gateway.warnings, [])
 })
 

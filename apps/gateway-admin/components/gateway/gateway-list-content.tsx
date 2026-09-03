@@ -154,7 +154,7 @@ export interface GatewayListViewProps {
 }
 
 export function GatewayListContent() {
-  const { data: gateways, isLoading, error } = useGateways()
+  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm } = useGateways()
   const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, enableGateway, disableGateway } =
     useGatewayMutations()
 
@@ -178,6 +178,17 @@ export function GatewayListContent() {
     gateway: Gateway
     result: Awaited<ReturnType<typeof testGateway>>
   } | null>(null)
+
+  useEffect(() => {
+    if (!catalogWarmError) return
+    toast.error('Tool catalog refresh failed', {
+      description: getErrorMessage(catalogWarmError, 'The current capability counts may be incomplete.'),
+      action: {
+        label: 'Retry',
+        onClick: () => void retryCatalogWarm(),
+      },
+    })
+  }, [catalogWarmError, retryCatalogWarm])
   const [cleanupResult, setCleanupResult] = useState<{
     gateway: Gateway
     result: Awaited<ReturnType<typeof cleanupGateway>>
@@ -680,13 +691,21 @@ export function GatewayListView({
   const [layout, setLayout] = useState<GatewayLayout>('table')
 
   useEffect(() => {
-    const saved = window.localStorage.getItem('labby.gateway.layout')
-    if (saved === 'table' || saved === 'cards' || saved === 'list') setLayout(saved)
+    try {
+      const saved = window.localStorage.getItem('labby.gateway.layout')
+      if (saved === 'table' || saved === 'cards' || saved === 'list') setLayout(saved)
+    } catch {
+      toast.warning('Gateway layout could not be loaded; using the default for this session.')
+    }
   }, [])
 
   const selectLayout = (next: GatewayLayout) => {
     setLayout(next)
-    window.localStorage.setItem('labby.gateway.layout', next)
+    try {
+      window.localStorage.setItem('labby.gateway.layout', next)
+    } catch {
+      toast.warning('Gateway layout changed for this session but could not be saved.')
+    }
   }
   return (
     <>

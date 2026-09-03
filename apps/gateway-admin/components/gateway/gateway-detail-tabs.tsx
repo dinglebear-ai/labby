@@ -222,7 +222,6 @@ export type DetailCapabilityKey =
   | 'resources'
   | 'elicitation'
   | 'ui_resources'
-  | 'roots'
   | 'sampling'
   | 'logging'
   | 'completions'
@@ -316,15 +315,6 @@ export const DETAIL_CAPABILITIES: ReadonlyArray<{
     ),
   },
   {
-    key: 'roots',
-    label: 'Roots',
-    icon: (
-      <CapabilityGlyph>
-        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-      </CapabilityGlyph>
-    ),
-  },
-  {
     key: 'sampling',
     label: 'Sampling',
     icon: (
@@ -410,12 +400,8 @@ const CAPABILITY_BOX_STYLE: React.CSSProperties = {
 /**
  * The mock ships two tones; `unknown` is ours.
  *
- * It is deliberately *not* a dimmer variant of `not_advertised` — a dimmer
- * filled box is exactly how a reader would spell "advertised: no". Unknown is
- * an **empty box with a dashed edge**: no fill at all, so it reads as a slot
- * nothing has been written into. The cluster additionally leads with the
- * project's `—` no-data glyph, the same marker used for every other metric the
- * gateway API cannot back.
+ * Unknown retains the mock's muted box treatment. Its accessible label and
+ * tooltip explicitly distinguish "not reported" from "not advertised".
  */
 const CAPABILITY_TONE_STYLE: Record<DetailCapabilityState, React.CSSProperties> = {
   supported: {
@@ -450,7 +436,7 @@ function capabilityTitle(label: string, state: DetailCapabilityState): string {
  * The capability cluster parked at the right end of the detail tab bar.
  *
  * Mock geometry, measured live: `flex; align-items: center; gap: 3px;
- * padding-bottom: 6px`, twelve 24px boxes (26px border-box), 345×32 overall.
+ * padding-bottom: 6px`, eleven 24px boxes (26px border-box).
  * Its container `title` in the mock reads `6 of 12 capabilities advertised in
  * initialize.`
  *

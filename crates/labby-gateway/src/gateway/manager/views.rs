@@ -10,6 +10,7 @@ use crate::gateway::types::{
 };
 use crate::gateway::view_models::ServerView;
 use crate::upstream::pool::in_process_upstream_name;
+use futures::FutureExt;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
 
@@ -81,38 +82,98 @@ impl GatewayManager {
         &self,
         scope: &GatewayEnrichmentScope,
         name: Option<&str>,
-    ) {
+    ) -> Result<(), ToolError> {
         if name.is_none() {
             // A fleet refresh can outlive the API response budget when dozens
             // of remote and stdio upstreams are discovered with bounded
             // concurrency. Keep the owned task alive after returning the
             // current partial snapshot instead of cancelling all remaining
             // discovery work at the response deadline.
+            let refresh_key = format!(
+                "{:?}\0{:?}",
+                scope.route_visible_upstreams, scope.oauth_subject
+            );
+            if self
+                .mcp_catalog_refresh_failures
+                .lock()
+                .await
+                .remove(&refresh_key)
+            {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.status.refresh",
+                    "retrying gateway catalog refresh after a terminal failure"
+                );
+            }
+            if !self
+                .mcp_catalog_refresh_inflight
+                .lock()
+                .await
+                .insert(refresh_key.clone())
+            {
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.status.refresh",
+                    "gateway fleet catalog refresh already in progress"
+                );
+                return Ok(());
+            };
             let manager = self.clone();
             let scope = scope.clone();
             let mut refresh = tokio::spawn(async move {
                 let (cfg, pool) = manager.published_config_and_pool().await;
+                let outcome = std::panic::AssertUnwindSafe(manager.refresh_mcp_runtime_catalog(
+                    &cfg,
+                    pool.as_deref(),
+                    scope.route_visible_upstreams.as_ref(),
+                    scope.oauth_subject.as_deref(),
+                ))
+                .catch_unwind()
+                .await;
                 manager
-                    .refresh_mcp_runtime_catalog(
-                        &cfg,
-                        pool.as_deref(),
-                        scope.route_visible_upstreams.as_ref(),
-                        scope.oauth_subject.as_deref(),
-                    )
-                    .await;
+                    .mcp_catalog_refresh_inflight
+                    .lock()
+                    .await
+                    .remove(&refresh_key);
+                if outcome.is_err() {
+                    manager
+                        .mcp_catalog_refresh_failures
+                        .lock()
+                        .await
+                        .insert(refresh_key);
+                    tracing::error!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.status.refresh",
+                        "gateway fleet catalog refresh panicked"
+                    );
+                    return Err("catalog refresh panicked");
+                }
+                Ok(())
             });
             let (cfg, _) = self.published_config_and_pool().await;
             let timeout = super::super::runtime::mcp_runtime_warm_timeout(&cfg);
-            if tokio::time::timeout(timeout, &mut refresh).await.is_err() {
-                tracing::info!(
+            match tokio::time::timeout(timeout, &mut refresh).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(message))) => return Err(ToolError::internal_message(message)),
+                Ok(Err(error)) => tracing::error!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.status.refresh",
+                    error = %error,
+                    "gateway fleet catalog refresh task failed"
+                ),
+                Err(_) => tracing::info!(
                     surface = "dispatch",
                     service = "gateway",
                     action = "gateway.status.refresh",
                     timeout_ms = timeout.as_millis(),
                     "gateway fleet catalog refresh continuing in background"
-                );
+                ),
             }
-            return;
+            return Ok(());
         }
 
         let (cfg, pool) = self.published_config_and_pool().await;
@@ -136,6 +197,7 @@ impl GatewayManager {
             "gateway.status.refresh",
         )
         .await;
+        Ok(())
     }
 
     pub async fn list(&self) -> Result<Vec<ServerView>, ToolError> {

@@ -40,6 +40,8 @@ export interface GatewayWriteConfig extends GatewayConfig {
 export interface GatewayStatus {
   healthy: boolean
   connected: boolean
+  /** Connected, but the runtime capability snapshot is still being populated. */
+  catalog_warming?: boolean
   last_error?: string
   discovered_tool_count: number
   exposed_tool_count: number

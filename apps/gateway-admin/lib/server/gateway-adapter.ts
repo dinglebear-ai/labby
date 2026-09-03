@@ -400,6 +400,7 @@ export function normalizeServerView(
     proxy_mcp_ui: false,
   }
   const isLabService = view.source === 'in_process'
+  const catalogWarming = (view.warnings ?? []).some((warning) => warning.code === 'catalog_warming')
   const warnings = (view.warnings ?? []).map((warning) => {
     if (warning.code === 'catalog_warming') {
       return null
@@ -466,6 +467,7 @@ export function normalizeServerView(
     status: {
       healthy: (view.connected ?? false) && warnings.length === 0,
       connected: view.connected ?? false,
+      catalog_warming: catalogWarming,
       ...(lastError ? { last_error: lastError } : {}),
       discovered_tool_count: view.discovered_tool_count ?? tools.length,
       exposed_tool_count: view.exposed_tool_count ?? tools.length,

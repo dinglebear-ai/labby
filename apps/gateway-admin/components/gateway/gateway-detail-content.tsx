@@ -254,7 +254,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [inventorySearch, setInventorySearch] = useState('')
   const [inventoryFilter, setInventoryFilter] = useState<'tools' | 'resources' | 'prompts' | 'ui-resources'>('tools')
   const [envDraft, setEnvDraft] = useState('')
-  const [isSavingEnv, setIsSavingEnv] = useState(false)
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false)
   const [isStartingOauth, setIsStartingOauth] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'catalog' | 'activity' | 'routes' | 'runtime' | 'config' | 'settings' | 'warnings' | 'logs'>('overview')
@@ -1464,12 +1463,12 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             <DetailCard padding="0" className="overflow-hidden border-aurora-accent-primary/40">
               <div className="flex h-12 items-center justify-between border-b border-aurora-border-subtle px-4">
                 <div className="flex items-center gap-2 text-xs text-aurora-text-muted"><span>{gateway.name}</span><span>/</span><strong className="text-aurora-text-primary">.env</strong><Badge variant="outline" className="text-[9px] uppercase">Virtual</Badge></div>
-                <div className="flex gap-2"><Button variant="outline" size="sm" disabled={isSavingEnv} onClick={() => setEnvDraft(Object.entries(gateway.config.env ?? {}).map(([key,value]) => `${key}=${value}`).join('\n'))}>Revert</Button><Button size="sm" disabled={isSavingEnv} onClick={async()=>{setIsSavingEnv(true);try{const env=Object.fromEntries(envDraft.split('\n').map(line=>line.trim()).filter(line=>line&&!line.startsWith('#')&&line.includes('=')).map(line=>{const at=line.indexOf('=');return [line.slice(0,at).trim(),line.slice(at+1)]}));await updateGateway(gateway.id,{config:{env}});await reloadGateway(gateway.id);toast.success('Variables saved and server restarted')}catch(error){toast.error(getErrorMessage(error,'Failed to save variables'))}finally{setIsSavingEnv(false)}}}>Save &amp; Restart</Button></div>
+                <div className="flex gap-2"><Button variant="outline" size="sm" disabled>Revert</Button><Button size="sm" disabled>Save &amp; Restart</Button></div>
               </div>
               <div className="gateway-env-editor h-[380px] bg-aurora-page-bg">
-                <EnvTextSurface path={`${gateway.name}/.env`} value={envDraft} mode="edit" language="dotenv" onChange={setEnvDraft} embedded showToolbar={false}/>
+                <EnvTextSurface path={`${gateway.name}/.env`} value={envDraft || '# Environment values are not returned by the gateway API.\n# Use Edit server to replace variables safely.'} mode="view" language="dotenv" embedded showToolbar={false}/>
               </div>
-              <div className="flex h-8 items-center justify-between border-t border-aurora-border-subtle px-4 text-[10px] text-aurora-text-muted"><span>{envDraft.split('\n').filter(line=>line.trim()&&!line.trim().startsWith('#')).length} variables</span><span>Values are injected into the runtime on restart — secrets stay on the gateway.</span></div>
+              <div className="flex h-8 items-center justify-between border-t border-aurora-border-subtle px-4 text-[10px] text-aurora-text-muted"><span>Values hidden</span><span>Secrets stay on the gateway; this view never interprets hidden values as empty.</span></div>
             </DetailCard>
           </TabsContent>
 
