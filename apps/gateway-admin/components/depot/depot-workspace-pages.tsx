@@ -1,6 +1,10 @@
+'use client'
+
+import { useState } from 'react'
 import {
-  Bot, Box, CheckCircle2, CirclePlus, Clock3, Container,
-  FileCode2, FileText, Inbox, Layers3, Play, Search,
+  Bot, Box, CheckCircle2, CirclePlus, Clock3, Code2, Download, ExternalLink,
+  FileArchive, FileCode2, FileJson, FileText, Grid2X2, Inbox, Layers3, List,
+  Pause, Play, Search, Square, Table2, Upload, X, ChevronDown, ArrowUpDown, ScrollText,
 } from 'lucide-react'
 
 import { AppHeader } from '@/components/app-header'
@@ -9,6 +13,12 @@ import { ConsoleHero } from '@/components/console/console-hero'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { ArtifactComposer } from './artifact-composer'
+import { DevContainersPageContent } from './dev-containers-page-content'
+import { NewAgentSessionWizard } from './new-agent-session-wizard'
+import { AlpineMark, CodexMark, DebianMark, UbuntuMark } from './brand-marks'
 
 const demoArtifacts = [
   ['Skill', 'repo-triage', 'Cluster open PRs and issues, then draft a triage note.', '#review · #github'],
@@ -53,37 +63,108 @@ export function LibraryPage() {
 }
 
 export function CreatePage() {
-  return <><AppHeader breadcrumbs={[{ label: 'Depot' }, { label: 'Create' }]} /><PageFrame>
-    <div className="mx-auto max-w-4xl space-y-4">
-      <div className="flex items-center justify-between"><Badge variant="outline">Skill</Badge><div className="flex gap-2"><Badge variant="outline">Draft</Badge><Button>Publish</Button></div></div>
-      <section className="min-h-[510px] rounded-aurora-3 border border-aurora-border-subtle bg-aurora-panel-medium p-8 shadow-aurora-panel">
-        <textarea aria-label="Artifact name" rows={2} defaultValue="repo-triage" className="w-full resize-none border-0 bg-transparent text-2xl font-semibold leading-tight text-aurora-text-primary outline-none sm:text-3xl"/>
-        <textarea aria-label="Artifact description" rows={2} defaultValue="Cluster open PRs and issues, then draft a triage note per cluster." className="mt-2 w-full resize-none border-0 bg-transparent text-sm leading-6 text-aurora-text-muted outline-none"/>
-        <div className="my-6 border-t border-aurora-border-subtle"/>
-        <textarea aria-label="Artifact content" defaultValue={'## When to use\n\nInvoke when the user asks to triage, group, or summarize open work in a repository.\n\n## Steps\n\n1. List open PRs and issues with labels and last activity.\n2. Cluster by touched subsystem, not by label.\n3. For each cluster write what it is, who owns it, and what unblocks it.'} className="min-h-80 w-full resize-none border-0 bg-transparent font-mono text-sm leading-7 text-aurora-text-primary outline-none"/>
-      </section>
-    </div>
-  </PageFrame></>
+  return <ArtifactComposer />
 }
 
 const agents = [
-  ['Running', 'Reconcile the gateway catalog', 'operator-console', 'Claude Code', '12m'],
-  ['Running', 'Research Depot publishing contracts', 'research-workbench', 'Codex', '4m'],
-  ['Completed', 'Verify Skills build matrix', 'operator-console', 'Codex', '2m'],
-  ['Failed', 'Draft plugin manifest', 'research-workbench', 'Claude Code', '41s'],
+  ['Running', 'Reconcile the gateway catalog', 'operator-console', 'platform-base', 'Claude Code', '12m'],
+  ['Running', 'Research Depot publishing contracts', 'research-workbench', 'rust-heavy', 'Codex', '4m'],
+  ['Completed', 'Verify Skills build matrix', 'operator-console', 'platform-base', 'Codex', '2m'],
+  ['Failed', 'Draft plugin manifest', 'research-workbench', 'edge-minimal', 'Claude Code', '41s'],
 ]
 
 export function AgentsPage() {
-  return <><AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} /><PageFrame><ConsoleHero eyebrow="Workspace · Agents" title="Agents" pulse={{ color: 'var(--aurora-warn)', label: 'preview data' }} actions={<Button><CirclePlus/>New session</Button>} stats={[{label:'Running',value:2,icon:<Play size={12}/>},{label:'Completed',value:1,icon:<CheckCircle2 size={12}/>},{label:'Failed',value:1,icon:<Clock3 size={12}/>}]}/><DashboardPanel title="Sessions"><DataTable headings={['Status','Session','Loadout','Harness','Elapsed']} rows={agents}/></DashboardPanel></PageFrame></>
+  const [selected, setSelected] = useState<string[] | null>(null)
+  const [creating, setCreating] = useState(false)
+  return <><AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} /><PageFrame><ConsoleHero eyebrow="Workspace · Agents" title="Agents" pulse={{ color: 'var(--aurora-success)' }} actions={<Button onClick={() => setCreating(true)}><CirclePlus/>New session</Button>} stats={[{label:'Running',value:2,icon:<Play size={12}/>,tone:'var(--aurora-success)'},{label:'Completed',value:1,icon:<CheckCircle2 size={12}/>},{label:'Failed',value:1,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'},{label:'Median',value:<><span>4m 12s</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">per session</small></>,icon:<Clock3 size={12}/>} ]}/><AgentsCollection rows={agents} onSelect={setSelected}/></PageFrame>
+    <AgentSessionSheet session={selected} onOpenChange={(open) => !open && setSelected(null)} />
+    <NewAgentSessionWizard open={creating} onOpenChange={setCreating} />
+  </>
 }
 
+function AgentSessionSheet({ session, onOpenChange }: { session: string[] | null; onOpenChange: (open: boolean) => void }) {
+  const running = session?.[0] === 'Running'
+  const events: Array<[typeof FileText, string, string, string]> = [
+    [FileText,'Read','src/gateway/reconcile.rs','412 lines'],
+    [Search,'Searched','callers of reconcile_all','7 matches · 38ms'],
+    [Bot,'Agent update','Splitting the fleet scan into a dirty-set pass while retaining a periodic full sweep.',''],
+    [FileCode2,'Wrote','src/gateway/reconcile.rs','+148 −62'],
+    [Play,'Ran','cargo test reconcile','24 passed · 3.1s'],
+  ]
+  return <Sheet open={Boolean(session)} onOpenChange={onOpenChange}>
+    <SheetContent className="!w-[min(92vw,680px)] border-aurora-border-strong bg-aurora-panel-medium p-0 sm:!max-w-[680px]">
+      <SheetHeader className="border-b border-aurora-border-subtle bg-aurora-panel-strong px-6 py-5">
+        <div className="flex items-center gap-2"><span className={`size-2 rounded-full ${running ? 'bg-aurora-success shadow-[0_0_8px_var(--aurora-success)]' : session?.[0] === 'Failed' ? 'bg-aurora-error' : 'bg-aurora-text-muted'}`} /><SheetTitle className="text-xl text-aurora-text-primary">{session?.[1] ?? 'Agent session'}</SheetTitle></div>
+        <SheetDescription className="pl-4 text-aurora-text-muted">tootie-tv/labby · jmagar · {session?.[5]}</SheetDescription>
+      </SheetHeader>
+      <div className="grid grid-cols-2 border-b border-aurora-border-subtle bg-aurora-panel-low sm:grid-cols-4">
+        {[['Loadout',session?.[2]],['Container',session?.[3]],['Harness',session?.[4]],['Status',session?.[0]]].map(([label,value])=><div key={label} className="border-r border-aurora-border-subtle px-5 py-4 last:border-r-0"><span className="block text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{label}</span><strong className="mt-1 block text-xs text-aurora-text-primary">{value}</strong></div>)}
+      </div>
+      <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="mb-6 rounded-aurora-2 border border-aurora-error/25 bg-aurora-error/5 px-4 py-3 text-sm leading-6 text-aurora-text-primary">The reconcile loop re-probes every server on each tick. Keep the error semantics while making the pass incremental.</div>
+        <ol className="relative ml-3 border-l border-aurora-border-strong pl-6">
+          {events.map(([Icon,verb,target,meta],index)=><li key={`${verb}-${target}`} className="relative pb-6 last:pb-0"><span className="absolute -left-[39px] grid size-7 place-items-center rounded-full border border-aurora-accent-primary/50 bg-aurora-panel-medium text-aurora-accent-primary"><Icon className="size-3.5" /></span><div className="flex items-start justify-between gap-4"><p className={index===2?'font-semibold leading-6 text-aurora-text-primary':'text-sm text-aurora-text-primary'}><span className="text-aurora-text-muted">{verb}</span> {target}</p>{meta?<span className="shrink-0 text-xs text-aurora-text-muted">{meta}</span>:null}</div></li>)}
+          {running ? <li className="relative text-sm font-semibold text-aurora-error"><span className="absolute -left-[39px] grid size-7 place-items-center rounded-full border border-aurora-error/50 bg-aurora-panel-medium"><ActivitySpinner /></span>Working…</li> : null}
+        </ol>
+      </div>
+      <SheetFooter className="flex-row items-center justify-between border-t border-aurora-border-subtle bg-aurora-panel-strong px-6 py-4"><span className="truncate text-xs text-aurora-text-muted">{session?.[2]} · {session?.[3]} · {session?.[4]}</span><div className="flex gap-2"><Button variant="outline"><ExternalLink />Copy transcript</Button>{running?<Button variant="outline" className="border-aurora-error/40 text-aurora-error"><Square />Stop session</Button>:<Button><Play />Run again</Button>}</div></SheetFooter>
+    </SheetContent>
+  </Sheet>
+}
+
+function ActivitySpinner() { return <span className="size-3 animate-pulse rounded-full bg-aurora-error" /> }
+
 const tasks = [
-  ['Armed', 'Loadout scope audit', 'Daily · 02:00', 'operator-console', 'in 6h'],
-  ['Armed', 'Gateway error digest', 'Mon, Thu · 07:00', 'operator-console', 'in 2d'],
-  ['Armed', 'Upstream drift sweep', 'Weekly · Sun 03:00', 'research-workbench', 'in 4d'],
-  ['Paused', 'Dependency bump PR', 'Daily · 05:00', 'research-workbench', 'paused'],
+  ['Armed', 'Loadout Scope Audit', 'Daily · 02:00', 'project-a', 'in 6h', 'Flag write-capable tools added since the last run.', 'passed'],
+  ['Armed', 'Error Forensics Digest', 'Mon, Thu · 07:00', 'platform', 'in 2d', 'Cluster gateway errors and post a concise digest to Activity.', 'passed'],
+  ['Armed', 'Upstream Drift Sweep', 'Weekly · Sun 03:00', 'shared', 'in 4d', 'Merge clean upstream updates and open reviewable diffs for the rest.', 'partial'],
+  ['Armed', 'Container Rebuild', 'Weekly · Sat 01:00', 'platform', 'in 3d', 'Rebuild every image against the pinned toolchain set.', 'passed'],
+  ['Paused', 'Dependency Bump PR', 'Daily · 05:00', 'project-b', 'paused', 'Open one safe dependency update pull request per repository.', 'failed'],
 ]
-export function TasksPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/><PageFrame><ConsoleHero eyebrow="Workspace · Schedules" title="Tasks" pulse={{color:'var(--aurora-warn)',label:'preview data'}} actions={<Button><CirclePlus/>New task</Button>} stats={[{label:'Scheduled',value:4,icon:<Clock3 size={12}/>},{label:'Armed',value:3,icon:<CheckCircle2 size={12}/>},{label:'Next run',value:'02:00',icon:<Play size={12}/>} ]}/><DashboardPanel title="Scheduled"><DataTable headings={['On','Task','Schedule','Loadout','Next']} rows={tasks}/></DashboardPanel></PageFrame></> }
+export function TasksPage() {
+  const [rows, setRows] = useState(tasks)
+  const [selected, setSelected] = useState<string[] | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [name,setName]=useState(''),[definition,setDefinition]=useState(''),[schedule,setSchedule]=useState('Daily · 09:00'),[loadout,setLoadout]=useState('operator-console')
+  const create=()=>{if(!name.trim()||!definition.trim())return;setRows(c=>[['Armed',name.trim(),schedule,loadout,'tomorrow',definition.trim(),'pending'],...c]);setName('');setDefinition('');setCreating(false)}
+  return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Tasks'}]}/><PageFrame><ConsoleHero eyebrow="Team · Schedules" title="Tasks" description="Recurring agent runs. Each task carries its own loadout, container and repository, and reports back into Activity when it finishes." actions={<Button onClick={()=>setCreating(true)}><CirclePlus/>New Task</Button>} stats={[{label:'Scheduled',value:rows.length,icon:<Clock3 size={12}/>},{label:'Armed',value:rows.filter(row=>row[0]==='Armed').length,icon:<CheckCircle2 size={12}/>,tone:'var(--aurora-success)'},{label:'Next run',value:<><span className="text-aurora-accent-primary">02:00</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">Scope Audit</small></>,icon:<Play size={12}/>},{label:'Failures',value:<><span>1</span><small className="ml-1 text-[10px] font-normal text-aurora-text-muted">last 7 days</small></>,icon:<Clock3 size={12}/>,tone:'var(--aurora-error)'}]}/><TasksCollection rows={rows} setRows={setRows} onSelect={setSelected}/></PageFrame>
+    <TaskDialog row={selected} onOpenChange={open=>!open&&setSelected(null)} onSave={updated=>{setRows(c=>c.map(row=>row===selected?updated:row));setSelected(updated)}}/>
+    <Dialog open={creating} onOpenChange={setCreating}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>New task</DialogTitle><DialogDescription>Schedule a reusable agent run.</DialogDescription><TaskFields name={name} setName={setName} definition={definition} setDefinition={setDefinition} schedule={schedule} setSchedule={setSchedule} loadout={loadout} setLoadout={setLoadout}/><Button onClick={create} disabled={!name.trim()||!definition.trim()}><CirclePlus/>Create task</Button></DialogContent></Dialog>
+  </>
+}
+
+function SortHead({children,onClick}:{children:React.ReactNode;onClick:()=>void}){return <th className="px-3 py-2 text-left"><button type="button" onClick={onClick} className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted hover:text-aurora-text-primary">{children}<ArrowUpDown className="size-3 opacity-45"/></button></th>}
+
+function AgentsCollection({rows,onSelect}:{rows:string[][];onSelect:(row:string[])=>void}){
+  const [filter,setFilter]=useState('All'),[sort,setSort]=useState(1),[view,setView]=useState<ViewMode>('table')
+  const shown=[...rows].filter(row=>filter==='All'||row[0]===filter).sort((a,b)=>a[sort].localeCompare(b[sort]))
+  return <DashboardPanel title="Sessions" action={<div className="flex items-center gap-3"><div className="flex gap-1">{['All','Running','Completed','Failed'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div><ViewModes value={view} onChange={setView}/></div>}>
+    {view==='table'?<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['Status','Session','Loadout','Container','Harness','Elapsed'].map((head,index)=><SortHead key={head} onClick={()=>setSort(index)}>{head}</SortHead>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} tabIndex={0} onClick={()=>onSelect(row)} onKeyDown={event=>event.key==='Enter'&&onSelect(row)} className="cursor-pointer border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-3"><StatusDot status={row[0]}/></td><td className="px-3 py-3 font-semibold text-aurora-text-primary">{row[1]}</td><td className="px-3 py-3"><Badge variant="outline" className="text-aurora-accent-primary">{row[2]}</Badge></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[3]}/>{row[3]}</span></td><td className="px-3 py-3 text-aurora-text-muted"><span className="flex items-center gap-2"><ProductMark kind={row[4]}/>{row[4]}</span></td><td className="px-3 py-3 text-aurora-text-muted">{row[5]}</td></tr>)}</tbody></table></div>:<div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':'divide-y divide-aurora-border-subtle'}>{shown.map(row=><button key={row[1]} onClick={()=>onSelect(row)} className="w-full rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left"><StatusDot status={row[0]}/><strong className="mt-2 block text-aurora-text-primary">{row[1]}</strong><span className="mt-1 block text-xs text-aurora-text-muted">{row.slice(2).join(' · ')}</span></button>)}</div>}
+  </DashboardPanel>
+}
+
+function StatusDot({status}:{status:string}){const color=status==='Running'||status==='Armed'?'bg-aurora-success':status==='Failed'?'bg-aurora-error':status==='Paused'?'bg-aurora-warn':'bg-aurora-text-muted';return <span role="img" aria-label={status} title={status} className={`block size-2 rounded-full ${color}`}/>}
+
+function ProductMark({kind}:{kind:string}){
+  if(kind==='platform-base')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><UbuntuMark className="size-3.5 fill-current"/></span>
+  if(kind==='rust-heavy')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><DebianMark className="size-3.5 fill-current"/></span>
+  if(kind==='edge-minimal')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><AlpineMark className="size-3.5 fill-current"/></span>
+  if(kind==='Claude Code')return <span aria-label="Claude" className="grid size-5 place-items-center rounded bg-white/5 text-[10px] font-black text-aurora-text-primary">AI</span>
+  if(kind==='Codex')return <span className="grid size-5 place-items-center rounded bg-white/5 text-aurora-text-primary"><CodexMark className="size-3.5 fill-current"/></span>
+  return <span aria-label="Gemini" className="grid size-5 place-items-center rounded bg-white/5 text-sm text-aurora-text-primary">✦</span>
+}
+
+function TasksCollection({rows,setRows,onSelect}:{rows:string[][];setRows:React.Dispatch<React.SetStateAction<string[][]>>;onSelect:(row:string[])=>void}){
+  const [filter,setFilter]=useState('All')
+  const shown=rows.filter(row=>filter==='All'||row[0]===filter)
+  const toggle=(target:string[])=>setRows(current=>current.map(row=>row===target?[row[0]==='Armed'?'Paused':'Armed',...row.slice(1)]:row))
+  return <DashboardPanel title="Scheduled" action={<div className="flex gap-1">{['All','Armed','Paused'].map(item=><button key={item} type="button" onClick={()=>setFilter(item)} aria-pressed={filter===item} className="rounded-full border border-aurora-border-subtle px-3 py-1 text-[10px] font-semibold text-aurora-text-muted aria-pressed:border-aurora-accent-primary aria-pressed:bg-aurora-accent-primary aria-pressed:text-aurora-page-bg">{item}</button>)}</div>}><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-aurora-border-subtle">{['On','Task','Schedule','Loadout','Last run','Next',''].map(head=><th key={head} className="px-3 py-2 text-left text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted">{head}</th>)}</tr></thead><tbody>{shown.map(row=><tr key={row[1]} className="border-b border-aurora-border-subtle/70 last:border-0 hover:bg-aurora-hover-bg"><td className="px-3 py-2"><button type="button" role="switch" aria-checked={row[0]==='Armed'} aria-label={`${row[0]==='Armed'?'Pause':'Arm'} ${row[1]}`} onClick={()=>toggle(row)} className="relative h-5 w-9 rounded-full border border-aurora-border-strong bg-aurora-control-surface aria-checked:border-aurora-accent-primary aria-checked:bg-aurora-accent-primary"><span className="absolute left-0.5 top-0.5 size-3.5 rounded-full bg-aurora-text-muted transition-transform [[aria-checked=true]_&]:translate-x-4 [[aria-checked=true]_&]:bg-aurora-page-bg"/></button></td><td className="px-3 py-2"><button onClick={()=>onSelect(row)} className="text-left"><strong className="block text-xs text-aurora-text-primary">{row[1]}</strong><span className="block max-w-[30rem] truncate text-[10px] text-aurora-text-muted">{row[5]}</span></button></td><td className="px-3 py-2 text-xs text-aurora-text-muted">◷ {row[2]}</td><td className="px-3 py-2"><Badge variant="outline" className="text-aurora-accent-primary">#{row[3]}</Badge></td><td className="px-3 py-2"><span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold ${row[6]==='failed'?'text-aurora-error':row[6]==='partial'?'text-aurora-warn':'text-aurora-success'}`}><span className="size-1.5 rounded-full bg-current"/>{row[6]}</span></td><td className="px-3 py-2 text-xs text-aurora-text-muted">{row[4]}</td><td className="px-3 py-2"><Button variant="ghost" size="icon-sm" aria-label={`View logs for ${row[1]}`} asChild><a href="/logs"><ScrollText className="size-4"/></a></Button></td></tr>)}</tbody></table></div></DashboardPanel>
+}
+
+function SelectField({label,value,onChange,children}:{label:string;value:string;onChange:(value:string)=>void;children:React.ReactNode}){return <label className="text-xs text-aurora-text-muted">{label}<span className="relative mt-2 block"><select value={value} onChange={event=>onChange(event.target.value)} className="h-10 w-full appearance-none rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface pl-3 pr-10 text-sm text-aurora-text-primary">{children}</select><ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted"/></span></label>}
+function TaskFields({name,setName,definition,setDefinition,schedule,setSchedule,loadout,setLoadout}:{name:string;setName:(v:string)=>void;definition:string;setDefinition:(v:string)=>void;schedule:string;setSchedule:(v:string)=>void;loadout:string;setLoadout:(v:string)=>void}){return <><label className="text-xs font-semibold text-aurora-text-muted">Task name<input autoFocus value={name} onChange={event=>setName(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="Weekly gateway review"/></label><label className="text-xs font-semibold text-aurora-text-muted">Define the task<textarea value={definition} onChange={event=>setDefinition(event.target.value)} rows={4} className="mt-2 w-full resize-none rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="Describe exactly what the agent should do and what a successful run produces."/></label><div className="grid grid-cols-2 gap-3"><SelectField label="Schedule" value={schedule} onChange={setSchedule}><option>Daily · 09:00</option><option>Daily · 02:00</option><option>Weekly · Monday</option><option>Weekly · Sun 03:00</option></SelectField><SelectField label="Loadout" value={loadout} onChange={setLoadout}><option>operator-console</option><option>research-workbench</option><option>project-a</option><option>project-b</option><option>platform</option><option>shared</option></SelectField></div></>}
+
+function TaskDialog({row,onOpenChange,onSave}:{row:string[]|null;onOpenChange:(open:boolean)=>void;onSave:(row:string[])=>void}){const [editing,setEditing]=useState(false),[name,setName]=useState(''),[definition,setDefinition]=useState(''),[schedule,setSchedule]=useState('Daily · 09:00'),[loadout,setLoadout]=useState('operator-console');const begin=()=>{if(!row)return;setName(row[1]);setSchedule(row[2]);setLoadout(row[3]);setDefinition(row[5]);setEditing(true)};return <Dialog open={Boolean(row)} onOpenChange={open=>{onOpenChange(open);if(!open)setEditing(false)}}><DialogContent className="border-aurora-border-strong bg-aurora-panel-medium"><DialogTitle>{editing?'Edit task':row?.[1]??'Task'}</DialogTitle><DialogDescription>{editing?'Change the task definition, schedule, or loadout.':'Workspace details and controls.'}</DialogDescription>{editing?<TaskFields name={name} setName={setName} definition={definition} setDefinition={setDefinition} schedule={schedule} setSchedule={setSchedule} loadout={loadout} setLoadout={setLoadout}/>:<><p className="rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-3 text-sm leading-6 text-aurora-text-primary">{row?.[5]}</p><dl className="divide-y divide-aurora-border-subtle rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low px-4">{[['State',row?.[0]],['Schedule',row?.[2]],['Loadout',row?.[3]],['Next run',row?.[4]]].map(([label,value])=><div key={label} className="flex justify-between gap-4 py-3 text-sm"><dt className="text-aurora-text-muted">{label}</dt><dd className="font-medium text-aurora-text-primary">{value}</dd></div>)}</dl></>}<div className="flex flex-wrap justify-end gap-2">{editing?<><Button variant="outline" onClick={()=>setEditing(false)}>Cancel</Button><Button onClick={()=>{if(row)onSave([row[0],name,schedule,loadout,row[4],definition,row[6]]);setEditing(false)}}>Save changes</Button></>:<><Button variant="outline" onClick={begin}>Edit task</Button><Button variant="outline"><Pause/>Pause task</Button><Button><Play/>Run now</Button><Button variant="outline" asChild><a href="/logs"><ScrollText/>View last run logs</a></Button></>}</div></DialogContent></Dialog>}
 
 const files = [
   ['Data','fleet-snapshot.json','stash://me/fleet-snapshot.json','412 KB','2h ago'],
@@ -91,14 +172,9 @@ const files = [
   ['Archive','gateway-trace.log','stash://me/gateway-trace.log','96 MB','1d ago'],
   ['Code','schema.prisma','stash://me/schema.prisma','11 KB','1d ago'],
 ]
-export function StashPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Stash'}]}/><PageFrame><ConsoleHero eyebrow="Workspace · Stash" title="Stash" pulse={{color:'var(--aurora-warn)',label:'preview data'}} actions={<Button><CirclePlus/>Upload</Button>} stats={[{label:'Files',value:4,icon:<Inbox size={12}/>},{label:'Size',value:'96.4 MB',icon:<FileText size={12}/>},{label:'Shared',value:2,icon:<Bot size={12}/>} ]}/><div className="rounded-aurora-2 border border-dashed border-aurora-accent-primary/40 p-6 text-center text-sm text-aurora-text-muted">Drop files here to make them available to agents through <code>stash://</code></div><DashboardPanel title="Files"><DataTable headings={['Kind','Name','Address','Size','Added']} rows={files}/></DashboardPanel></PageFrame></> }
+export function StashPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Stash'}]}/><PageFrame><ConsoleHero eyebrow="Workspace · Stash" title="Stash" pulse={{color:'var(--aurora-success)'}} actions={<Button><Upload/>Upload</Button>} stats={[{label:'Files',value:4,icon:<Inbox size={12}/>},{label:'Size',value:'96.4 MB',icon:<FileText size={12}/>},{label:'Shared',value:2,icon:<Bot size={12}/>} ]}/><button className="group w-full rounded-aurora-2 border border-dashed border-aurora-accent-primary/50 bg-[linear-gradient(135deg,color-mix(in_srgb,var(--aurora-accent-primary)_8%,transparent),color-mix(in_srgb,var(--aurora-success)_7%,transparent))] p-7 text-center text-sm text-aurora-text-muted transition-colors hover:border-aurora-accent-primary"><Upload className="mx-auto mb-2 size-6 text-aurora-accent-primary"/><strong className="block text-aurora-text-primary">Drop files here or browse</strong>Available to agents through <code className="text-aurora-success">stash://</code></button><StashCollection/></PageFrame></> }
 
-const containers = [
-  ['Ready','platform-base','Ubuntu 24.04','Node · Python · Rust · Docker','38 pulls'],
-  ['Ready','rust-heavy','Debian 12','Rust · PostgreSQL · Docker','12 pulls'],
-  ['Building','edge-minimal','Alpine 3.21','Go · Docker · Tailscale','Layer 4/7'],
-]
-export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame><ConsoleHero eyebrow="Workspace · Incus" title="Dev Containers" pulse={{color:'var(--aurora-warn)',label:'preview data'}} actions={<Button><CirclePlus/>New container</Button>}/><div className="grid gap-4 xl:grid-cols-3">{containers.map(([status,name,distro,tools,foot])=><section key={name} className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium p-5"><div className="flex justify-between"><h2 className="font-semibold text-aurora-text-primary">{name}</h2><Badge variant="outline">{status}</Badge></div><p className="mt-4 text-sm text-aurora-text-muted">{distro}</p><div className="mt-5 flex items-center gap-2 text-xs text-aurora-accent-primary"><Container size={15}/>{tools}</div><p className="mt-5 border-t border-aurora-border-subtle pt-3 text-xs text-aurora-text-muted">{foot}</p></section>)}</div></PageFrame></> }
+export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame><DevContainersPageContent /></PageFrame></> }
 
 const logRows = [
   ['Info','gateway','catalog reconciled · 2 healthy upstreams'],
@@ -112,3 +188,8 @@ export function LogsPage() { return <><AppHeader breadcrumbs={[{label:'Logs'}]}/
 function DataTable({ headings, rows }: { headings: string[]; rows: string[][] }) {
   return <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr className="border-b border-aurora-border-subtle">{headings.map(h=><th key={h} className="px-3 py-2 text-[11px] uppercase tracking-[.14em] text-aurora-text-muted">{h}</th>)}</tr></thead><tbody>{rows.map((row,index)=><tr key={index} className="border-b border-aurora-border-subtle/70 last:border-0">{row.map((cell,i)=><td key={i} className={`px-3 py-3 ${i === 1 ? 'font-semibold text-aurora-text-primary' : 'text-aurora-text-muted'}`}>{i === 0 ? <Badge variant="outline">{cell}</Badge> : cell}</td>)}</tr>)}</tbody></table></div>
 }
+
+type ViewMode = 'table'|'list'|'cards'
+function ViewModes({value,onChange}:{value:ViewMode;onChange:(value:ViewMode)=>void}) { return <div className="flex rounded-aurora-1 border border-aurora-border-subtle bg-aurora-control-surface p-0.5">{([[Table2,'Table','table'],[List,'List','list'],[Grid2X2,'Cards','cards']] as const).map(([Icon,label,mode])=><button key={mode} type="button" onClick={()=>onChange(mode)} aria-pressed={value===mode} aria-label={`${label} view`} title={`${label} view`} className={`rounded p-1.5 ${value===mode?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted hover:text-aurora-text-primary'}`}><Icon className="size-3.5"/></button>)}</div> }
+
+function StashCollection(){const [view,setView]=useState<ViewMode>('table');return <DashboardPanel title="Files" action={<ViewModes value={view} onChange={setView}/>}><div className={view==='cards'?'grid gap-3 md:grid-cols-2 xl:grid-cols-3':view==='list'?'divide-y divide-aurora-border-subtle':'divide-y divide-aurora-border-subtle'}>{files.map((file,index)=><div key={file[1]} className={view==='cards'?'rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4':'grid grid-cols-[34px_minmax(0,1fr)_120px_90px] items-center gap-3 px-3 py-3 hover:bg-aurora-hover-bg'}><span className={`grid size-8 place-items-center rounded-aurora-1 ${index===0?'bg-aurora-accent-primary/10 text-aurora-accent-primary':index===1?'bg-aurora-success/10 text-aurora-success':index===2?'bg-aurora-error/10 text-aurora-error':'bg-aurora-warn/10 text-aurora-warn'}`}>{index===0?<FileJson/>:index===1?<FileText/>:index===2?<FileArchive/>:<Code2/>}</span><div className={view==='cards'?'mt-3':''}><strong className="text-sm text-aurora-text-primary">{file[1]}</strong><code className="block truncate text-xs text-aurora-text-muted">{file[2]}</code></div><span className="text-xs text-aurora-text-muted">{file[3]}</span><div className="flex items-center justify-end gap-1"><Button size="icon-sm" variant="ghost" aria-label="Download"><Download/></Button><Button size="icon-sm" variant="ghost" aria-label="Remove"><X/></Button></div></div>)}</div></DashboardPanel>}

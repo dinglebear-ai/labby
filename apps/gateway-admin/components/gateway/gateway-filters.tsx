@@ -362,9 +362,6 @@ export function GatewayFilters({
             onChange={(e) => onSearchChange(e.target.value)}
             className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-[13px] text-aurora-text-primary shadow-none placeholder:text-aurora-text-muted focus-visible:ring-0"
           />
-          <span className={cn(AURORA_BADGE_LABEL, 'hidden shrink-0 rounded-aurora-1 border border-aurora-border-strong/80 bg-aurora-panel-strong/70 px-2 py-1 text-aurora-text-muted xl:inline-flex')}>
-            {mode === 'tools' ? 'Tools' : 'Servers'}
-          </span>
           {search ? (
             <Button
               type="button"

@@ -229,6 +229,15 @@
   border-left-color: var(--aurora-text-primary) !important;
 }
 
+.gateway-env-editor .cm-gutters {
+  display: none;
+}
+
+.gateway-env-editor .cm-content {
+  padding: 14px 16px;
+  line-height: 1.75;
+}
+
 .dark {
   /* Core surfaces — remapped to Aurora tokens */
   --background: var(--aurora-page-bg);
@@ -713,6 +722,19 @@ section[data-screen-label] {
 [data-hoverrow]:hover {
   box-shadow: inset 2.5px 0 0
     color-mix(in srgb, var(--aurora-accent-primary) 40%, transparent);
+}
+
+/* Dense operational tables share one alternating-row rhythm. */
+.console-root tbody tr:nth-child(even),
+.console-root [data-zebra-row='1']:nth-child(even) {
+  background: color-mix(in srgb, var(--aurora-panel-medium) 22%, transparent);
+}
+.console-root tbody tr {
+  transition: background 130ms ease-out, box-shadow 130ms ease-out;
+}
+.console-root tbody tr:hover {
+  background: color-mix(in srgb, var(--aurora-accent-primary) 7%, var(--aurora-panel-medium));
+  box-shadow: inset 2.5px 0 0 color-mix(in srgb, var(--aurora-accent-primary) 45%, transparent);
 }
 [data-hovercard] {
   transition:

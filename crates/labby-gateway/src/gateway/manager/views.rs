@@ -82,6 +82,39 @@ impl GatewayManager {
         scope: &GatewayEnrichmentScope,
         name: Option<&str>,
     ) {
+        if name.is_none() {
+            // A fleet refresh can outlive the API response budget when dozens
+            // of remote and stdio upstreams are discovered with bounded
+            // concurrency. Keep the owned task alive after returning the
+            // current partial snapshot instead of cancelling all remaining
+            // discovery work at the response deadline.
+            let manager = self.clone();
+            let scope = scope.clone();
+            let mut refresh = tokio::spawn(async move {
+                let (cfg, pool) = manager.published_config_and_pool().await;
+                manager
+                    .refresh_mcp_runtime_catalog(
+                        &cfg,
+                        pool.as_deref(),
+                        scope.route_visible_upstreams.as_ref(),
+                        scope.oauth_subject.as_deref(),
+                    )
+                    .await;
+            });
+            let (cfg, _) = self.published_config_and_pool().await;
+            let timeout = super::super::runtime::mcp_runtime_warm_timeout(&cfg);
+            if tokio::time::timeout(timeout, &mut refresh).await.is_err() {
+                tracing::info!(
+                    surface = "dispatch",
+                    service = "gateway",
+                    action = "gateway.status.refresh",
+                    timeout_ms = timeout.as_millis(),
+                    "gateway fleet catalog refresh continuing in background"
+                );
+            }
+            return;
+        }
+
         let (cfg, pool) = self.published_config_and_pool().await;
         let allowed_upstreams = match (scope.route_visible_upstreams.as_ref(), name) {
             (Some(allowed), Some(name)) => Some(

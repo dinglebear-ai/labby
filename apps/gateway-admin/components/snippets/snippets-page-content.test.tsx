@@ -254,6 +254,138 @@ test('snippets table filters by tag pill and search, and dashes out absent metri
   await view.unmount()
 })
 
+test('new snippet opens a guided intent-first builder with progressive disclosure', async () => {
+  const window = installTestDom()
+  Object.defineProperty(globalThis, 'NodeFilter', { value: window.NodeFilter, configurable: true })
+  Object.defineProperty(globalThis, 'HTMLInputElement', { value: window.HTMLInputElement, configurable: true })
+  Object.defineProperty(globalThis, 'HTMLTextAreaElement', { value: window.HTMLTextAreaElement, configurable: true })
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string }
+    return new Response(JSON.stringify(payload.action === 'snippets.list' ? { snippets: [] } : {}), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const view = await renderClient(<SidebarProvider><SnippetsPageContent /></SidebarProvider>)
+  try {
+    const newSnippet = Array.from(view.container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.trim() === 'New snippet',
+    )
+    assert.ok(newSnippet)
+    await act(async () => newSnippet.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Build a snippet/))
+    assert.match(document.body.textContent ?? '', /Inspect one system/)
+    assert.match(document.body.textContent ?? '', /Gather in parallel/)
+    assert.doesNotMatch(document.body.textContent ?? '', /Selected tools/)
+
+    const next = Array.from(document.body.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.includes('Use this pattern'),
+    )
+    assert.ok(next)
+    await act(async () => next.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Selected tools/))
+    assert.match(document.body.textContent ?? '', /Use tool ids from the Tools catalog/)
+  } finally {
+    await view.unmount()
+  }
+})
+
+test('user snippets can be validated and overwritten from the editor', async () => {
+  const window = installTestDom()
+  Object.defineProperty(globalThis, 'NodeFilter', { value: window.NodeFilter, configurable: true })
+  Object.defineProperty(globalThis, 'HTMLInputElement', { value: window.HTMLInputElement, configurable: true })
+  Object.defineProperty(globalThis, 'HTMLTextAreaElement', { value: window.HTMLTextAreaElement, configurable: true })
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  const requests: Array<{ action?: string; params?: Record<string, unknown> }> = []
+  const snippet = {
+    name: 'beta-sweep',
+    description: 'Beta sweep',
+    tags: ['research'],
+    source: 'user',
+    path: '/home/u/.labby/snippets/beta-sweep.md',
+    shadowed: false,
+  }
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
+    requests.push(payload)
+    if (payload.action === 'snippets.list') {
+      return new Response(JSON.stringify({ snippets: [snippet] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (payload.action === 'snippets.get') {
+      return new Response(JSON.stringify({
+        ...snippet,
+        body: 'async () => ({ ok: true })',
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (payload.action === 'snippets.validate') {
+      return new Response(JSON.stringify({ valid: true, name: snippet.name, mode: 'body' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify(snippet), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+
+  const view = await renderClient(
+    <SidebarProvider>
+      <SnippetsPageContent />
+    </SidebarProvider>,
+  )
+  try {
+    await waitFor(() =>
+      assert.ok(
+        Array.from(view.container.querySelectorAll('button')).some(
+          (candidate) => candidate.textContent?.trim() === 'Edit',
+        ),
+      ),
+    )
+    const editButton = Array.from(view.container.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.trim() === 'Edit',
+    )
+    assert.ok(editButton)
+    await act(async () => {
+      editButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Edit beta-sweep/))
+
+    const body = document.body.querySelector<HTMLTextAreaElement>('#snippet-edit-body')
+    assert.ok(body)
+    assert.equal(body.value, 'async () => ({ ok: true })')
+    const save = Array.from(document.body.querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.trim() === 'Validate and save',
+    )
+    assert.ok(save)
+    await act(async () => {
+      save.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    await waitFor(() =>
+      assert.ok(requests.some((request) => request.action === 'snippets.create')),
+    )
+    const validateIndex = requests.findIndex((request) => request.action === 'snippets.validate')
+    const createIndex = requests.findIndex((request) => request.action === 'snippets.create')
+    assert.ok(validateIndex >= 0 && createIndex > validateIndex, 'draft must validate before overwrite')
+    assert.deepEqual(requests[createIndex]?.params, {
+      name: 'beta-sweep',
+      body: 'async () => ({ ok: true })',
+      description: 'Beta sweep',
+      force: true,
+    })
+  } finally {
+    await view.unmount()
+  }
+})
+
 // bead lab-l9gpj
 test('user snippets can be removed after confirmation; built-ins offer no Remove button', async () => {
   installTestDom()

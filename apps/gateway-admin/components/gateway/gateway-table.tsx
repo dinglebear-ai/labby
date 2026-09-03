@@ -49,7 +49,7 @@ import {
   gatewayStatusTone,
 } from './gateway-theme'
 
-type SortKey = 'name' | 'endpoint' | 'exposed'
+type SortKey = 'name' | 'endpoint' | 'exposed' | 'uptime'
 type SortDirection = 'asc' | 'desc'
 type StatusGroupId = 'attention' | 'healthy'
 
@@ -125,6 +125,7 @@ function canRemoveGateway(gateway: Gateway): boolean {
 interface GatewayTableProps {
   gateways: Gateway[]
   density: 'comfortable' | 'condensed'
+  presentation?: 'table' | 'cards' | 'list'
   cleanupSummaryByGatewayId?: Record<
     string,
     { preview?: { label: string; occurredAt: string }; cleanup?: { label: string; occurredAt: string } }
@@ -152,6 +153,7 @@ function GatewayFact({ label, value, mono = false }: { label: string; value: str
 export function GatewayTable({
   gateways,
   density,
+  presentation = 'table',
   cleanupSummaryByGatewayId = {},
   onEdit,
   onTest,
@@ -273,6 +275,9 @@ export function GatewayTable({
             left.status.exposed_prompt_count - right.status.exposed_prompt_count ||
             (left.status.exposed_skill_count ?? 0) - (right.status.exposed_skill_count ?? 0)
           break
+        case 'uptime':
+          result = (left.status.age_seconds ?? -1) - (right.status.age_seconds ?? -1)
+          break
       }
 
       if (result === 0) {
@@ -330,7 +335,7 @@ export function GatewayTable({
     }
 
     setSortKey(nextKey)
-    setSortDirection(nextKey === 'exposed' ? 'desc' : 'asc')
+    setSortDirection(nextKey === 'exposed' || nextKey === 'uptime' ? 'desc' : 'asc')
   }
 
   const SortHeader = ({
@@ -363,10 +368,7 @@ export function GatewayTable({
     </button>
   )
 
-  /**
-   * Clients and Uptime have no field on `Gateway`, so their headers are labels
-   * rather than sort buttons — there is nothing to order by.
-   */
+  /** Clients have no field on `Gateway`, so that header remains static. */
   const StaticHeader = ({ label, title }: { label: string; title: string }) => (
     <span className={cn(GW_HEAD_LABEL, 'justify-self-center whitespace-nowrap')} title={title}>
       {label}
@@ -478,7 +480,7 @@ export function GatewayTable({
   }
 
   /** One desktop row, laid out on the mock's six-track grid. */
-  const renderDesktopRow = (gateway: Gateway) => {
+  const renderDesktopRow = (gateway: Gateway, stripeIndex = 0) => {
     const supportsProbeControls = gateway.source !== 'in_process'
     const canRemoveGatewayRow = canRemoveGateway(gateway)
     const endpointPreview = buildGatewayEndpointPreview(gateway)
@@ -503,7 +505,8 @@ export function GatewayTable({
           data-hoverrow="1"
           className={cn(
             GW_GRID,
-            'group relative border-t border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] bg-[var(--gw-row)] transition-[background-color,box-shadow] duration-150 hover:bg-[color-mix(in_srgb,var(--aurora-accent-primary)_7%,var(--gw-row-hover))]',
+            'group relative border-t border-[color-mix(in_srgb,var(--aurora-border-default)_55%,var(--aurora-page-bg))] transition-[background-color,box-shadow] duration-150 hover:bg-[color-mix(in_srgb,var(--aurora-accent-primary)_7%,var(--gw-row-hover))]',
+            stripeIndex % 2 === 0 ? 'bg-[var(--gw-row)]' : 'bg-[color-mix(in_srgb,var(--aurora-panel-medium)_48%,var(--gw-row))]',
             density === 'condensed' ? 'py-[7px]' : 'py-[11px]',
             isDisabled && 'text-aurora-text-muted',
           )}
@@ -801,14 +804,14 @@ export function GatewayTable({
           </span>
         </div>
 
-        {/* Uptime — no uptime history exists on the Gateway type. */}
+        {/* Runtime age is the uptime value currently reported by the gateway API. */}
         <div className="min-w-0 justify-self-center">
           <span
             className={cn('text-[10.5px] [font-weight:650] tabular-nums', GW_EMPTY_TONE)}
-            title="Uptime history is not reported by the gateway API"
+            title={runtimeAgeLabel(gateway) ?? 'Runtime uptime is not reported by this server'}
           >
             <span className="sr-only">Uptime:</span>
-            {EM_DASH}
+            {runtimeAgeLabel(gateway)?.replace(' old', '') ?? EM_DASH}
           </span>
         </div>
         </div>
@@ -839,7 +842,13 @@ export function GatewayTable({
   }
   return (
     <>
-      <section aria-label="Server inventory" className="space-y-2 min-[1101px]:hidden">
+      <section
+        aria-label="Server inventory cards"
+        className={cn(
+          'space-y-2 min-[1101px]:hidden',
+          presentation === 'cards' && 'min-[1101px]:grid min-[1101px]:grid-cols-2 min-[1101px]:gap-3 min-[1101px]:space-y-0 min-[1450px]:grid-cols-3',
+        )}
+      >
         {sortedGateways.map((gateway) => {
           const supportsProbeControls = gateway.source !== 'in_process'
           const canRemoveGatewayRow = canRemoveGateway(gateway)
@@ -976,7 +985,7 @@ export function GatewayTable({
       <section
         aria-label="Server inventory"
         data-hovercard="1"
-        className={cn(GW_CARD, 'hidden min-[1101px]:block')}
+        className={cn(GW_CARD, 'hidden', presentation !== 'cards' && 'min-[1101px]:block')}
         style={GW_SCRIM_ALIASES}
       >
         <div
@@ -998,10 +1007,7 @@ export function GatewayTable({
               />
               <SortHeader label="Endpoint" sort="endpoint" />
               <SortHeader label="Exposed" sort="exposed" />
-              <StaticHeader
-                label="Uptime"
-                title="Uptime history is not reported by the gateway API"
-              />
+              <SortHeader label="Uptime" sort="uptime" />
             </div>
 
             {attentionCount > 0 && !attentionBannerDismissed ? (
@@ -1068,7 +1074,7 @@ export function GatewayTable({
                       className="h-px flex-1 bg-[color-mix(in_srgb,var(--aurora-border-default)_40%,var(--aurora-page-bg))]"
                     />
                   </button>
-                  {expanded ? group.rows.map((gateway) => renderDesktopRow(gateway)) : null}
+                  {expanded ? group.rows.map((gateway, index) => renderDesktopRow(gateway, index)) : null}
                 </Fragment>
               )
             })}

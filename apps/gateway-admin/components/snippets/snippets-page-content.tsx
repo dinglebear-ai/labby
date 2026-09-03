@@ -5,10 +5,14 @@ import { toast } from 'sonner'
 import {
   ArrowDown,
   ArrowUp,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
   FileCode2,
   FlaskConical,
   Loader2,
   Package,
+  Pencil,
   Plus,
   Play,
   RefreshCw,
@@ -16,6 +20,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
+  WandSparkles,
 } from 'lucide-react'
 import { ActionConfirmationDialog } from '@/components/action-confirmation-dialog'
 import { AppHeader } from '@/components/app-header'
@@ -237,8 +242,18 @@ export function SnippetsPageContent() {
   const [createName, setCreateName] = React.useState('')
   const [createDescription, setCreateDescription] = React.useState('')
   const [createBody, setCreateBody] = React.useState('async () => {\n  return { ok: true }\n}')
+  const [createStep, setCreateStep] = React.useState(0)
+  const [createIntent, setCreateIntent] = React.useState<'inspect' | 'transform' | 'fanout' | 'custom'>('inspect')
+  const [createTools, setCreateTools] = React.useState('')
+  const [createInputJson, setCreateInputJson] = React.useState('{}')
+  const [expertCreate, setExpertCreate] = React.useState(false)
   const [createError, setCreateError] = React.useState<string | null>(null)
   const [creating, setCreating] = React.useState(false)
+  const [editOpen, setEditOpen] = React.useState(false)
+  const [editDescription, setEditDescription] = React.useState('')
+  const [editBody, setEditBody] = React.useState('')
+  const [editError, setEditError] = React.useState<string | null>(null)
+  const [saving, setSaving] = React.useState(false)
   const [removeConfirmKey, setRemoveConfirmKey] = React.useState<string | null>(null)
   const [removing, setRemoving] = React.useState(false)
 
@@ -356,7 +371,73 @@ export function SnippetsPageContent() {
 
   const running = actionState.kind === 'loading' ? actionState.label : null
 
-  const createSnippet = async () => {
+  const resetCreate = () => {
+    setCreateStep(0)
+    setCreateIntent('inspect')
+    setCreateTools('')
+    setCreateInputJson('{}')
+    setExpertCreate(false)
+    setCreateName('')
+    setCreateDescription('')
+    setCreateBody('async () => {\n  return { ok: true }\n}')
+    setCreateError(null)
+  }
+
+  const applyBuilderDraft = () => {
+    const tools = createTools.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean)
+    let exampleInput: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(createInputJson) as unknown
+      if (!isObject(parsed) || Array.isArray(parsed)) throw new Error('Inputs must be a JSON object.')
+      exampleInput = parsed
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Inputs must be valid JSON.')
+      return
+    }
+    setCreateError(null)
+    const safeName = createName.trim() || 'my-workflow'
+    const description = createDescription.trim() || 'Reusable Labby workflow'
+    const calls = tools.map((tool, index) =>
+      `    callTool(${JSON.stringify(tool)}, input), // ${index + 1}. Verify this tool's input schema`,
+    )
+    const execution = calls.length === 0
+      ? '  const results = [{ ok: true, message: "Add a tool to run this against live data." }];'
+      : createIntent === 'fanout'
+        ? `  const results = await Promise.all([\n${calls.join('\n')}\n  ]);`
+        : `  const results = [];\n${tools.map((tool) => `  results.push(await callTool(${JSON.stringify(tool)}, input));`).join('\n')}`
+    const body = [
+      '---',
+      `name: ${safeName}`,
+      `description: ${description}`,
+      `tags: [builder, ${createIntent}]`,
+      ...(Object.keys(exampleInput).length ? [
+        'inputs:',
+        ...Object.entries(exampleInput).flatMap(([name, value]) => [
+          `  ${name}:`,
+          `    type: ${typeof value === 'boolean' ? 'boolean' : typeof value === 'number' ? (Number.isInteger(value) ? 'integer' : 'number') : typeof value === 'string' ? 'string' : 'json'}`,
+          `    default: ${JSON.stringify(value)}`,
+          '    required: false',
+        ]),
+      ] : []),
+      ...(tools.length ? ['tools:', ...tools.map((tool) => `  - ${tool}`)] : []),
+      '---',
+      '',
+      `# ${safeName}`,
+      '',
+      `${description}. Review each selected tool's schema before running.`,
+      '',
+      '```js',
+      'async (input = {}) => {',
+      execution,
+      `  return { snippet: ${JSON.stringify(safeName)}, input, results };`,
+      '}',
+      '```',
+    ].join('\n')
+    setCreateBody(body)
+    setCreateStep(2)
+  }
+
+  const createSnippet = async (runAfterSave = false) => {
     const name = createName.trim()
     if (!name) {
       setCreateError('Name is required.')
@@ -370,6 +451,8 @@ export function SnippetsPageContent() {
     setCreating(true)
     setCreateError(null)
     try {
+      const runParams = runAfterSave ? JSON.parse(createInputJson) as Record<string, unknown> : {}
+      await snippetsApi.validate(name, createBody)
       const created = await snippetsApi.create({
         name,
         body: createBody,
@@ -378,14 +461,56 @@ export function SnippetsPageContent() {
       await reload()
       setSelectedKey(snippetKey(created))
       setCreateOpen(false)
-      setCreateName('')
-      setCreateDescription('')
-      setCreateBody('async () => {\n  return { ok: true }\n}')
-      setActionState({ kind: 'success', label: 'Create', detail: `Created ${created.name}` })
+      resetCreate()
+      if (runAfterSave) {
+        await runAction('Execute', () => snippetsApi.exec(created.name, runParams))
+      } else {
+        setActionState({ kind: 'success', label: 'Create', detail: `Created ${created.name}` })
+      }
     } catch (err) {
       setCreateError(errorMessage(err))
     } finally {
       setCreating(false)
+    }
+  }
+
+  const openEditor = () => {
+    if (!selected || selected.source === 'builtin') return
+    if (!selectedDetailLoaded || !selectedDetail) {
+      setActionState({ kind: 'error', label: 'Edit', detail: 'Wait for the snippet source to finish loading.' })
+      return
+    }
+    setEditDescription(selectedDetail.description ?? '')
+    setEditBody(selectedDetail.body)
+    setEditError(null)
+    setEditOpen(true)
+  }
+
+  const saveSnippet = async () => {
+    if (!selected || selected.source === 'builtin') return
+    if (!editBody.trim()) {
+      setEditError('Snippet body is required.')
+      return
+    }
+
+    setSaving(true)
+    setEditError(null)
+    try {
+      await snippetsApi.validate(selected.name, editBody)
+      const updated = await snippetsApi.create({
+        name: selected.name,
+        body: editBody,
+        ...(editDescription.trim() ? { description: editDescription.trim() } : {}),
+        force: true,
+      })
+      await reload()
+      setSelectedKey(snippetKey(updated))
+      setEditOpen(false)
+      setActionState({ kind: 'success', label: 'Save', detail: `Saved ${updated.name}` })
+    } catch (err) {
+      setEditError(errorMessage(err))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -431,16 +556,20 @@ export function SnippetsPageContent() {
     }
   }
 
+  const copyRunCommand = async (snippet: SnippetInfo) => {
+    const command = `labby snippets exec ${snippet.name} --params '{}' --json`
+    try {
+      await navigator.clipboard.writeText(command)
+      toast.success('Run command copied')
+    } catch {
+      toast.error(`Copy failed. Run: ${command}`)
+    }
+  }
+
   return (
     <>
       <AppHeader
         breadcrumbs={[{ label: 'Depot' }, { label: 'Library' }, { label: 'Snippets' }]}
-        actions={
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="size-4" />
-            New snippet
-          </Button>
-        }
       />
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
         <div className={AURORA_PAGE_FRAME}>
@@ -814,14 +943,28 @@ export function SnippetsPageContent() {
                               )
                             }
                           />
+                          <DetailButton
+                            label="Copy run command"
+                            icon={<Copy size={11} />}
+                            disabled={running !== null}
+                            onClick={() => void copyRunCommand(snippet)}
+                          />
                           {snippet.source !== 'builtin' ? (
-                            <DetailButton
-                              label="Remove"
-                              icon={<Trash2 size={11} />}
-                              disabled={running !== null}
-                              danger
-                              onClick={() => setRemoveConfirmKey(snippetKey(snippet))}
-                            />
+                            <>
+                              <DetailButton
+                                label="Edit"
+                                icon={<Pencil size={11} />}
+                                disabled={running !== null || !selectedDetailLoaded}
+                                onClick={openEditor}
+                              />
+                              <DetailButton
+                                label="Remove"
+                                icon={<Trash2 size={11} />}
+                                disabled={running !== null}
+                                danger
+                                onClick={() => setRemoveConfirmKey(snippetKey(snippet))}
+                              />
+                            </>
                           ) : null}
                         </div>
 
@@ -1027,53 +1170,105 @@ export function SnippetsPageContent() {
           </section>
         </div>
       </div>
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <Dialog open={createOpen} onOpenChange={(open) => { setCreateOpen(open); if (!open) resetCreate() }}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><WandSparkles className="size-5 text-cyan-400" /> Build a snippet</DialogTitle>
+            <DialogDescription>
+              Turn an intent into a reusable workflow. You can inspect and edit every generated line before saving.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2" aria-label="Builder progress">
+            {['Choose a pattern', 'Name and tools', 'Review and run'].map((label, index) => (
+              <div key={label} className={`flex-1 rounded-aurora-1 border px-3 py-2 text-xs ${index === createStep ? 'border-aurora-accent-primary/60 bg-aurora-accent-primary/10 text-aurora-accent-primary' : index < createStep ? 'border-aurora-success/30 text-aurora-success' : 'border-aurora-border-subtle text-aurora-text-muted'}`}>
+                <span className="mr-2 font-mono">{index + 1}</span>{label}
+              </div>
+            ))}
+          </div>
+          <div className="grid min-h-[330px] gap-4 py-3">
+            {createStep === 0 ? (
+              <div className="grid grid-cols-2 gap-3">
+                {([
+                  ['inspect', 'Inspect one system', 'Run one tool and return a clear, reusable result.'],
+                  ['transform', 'Run a sequence', 'Call tools in order when each step contributes to the final result.'],
+                  ['fanout', 'Gather in parallel', 'Ask several independent tools at once and collect every result.'],
+                  ['custom', 'Start from code', 'Skip the guide and open the full expert editor.'],
+                ] as const).map(([id, title, copy]) => (
+                  <button key={id} type="button" aria-pressed={createIntent === id} onClick={() => { setCreateIntent(id); if (id === 'custom') setExpertCreate(true) }} className={`rounded-aurora-2 border p-4 text-left transition ${createIntent === id ? 'border-aurora-accent-primary/60 bg-aurora-accent-primary/10' : 'border-aurora-border-subtle bg-aurora-panel-low hover:border-aurora-accent-primary/30'}`}>
+                    <strong className="block text-sm text-aurora-text-primary">{title}</strong>
+                    <span className="mt-2 block text-xs leading-5 text-aurora-text-muted">{copy}</span>
+                  </button>
+                ))}
+              </div>
+            ) : createStep === 1 ? (
+              <div className="grid gap-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="grid gap-2"><Label htmlFor="snippet-name">Workflow name</Label><Input id="snippet-name" value={createName} onChange={(event) => setCreateName(event.target.value)} placeholder="daily-fleet-check" autoComplete="off" /></div>
+                  <div className="grid gap-2"><Label htmlFor="snippet-description">What should it accomplish?</Label><Input id="snippet-description" value={createDescription} onChange={(event) => setCreateDescription(event.target.value)} placeholder="Check the fleet and highlight anything unhealthy" /></div>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="snippet-tools">Selected tools</Label>
+                  <Textarea id="snippet-tools" value={createTools} onChange={(event) => setCreateTools(event.target.value)} placeholder={'One exact tool id per line, for example:\ntime::get_current_time\ngithub::search_issues'} className="min-h-28 font-mono text-xs" />
+                  <p className="text-xs text-aurora-text-muted">Use tool ids from the Tools catalog. The generated draft passes the snippet input object to each tool, so review its schema before running.</p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="snippet-inputs">Example inputs</Label>
+                  <Textarea id="snippet-inputs" value={createInputJson} onChange={(event) => setCreateInputJson(event.target.value)} placeholder={'{"query":"unhealthy services","limit":10}'} className="min-h-20 font-mono text-xs" />
+                  <p className="text-xs text-aurora-text-muted">These values become editable defaults and are used for the first run. Use an empty object when the selected tools need no parameters.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                <div className="flex items-center justify-between"><div><strong className="text-sm">Runnable draft</strong><p className="text-xs text-aurora-text-muted">Validation checks the real Labby snippet parser. Runtime errors remain visible after save.</p></div><Button type="button" size="sm" variant="outline" onClick={() => setExpertCreate((value) => !value)}>{expertCreate ? 'Guided view' : 'Edit code'}</Button></div>
+                {expertCreate ? <Textarea id="snippet-body" value={createBody} onChange={(event) => setCreateBody(event.target.value)} className="min-h-64 font-mono text-[12px] leading-5" spellCheck={false} /> : <pre className="max-h-64 overflow-auto rounded-aurora-2 border border-aurora-border-subtle bg-aurora-page-bg/60 p-4 font-mono text-xs leading-5 text-aurora-text-muted whitespace-pre-wrap">{createBody}</pre>}
+              </div>
+            )}
+            {createError ? <p className="text-sm text-aurora-error">{createError}</p> : null}
+          </div>
+          <DialogFooter>
+            {createStep > 0 ? <Button variant="outline" onClick={() => setCreateStep((step) => step - 1)} disabled={creating}><ChevronLeft className="size-4" /> Back</Button> : <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>}
+            <div className="flex-1" />
+            {createStep === 0 ? <Button onClick={() => setCreateStep(1)}>Use this pattern <ChevronRight className="size-4" /></Button> : createStep === 1 ? <Button onClick={applyBuilderDraft} disabled={!createName.trim()}>Build draft <ChevronRight className="size-4" /></Button> : <><Button variant="outline" onClick={() => void createSnippet(false)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />} Validate and save</Button><Button onClick={() => void createSnippet(true)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />} Save and run</Button></>}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Create snippet</DialogTitle>
+            <DialogTitle>Edit {selected?.name ?? 'snippet'}</DialogTitle>
             <DialogDescription>
-              Save an executable Code Mode snippet under your Labby home.
+              Validate and overwrite this user snippet in your Labby home.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="grid gap-2">
-              <Label htmlFor="snippet-name">Name</Label>
+              <Label htmlFor="snippet-edit-description">Description</Label>
               <Input
-                id="snippet-name"
-                value={createName}
-                onChange={(event) => setCreateName(event.target.value)}
-                placeholder="fleet-health"
-                autoComplete="off"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="snippet-description">Description</Label>
-              <Input
-                id="snippet-description"
-                value={createDescription}
-                onChange={(event) => setCreateDescription(event.target.value)}
+                id="snippet-edit-description"
+                value={editDescription}
+                onChange={(event) => setEditDescription(event.target.value)}
                 placeholder="What this workflow does"
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="snippet-body">Code</Label>
+              <Label htmlFor="snippet-edit-body">Snippet body</Label>
               <Textarea
-                id="snippet-body"
-                value={createBody}
-                onChange={(event) => setCreateBody(event.target.value)}
+                id="snippet-edit-body"
+                value={editBody}
+                onChange={(event) => setEditBody(event.target.value)}
                 className="min-h-64 font-mono text-[13px] leading-5"
                 spellCheck={false}
               />
             </div>
-            {createError ? <p className="text-sm text-destructive">{createError}</p> : null}
+            {editError ? <p className="text-sm text-destructive">{editError}</p> : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
+            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button onClick={() => void createSnippet()} disabled={creating}>
-              {creating ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
-              Create snippet
+            <Button onClick={() => void saveSnippet()} disabled={saving}>
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+              Validate and save
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -401,6 +401,10 @@ export function normalizeServerView(
   }
   const isLabService = view.source === 'in_process'
   const warnings = (view.warnings ?? []).map((warning) => {
+    if (warning.code === 'catalog_warming') {
+      return null
+    }
+
     if (isNonEssentialCapabilityError(warning.message)) {
       return null
     }

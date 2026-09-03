@@ -1,7 +1,10 @@
 import React from 'react'
+import { Clipboard, Rocket, Save } from 'lucide-react'
 
 import type { EditorDiagnostic, EditorLanguage } from '@/lib/editor/types'
+import { Button } from './button'
 import { TextSurfaceStatus } from './text-surface-status'
+import { Tooltip, TooltipContent, TooltipTrigger } from './tooltip'
 
 interface TextSurfaceToolbarProps {
   path: string
@@ -15,6 +18,12 @@ interface TextSurfaceToolbarProps {
 }
 
 export function TextSurfaceToolbar({ path, language, dirty = false, diagnostics = [], canEdit = false, onSave, onDeploy, onCopy }: TextSurfaceToolbarProps) {
+  const action = (label: string, icon: React.ReactNode, onClick: () => void, primary = false) => (
+    <Tooltip>
+      <TooltipTrigger asChild><Button type="button" size="icon-sm" variant={primary ? 'default' : 'ghost'} aria-label={label} onClick={onClick}>{icon}</Button></TooltipTrigger>
+      <TooltipContent sideOffset={7}>{label}</TooltipContent>
+    </Tooltip>
+  )
   return (
     <div className="flex items-center gap-3 border-b border-aurora-border-default bg-aurora-nav-bg px-4 py-3">
       <div className="min-w-0 flex-1">
@@ -23,9 +32,9 @@ export function TextSurfaceToolbar({ path, language, dirty = false, diagnostics 
       </div>
       <TextSurfaceStatus diagnostics={diagnostics} dirty={dirty} />
       {diagnostics[0] ? <span className="max-w-56 truncate text-xs text-aurora-text-muted">{diagnostics[0].message}</span> : null}
-      {onCopy ? <button type="button" onClick={onCopy} className="rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 py-1.5 text-xs font-semibold text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary">Copy</button> : null}
-      {canEdit && onSave ? <button type="button" onClick={onSave} className="rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 py-1.5 text-xs font-semibold text-aurora-text-primary hover:bg-aurora-hover-bg">Save</button> : null}
-      {canEdit && onDeploy ? <button type="button" onClick={onDeploy} className="rounded-aurora-1 bg-aurora-accent-primary px-3 py-1.5 text-xs font-semibold text-aurora-page-bg hover:bg-aurora-accent-strong">Deploy</button> : null}
+      {onCopy ? action('Copy source', <Clipboard />, onCopy) : null}
+      {canEdit && onSave ? action('Save', <Save />, onSave) : null}
+      {canEdit && onDeploy ? action('Deploy', <Rocket />, onDeploy, true) : null}
     </div>
   )
 }

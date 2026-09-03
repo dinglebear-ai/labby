@@ -42,7 +42,7 @@ import type {
   DiscoveredMcpServer,
   GatewayImportResult,
 } from '@/lib/types/gateway'
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { loadGatewayConfiguration, loadGatewayRuntime } from '@/lib/api/gateway-progressive'
 import { withRequestTiming } from '@/lib/api/request-timing'
 
@@ -390,14 +390,35 @@ export function useGatewaySnapshots(enabled = true) {
 
 export function useGateways(enabled = true) {
   const configured = useGatewaySnapshots(enabled)
+  const catalogWarm = useSWR(
+    enabled && !USE_MOCK_DATA ? '/gateway-catalog-warm' : null,
+    () => gatewayApi.refreshStatus(),
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  )
   const runtimeKey = !USE_MOCK_DATA
     ? gatewaysRuntimeRequestKey(enabled, true, configured.data)
     : null
+  const runtimeCacheId = runtimeKey?.[1]
   const runtime = useSWR<Gateway[]>(
     runtimeKey,
     () => hydrateGatewayRuntime(configured.data ?? []),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   )
+
+  useEffect(() => {
+    if (!enabled || catalogWarm.isLoading || catalogWarm.error) return
+    const refreshCatalogView = () => {
+      void mutate(GATEWAYS_KEY)
+      if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
+    }
+    refreshCatalogView()
+    const first = window.setTimeout(refreshCatalogView, 8_000)
+    const second = window.setTimeout(refreshCatalogView, 20_000)
+    return () => {
+      window.clearTimeout(first)
+      window.clearTimeout(second)
+    }
+  }, [catalogWarm.error, catalogWarm.isLoading, enabled, runtimeCacheId])
 
   return {
     ...configured,

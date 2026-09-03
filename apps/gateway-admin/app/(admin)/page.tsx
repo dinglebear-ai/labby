@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
-import { ArrowRight, Cable, Clock3 } from 'lucide-react'
+import { ArrowDown, ArrowRight, ArrowUp, Cable, Clock3, GripVertical } from 'lucide-react'
 import { AppHeader } from '@/components/app-header'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -67,6 +67,61 @@ function MetricsUnavailable({ message }: { message: string }) {
   )
 }
 
+const OVERVIEW_ORDER_KEY = 'labby:overview-card-order:v1'
+
+function ReorderableOverview({ cards }: { cards: Array<{ id: string; content: ReactNode; wide?: boolean }> }) {
+  const ids = cards.map((card) => card.id)
+  const [order, setOrder] = useState(ids)
+  const [dragging, setDragging] = useState<string | null>(null)
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(OVERVIEW_ORDER_KEY) ?? '[]') as string[]
+      if (saved.length) setOrder([...saved.filter((id) => ids.includes(id)), ...ids.filter((id) => !saved.includes(id))])
+    } catch { /* keep the default layout */ }
+  // The card identities are stable for the lifetime of this dashboard.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const commit = (next: string[]) => {
+    setOrder(next)
+    window.localStorage.setItem(OVERVIEW_ORDER_KEY, JSON.stringify(next))
+  }
+  const move = (id: string, delta: number) => {
+    const from = order.indexOf(id)
+    const to = Math.max(0, Math.min(order.length - 1, from + delta))
+    if (from === to) return
+    const next = [...order]
+    next.splice(to, 0, next.splice(from, 1)[0])
+    commit(next)
+  }
+  const dropOn = (id: string) => {
+    if (!dragging || dragging === id) return
+    const next = order.filter((item) => item !== dragging)
+    next.splice(next.indexOf(id), 0, dragging)
+    commit(next)
+    setDragging(null)
+  }
+
+  return <section aria-label="Customizable overview cards">
+    <p className="mb-2 flex items-center gap-1.5 text-[10px] text-aurora-text-muted"><GripVertical className="size-3"/>Drag cards to arrange your overview. The order is saved on this device.</p>
+    <div className="grid items-start gap-3 xl:grid-cols-2">
+      {order.map((id) => {
+        const card = cards.find((item) => item.id === id)
+        if (!card) return null
+        return <div key={id} draggable onDragStart={() => setDragging(id)} onDragEnd={() => setDragging(null)} onDragOver={(event) => event.preventDefault()} onDrop={() => dropOn(id)} className={cn('group relative cursor-grab rounded-aurora-2 outline-none active:cursor-grabbing', card.wide && 'xl:col-span-2', dragging === id && 'opacity-50')}>
+          <div className="absolute right-3 top-2 z-10 flex items-center gap-0.5 rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-strong/95 p-0.5 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            <GripVertical className="mx-1 size-3.5 text-aurora-text-muted" aria-hidden="true"/>
+            <button type="button" onClick={() => move(id, -1)} className="rounded p-1 text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary" aria-label={`Move ${id} earlier`}><ArrowUp className="size-3"/></button>
+            <button type="button" onClick={() => move(id, 1)} className="rounded p-1 text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary" aria-label={`Move ${id} later`}><ArrowDown className="size-3"/></button>
+          </div>
+          {card.content}
+        </div>
+      })}
+    </div>
+  </section>
+}
+
 export default function OverviewPage() {
   const router = useRouter()
   const { data: gateways, isLoading: gatewaysLoading } = useGateways()
@@ -125,32 +180,8 @@ export default function OverviewPage() {
         {/* Primary telemetry uses the full canvas. The three compact breakdowns
             form a rail below it instead of leaving an empty right-hand column
             whenever the charts and fan-out insights are taller. */}
-        <div
-          data-ovouter="1"
-          data-mobile-stack="1"
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr)',
-            gap: 12,
-            alignItems: 'start',
-          }}
-        >
-          <div
-            data-ovinner="1"
-            data-mobile-stack="1"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'minmax(0, 1fr)',
-              gap: 12,
-              minWidth: 0,
-              alignItems: 'start',
-            }}
-          >
-            <DashboardPanel
-              className="[grid-column:1/-1]"
-              title="Upstream call volume"
-              meta={WINDOW_LABELS[activeWindow]}
-            >
+        <ReorderableOverview cards={[
+          { id: 'Call volume', wide: true, content: <DashboardPanel title="Upstream call volume" meta={WINDOW_LABELS[activeWindow]}>
               {metrics ? (
                 <ToolVolumeChart
                   data={metrics.timeseries}
@@ -162,9 +193,8 @@ export default function OverviewPage() {
               ) : (
                 <MetricsUnavailable message="Upstream-call history is unavailable." />
               )}
-            </DashboardPanel>
-
-            <DashboardPanel className="[grid-column:1/-1]" title="Top targets">
+            </DashboardPanel> },
+          { id: 'Top targets', wide: true, content: <DashboardPanel title="Top targets">
               {metrics ? (
                 <TopToolsChart
                   tools={metrics.tools.top}
@@ -175,65 +205,23 @@ export default function OverviewPage() {
               ) : (
                 <MetricsUnavailable message="Target rankings are unavailable." />
               )}
-            </DashboardPanel>
-
-            {metrics ? (
-              <>
-                <FanOutPanel fanOut={metrics.fan_out} collected={metrics.collected.fan_out} />
-                <LeastUsedPanel
+            </DashboardPanel> },
+          ...(metrics ? [
+              { id: 'Code Mode fan-out', content: <FanOutPanel fanOut={metrics.fan_out} collected={metrics.collected.fan_out} /> },
+              { id: 'Least used', content: <LeastUsedPanel
                   tools={metrics.tools.least}
                   distinct={metrics.tools.distinct}
                   onSelect={(name) => setDrill({ type: 'tool', name })}
-                />
-              </>
-            ) : metricsLoading ? (
-              [1, 2].map((i) => (
-                <Skeleton key={i} className="h-[176px] w-full rounded-aurora-2" />
-              ))
+                /> },
+              { id: 'Most active', content: <MostActivePanel actors={metrics.actors} window={activeWindow} actorKindsCollected={metrics.collected.actor_kinds} onSelectActor={(entry) => setDrill({ type: 'agent', id: entry.id })}/> },
+              { id: 'Upstreams', content: <UpstreamsPanel upstreams={metrics.upstreams} onSelect={(name) => router.push(`/usage/?window=${activeWindow}&upstream=${encodeURIComponent(name)}`)}/> },
+              { id: 'Call outcomes', content: <CallOutcomesPanel toolCalls={metrics.tool_calls} errors={metrics.errors} window={activeWindow} onSelectOutcome={(outcome) => router.push(`/usage/?window=${activeWindow}&outcome=${outcome}`)} onSelectError={(kind) => router.push(`/usage/?window=${activeWindow}&outcome=failed&error=${encodeURIComponent(kind)}`)}/> },
+            ] : metricsLoading ? (
+              ['Code Mode fan-out','Least used','Most active','Upstreams','Call outcomes'].map((id) => ({ id, content: <Skeleton className="h-[176px] w-full rounded-aurora-2" /> }))
             ) : (
-              <MetricsUnavailable message="Usage insights are unavailable." />
-            )}
-          </div>
-
-          <div
-            data-mobile-stack="1"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-              gap: 12,
-              minWidth: 0,
-              alignItems: 'start',
-            }}
-          >
-            {metrics ? (
-              <>
-                <MostActivePanel
-                  actors={metrics.actors}
-                  window={activeWindow}
-                  actorKindsCollected={metrics.collected.actor_kinds}
-                  onSelectActor={(entry) => setDrill({ type: 'agent', id: entry.id })}
-                />
-                <UpstreamsPanel
-                  upstreams={metrics.upstreams}
-                  onSelect={(name) => router.push(`/usage/?window=${activeWindow}&upstream=${encodeURIComponent(name)}`)}
-                />
-                <CallOutcomesPanel
-                  toolCalls={metrics.tool_calls}
-                  errors={metrics.errors}
-                  window={activeWindow}
-                  onSelectOutcome={(outcome) => router.push(`/usage/?window=${activeWindow}&outcome=${outcome}`)}
-                  onSelectError={(kind) => router.push(`/usage/?window=${activeWindow}&outcome=failed&error=${encodeURIComponent(kind)}`)}
-                />
-              </>
-            ) : metricsLoading ? (
-              [1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-[176px] w-full rounded-aurora-2" />
-              ))
-            ) : (
-              <MetricsUnavailable message="Usage breakdowns are unavailable." />
-            )}
-          </div>
-        </div>
+              ['Code Mode fan-out','Least used','Most active','Upstreams','Call outcomes'].map((id) => ({ id, content: <MetricsUnavailable message="Usage insights are unavailable." /> }))
+            )),
+        ]} />
 
         {/* ── Performance, cost & rhythm ─────────────────────────────── */}
         {metrics ? (

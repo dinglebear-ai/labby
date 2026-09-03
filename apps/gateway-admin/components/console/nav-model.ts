@@ -1,16 +1,16 @@
 import {
-  Activity,
   Cable,
   CirclePlus,
   Clock3,
   Container,
   Bot,
+  Activity,
   Inbox,
   Logs,
   Warehouse,
-  GitBranch,
   LayoutDashboard,
   SearchCode,
+  GitBranch,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -18,7 +18,9 @@ import {
  * Unified Labby + Depot information architecture. Depot owns Discover,
  * Create, and Library; Loadouts and Snippets are Library tabs rather than
  * parallel sidebar products. Workspace collects the agent-facing execution
- * surfaces, while operational telemetry remains under Observe.
+ * surfaces. Logs and distributed request traces live in a dedicated
+ * Observability section so operational investigation is visually distinct
+ * from control-plane configuration.
  */
 
 export type ConsoleNavItem = {
@@ -57,7 +59,7 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
     id: 'Control Plane',
     label: 'Control Plane',
     items: [
-      { id: 'Overview', label: 'Overview', href: '/', icon: LayoutDashboard },
+      { id: 'Overview', label: 'Overview', href: '/', icon: LayoutDashboard, contextLine: '16 servers · 127 calls' },
       {
         id: 'Gateway',
         label: 'Gateway',
@@ -66,11 +68,38 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
         tooltipDetail: 'upstream MCP servers',
       },
       {
+        id: 'Labby',
+        label: 'Labby',
+        href: '/gateway/?id=labby',
+        icon: Cable,
+        tooltipDetail: 'Labby gateway server',
+      },
+      {
+        id: 'Activity',
+        label: 'Activity',
+        href: '/usage',
+        icon: Activity,
+        tooltipDetail: 'calls, latency, cost and throughput',
+      },
+    ],
+  },
+  {
+    id: 'Observability',
+    label: 'Observability',
+    items: [
+      {
         id: 'Logs',
         label: 'Logs',
         href: '/logs',
         icon: Logs,
         tooltipDetail: 'live control-plane and upstream events',
+      },
+      {
+        id: 'Traces',
+        label: 'Traces',
+        href: '/traces',
+        icon: GitBranch,
+        tooltipDetail: 'correlated request flows',
       },
     ],
   },
@@ -109,24 +138,6 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
       { id: 'Tasks', label: 'Tasks', href: '/tasks', icon: Clock3 },
       { id: 'Stash', label: 'Stash', href: '/stash', icon: Inbox },
       { id: 'Dev Containers', label: 'Dev Containers', href: '/dev-containers', icon: Container },
-    ],
-  },
-  {
-    id: 'Observe', label: 'Observe', items: [
-      {
-        id: 'Usage',
-        label: 'Usage',
-        href: '/usage',
-        icon: Activity,
-        tooltipDetail: 'tool call volume and latency',
-      },
-      {
-        id: 'Traces',
-        label: 'Traces',
-        href: '/traces',
-        icon: GitBranch,
-        tooltipDetail: 'correlated request flows',
-      },
     ],
   },
 ]

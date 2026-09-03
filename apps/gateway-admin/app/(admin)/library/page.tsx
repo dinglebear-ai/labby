@@ -1,2 +1,2 @@
-import { LibraryPage } from '@/components/depot/depot-workspace-pages'
-export default function Page() { return <LibraryPage /> }
+import { LibraryPageContent } from '@/components/depot/library-page-content'
+export default function Page() { return <LibraryPageContent /> }

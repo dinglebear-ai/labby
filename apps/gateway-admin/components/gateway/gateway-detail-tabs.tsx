@@ -3,8 +3,6 @@
 import * as React from 'react'
 import * as TabsPrimitive from '@radix-ui/react-tabs'
 
-import { DETAIL_NO_DATA } from './gateway-detail-chrome'
-
 /**
  * Header-card chrome for the Gateway detail *page* — tab bar, attached stat
  * strip, and the overview key/value card.
@@ -507,32 +505,20 @@ export function DetailCapabilityCluster({
         display: 'flex',
         alignItems: 'center',
         gap: 3,
-        paddingBottom: 6,
+        paddingBottom: 4,
         ...style,
       }}
       {...rest}
     >
-      {allUnknown ? (
-        <span
-          style={{
-            flexShrink: 0,
-            paddingRight: 3,
-            fontSize: 12,
-            fontWeight: 700,
-            lineHeight: 1,
-            color: 'color-mix(in srgb, var(--aurora-text-muted) 70%, transparent)',
-          }}
-        >
-          {DETAIL_NO_DATA}
-        </span>
-      ) : null}
       {resolved.map((capability) => (
         <span
           key={capability.key}
           title={capabilityTitle(capability.label, capability.state)}
           style={{
             ...CAPABILITY_BOX_STYLE,
-            ...CAPABILITY_TONE_STYLE[capability.state],
+            ...(capability.state === 'unknown'
+              ? CAPABILITY_TONE_STYLE.not_advertised
+              : CAPABILITY_TONE_STYLE[capability.state]),
             flexShrink: 0,
           }}
         >
