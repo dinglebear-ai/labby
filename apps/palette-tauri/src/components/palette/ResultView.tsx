@@ -1,10 +1,11 @@
-import { Check, Copy, RotateCw, X } from "lucide-react";
+import { Check, Copy, LayoutDashboard, RotateCw, X } from "lucide-react";
 
 import { ErrorResultView } from "@/components/palette/ErrorResultView";
 import { Button } from "@/components/ui/aurora/button";
 import { Spinner } from "@/components/ui/aurora/spinner";
 import type { PaletteResult } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
+import { controlPlanePath, openControlPlane } from "@/lib/controlPlane";
 
 interface ResultViewProps {
   action: LauncherEntry | undefined;
@@ -50,6 +51,16 @@ export function ResultView({
           <span className="output-tools">
             {!running && result ? (
               <>
+                <Button
+                  variant="plain"
+                  size="unstyled"
+                  type="button"
+                  onClick={() => void openControlPlane(controlPlanePath(action))}
+                  title="Open in Control Plane"
+                  aria-label="Open result in Control Plane"
+                >
+                  <LayoutDashboard size={13} />
+                </Button>
                 <Button
                   variant="plain"
                   size="unstyled"

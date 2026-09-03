@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, Size,
+    AppHandle, Emitter, LogicalSize, Manager, Size, WebviewUrl, WebviewWindowBuilder,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -124,6 +124,65 @@ fn hide_palette(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn show_palette(app: AppHandle) -> Result<(), String> {
     show_main_window(&app)
+}
+
+const CONTROL_PLANE_WINDOW: &str = "control-plane";
+
+fn control_plane_url(
+    server_url: &str,
+    requested_path: Option<&str>,
+) -> Result<reqwest::Url, String> {
+    let origin = validate_saved_server_url(server_url)?;
+    let mut url = reqwest::Url::parse(&origin)
+        .map_err(|err| format!("saved Labby server URL is invalid: {err}"))?;
+    let requested = requested_path.unwrap_or("/").trim();
+    if requested.contains(['\\', '\0', '\r', '\n']) || requested.contains("..") {
+        return Err("control plane path is invalid".to_string());
+    }
+    let requested = if requested.is_empty() { "/" } else { requested };
+    if !requested.starts_with('/') || requested.starts_with("//") {
+        return Err("control plane path must be an absolute application path".to_string());
+    }
+    let (path, query) = requested
+        .split_once('?')
+        .map_or((requested, None), |(path, query)| (path, Some(query)));
+    url.set_path(path);
+    url.set_query(query.filter(|query| !query.is_empty()));
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn show_control_plane_window(app: &AppHandle, path: Option<&str>) -> Result<(), String> {
+    let settings = merged_settings_or_default(app);
+    #[cfg(debug_assertions)]
+    let server_url = std::env::var("LABBY_CONTROL_PLANE_DEV_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| settings.server_url.clone());
+    #[cfg(not(debug_assertions))]
+    let server_url = settings.server_url;
+    let url = control_plane_url(&server_url, path)?;
+    if let Some(window) = app.get_webview_window(CONTROL_PLANE_WINDOW) {
+        window.navigate(url).map_err(|err| err.to_string())?;
+        window.show().map_err(|err| err.to_string())?;
+        window.set_focus().map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(app, CONTROL_PLANE_WINDOW, WebviewUrl::External(url))
+        .title("Labby Control Plane")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(900.0, 620.0)
+        .resizable(true)
+        .center()
+        .build()
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_control_plane(app: AppHandle, path: Option<String>) -> Result<(), String> {
+    show_control_plane_window(&app, path.as_deref())
 }
 
 #[tauri::command]
@@ -401,19 +460,31 @@ fn toggle_main_window(app: &AppHandle) {
 
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Palette", true, None::<&str>)?;
+    let control_plane = MenuItem::with_id(
+        app,
+        "control-plane",
+        "Open Control Plane",
+        true,
+        None::<&str>,
+    )?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Labby Palette", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &control_plane, &settings, &quit])?;
 
     let icon = app.default_window_icon().cloned();
     let mut tray = TrayIconBuilder::new()
-        .tooltip("Labby Palette")
+        .tooltip("Labby")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {
                 if let Err(err) = show_main_window(app) {
                     log_palette_warning("failed to show main window from tray", err);
+                }
+            }
+            "control-plane" => {
+                if let Err(err) = show_control_plane_window(app, None) {
+                    log_palette_warning("failed to show control plane from tray", err);
                 }
             }
             "settings" => {
@@ -476,6 +547,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             save_palette_settings,
             hide_palette,
             show_palette,
+            open_control_plane,
             resize_palette,
             toggle_maximize,
             set_blur_dismiss,
@@ -507,8 +579,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let window_handle = handle.clone();
                 if let Err(err) = handle.run_on_main_thread(move || {
-                    if let Err(err) = show_main_window(&window_handle) {
-                        log_palette_warning("failed to show main window on launch", err);
+                    if let Err(err) = show_control_plane_window(&window_handle, None) {
+                        log_palette_warning("failed to show control plane on launch", err);
                     }
                 }) {
                     log_palette_warning("failed to schedule launch window show", err);
@@ -523,7 +595,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::default_server_url;
+    use super::{control_plane_url, default_server_url};
 
     #[test]
     fn default_server_url_prefers_dedicated_api_url() {
@@ -536,5 +608,30 @@ mod tests {
     #[test]
     fn default_server_url_does_not_use_oauth_public_url() {
         assert_eq!(default_server_url(None), "http://localhost:8765");
+    }
+
+    #[test]
+    fn control_plane_url_preserves_only_internal_path_and_query() {
+        assert_eq!(
+            control_plane_url(
+                "https://labby.example.com/mcp",
+                Some("/skills/?tab=library"),
+            )
+            .unwrap()
+            .as_str(),
+            "https://labby.example.com/skills/?tab=library"
+        );
+    }
+
+    #[test]
+    fn control_plane_url_rejects_cross_origin_and_traversal_paths() {
+        for path in [
+            "https://attacker.invalid/",
+            "//attacker.invalid/",
+            "/../authorize",
+            "/skills\\evil",
+        ] {
+            assert!(control_plane_url("https://labby.example.com", Some(path)).is_err());
+        }
     }
 }

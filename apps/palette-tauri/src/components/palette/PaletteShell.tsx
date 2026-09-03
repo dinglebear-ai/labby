@@ -9,6 +9,7 @@ import { SchemaForm } from "@/components/palette/SchemaForm";
 import { SettingsPanel } from "@/components/palette/SettingsPanel";
 import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
+import { openControlPlane } from "@/lib/controlPlane";
 import { invoke } from "@/lib/invoke";
 import type { RunState } from "@/lib/runState";
 
@@ -142,6 +143,7 @@ export function PaletteShell(props: PaletteShellProps) {
         <PaletteFooter
           config={props.config}
           configError={props.configError}
+          onControlPlane={() => void openControlPlane()}
           onSettings={props.onToggleSettings}
           onHide={() => void invoke("hide_palette")}
         />

@@ -1,13 +1,31 @@
-# Labby Palette Tauri
+# Labby Desktop
 
-Tauri v2 desktop command palette for a `labby serve` instance. The renderer is
-React with Aurora registry components; the Rust shell owns server URL
-resolution, OAuth/static bearer auth, and all HTTP traffic.
+Tauri v2 desktop control plane and command palette for a `labby serve`
+instance. The full-size Control Plane window loads the canonical Gateway Admin
+UI from the configured Labby origin, so every page uses the same project-bound
+session, CSRF protection, routes, and static assets as the browser product. The
+separate palette renderer is React with Aurora registry components; its Rust
+bridge owns server URL resolution, OAuth/static bearer auth, and palette HTTP
+traffic.
 
-The palette launches hidden, registers a global shortcut, and exposes a tray
-menu for showing the palette, opening settings, and quitting. The main window is
-an undecorated transient palette that hides on Escape, close, and blur by
-default.
+The Control Plane opens on app launch. The palette remains hidden until its
+global shortcut or tray command is used. The tray can open either surface,
+open palette settings, or quit. Closing either window hides it; only the
+transient palette hides on blur.
+
+## Control Plane Model
+
+The `control-plane` webview navigates only to an absolute application path on
+the saved Labby HTTP(S) origin. Cross-origin, scheme-relative, traversal, and
+backslash paths are rejected before navigation. Because Gateway Admin is served
+by `labby serve`, the desktop app automatically exposes its complete route set,
+including Gateways, Artifact Library, upstreams, access administration,
+surfaces, logs, doctor, setup, and settings without maintaining a forked copy
+of those pages in the palette bundle.
+
+Use **Open Control Plane** in the palette footer or tray. The Tauri command also
+accepts a validated internal path for future deep links, for example
+`/skills/` or `/settings/surfaces/`.
 
 ## Launcher Model
 
