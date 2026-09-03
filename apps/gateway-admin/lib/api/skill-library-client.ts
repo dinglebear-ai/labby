@@ -62,8 +62,7 @@ export interface SkillMutationReceipt {
 }
 
 export type SkillImportSource =
-  | { kind: 'depot'; connection_id: string; artifact_id: string; revision_id: string }
-  | { kind: 'repository'; connection_id: string; artifact_id: string; revision_id: string }
+  { kind: 'depot' | 'repository'; connection_id: string; artifact_id: string; revision_id: string }
 
 export interface SkillRevisionContents {
   library_version: number
@@ -100,10 +99,11 @@ function skillsAction<T>(action: string, params: object, signal?: AbortSignal) {
 }
 
 export const skillLibrary = {
-  list(query = '', signal?: AbortSignal) {
+  list(query = '', signal?: AbortSignal, cursor?: string) {
     const normalized = query.trim()
     return skillsAction<SkillLibraryPage>(normalized ? 'artifacts.search' : 'artifacts.list', {
       ...(normalized ? { query: normalized } : {}),
+      ...(cursor ? { cursor } : {}),
       limit: 100,
     }, signal)
   },

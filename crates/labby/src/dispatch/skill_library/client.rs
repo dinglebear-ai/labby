@@ -2,7 +2,7 @@
 
 #![allow(
     dead_code,
-    reason = "surface adapters consume this Wave 3 contract incrementally"
+    reason = "kept as a compile-time assertion of the cross-surface service contract"
 )]
 
 pub(crate) const SERVICE_NAME: &str = "artifacts";

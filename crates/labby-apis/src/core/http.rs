@@ -836,7 +836,11 @@ impl HttpClient {
         let mut stream = resp.bytes_stream();
         let mut body = Vec::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| ApiError::Decode(error.to_string()))?;
+            let chunk = chunk.map_err(|error| {
+                let error = ApiError::Decode(error.to_string());
+                Self::log_error(ctx, &error);
+                error
+            })?;
             if body.len().saturating_add(chunk.len()) > max_bytes {
                 let error =
                     ApiError::Decode(format!("response body exceeds the {max_bytes} byte limit"));
@@ -933,7 +937,6 @@ impl HttpClient {
                 elapsed_ms = ctx.elapsed_ms(),
                 status,
                 kind = err.kind(),
-                message = %err,
                 "request.error"
             ),
             ApiError::Auth
@@ -950,7 +953,6 @@ impl HttpClient {
                 elapsed_ms = ctx.elapsed_ms(),
                 status,
                 kind = err.kind(),
-                message = %err,
                 "request.error"
             ),
         }
@@ -959,11 +961,67 @@ impl HttpClient {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io,
+        sync::{Arc, Mutex},
+    };
+
     use super::*;
     use crate::core::auth::Auth;
+    use tracing_subscriber::fmt::MakeWriter;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> MakeWriter<'a> for Capture {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CaptureWriter(Arc::clone(&self.0))
+        }
+    }
+
+    impl io::Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn make_client(base_url: &str) -> HttpClient {
         HttpClient::new(base_url, Auth::None).expect("client construction should succeed")
+    }
+
+    #[tokio::test]
+    async fn provider_error_body_is_not_written_to_request_logs() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("canary-provider-secret"))
+            .mount(&server)
+            .await;
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .without_time()
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let client = make_client(&server.uri());
+
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+        let result = client.get_json::<serde_json::Value>("/failure").await;
+
+        assert!(result.is_err());
+        let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("request.error"));
+        assert!(logs.contains("kind="));
+        assert!(!logs.contains("canary-provider-secret"));
     }
 
     #[test]

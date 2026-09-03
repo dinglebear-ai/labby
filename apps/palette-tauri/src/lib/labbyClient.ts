@@ -7,6 +7,7 @@ import { invoke } from "./invoke";
 
 export interface PaletteConfig {
   serverUrl: string;
+  controlPlaneUrl: string;
   staticToken?: string | null;
   shortcut: string;
   theme: "system" | "dark" | "light";

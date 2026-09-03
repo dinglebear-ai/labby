@@ -96,6 +96,20 @@ export function SkillLibraryPageContent() {
     }
   }, [])
 
+  const loadMore = useCallback(async () => {
+    if (!page?.next_cursor) return
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await skillLibrary.list(appliedQuery, undefined, page.next_cursor)
+      setPage(current => current ? { ...next, items: [...current.items, ...next.items] } : next)
+    } catch (cause) {
+      setError(getErrorMessage(cause, 'Unable to load more Artifacts.'))
+    } finally {
+      setLoading(false)
+    }
+  }, [appliedQuery, page?.next_cursor])
+
   useEffect(() => {
     const controller = new AbortController()
     void load(controller.signal)
@@ -224,9 +238,7 @@ export function SkillLibraryPageContent() {
     if (!page) return
     setBusy('import')
     try {
-      const source = importKind === 'repository'
-        ? { kind: 'repository' as const, connection_id: importConnection.trim(), artifact_id: importArtifactId.trim(), revision_id: importRevisionId.trim() }
-        : { kind: 'depot' as const, connection_id: importConnection.trim(), artifact_id: importArtifactId.trim(), revision_id: importRevisionId.trim() }
+      const source = { kind: importKind, connection_id: importConnection.trim(), artifact_id: importArtifactId.trim(), revision_id: importRevisionId.trim() }
       const receipt = await skillLibrary.import({
         source,
         expectedLibraryVersion: page.library_version,
@@ -263,6 +275,7 @@ export function SkillLibraryPageContent() {
           <div className="grid gap-1">
             {page.items.length === 0 ? <div className="py-10 text-center"><BookOpen className="mx-auto mb-3 size-6 text-aurora-text-muted" /><p className="text-sm">No managed Skills yet.</p><Button className="mt-4" size="sm" onClick={newSkill}>Create the first Skill</Button></div> : page.items.map(item => <button key={item.artifact_id} onClick={() => { setSelectedId(item.artifact_id); setEditing(false); setValidation(null) }} className={cn('rounded-lg border px-3 py-2.5 text-left transition-colors', selectedId === item.artifact_id ? 'border-aurora-accent-primary bg-aurora-accent-primary/10' : 'border-transparent hover:border-aurora-border-subtle hover:bg-aurora-surface-muted/40')}><span className="block truncate text-sm font-medium">{item.name}</span><span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{lifecycle(item, page.library_version === page.published_library_version)} · {item.visibility === 'shared' ? 'Shared' : 'Personal'}</span></button>)}
           </div>
+          {page.next_cursor ? <Button className="mt-3 w-full" variant="outline" size="sm" onClick={() => void loadMore()} disabled={loading}>{loading ? <Loader2 className="size-4 animate-spin" /> : null}Load more</Button> : null}
         </DashboardPanel>
 
         <DashboardPanel title={importing ? 'Import exact Artifact' : editing ? selected ? `Revise ${selected.name}` : 'Create a Skill' : selected?.name ?? 'Select a Skill'}>

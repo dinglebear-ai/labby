@@ -696,9 +696,7 @@ pub(crate) async fn dispatch(
             message: "Control-plane parameters must be an object".to_owned(),
             param: "params".to_owned(),
         })?;
-    let connection_id = object
-        .remove("connection_id")
-        .and_then(|value| value.as_str().map(str::to_owned));
+    let connection_id = take_connection_id(&mut object)?;
     reject_secret_values(&object)?;
     normalize_provider_params(service, action, &mut object)?;
     let operation = operation(service, action).ok_or_else(|| ToolError::UnknownAction {
@@ -717,6 +715,19 @@ pub(crate) async fn dispatch(
     controls
         .execute(connection_id.as_deref(), operation, &Value::Object(object))
         .await
+}
+
+fn take_connection_id(
+    object: &mut serde_json::Map<String, Value>,
+) -> Result<Option<String>, ToolError> {
+    match object.remove("connection_id") {
+        None => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value)),
+        Some(_) => Err(ToolError::InvalidParam {
+            message: "connection_id must be a non-empty string".to_owned(),
+            param: "connection_id".to_owned(),
+        }),
+    }
 }
 
 fn normalize_provider_params(
@@ -809,16 +820,16 @@ fn reject_secret_values(object: &serde_json::Map<String, Value>) -> Result<(), T
         match value {
             Value::Object(map) => map.iter().any(|(key, value)| {
                 let key = key.to_ascii_lowercase();
-                [
-                    "authorization",
-                    "password",
-                    "secret",
-                    "token",
-                    "credential_value",
-                ]
-                .iter()
-                .any(|needle| key.contains(needle))
-                    || contains(value)
+                matches!(
+                    key.as_str(),
+                    "authorization"
+                        | "password"
+                        | "secret"
+                        | "token"
+                        | "access_token"
+                        | "refresh_token"
+                        | "credential_value"
+                ) || contains(value)
             }),
             Value::Array(values) => values.iter().any(contains),
             _ => false,
@@ -934,6 +945,28 @@ mod tests {
     fn rejects_renderer_supplied_secrets_recursively() {
         let params = json!({"arguments":{"authorization":"Bearer nope"}});
         assert!(reject_secret_values(params.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn accepts_opaque_pagination_tokens_but_not_credentials() {
+        let mut params = json!({"page_token":"opaque-next-page"})
+            .as_object()
+            .unwrap()
+            .clone();
+        reject_secret_values(&params).unwrap();
+        normalize_provider_params("artifacts", "artifacts.search_ard", &mut params).unwrap();
+        assert_eq!(params["pageToken"], "opaque-next-page");
+    }
+
+    #[test]
+    fn connection_id_must_be_a_non_empty_string() {
+        for value in [json!(42), json!("   ")] {
+            let mut params = json!({"connection_id": value}).as_object().unwrap().clone();
+            assert!(matches!(
+                take_connection_id(&mut params),
+                Err(ToolError::InvalidParam { ref param, .. }) if param == "connection_id"
+            ));
+        }
     }
 
     #[test]

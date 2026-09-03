@@ -80,6 +80,28 @@ test('artifact library search uses the artifact search contract', async () => {
   })
 })
 
+test('artifact library pagination forwards the opaque cursor', async () => {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated', user: { sub: 'browser-user' }, expiresAt: 42,
+    csrfToken: 'csrf-123', projectId: 'project-42',
+  })
+  let requestBody: unknown
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return new Response(JSON.stringify({
+      library_version: 1, published_library_version: 1, can_create: true,
+      create_visibilities: ['private'], allowed_actions: [], items: [],
+    }), { status: 200 })
+  }) as typeof fetch
+
+  await skillLibrary.list('', undefined, 'next-100')
+
+  assert.deepEqual(requestBody, {
+    action: 'artifacts.list',
+    params: { cursor: 'next-100', limit: 100 },
+  })
+})
+
 test('artifact revision and archive methods retain exact concurrency guards', async () => {
   __setBrowserSessionStateForTests({
     status: 'authenticated',

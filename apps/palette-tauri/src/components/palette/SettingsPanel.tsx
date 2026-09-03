@@ -101,6 +101,17 @@ export function SettingsPanel({
                 placeholder="http://localhost:8765"
               />
             </Field>
+            <Field
+              label="Control plane"
+              hint="Origin that serves the Labby WebUI; it may differ from the API origin"
+            >
+              <TextInput
+                value={draftConfig.controlPlaneUrl}
+                onChange={(value) => updateConfig("controlPlaneUrl", value)}
+                mono
+                placeholder="https://labby.example.com"
+              />
+            </Field>
             <div className="settings-toggle-row">
               <span>
                 <span>Test connection</span>

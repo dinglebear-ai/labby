@@ -14,12 +14,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { controlPlaneAction, uploadArtifactBytes } from '@/lib/api/artifact-control-client'
+import { ArtifactUploadWorkflowError, runArtifactUpload } from '@/lib/api/artifact-upload-workflow'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 type JsonObject = Record<string, unknown>
 type Source = JsonObject & { enabled?: boolean; intervalSeconds?: number }
 type UploadRecord = JsonObject & { filename?: string }
 type DeleteTarget = { kind: 'source' | 'upload' | 'bundle'; id: string } | null
+
+function deleteRequest(target: NonNullable<DeleteTarget>) {
+  switch (target.kind) {
+    case 'source': return { service: 'sources' as const, params: { id: target.id } }
+    case 'upload': return { service: 'uploads' as const, params: { id: target.id } }
+    case 'bundle': return { service: 'bundles' as const, params: { slug: target.id } }
+  }
+}
 
 function rows(value: unknown, key: string): JsonObject[] {
   if (!value || typeof value !== 'object') return []
@@ -83,12 +92,16 @@ export function ArtifactControlPlane() {
       controlPlaneAction<JsonObject>('artifacts', 'artifacts.authority_status', {}, signal),
     ])
     if (signal?.aborted) return
-    if (settled[0].status === 'fulfilled') setSources(rows(settled[0].value, 'sources'))
-    if (settled[1].status === 'fulfilled') setJobs(rows(settled[1].value, 'jobs'))
-    if (settled[2].status === 'fulfilled') setBundles(rows(settled[2].value, 'bundles'))
-    if (settled[3].status === 'fulfilled') setAuthorityStatus(settled[3].value)
-    const failure = settled.find((item): item is PromiseRejectedResult => item.status === 'rejected')
-    if (failure) setError(getErrorMessage(failure.reason, 'Remote Artifact authority is unavailable.'))
+    if (settled[0].status === 'fulfilled') setSources(rows(settled[0].value, 'sources')); else setSources([])
+    if (settled[1].status === 'fulfilled') setJobs(rows(settled[1].value, 'jobs')); else setJobs([])
+    if (settled[2].status === 'fulfilled') setBundles(rows(settled[2].value, 'bundles')); else setBundles([])
+    if (settled[3].status === 'fulfilled') setAuthorityStatus(settled[3].value); else setAuthorityStatus(null)
+    const failures = settled
+      .map((item, index) => item.status === 'rejected' ? { name: ['sources', 'jobs', 'bundles', 'authority status'][index], reason: item.reason } : null)
+      .filter((item): item is { name: string; reason: unknown } => item !== null)
+    if (failures.length) {
+      setError(`${failures.map(item => item.name).join(', ')} unavailable: ${getErrorMessage(failures[0].reason, 'Remote Artifact authority is unavailable.')}`)
+    }
   }, [])
 
   useEffect(() => {
@@ -151,20 +164,35 @@ export function ArtifactControlPlane() {
 
   async function upload(file?: File) {
     if (!file) return
-    await run('upload Artifact', async () => {
-      const created = await controlPlaneAction<JsonObject>('uploads', 'uploads.create', { filename: file.name })
-      const uploadRecord = objectAt(created, 'upload')
-      const uploadId = uploadRecord ? itemId(uploadRecord, 'id', 'uploadId') : ''
-      if (!uploadId || uploadId === 'unknown') throw new Error('Authority did not return an upload id')
-      setUploads(current => [{ ...uploadRecord, id: uploadId, filename: file.name }, ...current])
-      await uploadArtifactBytes(uploadId, file)
-      const job = await controlPlaneAction<JsonObject>('jobs', 'jobs.start', {
-        kind: file.name.endsWith('.json') ? 'marketplace' : 'archive',
-        arguments: file.name.endsWith('.json') ? { uploadId, baseSource: file.name } : { uploadId, namespace },
-        idempotency_key: `gateway-admin-upload-${crypto.randomUUID()}`,
+    setBusy('upload Artifact')
+    try {
+      const job = await runArtifactUpload({
+        file,
+        namespace,
+        create: (filename) => controlPlaneAction<JsonObject>('uploads', 'uploads.create', { filename }),
+        uploadId: (created) => {
+          const upload = objectAt(created, 'upload')
+          return upload ? itemId(upload, 'id', 'uploadId') : ''
+        },
+        putBytes: uploadArtifactBytes,
+        startJob: (params) => controlPlaneAction<JsonObject>('jobs', 'jobs.start', params),
+        onCreated: (created, uploadId) => {
+          const upload = objectAt(created, 'upload') ?? {}
+          setUploads(current => [{ ...upload, id: uploadId, filename: file.name }, ...current])
+        },
       })
       setSelectedDetail(job)
-    }, 'Upload stored and ingestion queued')
+      toast.success('Upload stored and ingestion queued')
+      await refresh()
+    } catch (cause) {
+      const stage = cause instanceof ArtifactUploadWorkflowError ? cause.stage : 'uploading the Artifact'
+      const uploadId = cause instanceof ArtifactUploadWorkflowError ? cause.uploadId : ''
+      const recovery = uploadId ? ` Upload ${uploadId} remains available to inspect or delete before retrying.` : ''
+      toast.error(`${getErrorMessage(cause, `Failed while ${stage}.`)}${recovery}`)
+      await refresh()
+    } finally {
+      setBusy(null)
+    }
   }
 
   async function configureSource(id: string, enabled: boolean, intervalSeconds?: number) {
@@ -183,8 +211,7 @@ export function ArtifactControlPlane() {
   async function confirmDelete() {
     const target = deleteTarget
     if (!target) return
-    const service = target.kind === 'source' ? 'sources' : target.kind === 'upload' ? 'uploads' : 'bundles'
-    const params = target.kind === 'bundle' ? { slug: target.id } : { id: target.id }
+    const { service, params } = deleteRequest(target)
     const response = await run(`delete ${target.kind}`, () => controlPlaneAction(service, `${service}.delete`, params), `${target.kind} deleted`)
     if (response && target.kind === 'upload') setUploads(current => current.filter(item => itemId(item, 'id', 'uploadId') !== target.id))
     if (response) setDeleteTarget(null)

@@ -16,6 +16,14 @@ pub(crate) struct ArtifactControlPlane {
 
 impl ArtifactControlPlane {
     pub(crate) fn from_config(config: &ArtifactPreferences) -> Result<Self, ToolError> {
+        if config.sources.iter().any(|source| {
+            source.kind == ArtifactSourceKind::Repository && source.control_plane_url.is_some()
+        }) {
+            return Err(ToolError::InvalidParam {
+                message: "control_plane_url is supported only for Depot sources".to_owned(),
+                param: "control_plane_url".to_owned(),
+            });
+        }
         let mut clients = BTreeMap::new();
         for source in config.sources.iter().filter(|source| {
             source.kind == ArtifactSourceKind::Depot && source.control_plane_url.is_some()
@@ -245,5 +253,15 @@ mod tests {
             )))
             .is_ok()
         );
+
+        let repository = ArtifactSourceConfig {
+            id: "repo".to_owned(),
+            kind: ArtifactSourceKind::Repository,
+            endpoint: "https://repository.example/v1/exact".to_owned(),
+            control_plane_url: Some("https://depot.example".to_owned()),
+            pinned_addresses: Vec::new(),
+            bearer_token_env: None,
+        };
+        assert!(ArtifactControlPlane::from_config(&with(repository)).is_err());
     }
 }

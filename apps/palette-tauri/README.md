@@ -2,7 +2,7 @@
 
 Tauri v2 desktop control plane and command palette for a `labby serve`
 instance. The full-size Control Plane window loads the canonical Gateway Admin
-UI from the configured Labby origin, so every page uses the same project-bound
+UI from the configured Control Plane origin, so every page uses the same project-bound
 session, CSRF protection, routes, and static assets as the browser product. The
 separate palette renderer is React with Aurora registry components; its Rust
 bridge owns server URL resolution, OAuth/static bearer auth, and palette HTTP
@@ -15,9 +15,10 @@ transient palette hides on blur.
 
 ## Control Plane Model
 
-The `control-plane` webview navigates only to an absolute application path on
-the saved Labby HTTP(S) origin. Cross-origin, scheme-relative, traversal, and
-backslash paths are rejected before navigation. Because Gateway Admin is served
+Tauri-command and deep-link inputs for the `control-plane` webview are limited
+to absolute application paths on the saved Control Plane HTTP(S) origin.
+Scheme-relative, traversal, and backslash inputs are rejected before the initial
+navigation. Because Gateway Admin is served
 by `labby serve`, the desktop app automatically exposes its complete route set,
 including Gateways, Artifact Library, upstreams, access administration,
 surfaces, logs, doctor, setup, and settings without maintaining a forked copy
@@ -105,6 +106,7 @@ desktop.
 The app reads Labby connection settings from environment defaults first:
 
 - `LABBY_API_URL` (preferred; API origin that serves `/v1/palette/*`)
+- `LABBY_CONTROL_PLANE_URL` (WebUI origin; defaults to `LABBY_API_URL`)
 - `LABBY_MCP_HTTP_TOKEN`
 
 `LABBY_PUBLIC_URL` is intentionally not used as a palette endpoint: it is the
@@ -117,8 +119,9 @@ discover `apiBaseUrl` and retry palette catalog/execute calls against the
 advertised API origin.
 
 Runtime palette preferences are stored in the platform app config directory as
-`settings.json`. The settings panel can override the server URL, static bearer
-token, shortcut, theme, result layout, footer hints, and hide-on-blur behavior.
+`settings.json`. The settings panel can independently override the API and
+Control Plane origins, plus the static bearer token, shortcut, theme, result
+layout, footer hints, and hide-on-blur behavior.
 
 ## Authentication
 

@@ -44,6 +44,7 @@ export async function invoke<T = unknown>(
     case "load_palette_default_config":
       return {
         serverUrl: "http://localhost:8765",
+        controlPlaneUrl: "http://localhost:8765",
         staticToken: null,
         shortcut: "Ctrl+Shift+Space",
         theme: "dark",

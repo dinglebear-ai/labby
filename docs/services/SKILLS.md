@@ -1,7 +1,7 @@
 ---
 title: "Artifacts And Agent Skills"
 created: "2026-08-26"
-updated: "2026-08-26"
+updated: "2026-09-03"
 ---
 
 # Artifacts And Agent Skills
@@ -150,17 +150,19 @@ environment variable rather than containing a secret.
 
 ## Remote Metadata Boundary
 
-Labby retains product metadata that an operator needs to identify, compare, and
-reconcile Artifacts: stable identity, kind, descriptive fields, revision and
-content digests, provenance, license evidence and redistribution posture,
-publication state, source refresh state, job progress and disposition, upload
-state, bundle membership, published versions, drift, pagination, and timestamps.
+Depot retains the complete authority record. Labby passes the operator-facing
+subset through after redaction: stable identity, kind, descriptive fields,
+revision and content digests, license and publication state, source refresh
+state, job progress, upload state, bundle membership, drift, pagination, and
+timestamps. On import, Labby's local Artifact Library persists the immutable
+revision contents and its smaller source-provenance projection.
 
 The provider adapter removes authorization values, bearer/access tokens,
 credential fields, raw internal errors, stack traces, internal implementation
 state, and operator-only notes recursively before a result reaches API, MCP, or
 the WebUI. Provider errors are normalized to Labby's stable error taxonomy; raw
-provider bodies are not returned to the renderer.
+provider error bodies are not returned to callers. Successful provider results
+are passed through after recursive sensitive-field redaction.
 
 ## Limits And Reading
 
