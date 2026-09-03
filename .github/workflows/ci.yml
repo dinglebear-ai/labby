@@ -1449,6 +1449,10 @@ jobs:
           echo "::warning title=Changed-path routing drift::the trusted base-branch classifier does not emit: ${GATE_KEY_DRIFT}. Jobs gated on those keys ran fail-open. The drift clears once the base branch carries a scripts/ci/changed_paths.py that emits them."
           printf 'Changed-path routing drift (ran fail-open): %s\n' "$GATE_KEY_DRIFT" >> "$GITHUB_STEP_SUMMARY"
       - name: verify required jobs passed or were intentionally skipped
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           require_success_or_skipped() {
@@ -1461,12 +1465,20 @@ jobs:
           }
           # `changes` owns every routing decision: if it does not run, every
           # gate expression is empty, every gated job skips, and the whole run
-          # is vacuously green. `fleet-policy` is an unconditional single-job
-          # reusable workflow. Neither has an `if:`, so a skip is never a
-          # legitimate conclusion for either.
+          # is vacuously green. It must succeed on trusted branches; the only
+          # exception is the fork-safety case handled explicitly below.
           require_success() {
             local name="$1"
             local result="$2"
+            if [[ "$name" == changes && "$result" == skipped \
+              && "$EVENT_NAME" == pull_request \
+              && "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]]; then
+              # Fork PRs intentionally skip changes before any fork-controlled
+              # script can run. Their trusted policy, contract, and protected
+              # documentation checks still run independently.
+              printf '%s=%s (fork safety)\n' "$name" "$result"
+              return
+            fi
             case "$result" in
               success) printf '%s=%s\n' "$name" "$result" ;;
               *) echo "::error::$name concluded $result; it must run for path routing to be meaningful" >&2; exit 1 ;;

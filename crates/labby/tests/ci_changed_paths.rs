@@ -566,12 +566,20 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    for unconditional in ["changes", "fleet-policy"] {
+    assert!(
+        gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
+        "ci-gate must document the narrow fork-safety exception for skipped changes"
+    );
+    for unconditional in ["fleet-policy"] {
         assert!(
             gate.contains(&format!("require_success {unconditional} ")),
-            "ci-gate must reject a skipped `{unconditional}` job: it has no `if:`, so a skip means it never ran, and for `changes` that also empties every gate expression"
+            "ci-gate must reject a skipped `{unconditional}` job"
         );
     }
+    assert!(
+        gate.contains("require_success changes "),
+        "ci-gate must still require changes on trusted branches"
+    );
     assert!(
         gate.contains("needs.changes.outputs.gate_key_drift"),
         "ci-gate must surface routing keys the trusted classifier could not emit"
