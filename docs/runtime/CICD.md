@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-08-19"
+updated: "2026-09-03"
 ---
 
 # CI/CD
 
-Last updated: 2026-08-19
+Last updated: 2026-09-03
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -148,8 +148,8 @@ jobs when their changed-path category is enabled:
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
 | Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
 | Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
-| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
-| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on the Rust runner-farm pool without repository secrets |
+| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
+| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
@@ -185,7 +185,7 @@ land the required code/tests and the baseline update together.
 - **Job split:**
   - `changes` classifies paths first and exports category booleans, forcing any gated key the trusted base-branch classifier cannot emit to `true`
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
-  - Required fast jobs run only when their category is enabled; `ci-gate` is the stable required check for branch protection
+  - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
   - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; they report portability regressions without blocking `ci-gate`
   - Heavy release work starts only from a published stable GitHub release
   - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS and Windows artifacts use GitHub-hosted runners
@@ -196,21 +196,19 @@ the shared workflows' default x86_64-only for callers that do not opt in. The
 current release matrix remains the support matrix below until ARM64 jobs and
 artifacts are added and verified.
 
-## Linux runner farm
+## GitHub-hosted runners
 
-All fast Linux jobs run on the self-hosted farm. Rust jobs select
-`ci-pool-rust`, Node and browser jobs select `ci-pool-typescript`, and
-policy/metadata jobs select `ci-pool-ops`. Rust jobs use the repository
-`setup-rust-kache` composite, which connects trusted jobs to the shared MinIO
-cache and runs bare Cargo when credentials are unavailable. The composite also
-verifies that an action-managed Kache daemon reports the expected S3 remote;
-if a stale daemon has no matching remote, the job restarts it with the current
-validated configuration and verifies it again. If repair does not converge,
-the job clears both Rust compiler wrappers and uses the GitHub Actions Cargo
-cache instead. The rustfmt-only lane
-skips cache setup but still selects writable per-job Rust homes before rustup
-runs. Runner setup is
-documented in [Actions runner setup](./ACTIONS_RUNNER.md).
+All repository-defined Linux jobs use the GitHub-hosted `ubuntu-24.04` image.
+Native Windows jobs use `windows-latest`. No repository-defined job selects a
+self-hosted runner or a custom runner label.
+
+Rust jobs use the repository `setup-rust-kache` composite. Trusted jobs connect
+to the shared MinIO cache when credentials and the hosted runner tool cache are
+available. Other jobs use the GitHub Actions Cargo cache or bare Cargo.
+
+The reusable fleet policy and repository contract are organization-managed
+workflow calls. Their execution environment is owned by the central workflows
+repository and is outside this repository's local runner selection.
 
 ## Build Matrix
 

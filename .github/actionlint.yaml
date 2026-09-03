@@ -1,6 +1,0 @@
-# Custom runner-farm pool labels.
-self-hosted-runner:
-  labels:
-    - ci-pool-rust
-    - ci-pool-typescript
-    - ci-pool-ops
