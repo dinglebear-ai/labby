@@ -528,8 +528,8 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "CI must expose a stable aggregate ci-gate job"
     );
     assert!(
-        workflow.contains("allow-hosted-fast: true"),
-        "CI must opt into the hosted-fast fleet policy"
+        workflow.contains("check_workflow_policy.py") && workflow.contains("runs-on: ubuntu-24.04"),
+        "CI must enforce the hosted-runner policy on a GitHub-hosted runner"
     );
     assert!(
         workflow.contains("success|skipped"),
@@ -566,12 +566,20 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    for unconditional in ["changes", "fleet-policy"] {
+    assert!(
+        gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
+        "ci-gate must document the narrow fork-safety exception for skipped changes"
+    );
+    for unconditional in ["fleet-policy"] {
         assert!(
             gate.contains(&format!("require_success {unconditional} ")),
-            "ci-gate must reject a skipped `{unconditional}` job: it has no `if:`, so a skip means it never ran, and for `changes` that also empties every gate expression"
+            "ci-gate must reject a skipped `{unconditional}` job"
         );
     }
+    assert!(
+        gate.contains("require_success changes "),
+        "ci-gate must still require changes on trusted branches"
+    );
     assert!(
         gate.contains("needs.changes.outputs.gate_key_drift"),
         "ci-gate must surface routing keys the trusted classifier could not emit"

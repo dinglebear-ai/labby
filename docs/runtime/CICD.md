@@ -27,12 +27,11 @@ stops a branch from *accidentally* rerouting its own CI while editing path
 rules; it is not a control against a branch that sets out to. The controls for
 that are branch protection and review on `.github/**` and `scripts/ci/**`.
 
-Moving `changes` into a pinned reusable workflow (the `fleet-policy` pattern
-above) would put the classifier *and* its `outputs:` block on a trusted ref.
-It would not remove the reconciliation below: the `if:` gates still come from
-the caller's merge-ref `ci.yml`, so a caller gating on a key the pinned version
-does not export lands in exactly the same window, just versioned by the pin
-instead of by the base branch.
+The workflow-policy and repository-contract checks run locally on
+GitHub-hosted runners. The repository contract still checks out its immutable
+implementation from the pinned workflows revision, but the validation job
+itself does not depend on the self-hosted fleet. Keeping these checks in the
+caller makes the runner boundary visible and testable in this repository.
 
 That window: `ci.yml` always comes from the merge ref, so a pull request that
 adds a routing key gates on a key the trusted classifier cannot emit, and every
