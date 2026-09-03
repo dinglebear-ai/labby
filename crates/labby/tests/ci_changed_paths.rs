@@ -570,12 +570,11 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
         "ci-gate must document the narrow fork-safety exception for skipped changes"
     );
-    for unconditional in ["fleet-policy"] {
-        assert!(
-            gate.contains(&format!("require_success {unconditional} ")),
-            "ci-gate must reject a skipped `{unconditional}` job"
-        );
-    }
+    let unconditional = "fleet-policy";
+    assert!(
+        gate.contains(&format!("require_success {unconditional} ")),
+        "ci-gate must reject a skipped `{unconditional}` job"
+    );
     assert!(
         gate.contains("require_success changes "),
         "ci-gate must still require changes on trusted branches"

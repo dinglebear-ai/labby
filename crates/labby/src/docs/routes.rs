@@ -1,11 +1,16 @@
 use super::types::RouteDoc;
 use crate::api::route_registry::{RouteAuth, build_route_descriptors};
 
+#[cfg(test)]
 pub(crate) const OAUTH_MODE_ONLY: &str = "OAuth mode only";
+#[cfg(test)]
 pub(crate) const BOOTSTRAP_OWNER_RUNTIME_CONDITION: &str = "OAuth mode only; handler requires a browser session, middleware-derived VerifiedIdentity, lab:admin, and the configured admin email; bearer, MCP, CLI, stdio, and loopback identity bypasses are rejected";
+#[cfg(test)]
 pub(crate) const DEV_RUNTIME_CONDITION: &str = "development/mockup routes";
+#[cfg(test)]
 pub(crate) const GATEWAY_RUNTIME_CONDITION: &str =
     "mounted only when the gateway runtime is configured";
+#[cfg(test)]
 pub(crate) const FS_RUNTIME_CONDITION: &str =
     "mounted only when fs is enabled and /v1 auth is configured if LABBY_WEB_UI_AUTH_DISABLED=true";
 
