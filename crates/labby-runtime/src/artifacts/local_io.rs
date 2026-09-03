@@ -30,25 +30,6 @@ pub(crate) struct SnapshotFile {
     pub unix_mode: Option<u32>,
 }
 
-pub(crate) fn normalize_verified_macos_var_alias(path: &Path) -> Result<PathBuf, ArtifactError> {
-    #[cfg(target_os = "macos")]
-    {
-        let system_var = Path::new("/var");
-        if let Ok(relative) = path.strip_prefix(system_var) {
-            let trusted_target = Path::new("/private/var");
-            if !matches!(
-                std::fs::canonicalize(system_var),
-                Ok(resolved) if resolved == trusted_target
-            ) {
-                return Err(ArtifactError::UnsafePath("symlink"));
-            }
-            return Ok(trusted_target.join(relative));
-        }
-    }
-
-    Ok(path.to_path_buf())
-}
-
 pub(crate) fn snapshot_local_path(source: &Path) -> Result<Vec<SnapshotFile>, ArtifactError> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     return snapshot_local_path_descriptor_relative(source, |_| {});
