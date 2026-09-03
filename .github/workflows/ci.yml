@@ -28,17 +28,26 @@ env:
 
 jobs:
   fleet-policy:
-    name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@b2813662ca27ca8868752fb353d9dd568f2f97f9
-    with:
-      allow-hosted-fast: true
-      release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
-      allow-arm64: true
+    name: Fleet workflow policy / policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+      - name: Enforce hosted workflow policy
+        run: >-
+          python scripts/ci/check_workflow_policy.py
+          --release-file-regex '(^|/)(release|build-incus-image)\.ya?ml$'
+          --allow-arm64
 
-  # The fleet repository contract runs once, from repository-contract.yml (the
-  # required "Repository Contract" gate with `secrets: inherit`). Do not add a
-  # second fleet-contract caller here — duplicate callers drift to different
-  # fleet revisions.
+  # The repository contract runs once, from repository-contract.yml (the
+  # required "Repository Contract" gate). Keep it separate from the policy
+  # check above so each required status has one clear owner.
 
   changes:
     name: changes

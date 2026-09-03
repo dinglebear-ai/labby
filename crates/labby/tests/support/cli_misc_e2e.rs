@@ -347,10 +347,7 @@ fn tree_fingerprint(root: &Path) -> Vec<PathBuf> {
             return;
         }
         for entry in std::fs::read_dir(path).expect("walk owned CLI home") {
-            collect(
-                &entry.expect("read owned CLI home entry").path(),
-                paths,
-            );
+            collect(&entry.expect("read owned CLI home entry").path(), paths);
         }
     }
 

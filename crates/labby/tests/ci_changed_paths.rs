@@ -528,8 +528,8 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "CI must expose a stable aggregate ci-gate job"
     );
     assert!(
-        workflow.contains("allow-hosted-fast: true"),
-        "CI must opt into the hosted-fast fleet policy"
+        workflow.contains("check_workflow_policy.py") && workflow.contains("runs-on: ubuntu-24.04"),
+        "CI must enforce the hosted-runner policy on a GitHub-hosted runner"
     );
     assert!(
         workflow.contains("success|skipped"),
