@@ -13,3 +13,6 @@ pub mod doctor;
 
 /// Setup — first-run + draft-commit configuration flow (Bootstrap orchestrator).
 pub mod setup;
+
+/// Provider-neutral artifact control-plane client contracts.
+pub mod artifact_control;

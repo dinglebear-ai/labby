@@ -387,8 +387,8 @@ async fn restricted_skills_gateway_manager(
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
                 virtual_servers: vec![crate::config::VirtualServerConfig {
-                    id: "skills-list-only".to_string(),
-                    service: "skills".to_string(),
+                    id: "artifacts-list-only".to_string(),
+                    service: "artifacts".to_string(),
                     enabled: true,
                     surfaces: crate::config::VirtualServerSurfacesConfig {
                         cli: false,
@@ -2539,10 +2539,10 @@ async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
 
 #[cfg(feature = "skills")]
 #[tokio::test]
-async fn skills_disabled_loadout_hides_and_denies_fixed_compat_tool() {
+async fn artifact_management_is_distinct_from_sep_skill_exposure() {
     let loadout = GatewayLoadoutConfig {
         name: "no-skills".to_string(),
-        services: vec!["skills".to_string()],
+        services: vec!["artifacts".to_string()],
         expose_tools: true,
         expose_resources: true,
         expose_prompts: true,
@@ -2574,8 +2574,8 @@ async fn skills_disabled_loadout_hides_and_denies_fixed_compat_tool() {
     .expect("loadout scope resolves")
     .expect("gateway subset scope");
     assert!(
-        scope.allows_service("skills"),
-        "service allowlist includes skills"
+        scope.allows_service("artifacts"),
+        "service allowlist includes artifacts"
     );
     assert!(!scope.exposes_skills(), "capability gate disables Skills");
 
@@ -2600,8 +2600,13 @@ async fn skills_disabled_loadout_hides_and_denies_fixed_compat_tool() {
         listed
             .tools
             .iter()
-            .all(|tool| tool.name.as_ref() != "skills"),
-        "the fixed Skills compatibility tool must honor expose_skills=false"
+            .any(|tool| tool.name.as_ref() == "artifacts")
+    );
+    assert!(
+        listed
+            .tools
+            .iter()
+            .all(|tool| tool.name.as_ref() != "skills")
     );
 
     let denied = Box::pin(running.service().call_tool_impl(
@@ -2620,7 +2625,7 @@ async fn skills_disabled_loadout_hides_and_denies_fixed_compat_tool() {
     let text = denied.content[0].as_text().expect("text").text.as_str();
     assert!(
         text.contains("not_found") && text.contains("not enabled on the mcp surface"),
-        "forged call must fail through the same visibility gate: {text}"
+        "the retired Skills service must not dispatch: {text}"
     );
 }
 
@@ -6100,10 +6105,10 @@ async fn raw_mode_builtin_descriptors_match_across_builders() {
 
 #[cfg(feature = "skills")]
 #[tokio::test]
-async fn authenticated_http_gets_management_descriptor_while_local_peers_keep_compatibility() {
+async fn authenticated_http_gets_scoped_artifact_management_while_local_peers_do_not() {
     let mut server = test_server(
         crate::registry::build_docs_registry(),
-        Some(restricted_skills_gateway_manager(&["skill_library.list"]).await),
+        Some(restricted_skills_gateway_manager(&["artifacts.list"]).await),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
@@ -6155,22 +6160,20 @@ async fn authenticated_http_gets_management_descriptor_while_local_peers_keep_co
     );
     let managed = listed
         .iter()
-        .find(|tool| tool.name.as_ref() == "skills")
-        .expect("skills descriptor");
+        .find(|tool| tool.name.as_ref() == "artifacts")
+        .expect("artifacts descriptor");
     assert_eq!(
         managed.input_schema["properties"]["action"]["enum"]
             .as_array()
             .expect("action enum")
             .len(),
-        3
+        1
     );
     let actions = managed.input_schema["properties"]["action"]["enum"]
         .as_array()
         .expect("action enum");
-    assert!(actions.contains(&serde_json::json!("help")));
-    assert!(actions.contains(&serde_json::json!("schema")));
-    assert!(actions.contains(&serde_json::json!("skill_library.list")));
-    assert!(!actions.contains(&serde_json::json!("skill_library.create")));
+    assert!(actions.contains(&serde_json::json!("artifacts.list")));
+    assert!(!actions.contains(&serde_json::json!("artifacts.create")));
     assert!(managed.meta.is_some());
     assert_eq!(
         managed
@@ -6185,22 +6188,9 @@ async fn authenticated_http_gets_management_descriptor_while_local_peers_keep_co
         .peer_contract()
         .visible_tool_descriptors()
         .await;
-    let compat = local
-        .iter()
-        .find(|tool| tool.name.as_ref() == "skills")
-        .expect("local compatibility descriptor");
-    assert_eq!(
-        compat.input_schema["properties"]["action"]["enum"]
-            .as_array()
-            .expect("compatibility action enum")
-            .len(),
-        6
-    );
     assert!(
-        compat
-            .meta
-            .as_ref()
-            .is_some_and(|meta| !meta.0.contains_key("ui"))
+        local.iter().all(|tool| tool.name.as_ref() != "artifacts"),
+        "Artifact management requires the authenticated project-bound HTTP context"
     );
 }
 

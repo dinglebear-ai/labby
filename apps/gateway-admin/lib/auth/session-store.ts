@@ -9,6 +9,7 @@ export type BrowserSessionState =
       expiresAt: number
       csrfToken: string
       isAdmin?: boolean
+      projectId?: string
     }
   | { status: 'unauthenticated' }
   | {
@@ -28,6 +29,7 @@ type SessionPayload =
       expires_at: number
       csrf_token: string
       is_admin: boolean
+      project_id?: string | null
     }
   | {
       authenticated: false
@@ -58,7 +60,7 @@ function setState(next: BrowserSessionState) {
 
 function sessionIdentity(state: BrowserSessionState) {
   return state.status === 'authenticated'
-    ? `authenticated:${state.user.sub}:${state.isAdmin ? 'admin' : 'user'}:${state.csrfToken}:${state.expiresAt}`
+    ? `authenticated:${state.user.sub}:${state.isAdmin ? 'admin' : 'user'}:${state.projectId ?? 'unbound'}:${state.csrfToken}:${state.expiresAt}`
     : state.status
 }
 
@@ -72,6 +74,7 @@ function normalizePayload(payload: SessionPayload): BrowserSessionState {
     expiresAt: payload.expires_at,
     csrfToken: payload.csrf_token,
     isAdmin: payload.is_admin ?? false,
+    projectId: payload.project_id ?? undefined,
   }
 }
 
@@ -88,6 +91,10 @@ export function getBrowserSessionState() {
 
 export function getSessionCsrfToken() {
   return currentState.status === 'authenticated' ? currentState.csrfToken : undefined
+}
+
+export function getSessionProjectId() {
+  return currentState.status === 'authenticated' ? currentState.projectId : undefined
 }
 
 /** Authority-adjacent cache generation. Never expose the subject in cache keys. */

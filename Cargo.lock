@@ -1834,6 +1834,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "jiff",
+ "labby-apis",
  "labby-auth",
  "labby-codemode",
  "labby-gateway",

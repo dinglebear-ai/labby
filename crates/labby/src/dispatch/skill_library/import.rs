@@ -77,7 +77,7 @@ pub(crate) struct ImportCoordinator {
 
 impl ImportCoordinator {
     pub(crate) fn from_config(
-        config: &crate::config::SkillLibraryPreferences,
+        config: &crate::config::ArtifactPreferences,
         staging_root: &Path,
     ) -> Result<Self, ArtifactError> {
         let mut depot = BTreeMap::new();
@@ -110,10 +110,10 @@ impl ImportCoordinator {
                 std::fs::set_permissions(&source_root, std::fs::Permissions::from_mode(0o700))?;
             }
             let kind = match source.kind {
-                crate::config::SkillLibrarySourceKind::Depot => {
+                crate::config::ArtifactSourceKind::Depot => {
                     labby_runtime::artifacts::provider::ExactArtifactSource::Depot
                 }
-                crate::config::SkillLibrarySourceKind::Repository => {
+                crate::config::ArtifactSourceKind::Repository => {
                     labby_runtime::artifacts::provider::ExactArtifactSource::Repository
                 }
             };
@@ -131,10 +131,10 @@ impl ImportCoordinator {
                 Default::default(),
             )?;
             let duplicate = match source.kind {
-                crate::config::SkillLibrarySourceKind::Depot => {
+                crate::config::ArtifactSourceKind::Depot => {
                     depot.insert(source.id.clone(), connection).is_some()
                 }
-                crate::config::SkillLibrarySourceKind::Repository => repository
+                crate::config::ArtifactSourceKind::Repository => repository
                     .insert(source.id.clone(), Arc::new(connection))
                     .is_some(),
             };
@@ -244,7 +244,22 @@ impl ImportCoordinator {
         idempotency_key: String,
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, ImportAdapterError> {
-        let source = match source {
+        let source = self.resolve_selector(source)?;
+        self.import(
+            service,
+            runtime,
+            caller,
+            project_id,
+            source,
+            expected_library_version,
+            idempotency_key,
+            correlation_id,
+        )
+        .await
+    }
+
+    fn resolve_selector(&self, source: SourceSelector) -> Result<ImportSource, ImportAdapterError> {
+        Ok(match source {
             SourceSelector::Depot {
                 connection_id,
                 artifact_id,
@@ -268,18 +283,66 @@ impl ImportCoordinator {
                 artifact_id,
                 object_id: revision_id,
             },
-        };
-        self.import(
-            service,
-            runtime,
-            caller,
-            project_id,
-            source,
-            expected_library_version,
-            idempotency_key,
-            correlation_id,
-        )
-        .await
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn import_batch_selected<G: Send + Sync + 'static>(
+        &self,
+        service: &SkillLibraryService<G>,
+        runtime: &AccessRuntime,
+        caller: SkillLibraryCaller,
+        project_id: &str,
+        sources: Vec<SourceSelector>,
+        expected_library_version: u64,
+        idempotency_key: String,
+        correlation_id: &SkillLibraryCorrelationId,
+    ) -> Result<Value, ImportAdapterError> {
+        if sources.is_empty() || sources.len() > 100 {
+            return Err(ArtifactError::InvalidField {
+                field: "sources",
+                reason: "batch_size",
+            }
+            .into());
+        }
+        let mut acquisitions = Vec::with_capacity(sources.len());
+        for source in sources {
+            acquisitions.push(self.acquire(self.resolve_selector(source)?).await?);
+        }
+
+        let mut version = expected_library_version;
+        let mut items = Vec::with_capacity(acquisitions.len());
+        for (index, acquisition) in acquisitions.into_iter().enumerate() {
+            let child_key = format!("{idempotency_key}:{index}");
+            super::params::validate_idempotency_key(&child_key).map_err(|reason| {
+                ArtifactError::InvalidField {
+                    field: "idempotency_key",
+                    reason,
+                }
+            })?;
+            let value = service
+                .import_acquired(
+                    runtime,
+                    caller.clone(),
+                    project_id,
+                    acquisition,
+                    version,
+                    child_key,
+                    correlation_id,
+                )
+                .await?;
+            version = value
+                .get("committed_library_version")
+                .and_then(Value::as_u64)
+                .ok_or(SkillLibraryDispatchError::Serialization)?;
+            items.push(value);
+        }
+        Ok(serde_json::json!({
+            "items": items,
+            "imported": items.len(),
+            "committed_library_version": version,
+            "atomic": false
+        }))
     }
 }
 
@@ -307,10 +370,17 @@ fn validate_exact_repository_selector(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use labby_auth::{Authenticator, VerifiedIdentity};
+    use labby_runtime::artifacts::provider::{
+        ArtifactAcquisitionTransport, ArtifactFetchPolicy, ArtifactTransferGate,
+        ArtifactTransportDeadlines, ArtifactTransportFuture, ExactArtifactProvider,
+        ExactArtifactRequest, ExactArtifactSource,
+    };
     use labby_runtime::artifacts::{
         ArtifactPayloadFile, ArtifactProvenance, LogicalSkillFile, materialize_logical_skill,
     };
@@ -388,6 +458,69 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
+    #[derive(Clone)]
+    struct HermeticTransport {
+        acquisition: ArtifactAcquisition,
+    }
+
+    impl ArtifactAcquisitionTransport for HermeticTransport {
+        fn fetch<'a>(
+            &'a self,
+            _request: &'a ExactArtifactRequest,
+            _deadlines: ArtifactTransportDeadlines,
+            gate: &'a mut ArtifactTransferGate,
+        ) -> ArtifactTransportFuture<'a> {
+            Box::pin(async move {
+                gate.observe_peer(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))?;
+                for file in &self.acquisition.files {
+                    let component = self
+                        .acquisition
+                        .interchange
+                        .revision
+                        .components
+                        .iter()
+                        .find(|component| component.path == file.path)
+                        .expect("fixture component");
+                    gate.begin_file(&file.path, component.size, component.digest.clone())
+                        .await?;
+                    gate.write_chunk(&file.bytes).await?;
+                    gate.finish_file().await?;
+                }
+                Ok(self.acquisition.interchange.clone())
+            })
+        }
+    }
+
+    struct HermeticRepository {
+        provider: ExactArtifactProvider<HermeticTransport>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl RepositoryConnection for HermeticRepository {
+        fn acquire_exact<'a>(
+            &'a self,
+            repository: &'a str,
+            artifact_id: &'a str,
+            object_id: &'a str,
+        ) -> RepositoryFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                self.provider
+                    .acquire_exact(&ExactArtifactRequest {
+                        source: ExactArtifactSource::Repository,
+                        source_id: repository.to_owned(),
+                        artifact_id: artifact_id.to_owned(),
+                        revision_id: object_id.to_owned(),
+                        endpoint: url::Url::parse("https://repository.invalid/v1/artifacts/exact")
+                            .expect("fixture URL"),
+                        credential_origin: None,
+                        pinned_addresses: BTreeSet::from([IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
+                    })
+                    .await
+            })
+        }
+    }
+
     impl RepositoryConnection for FakeRepository {
         fn acquire_exact<'a>(
             &'a self,
@@ -459,7 +592,7 @@ mod tests {
                     &runtime,
                     caller(),
                     "bootstrap-default",
-                    "skill_library.import",
+                    "artifacts.import",
                     json!({
                         "acquisition": {
                             "interchange": depot.interchange.clone(),
@@ -477,15 +610,34 @@ mod tests {
             Err(SkillLibraryDispatchError::InvalidParams)
         ));
         let depot_calls = Arc::new(AtomicUsize::new(0));
-        let repository = acquisition(
+        let mut repository = acquisition(
             "repo-import",
             "repository",
             None,
             Some("repo-1"),
-            "sha256:repository-object",
+            &format!("sha256:{}", "0".repeat(64)),
         );
+        let repository_revision = repository.interchange.revision.id.clone();
+        repository.interchange.provenance.reference = Some(repository_revision.clone());
+        repository.validate().unwrap();
         let repository_id = repository.interchange.descriptor.id.clone();
         let repository_calls = Arc::new(AtomicUsize::new(0));
+        let repository_staging = root.path().join("repository-staging");
+        std::fs::create_dir(&repository_staging).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&repository_staging, std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let repository_provider = ExactArtifactProvider::new(
+            HermeticTransport {
+                acquisition: repository,
+            },
+            &repository_staging,
+            ArtifactFetchPolicy::default(),
+        )
+        .unwrap();
         let coordinator = ImportCoordinator::new(
             Some(DepotConnection::fake(
                 Arc::new(FakeDepot {
@@ -494,8 +646,8 @@ mod tests {
                 }),
                 "account-1",
             )),
-            Some(Arc::new(FakeRepository {
-                value: Ok(repository),
+            Some(Arc::new(HermeticRepository {
+                provider: repository_provider,
                 calls: Arc::clone(&repository_calls),
             })),
         );
@@ -546,8 +698,8 @@ mod tests {
                 "bootstrap-default",
                 ImportSource::Repository {
                     repository: "repo-1".to_owned(),
-                    artifact_id: repository_id,
-                    object_id: "sha256:repository-object".to_owned(),
+                    artifact_id: repository_id.clone(),
+                    object_id: repository_revision.clone(),
                 },
                 1,
                 "repo-import-key".to_owned(),
@@ -557,6 +709,38 @@ mod tests {
             .unwrap();
         assert_eq!(repo_result["outcome"], "committed");
         assert_eq!(store.library_snapshot().unwrap().records.len(), 2);
+        let repository_record = store
+            .library_snapshot()
+            .unwrap()
+            .records
+            .into_values()
+            .find(|record| record.artifact_id == repository_id)
+            .expect("repository import in local library");
+        assert_eq!(
+            repository_record.provenance_provider.as_deref(),
+            Some("repository")
+        );
+        let repository_list = service
+            .dispatch(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                "artifacts.list",
+                json!({}),
+                &SkillLibraryCorrelationId::parse("list-provenance-3").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            repository_list["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["artifact_id"] == repository_id)
+                .unwrap()["provenance"]["source"],
+            "repository"
+        );
+        assert_eq!(std::fs::read_dir(&repository_staging).unwrap().count(), 0);
         assert!(matches!(
             coordinator
                 .import(
@@ -589,7 +773,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.activate",
+                "artifacts.activate",
                 json!({
                     "artifact_id": depot_id.clone(),
                     "expected_revision_id": depot_revision.clone(),
@@ -605,7 +789,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.list",
+                "artifacts.list",
                 json!({}),
                 &SkillLibraryCorrelationId::parse("list-local-5").unwrap(),
             )
@@ -617,7 +801,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.get",
+                "artifacts.get",
                 json!({"artifact_id": depot_id}),
                 &SkillLibraryCorrelationId::parse("get-local-6").unwrap(),
             )
@@ -629,7 +813,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.read",
+                "artifacts.read",
                 json!({
                     "artifact_id": depot_id,
                     "revision_id": depot_revision,
@@ -767,7 +951,7 @@ mod tests {
     async fn local_only_config_has_a_typed_non_fallback_source_failure() {
         let root = tempfile::tempdir().unwrap();
         let coordinator = ImportCoordinator::from_config(
-            &crate::config::SkillLibraryPreferences::default(),
+            &crate::config::ArtifactPreferences::default(),
             root.path(),
         )
         .unwrap();
@@ -790,26 +974,24 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
         let root = tempfile::tempdir().unwrap();
         let sources = [
-            (
-                "depot-primary",
-                crate::config::SkillLibrarySourceKind::Depot,
-            ),
+            ("depot-primary", crate::config::ArtifactSourceKind::Depot),
             (
                 "repository-primary",
-                crate::config::SkillLibrarySourceKind::Repository,
+                crate::config::ArtifactSourceKind::Repository,
             ),
         ]
         .into_iter()
-        .map(|(id, kind)| crate::config::SkillLibrarySourceConfig {
+        .map(|(id, kind)| crate::config::ArtifactSourceConfig {
             id: id.to_owned(),
             kind,
             endpoint: format!("https://{id}.example/v1/exact"),
+            control_plane_url: None,
             pinned_addresses: vec![IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))],
             bearer_token_env: None,
         })
         .collect();
         let coordinator = ImportCoordinator::from_config(
-            &crate::config::SkillLibraryPreferences { sources },
+            &crate::config::ArtifactPreferences { sources },
             root.path(),
         )
         .unwrap();

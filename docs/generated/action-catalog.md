@@ -6,6 +6,48 @@ This is a global inventory, not the active runtime exposure or authorization pol
 
 | Service | Action | Built-in | Destructive | Admin | Required scopes | Params | Returns | Surfaces |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `artifacts` | `artifacts.activate` | false | false | false |  | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
+| `artifacts` | `artifacts.archive` | false | false | false |  | `artifact_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
+| `artifacts` | `artifacts.authority_status` | false | false | false |  | `connection_id: string` | `ArtifactAuthorityStatus` | mcp, api, web |
+| `artifacts` | `artifacts.create` | false | false | false |  | `name*: string`<br>`files*: array`<br>`visibility: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
+| `artifacts` | `artifacts.deactivate` | false | false | false |  | `artifact_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api |
+| `artifacts` | `artifacts.follow` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string`<br>`upstream_artifact_id: string`<br>`upstream_revision_id: string`<br>`following: boolean` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.fork` | false | false | true | lab:admin | `connection_id: string`<br>`source_artifact_id*: string`<br>`revision_id: string`<br>`namespace*: string`<br>`name*: string`<br>`following: boolean` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.get` | false | false | false |  | `artifact_id*: string` | `VersionedSkillLibrarySummary` | mcp, api |
+| `artifacts` | `artifacts.get_remote` | false | false | false |  | `connection_id: string`<br>`id*: string` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.history` | false | false | false |  | `artifact_id*: string`<br>`cursor: string`<br>`limit: integer` | `VersionedRevisionPage` | mcp, api |
+| `artifacts` | `artifacts.import` | false | false | false |  | `source*: object`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
+| `artifacts` | `artifacts.import_batch` | false | false | false |  | `sources*: array`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `ArtifactImportBatchReceipt` | mcp, api |
+| `artifacts` | `artifacts.intake_candidate` | false | false | true | lab:admin | `connection_id: string`<br>`candidate*: object` | `ArtifactCandidate` | mcp, api, web |
+| `artifacts` | `artifacts.list` | false | false | false |  | `cursor: string`<br>`limit: integer` | `VersionedSkillLibraryPage` | mcp, api, web |
+| `artifacts` | `artifacts.list_acp_registry` | false | false | false |  | `connection_id: string` | `AcpRegistryPage` | mcp, api, web |
+| `artifacts` | `artifacts.list_candidates` | false | false | true | lab:admin | `connection_id: string`<br>`cursor: string`<br>`limit: integer` | `ArtifactCandidatePage` | mcp, api, web |
+| `artifacts` | `artifacts.list_mcp_registry` | false | false | false |  | `connection_id: string`<br>`query: string`<br>`category: string`<br>`tag: string`<br>`version: string`<br>`updated_since: string`<br>`include_deleted: boolean`<br>`cursor: string`<br>`limit: integer` | `McpRegistryPage` | mcp, api, web |
+| `artifacts` | `artifacts.list_remote` | false | false | false |  | `connection_id: string`<br>`cursor: string`<br>`limit: integer` | `RemoteArtifactPage` | mcp, api, web |
+| `artifacts` | `artifacts.read` | false | false | false |  | `artifact_id*: string`<br>`revision_id*: string`<br>`path*: string` | `VersionedRevisionFile` | mcp, api, web |
+| `artifacts` | `artifacts.refresh` | false | false | false |  | `expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api |
+| `artifacts` | `artifacts.rollback` | false | false | false |  | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api |
+| `artifacts` | `artifacts.save` | false | false | false |  | `artifact_id*: string`<br>`expected_revision_id*: string`<br>`files*: array`<br>`expected_library_version*: integer`<br>`idempotency_key*: string` | `SkillMutationReceipt` | mcp, api, web |
+| `artifacts` | `artifacts.search` | false | false | false |  | `query*: string`<br>`cursor: string`<br>`limit: integer` | `VersionedArtifactPage` | mcp, api, web |
+| `artifacts` | `artifacts.search_ard` | false | false | false |  | `connection_id: string`<br>`registry*: string`<br>`query*: string`<br>`page_token: string` | `RemoteArtifactSearch` | mcp, api, web |
+| `artifacts` | `artifacts.search_marketplace` | false | false | false |  | `connection_id: string`<br>`source*: string`<br>`ref: string`<br>`only: array` | `RemoteArtifactSearch` | mcp, api, web |
+| `artifacts` | `artifacts.search_remote` | false | false | false |  | `connection_id: string`<br>`query*: string`<br>`limit: integer` | `RemoteArtifactSearch` | mcp, api, web |
+| `artifacts` | `artifacts.search_skills_sh` | false | false | false |  | `connection_id: string`<br>`query*: string`<br>`limit: integer` | `RemoteArtifactSearch` | mcp, api, web |
+| `artifacts` | `artifacts.set_license` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string`<br>`declared: string\|null`<br>`detected: array`<br>`notices: array`<br>`redistribution: string`<br>`review_state: unreviewed\|reviewed\|disputed`<br>`takedown_state: none\|requested\|restricted\|removed`<br>`evidence_at: string`<br>`metadata: object` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.set_publication` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string`<br>`state: draft\|listed\|published\|withdrawn`<br>`visibility: private\|unlisted\|public`<br>`distribution: metadata\|bytes` | `RemoteArtifact` | mcp, api, web |
+| `artifacts` | `artifacts.validate` | false | false | false |  | `name*: string`<br>`files*: array` | `SkillValidation` | mcp, api, web |
+| `artifacts` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `artifacts` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
+| `bundles` | `bundles.add` | false | false | true | lab:admin | `connection_id: string`<br>`slug*: string`<br>`namespace*: string`<br>`name*: string` | `Bundle` | mcp, api, web |
+| `bundles` | `bundles.create` | false | false | true | lab:admin | `connection_id: string`<br>`slug*: string`<br>`description: string`<br>`visibility: public\|bearer\|oauth` | `Bundle` | mcp, api, web |
+| `bundles` | `bundles.delete` | false | true | true | lab:admin | `connection_id: string`<br>`slug*: string` | `DeleteReceipt` | mcp, api |
+| `bundles` | `bundles.get` | false | false | false |  | `connection_id: string`<br>`slug*: string` | `Bundle` | mcp, api, web |
+| `bundles` | `bundles.list` | false | false | false |  | `connection_id: string` | `Bundle[]` | mcp, api, web |
+| `bundles` | `bundles.publish` | false | false | true | lab:admin | `connection_id: string`<br>`slug*: string` | `BundlePublishReceipt` | mcp, api, web |
+| `bundles` | `bundles.remove` | false | false | true | lab:admin | `connection_id: string`<br>`slug*: string`<br>`namespace*: string`<br>`name*: string` | `Bundle` | mcp, api, web |
+| `bundles` | `bundles.set_visibility` | false | false | true | lab:admin | `connection_id: string`<br>`slug*: string`<br>`visibility*: public\|bearer\|oauth` | `Bundle` | mcp, api, web |
+| `bundles` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `bundles` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
 | `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | mcp, api |
 | `doctor` | `audit.full` | false | false | false |  |  | `stream&lt;Finding&gt;` | cli, mcp, api |
 | `doctor` | `auth.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
@@ -98,7 +140,14 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.virtual_server.set_mcp_policy` | false | false | true | lab:admin | `id*: string`<br>`allowed_actions*: string[]` | `VirtualServerMcpPolicyView` | mcp, api, web |
 | `gateway` | `gateway.virtual_server.set_surface` | false | false | true | lab:admin | `id*: string`<br>`surface*: string`<br>`enabled*: boolean` | `ServerView` | mcp, api, web |
 | `gateway` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
-| `gateway` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
+| `gateway` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api, web |
+| `jobs` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `jobs` | `jobs.cancel` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `IngestJob` | mcp, api, web |
+| `jobs` | `jobs.get` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `IngestJob` | mcp, api, web |
+| `jobs` | `jobs.list` | false | false | true | lab:admin | `connection_id: string`<br>`limit: integer` | `IngestJob[]` | mcp, api, web |
+| `jobs` | `jobs.retry` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `IngestJob` | mcp, api, web |
+| `jobs` | `jobs.start` | false | false | true | lab:admin | `connection_id: string`<br>`kind*: string`<br>`arguments*: object`<br>`idempotency_key: string` | `IngestJobReceipt` | mcp, api, web |
+| `jobs` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
 | `lab_admin` | `help` | false | false | false |  |  | `Catalog` | mcp |
 | `lab_admin` | `onboarding.audit` | false | false | false |  | `services*: string[]` | `AuditReport` | mcp |
 | `lab_admin` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp |
@@ -124,7 +173,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `setup` | `plugins.installed` | false | false | true | lab:admin | `force: boolean` | `InstalledPlugin[]` | cli, mcp, api |
 | `setup` | `proxy.configure` | false | true | true | lab:admin | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
 | `setup` | `repair` | false | true | true | lab:admin |  | `SetupReport` | cli, mcp, api |
-| `setup` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
+| `setup` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |
 | `setup` | `services.status` | false | false | true | lab:admin |  | `ServiceStatus[]` | cli, mcp, api |
 | `setup` | `services_status` | false | false | true | lab:admin |  | `ServiceStatus[]` | mcp, api, web |
@@ -137,12 +186,6 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `setup` | `settings.update` | false | true | true | lab:admin | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin |  | `SetupSnapshot` | cli, mcp, api, web |
 | `setup` | `uninstall_plugin` | false | true | true | lab:admin | `service*: string` | `PluginMutationResult` | mcp, api, web |
-| `skills` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
-| `skills` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
-| `skills` | `skills.get` | false | false | false |  | `uri*: string` | `SkillGetResponse` | cli, mcp, api |
-| `skills` | `skills.list` | false | false | false |  | `origin: string`<br>`limit: integer` | `SkillListResponse` | cli, mcp, api |
-| `skills` | `skills.read` | false | false | false |  | `uri*: string` | `VisibleSkillFile` | cli, mcp, api |
-| `skills` | `skills.search` | false | false | false |  | `query*: string`<br>`origin: string`<br>`limit: integer` | `SkillSearchResponse` | cli, mcp, api |
 | `snippets` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |
@@ -153,3 +196,14 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `snippets` | `snippets.remove` | false | true | true | lab:admin | `name*: string` | `SnippetRemoveResult` | cli, mcp, api |
 | `snippets` | `snippets.test` | false | false | true | lab:admin | `name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
 | `snippets` | `snippets.validate` | false | false | true | lab:admin | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |
+| `sources` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `sources` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
+| `sources` | `sources.configure` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string`<br>`enabled: boolean`<br>`interval_seconds: integer` | `Source` | mcp, api, web |
+| `sources` | `sources.delete` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `DeleteReceipt` | mcp, api |
+| `sources` | `sources.list` | false | false | false |  | `connection_id: string` | `Source[]` | mcp, api, web |
+| `sources` | `sources.refresh` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `SourceRefreshReceipt` | mcp, api, web |
+| `uploads` | `help` | true | false | false |  |  | `HelpPayload` | mcp, api |
+| `uploads` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
+| `uploads` | `uploads.create` | false | false | true | lab:admin | `connection_id: string`<br>`filename*: string` | `Upload` | mcp, api, web |
+| `uploads` | `uploads.delete` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `DeleteReceipt` | mcp, api |
+| `uploads` | `uploads.get` | false | false | true | lab:admin | `connection_id: string`<br>`id*: string` | `Upload` | mcp, api, web |

@@ -632,7 +632,7 @@ impl LibraryDurableAudit {
             || self.correlation_id.len() > 256
             || self.correlation_id.chars().any(char::is_control)
             || !matches!(
-                (self.action.strip_prefix("skill_library."), receipt.action.as_str()),
+                (self.action.strip_prefix("artifacts."), receipt.action.as_str()),
                 (Some(product), runtime) if product == runtime
                     || (product == "import" && runtime == "create")
             )
@@ -2023,15 +2023,18 @@ mod tests {
 
     fn maximal_materialized(name: &str) -> MaterializedSkill {
         let mut logical = Vec::with_capacity(crate::skills::limits::MAX_RESOURCES_PER_SKILL);
-        let mut skill_md = format!("---\nname: {name}\ndescription: Maximal\n---\n");
-        skill_md.push_str(
-            &"x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES - skill_md.len()),
-        );
+        let skill_md = format!("---\nname: {name}\ndescription: Maximal\n---\n");
+        let mut remaining =
+            usize::try_from(crate::skills::limits::MAX_SKILL_TOTAL_BYTES).unwrap() - skill_md.len();
         logical.push(LogicalSkillFile::new("SKILL.md", skill_md));
-        for index in 1..crate::skills::limits::MAX_RESOURCES_PER_SKILL {
+        let supporting = crate::skills::limits::MAX_RESOURCES_PER_SKILL - 1;
+        for index in 1..=supporting {
+            let files_left = supporting - index + 1;
+            let bytes = remaining.div_ceil(files_left);
+            remaining -= bytes;
             logical.push(LogicalSkillFile::new(
                 format!("resource-{index:02}.txt"),
-                "x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES),
+                "x".repeat(bytes),
             ));
         }
         materialize_logical_skill(name, logical, ArtifactProvenance::default()).unwrap()
@@ -2045,7 +2048,7 @@ mod tests {
         LibraryDurableAudit {
             schema_version: 1,
             correlation_id: "correlation-1".to_owned(),
-            action: "skill_library.create".to_owned(),
+            action: "artifacts.create".to_owned(),
             target_digest: canonical_json::digest(&artifact_id).unwrap(),
             revision_digest: None,
             tenant_id: owner.tenant_id.clone(),
@@ -2187,7 +2190,7 @@ mod tests {
         let candidate = maximal_materialized("maximal");
         assert_eq!(
             candidate.resources.values().map(Vec::len).sum::<usize>(),
-            super::super::validation::MAX_SKILL_PACKAGE_BYTES
+            usize::try_from(crate::skills::limits::MAX_SKILL_TOTAL_BYTES).unwrap()
         );
         let artifact_id = candidate.interchange.descriptor.id.clone();
         let revision_id = candidate.interchange.revision.id.clone();

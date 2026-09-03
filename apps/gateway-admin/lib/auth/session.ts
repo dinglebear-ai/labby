@@ -6,6 +6,7 @@ export {
   __setBrowserSessionStateForTests,
   getBrowserSessionState,
   getSessionCsrfToken,
+  getSessionProjectId,
   loadBrowserSession,
   logoutBrowserSession,
   subscribeToBrowserSession,

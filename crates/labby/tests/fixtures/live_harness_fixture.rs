@@ -1,3 +1,5 @@
+//! Process fixture used by the owned live-test harness.
+
 #![allow(clippy::panic)]
 
 use std::io::Write as _;

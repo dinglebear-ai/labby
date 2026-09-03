@@ -1,7 +1,8 @@
-//! Shared compatibility dispatch service for Agent Skills.
+//! Internal dispatch for the native Agent Skills protocol.
 //!
-//! Native SEP methods remain protocol-specific; this service projects the same
-//! canonical registry into Labby's action-oriented CLI/API/MCP surface.
+//! These operations back `skills/list`, `skills/get`, and `resources/read`.
+//! They are not registered as Labby action-service aliases; managed lifecycle
+//! operations live exclusively under `artifacts.*`.
 
 pub mod catalog;
 pub mod client;
@@ -9,8 +10,8 @@ pub mod dispatch;
 pub mod params;
 pub mod types;
 
-pub(crate) use catalog::{ACTIONS, API_ACTIONS, MCP_ACTIONS};
-pub(crate) use dispatch::{dispatch, dispatch_with_context};
+pub(crate) use catalog::api_actions;
+pub(crate) use dispatch::dispatch_with_context;
 
 use labby_primitives::plugin::{Category, PluginMeta};
 

@@ -451,11 +451,47 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
 
     #[cfg(feature = "skills")]
     reg.register(RegisteredService::bootstrap_operator(
-        "skills",
-        crate::dispatch::skills::META.description,
+        crate::dispatch::artifacts::META.name,
+        crate::dispatch::artifacts::META.description,
         "bootstrap",
-        crate::dispatch::skills::ACTIONS,
-        dispatch_fn!(crate::dispatch::skills::dispatch),
+        &crate::dispatch::artifacts::ACTIONS,
+        dispatch_fn!(crate::dispatch::artifacts::dispatch),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::bootstrap_operator(
+        "bundles",
+        "Curate and publish immutable Artifact bundles",
+        "bootstrap",
+        crate::dispatch::remote_control::BUNDLE_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_bundles),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::bootstrap_operator(
+        "jobs",
+        "Run and inspect durable Artifact ingestion jobs",
+        "bootstrap",
+        crate::dispatch::remote_control::JOB_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_jobs),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::bootstrap_operator(
+        "sources",
+        "Manage remote Artifact ingestion sources",
+        "bootstrap",
+        crate::dispatch::remote_control::SOURCE_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_sources),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::bootstrap_operator(
+        "uploads",
+        "Manage staged Artifact ingestion uploads",
+        "bootstrap",
+        crate::dispatch::remote_control::UPLOAD_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_uploads),
     ));
 
     #[cfg(feature = "gateway")]
@@ -725,7 +761,7 @@ mod tests {
             #[cfg(feature = "gateway")]
             s.insert("snippets");
             #[cfg(feature = "skills")]
-            s.insert("skills");
+            s.extend(["artifacts", "bundles", "jobs", "sources", "uploads"]);
             s.insert(crate::dispatch::doctor::META.name); // always-on
             s.insert(crate::dispatch::server_logs::META.name); // always-on
             s.insert(crate::dispatch::setup::META.name); // always-on

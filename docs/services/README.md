@@ -4,6 +4,7 @@ This directory documents Labby's current first-party product services. The gener
 
 | Service | Documentation |
 | --- | --- |
+| `artifacts`, `sources`, `jobs`, `uploads`, `bundles` | [SKILLS.md](./SKILLS.md) |
 | `doctor` | [DOCTOR.md](./DOCTOR.md) |
 | `fs` | [FILESYSTEM.md](./FILESYSTEM.md) |
 | `gateway` | [GATEWAY.md](./GATEWAY.md) |

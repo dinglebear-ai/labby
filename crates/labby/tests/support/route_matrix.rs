@@ -107,9 +107,9 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
     },
 ];
 
-pub(crate) const PINNED_ROUTE_COUNT: usize = 84;
+pub(crate) const PINNED_ROUTE_COUNT: usize = 89;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "57142bad25e7e16ba31da3e2a8fd55ae6b82b6d1894fd659ce8d6b805bfd8057";
+    "3f672d0f42efe25aaf992622c6311ce5f8dac4cc57e03fe29bb7e0af65f93d7c";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
@@ -120,8 +120,10 @@ impl SecurityInvariant {
             }
             RequestClass::Bearer => (true, false, false, false, false, false),
             RequestClass::BrowserSession => {
-                let host = matches!(route.handler_group.as_str(), "doctor" | "setup")
-                    || route.path == "/auth/local-session";
+                let host = matches!(
+                    route.handler_group.as_str(),
+                    "doctor" | "setup" | "bundles" | "jobs" | "sources" | "uploads"
+                ) || route.path == "/auth/local-session";
                 (true, false, false, true, mutation, host)
             }
             RequestClass::BootstrapProof => (true, false, true, false, false, true),
@@ -262,6 +264,7 @@ fn sample_path(template: &str) -> Result<String, String> {
         ("{machine_id}", "missing-machine"),
         ("{credential_id}", "missing-credential"),
         ("{email}", "nobody%40example.invalid"),
+        ("{id}", "missing-upload"),
         ("{name}", "missing"),
         ("{service}", "doctor"),
         ("{*route}", "missing"),

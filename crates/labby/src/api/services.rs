@@ -27,6 +27,8 @@ pub mod gateway;
 pub mod oauth_relay;
 #[cfg(feature = "gateway")]
 pub mod palette;
+#[cfg(feature = "skills")]
+pub mod remote_control;
 pub mod server_logs;
 pub mod setup;
 #[cfg(feature = "skills")]

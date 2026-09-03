@@ -114,7 +114,7 @@ async fn ensure_action_fixture(
 fn every_api_classification_has_exactly_one_execution_or_contract_plan() {
     let plans = action_scenarios::exact_plans(Surface::Api);
     assert_eq!(plans.len(), action_matrix::EXPECTED_API_ACTIONS);
-    assert_eq!(action_scenarios::services_for(Surface::Api).len(), 7);
+    assert_eq!(action_scenarios::services_for(Surface::Api).len(), 11);
 }
 
 #[tokio::test]
@@ -359,9 +359,11 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         assert!(invalid_logs_error.get("side_effects").is_some());
         structured_errors.insert("server_logs".into());
         let api_services = action_scenarios::services_for(Surface::Api);
+        let mut success_capable_services = api_services.clone();
+        success_capable_services.remove("artifacts");
         assert_eq!(
-            successes, api_services,
-            "every API service needs a live success"
+            successes, success_capable_services,
+            "every locally self-contained API service needs a live success"
         );
         assert_eq!(
             structured_errors, api_services,
@@ -369,7 +371,12 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         );
         assert_eq!(
             destructive_denials,
-            BTreeSet::from(["gateway".into(), "setup".into(), "snippets".into()])
+            BTreeSet::from([
+                "bundles".into(),
+                "gateway".into(),
+                "setup".into(),
+                "snippets".into(),
+            ])
         );
 
         // Valid reversible workflow: API create, CLI observation, API delete,

@@ -44,13 +44,17 @@ fn every_current_multi_surface_service_has_a_parity_partition() {
     assert_eq!(
         multi,
         BTreeSet::from([
+            "artifacts",
+            "bundles",
             "doctor",
             "fs",
             "gateway",
+            "jobs",
             "server_logs",
             "setup",
-            "skills",
-            "snippets"
+            "snippets",
+            "sources",
+            "uploads"
         ])
     );
     for service in multi {

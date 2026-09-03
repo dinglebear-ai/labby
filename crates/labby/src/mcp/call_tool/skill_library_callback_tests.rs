@@ -159,14 +159,14 @@ fn callback_action_catalog_has_no_app_only_or_stale_aliases() {
         .iter()
         .map(|spec| spec.name)
         .collect::<Vec<_>>();
-    assert_eq!(actions.len(), 13);
-    assert!(actions.contains(&"skill_library.list"));
+    assert_eq!(actions.len(), 19);
+    assert!(actions.contains(&"artifacts.list"));
     assert!(!actions.contains(&"open"));
-    assert!(!actions.contains(&"skill_library.open"));
+    assert!(!actions.contains(&"artifacts.open"));
 }
 
 #[test]
-fn protected_route_service_mismatch_denies_the_shared_skills_tool() {
+fn protected_route_service_mismatch_denies_the_artifacts_tool() {
     let denied = crate::mcp::route_scope::McpRouteScope::protected_subset(
         "restricted",
         std::iter::empty::<&str>(),
@@ -174,13 +174,13 @@ fn protected_route_service_mismatch_denies_the_shared_skills_tool() {
         false,
     );
     let allowed = crate::mcp::route_scope::McpRouteScope::protected_subset(
-        "skills",
+        "artifacts",
         std::iter::empty::<&str>(),
-        ["skills"],
+        ["artifacts"],
         false,
     );
-    assert!(!denied.allows_service("skills"));
-    assert!(allowed.allows_service("skills"));
+    assert!(!denied.allows_service("artifacts"));
+    assert!(allowed.allows_service("artifacts"));
 }
 
 #[tokio::test]
@@ -214,10 +214,10 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
     let running =
         serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(server, transport, None);
     let call = || {
-        CallToolRequestParams::new("skills").with_arguments(serde_json::Map::from_iter([
+        CallToolRequestParams::new("artifacts").with_arguments(serde_json::Map::from_iter([
             (
                 "action".to_owned(),
-                serde_json::Value::String("skill_library.list".to_owned()),
+                serde_json::Value::String("artifacts.list".to_owned()),
             ),
             ("params".to_owned(), serde_json::json!({})),
         ]))
@@ -401,13 +401,22 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     ));
     let imports = Arc::new(
         crate::dispatch::skill_library::import::ImportCoordinator::from_config(
-            &crate::config::SkillLibraryPreferences::default(),
+            &crate::config::ArtifactPreferences::default(),
             &root.path().join("acquisition"),
         )
         .expect("import coordinator"),
     );
-    let runtime =
-        Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime { service, imports });
+    let controls = Arc::new(
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_config(
+            &crate::config::ArtifactPreferences::default(),
+        )
+        .expect("control plane"),
+    );
+    let runtime = Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime {
+        service,
+        imports,
+        controls,
+    });
     assert!(
         crate::dispatch::skill_library::install_process_runtime(runtime).is_ok(),
         "the production process Skill Library installs once in this regression"
@@ -459,7 +468,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         context
     };
     let call = |action: &str, params: serde_json::Value| {
-        CallToolRequestParams::new("skills").with_arguments(serde_json::Map::from_iter([
+        CallToolRequestParams::new("artifacts").with_arguments(serde_json::Map::from_iter([
             (
                 "action".to_owned(),
                 serde_json::Value::String(action.to_owned()),
@@ -479,10 +488,11 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         envelope.get("data").cloned().unwrap_or(envelope)
     };
 
-    let listed = Box::pin(running.service().call_tool_impl(
-        call("skill_library.list", serde_json::json!({})),
-        context(&eli),
-    ))
+    let listed = Box::pin(
+        running
+            .service()
+            .call_tool_impl(call("artifacts.list", serde_json::json!({})), context(&eli)),
+    )
     .await
     .expect("management list response");
     assert!(!listed.is_error.unwrap_or(false), "{listed:?}");
@@ -492,7 +502,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     let support_text = "exact support bytes\n";
     let validated = Box::pin(running.service().call_tool_impl(
         call(
-            "skill_library.validate",
+            "artifacts.validate",
             serde_json::json!({
                 "name": "mcp-production-wire",
                 "files": [
@@ -515,7 +525,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
     let created = Box::pin(running.service().call_tool_impl(
         call(
-            "skill_library.create",
+            "artifacts.create",
             serde_json::json!({
                 "name": "mcp-production-wire",
                 "visibility": "shared",
@@ -545,7 +555,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
     let activated = Box::pin(running.service().call_tool_impl(
         call(
-            "skill_library.activate",
+            "artifacts.activate",
             serde_json::json!({
                 "artifact_id": artifact_id,
                 "expected_revision_id": expected_revision,
@@ -569,7 +579,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     let mut observed = Vec::new();
     for (label, principal) in [("eli", &eli), ("pujit", &pujit), ("jake", &jake)] {
         let listed = Box::pin(running.service().call_tool_impl(
-            call("skill_library.list", serde_json::json!({})),
+            call("artifacts.list", serde_json::json!({})),
             context(principal),
         ))
         .await
@@ -585,7 +595,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
         let got = Box::pin(running.service().call_tool_impl(
             call(
-                "skill_library.get",
+                "artifacts.get",
                 serde_json::json!({"artifact_id": artifact_id}),
             ),
             context(principal),
@@ -597,7 +607,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
         let read = Box::pin(running.service().call_tool_impl(
             call(
-                "skill_library.read",
+                "artifacts.read",
                 serde_json::json!({
                     "artifact_id": artifact_id,
                     "revision_id": expected_revision,
@@ -744,7 +754,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
     let member_denied = Box::pin(running.service().call_tool_impl(
         call(
-            "skill_library.deactivate",
+            "artifacts.deactivate",
             serde_json::json!({
                 "artifact_id": artifact_id,
                 "expected_library_version": 2,
@@ -770,7 +780,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
     let unchanged = Box::pin(running.service().call_tool_impl(
         call(
-            "skill_library.get",
+            "artifacts.get",
             serde_json::json!({"artifact_id": artifact_id}),
         ),
         context(&eli),
@@ -786,7 +796,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
 
     let admin_deactivated = Box::pin(running.service().call_tool_impl(
         call(
-            "skill_library.deactivate",
+            "artifacts.deactivate",
             serde_json::json!({
                 "artifact_id": artifact_id,
                 "expected_library_version": 2,
@@ -823,15 +833,15 @@ async fn explicit_mcp_action_allowlist_permits_list_and_denies_create() {
         .seed_config_unchecked_for_tests(
             crate::config::LabConfig {
                 virtual_servers: vec![crate::config::VirtualServerConfig {
-                    id: "skills-policy".to_owned(),
-                    service: "skills".to_owned(),
+                    id: "artifacts-policy".to_owned(),
+                    service: "artifacts".to_owned(),
                     enabled: true,
                     surfaces: crate::config::VirtualServerSurfacesConfig {
                         mcp: true,
                         ..Default::default()
                     },
                     mcp_policy: Some(crate::config::VirtualServerMcpPolicyConfig {
-                        allowed_actions: vec!["skill_library.list".to_owned()],
+                        allowed_actions: vec!["artifacts.list".to_owned()],
                     }),
                 }],
                 ..Default::default()
@@ -885,20 +895,20 @@ async fn explicit_mcp_action_allowlist_permits_list_and_denies_create() {
     assert!(
         running
             .service()
-            .skill_library_http_action_allowed(&context, "skill_library.list")
+            .skill_library_http_action_allowed(&context, "artifacts.list")
             .await
     );
     assert!(
         !running
             .service()
-            .skill_library_http_action_allowed(&context, "skill_library.create")
+            .skill_library_http_action_allowed(&context, "artifacts.create")
             .await
     );
     let denied = Box::pin(running.service().call_tool_impl(
-        CallToolRequestParams::new("skills").with_arguments(serde_json::Map::from_iter([
+        CallToolRequestParams::new("artifacts").with_arguments(serde_json::Map::from_iter([
             (
                 "action".to_owned(),
-                serde_json::Value::String("skill_library.create".to_owned()),
+                serde_json::Value::String("artifacts.create".to_owned()),
             ),
             ("params".to_owned(), serde_json::json!({})),
         ])),

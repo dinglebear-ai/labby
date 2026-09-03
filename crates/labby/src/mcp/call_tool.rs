@@ -269,10 +269,10 @@ impl LabMcpServer {
         action: &str,
     ) -> bool {
         self.skill_library_http_management_visible(context)
-            && crate::dispatch::skills::MCP_ACTIONS
+            && crate::dispatch::artifacts::ACTIONS
                 .iter()
                 .any(|spec| spec.name == action)
-            && self.action_allowed_on_mcp("skills", action).await
+            && self.action_allowed_on_mcp("artifacts", action).await
     }
 
     async fn mcp_action_policy_denial(
@@ -282,7 +282,7 @@ impl LabMcpServer {
         action: &str,
         registered: bool,
     ) -> Option<CallToolResponse> {
-        let action_allowed = if service == "skills" && action.starts_with("skill_library.") {
+        let action_allowed = if service == "artifacts" && action.starts_with("artifacts.") {
             #[cfg(feature = "skills")]
             {
                 self.skill_library_http_action_allowed(context, action)
@@ -307,7 +307,7 @@ impl LabMcpServer {
             );
         }
         #[cfg(feature = "skills")]
-        if service == "skills" && action.starts_with("skill_library.") {
+        if service == "artifacts" && action.starts_with("artifacts.") {
             extra.insert(
                 "correlation_id".to_owned(),
                 Value::String(skill_library_safe_callback_correlation(context)),
@@ -1335,6 +1335,16 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope).into());
         }
 
+        if service == "skills" && svc.is_none() {
+            let envelope = build_error(
+                &service,
+                &action,
+                "not_found",
+                "service `skills` is not enabled on the mcp surface",
+            );
+            return Ok(error_result_from_envelope(envelope).into());
+        }
+
         if let Some(response) =
             Box::pin(self.mcp_action_policy_denial(&context, &service, &action, svc.is_some()))
                 .await
@@ -1431,7 +1441,7 @@ impl LabMcpServer {
             }
         }
 
-        if service == "skills"
+        if matches!(service.as_str(), "skills" | "artifacts")
             && !matches!(action.as_str(), "help" | "schema")
             && !resolve_caller_authorization(
                 auth_context_from_extensions(&context.extensions),
@@ -1527,10 +1537,10 @@ impl LabMcpServer {
                     .await
                     .map(Into::into);
             }
-            let result = if service == "skills" {
+            let result = if service == "artifacts" {
                 #[cfg(feature = "skills")]
                 {
-                    self.dispatch_compat_tool_boxed(
+                    self.dispatch_artifact_tool_boxed(
                         &context,
                         request.meta.as_ref(),
                         &action,

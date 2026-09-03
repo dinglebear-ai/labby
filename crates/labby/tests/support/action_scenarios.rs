@@ -157,7 +157,11 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         include_str!("../fixtures/e2e_actions/server_logs.json"),
         include_str!("../fixtures/e2e_actions/setup.json"),
         include_str!("../fixtures/e2e_actions/snippets.json"),
-        include_str!("../fixtures/e2e_actions/skills.json"),
+        include_str!("../fixtures/e2e_actions/artifacts.json"),
+        include_str!("../fixtures/e2e_actions/sources.json"),
+        include_str!("../fixtures/e2e_actions/jobs.json"),
+        include_str!("../fixtures/e2e_actions/uploads.json"),
+        include_str!("../fixtures/e2e_actions/bundles.json"),
     ];
     let fixtures = values
         .into_iter()
@@ -349,6 +353,10 @@ pub(crate) fn dedicated_contract_reason_for(key: &str, surface: Surface) -> Opti
 
 fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
     match key {
+        "bundles:bundles.delete" => Some((
+            "requires_configured_artifact_authority",
+            "source_unavailable",
+        )),
         "gateway:gateway.clients.list" => Some(("catalog_dispatch_mismatch", "unknown_action")),
         "gateway:gateway.enrich.apply" => {
             Some(("requires_live_catalog_suggestion", "stale_suggestion"))
@@ -431,6 +439,26 @@ pub(crate) fn dedicated_contract_accepts_for(
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    if surface == Surface::Api
+        && matches!(
+            key,
+            "artifacts:artifacts.search"
+                | "artifacts:artifacts.list"
+                | "artifacts:artifacts.get"
+                | "artifacts:artifacts.read"
+                | "artifacts:artifacts.history"
+                | "artifacts:artifacts.validate"
+                | "artifacts:artifacts.create"
+                | "artifacts:artifacts.save"
+                | "artifacts:artifacts.activate"
+                | "artifacts:artifacts.deactivate"
+                | "artifacts:artifacts.archive"
+                | "artifacts:artifacts.rollback"
+                | "artifacts:artifacts.refresh"
+        )
+    {
+        return Some(("requires_project_bound_artifact_authority", "forbidden"));
+    }
     if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
         return Some((
             "requires_mounted_publication_restart_generation",
