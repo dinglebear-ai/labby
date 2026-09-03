@@ -407,12 +407,14 @@ fn route_resource_metadata_url(route: &crate::config::ProtectedMcpRouteConfig) -
     )
 }
 
+#[cfg(feature = "gateway")]
 struct AuthenticatedProtectedRoute {
     identity: Option<labby_auth::VerifiedIdentity>,
     transport: Option<crate::mcp::bound_access::TransportCredentialBinding>,
     product_bound: Option<BoundAccessGrant>,
 }
 
+#[cfg(feature = "gateway")]
 async fn authenticate_protected_route_request(
     request: &mut Request<Body>,
     route: &crate::config::ProtectedMcpRouteConfig,
