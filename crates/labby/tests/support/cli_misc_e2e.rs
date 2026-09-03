@@ -338,11 +338,21 @@ fn home(root: &Path, name: &str) -> PathBuf {
 }
 
 fn tree_fingerprint(root: &Path) -> Vec<PathBuf> {
-    let mut paths = walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .map(|entry| entry.expect("walk owned CLI home").into_path())
-        .collect::<Vec<_>>();
+    fn collect(path: &Path, paths: &mut Vec<PathBuf>) {
+        paths.push(path.to_path_buf());
+        if !std::fs::symlink_metadata(path)
+            .expect("inspect owned CLI home entry")
+            .is_dir()
+        {
+            return;
+        }
+        for entry in std::fs::read_dir(path).expect("walk owned CLI home") {
+            collect(&entry.expect("read owned CLI home entry").path(), paths);
+        }
+    }
+
+    let mut paths = Vec::new();
+    collect(root, &mut paths);
     paths.sort();
     paths
 }
