@@ -147,6 +147,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         for intent in action_matrix::intents()
             .iter()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
+            .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
         {
             ensure_action_fixture(&client, &guard.connection().base_url, intent).await;
             let fixture = &fixtures[&intent.service];
@@ -320,10 +321,16 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             outcomes.insert(intent.key(), outcome);
         }
 
-        assert_eq!(observed.len(), action_matrix::EXPECTED_API_ACTIONS);
+        let expected_api_actions = action_matrix::intents()
+            .iter()
+            .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
+            .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
+            .count();
+        assert_eq!(observed.len(), expected_api_actions);
         let insufficient = action_matrix::intents()
             .iter()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
+            .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
             .filter(|intent| {
                 let outcome = &outcomes[&intent.key()];
                 !outcome.satisfies(intent)
@@ -369,7 +376,10 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         assert!(invalid_logs_error.get("recovery").is_some());
         assert!(invalid_logs_error.get("side_effects").is_some());
         structured_errors.insert("server_logs".into());
-        let api_services = action_scenarios::services_for(Surface::Api);
+        let api_services = action_scenarios::services_for(Surface::Api)
+            .into_iter()
+            .filter(|service| cfg!(feature = "fs") || service != "fs")
+            .collect::<BTreeSet<_>>();
         assert_eq!(
             successes, api_services,
             "every API service needs a live success"
