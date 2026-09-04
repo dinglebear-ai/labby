@@ -16,7 +16,7 @@ fn repo_root() -> PathBuf {
 
 #[test]
 fn repository_contract_checks_cargo_manifests_outside_ignored_directories() {
-    let workflow: serde_yaml::Value = serde_yaml::from_str(include_str!(
+    let workflow: serde_yaml_ng::Value = serde_yaml_ng::from_str(include_str!(
         "../../../.github/workflows/repository-contract.yml"
     ))
     .expect("parse repository contract workflow");
