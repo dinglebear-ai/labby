@@ -29,7 +29,7 @@ mod linux {
     use super::*;
     use anyhow::{anyhow, bail};
     use landlock::{
-        ABI, Access as _, AccessFs, CompatLevel, Ruleset, RulesetAttr as _,
+        ABI, Access as _, AccessFs, CompatLevel, Compatible as _, Ruleset, RulesetAttr as _,
         RulesetCreatedAttr as _, RulesetStatus, path_beneath_rules,
     };
     use std::os::unix::process::CommandExt as _;

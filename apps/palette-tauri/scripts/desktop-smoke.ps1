@@ -16,7 +16,7 @@ function Import-DotEnv($Path) {
   }
 }
 
-function First-Env([string[]]$Names) {
+function Get-FirstEnvironmentValue([string[]]$Names) {
   foreach ($name in $Names) {
     $value = [Environment]::GetEnvironmentVariable($name, 'Process')
     if ($value -and $value.Trim().Length -gt 0) { return $value.Trim() }
@@ -26,12 +26,12 @@ function First-Env([string[]]$Names) {
 
 Import-DotEnv $EnvFile
 
-$exe = First-Env @('LABBY_PALETTE_EXE')
-$apiUrl = First-Env @('LABBY_PALETTE_API_URL', 'LABBY_API_URL')
-$token = First-Env @('LABBY_PALETTE_TOKEN', 'LABBY_MCP_HTTP_TOKEN', 'LAB_MCP_HTTP_TOKEN')
-$query = First-Env @('LABBY_PALETTE_QUERY')
-$evidenceDir = First-Env @('LABBY_PALETTE_EVIDENCE_DIR')
-$settingsDir = First-Env @('LABBY_PALETTE_SETTINGS_DIR')
+$exe = Get-FirstEnvironmentValue @('LABBY_PALETTE_EXE')
+$apiUrl = Get-FirstEnvironmentValue @('LABBY_PALETTE_API_URL', 'LABBY_API_URL')
+$token = Get-FirstEnvironmentValue @('LABBY_PALETTE_TOKEN', 'LABBY_MCP_HTTP_TOKEN', 'LAB_MCP_HTTP_TOKEN')
+$query = Get-FirstEnvironmentValue @('LABBY_PALETTE_QUERY')
+$evidenceDir = Get-FirstEnvironmentValue @('LABBY_PALETTE_EVIDENCE_DIR')
+$settingsDir = Get-FirstEnvironmentValue @('LABBY_PALETTE_SETTINGS_DIR')
 
 if (-not $exe) { throw 'LABBY_PALETTE_EXE is required' }
 if (-not (Test-Path $exe)) { throw "LABBY_PALETTE_EXE does not exist: $exe" }
@@ -53,13 +53,13 @@ $catalog = Invoke-RestMethod `
   -TimeoutSec 30
 
 $entries = @($catalog.entries)
-$matches = @($entries | Where-Object {
+$matchedEntries = @($entries | Where-Object {
   ($_.id -like "*$query*") -or
   ($_.label -like "*$query*") -or
   ($_.source -like "*$query*") -or
   ($_.description -like "*$query*")
 })
-if ($matches.Count -lt 1) {
+if ($matchedEntries.Count -lt 1) {
   throw "catalog has $($entries.Count) entries, but query '$query' matched no launcher rows"
 }
 
@@ -112,8 +112,8 @@ try {
     apiUrl = $apiUrl
     query = $query
     catalogEntries = $entries.Count
-    matchedEntries = $matches.Count
-    matchedIds = @($matches | Select-Object -First 10 -ExpandProperty id)
+    matchedEntries = $matchedEntries.Count
+    matchedIds = @($matchedEntries | Select-Object -First 10 -ExpandProperty id)
     screenshot = $screenshot
     screenshotBytes = $screenshotInfo.Length
     process = $procInfo
