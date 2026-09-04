@@ -160,9 +160,7 @@ fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> 
     };
     Ok(opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
         && current.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-        && !current.file_type().is_symlink()
-        && opened.volume_serial_number() == current.volume_serial_number()
-        && opened.file_index() == current.file_index())
+        && !current.file_type().is_symlink())
 }
 
 #[cfg(windows)]
