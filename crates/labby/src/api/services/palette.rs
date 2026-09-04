@@ -102,11 +102,58 @@ async fn search(
     auth: Option<Extension<AuthContext>>,
     Query(query): Query<SearchQuery>,
 ) -> Result<Response<axum::body::Body>, ApiError> {
-    let mut catalog =
-        compact_palette_catalog(&state, &headers, auth.as_ref().map(|auth| &auth.0)).await?;
-    catalog.entries = search_entries(catalog.entries, &query.q, query.limit.min(100));
+    let auth = auth.as_ref().map(|auth| &auth.0);
+    let query_id = query.q.trim();
+    let exact_labby = exact_launcher_query(query_id, "labby:");
+    let exact_mcp = exact_launcher_query(query_id, "mcp:");
+    let mut catalog = if exact_labby || exact_mcp {
+        let caller = palette_caller(auth, request_id(&headers))?;
+        if !caller.caller.can_read() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: "palette catalog requires mcp:read permission".to_string(),
+            }
+            .into());
+        }
+        let mut catalog = LauncherCatalogView {
+            fingerprint: String::new(),
+            entries: Vec::new(),
+        };
+        if exact_labby && query_id.starts_with("labby:") {
+            append_labby_actions(&mut catalog, &state, auth);
+            catalog.entries.retain(|entry| entry_id(entry) == query_id);
+        } else if exact_mcp && query_id.starts_with("mcp:") {
+            let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
+            catalog = manager
+                .palette_catalog_snapshot_for_tool(&caller, query_id)
+                .await?;
+        }
+        compact_catalog_schemas(&mut catalog);
+        catalog
+    } else {
+        let mut catalog = compact_palette_catalog(&state, &headers, auth).await?;
+        catalog.entries = search_entries(catalog.entries, &query.q, query.limit.min(100));
+        catalog
+    };
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
     Ok(catalog_response(headers, catalog))
+}
+
+fn exact_launcher_query(query: &str, prefix: &str) -> bool {
+    // Recognize the shape independently of case so noncanonical full IDs cannot
+    // accidentally fall back to a fuzzy match for a different identity.
+    if !query
+        .get(..prefix.len())
+        .is_some_and(|namespace| namespace.eq_ignore_ascii_case(prefix))
+    {
+        return false;
+    }
+    query
+        .get(prefix.len()..)
+        .and_then(|id| id.split_once("::"))
+        .is_some_and(|(source, name)| {
+            !source.is_empty() && !name.is_empty() && !name.contains("::")
+        })
 }
 
 async fn compact_palette_catalog(
@@ -1637,7 +1684,232 @@ mod tests {
     }
 
     #[test]
-    fn palette_search_ranks_exact_mcp_tool_matches() {
+    fn exact_launcher_queries_require_complete_namespaced_ids() {
+        assert!(super::exact_launcher_query("mcp:github::ping", "mcp:"));
+        assert!(super::exact_launcher_query("MCP:github::ping", "mcp:"));
+        assert!(super::exact_launcher_query(
+            "labby:demo::echo.run",
+            "labby:"
+        ));
+        for query in [
+            "ping",
+            "github::ping",
+            "mcp:github",
+            "mcp:::ping",
+            "mcp:github::",
+            "MCP:github::",
+            "mcp:github::ping::extra",
+            "MCP:github::ping::extra",
+        ] {
+            assert!(!super::exact_launcher_query(query, "mcp:"), "{query}");
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_labby_search_preserves_read_and_admin_filters() {
+        for (scopes, id, expected_count, forbidden) in [
+            (vec!["mcp:read"], "labby:demo::echo.run", 1, false),
+            (vec!["mcp:read"], "labby:demo::admin.run", 0, false),
+            (vec!["mcp:read"], "labby:demo::missing", 0, false),
+            (vec!["mcp:read"], "labby:Demo::Echo.run", 0, false),
+            (vec!["mcp:read"], "LABBY:demo::echo.run", 0, false),
+            (vec!["mcp:write"], "labby:demo::echo.run", 0, true),
+            (vec!["mcp:write"], "mcp:github::ping", 0, true),
+        ] {
+            let auth = AuthContext {
+                sub: "alice".to_string(),
+                actor_key: None,
+                scopes: scopes.into_iter().map(str::to_string).collect(),
+                issuer: "test".to_string(),
+                via_session: false,
+                csrf_token: None,
+                email: None,
+            };
+            // No gateway manager: a local action must not hydrate gateway catalogs.
+            let response = super::search(
+                axum::extract::State(AppState::from_registry(test_registry())),
+                axum::http::HeaderMap::new(),
+                Some(axum::Extension(auth)),
+                axum::extract::Query(super::SearchQuery {
+                    q: id.to_string(),
+                    limit: 0,
+                }),
+            )
+            .await;
+            if forbidden {
+                assert_eq!(response.unwrap_err().body()["kind"], "forbidden");
+            } else {
+                let response = response.unwrap();
+                let body = axum::body::to_bytes(response.into_body(), 8_192)
+                    .await
+                    .unwrap();
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["entries"].as_array().unwrap().len(), expected_count);
+            }
+        }
+    }
+
+    #[cfg(feature = "proxy-testkit")]
+    #[tokio::test]
+    async fn exact_search_uses_only_selected_snapshot_entries_with_code_mode_disabled() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = test_gateway_manager(directory.path().join("gateway.toml"), runtime);
+        let mut disabled = test_upstream_config("disabled");
+        disabled.enabled = false;
+        let mut hidden = test_upstream_config("hidden");
+        hidden.priority = 0.0;
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                code_mode: CodeModeConfig {
+                    enabled: false,
+                    ..CodeModeConfig::default()
+                },
+                upstream: vec![
+                    test_upstream_config("github"),
+                    test_upstream_config("unrelated"),
+                    disabled,
+                    hidden,
+                ],
+                ..GatewayConfig::default()
+            })
+            .await;
+        let mut selected =
+            healthy_upstream_entry_with_schema("github", "ping", Some(json!({"type":"object"})));
+        let poison = healthy_upstream_entry_with_schema(
+            "github",
+            "poison",
+            Some(json!({"description":"x".repeat(70_000)})),
+        );
+        selected.tools.extend(poison.tools);
+        pool.insert_entry_for_test("github", selected).await;
+        pool.insert_entry_for_test(
+            "unrelated",
+            healthy_upstream_entry_with_schema(
+                "unrelated",
+                "poison",
+                Some(json!({"description":"x".repeat(70_000)})),
+            ),
+        )
+        .await;
+        pool.insert_entry_for_test("disabled", healthy_upstream_entry("disabled", "ping"))
+            .await;
+        pool.insert_entry_for_test("hidden", healthy_upstream_entry("hidden", "ping"))
+            .await;
+        let state =
+            AppState::from_registry(test_registry()).with_gateway_manager(Arc::new(manager));
+        for (granted, expected_count) in [("github", 1), ("unrelated", 0)] {
+            let auth = AuthContext {
+                sub: "alice".to_string(),
+                actor_key: None,
+                scopes: vec!["mcp:read".to_string(), format!("gateway:{granted}")],
+                issuer: "test".to_string(),
+                via_session: false,
+                csrf_token: None,
+                email: None,
+            };
+            let response = super::search(
+                axum::extract::State(state.clone()),
+                axum::http::HeaderMap::new(),
+                Some(axum::Extension(auth)),
+                axum::extract::Query(super::SearchQuery {
+                    q: "mcp:github::ping".to_string(),
+                    limit: 1,
+                }),
+            )
+            .await
+            .unwrap();
+            let body = axum::body::to_bytes(response.into_body(), 8_192)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["entries"].as_array().unwrap().len(), expected_count);
+        }
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+
+        for (id, expected_count) in [
+            ("mcp:github::ping", 1),
+            ("mcp:GitHub::Ping", 0),
+            ("MCP:github::ping", 0),
+            ("labby:demo::echo.run", 1),
+            ("mcp:github::missing", 0),
+            ("mcp:unknown::ping", 0),
+            ("mcp:disabled::ping", 0),
+            ("mcp:hidden::ping", 0),
+        ] {
+            let uri = format!("/v1/palette/search?q={id}&limit=0");
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&uri)
+                        .header(header::AUTHORIZATION, "Bearer test-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{id}");
+            let etag = response.headers()[header::ETAG].clone();
+            let body = axum::body::to_bytes(response.into_body(), 8_192)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            let entries = body["entries"].as_array().unwrap();
+            assert_eq!(entries.len(), expected_count, "{id}");
+            if let Some(entry) = entries.first() {
+                assert_eq!(entry["id"], id);
+                assert_eq!(entry.get("inputSchema"), Some(&Value::Null));
+                assert_eq!(entry["contractHash"].as_str().unwrap().len(), 64);
+                assert_eq!(entry["schemaFingerprint"].as_str().unwrap().len(), 64);
+            }
+            let cached = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(&uri)
+                        .header(header::AUTHORIZATION, "Bearer test-token")
+                        .header(header::IF_NONE_MATCH, etag)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        }
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/search?q=mcp:github::ping")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        // A fuzzy search still inspects the full snapshot and detects the poison
+        // schemas, proving exact searches above did not process those entries.
+        let full = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/search?q=ping")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(full.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(full.into_body(), 8_192).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["kind"], "descriptor_unsupported");
+    }
+
+    #[test]
+    fn palette_search_ranks_case_insensitive_partial_mcp_tool_matches() {
         let entries = search_entries(
             vec![
                 LauncherEntryView::McpTool(labby_gateway::gateway::palette::McpToolLauncherEntry {
@@ -1665,7 +1937,7 @@ mod tests {
                     tool: "search_repos".to_string(),
                 }),
             ],
-            "search",
+            "SeArCh",
             10,
         );
 
