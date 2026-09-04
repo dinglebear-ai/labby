@@ -7,10 +7,10 @@ use super::credential_schema;
 pub(super) const SCHEMA_VERSION: i64 = 5;
 pub(super) const APPLICATION_ID: i64 = 0x4c_41_43_31;
 pub(super) const SCHEMA_FINGERPRINT: &str = "labby-access-v5-20260827";
-const V4_SCHEMA_VERSION: i64 = 4;
-const V4_SCHEMA_FINGERPRINT: &str = "labby-access-v4-20260827";
-const V3_SCHEMA_VERSION: i64 = 3;
-const V3_SCHEMA_FINGERPRINT: &str = "labby-access-v3-20260827";
+pub(super) const V4_SCHEMA_VERSION: i64 = 4;
+pub(super) const V4_SCHEMA_FINGERPRINT: &str = "labby-access-v4-20260827";
+pub(super) const V3_SCHEMA_VERSION: i64 = 3;
+pub(super) const V3_SCHEMA_FINGERPRINT: &str = "labby-access-v3-20260827";
 pub(super) const V1_SCHEMA_VERSION: i64 = 1;
 pub(super) const V1_SCHEMA_FINGERPRINT: &str = "labby-access-v1-20260823";
 pub(super) const V2_SCHEMA_VERSION: i64 = 2;
@@ -184,19 +184,14 @@ pub(super) fn validate_migratable(connection: &Connection, version: i64) -> Acce
 }
 
 fn validate_v4_before_migration(connection: &Connection) -> AccessStoreResult<()> {
-    let metadata = connection
-        .query_row(
-            "SELECT schema_version,schema_fingerprint FROM access_metadata WHERE singleton=1",
-            [],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-        )
-        .map_err(|_| AccessStoreError::IntegrityViolation {
-            check: "schema_metadata",
-        })?;
+    let metadata = read_legacy_metadata(connection)?;
     let application_id = connection
         .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
         .map_err(super::store::map_sqlite_error)?;
-    if metadata != (V4_SCHEMA_VERSION, V4_SCHEMA_FINGERPRINT.to_owned())
+    if metadata.schema_version != V4_SCHEMA_VERSION
+        || metadata.schema_fingerprint != V4_SCHEMA_FINGERPRINT
+        || metadata.global_revision < 0
+        || !metadata.has_valid_bootstrap_fields()
         || application_id != APPLICATION_ID
     {
         return Err(AccessStoreError::IntegrityViolation {
@@ -209,10 +204,12 @@ fn validate_v4_before_migration(connection: &Connection) -> AccessStoreResult<()
             check: "schema_manifest",
         });
     }
+    validate_pre_migration_integrity(connection)?;
+    super::integrity::validate_bootstrap_state(connection, metadata.bootstrap_generation)?;
     Ok(())
 }
 
-fn canonical_v4_schema() -> AccessStoreResult<Connection> {
+pub(super) fn canonical_v4_schema() -> AccessStoreResult<Connection> {
     let connection = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
     connection
         .execute_batch(SCHEMA_V2_METADATA)
@@ -228,22 +225,72 @@ fn validate_v3_before_migration(connection: &Connection) -> AccessStoreResult<()
     let application_id = connection
         .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
         .map_err(super::store::map_sqlite_error)?;
-    let metadata = connection
-        .query_row(
-            "SELECT schema_version,schema_fingerprint,global_revision FROM access_metadata WHERE singleton=1",
-            [],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
-        )
-        .map_err(|_| AccessStoreError::IntegrityViolation { check: "schema_metadata" })?;
+    let metadata = read_legacy_metadata(connection)?;
     if application_id != APPLICATION_ID
-        || metadata.0 != V3_SCHEMA_VERSION
-        || metadata.1 != V3_SCHEMA_FINGERPRINT
-        || metadata.2 < 0
+        || metadata.schema_version != V3_SCHEMA_VERSION
+        || metadata.schema_fingerprint != V3_SCHEMA_FINGERPRINT
+        || metadata.global_revision < 0
+        || !metadata.has_valid_bootstrap_fields()
     {
         return Err(AccessStoreError::IntegrityViolation {
             check: "schema_metadata",
         });
     }
+    validate_pre_migration_integrity(connection)?;
+    let canonical = canonical_v3_schema()?;
+    if schema_manifest(connection)? != schema_manifest(&canonical)? {
+        return Err(AccessStoreError::IntegrityViolation {
+            check: "schema_manifest",
+        });
+    }
+    super::integrity::validate_bootstrap_state(connection, metadata.bootstrap_generation)?;
+    Ok(())
+}
+
+struct LegacyMetadata {
+    schema_version: i64,
+    schema_fingerprint: String,
+    global_revision: i64,
+    bootstrap_generation: i64,
+    bootstrap_identity_fingerprint: Option<String>,
+}
+
+impl LegacyMetadata {
+    fn has_valid_bootstrap_fields(&self) -> bool {
+        matches!(
+            (
+                self.bootstrap_generation,
+                self.bootstrap_identity_fingerprint.as_deref()
+            ),
+            (0, None)
+        ) || matches!(
+            (self.bootstrap_generation, self.bootstrap_identity_fingerprint.as_deref()),
+            (1, Some(value)) if !value.is_empty()
+        )
+    }
+}
+
+fn read_legacy_metadata(connection: &Connection) -> AccessStoreResult<LegacyMetadata> {
+    connection
+        .query_row(
+            "SELECT schema_version,schema_fingerprint,global_revision,bootstrap_generation,bootstrap_identity_fingerprint FROM access_metadata WHERE singleton=1",
+            [],
+            |row| {
+                Ok(LegacyMetadata {
+                    schema_version: row.get(0)?,
+                    schema_fingerprint: row.get(1)?,
+                    global_revision: row.get(2)?,
+                    bootstrap_generation: row.get(3)?,
+                    bootstrap_identity_fingerprint: row.get(4)?,
+                })
+            },
+        )
+        .map_err(|_| AccessStoreError::IntegrityViolation {
+            check: "schema_metadata",
+        })
+}
+
+fn validate_pre_migration_integrity(connection: &Connection) -> AccessStoreResult<()> {
     let quick_check = connection
         .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
         .map_err(super::store::map_sqlite_error)?;
@@ -259,16 +306,10 @@ fn validate_v3_before_migration(connection: &Connection) -> AccessStoreResult<()
             check: "pre_migration",
         });
     }
-    let canonical = canonical_v3_schema()?;
-    if schema_manifest(connection)? != schema_manifest(&canonical)? {
-        return Err(AccessStoreError::IntegrityViolation {
-            check: "schema_manifest",
-        });
-    }
     Ok(())
 }
 
-fn canonical_v3_schema() -> AccessStoreResult<Connection> {
+pub(super) fn canonical_v3_schema() -> AccessStoreResult<Connection> {
     let connection = Connection::open_in_memory().map_err(super::store::map_sqlite_error)?;
     connection
         .execute_batch(SCHEMA_V2_METADATA)

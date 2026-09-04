@@ -234,6 +234,13 @@ pub(crate) fn product_grants_match(
         && source.expires_at == bound.expires_at
 }
 
+pub(crate) fn product_grants_are_route_bound(
+    source: &ProductCredentialGrant,
+    bound: &BoundAccessGrant,
+) -> bool {
+    product_grants_match(source, bound) && bound.audience == bound.resource
+}
+
 /// Target visibility relevant to non-enumerating read policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SkillLibraryTarget<'a> {
@@ -743,6 +750,7 @@ fn validate_transport(
                 identity_transport,
                 Authenticator::OauthBearer | Authenticator::StaticBearer
             ) || (identity_transport == Authenticator::ProductCredential
+                && caller.transport.surface != SkillLibrarySurface::ApiBearer
                 && caller.transport.product_credential_bound))
                 && caller.transport.audience_bound
                 && scope_allowed
@@ -972,7 +980,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_bootstrap_credential_can_use_the_bearer_skill_library_surface() {
+    async fn project_bootstrap_credential_can_use_the_bound_mcp_skill_library_surface() {
         let directory = secure_tempdir();
         let path = directory.path().join("access.db");
         let store = AccessStore::open(path.clone()).await.unwrap();
@@ -993,7 +1001,7 @@ mod tests {
             SkillLibraryCaller::new(
                 owner,
                 ["lab:read".to_string(), "lab:admin".to_string()],
-                SkillLibraryTransport::product_bearer(SkillLibrarySurface::ApiBearer),
+                SkillLibraryTransport::product_bearer(SkillLibrarySurface::Mcp),
             ),
             "bootstrap-default",
             SkillLibraryAction::List,
@@ -1005,6 +1013,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(decision.ownership.owner_id.as_str(), "bootstrap-owner");
+
+        let generic_api = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                VerifiedIdentity::local_credential(
+                    Authenticator::ProductCredential,
+                    "bootstrap-project-credential",
+                )
+                .unwrap(),
+                ["lab:admin".to_string()],
+                SkillLibraryTransport::product_bearer(SkillLibrarySurface::ApiBearer),
+            ),
+            "bootstrap-default",
+            SkillLibraryAction::Import,
+            "artifact",
+            SkillLibraryTarget::CreateForCaller,
+            "generic-api-product-credential",
+        )
+        .await;
+        assert!(matches!(
+            generic_api,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
 
         let unbound = decide(
             &runtime,

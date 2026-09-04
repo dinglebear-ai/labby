@@ -272,6 +272,14 @@ mod tests {
     }
 
     #[test]
+    fn product_route_binding_matches_only_the_exact_protected_route() {
+        let scope = McpRouteScope::protected_subset("team", ["depot"], ["skills"], false);
+        assert!(scope.matches_product_route("team"));
+        assert!(!scope.matches_product_route("other"));
+        assert!(!McpRouteScope::Root.matches_product_route("team"));
+    }
+
+    #[test]
     fn protected_subset_can_hide_code_mode() {
         let scope = McpRouteScope::protected_subset("ops", ["unifi"], ["device"], false);
         assert!(!scope.exposes_code_mode());

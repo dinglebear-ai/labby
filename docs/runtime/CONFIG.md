@@ -104,9 +104,54 @@ URLs, digest mismatches, and oversized responses. Put the bearer value in
 UNRAID_TEAM_DEPOT_TOKEN=replace-with-the-worker-machine-token
 ```
 
-First call `skill_library.list` to obtain its current `library_version`. Then
-submit the immutable Depot Artifact and `sha256:` revision through `POST
-/v1/skills`:
+With a Labby OAuth or configured static bearer identity, call `skill_library.list`
+to obtain its current `library_version`. Then submit the immutable Depot Artifact
+and `sha256:` revision through `POST /v1/skills`, including both required request
+headers:
+
+```sh
+curl --request POST https://labby.example.invalid/v1/skills \
+  --header "Authorization: Bearer $LABBY_CLIENT_TOKEN" \
+  --header "X-Labby-Project-Id: $LABBY_PROJECT_ID" \
+  --header "Content-Type: application/json" \
+  --data @import-request.json
+```
+
+`LABBY_PROJECT_ID` must name a project that the inbound caller is authorized to
+access. The bearer above is the inbound caller credential, not
+`UNRAID_TEAM_DEPOT_TOKEN`; the latter remains server-held and is used only for
+Labby-to-Depot acquisition. A project product credential is bound to its
+configured protected MCP resource and therefore must invoke the same
+`skill_library.import` tool through that protected MCP route, not through the
+generic `/v1/skills` endpoint.
+
+The ProductCredential route must expose the skills service through its bound
+loadout:
+
+```toml
+[[loadouts]]
+name = "team-skills"
+upstreams = []
+services = ["skills"]
+expose_skills = true
+
+[[protected_mcp_routes]]
+name = "team-skills"
+enabled = true
+public_host = "labby.example.invalid"
+public_path = "/mcp/team-skills"
+scopes = ["lab:read"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+project_id = "replace-with-project-id"
+loadout = "team-skills"
+```
+
+The ProductCredential resource and audience must exactly match this route's
+public URL (`https://labby.example.invalid/mcp/team-skills`).
+
+`import-request.json` contains:
 
 ```json
 {

@@ -123,8 +123,7 @@ impl LabMcpServer {
             .extensions
             .get::<labby_primitives::product_credential::BoundAccessGrant>();
         source.zip(bound).is_some_and(|(source, bound)| {
-            crate::dispatch::skill_library::auth::product_grants_match(source, bound)
-                && bound.audience == bound.resource
+            crate::dispatch::skill_library::auth::product_grants_are_route_bound(source, bound)
                 && bound.project_id == project_id
                 && self.route_scope.matches_product_route(&bound.route_id)
                 && self.route_scope.allows_service("skills")

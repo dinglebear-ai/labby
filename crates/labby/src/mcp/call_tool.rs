@@ -112,32 +112,32 @@ pub(super) fn skill_library_callback_boundary(
             message: "Skill Library requires a verified host identity".to_owned(),
             required_scopes: Vec::new(),
         })?;
-    let product_credential_bound = if identity.authenticator()
-        == labby_auth::Authenticator::ProductCredential
-    {
-        let source = parts
-            .extensions
-            .get::<labby_primitives::product_credential::ProductCredentialGrant>();
-        let bound = parts
-            .extensions
-            .get::<labby_primitives::product_credential::BoundAccessGrant>();
-        match source.zip(bound) {
-            Some((source, bound))
-                if crate::dispatch::skill_library::auth::product_grants_match(source, bound)
-                    && bound.audience == bound.resource =>
-            {
-                true
+    let product_credential_bound =
+        if identity.authenticator() == labby_auth::Authenticator::ProductCredential {
+            let source = parts
+                .extensions
+                .get::<labby_primitives::product_credential::ProductCredentialGrant>();
+            let bound = parts
+                .extensions
+                .get::<labby_primitives::product_credential::BoundAccessGrant>();
+            match source.zip(bound) {
+                Some((source, bound))
+                    if crate::dispatch::skill_library::auth::product_grants_are_route_bound(
+                        source, bound,
+                    ) =>
+                {
+                    true
+                }
+                _ => {
+                    return Err(ToolError::Forbidden {
+                        message: "Skill Library product credential binding is invalid".to_owned(),
+                        required_scopes: Vec::new(),
+                    });
+                }
             }
-            _ => {
-                return Err(ToolError::Forbidden {
-                    message: "Skill Library product credential binding is invalid".to_owned(),
-                    required_scopes: Vec::new(),
-                });
-            }
-        }
-    } else {
-        false
-    };
+        } else {
+            false
+        };
     Ok(SkillLibraryCallbackBoundary {
         identity,
         scopes: auth.scopes.clone(),

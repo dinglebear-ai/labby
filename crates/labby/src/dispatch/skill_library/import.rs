@@ -816,4 +816,47 @@ mod tests {
         assert!(coordinator.depot.contains_key("depot-primary"));
         assert!(coordinator.repository.contains_key("repository-primary"));
     }
+
+    #[test]
+    fn documented_depot_toml_parses_and_fails_closed_on_credentials_and_duplicates() {
+        const TOKEN_ENV: &str = "LABBY_TEST_DEPOT_SOURCE_TOKEN_531";
+        drop(rustls::crypto::ring::default_provider().install_default());
+        assert!(std::env::var_os(TOKEN_ENV).is_none());
+
+        let config: crate::config::LabConfig = toml::from_str(&format!(
+            r#"
+[[skill_library.sources]]
+id = "unraid-team-depot"
+kind = "depot"
+endpoint = "https://depot.example.invalid/artifacts/acquire"
+pinned_addresses = ["1.1.1.1", "2606:4700:4700::1111"]
+bearer_token_env = "{TOKEN_ENV}"
+"#
+        ))
+        .expect("documented Depot source parses");
+        assert_eq!(config.skill_library.sources.len(), 1);
+        assert_eq!(
+            config.skill_library.sources[0].kind,
+            crate::config::SkillLibrarySourceKind::Depot
+        );
+        assert_eq!(config.skill_library.sources[0].pinned_addresses.len(), 2);
+
+        let root = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            ImportCoordinator::from_config(&config.skill_library, root.path()),
+            Err(ArtifactError::NotFound("source_credential"))
+        ));
+
+        let mut credential_free = config.skill_library.clone();
+        credential_free.sources[0].bearer_token_env = None;
+        let coordinator = ImportCoordinator::from_config(&credential_free, root.path()).unwrap();
+        assert!(coordinator.depot.contains_key("unraid-team-depot"));
+
+        let mut duplicate = credential_free;
+        duplicate.sources.push(duplicate.sources[0].clone());
+        assert!(matches!(
+            ImportCoordinator::from_config(&duplicate, root.path()),
+            Err(ArtifactError::Conflict("duplicate_import_connection_id"))
+        ));
+    }
 }

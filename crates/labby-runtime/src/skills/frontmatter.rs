@@ -135,8 +135,11 @@ pub fn validate_frontmatter(
             !tools.is_empty()
                 && tools.len() <= 64
                 && tools.iter().all(|tool| {
-                    tool.as_str()
-                        .is_some_and(|tool| !tool.is_empty() && tool.len() <= 128)
+                    tool.as_str().is_some_and(|tool| {
+                        !tool.is_empty()
+                            && tool.len() <= 128
+                            && !tool.bytes().any(|byte| byte.is_ascii_whitespace())
+                    })
                 })
         });
         if !allowed_tools.is_string() && !compatible_list {
@@ -348,6 +351,43 @@ mod tests {
             "allowed-tools": ["Bash", "Read", "Grep"]
         }));
         validate_frontmatter(&fm, None).expect("bounded string list is compatible");
+    }
+
+    #[test]
+    fn enforces_claude_compatible_allowed_tools_list_bounds() {
+        let tools_64: Vec<_> = (0..64).map(|index| format!("tool-{index}")).collect();
+        validate_frontmatter(
+            &object(json!({"name": "x", "description": "d", "allowed-tools": tools_64})),
+            None,
+        )
+        .expect("64 tools are accepted");
+
+        for tools in [
+            Vec::<String>::new(),
+            (0..65).map(|index| format!("tool-{index}")).collect(),
+            vec![String::new()],
+            vec!["   ".to_owned()],
+            vec!["Read Grep".to_owned()],
+            vec!["x".repeat(129)],
+        ] {
+            assert!(
+                validate_frontmatter(
+                    &object(json!({"name": "x", "description": "d", "allowed-tools": tools})),
+                    None,
+                )
+                .is_err()
+            );
+        }
+
+        validate_frontmatter(
+            &object(json!({
+                "name": "x",
+                "description": "d",
+                "allowed-tools": ["x".repeat(128)]
+            })),
+            None,
+        )
+        .expect("a 128-byte tool hint is accepted");
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::http::{Request, header};
 use labby_auth::auth_context::AuthContext;
 use labby_auth::{Authenticator, VerifiedIdentity};
+use labby_primitives::product_credential::{BoundAccessGrant, ProductCredentialGrant};
 
 use super::{skill_library_callback_boundary, skill_library_callback_correlation};
 use crate::dispatch::error::ToolError;
@@ -40,6 +41,77 @@ fn parts(
 
 fn assert_forbidden(error: ToolError) {
     assert!(matches!(error, ToolError::Forbidden { .. }));
+}
+
+fn product_grants() -> (VerifiedIdentity, ProductCredentialGrant, BoundAccessGrant) {
+    let resource = "https://team.example.com/mcp".to_owned();
+    let source = ProductCredentialGrant {
+        issuer: "local".into(),
+        subject: "operator-1".into(),
+        credential_id: "credential-1".into(),
+        credential_generation: 1,
+        scopes: vec!["lab:read".into(), "lab:admin".into()],
+        resource: resource.clone(),
+        audience: resource.clone(),
+        expires_at: 4_000_000_000,
+    };
+    let bound = BoundAccessGrant {
+        installation_id: "installation-1".into(),
+        issuer: source.issuer.clone(),
+        subject: source.subject.clone(),
+        principal_id: "principal-1".into(),
+        organization_id: "organization-1".into(),
+        project_id: "project-1".into(),
+        loadout_id: "team-skills".into(),
+        loadout_generation: 1,
+        assignment_generation: 1,
+        catalog_generation: 1,
+        route_id: "team".into(),
+        route_generation: 1,
+        membership_epoch: 1,
+        organization_policy_epoch: 0,
+        project_policy_epoch: 0,
+        credential_id: source.credential_id.clone(),
+        credential_generation: source.credential_generation,
+        scopes: source.scopes.clone(),
+        resource: resource.clone(),
+        audience: resource,
+        expires_at: source.expires_at,
+        requires_admin: false,
+        destructive: false,
+    };
+    let identity = VerifiedIdentity::local_credential_with_issuer(
+        Authenticator::ProductCredential,
+        source.issuer.clone(),
+        source.credential_id.clone(),
+    )
+    .unwrap();
+    (identity, source, bound)
+}
+
+#[test]
+fn product_callback_requires_matching_host_bound_grants() {
+    let (identity, source, bound) = product_grants();
+    let mut valid = parts(
+        Some(identity.clone()),
+        false,
+        &["lab:read", "lab:admin"],
+        &[],
+    );
+    valid.extensions.insert(source.clone());
+    valid.extensions.insert(bound.clone());
+    let boundary = skill_library_callback_boundary(&valid).expect("matching product grants");
+    assert!(boundary.product_credential_bound);
+
+    let missing = parts(Some(identity.clone()), false, &["lab:admin"], &[]);
+    assert_forbidden(skill_library_callback_boundary(&missing).unwrap_err());
+
+    let mut mismatched = parts(Some(identity), false, &["lab:admin"], &[]);
+    let mut other_audience = bound;
+    other_audience.audience = "https://other.example.com/mcp".into();
+    mismatched.extensions.insert(source);
+    mismatched.extensions.insert(other_audience);
+    assert_forbidden(skill_library_callback_boundary(&mismatched).unwrap_err());
 }
 
 #[test]

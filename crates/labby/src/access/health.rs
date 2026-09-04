@@ -238,7 +238,7 @@ fn inspect_connection(connection: &Connection) -> AccessHealth {
                 AccessHealthStatus::Uninitialized,
                 "initialize_or_migrate_access_store",
             ),
-            Err(_) => AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store"),
+            Err(error) => classify_access_store_error(&error),
         };
     }
     if version == 0 {
@@ -274,18 +274,24 @@ fn inspect_connection(connection: &Connection) -> AccessHealth {
                 Err(error) => classify_sqlite_error(&error),
             }
         }
-        Err(super::error::AccessStoreError::Locked) => {
+        Err(error) => classify_access_store_error(&error),
+    }
+}
+
+fn classify_access_store_error(error: &super::error::AccessStoreError) -> AccessHealth {
+    match error {
+        super::error::AccessStoreError::Locked => {
             AccessHealth::new(AccessHealthStatus::Locked, "retry_access_store_check")
         }
-        Err(super::error::AccessStoreError::ReadOnly) => {
+        super::error::AccessStoreError::ReadOnly => {
             AccessHealth::new(AccessHealthStatus::ReadOnly, "make_access_store_writable")
         }
-        Err(
-            super::error::AccessStoreError::Corrupt
-            | super::error::AccessStoreError::IntegrityViolation { .. }
-            | super::error::AccessStoreError::ForeignKeyViolation,
-        ) => AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store"),
-        Err(_) => AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store"),
+        super::error::AccessStoreError::Corrupt
+        | super::error::AccessStoreError::IntegrityViolation { .. }
+        | super::error::AccessStoreError::ForeignKeyViolation => {
+            AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store")
+        }
+        _ => AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store"),
     }
 }
 
@@ -435,6 +441,24 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
+
+    #[test]
+    fn legacy_validation_operational_errors_are_not_reported_as_corruption() {
+        assert_eq!(
+            classify_access_store_error(&super::super::error::AccessStoreError::Locked),
+            AccessHealth::new(AccessHealthStatus::Locked, "retry_access_store_check")
+        );
+        assert_eq!(
+            classify_access_store_error(&super::super::error::AccessStoreError::ReadOnly),
+            AccessHealth::new(AccessHealthStatus::ReadOnly, "make_access_store_writable")
+        );
+        assert_eq!(
+            classify_access_store_error(&super::super::error::AccessStoreError::Unavailable(
+                "temporary".to_string()
+            )),
+            AccessHealth::new(AccessHealthStatus::Unavailable, "check_access_store")
+        );
+    }
 
     #[tokio::test]
     async fn bootstrapped_store_is_ready() {
@@ -663,6 +687,115 @@ mod tests {
             inspect_health(&path),
             AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store")
         );
+    }
+
+    #[test]
+    fn canonical_v3_and_v4_stores_are_migratable_without_mutation() {
+        for version in [
+            super::super::migrations::V3_SCHEMA_VERSION,
+            super::super::migrations::V4_SCHEMA_VERSION,
+        ] {
+            let connection = populated_legacy_schema(version);
+            let directory = super::super::test_support::secure_tempdir();
+            let path = secure_path(&directory);
+            connection
+                .execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])
+                .unwrap();
+            drop(connection);
+            #[cfg(unix)]
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let before = std::fs::read(&path).unwrap();
+
+            assert_eq!(
+                inspect_health(&path),
+                AccessHealth::new(
+                    AccessHealthStatus::Uninitialized,
+                    "initialize_or_migrate_access_store"
+                ),
+                "schema v{version}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before, "schema v{version}");
+        }
+    }
+
+    #[test]
+    fn malformed_v3_and_v4_stores_are_corrupt_not_migratable() {
+        for version in [
+            super::super::migrations::V3_SCHEMA_VERSION,
+            super::super::migrations::V4_SCHEMA_VERSION,
+        ] {
+            let directory = super::super::test_support::secure_tempdir();
+            let path = secure_path(&directory);
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            drop(connection);
+            #[cfg(unix)]
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+            assert_eq!(
+                inspect_health(&path),
+                AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store"),
+                "schema v{version}"
+            );
+        }
+
+        for version in [
+            super::super::migrations::V3_SCHEMA_VERSION,
+            super::super::migrations::V4_SCHEMA_VERSION,
+        ] {
+            let connection = populated_legacy_schema(version);
+            connection
+                .execute(
+                    "UPDATE access_metadata SET bootstrap_generation=1, bootstrap_identity_fingerprint='missing-bootstrap-state' WHERE singleton=1",
+                    [],
+                )
+                .unwrap();
+            let directory = super::super::test_support::secure_tempdir();
+            let path = secure_path(&directory);
+            connection
+                .execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])
+                .unwrap();
+            drop(connection);
+            #[cfg(unix)]
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(
+                inspect_health(&path),
+                AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store")
+            );
+        }
+    }
+
+    fn populated_legacy_schema(version: i64) -> Connection {
+        let (connection, fingerprint) = match version {
+            super::super::migrations::V3_SCHEMA_VERSION => (
+                super::super::migrations::canonical_v3_schema().unwrap(),
+                super::super::migrations::V3_SCHEMA_FINGERPRINT,
+            ),
+            super::super::migrations::V4_SCHEMA_VERSION => (
+                super::super::migrations::canonical_v4_schema().unwrap(),
+                super::super::migrations::V4_SCHEMA_FINGERPRINT,
+            ),
+            _ => unreachable!("test uses only canonical legacy schemas"),
+        };
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES(1,?1,?2,7,123,0,NULL)",
+                rusqlite::params![version, fingerprint],
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "application_id",
+                super::super::migrations::APPLICATION_ID,
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        connection
     }
 
     #[test]
