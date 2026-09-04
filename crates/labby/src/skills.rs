@@ -414,6 +414,5 @@ mod tests {
         }
         assert!(include_str!("cli/skills.rs").contains("dispatch_at_cli_boundary"));
         assert!(include_str!("mcp/skills.rs").contains("dispatch_at_in_process_boundary"));
-        assert!(include_str!("api/services/skills.rs").contains("dispatch_at_api_boundary"));
     }
 }

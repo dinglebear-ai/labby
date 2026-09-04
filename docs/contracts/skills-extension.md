@@ -1,45 +1,35 @@
 ---
 title: Skills extension contract
 created: 2026-08-12
-updated: 2026-08-26
+updated: 2026-09-04
 ---
 
 # Skills Extension Contract (SEP-2640)
 
-> **Status: unmerged draft.** SEP-2640 is on the MCP Extensions Track and has
-> not been merged into any spec revision. Labby implements it behind the
-> `skills` cargo feature so the surface can ship dark and be withdrawn if the
-> draft changes incompatibly.
+> **Status: accepted.** Core Maintainers accepted SEP-2640 on 2026-09-03.
+> Labby implements the accepted Extensions Track contract behind the `skills`
+> cargo feature. The canonical SEP branch, not the working-group mirror, is the
+> normative source.
 
 ## Pinned revision
 
 | What | Value |
 |------|-------|
-| Mirror repo | `modelcontextprotocol/experimental-ext-skills` |
-| **Pinned commit** | **`9f55cd349932ba00fc18402873c9eb2d2c2e78cb`** (2026-08-04) |
-| Pinned file | `docs/sep-draft-skills-extension.md` |
-| Upstream provenance | PR #2640 head on branch `sep/skills-extension` |
-| Upstream PR | [#2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) — open |
-| Companion | `docs/threat-model.md` (T1–T9), `docs/rationale.md` |
+| Canonical repo | `modelcontextprotocol/modelcontextprotocol` |
+| **Pinned commit** | **`d6b31a03504c15677d49b922b6b6ace0ef65728d`** (2026-09-03) |
+| Pinned file | `docs/seps/2640-skills-extension.mdx` |
+| Upstream provenance | Accepted PR #2640 on branch `sep/skills-extension` |
+| Upstream PR | [#2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) — accepted |
+| Non-normative companion | `modelcontextprotocol/ext-skills` threat model, rationale, glossary, and implementation findings |
 
-**On the two SHAs.** Earlier planning cited `0eb05fe` as the pin. That commit
-does not exist in `experimental-ext-skills` — the API returns `422 No commit
-found` — because it is an *upstream* commit in the spec repo. The mirror commit
-that carries that exact text is `9f55cd3`, whose message is literally
-`docs: sync SEP copy with upstream commit 0eb05fe (#119)`. Pin `9f55cd3`; it is
-the revision whose bytes this implementation was written against.
-
-**Drift check as of 2026-08-18.** The mirror's current `main` snapshot is
-`f1f66fa7f8c75d6094dff1fd4a5e83f058ec8692`. GitHub reports the
-`docs/sep-draft-skills-extension.md` blob as
-`6b535330430f55170bab488dde661f8909fb947b` at both that snapshot and the
-pinned mirror commit `9f55cd349932ba00fc18402873c9eb2d2c2e78cb`. The normative SEP draft
-bytes are therefore unchanged from Labby's pin. PR #2640 remains open; repeat
-this comparison before changing native wire behavior.
+The Working Group repository was renamed from `experimental-ext-skills` to
+`ext-skills`. Its own `AGENTS.md` says the accepted SEP branch is authoritative;
+the synchronized copy and later glossary, findings, and decision records are
+implementation guidance rather than a replacement protocol contract.
 
 ## Resolved questions
 
-These were open when planning started. Each is answered from the pinned text.
+These were open when planning started. Each is answered from the accepted text.
 
 ### 1. Is there a `list_changed` notification for skills?
 
@@ -120,7 +110,7 @@ specification](https://agentskills.io/specification).
 | `name` | yes | ≤64 chars; lowercase letters, digits, hyphens; no leading/trailing hyphen; **no consecutive hyphens**; equals the parent directory name |
 | `description` | yes | ≤1024 chars, non-empty |
 | `license` | no | string |
-| `compatibility` | no | ≤500 chars |
+| `compatibility` | no | 1–500 chars when present |
 | `metadata` | no | object, string values only |
 | `allowed-tools` | no | space-separated **string** (not a list); experimental |
 
@@ -165,6 +155,15 @@ The two failures are spec-equivalent, and both recover the same way: refresh via
 `skills/get` (or `skills/list`) and proceed from the current `resources` set,
 "which, being different, revokes any content-bound approval."
 
+### Raw bytes, text, and blobs
+
+The manifest's `size` and `digest` cover raw file bytes. `SKILL.md` is a UTF-8
+Markdown text resource, while supporting assets may be MCP text or base64 blob
+content. Labby decodes blob content before comparing its byte length and
+SHA-256 digest, then preserves the text/blob representation and MIME type when
+relaying the resource. A size mismatch fails even when the digest field is
+otherwise well formed.
+
 ### Frontmatter cross-verification
 
 > After fetching a `SKILL.md` for which the host holds an entry … hosts MUST
@@ -189,6 +188,11 @@ carried.
 Absence from a cached listing therefore is **not** an error. Labby resolves a
 cache miss by calling `skills/get` for that URI; only `-32602` means
 not-a-skill.
+
+The `uri` passed to `skills/get` is specifically the skill's root `SKILL.md`
+URI. A supporting-file URI is not an alias for its owning skill and receives
+`-32602`; supporting files are fetched through manifest-bound
+`resources/read` calls.
 
 ### Per-origin namespacing (T8)
 
@@ -343,7 +347,7 @@ declared `directoryRead: true`. Labby does not declare it.
       "uri": "skill://pdf-processing/SKILL.md",
       "frontmatter": { "name": "pdf-processing", "description": "…" },
       "resources": [
-        { "uri": "skill://pdf-processing/SKILL.md", "digest": "sha256:d5e6f7a8…" }
+        { "uri": "skill://pdf-processing/SKILL.md", "digest": "sha256:d5e6f7a8…", "size": 2314 }
       ]
     }
   }
@@ -352,23 +356,26 @@ declared `directoryRead: true`. Labby does not declare it.
 
 `skills/list` returns `skills[]` plus `nextCursor`, `ttlMs`, and `cacheScope`.
 Digests are `sha256:{hex}` with exactly 64 lowercase hex characters.
+Servers using protocol version 2026-07-28 include `resultType: "complete"`.
+Labby accepts an absent `resultType` as `"complete"` as a compatibility
+tolerance, while rejecting unknown values.
 
-## Labby-owned Skill Library extension
+## Labby-owned Artifact Library extension
 
 SEP-2640 defines discovery and reading; it does not define authoring,
 revisioning, activation, visibility, or import. Labby keeps those product
-operations outside the SEP namespace as actions on its existing `skills` tool:
+operations outside the SEP namespace as actions on its `artifacts` tool:
 
-- read metadata: `skill_library.list`, `.get`, `.history`, `.read`;
+- search and read metadata: `artifacts.search`, `.list`, `.get`, `.history`, `.read`;
 - author without implicit activation: `.validate`, `.create`, `.save`;
 - publish exact revisions: `.activate`, `.deactivate`, `.rollback`, `.refresh`;
-- acquire without implicit activation: `.import`;
+- acquire without implicit activation: `.import`, `.import_batch`;
 - retain revisions while retiring catalog visibility: `.archive`.
 
 These actions are a Labby extension and must not be presented as SEP-2640
 methods. They share the same immutable published generation as native
-`skills/list`, `skills/get`, and `resources/read`, and as the compatibility
-`skills.list`, `skills.get`, and `skills.read` actions.
+`skills/list`, `skills/get`, and `resources/read`. Labby does not expose a
+duplicate `skills.*` action-tool compatibility namespace.
 
 The management surface is versioned and optimistic: mutations require an
 expected library version and idempotency key, and revision-sensitive mutations
@@ -399,8 +406,8 @@ tools, prompts, and resources — none of which is the method a caller needs.
 
 ## Budgets
 
-These combine SEP-2640's required per-skill interoperability limits with
-host-chosen catalog and parsing bounds. They are defined in
+Host-chosen, not spec-mandated; SEP-2640 defines no limits and its threat model
+(T6) puts the responsibility on the host. Defined in
 `crates/labby-runtime/src/skills/limits.rs`.
 
 | Budget | Value |
@@ -427,6 +434,7 @@ asserted against their Rust definitions, so editing one without the other fails
 CI.
 
 A scheduled drift watcher (an extension of `scripts/ci/mcp_upstream_drift.py`)
-compares the pinned SHA against the mirror's HEAD and opens an issue on
-divergence. **That issue must be triaged before any release touching skills
-aggregation** — a warn-only job nobody reads defeats the point of pinning.
+compares the pinned SHA against the canonical SEP branch and opens or updates an
+issue when a watched normative SEP file changes. **That issue must be triaged
+before any release touching skills aggregation** — a warn-only job nobody reads
+defeats the point of pinning.

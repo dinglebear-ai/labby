@@ -110,6 +110,14 @@ const ALLOWED_EDGES: &[(&str, &str)] = &[
     // library action catalog and delegates mutations to the library's canonical
     // authorization/transaction kernel; it does not duplicate library semantics.
     ("skills", "skill_library"),
+    // skills → artifacts: first-party SEP-2640 discovery projects the
+    // canonical Artifact action catalog for surface filtering; it does not
+    // own or dispatch Artifact mutations.
+    ("skills", "artifacts"),
+    // skill_library → artifact_control: the local transactional library owns
+    // the process-scoped provider-neutral relay used by remote Artifact
+    // discovery and acquisition.
+    ("skill_library", "artifact_control"),
     // snippets → gateway: snippets reuses gateway::code_mode (the shared JS
     //   execution kernel) plus the GatewayManager handle. The Arch-M2
     //   relocation of code_mode to a top-level peer is DEFERRED, so this edge
@@ -358,10 +366,11 @@ fn extract_action_names(contents: &str) -> Vec<String> {
 /// Given the text right after `ActionSpec {`, return the value of the first
 /// `name: "..."` field.
 fn first_name_field(after: &str) -> Option<String> {
-    let name_idx = after.find("name:")?;
-    let q1 = after[name_idx..].find('"')? + name_idx + 1;
-    let q2 = after[q1..].find('"')? + q1;
-    Some(after[q1..q2].to_string())
+    let after = after.trim_start();
+    let name = after.strip_prefix("name:")?;
+    let q1 = name.find('"')? + 1;
+    let q2 = name[q1..].find('"')? + q1;
+    Some(name[q1..q2].to_string())
 }
 
 fn is_exempt_action(name: &str) -> bool {

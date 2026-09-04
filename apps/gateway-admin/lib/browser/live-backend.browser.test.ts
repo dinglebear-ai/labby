@@ -30,7 +30,11 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
     if (!session.ok || !sessionBody.authenticated) return { status: session.status, body: sessionBody }
     const response = await fetch(`/v1/${service}`, {
       method: 'POST', credentials: 'include', cache: 'no-store',
-      headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+        ...(typeof sessionBody.project_id === 'string' ? { 'x-labby-project-id': sessionBody.project_id } : {}),
+      },
       body: JSON.stringify({ action: name, params }),
     })
     return {
@@ -38,12 +42,13 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       body: await response.json(),
       sessionAuthenticated: sessionBody.authenticated === true,
       csrfLength: typeof sessionBody.csrf_token === 'string' ? sessionBody.csrf_token.length : 0,
+      sessionProjectId: typeof sessionBody.project_id === 'string' ? sessionBody.project_id : null,
     }
   }, { csrfToken, service, name, params })
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
-  await page.getByRole('button', { name: 'Add Server', exact: true }).click()
+  await page.getByRole('button', { name: 'Add Server', exact: true }).last().click()
   const dialog = page.getByRole('dialog', { name: 'Add server' })
   await dialog.getByLabel('Name').fill(name)
   await dialog.getByLabel('URL').fill('http://127.0.0.1:9/mcp')
@@ -84,6 +89,67 @@ async function removeProtectedRouteThroughUi(page: Page, name: string) {
   // Removing a just-staged add cancels it outright; removing an already
   // mounted route instead leaves a restart-required tombstone.
   await assert.doesNotReject(removeButton.waitFor({ state: 'hidden', timeout: 10_000 }))
+}
+
+async function exerciseArtifactLibraryThroughUi(page: Page, csrfToken: string, name: string) {
+  await page.goto('/skills/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+  await page.getByRole('button', { name: 'Create skill', exact: true }).click()
+  await page.getByLabel('Skill name').fill(name)
+  await page.getByLabel('Contents').fill(`---\nname: ${name}\ndescription: Live browser Artifact lifecycle\n---\n\n# First revision\n`)
+  await page.getByRole('button', { name: 'Validate', exact: true }).click()
+  await assert.doesNotReject(page.getByText('Skill is valid').waitFor({ state: 'visible', timeout: 10_000 }))
+  let mutation = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/v1/artifacts'
+    && response.request().postData()?.includes('artifacts.create') === true)
+  await page.getByRole('button', { name: 'Save immutable revision', exact: true }).click()
+  let response = await mutation
+  assert.equal(response.status(), 200, `Artifact create returned ${response.status()}: ${await response.text()}`)
+  await assert.doesNotReject(page.getByRole('button', { name: new RegExp(`^${name}`) }).waitFor({ state: 'visible', timeout: 10_000 }))
+
+  await page.getByRole('button', { name: 'Activate latest revision', exact: true }).click()
+  await assert.doesNotReject(page.getByText('Published', { exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 }))
+
+  await page.getByRole('button', { name: 'Edit latest', exact: true }).click()
+  await page.getByLabel('Contents').fill(`---\nname: ${name}\ndescription: Live browser Artifact lifecycle\n---\n\n# Second revision\n`)
+  mutation = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/v1/artifacts'
+    && response.request().postData()?.includes('artifacts.save') === true)
+  await page.getByRole('button', { name: 'Save immutable revision', exact: true }).click()
+  response = await mutation
+  assert.equal(response.status(), 200, `Artifact save returned ${response.status()}: ${await response.text()}`)
+  const afterSave = await action(page, csrfToken, 'artifacts', 'artifacts.list', { limit: 10 })
+  progress(`artifact-after-save:${afterSave.status}:${JSON.stringify(afterSave.body).slice(0, 1000)}`)
+  const activate = page.getByRole('button', { name: 'Activate latest revision', exact: true })
+  await activate.waitFor({ state: 'visible', timeout: 10_000 })
+  await activate.click({ timeout: 10_000 })
+
+  page.once('dialog', dialog => dialog.accept())
+  mutation = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/v1/artifacts'
+    && response.request().postData()?.includes('artifacts.archive') === true)
+  await page.getByRole('button', { name: 'Archive', exact: true }).click()
+  response = await mutation
+  assert.equal(response.status(), 200, `Artifact archive returned ${response.status()}: ${await response.text()}`)
+  const afterArchive = await action(page, csrfToken, 'artifacts', 'artifacts.list', { limit: 10 })
+  assert.equal(afterArchive.status, 200)
+  assert.equal(afterArchive.body.items.find((item: { name: string }) => item.name === name)?.archived, true)
+}
+
+async function exerciseActionableImportFailure(page: Page) {
+  await page.goto('/skills/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+  await page.getByRole('button', { name: 'Import', exact: true }).click()
+  await page.getByLabel('Import connection').fill('unconfigured-repository')
+  await page.getByLabel('Import artifact ID').fill('missing-artifact')
+  await page.getByLabel('Import revision ID').fill(`sha256:${'a'.repeat(64)}`)
+  const mutation = page.waitForResponse(response => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/v1/artifacts'
+    && response.request().postData()?.includes('artifacts.import') === true)
+  await page.getByRole('button', { name: 'Import exact revision', exact: true }).click()
+  const response = await mutation
+  assert.equal(response.status(), 503)
+  const body = await response.json()
+  assert.equal(body.kind, 'source_unavailable')
+  await assert.doesNotReject(page.getByText(/import sources are not configured|source is not configured/i).waitFor({ state: 'visible', timeout: 10_000 }))
 }
 
 test('embedded Gateway Admin completes a real backend journey', {
@@ -161,13 +227,21 @@ test('embedded Gateway Admin completes a real backend journey', {
       const persisted = await action(page, csrfToken, 'gateway', 'gateway.server.get', { id: ownedGatewayId })
       progress(`gateway-get:${persisted.status}`)
       assert.equal(persisted.status, 200)
-      assert.ok(await page.locator('a:visible').filter({ hasText: ownedName }).first().isVisible())
+      await assert.doesNotReject(page.locator('a:visible').filter({ hasText: ownedName }).first().waitFor({ state: 'visible', timeout: 10_000 }))
 
       await stageProtectedRouteThroughUi(page, ownedRoute)
       progress('protected-route-staged-through-ui')
       await removeProtectedRouteThroughUi(page, ownedRoute)
       ownedRouteRemoved = true
       progress('protected-route-removed-through-ui')
+
+      const libraryProbe = await action(page, csrfToken, 'artifacts', 'artifacts.list', { limit: 10 })
+      progress(`artifact-library-probe:${libraryProbe.status}:project=${libraryProbe.sessionProjectId}:${JSON.stringify(libraryProbe.body).slice(0, 500)}`)
+      assert.equal(libraryProbe.status, 200, `Artifact Library probe failed: ${JSON.stringify(libraryProbe.body)}`)
+      await exerciseArtifactLibraryThroughUi(page, csrfToken, `${ownedName}-skill`)
+      progress('artifact-lifecycle-through-ui')
+      await exerciseActionableImportFailure(page)
+      progress('artifact-import-failure-through-ui')
 
       // A real rapid duplicate reaches backend serialization; the UI must not
       // turn it into two successful state transitions.

@@ -182,8 +182,13 @@ impl SkillProvider for SepSkillProvider {
             let result = SkillResourceReadResult {
                 skill_id: request.skill_id.clone(),
                 resource_id: request.resource_id.clone(),
-                bytes: verified.text.into_bytes(),
+                bytes: verified.bytes,
                 media_type: verified.mime_type,
+                representation: if verified.is_blob {
+                    labby_runtime::skills::SkillResourceRepresentation::Blob
+                } else {
+                    labby_runtime::skills::SkillResourceRepresentation::Text
+                },
             };
             result.validate_for(request)?;
             Ok(result)

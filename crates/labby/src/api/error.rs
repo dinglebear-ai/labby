@@ -84,9 +84,10 @@ impl IntoResponse for ApiError {
             "auth_failed" => StatusCode::UNAUTHORIZED,
             "not_found" | "route_not_found" => StatusCode::NOT_FOUND,
             "rate_limited" | "queue_saturated" => StatusCode::TOO_MANY_REQUESTS,
-            "sync_in_progress" | "service_unavailable" | "provider_unavailable" => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            "sync_in_progress"
+            | "service_unavailable"
+            | "provider_unavailable"
+            | "source_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             "missing_param" | "invalid_param" | "validation_failed" | "invalid_hint"
             | "tool_error" => StatusCode::UNPROCESSABLE_ENTITY,
             "relay_invalid_target" => StatusCode::UNPROCESSABLE_ENTITY,
@@ -214,6 +215,14 @@ mod tests {
         })
         .into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn source_unavailable_maps_to_service_unavailable() {
+        assert_eq!(
+            status_for("source_unavailable"),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 
     #[test]

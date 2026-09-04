@@ -30,7 +30,8 @@ if [[ $# -ne 0 ]]; then
   exit 2
 fi
 
-LABBY_RMCP_VERSION="${LABBY_RMCP_VERSION:-3.1.0}"
+LABBY_RMCP_REPOSITORY="${LABBY_RMCP_REPOSITORY:-https://github.com/dinglebear-ai/rust-sdk.git}"
+LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-0665dcac527abd6828a6bdc805821e820841e491}"
 RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.1.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
 RMCP_COMMIT="${RMCP_COMMIT:-1f9358eddca42d3a510c70ae6446dd6548c7c856}"
@@ -73,8 +74,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! grep -Eq "rmcp = \\{ version = \"=${LABBY_RMCP_VERSION}\"" "${repo_root}/Cargo.toml"; then
-  echo "Cargo.toml must pin rmcp exactly to =${LABBY_RMCP_VERSION}" >&2
+if ! grep -Fq \
+  "rmcp = { git = \"${LABBY_RMCP_REPOSITORY}\", rev = \"${LABBY_RMCP_REVISION}\"" \
+  "${repo_root}/Cargo.toml"; then
+  echo \
+    "Cargo.toml must pin rmcp to ${LABBY_RMCP_REPOSITORY}@${LABBY_RMCP_REVISION}" \
+    >&2
   exit 1
 fi
 

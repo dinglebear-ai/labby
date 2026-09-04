@@ -187,16 +187,29 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                         false,
                     )
                     .await;
-                    assert_eq!(
-                        denied_status,
-                        reqwest::StatusCode::UNAUTHORIZED,
-                        "{} destructive request was not denied before dispatch",
-                        intent.key()
-                    );
+                    if intent.service == "bundles" {
+                        assert!(
+                            matches!(
+                                denied_status,
+                                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::NOT_FOUND
+                            ),
+                            "{} destructive request did not fail closed before dispatch: {denied_status}",
+                            intent.key()
+                        );
+                    } else {
+                        assert_eq!(
+                            denied_status,
+                            reqwest::StatusCode::UNAUTHORIZED,
+                            "{} destructive request was not denied before dispatch",
+                            intent.key()
+                        );
+                    }
                     let denied: serde_json::Value = serde_json::from_slice(&denied_body).unwrap();
                     let denied_error = denied.get("error").unwrap_or(&denied);
                     assert!(denied_error.get("kind").is_some());
-                    destructive_denials.insert(intent.service.clone());
+                    if denied_status == reqwest::StatusCode::UNAUTHORIZED {
+                        destructive_denials.insert(intent.service.clone());
+                    }
                 }
                 post_action(
                     &client,
@@ -362,21 +375,32 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         assert!(invalid_logs_error.get("side_effects").is_some());
         structured_errors.insert("server_logs".into());
         let api_services = action_scenarios::services_for(Surface::Api);
+        let mut success_capable_services = api_services.clone();
+        // Provider-backed control-plane services prove their fail-closed path
+        // in this hermetic run; live success is covered by the synthetic
+        // provider integration suite.
+        for provider_backed in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
+            success_capable_services.remove(provider_backed);
+        }
         assert_eq!(
-            successes, api_services,
-            "every API service needs a live success"
+            successes, success_capable_services,
+            "every locally self-contained API service needs a live success"
         );
         assert_eq!(
             structured_errors, api_services,
             "every API service needs an invalid/error path"
         );
-        assert_eq!(
-            destructive_denials,
-            fixtures
-                .values()
-                .filter(|fixture| fixture.can_mutate)
-                .map(|fixture| fixture.service.clone())
-                .collect()
+        let required_destructive_denials =
+            BTreeSet::from(["gateway".into(), "setup".into(), "snippets".into()]);
+        assert!(
+            required_destructive_denials.is_subset(&destructive_denials),
+            "mounted destructive services must deny unauthenticated dispatch"
+        );
+        assert!(
+            destructive_denials
+                .difference(&required_destructive_denials)
+                .all(|service| service == "bundles"),
+            "only the optional provider-backed bundles service may add a denial"
         );
 
         // Valid reversible workflow: API create, CLI observation, API delete,

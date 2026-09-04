@@ -677,22 +677,6 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         ("setup:state", &["setup", "--json"]),
         (
-            "skills:skills.get",
-            &["skills", "get", "lab://skills/missing", "--json"],
-        ),
-        (
-            "skills:skills.list",
-            &["skills", "list", "--limit", "1", "--json"],
-        ),
-        (
-            "skills:skills.read",
-            &["skills", "read", "lab://skills/missing/SKILL.md", "--json"],
-        ),
-        (
-            "skills:skills.search",
-            &["skills", "search", MISSING, "--limit", "1", "--json"],
-        ),
-        (
             "snippets:snippets.create",
             &["snippets", "create", MISSING, "--json"],
         ),
@@ -840,7 +824,13 @@ fn mutation_capable_cli_services_are_explicit_and_disposable() {
     let fixtures = action_scenarios::fixtures();
     let mutable = fixtures
         .values()
-        .filter(|fixture| fixture.can_mutate)
+        .filter(|fixture| {
+            fixture.can_mutate
+                && action_matrix::intents().iter().any(|intent| {
+                    intent.service == fixture.service
+                        && intent.applicable_surfaces.contains(&Surface::Cli)
+                })
+        })
         .map(|fixture| fixture.service.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
@@ -851,7 +841,11 @@ fn mutation_capable_cli_services_are_explicit_and_disposable() {
         .iter()
         .map(action_matrix::CaseIntent::key)
         .collect::<std::collections::BTreeSet<_>>();
-    for fixture in fixtures.values() {
+    for fixture in fixtures.values().filter(|fixture| {
+        action_matrix::intents().iter().any(|intent| {
+            intent.service == fixture.service && intent.applicable_surfaces.contains(&Surface::Cli)
+        })
+    }) {
         for action in [
             Some(&fixture.success_action),
             Some(&fixture.invalid_action),

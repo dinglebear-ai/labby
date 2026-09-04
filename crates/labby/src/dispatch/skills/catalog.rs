@@ -92,28 +92,11 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     },
 ];
 
-const fn api_actions() -> [ActionSpec; 19] {
-    let mut result = [ACTIONS[0]; 19];
-    let mut index = 0;
-    while index < ACTIONS.len() {
-        result[index] = ACTIONS[index];
-        index += 1;
-    }
-    let mut management = 0;
-    while management < crate::dispatch::skill_library::catalog::ACTIONS.len() {
-        result[index] = crate::dispatch::skill_library::catalog::ACTIONS[management];
-        index += 1;
-        management += 1;
-    }
-    result
+/// The HTTP control plane is Artifact-centered; native Skill protocol reads do
+/// not share its action namespace.
+pub(crate) fn api_actions() -> &'static [ActionSpec] {
+    &crate::dispatch::artifacts::ACTIONS
 }
-
-const ALL_MANAGEMENT_ACTIONS: [ActionSpec; 19] = api_actions();
-/// Authenticated HTTP MCP/App contract: compatibility reads plus the bounded
-/// Skill Library management vocabulary. Stdio and private in-process callers
-/// intentionally retain [`ACTIONS`].
-pub(crate) const MCP_ACTIONS: &[ActionSpec] = &ALL_MANAGEMENT_ACTIONS;
-pub(crate) const API_ACTIONS: &[ActionSpec] = MCP_ACTIONS;
 
 #[cfg(test)]
 mod tests {
@@ -122,30 +105,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn api_catalog_contains_compatibility_and_management_without_collisions() {
-        let names = API_ACTIONS
+    fn api_catalog_contains_artifact_management_without_collisions() {
+        let names = api_actions()
             .iter()
             .map(|action| action.name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 19);
+        assert_eq!(names.len(), 31);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()
         );
-        assert!(names.contains(&"skills.list"));
-        assert!(names.contains(&"skill_library.activate"));
+        assert!(names.contains(&"artifacts.search"));
+        assert!(names.contains(&"artifacts.activate"));
         assert!(!names.iter().any(|name| name.contains("list_changed")));
-        for action in API_ACTIONS.iter().filter(|action| {
+        for action in api_actions().iter().filter(|action| {
             matches!(
                 action.name,
-                "skill_library.create"
-                    | "skill_library.save"
-                    | "skill_library.activate"
-                    | "skill_library.deactivate"
-                    | "skill_library.archive"
-                    | "skill_library.rollback"
-                    | "skill_library.import"
-                    | "skill_library.refresh"
+                "artifacts.create"
+                    | "artifacts.save"
+                    | "artifacts.activate"
+                    | "artifacts.deactivate"
+                    | "artifacts.archive"
+                    | "artifacts.rollback"
+                    | "artifacts.import"
+                    | "artifacts.refresh"
             )
         }) {
             let names = action
@@ -172,7 +155,7 @@ mod tests {
         assert!(
             ACTIONS
                 .iter()
-                .all(|action| !action.name.starts_with("skill_library."))
+                .all(|action| !action.name.starts_with("artifacts."))
         );
         assert!(
             ACTIONS

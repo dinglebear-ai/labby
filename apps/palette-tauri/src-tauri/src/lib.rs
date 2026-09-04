@@ -1,5 +1,7 @@
 use std::{
     fmt::Display,
+    net::IpAddr,
+    path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -8,9 +10,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, Size,
+    AppHandle, Emitter, LogicalSize, Manager, Size, WebviewUrl, WebviewWindowBuilder,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::PageLoadEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -32,7 +35,9 @@ pub(crate) fn warn(message: impl Display) {
 #[serde(rename_all = "camelCase")]
 struct LabbySettings {
     server_url: String,
+    control_plane_url: String,
     static_token: Option<String>,
+    project_id: Option<String>,
     shortcut: String,
     theme: PaletteTheme,
     hide_on_blur: bool,
@@ -69,6 +74,140 @@ struct ActiveShortcut(Mutex<Option<String>>);
 /// thread or Tokio worker threads.
 #[derive(Default)]
 struct SettingsState(tokio::sync::RwLock<Option<LabbySettings>>);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ControlPlaneLoadPhase {
+    #[default]
+    Idle,
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Default)]
+struct ControlPlaneLoadState {
+    generation: u64,
+    phase: ControlPlaneLoadPhase,
+    target_url: Option<String>,
+    shell_ready: bool,
+    error_message: Option<String>,
+}
+
+#[derive(Default)]
+struct ControlPlaneLoad(Mutex<ControlPlaneLoadState>);
+
+impl ControlPlaneLoad {
+    fn with_state<T>(&self, f: impl FnOnce(&mut ControlPlaneLoadState) -> T) -> T {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut state)
+    }
+
+    fn begin(&self) -> u64 {
+        self.with_state(|state| {
+            state.generation = state.generation.wrapping_add(1).max(1);
+            state.phase = ControlPlaneLoadPhase::Pending;
+            state.target_url = None;
+            state.shell_ready = false;
+            state.error_message = None;
+            state.generation
+        })
+    }
+
+    fn set_target(&self, generation: u64, target_url: &str) -> bool {
+        self.with_state(|state| {
+            if state.generation != generation || state.phase != ControlPlaneLoadPhase::Pending {
+                return false;
+            }
+            state.target_url = Some(target_url.to_owned());
+            state.shell_ready = false;
+            true
+        })
+    }
+
+    fn complete_url(&self, loaded_url: &str) -> bool {
+        self.with_state(|state| {
+            if state.phase != ControlPlaneLoadPhase::Pending
+                || state.target_url.as_deref() != Some(loaded_url)
+            {
+                return false;
+            }
+            state.phase = ControlPlaneLoadPhase::Succeeded;
+            true
+        })
+    }
+
+    fn fail(&self, generation: u64) -> bool {
+        self.with_state(|state| {
+            if state.generation != generation || state.phase != ControlPlaneLoadPhase::Pending {
+                return false;
+            }
+            state.phase = ControlPlaneLoadPhase::Failed;
+            true
+        })
+    }
+
+    fn fail_with_message(&self, generation: u64, message: String) -> bool {
+        self.with_state(|state| {
+            if state.generation != generation || state.phase != ControlPlaneLoadPhase::Pending {
+                return false;
+            }
+            state.phase = ControlPlaneLoadPhase::Failed;
+            state.error_message = Some(message);
+            true
+        })
+    }
+
+    fn ready_error(&self) -> Option<String> {
+        self.with_state(|state| {
+            (state.shell_ready && state.phase == ControlPlaneLoadPhase::Failed)
+                .then(|| state.error_message.clone())
+                .flatten()
+        })
+    }
+
+    fn shell_loaded(&self) -> Option<String> {
+        self.with_state(|state| {
+            state.shell_ready = true;
+            (state.phase == ControlPlaneLoadPhase::Failed)
+                .then(|| state.error_message.clone())
+                .flatten()
+        })
+    }
+
+    fn navigation_allowed(&self, url: &tauri::Url) -> bool {
+        if is_control_plane_shell_url(url) {
+            return true;
+        }
+        self.with_state(|state| {
+            let Some(target) = state.target_url.as_deref() else {
+                return false;
+            };
+            let Ok(target) = tauri::Url::parse(target) else {
+                return false;
+            };
+            matches!(url.scheme(), "http" | "https") && url.origin() == target.origin()
+        })
+    }
+}
+
+fn is_control_plane_shell_url(url: &tauri::Url) -> bool {
+    ((url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+        || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost")))
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/control-plane-loader.html"
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+fn generation_url(mut url: reqwest::Url, generation: u64) -> reqwest::Url {
+    url.set_fragment(Some(&format!("labby-load-generation-{generation}")));
+    url
+}
 
 fn log_palette_warning(context: &str, err: impl Display) {
     warn(format!("{context}: {err}"));
@@ -124,6 +263,236 @@ fn hide_palette(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn show_palette(app: AppHandle) -> Result<(), String> {
     show_main_window(&app)
+}
+
+const CONTROL_PLANE_WINDOW: &str = "control-plane";
+
+fn control_plane_url(
+    server_url: &str,
+    requested_path: Option<&str>,
+) -> Result<reqwest::Url, String> {
+    let origin = validate_saved_server_url(server_url)?;
+    let mut url = reqwest::Url::parse(&origin)
+        .map_err(|err| format!("saved Labby server URL is invalid: {err}"))?;
+    let requested = requested_path.unwrap_or("/").trim();
+    if requested.contains(['\\', '\0', '\r', '\n']) || requested.contains("..") {
+        return Err("control plane path is invalid".to_string());
+    }
+    let requested = if requested.is_empty() { "/" } else { requested };
+    if !requested.starts_with('/') || requested.starts_with("//") {
+        return Err("control plane path must be an absolute application path".to_string());
+    }
+    let (path, query) = requested
+        .split_once('?')
+        .map_or((requested, None), |(path, query)| (path, Some(query)));
+    url.set_path(path);
+    url.set_query(query.filter(|query| !query.is_empty()));
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn show_control_plane_window(app: &AppHandle, path: Option<&str>) -> Result<(), String> {
+    let load_state = app.state::<ControlPlaneLoad>();
+    let generation = load_state.begin();
+    if let Err(err) = show_control_plane_shell(app) {
+        load_state.fail(generation);
+        return Err(err);
+    }
+    let settings = match merged_settings_from_disk(app) {
+        Ok(settings) => settings,
+        Err(err) => {
+            let message = format!(
+                "Unable to load Labby settings: {err}. Open Settings to repair the saved configuration."
+            );
+            deliver_control_plane_error(app, generation, message.clone());
+            return Err(message);
+        }
+    };
+    #[cfg(debug_assertions)]
+    let server_url = std::env::var("LABBY_CONTROL_PLANE_DEV_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| settings.control_plane_url.clone());
+    #[cfg(not(debug_assertions))]
+    let server_url = settings.control_plane_url;
+    let url = match control_plane_url(&server_url, path) {
+        Ok(url) => url,
+        Err(err) => {
+            deliver_control_plane_error(app, generation, err.clone());
+            return Err(err);
+        }
+    };
+    load_control_plane(app.clone(), generation, url);
+    Ok(())
+}
+
+fn show_control_plane_shell(app: &AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(CONTROL_PLANE_WINDOW) {
+        window
+            .navigate(
+                tauri::Url::parse("tauri://localhost/control-plane-loader.html")
+                    .map_err(|err| err.to_string())?,
+            )
+            .map_err(|err| err.to_string())?;
+        window.show().map_err(|err| err.to_string())?;
+        window.set_focus().map_err(|err| err.to_string())?;
+    } else {
+        let navigation_app = app.clone();
+        WebviewWindowBuilder::new(
+            app,
+            CONTROL_PLANE_WINDOW,
+            WebviewUrl::App(PathBuf::from("control-plane-loader.html")),
+        )
+        .title("Labby Control Plane")
+        .inner_size(1280.0, 820.0)
+        .min_inner_size(900.0, 620.0)
+        .resizable(true)
+        .center()
+        .on_navigation(move |url| {
+            navigation_app
+                .state::<ControlPlaneLoad>()
+                .navigation_allowed(url)
+        })
+        .on_page_load(|window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            if is_control_plane_shell_url(payload.url()) {
+                if let Some(message) = window.state::<ControlPlaneLoad>().shell_loaded() {
+                    render_control_plane_error(&window, &message);
+                }
+            } else if matches!(payload.url().scheme(), "http" | "https") {
+                window
+                    .state::<ControlPlaneLoad>()
+                    .complete_url(payload.url().as_str());
+            }
+        })
+        .build()
+        .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn render_control_plane_error(window: &tauri::WebviewWindow, message: &str) {
+    let detail = serde_json::to_string(message)
+        .unwrap_or_else(|_| "\"The Control Plane could not be loaded.\"".to_owned());
+    if let Err(err) = window.eval(format!("window.showControlPlaneError({detail})")) {
+        log_palette_warning("failed to render control-plane error", err);
+    }
+}
+
+fn deliver_control_plane_error(app: &AppHandle, generation: u64, message: String) {
+    let state = app.state::<ControlPlaneLoad>();
+    if !state.fail_with_message(generation, message) {
+        return;
+    }
+    if let (Some(message), Some(window)) = (
+        state.ready_error(),
+        app.get_webview_window(CONTROL_PLANE_WINDOW),
+    ) {
+        render_control_plane_error(&window, &message);
+    }
+}
+
+fn restore_control_plane_error_shell(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(CONTROL_PLANE_WINDOW) {
+        match window.navigate(
+            tauri::Url::parse("tauri://localhost/control-plane-loader.html")
+                .expect("static loader URL is valid"),
+        ) {
+            Ok(()) => return,
+            Err(err) => {
+                log_palette_warning("failed to restore control-plane error shell", err);
+                if let Err(err) = window.destroy() {
+                    log_palette_warning("failed to destroy unresponsive control-plane window", err);
+                }
+            }
+        }
+    }
+    if let Err(err) = show_control_plane_shell(app) {
+        log_palette_warning("failed to rebuild control-plane error shell", err);
+    }
+}
+
+fn load_control_plane(app: AppHandle, generation: u64, url: reqwest::Url) {
+    tauri::async_runtime::spawn(async move {
+        let origin = url.origin().ascii_serialization();
+        let navigation_url = generation_url(url, generation);
+        let result = async {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|err| err.to_string())?;
+            let response = client
+                .get(origin.clone())
+                .send()
+                .await
+                .map_err(|err| err.to_string())?;
+            if !response.status().is_success() {
+                return Err(format!("server returned HTTP {}", response.status()));
+            }
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            if !content_type.starts_with("text/html") {
+                return Err(format!(
+                    "server returned {content_type} instead of the Labby WebUI"
+                ));
+            }
+            Ok::<_, String>(())
+        }
+        .await;
+        if let Some(window) = app.get_webview_window(CONTROL_PLANE_WINDOW) {
+            match result {
+                Ok(()) => {
+                    let state = app.state::<ControlPlaneLoad>();
+                    if !state.set_target(generation, navigation_url.as_str()) {
+                        return;
+                    }
+                    if let Err(err) = window.navigate(navigation_url) {
+                        log_palette_warning("failed to navigate control plane", err);
+                        if state.fail_with_message(
+                            generation,
+                            "The Control Plane WebView could not start navigation. Check Settings and retry from the tray."
+                                .to_owned(),
+                        ) {
+                            restore_control_plane_error_shell(&app);
+                        }
+                        return;
+                    }
+                    let deadline_app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                        let state = deadline_app.state::<ControlPlaneLoad>();
+                        if state.fail_with_message(
+                            generation,
+                            "The Control Plane did not finish loading within 15 seconds. Check Settings and retry from the tray."
+                                .to_owned(),
+                        ) {
+                            restore_control_plane_error_shell(&deadline_app);
+                        }
+                    });
+                }
+                Err(err) => {
+                    deliver_control_plane_error(
+                        &app,
+                        generation,
+                        format!(
+                            "Could not load {origin}: {err}. Check the Control Plane URL in palette Settings, then retry from the tray."
+                        ),
+                    );
+                }
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn open_control_plane(app: AppHandle, path: Option<String>) -> Result<(), String> {
+    show_control_plane_window(&app, path.as_deref())
 }
 
 #[tauri::command]
@@ -190,9 +559,15 @@ fn merged_settings_or_default(app: &AppHandle) -> LabbySettings {
 }
 
 fn merge_settings(persisted: PartialPaletteSettings, defaults: LabbySettings) -> LabbySettings {
+    let persisted_server_url = persisted.server_url;
     normalize_settings(LabbySettings {
-        server_url: persisted.server_url.unwrap_or(defaults.server_url),
+        server_url: persisted_server_url.clone().unwrap_or(defaults.server_url),
+        control_plane_url: persisted
+            .control_plane_url
+            .or(persisted_server_url)
+            .unwrap_or(defaults.control_plane_url),
         static_token: persisted.static_token.unwrap_or(defaults.static_token),
+        project_id: persisted.project_id.or(defaults.project_id),
         shortcut: persisted
             .shortcut
             .unwrap_or_else(|| DEFAULT_SHORTCUT.to_string()),
@@ -205,13 +580,23 @@ fn merge_settings(persisted: PartialPaletteSettings, defaults: LabbySettings) ->
 
 fn default_settings() -> LabbySettings {
     let server_url = default_server_url(value_for("LABBY_API_URL").as_deref());
+    let control_plane_url = default_server_url(
+        value_for("LABBY_CONTROL_PLANE_URL")
+            .as_deref()
+            .or(Some(server_url.as_str())),
+    );
     let static_token = value_for("LABBY_MCP_HTTP_TOKEN")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let project_id = value_for("LABBY_PROJECT_ID")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
 
     LabbySettings {
         server_url,
+        control_plane_url,
         static_token,
+        project_id,
         shortcut: DEFAULT_SHORTCUT.to_string(),
         theme: PaletteTheme::System,
         hide_on_blur: true,
@@ -231,7 +616,9 @@ fn default_server_url(api_url: Option<&str>) -> String {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PartialPaletteSettings {
     server_url: Option<String>,
+    control_plane_url: Option<String>,
     static_token: Option<Option<String>>,
+    project_id: Option<String>,
     shortcut: Option<String>,
     theme: Option<PaletteTheme>,
     hide_on_blur: Option<bool>,
@@ -244,10 +631,18 @@ fn normalize_settings(mut settings: LabbySettings) -> LabbySettings {
     if settings.server_url.is_empty() {
         settings.server_url = DEFAULT_SERVER_URL.to_string();
     }
+    settings.control_plane_url = normalize_server_url(&settings.control_plane_url);
+    if settings.control_plane_url.is_empty() {
+        settings.control_plane_url = settings.server_url.clone();
+    }
     settings.static_token = settings
         .static_token
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty());
+    settings.project_id = settings
+        .project_id
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty());
     settings.shortcut = normalize_shortcut_label(&settings.shortcut);
     settings
 }
@@ -290,9 +685,9 @@ fn normalize_shortcut_label(shortcut: &str) -> String {
     }
 }
 
-/// Validate a saved Labby server URL. `normalize_server_url` already strips
-/// any path/query/fragment down to the origin, so this only needs to reject
-/// an empty/unparsable value or a non-http(s) scheme.
+/// Validate a saved Labby server URL. Cleartext HTTP is limited to loopback so
+/// credentials and authenticated Control Plane pages cannot cross the network
+/// without transport security.
 pub(crate) fn validate_saved_server_url(server_url: &str) -> Result<String, String> {
     let server_url = normalize_server_url(server_url);
     if server_url.is_empty() {
@@ -306,7 +701,21 @@ pub(crate) fn validate_saved_server_url(server_url: &str) -> Result<String, Stri
     if parsed.host_str().is_none() {
         return Err("saved Labby server URL must include a host".to_string());
     }
+    if parsed.scheme() == "http" && !is_loopback_host(parsed.host_str().unwrap_or_default()) {
+        return Err(
+            "saved Labby server URL must use https unless the host is loopback".to_string(),
+        );
+    }
     Ok(server_url)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn shortcut_for_label(label: &str) -> Shortcut {
@@ -401,19 +810,31 @@ fn toggle_main_window(app: &AppHandle) {
 
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Palette", true, None::<&str>)?;
+    let control_plane = MenuItem::with_id(
+        app,
+        "control-plane",
+        "Open Control Plane",
+        true,
+        None::<&str>,
+    )?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Labby Palette", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &control_plane, &settings, &quit])?;
 
     let icon = app.default_window_icon().cloned();
     let mut tray = TrayIconBuilder::new()
-        .tooltip("Labby Palette")
+        .tooltip("Labby")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {
                 if let Err(err) = show_main_window(app) {
                     log_palette_warning("failed to show main window from tray", err);
+                }
+            }
+            "control-plane" => {
+                if let Err(err) = show_control_plane_window(app, None) {
+                    log_palette_warning("failed to show control plane from tray", err);
                 }
             }
             "settings" => {
@@ -476,6 +897,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             save_palette_settings,
             hide_palette,
             show_palette,
+            open_control_plane,
             resize_palette,
             toggle_maximize,
             set_blur_dismiss,
@@ -491,6 +913,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .manage(BlurDismiss(AtomicBool::new(true)))
         .manage(ActiveShortcut(Mutex::new(None)))
         .manage(SettingsState::default())
+        .manage(ControlPlaneLoad::default())
         .manage(bridge_client)
         .manage(oauth::OauthState::new())
         .setup(|app| {
@@ -507,8 +930,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 let window_handle = handle.clone();
                 if let Err(err) = handle.run_on_main_thread(move || {
-                    if let Err(err) = show_main_window(&window_handle) {
-                        log_palette_warning("failed to show main window on launch", err);
+                    if let Err(err) = show_control_plane_window(&window_handle, None) {
+                        log_palette_warning("failed to show control plane on launch", err);
                     }
                 }) {
                     log_palette_warning("failed to schedule launch window show", err);
@@ -523,7 +946,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::default_server_url;
+    use super::{
+        ControlPlaneLoad, LabbySettings, PaletteTheme, PartialPaletteSettings, control_plane_url,
+        default_server_url, generation_url, merge_settings, normalize_settings,
+        validate_saved_server_url,
+    };
 
     #[test]
     fn default_server_url_prefers_dedicated_api_url() {
@@ -536,5 +963,180 @@ mod tests {
     #[test]
     fn default_server_url_does_not_use_oauth_public_url() {
         assert_eq!(default_server_url(None), "http://localhost:8765");
+    }
+    #[test]
+    fn control_plane_origin_can_differ_and_legacy_settings_follow_server() {
+        let defaults = LabbySettings {
+            server_url: "https://api.default.example".to_owned(),
+            control_plane_url: "https://ui.default.example".to_owned(),
+            static_token: None,
+            project_id: None,
+            shortcut: "Ctrl+Shift+Space".to_owned(),
+            theme: PaletteTheme::System,
+            hide_on_blur: true,
+            open_results_inline: true,
+            show_footer_hints: false,
+        };
+        let split = merge_settings(
+            PartialPaletteSettings {
+                server_url: Some("https://api.example".to_owned()),
+                control_plane_url: Some("https://ui.example".to_owned()),
+                ..Default::default()
+            },
+            defaults.clone(),
+        );
+        assert_eq!(split.server_url, "https://api.example");
+        assert_eq!(split.control_plane_url, "https://ui.example");
+
+        let legacy = merge_settings(
+            PartialPaletteSettings {
+                server_url: Some("https://legacy.example".to_owned()),
+                ..Default::default()
+            },
+            defaults,
+        );
+        assert_eq!(legacy.control_plane_url, "https://legacy.example");
+    }
+
+    #[test]
+    fn control_plane_url_preserves_only_internal_path_and_query() {
+        assert_eq!(
+            control_plane_url(
+                "https://labby.example.com/mcp",
+                Some("/skills/?tab=library"),
+            )
+            .unwrap()
+            .as_str(),
+            "https://labby.example.com/skills/?tab=library"
+        );
+    }
+
+    #[test]
+    fn control_plane_url_rejects_cross_origin_and_traversal_paths() {
+        for path in [
+            "https://attacker.invalid/",
+            "//attacker.invalid/",
+            "/../authorize",
+            "/skills\\evil",
+        ] {
+            assert!(control_plane_url("https://labby.example.com", Some(path)).is_err());
+        }
+    }
+
+    #[test]
+    fn saved_server_url_requires_tls_outside_loopback() {
+        for allowed in [
+            "https://labby.example.com",
+            "http://localhost:8765",
+            "https://localhost:8765",
+            "http://127.0.0.1:8765",
+            "https://127.0.0.1:8765",
+            "http://[::1]:8765",
+            "https://[::1]:8765",
+        ] {
+            assert_eq!(validate_saved_server_url(allowed).unwrap(), allowed);
+        }
+
+        for rejected in ["http://labby.example.com", "http://192.168.1.20:8765"] {
+            assert!(
+                validate_saved_server_url(rejected).is_err(),
+                "{rejected} must not be accepted over cleartext HTTP"
+            );
+        }
+    }
+
+    #[test]
+    fn control_plane_load_is_latest_wins() {
+        let load = ControlPlaneLoad::default();
+        let first = load.begin();
+        let first_url = generation_url(
+            tauri::Url::parse("https://labby.example.com/skills/").unwrap(),
+            first,
+        );
+        assert!(load.set_target(first, first_url.as_str()));
+
+        let second = load.begin();
+        let second_url = generation_url(
+            tauri::Url::parse("https://labby.example.com/skills/").unwrap(),
+            second,
+        );
+        assert!(load.set_target(second, second_url.as_str()));
+        assert!(!load.complete_url(first_url.as_str()));
+        assert!(!load.fail(first));
+        assert!(load.complete_url(second_url.as_str()));
+        assert!(!load.fail(second));
+    }
+
+    #[test]
+    fn control_plane_load_arbitrates_failure_and_retry() {
+        let load = ControlPlaneLoad::default();
+        let timed_out = load.begin();
+        assert!(load.set_target(timed_out, "https://labby.example.com/skills/"));
+        assert!(load.fail(timed_out));
+        assert!(!load.complete_url("https://labby.example.com/skills/"));
+
+        let retry = load.begin();
+        assert!(!load.fail(timed_out));
+        assert!(load.set_target(retry, "https://labby.example.com/tools/"));
+        assert!(load.complete_url("https://labby.example.com/tools/"));
+    }
+
+    #[test]
+    fn control_plane_error_waits_for_ready_shell() {
+        let load = ControlPlaneLoad::default();
+        let generation = load.begin();
+        assert!(load.fail_with_message(generation, "connection failed".to_owned()));
+        assert_eq!(load.ready_error(), None);
+        assert_eq!(load.shell_loaded().as_deref(), Some("connection failed"));
+        assert_eq!(load.ready_error().as_deref(), Some("connection failed"));
+    }
+
+    #[test]
+    fn control_plane_navigation_is_confined_to_target_origin_and_error_shell() {
+        let load = ControlPlaneLoad::default();
+        let shell = tauri::Url::parse("tauri://localhost/control-plane-loader.html").unwrap();
+        let target = tauri::Url::parse("https://labby.example.com/skills/").unwrap();
+        let same_origin = tauri::Url::parse("https://labby.example.com/settings/").unwrap();
+        let attacker = tauri::Url::parse("https://attacker.invalid/phish").unwrap();
+        let downgraded = tauri::Url::parse("http://labby.example.com/skills/").unwrap();
+        let fake_shell =
+            tauri::Url::parse("http://localhost:9999/control-plane-loader.html").unwrap();
+        let ported_shell =
+            tauri::Url::parse("http://tauri.localhost:9999/control-plane-loader.html").unwrap();
+
+        assert!(load.navigation_allowed(&shell));
+        assert!(!load.navigation_allowed(&target));
+        let generation = load.begin();
+        assert!(load.set_target(generation, target.as_str()));
+        assert!(load.navigation_allowed(&target));
+        assert!(load.navigation_allowed(&same_origin));
+        assert!(!load.navigation_allowed(&attacker));
+        assert!(!load.navigation_allowed(&downgraded));
+        assert!(!load.navigation_allowed(&fake_shell));
+        assert!(!load.navigation_allowed(&ported_shell));
+    }
+
+    #[test]
+    fn project_context_is_trimmed_and_empty_values_are_removed() {
+        let settings = |project_id| LabbySettings {
+            server_url: "http://localhost:8765".to_string(),
+            control_plane_url: "http://localhost:8765".to_string(),
+            static_token: None,
+            project_id,
+            shortcut: "Ctrl+Shift+Space".to_string(),
+            theme: PaletteTheme::System,
+            hide_on_blur: true,
+            open_results_inline: true,
+            show_footer_hints: false,
+        };
+
+        assert_eq!(
+            normalize_settings(settings(Some(" team-project ".to_string()))).project_id,
+            Some("team-project".to_string())
+        );
+        assert_eq!(
+            normalize_settings(settings(Some("   ".to_string()))).project_id,
+            None
+        );
     }
 }

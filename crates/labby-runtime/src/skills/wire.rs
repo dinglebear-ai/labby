@@ -153,7 +153,7 @@ pub enum CompleteResultType {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsListResult {
     /// Identifies this as a complete MCP result rather than an input request.
-    #[serde(rename = "resultType")]
+    #[serde(rename = "resultType", default)]
     pub result_type: CompleteResultType,
     /// Skill entries returned on this page.
     pub skills: Vec<SkillEntry>,
@@ -254,7 +254,7 @@ pub struct SkillsGetParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsGetResult {
     /// Identifies this as a complete MCP result rather than an input request.
-    #[serde(rename = "resultType")]
+    #[serde(rename = "resultType", default)]
     pub result_type: CompleteResultType,
     /// Retrieved skill entry.
     pub skill: SkillEntry,
@@ -371,8 +371,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_required_result_fields_are_rejected() {
-        assert!(serde_json::from_value::<SkillsListResult>(json!({ "skills": [] })).is_err());
+    fn missing_skill_payload_fields_are_rejected_but_legacy_result_type_defaults() {
+        assert!(serde_json::from_value::<SkillsListResult>(json!({ "skills": [] })).is_ok());
         assert!(
             serde_json::from_value::<SkillsListResult>(json!({ "resultType": "complete" }))
                 .is_err()
@@ -385,7 +385,7 @@ mod tests {
                     "resources": "dynamic"
                 }
             }))
-            .is_err()
+            .is_ok()
         );
     }
 

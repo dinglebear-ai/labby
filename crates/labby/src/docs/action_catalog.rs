@@ -127,14 +127,6 @@ const CLI_ACTION_BINDINGS: &[(&str, &str)] = &[
     ("setup", "repair"),
     ("setup", "services.status"),
     ("setup", "state"),
-    #[cfg(feature = "skills")]
-    ("skills", "skills.get"),
-    #[cfg(feature = "skills")]
-    ("skills", "skills.list"),
-    #[cfg(feature = "skills")]
-    ("skills", "skills.read"),
-    #[cfg(feature = "skills")]
-    ("skills", "skills.search"),
     #[cfg(feature = "gateway")]
     ("snippets", "snippets.create"),
     #[cfg(feature = "gateway")]
@@ -158,6 +150,9 @@ const WEB_ACTION_CLIENT_SOURCES: &[&str] = &[
     include_str!("../../../../apps/gateway-admin/lib/api/server-logs-client.ts"),
     include_str!("../../../../apps/gateway-admin/lib/api/setup-client.ts"),
     include_str!("../../../../apps/gateway-admin/lib/api/snippets-client.ts"),
+    include_str!("../../../../apps/gateway-admin/lib/api/skill-library-client.ts"),
+    include_str!("../../../../apps/gateway-admin/lib/api/artifact-control-client.ts"),
+    include_str!("../../../../apps/gateway-admin/components/skills/artifact-control-plane.tsx"),
     include_str!("../../../../apps/gateway-admin/lib/fs/client.ts"),
 ];
 
@@ -303,7 +298,7 @@ mod tests {
     #[cfg(feature = "all")]
     #[test]
     fn all_features_cli_action_denominator_is_exact() {
-        assert_eq!(CLI_ACTION_BINDINGS.len(), 80);
+        assert_eq!(CLI_ACTION_BINDINGS.len(), 76);
     }
 
     #[test]
@@ -317,6 +312,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let source_bound = actions
             .iter()
+            .filter(|action| !action.builtin)
             .filter(|action| binding_literal_exists(CLI_DISPATCH_SOURCES, &action.action))
             .map(|action| (action.service.as_str(), action.action.as_str()))
             .collect::<BTreeSet<_>>();
@@ -368,6 +364,7 @@ fn builtin_action(
     surfaces: &SurfaceAvailability,
 ) -> ActionDoc {
     let mut surfaces = surfaces.clone();
+    surfaces.cli = false;
     surfaces.web_ui = false;
     let params = if action == "schema" {
         vec![ParamDoc {

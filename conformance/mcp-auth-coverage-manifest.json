@@ -437,7 +437,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "applicability": "applicable",
@@ -461,7 +461,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "applicability": "applicable",
@@ -485,7 +485,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "applicability": "applicable",
@@ -509,7 +509,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "applicability": "applicable",
@@ -556,7 +556,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -579,7 +579,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -678,7 +678,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -849,7 +849,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1247,7 +1247,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1270,7 +1270,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1327,7 +1327,7 @@
       ],
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1351,7 +1351,7 @@
       ],
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1472,7 +1472,7 @@
       ],
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1496,7 +1496,7 @@
       ],
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1520,7 +1520,7 @@
       ],
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1544,7 +1544,7 @@
       ],
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1568,7 +1568,7 @@
       ],
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -1865,7 +1865,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2028,7 +2028,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2303,7 +2303,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2326,7 +2326,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2349,7 +2349,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2372,7 +2372,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2395,7 +2395,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2418,7 +2418,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2441,7 +2441,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "applicability": "applicable",
       "status": "pass",
@@ -2510,7 +2510,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-auth/src/upstream/store.rs"
       ],
       "applicability": "applicable",
@@ -2534,7 +2534,7 @@
         }
       ],
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-auth/src/upstream/store.rs"
       ],
       "applicability": "applicable",

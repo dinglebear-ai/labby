@@ -518,7 +518,7 @@ pub struct UpstreamConfig {
     /// Defaults to **false**, unlike `proxy_resources`/`proxy_prompts`. Skills
     /// carry instructions an agent will act on, so aggregating them from an
     /// upstream is a trust decision an operator should make deliberately —
-    /// and the extension is still an unmerged draft.
+    /// and the extension remains explicitly opt-in per upstream.
     #[serde(default)]
     pub proxy_skills: bool,
     /// Optional allowlist of skill names/patterns to expose from this upstream.

@@ -46,8 +46,8 @@ use super::super::types::{UpstreamRuntimeMetadata, UpstreamRuntimeOwner};
 use super::catalog_pagination;
 use super::connect_stdio::connect_stdio_upstream;
 use super::helpers::{
-    DEFAULT_REQUEST_TIMEOUT, DISCOVERY_TIMEOUT, max_response_bytes, upstream_target_redacted,
-    upstream_transport,
+    DEFAULT_REQUEST_TIMEOUT, DISCOVERY_TIMEOUT, max_transport_response_bytes,
+    upstream_target_redacted, upstream_transport,
 };
 use super::legacy_client::VersionedClientHandler;
 use super::lifecycle_compat::{
@@ -612,7 +612,9 @@ async fn connect_websocket_upstream_once<H: ClientHandler>(
     let parsed = parse_ws_url(url).map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let authorization = websocket_authorization_header(config);
     let transport = connect_websocket_transport(
-        WebSocketTransportConfig::new(parsed.to_string()).with_authorization(authorization),
+        WebSocketTransportConfig::new(parsed.to_string())
+            .with_authorization(authorization)
+            .with_max_message_size(max_transport_response_bytes()),
     );
     let transport = OrderedRelayNotificationTransport::new(transport, notification_interceptor);
     let service = match lifecycle {
@@ -790,7 +792,8 @@ async fn connect_http_upstream_once<H: ClientHandler>(
 
     // Wrap in BodyCappedHttpClient so both the OAuth and non-OAuth paths
     // enforce the streaming response-size cap (P-H4).
-    let capped = http_client::BodyCappedHttpClient::new(base_client, max_response_bytes());
+    let capped =
+        http_client::BodyCappedHttpClient::new(base_client, max_transport_response_bytes());
 
     // OAuth path: when the upstream declares oauth config, build an AuthClient.
     if config.oauth.is_some() {

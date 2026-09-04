@@ -3,12 +3,12 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-pub(crate) const EXPECTED_ACTIONS: usize = 147;
-pub(crate) const EXPECTED_CLI_ACTIONS: usize = 80;
-pub(crate) const EXPECTED_MCP_ACTIONS: usize = 146;
-pub(crate) const EXPECTED_API_ACTIONS: usize = 144;
-pub(crate) const EXPECTED_WEB_ACTIONS: usize = 70;
-pub(crate) const EXPECTED_SHARED_CLI_MCP_API_ACTIONS: usize = 80;
+pub(crate) const EXPECTED_ACTIONS: usize = 202;
+pub(crate) const EXPECTED_CLI_ACTIONS: usize = 76;
+pub(crate) const EXPECTED_MCP_ACTIONS: usize = 201;
+pub(crate) const EXPECTED_API_ACTIONS: usize = 199;
+pub(crate) const EXPECTED_WEB_ACTIONS: usize = 114;
+pub(crate) const EXPECTED_SHARED_CLI_MCP_API_ACTIONS: usize = 76;
 
 const INTENT_JSON: &str = include_str!("../fixtures/action_cases.json");
 
@@ -382,7 +382,19 @@ fn approved_fixture(name: &str) -> bool {
     };
     matches!(
         service,
-        "doctor" | "fs" | "gateway" | "lab_admin" | "server_logs" | "setup" | "skills" | "snippets"
+        "artifacts"
+            | "bundles"
+            | "doctor"
+            | "fs"
+            | "gateway"
+            | "jobs"
+            | "lab_admin"
+            | "server_logs"
+            | "setup"
+            | "skills"
+            | "snippets"
+            | "sources"
+            | "uploads"
     ) && matches!(purpose, "readonly" | "workflow" | "destructive")
 }
 

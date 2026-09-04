@@ -18,6 +18,23 @@ pub(crate) struct PageParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct SearchParams {
+    pub(crate) query: String,
+    pub(crate) cursor: Option<String>,
+    pub(crate) limit: Option<usize>,
+}
+
+pub(crate) fn normalized_query(value: String) -> Result<String, &'static str> {
+    let value = value.trim().to_lowercase();
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        Err("query")
+    } else {
+        Ok(value)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ArtifactParams {
     pub(crate) artifact_id: String,
 }
@@ -44,7 +61,7 @@ pub(crate) struct CreateParams {
     pub(crate) files: Vec<LogicalFileInput>,
     pub(crate) expected_library_version: u64,
     pub(crate) idempotency_key: String,
-    /// Defaults to private for compatibility with pre-library App clients.
+    /// Defaults to private as the fail-closed creation policy.
     #[serde(default)]
     pub(crate) visibility: CreateVisibility,
 }
@@ -80,6 +97,14 @@ pub(crate) struct LibraryMutationParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportParams {
     pub(crate) source: SourceSelector,
+    pub(crate) expected_library_version: u64,
+    pub(crate) idempotency_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportBatchParams {
+    pub(crate) sources: Vec<SourceSelector>,
     pub(crate) expected_library_version: u64,
     pub(crate) idempotency_key: String,
 }
@@ -136,6 +161,12 @@ mod tests {
         assert!(page_limit(Some(MAX_PAGE_LIMIT + 1)).is_err());
         assert!(validate_cursor(Some("x".repeat(MAX_CURSOR_BYTES + 1))).is_err());
         assert!(validate_idempotency_key(&"x".repeat(MAX_IDEMPOTENCY_KEY_BYTES + 1)).is_err());
+        assert_eq!(
+            normalized_query("  Fleet Health  ".to_owned()),
+            Ok("fleet health".to_owned())
+        );
+        assert!(normalized_query("   ".to_owned()).is_err());
+        assert!(normalized_query("x".repeat(257)).is_err());
     }
 
     #[test]
@@ -152,5 +183,17 @@ mod tests {
             "idempotency_key": "request-1"
         });
         assert!(serde_json::from_value::<ImportParams>(bytes).is_err());
+
+        let batch = serde_json::json!({
+            "sources": [
+                { "kind": "depot", "connection_id": "primary", "artifact_id": "one", "revision_id": "sha256:one" },
+                { "kind": "repository", "connection_id": "repo-1", "artifact_id": "two", "revision_id": "sha256:two" }
+            ],
+            "expected_library_version": 0,
+            "idempotency_key": "batch-1"
+        });
+        let parsed = serde_json::from_value::<ImportBatchParams>(batch).unwrap();
+        assert_eq!(parsed.sources.len(), 2);
+        assert_eq!(parsed.idempotency_key, "batch-1");
     }
 }

@@ -10,6 +10,9 @@ use tracing::warn;
 
 mod allowlist;
 mod assertions;
+#[cfg(test)]
+#[path = "sqlite/tests.rs"]
+mod extracted_tests;
 mod google_credentials;
 mod migrations;
 mod oauth;
@@ -937,10 +940,6 @@ fn add_column_if_missing(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "sqlite/tests.rs"]
-mod external_tests;
 
 #[cfg(test)]
 mod tests {
