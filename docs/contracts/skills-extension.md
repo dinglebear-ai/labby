@@ -399,14 +399,16 @@ tools, prompts, and resources — none of which is the method a caller needs.
 
 ## Budgets
 
-Host-chosen, not spec-mandated; SEP-2640 defines no limits and its threat model
-(T6) puts the responsibility on the host. Defined in
+These combine SEP-2640's required per-skill interoperability limits with
+host-chosen catalog and parsing bounds. They are defined in
 `crates/labby-runtime/src/skills/limits.rs`.
 
 | Budget | Value |
 |--------|-------|
 | Skills per upstream | 256 |
-| Resources per skill | 64 |
+| Resources per skill | 512 |
+| Total raw bytes per skill | 16 MiB |
+| Raw bytes per resource | 16 MiB |
 | `skills/list` pages | 16 |
 | `skills/list` wall clock | 10s |
 | Frontmatter bytes | 16 KiB |

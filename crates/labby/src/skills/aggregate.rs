@@ -279,7 +279,7 @@ mod tests {
             "uri": uri,
             "frontmatter": { "name": name, "description": "d" },
             "resources": [
-                { "uri": uri, "digest": labby_runtime::skills::ResourceDigest::of_bytes(b"a").to_wire() },
+                { "uri": uri, "digest": labby_runtime::skills::ResourceDigest::of_bytes(b"a").to_wire(), "size": 1 },
             ]
         }))
         .expect("entry");
@@ -293,8 +293,8 @@ mod tests {
             "uri": uri,
             "frontmatter": { "name": name, "description": "d" },
             "resources": [
-                { "uri": uri, "digest": labby_runtime::skills::ResourceDigest::of_bytes(b"a").to_wire() },
-                { "uri": extra, "digest": labby_runtime::skills::ResourceDigest::of_bytes(b"b").to_wire() },
+                { "uri": uri, "digest": labby_runtime::skills::ResourceDigest::of_bytes(b"a").to_wire(), "size": 1 },
+                { "uri": extra, "digest": labby_runtime::skills::ResourceDigest::of_bytes(b"b").to_wire(), "size": 1 },
             ]
         }))
         .expect("entry");

@@ -10,6 +10,11 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
 }
 
+#[cfg(test)]
+pub(super) fn run_migrations_with_fault(conn: &Connection, fault: &str) -> Result<(), AuthError> {
+    run_migrations_inner(conn, Some(fault))
+}
+
 fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> {
     let current: i64 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))

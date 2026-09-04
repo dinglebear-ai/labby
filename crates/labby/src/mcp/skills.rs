@@ -855,8 +855,15 @@ mod serve_tests {
         )
         .await
         .unwrap();
-        let compat: SkillsGetResult = serde_json::from_value(compat).unwrap();
-        assert_eq!(native.skill, compat.skill);
+        assert_eq!(compat["skill"]["uri"], native.skill.uri);
+        assert_eq!(
+            compat["skill"]["frontmatter"],
+            serde_json::to_value(&native.skill.frontmatter).unwrap()
+        );
+        assert_eq!(
+            compat["skill"]["resources"],
+            serde_json::to_value(&native.skill.resources).unwrap()
+        );
         let support = native
             .skill
             .resources

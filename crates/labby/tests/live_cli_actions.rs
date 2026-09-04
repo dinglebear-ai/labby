@@ -177,6 +177,7 @@ fn validated_nonzero_domain_result(key: &str, body: &serde_json::Value) -> bool 
         "doctor:system.checks" => validated_findings_for_services(body, &["lab", "system"]),
         "doctor:auth.check" => validated_doctor_findings(body, "auth", "auth:"),
         "doctor:oauth.relay.check" => validated_doctor_findings(body, "oauth_relay", "registry:"),
+        "doctor:proxy.preflight" => validated_doctor_findings(body, "proxy", "proxy:"),
         _ => false,
     }
 }

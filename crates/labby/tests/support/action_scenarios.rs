@@ -402,6 +402,10 @@ fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
             "requires_configured_external_plugin_service",
             "unknown_service",
         )),
+        "setup:services.status" => Some((
+            "requires_configured_external_plugin_service",
+            "claude_cli_unavailable",
+        )),
         "setup:settings.config.update" | "setup:settings.env.update" => {
             Some(("typed_compare_and_swap_contract_probed", "invalid_param"))
         }
