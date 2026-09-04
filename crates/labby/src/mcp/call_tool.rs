@@ -653,7 +653,7 @@ impl LabMcpServer {
                 identity,
             } => {
                 #[cfg(feature = "skills")]
-                if is_project_skill_library_management_call(&request) {
+                if is_project_artifact_management_call(&request) {
                     if let Some(response) =
                         Box::pin(self.destructive_confirmation_response(&request, &context)).await
                     {
@@ -2050,22 +2050,26 @@ impl LabMcpServer {
 }
 
 #[cfg(feature = "skills")]
-fn is_project_skill_library_management_call(request: &CallToolRequestParams) -> bool {
-    request.name.as_ref() == "skills"
+fn is_project_artifact_management_call(request: &CallToolRequestParams) -> bool {
+    request.name.as_ref() == "artifacts"
         && request
             .arguments
             .as_ref()
             .and_then(|arguments| arguments.get("action"))
             .and_then(Value::as_str)
-            .is_some_and(|action| action.starts_with("skill_library."))
+            .is_some_and(|action| {
+                crate::dispatch::skill_library::catalog::LOCAL_ACTIONS
+                    .iter()
+                    .any(|candidate| candidate.name == action)
+            })
 }
 
 #[cfg(all(test, feature = "skills"))]
-mod project_skill_library_routing_tests {
+mod project_artifact_routing_tests {
     use rmcp::model::CallToolRequestParams;
     use serde_json::json;
 
-    use super::is_project_skill_library_management_call;
+    use super::is_project_artifact_management_call;
 
     fn request(name: &str, action: &str) -> CallToolRequestParams {
         CallToolRequestParams::new(name.to_owned()).with_arguments(
@@ -2077,18 +2081,18 @@ mod project_skill_library_routing_tests {
     }
 
     #[test]
-    fn project_skill_library_calls_use_the_access_authorized_builtin_path() {
-        assert!(is_project_skill_library_management_call(&request(
-            "skills",
-            "skill_library.import",
+    fn project_artifact_library_calls_use_the_access_authorized_builtin_path() {
+        assert!(is_project_artifact_management_call(&request(
+            "artifacts",
+            "artifacts.import",
         )));
-        assert!(!is_project_skill_library_management_call(&request(
-            "skills",
-            "skills.list",
+        assert!(!is_project_artifact_management_call(&request(
+            "artifacts",
+            "artifacts.search_remote",
         )));
-        assert!(!is_project_skill_library_management_call(&request(
+        assert!(!is_project_artifact_management_call(&request(
             "gateway",
-            "skill_library.import",
+            "artifacts.import",
         )));
     }
 }
