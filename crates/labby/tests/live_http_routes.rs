@@ -519,9 +519,23 @@ async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
         .header(header::CONTENT_TYPE, "application/json")
         .body(vec![b'x'; 2 * 1024 * 1024])
         .send()
-        .await
-        .expect("oversized request");
-    assert!(!oversized.status().is_success());
+        .await;
+    match oversized {
+        Ok(response) => assert!(!response.status().is_success()),
+        Err(error) => {
+            // The auth layer rejects this request before consuming its body.
+            // Depending on when the client finishes writing, Linux reports
+            // that fail-closed response as a broken pipe instead of exposing
+            // an HTTP status.
+            let message = error.to_string().to_ascii_lowercase();
+            assert!(
+                error.is_request()
+                    && (message.contains("broken pipe")
+                        || message.contains("pipe is being closed")),
+                "unexpected oversized-request transport error: {error:?}"
+            );
+        }
+    }
 
     for headers in [
         vec![
