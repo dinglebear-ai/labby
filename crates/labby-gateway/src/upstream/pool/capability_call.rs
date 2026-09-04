@@ -324,6 +324,83 @@ where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
     SizeFn: Fn(&R) -> usize,
 {
+    timed_capability_call_with_timeout_and_limit(
+        pool,
+        request_timeout,
+        upstream_name,
+        capability,
+        event,
+        start,
+        rpc_future,
+        size_fn,
+        subject,
+        error_message_fn,
+        timeout_message,
+        cancel,
+        max_response_bytes(),
+    )
+    .await
+}
+
+/// Capability call with an explicit serialized-response limit. This exists for
+/// SEP-2640 resource reads, whose base64 wire representation requires more
+/// headroom than ordinary upstream calls while retaining a 16 MiB raw limit.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn timed_capability_call_with_response_limit<R, Fut, SizeFn>(
+    pool: &UpstreamPool,
+    upstream_name: &str,
+    capability: UpstreamCapability,
+    event: UpstreamRequestLog<'_>,
+    start: Instant,
+    rpc_future: Fut,
+    size_fn: SizeFn,
+    subject: Option<&str>,
+    error_message_fn: impl Fn(&rmcp::ServiceError) -> String,
+    timeout_message: String,
+    response_limit: usize,
+) -> Result<R, CapabilityCallError>
+where
+    Fut: Future<Output = Result<R, rmcp::ServiceError>>,
+    SizeFn: Fn(&R) -> usize,
+{
+    timed_capability_call_with_timeout_and_limit(
+        pool,
+        pool.request_timeout,
+        upstream_name,
+        capability,
+        event,
+        start,
+        rpc_future,
+        size_fn,
+        subject,
+        error_message_fn,
+        timeout_message,
+        None,
+        response_limit,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn timed_capability_call_with_timeout_and_limit<R, Fut, SizeFn>(
+    pool: &UpstreamPool,
+    request_timeout: std::time::Duration,
+    upstream_name: &str,
+    capability: UpstreamCapability,
+    event: UpstreamRequestLog<'_>,
+    start: Instant,
+    rpc_future: Fut,
+    size_fn: SizeFn,
+    subject: Option<&str>,
+    error_message_fn: impl Fn(&rmcp::ServiceError) -> String,
+    timeout_message: String,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+    response_limit: usize,
+) -> Result<R, CapabilityCallError>
+where
+    Fut: Future<Output = Result<R, rmcp::ServiceError>>,
+    SizeFn: Fn(&R) -> usize,
+{
     // Enforce one wall-clock budget across peer acquisition, bulkhead wait, and
     // the RPC itself. Waiting for a permit must not extend the configured
     // upstream timeout, and queue pressure must not poison connection health.
@@ -458,7 +535,7 @@ where
     match outcome {
         RawCallOutcome::Ok(result) => {
             let response_size = size_fn(&result);
-            let max_bytes = max_response_bytes();
+            let max_bytes = response_limit;
             if response_size > max_bytes {
                 // The peer returned a complete, valid response. Rejecting it at
                 // the gateway policy boundary must not mark the connection down.

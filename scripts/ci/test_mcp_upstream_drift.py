@@ -29,6 +29,15 @@ class OwnershipMappingTest(unittest.TestCase):
         self.assertIn("Cargo.toml", paths)
         self.assertIn("scripts/ci/mcp-conformance.sh", checks)
 
+    def test_sep_2640_change_maps_to_skills_owners_and_checks(self):
+        paths, checks = MODULE.map_ownership(["docs/seps/2640-skills-extension.mdx"])
+        self.assertIn("docs/contracts/skills-extension.md", paths)
+        self.assertIn("crates/labby-gateway/src/upstream/pool/skills.rs", paths)
+        self.assertIn(
+            "cargo test -p labby-runtime --all-features --locked skills_contract_conformance",
+            checks,
+        )
+
     def test_workflow_uses_python3_on_ops_runners(self):
         workflow = (
             Path(__file__).parents[2] / ".github/workflows/mcp-upstream-drift.yml"

@@ -471,6 +471,7 @@ async fn dispatch_native_with_registry(
             .ok_or_else(|| ErrorData::invalid_params("skills/get requires uri", None))?;
         let entry = get_visible_skill(registry, &params.uri)
             .await
+            .map_err(skill_read_error)?
             .ok_or_else(|| {
                 ErrorData::invalid_params(
                     format!("'{}' is not a skill this server serves", params.uri),
@@ -642,7 +643,7 @@ mod serve_tests {
         assert!(
             labby_runtime::skills::parse_digest(&resource.digest)
                 .unwrap()
-                .matches(file.text.as_bytes())
+                .matches(file.text().unwrap().as_bytes())
         );
         let resource_file = crate::mcp::handlers_resources::read_skill_resource_with_registry(
             &pinned,
@@ -651,8 +652,8 @@ mod serve_tests {
         .await
         .unwrap();
         assert_eq!(resource_file.digest, resource.digest);
-        assert_eq!(resource_file.text, file.text);
-        assert_eq!(resource_file.text, "support-old\n");
+        assert_eq!(resource_file.text(), file.text());
+        assert_eq!(resource_file.text(), Some("support-old\n"));
 
         let current = SkillRegistryContext::from_generation(manager.generation());
         let current_file = crate::mcp::handlers_resources::read_skill_resource_with_registry(
@@ -661,7 +662,7 @@ mod serve_tests {
         )
         .await
         .unwrap();
-        assert_eq!(current_file.text, "support-new\n");
+        assert_eq!(current_file.text(), Some("support-new\n"));
         assert_ne!(current_file.digest, resource_file.digest);
     }
 
@@ -678,7 +679,7 @@ mod serve_tests {
     async fn first_party_get_rejects_a_supporting_file_uri() {
         let uri = "skill://labby/creating-snippets/README.md";
         let registry = SkillRegistryContext::first_party_only();
-        assert!(get_visible_skill(&registry, uri).await.is_none());
+        assert!(get_visible_skill(&registry, uri).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -694,7 +695,7 @@ mod serve_tests {
                 let digest =
                     labby_runtime::skills::parse_digest(&resource.digest).expect("valid digest");
                 assert!(
-                    digest.matches(file.text.as_bytes()),
+                    digest.matches(file.text().unwrap().as_bytes()),
                     "{} failed",
                     resource.uri
                 );
@@ -705,11 +706,16 @@ mod serve_tests {
     #[tokio::test]
     async fn unknown_first_party_skill_uris_are_not_served() {
         let registry = SkillRegistryContext::first_party_only();
-        for uri in [
-            "skill://labby/using-labby/../escape.md",
-            "skill://labby/nonexistent/SKILL.md",
-        ] {
-            assert!(get_visible_skill(&registry, uri).await.is_none());
+        let invalid = "skill://labby/using-labby/../escape.md";
+        assert!(get_visible_skill(&registry, invalid).await.is_err());
+        assert!(
+            crate::skills::facade::read_visible_skill_file(&registry, invalid)
+                .await
+                .is_err()
+        );
+
+        for uri in ["skill://labby/nonexistent/SKILL.md"] {
+            assert!(get_visible_skill(&registry, uri).await.unwrap().is_none());
             assert!(
                 crate::skills::facade::read_visible_skill_file(&registry, uri)
                     .await

@@ -753,7 +753,7 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         .await
         .unwrap_or_else(|error| panic!("{label} resource adapter: {error}"));
         assert_eq!(resource.uri, support_uri, "{label}");
-        assert_eq!(resource.text, support_text, "{label}");
+        assert_eq!(resource.text(), Some(support_text), "{label}");
         assert!(resource.digest.starts_with("sha256:"), "{label}");
 
         let compatibility_list = crate::dispatch::skills::dispatch_with_context(
@@ -820,7 +820,8 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
                 "{label}"
             );
         }
-        resource_facts.push((resource.uri, resource.digest, resource.text));
+        let resource_text = resource.text().unwrap().to_owned();
+        resource_facts.push((resource.uri, resource.digest, resource_text));
     }
     assert!(resource_facts.windows(2).all(|pair| pair[0] == pair[1]));
 

@@ -27,7 +27,7 @@ use super::entries::{log_exposure_filter, resolve_request_skill_exposure_policy}
 use super::skills_cache::{CachedDirectSkill, CachedSkills, evict};
 use std::time::Instant;
 
-use super::capability_call::{CapabilityCallError, timed_capability_call};
+use super::capability_call::{CapabilityCallError, timed_capability_call_with_response_limit};
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
 use super::skills_exposure::SkillExposureDecision;
 use super::skills_list::{UpstreamSkills, peer_declares_skills};
@@ -41,10 +41,18 @@ fn skill_read_response_size(result: &rmcp::model::ReadResourceResult, content_ca
             text.len() > content_cap
         }
         rmcp::model::ResourceContents::BlobResourceContents { blob, .. } => {
-            // Base64 expands the raw body. Bound the decoded size here so a
-            // conforming binary resource is not rejected merely because its
-            // wire representation is larger than its manifest `size`.
-            blob.len().div_ceil(4).saturating_mul(3) > content_cap
+            let padding = blob
+                .as_bytes()
+                .iter()
+                .rev()
+                .take(2)
+                .take_while(|byte| **byte == b'=')
+                .count();
+            blob.len()
+                .checked_div(4)
+                .and_then(|groups| groups.checked_mul(3))
+                .and_then(|bytes| bytes.checked_sub(padding))
+                .is_none_or(|bytes| bytes > content_cap)
         }
         _ => false,
     });
@@ -780,7 +788,7 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::skill(&config.name, redacted, subject.is_some());
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        let contents = timed_capability_call(
+        let contents = timed_capability_call_with_response_limit(
             self,
             &config.name,
             super::super::types::UpstreamCapability::Skills,
@@ -794,6 +802,7 @@ impl UpstreamPool {
                 "upstream `{}` skill read timed out after {timeout_ms}ms",
                 config.name
             ),
+            super::helpers::max_skill_response_bytes(),
         )
         .await
         .map_err(|error| ToolError::Sdk {
@@ -971,6 +980,42 @@ mod provider_response_tests {
                 "skill://demo/SKILL.md",
             )]);
         assert_eq!(skill_read_response_size(&result, 4), usize::MAX);
+    }
+
+    #[test]
+    fn response_sizing_counts_padded_base64_as_exact_raw_bytes() {
+        for bytes in [vec![0_u8; 4], vec![0_u8; 5]] {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let result =
+                rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::blob(
+                    encoded,
+                    "skill://demo/asset.bin",
+                )]);
+            assert_ne!(
+                skill_read_response_size(&result, bytes.len()),
+                usize::MAX,
+                "a raw body exactly at its cap must survive base64 padding"
+            );
+            assert_eq!(
+                skill_read_response_size(&result, bytes.len() - 1),
+                usize::MAX,
+                "one raw byte over the cap must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn response_sizing_accepts_the_required_sixteen_mibibyte_binary_boundary() {
+        let bytes = vec![0_u8; limits::MAX_SKILL_RESOURCE_BYTES];
+        let result =
+            rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::blob(
+                base64::engine::general_purpose::STANDARD.encode(bytes),
+                "skill://demo/asset.bin",
+            )]);
+        assert_ne!(
+            skill_read_response_size(&result, limits::MAX_SKILL_RESOURCE_BYTES),
+            usize::MAX
+        );
     }
 
     #[test]

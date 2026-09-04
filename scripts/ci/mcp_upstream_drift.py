@@ -59,6 +59,21 @@ OWNERSHIP = (
         ("crates/labby/src/mcp/server.rs", "crates/labby/src/mcp/handlers_resources.rs"),
         ("cargo test -p labby --all-features --locked mcp::server::tests",),
     ),
+    Ownership(
+        ("2640-skills-extension", "skills-extension", "skills/list", "skills/get"),
+        (
+            "docs/contracts/skills-extension.md",
+            "crates/labby-runtime/src/skills/",
+            "crates/labby-gateway/src/upstream/pool/skills.rs",
+            "crates/labby/src/skills/",
+            "crates/labby/src/mcp/skills.rs",
+        ),
+        (
+            "cargo test -p labby-runtime --all-features --locked skills_contract_conformance",
+            "cargo test -p labby-gateway --all-features --locked upstream::pool::skills_tests",
+            "cargo test -p labby --all-features --locked skills",
+        ),
+    ),
 )
 
 DEFAULT_PATHS = (
@@ -150,7 +165,7 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         or bool(skills_files)
     )
     mapped_paths, checks = map_ownership(
-        spec_files + rmcp_files, latest_release.get("body") or ""
+        spec_files + rmcp_files + skills_files, latest_release.get("body") or ""
     )
 
     lines = [

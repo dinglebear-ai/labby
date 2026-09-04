@@ -19,7 +19,7 @@
 //! and file contents are untouched. A digest the upstream computed therefore
 //! still describes exactly the bytes Labby relays.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use labby_runtime::gateway_config::UpstreamConfig;
 use labby_runtime::skills::wire::{SkillEntry, SkillResource};
@@ -138,24 +138,30 @@ pub(crate) fn mint_proxied_entries(
     // A skill is identified by its manifest URI within its server origin.
     // Supporting-resource overlap is valid: a nested skill's files are also
     // supporting files of its parent and therefore appear in both manifests.
-    let mut minted: Vec<SkillEntry> = Vec::with_capacity(skills.len());
-    let mut manifest_owners = BTreeSet::new();
-    let mut excluded_uris = BTreeSet::new();
+    let mut candidates: Vec<SkillEntry> = Vec::with_capacity(skills.len());
+    let mut manifest_counts = BTreeMap::<String, usize>::new();
     for skill in skills {
         let Some(entry) = mint_proxied_entry(&config.name, skill, meta) else {
             continue;
         };
-        if !manifest_owners.insert(entry.uri.clone()) {
-            excluded_uris.insert(entry.uri.clone());
-            tracing::warn!(
-                upstream = %config.name,
-                skill = %entry.uri,
-                "excluding duplicate skill identity from one upstream listing"
-            );
-            continue;
-        }
-        minted.push(entry);
+        *manifest_counts.entry(entry.uri.clone()).or_default() += 1;
+        candidates.push(entry);
     }
+    let excluded_uris = manifest_counts
+        .into_iter()
+        .filter_map(|(uri, count)| (count > 1).then_some(uri))
+        .collect::<BTreeSet<_>>();
+    for uri in &excluded_uris {
+        tracing::warn!(
+            upstream = %config.name,
+            skill = %uri,
+            "excluding every duplicate publication of one skill identity"
+        );
+    }
+    let minted = candidates
+        .into_iter()
+        .filter(|entry| !excluded_uris.contains(&entry.uri))
+        .collect::<Vec<_>>();
     let excluded_count = skills.len().saturating_sub(minted.len());
     MintedEntries {
         entries: minted,
@@ -356,6 +362,45 @@ mod tests {
             result.entries[1].uri,
             "skill://gh/github/acme/refunds/SKILL.md"
         );
+    }
+
+    #[test]
+    fn duplicate_manifest_identity_excludes_every_publication() {
+        let duplicate = upstream_skill("acme", "refunds");
+        let result = mint_proxied_entries(
+            &UpstreamConfig {
+                name: "gh".to_string(),
+                ..minimal_config()
+            },
+            &[duplicate.clone(), duplicate],
+            None,
+        );
+        assert!(result.entries.is_empty());
+        assert_eq!(result.excluded_count, 2);
+        assert_eq!(
+            result.excluded_uris,
+            BTreeSet::from(["skill://gh/skill/acme/refunds/SKILL.md".to_string()])
+        );
+    }
+
+    #[test]
+    fn conflicting_duplicate_manifest_identity_excludes_every_publication() {
+        let first = upstream_skill("acme", "refunds");
+        let mut second = first.clone();
+        second.entry.frontmatter.insert(
+            "description".to_string(),
+            serde_json::Value::String("conflicting publication".to_string()),
+        );
+        let result = mint_proxied_entries(
+            &UpstreamConfig {
+                name: "gh".to_string(),
+                ..minimal_config()
+            },
+            &[first, second],
+            None,
+        );
+        assert!(result.entries.is_empty());
+        assert_eq!(result.excluded_count, 2);
     }
 
     #[test]

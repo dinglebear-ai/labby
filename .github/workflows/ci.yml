@@ -638,13 +638,11 @@ jobs:
     # all-features `check`/`clippy`/`test` jobs above remain the authoritative
     # warning-clean signal.
     # Retired ACP, Registry, Marketplace, Deploy, Fleet, and Stash product
-    # surfaces are deleted from the workspace. Gateway and fs are the only
-    # standalone product slices left on `labby` itself.
-    # Slices are compile checks, EXCEPT gateway: the flagship slice also runs
-    # its test suite so omission-side tests (#[cfg(not(feature = ...))] —
-    # registry omission tests, the no-feature rejection helpers) actually
-    # execute somewhere in CI instead of only ever being compiled. The fs
-    # slice also executes its focused no-gateway proxy preflight regression.
+    # surfaces are deleted from the workspace. The matrix below covers every
+    # supported standalone and composed Labby product slice.
+    # Every slice compiles. Gateway also runs its suite so omission-side tests
+    # execute; fs and skills run focused behavioral regressions for their
+    # feature boundaries.
     env:
       # lld only; see the `test` job for why CARGO_BUILD_JOBS must stay unset.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"

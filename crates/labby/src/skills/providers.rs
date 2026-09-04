@@ -121,9 +121,9 @@ pub(crate) struct FirstPartySkillProviders {
     bundled: SnapshotSkillProvider,
     operator_local: SnapshotSkillProvider,
     merged: Vec<SkillProviderEntry>,
-    uri_index: BTreeMap<String, usize>,
+    uri_index: BTreeMap<String, Vec<usize>>,
     collision_rejections: Vec<CollisionRejection>,
-    artifact_access: BTreeMap<String, ArtifactSkillAccess>,
+    artifact_access: BTreeMap<String, Vec<ArtifactSkillAccess>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,13 +150,7 @@ impl FirstPartySkillProviders {
     ) -> Self {
         let (merged, collision_rejections) =
             merge_bundled_first(bundled.entries(), operator_local.entries());
-        let mut uri_index = BTreeMap::new();
-        for (index, entry) in merged.iter().enumerate() {
-            uri_index.insert(entry.descriptor().id.source_id().to_string(), index);
-            for resource in entry.resources() {
-                uri_index.insert(resource.source_id, index);
-            }
-        }
+        let uri_index = build_uri_index(&merged);
         Self {
             bundled,
             operator_local,
@@ -233,13 +227,7 @@ impl FirstPartySkillProviders {
             id: legacy.id,
             skills: operator_skills,
         };
-        let mut uri_index = BTreeMap::new();
-        for (index, entry) in merged.iter().enumerate() {
-            uri_index.insert(entry.descriptor().id.source_id().to_string(), index);
-            for resource in entry.resources() {
-                uri_index.insert(resource.source_id, index);
-            }
-        }
+        let uri_index = build_uri_index(&merged);
         let mut providers = Self {
             bundled: self.bundled.clone(),
             operator_local,
@@ -251,21 +239,20 @@ impl FirstPartySkillProviders {
         for entry in &providers.merged {
             let manifest = entry.descriptor().id.source_id();
             if let Some(access) = access_by_manifest.get(manifest) {
-                providers
-                    .artifact_access
-                    .insert(manifest.to_owned(), access.clone());
-                for resource in entry.resources() {
+                for uri in bound_uris(entry) {
                     providers
                         .artifact_access
-                        .insert(resource.source_id.clone(), access.clone());
+                        .entry(uri)
+                        .or_default()
+                        .push(access.clone());
                 }
             }
         }
         providers
     }
 
-    pub(crate) fn artifact_access(&self, uri: &str) -> Option<&ArtifactSkillAccess> {
-        self.artifact_access.get(uri)
+    pub(crate) fn artifact_access(&self, uri: &str) -> Option<&[ArtifactSkillAccess]> {
+        self.artifact_access.get(uri).map(Vec::as_slice)
     }
 
     pub(crate) fn has_artifact_skills(&self) -> bool {
@@ -277,7 +264,19 @@ impl FirstPartySkillProviders {
     }
 
     pub(crate) fn find(&self, uri: &str) -> Option<&SkillProviderEntry> {
-        self.uri_index.get(uri).map(|index| &self.merged[*index])
+        self.uri_index
+            .get(uri)
+            .and_then(|indices| indices.first())
+            .map(|index| &self.merged[*index])
+    }
+
+    pub(crate) fn find_all(&self, uri: &str) -> Vec<&SkillProviderEntry> {
+        self.uri_index
+            .get(uri)
+            .into_iter()
+            .flatten()
+            .map(|index| &self.merged[*index])
+            .collect()
     }
 
     pub(crate) async fn read(
@@ -321,6 +320,26 @@ impl FirstPartySkillProviders {
     pub(crate) fn collision_rejections(&self) -> &[CollisionRejection] {
         &self.collision_rejections
     }
+}
+
+fn bound_uris(entry: &SkillProviderEntry) -> impl Iterator<Item = String> + '_ {
+    let manifest = entry.descriptor().id.source_id();
+    std::iter::once(manifest.to_string()).chain(
+        entry
+            .resources()
+            .map(|resource| resource.source_id)
+            .filter(move |uri| uri != manifest),
+    )
+}
+
+fn build_uri_index(entries: &[SkillProviderEntry]) -> BTreeMap<String, Vec<usize>> {
+    let mut index: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (owner, entry) in entries.iter().enumerate() {
+        for uri in bound_uris(entry) {
+            index.entry(uri).or_default().push(owner);
+        }
+    }
+    index
 }
 
 impl SnapshotSkillProvider {

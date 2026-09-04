@@ -9,7 +9,8 @@
 //! branches live in `resource_proxy.rs` and are reached via the same
 //! guard ordering as the original (gateway → upstream → subject-scoped).
 //!
-//! No behavior change — relocation only.
+//! Skill resources are converted here into their exact MCP text/blob wire
+//! representation after the shared registry and digest checks succeed.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -1570,18 +1571,7 @@ impl LabMcpServer {
                 elapsed_ms = start.elapsed().as_millis(),
                 "dispatch finish"
             );
-            let mut contents = if let Some(bytes) = file.blob {
-                use base64::Engine as _;
-                ResourceContents::blob(
-                    base64::engine::general_purpose::STANDARD.encode(bytes),
-                    uri.clone(),
-                )
-            } else {
-                ResourceContents::text(file.text, uri.clone())
-            };
-            if let Some(mime_type) = file.mime_type {
-                contents = contents.with_mime_type(mime_type);
-            }
+            let contents = visible_skill_resource_contents(file, &uri);
             return Ok(ReadResourceResult::new(vec![contents]).into());
         }
 
@@ -2473,6 +2463,29 @@ impl LabMcpServer {
 }
 
 #[cfg(feature = "skills")]
+fn visible_skill_resource_contents(
+    file: crate::skills::facade::VisibleSkillFile,
+    uri: &str,
+) -> ResourceContents {
+    let mut contents = match file.content {
+        crate::skills::facade::VisibleSkillContent::Text(text) => {
+            ResourceContents::text(text, uri.to_string())
+        }
+        crate::skills::facade::VisibleSkillContent::Blob(bytes) => {
+            use base64::Engine as _;
+            ResourceContents::blob(
+                base64::engine::general_purpose::STANDARD.encode(bytes),
+                uri.to_string(),
+            )
+        }
+    };
+    if let Some(mime_type) = file.mime_type {
+        contents = contents.with_mime_type(mime_type);
+    }
+    contents
+}
+
+#[cfg(feature = "skills")]
 pub(crate) async fn read_skill_resource_with_registry(
     registry: &crate::skills::facade::SkillRegistryContext,
     uri: &str,
@@ -2742,6 +2755,31 @@ fn build_app_resource_meta(
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_resource_read_emits_one_binary_content_with_mime_type() {
+        use crate::skills::facade::{VisibleSkillContent, VisibleSkillFile};
+
+        let uri = "skill://up/demo/asset.png";
+        let content = visible_skill_resource_contents(
+            VisibleSkillFile {
+                uri: uri.into(),
+                skill_uri: "skill://up/demo/SKILL.md".into(),
+                origin: "up".into(),
+                digest: "sha256:test".into(),
+                mime_type: Some("image/png".into()),
+                content: VisibleSkillContent::Blob(vec![0, 1, 2, 3]),
+            },
+            uri,
+        );
+        let result = ReadResourceResult::new(vec![content]);
+        let wire = serde_json::to_value(result).unwrap();
+        assert_eq!(wire["contents"].as_array().unwrap().len(), 1);
+        assert_eq!(wire["contents"][0]["blob"], "AAECAw==");
+        assert_eq!(wire["contents"][0]["mimeType"], "image/png");
+        assert!(wire["contents"][0].get("text").is_none());
+    }
     use crate::dispatch::upstream::pool::{
         InProcessConnector, InProcessRegistration, UpstreamConnection, UpstreamPool,
     };

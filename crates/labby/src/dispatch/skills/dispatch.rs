@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, require_str, to_json};
 use crate::skills::facade::{
-    SkillRegistryContext, get_visible_skill, list_visible_skills, read_visible_skill_file,
+    SkillRegistryContext, list_visible_skills, read_visible_skill_file, resolve_visible_skill,
 };
 use crate::skills::search::search_skill_entries;
 
@@ -121,8 +121,8 @@ async fn search(context: &SkillRegistryContext, params: Value) -> Result<Value, 
 async fn get(context: &SkillRegistryContext, params: Value) -> Result<Value, ToolError> {
     let params = parse::<UriParams>(params)?;
     let uri = normalized_uri(params.uri)?;
-    let skill = get_visible_skill(context, &uri)
-        .await
+    let skill = resolve_visible_skill(context, &uri)
+        .await?
         .ok_or_else(|| not_found(&uri, "skill"))?;
     to_json(SkillGetResponse {
         skill: SkillSummary::from(skill),
@@ -133,9 +133,13 @@ async fn read(context: &SkillRegistryContext, params: Value) -> Result<Value, To
     let params = parse::<UriParams>(params)?;
     let uri = normalized_uri(params.uri)?;
     let file = read_visible_skill_file(context, &uri).await?;
-    let text = file.blob.is_none().then_some(file.text.as_str());
-    let blob = file.encoded_blob();
-    Ok(json!({
+    Ok(visible_skill_file_to_json(file))
+}
+
+fn visible_skill_file_to_json(file: crate::skills::facade::VisibleSkillFile) -> Value {
+    let text = file.content.text();
+    let blob = file.content.encoded_blob();
+    json!({
         "uri": file.uri,
         "skill_uri": file.skill_uri,
         "origin": file.origin,
@@ -143,7 +147,7 @@ async fn read(context: &SkillRegistryContext, params: Value) -> Result<Value, To
         "digest": file.digest,
         "text": text,
         "blob": blob,
-    }))
+    })
 }
 
 fn entry_origin(entry: &labby_runtime::skills::wire::SkillEntry) -> Option<String> {
@@ -162,6 +166,23 @@ fn not_found(uri: &str, kind: &str) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compatibility_read_represents_binary_once_as_blob() {
+        use crate::skills::facade::{VisibleSkillContent, VisibleSkillFile};
+
+        let wire = visible_skill_file_to_json(VisibleSkillFile {
+            uri: "skill://up/demo/asset.png".into(),
+            skill_uri: "skill://up/demo/SKILL.md".into(),
+            origin: "up".into(),
+            digest: "sha256:test".into(),
+            mime_type: Some("image/png".into()),
+            content: VisibleSkillContent::Blob(vec![0, 1, 2, 3]),
+        });
+        assert!(wire["text"].is_null());
+        assert_eq!(wire["blob"], "AAECAw==");
+        assert_eq!(wire["mime_type"], "image/png");
+    }
 
     fn write_versioned_skill(root: &std::path::Path, version: &str) {
         let dir = root.join("changing");

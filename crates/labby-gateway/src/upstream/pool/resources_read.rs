@@ -1511,8 +1511,8 @@ mod tests {
                 _: rmcp::model::ReadResourceRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
             ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
-                // 26 MiB of text — above the default 24 MiB cap.
-                let payload = "x".repeat(26 * 1024 * 1024);
+                // 12 MiB of text — above the default 10 MiB cap.
+                let payload = "x".repeat(12 * 1024 * 1024);
                 Ok(ReadResourceResult::new(vec![ResourceContents::text(
                     "file:///tmp/big",
                     payload,

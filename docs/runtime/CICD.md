@@ -148,6 +148,9 @@ jobs when their changed-path category is enabled:
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
+| MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
+| Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
+| Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
 
 Every distributable or deployable Labby binary must include the `skills`
 feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
@@ -155,9 +158,6 @@ default `gateway-host`, the sealed `integrated-gateway`, and `all` profiles all
 include it. Featureless and non-gateway slices exist only to verify dependency
 boundaries. Release binaries, the production container, and the Incus image
 each run a packaged-artifact smoke that proves the Skills CLI surface exists.
-| MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
-| Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
-| Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 

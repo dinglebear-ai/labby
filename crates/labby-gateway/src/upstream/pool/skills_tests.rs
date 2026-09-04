@@ -96,6 +96,7 @@ struct SkillsServer {
     get_calls: Arc<AtomicUsize>,
     /// When set, `skills/get` answers with this entry; otherwise -32602.
     get_entry: Arc<Option<Value>>,
+    omit_get_result_type: bool,
     /// When false, the handshake omits the skills extension entirely.
     declares_extension: bool,
     /// When true, resources/read serves bytes that do not match the digest.
@@ -117,6 +118,7 @@ impl SkillsServer {
             list_calls: Arc::new(AtomicUsize::new(0)),
             get_calls: Arc::new(AtomicUsize::new(0)),
             get_entry: Arc::new(None),
+            omit_get_result_type: false,
             declares_extension: true,
             tamper: false,
             forged_frontmatter: None,
@@ -129,6 +131,11 @@ impl SkillsServer {
 
     fn with_get(mut self, entry: Value) -> Self {
         self.get_entry = Arc::new(Some(entry));
+        self
+    }
+
+    fn omitting_get_result_type(mut self) -> Self {
+        self.omit_get_result_type = true;
         self
     }
 
@@ -244,16 +251,12 @@ impl ServerHandler for SkillsServer {
                     std::future::pending::<()>().await;
                 }
                 let index = self.list_calls.fetch_add(1, Ordering::SeqCst);
-                let mut page = self
+                let page = self
                     .pages
                     .get(index)
                     .or_else(|| self.pages.last())
                     .cloned()
                     .unwrap_or_else(|| json!({ "skills": [] }));
-                if let Some(page) = page.as_object_mut() {
-                    page.entry("resultType")
-                        .or_insert_with(|| json!("complete"));
-                }
                 Ok(CustomResult::new(page))
             }
             "skills/get" => {
@@ -262,16 +265,21 @@ impl ServerHandler for SkillsServer {
                 }
                 self.get_calls.fetch_add(1, Ordering::SeqCst);
                 match self.get_entry.as_ref() {
-                    Some(entry) => Ok(CustomResult::new(json!({
-                        "resultType": "complete",
-                        "skill": entry,
-                        "_meta": {
-                            "io.modelcontextprotocol/serverInfo": {
-                                "name": "depot-shaped-skills-server",
-                                "version": "1.0.0"
+                    Some(entry) => {
+                        let mut result = json!({
+                            "skill": entry,
+                            "_meta": {
+                                "io.modelcontextprotocol/serverInfo": {
+                                    "name": "depot-shaped-skills-server",
+                                    "version": "1.0.0"
+                                }
                             }
+                        });
+                        if !self.omit_get_result_type {
+                            result["resultType"] = json!("complete");
                         }
-                    }))),
+                        Ok(CustomResult::new(result))
+                    }
                     None => Err(ErrorData::new(
                         ErrorCode::INVALID_PARAMS,
                         "unknown skill".to_string(),
@@ -617,6 +625,41 @@ async fn skills_get_resolves_a_skill_that_never_appeared_in_a_listing() {
         .expect("skills/get succeeds")
         .expect("an unlisted skill still resolves");
     assert_eq!(fetched.name, "unlisted");
+}
+
+#[tokio::test]
+async fn missing_result_type_defaults_to_complete_on_list_and_get_paths() {
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "listed")] })])
+        .with_get(entry("up", "unlisted"))
+        .omitting_get_result_type();
+    let pool = catalog_pool_with_server("up", server).await;
+    let peer = peer_for(&pool, "up").await;
+
+    let listed = pool
+        .fetch_upstream_skills("up", &peer)
+        .await
+        .expect("a missing list resultType defaults to complete");
+    assert_eq!(listed.skills.len(), 1);
+    let fetched = pool
+        .fetch_upstream_skill("up", &peer, "skill://up/unlisted/SKILL.md", None)
+        .await
+        .expect("a missing get resultType defaults to complete")
+        .expect("skill resolves");
+    assert_eq!(fetched.name, "unlisted");
+}
+
+#[tokio::test]
+async fn unknown_result_type_is_rejected_on_the_client_path() {
+    let server = SkillsServer::new(vec![json!({
+        "resultType": "future-shape",
+        "skills": []
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let error = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect_err("unknown resultType values must not be silently accepted");
+    assert!(error.contains("malformed"), "{error}");
 }
 
 #[tokio::test]

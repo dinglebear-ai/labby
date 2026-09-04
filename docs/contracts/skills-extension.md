@@ -356,9 +356,9 @@ declared `directoryRead: true`. Labby does not declare it.
 
 `skills/list` returns `skills[]` plus `nextCursor`, `ttlMs`, and `cacheScope`.
 Digests are `sha256:{hex}` with exactly 64 lowercase hex characters.
-Servers using protocol version 2026-07-28 include `resultType: "complete"`;
-clients default an absent `resultType` to `"complete"` for older negotiated
-protocol versions.
+Servers using protocol version 2026-07-28 include `resultType: "complete"`.
+Labby accepts an absent `resultType` as `"complete"` as a compatibility
+tolerance, while rejecting unknown values.
 
 ## Labby-owned Artifact Library extension
 
@@ -434,6 +434,7 @@ asserted against their Rust definitions, so editing one without the other fails
 CI.
 
 A scheduled drift watcher (an extension of `scripts/ci/mcp_upstream_drift.py`)
-compares the pinned SHA against the canonical SEP branch and opens an issue on
-divergence. **That issue must be triaged before any release touching skills
-aggregation** — a warn-only job nobody reads defeats the point of pinning.
+compares the pinned SHA against the canonical SEP branch and opens or updates an
+issue when a watched normative SEP file changes. **That issue must be triaged
+before any release touching skills aggregation** — a warn-only job nobody reads
+defeats the point of pinning.
