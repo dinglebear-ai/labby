@@ -37,6 +37,7 @@ struct LabbySettings {
     server_url: String,
     control_plane_url: String,
     static_token: Option<String>,
+    project_id: Option<String>,
     shortcut: String,
     theme: PaletteTheme,
     hide_on_blur: bool,
@@ -566,6 +567,7 @@ fn merge_settings(persisted: PartialPaletteSettings, defaults: LabbySettings) ->
             .or(persisted_server_url)
             .unwrap_or(defaults.control_plane_url),
         static_token: persisted.static_token.unwrap_or(defaults.static_token),
+        project_id: persisted.project_id.or(defaults.project_id),
         shortcut: persisted
             .shortcut
             .unwrap_or_else(|| DEFAULT_SHORTCUT.to_string()),
@@ -586,11 +588,15 @@ fn default_settings() -> LabbySettings {
     let static_token = value_for("LABBY_MCP_HTTP_TOKEN")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let project_id = value_for("LABBY_PROJECT_ID")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     LabbySettings {
         server_url,
         control_plane_url,
         static_token,
+        project_id,
         shortcut: DEFAULT_SHORTCUT.to_string(),
         theme: PaletteTheme::System,
         hide_on_blur: true,
@@ -612,6 +618,7 @@ pub(crate) struct PartialPaletteSettings {
     server_url: Option<String>,
     control_plane_url: Option<String>,
     static_token: Option<Option<String>>,
+    project_id: Option<String>,
     shortcut: Option<String>,
     theme: Option<PaletteTheme>,
     hide_on_blur: Option<bool>,
@@ -632,6 +639,10 @@ fn normalize_settings(mut settings: LabbySettings) -> LabbySettings {
         .static_token
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty());
+    settings.project_id = settings
+        .project_id
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty());
     settings.shortcut = normalize_shortcut_label(&settings.shortcut);
     settings
 }
@@ -937,7 +948,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::{
         ControlPlaneLoad, LabbySettings, PaletteTheme, PartialPaletteSettings, control_plane_url,
-        default_server_url, generation_url, merge_settings, validate_saved_server_url,
+        default_server_url, generation_url, merge_settings, normalize_settings,
+        validate_saved_server_url,
     };
 
     #[test]
@@ -952,13 +964,13 @@ mod tests {
     fn default_server_url_does_not_use_oauth_public_url() {
         assert_eq!(default_server_url(None), "http://localhost:8765");
     }
-
     #[test]
     fn control_plane_origin_can_differ_and_legacy_settings_follow_server() {
         let defaults = LabbySettings {
             server_url: "https://api.default.example".to_owned(),
             control_plane_url: "https://ui.default.example".to_owned(),
             static_token: None,
+            project_id: None,
             shortcut: "Ctrl+Shift+Space".to_owned(),
             theme: PaletteTheme::System,
             hide_on_blur: true,
@@ -1102,5 +1114,29 @@ mod tests {
         assert!(!load.navigation_allowed(&downgraded));
         assert!(!load.navigation_allowed(&fake_shell));
         assert!(!load.navigation_allowed(&ported_shell));
+    }
+
+    #[test]
+    fn project_context_is_trimmed_and_empty_values_are_removed() {
+        let settings = |project_id| LabbySettings {
+            server_url: "http://localhost:8765".to_string(),
+            control_plane_url: "http://localhost:8765".to_string(),
+            static_token: None,
+            project_id,
+            shortcut: "Ctrl+Shift+Space".to_string(),
+            theme: PaletteTheme::System,
+            hide_on_blur: true,
+            open_results_inline: true,
+            show_footer_hints: false,
+        };
+
+        assert_eq!(
+            normalize_settings(settings(Some(" team-project ".to_string()))).project_id,
+            Some("team-project".to_string())
+        );
+        assert_eq!(
+            normalize_settings(settings(Some("   ".to_string()))).project_id,
+            None
+        );
     }
 }

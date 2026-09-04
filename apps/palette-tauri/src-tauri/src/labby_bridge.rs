@@ -128,6 +128,7 @@ pub(crate) async fn dispatch_action(
         .map(str::trim)
         .filter(|t| !t.is_empty());
     let body = serde_json::json!({ "action": request.action, "params": request.params });
+    let project_id = settings.project_id.as_deref();
 
     let make = |token: Option<&str>| {
         let mut b = client
@@ -136,6 +137,9 @@ pub(crate) async fn dispatch_action(
             .json(&body);
         if let Some(t) = token {
             b = b.bearer_auth(t);
+        }
+        if let Some(project_id) = project_id {
+            b = b.header("x-labby-project-id", project_id);
         }
         b
     };
@@ -291,6 +295,7 @@ pub(crate) async fn execute_launcher_entry(
         "confirmDestructive": request.confirm_destructive.unwrap_or(false),
         "expectedContractHash": request.expected_contract_hash,
     });
+    let project_id = settings.project_id.as_deref();
 
     let make = |token: Option<&str>| {
         let mut b = client
@@ -299,6 +304,9 @@ pub(crate) async fn execute_launcher_entry(
             .json(&body);
         if let Some(t) = token {
             b = b.bearer_auth(t);
+        }
+        if let Some(project_id) = project_id {
+            b = b.header("x-labby-project-id", project_id);
         }
         b
     };
@@ -317,6 +325,9 @@ pub(crate) async fn execute_launcher_entry(
                     .json(&body);
                 if let Some(t) = token {
                     b = b.bearer_auth(t);
+                }
+                if let Some(project_id) = project_id {
+                    b = b.header("x-labby-project-id", project_id);
                 }
                 b
             };

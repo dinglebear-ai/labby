@@ -527,6 +527,9 @@ async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
             // Depending on when the client finishes writing, Linux reports
             // that fail-closed response as a broken pipe instead of exposing
             // an HTTP status.
+            // reqwest's Display output stops at the high-level request error,
+            // while the platform-specific broken-pipe cause is retained in
+            // the debug/source chain.
             let message = format!("{error:?}").to_ascii_lowercase();
             assert!(
                 error.is_request()
