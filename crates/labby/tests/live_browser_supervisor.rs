@@ -192,6 +192,11 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for key in ["LABBY_E2E_HELPER_REGISTRY", "LABBY_E2E_GROUP_TOKEN"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     let mut child = command.spawn().expect("spawn browser");
     let stdout_task = tokio::spawn(read_capped(
         child.stdout.take().expect("stdout"),

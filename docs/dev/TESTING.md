@@ -279,6 +279,35 @@ created `LABBY_LIVE_BROWSER_DESCRIPTOR`; Playwright owns Chromium only. The
 outer supervisor owns Labby, loopback ports, browser-session storage state,
 fixtures, evidence roots, and teardown.
 
+The browser journey has a 90-second absolute deadline and a one-second bounded
+drain grace. Cancellation closes its owned browser and defers later cleanup
+mutations to the outer supervisor. Failure screenshots are captured as bytes
+before a bounded write; traces are discarded because Playwright cannot cancel a
+trace-file write. Retained events and artifact scans have explicit count and byte
+limits, and cleanup directory enumeration is bounded before entries are queued.
+
+The outer runner supervises every shard, including the ordinary sequential tier.
+`LABBY_E2E_SHARD_TIMEOUT_SECONDS` defaults to 900 and
+`LABBY_E2E_RUN_TIMEOUT_SECONDS` defaults to 7200. Cleanup helpers use private
+process groups; when supervised, they must register through the run-owned
+admission gate before executing recovery or artifact scanning. Cancellation
+closes admission before collecting helper groups, then terminates and verifies
+owned groups within bounded grace periods. A helper leader exiting successfully
+does not release ownership of its surviving descendants: a registered guardian
+retains the command's exit status until the group is reaped. Playwright's detached
+Chromium launcher uses the same admission gate, so a wedged Node parent does not
+hide the browser group from outer cancellation. The cancellation regression uses
+the real Playwright launcher with a listener-owning executable fixture; the live
+browser journey separately exercises Chromium. Credential revocation requires
+verified revocation plus explicit, fallible absence evidence rather than
+forgetting ledger rows.
+
+The Bash supervisor and its process-group orchestration tests are Unix-only.
+Native Windows process-tree containment is verified separately through required
+Windows Job Object tests; the Unix gates do not replace or make those tests
+advisory. Generic helper timeout, revocation, and failure-cleanup tests use the
+portable compiled process fixture rather than assuming a POSIX shell exists.
+
 ## Ownership Summary
 
 - `labby-apis` owns SDK tests

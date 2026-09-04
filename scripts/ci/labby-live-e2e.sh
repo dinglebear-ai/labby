@@ -12,6 +12,9 @@ else
   run_root="$(mktemp -d "${TMPDIR:-/tmp}/labby-live-e2e.XXXXXX")"
 fi
 mkdir "$run_root/shards" "$run_root/cases" "$run_root/artifacts"; chmod 700 "$run_root" "$run_root/shards" "$run_root/cases" "$run_root/artifacts"
+helper_registry="$run_root/helper-groups"
+mkdir "$helper_registry"; chmod 700 "$helper_registry"
+export LABBY_E2E_HELPER_REGISTRY="$helper_registry"
 run_id="${LABBY_E2E_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$-$seed}"
 export LABBY_E2E_SEED="$seed" LABBY_E2E_RUN_ID="$run_id"
 export LABBY_E2E_CASE_DIR="$run_root/cases"
@@ -22,21 +25,24 @@ export LABBY_E2E_RETAINED_SECRET="$evidence_canary"
 primary=0; cleanup=0; evidence=0; active_pids=(); owned_groups=(); group_seq=0
 touch "$run_root/process-groups.tsv" "$run_root/process-group-members.tsv"
 group_alive() { kill -0 -- "-$1" 2>/dev/null; }
-register_group() { printf '%s\t%s\t%s\n' "$1" "$(ps -o lstart= -p "$1" | sed 's/^ *//')" "$2" >>"$run_root/process-groups.tsv"; }
+register_group() { printf '%s\t%s\t%s\n' "$1" "$(ps -o lstart= -p "$1" | sed 's/^ *//;s/ *$//')" "$2" >>"$run_root/process-groups.tsv"; }
 refresh_group_members() {
-  group="$1"
-  for member in $(ps -axo pid=,pgid= | awk -v group="$group" '$2 == group { print $1 }'); do
-    printf '%s\t%s\t%s\n' "$group" "$member" "$(ps -o lstart= -p "$member" 2>/dev/null | sed 's/^ *//')" >>"$run_root/process-group-members.tsv"
-  done
+  local group="$1" inventory member member_group member_start
+  inventory="$(if [ "${LABBY_E2E_MEMBER_INVENTORY_FAILURE_SELFTEST:-0}" = 1 ]; then exit 1; else ps -axo pid=,pgid=,lstart=; fi)" || { cleanup=1; return 70; }
+  while read -r member member_group member_start; do
+    [ "$member_group" = "$group" ] || continue
+    [ -n "$member_start" ] || { cleanup=1; return 70; }
+    printf '%s\t%s\t%s\n' "$group" "$member" "$member_start" >>"$run_root/process-group-members.tsv"
+  done <<<"$inventory"
 }
 group_identity_matches() {
   expected="$(awk -F '\t' -v group="$1" '$1 == group { print $2; exit }' "$run_root/process-groups.tsv" 2>/dev/null)"
   token="$(awk -F '\t' -v group="$1" '$1 == group { print $3; exit }' "$run_root/process-groups.tsv" 2>/dev/null)"
-  current="$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//')"
+  current="$(ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')"
   [ -n "$expected" ] && [ "$current" = "$expected" ] && return 0
   while IFS=$'\t' read -r recorded_group member member_start; do
     [ "$recorded_group" = "$1" ] || continue
-    current="$(ps -o lstart= -p "$member" 2>/dev/null | sed 's/^ *//')"
+    current="$(ps -o lstart= -p "$member" 2>/dev/null | sed 's/^ *//;s/ *$//')"
     [ -n "$member_start" ] && [ "$current" = "$member_start" ] && return 0
   done <"$run_root/process-group-members.tsv" 2>/dev/null || true
   [ -n "$token" ] || return 1
@@ -52,29 +58,73 @@ group_has_listener() {
   done
   return 1
 }
+adopt_cleanup_helpers() {
+  local helper pid member token inventory recorded_start current_start
+  inventory="$(if [ "${LABBY_E2E_INVENTORY_FAILURE_SELFTEST:-0}" = 1 ]; then exit 1; else ps -axo pid=,pgid=; fi)" || { cleanup=1; return 70; }
+  for helper in "$helper_registry"/[0-9]*; do
+    [ -d "$helper" ] && [ ! -L "$helper" ] || continue
+    pid="${helper##*/}"
+    case "$pid" in *[!0-9]*|'') cleanup=1; continue;; esac
+    member="$(printf '%s\n' "$inventory" | awk -v group="$pid" '$2 == group { print $1; exit }')"
+    [ -n "$member" ] || continue
+    # The gate keeps its group leader alive until group reap; no platform-
+    # dependent environment introspection is needed to verify ownership.
+    [ -f "$helper/identity" ] && [ ! -L "$helper/identity" ] || { cleanup=1; continue; }
+    recorded_start="$(sed -n '1p' "$helper/identity" | sed 's/^ *//;s/ *$//')"
+    token="$(sed -n '2p' "$helper/identity")"
+    current_start="$(ps -o lstart= -p "$pid" 2>/dev/null)" || { cleanup=1; continue; }
+    current_start="$(printf '%s' "$current_start" | sed 's/^ *//;s/ *$//')"
+    [ -n "$recorded_start" ] && [ "$recorded_start" = "$current_start" ] || { cleanup=1; continue; }
+    if [ -z "$token" ] || ! awk -F '\t' -v token="$token" '$3 == token { found=1 } END { exit !found }' "$run_root/process-groups.tsv"; then
+      cleanup=1
+      continue
+    fi
+    owned_groups+=("$pid")
+    register_group "$pid" "$token"
+  done
+}
 terminate_children() {
-  for group in "${owned_groups[@]:-}"; do group_identity_matches "$group" && kill -TERM -- "-$group" 2>/dev/null || { group_alive "$group" && cleanup=1 || true; }; done
+  set +m
+  # Closing admission precedes the registry scan: later helper gates must exit
+  # before exec, and every previously admitted helper already has a directory.
+  mkdir "$helper_registry/closed" 2>/dev/null || [ -d "$helper_registry/closed" ] || { cleanup=1; return 70; }
+  adopt_cleanup_helpers || cleanup=1
+  termination_deadline="${termination_deadline:-$((SECONDS + 5))}"
+  for group in "${owned_groups[@]:-}"; do
+    refresh_group_members "$group" || cleanup=1
+    if ! group_identity_matches "$group" || ! kill -TERM -- "-$group" 2>/dev/null; then
+      if group_alive "$group"; then cleanup=1; fi
+    fi
+  done
   deadline=$((SECONDS + 3))
+  [ "$deadline" -le "$termination_deadline" ] || deadline="$termination_deadline"
   while [ "$SECONDS" -lt "$deadline" ]; do
     alive=0; for group in "${owned_groups[@]:-}"; do group_alive "$group" && alive=1; done
     [ "$alive" -eq 0 ] && break
     sleep 0.05
   done
-  for group in "${owned_groups[@]:-}"; do group_identity_matches "$group" && group_alive "$group" && kill -KILL -- "-$group" 2>/dev/null || true; done
-  for pid in "${active_pids[@]:-}"; do wait "$pid" 2>/dev/null || true; done
-  for _ in {1..20}; do
+  for group in "${owned_groups[@]:-}"; do
+    if group_identity_matches "$group" && group_alive "$group"; then
+      kill -KILL -- "-$group" 2>/dev/null || { cleanup=1; group_alive "$group" && return 70 || true; }
+    fi
+  done
+  reap_deadline=$((SECONDS + 2))
+  [ "$reap_deadline" -le "$termination_deadline" ] || reap_deadline="$termination_deadline"
+  while [ "$SECONDS" -lt "$reap_deadline" ]; do
     alive=0; for group in "${owned_groups[@]:-}"; do group_alive "$group" && alive=1; done
     [ "$alive" -eq 0 ] && break
     sleep 0.05
   done
-  for group in "${owned_groups[@]:-}"; do group_alive "$group" && cleanup=1; done
+  for group in "${owned_groups[@]:-}"; do group_alive "$group" && { cleanup=1; return 70; } || true; done
+  for pid in "${active_pids[@]:-}"; do wait "$pid" 2>/dev/null || true; done
   active_pids=()
+  owned_groups=()
 }
 finish() {
   status=$?
   trap - EXIT
   [ "$status" -eq 0 ] || primary=1
-  terminate_children
+  terminate_children || cleanup=1
   find "$run_root" -type l -print -quit | grep -q . && cleanup=1 || true
   printf '{"primary":%s,"cleanup":%s,"evidence":%s}\n' "$primary" "$cleanup" "$evidence" >"$run_root/artifacts/status.json"
   if [ "$status" -eq 0 ] && { [ "$primary" -ne 0 ] || [ "$cleanup" -ne 0 ] || [ "$evidence" -ne 0 ]; }; then status=1; fi
@@ -95,6 +145,7 @@ if [ "${LABBY_E2E_SIGNAL_SELFTEST:-0}" = 1 ]; then
   wait "$pid"
 fi
 if [ "${LABBY_E2E_EXIT_FAILURE_SELFTEST:-0}" = 1 ]; then cleanup=1; exit 0; fi
+if [ "${LABBY_E2E_INVENTORY_FAILURE_SELFTEST:-0}" = 1 ] || [ "${LABBY_E2E_MEMBER_INVENTORY_FAILURE_SELFTEST:-0}" = 1 ]; then exit 0; fi
 if [ "${LABBY_E2E_LISTENER_SELFTEST:-0}" = 1 ]; then
   set -m
   group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
@@ -185,6 +236,10 @@ if [ "$tier" = nightly ] || [ "$tier" = manual ] || [ "$tier" = release ]; then 
 if [ "$tier" = collision ]; then shards=(live-http-cli-api-a live-http-cli-api-b); fi
 complete() { shard="$1"; log="$2"; if [ "$(wc -c <"$log")" -gt 1048576 ]; then tail -c 1048576 "$log" >"$log.bounded"; mv "$log.bounded" "$log"; fi; hash="$(shasum -a 256 "$log" | awk '{print $1}')"; printf '{"schema_version":1,"run_id":"%s","seed":"%s","build_identity":"%s","shard":"%s","status":"passed","sha256":"%s"}\n' "$run_id" "$seed" "$build_id" "$shard" "$hash" >"$run_root/shards/$shard.json"; }
 run_shard() {
+  # The parent creates this background shard's process group with monitor mode.
+  # Inside it, foreground commands must inherit that group rather than creating
+  # additional unregistered job-control groups.
+  set +m
   shard="$1"; log="$run_root/$shard.log"
   case "$shard" in
     contracts) cargo test -p labby --all-features --test action_matrix_completeness --locked >"$log" 2>&1;;
@@ -195,9 +250,52 @@ run_shard() {
     live-identity-protected-restart) cargo test -p labby --all-features --test live_identity_bootstrap --test live_protected_routes --test live_restart_persistence --locked -- --test-threads=1 >"$log" 2>&1;;
     browser-live) node_bin="$(command -v node)"; case "$node_bin" in */mise/shims/*) node_bin="$(mise which node)";; esac; PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" LABBY_NODE_BIN="$node_bin" LABBY_LIVE_BROWSER_RUN=1 LABBY_LIVE_BROWSER_NIGHTLY="$([ "$tier" = nightly ] && echo true || echo false)" LABBY_LIVE_BROWSER_ASSETS_DIR="${LABBY_LIVE_BROWSER_ASSETS_DIR:-$repo_root/apps/gateway-admin/out}" cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >"$log" 2>&1;;
     fault-qualification) LABBY_E2E_FAULT_REPORT="$run_root/artifacts/fault-qualification.json" cargo test -p labby --all-features --test e2e_fault_qualification --locked -- --test-threads=1 >"$log" 2>&1;;
+    wedged-cleanup-selftest) bash -c 'trap "" TERM; sleep 6; touch -- "$LABBY_E2E_WEDGED_MARKER"; while :; do sleep 1; done' >"$log" 2>&1;;
+    escaped-cleanup-selftest) "$LABBY_E2E_HELPER_TEST_BINARY" "$LABBY_E2E_HELPER_TEST_FILTER" --exact --ignored --nocapture >"$log" 2>&1;;
+    escaped-browser-selftest) "$LABBY_NODE_BIN" --experimental-strip-types "$repo_root/apps/gateway-admin/lib/browser/noncooperative-browser-parent.fixture.ts" >"$log" 2>&1;;
   esac && complete "$shard" "$log"
 }
-if [ "$tier" = collision ]; then set -m; for shard in "${shards[@]}"; do group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"; LABBY_E2E_GROUP_TOKEN="$group_token" run_shard "$shard" & pid="$!"; active_pids+=("$pid"); owned_groups+=("$pid"); register_group "$pid" "$group_token"; done; for pid in "${active_pids[@]}"; do wait "$pid" || primary=1; refresh_group_members "$pid"; done; active_pids=(); set +m; else for shard in "${shards[@]}"; do run_shard "$shard" || { primary=1; tail -c 12000 "$run_root/$shard.log" >&2 || true; exit 1; }; done; fi
+start_owned_shard() {
+  shard="$1"; group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
+  LABBY_E2E_GROUP_TOKEN="$group_token" run_shard "$shard" & last_pid="$!"
+  active_pids+=("$last_pid"); owned_groups+=("$last_pid"); register_group "$last_pid" "$group_token"
+}
+wait_owned_shard() {
+  pid="$1"; shard="$2"; limit="${LABBY_E2E_SHARD_TIMEOUT_SECONDS:-900}"
+  case "$limit" in *[!0-9]*|'') return 64;; esac
+  shard_deadline=$((SECONDS + limit))
+  [ "$shard_deadline" -le "$run_deadline" ] || shard_deadline="$run_deadline"
+  while group_alive "$pid" && [ "$SECONDS" -lt "$shard_deadline" ]; do sleep 0.05; done
+  if group_alive "$pid"; then
+    primary=1
+    terminate_children || return 70
+    return 124
+  fi
+  wait "$pid" || return $?
+}
+if [ "${LABBY_E2E_WEDGED_SHARD_SELFTEST:-0}" = 1 ]; then
+  shards=(wedged-cleanup-selftest)
+  export LABBY_E2E_WEDGED_MARKER="$run_root/post-deadline-mutation"
+fi
+if [ "${LABBY_E2E_ESCAPED_HELPER_SELFTEST:-0}" = 1 ]; then
+  shards=(escaped-cleanup-selftest)
+  export LABBY_E2E_WEDGED_MARKER="$run_root/post-deadline-mutation"
+fi
+if [ "${LABBY_E2E_ESCAPED_BROWSER_SELFTEST:-0}" = 1 ]; then
+  shards=(escaped-browser-selftest)
+  export LABBY_E2E_BROWSER_FIXTURE_MARKER="$run_root/detached-browser.json"
+fi
+run_limit="${LABBY_E2E_RUN_TIMEOUT_SECONDS:-7200}"
+case "$run_limit" in *[!0-9]*|'') exit 64;; esac
+run_deadline=$((SECONDS + run_limit))
+set -m
+if [ "$tier" = collision ]; then
+  shard_pids=(); for shard in "${shards[@]}"; do start_owned_shard "$shard"; shard_pids+=("$last_pid:$shard"); done
+  for entry in "${shard_pids[@]}"; do pid="${entry%%:*}"; shard="${entry#*:}"; wait_owned_shard "$pid" "$shard" || primary=1; refresh_group_members "$pid"; done
+else
+  for shard in "${shards[@]}"; do start_owned_shard "$shard"; wait_owned_shard "$last_pid" "$shard" || { primary=1; tail -c 12000 "$run_root/$shard.log" >&2 || true; break; }; done
+fi
+active_pids=(); set +m
 [ "$primary" -eq 0 ] || exit 1
 # Audit before producing any aggregate artifact that claims this run passed.
 symlinks_absent=true; find "$run_root" -type l -print -quit | grep -q . && { symlinks_absent=false; cleanup=1; } || true

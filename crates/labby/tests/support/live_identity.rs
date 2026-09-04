@@ -221,24 +221,21 @@ impl LiveIdentity {
         // revocations. Register the shipped offline recovery path so timeout or
         // panic teardown still revokes this run's exact prepare and removes its
         // secret outputs before the caller-owned installation disappears.
-        let recovery_root = root.clone();
-        let recovery_prepare_id = prepare_id.clone();
-        let absent_root = root.clone();
+        let mut recovery = installation_command(&root);
+        recovery.args([
+            "setup",
+            "access-bootstrap",
+            "recover",
+            "--prepare-id",
+            &prepare_id,
+            "--revoke",
+            "--json",
+        ]);
         guard.register_credential_session(
             format!("bootstrap:{prepare_id}:{credential_id}"),
-            move || {
-                if !recovery_root.join("credential.txt").exists()
-                    && !recovery_root.join("proof.json").exists()
-                {
-                    return Ok(());
-                }
-                recover(&recovery_root, &recovery_prepare_id, true).map(drop)
-            },
-            move || {
-                Ok(!absent_root.join("credential.txt").exists()
-                    && !absent_root.join("proof.json").exists())
-            },
-        );
+            recovery,
+            vec![root.join("credential.txt"), root.join("proof.json")],
+        )?;
         Ok(Self {
             guard: Some(guard),
             owned,
@@ -588,7 +585,18 @@ impl LiveIdentity {
                 failures.push(format!("bootstrap secret output survived cleanup: {path}"));
             }
         }
-        let guard = self.guard.take().expect("active identity");
+        let mut guard = self.guard.take().expect("active identity");
+        // Successful online cleanup above already proves credential/session
+        // denial. Settle only that exact guard, after fallible output-absence
+        // verification, rather than repeating a non-idempotent offline revoke.
+        if failures.is_empty()
+            && let Err(error) = guard.confirm_credential_session_revoked(&format!(
+                "bootstrap:{}:{}",
+                self.prepare_id, self.identity.credential_id,
+            ))
+        {
+            failures.push(error);
+        }
         let result = guard.finish().await;
         failures.extend(result.failures.iter().cloned());
         if let Err(error) = scan_secrets(
