@@ -324,9 +324,36 @@ jobs:
           $results = @($inventory.powershell | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Warning,Error })
           $results | Format-Table -AutoSize
           if ($results.Count -ne 0) { throw "PSScriptAnalyzer found $($results.Count) issue(s)" }
-      - name: Run Windows installer behavioral contracts
+
+  windows-installer:
+    name: Windows installer behavioral contracts
+    runs-on: windows-latest
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Install pinned Pester
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+      - name: Run installer contracts on Windows
         shell: pwsh
         run: Invoke-Pester scripts/tests/install.ps1.Tests.ps1 -Output Detailed
+
+  macos-installer:
+    name: macOS installer behavioral contracts
+    runs-on: macos-15
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Run installer contracts on macOS
+        run: scripts/tests/installers.sh
 
   frontend-assets:
     name: Frontend assets
@@ -1474,6 +1501,8 @@ jobs:
       - unraid-plugin-check
       - actionlint
       - lifecycle-static-analysis
+      - windows-installer
+      - macos-installer
       - frontend-assets
       - gateway-admin-browser
       - live-e2e-core
@@ -1554,6 +1583,8 @@ jobs:
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped lifecycle-static-analysis "${{ needs.lifecycle-static-analysis.result }}"
+          require_success_or_skipped windows-installer "${{ needs.windows-installer.result }}"
+          require_success_or_skipped macos-installer "${{ needs.macos-installer.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
           require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
           require_success_or_skipped live-e2e-core "${{ needs.live-e2e-core.result }}"

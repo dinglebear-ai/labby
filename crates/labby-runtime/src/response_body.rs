@@ -10,6 +10,10 @@ const AGGREGATE_RESPONSE_BUDGET_PERMITS: usize =
     AGGREGATE_RESPONSE_BUDGET_BYTES / RESPONSE_BUDGET_QUANTUM;
 static GLOBAL_RESPONSE_BUDGET: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
+fn effective_response_limit(max_bytes: usize) -> usize {
+    max_bytes.min(AGGREGATE_RESPONSE_BUDGET_BYTES)
+}
+
 /// Failure while buffering a response within its configured byte budget.
 #[derive(Debug, thiserror::Error)]
 pub enum CappedResponseBodyError {
@@ -31,6 +35,7 @@ pub async fn read_response_body_capped(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, CappedResponseBodyError> {
+    let max_bytes = effective_response_limit(max_bytes);
     let weight = max_bytes
         .div_ceil(RESPONSE_BUDGET_QUANTUM)
         .max(1)
@@ -66,4 +71,18 @@ pub async fn read_response_body_capped(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caller_limit_cannot_exceed_the_aggregate_budget() {
+        assert_eq!(
+            effective_response_limit(AGGREGATE_RESPONSE_BUDGET_BYTES + 1),
+            AGGREGATE_RESPONSE_BUDGET_BYTES
+        );
+        assert_eq!(effective_response_limit(1024), 1024);
+    }
 }

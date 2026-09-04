@@ -290,8 +290,8 @@ impl GatewayManager {
         origin: Option<String>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<crate::gateway::types::GatewayCatalogDiff, ToolError> {
-        let previous_revision = config_revision(&previous);
-        let candidate_revision = config_revision(&candidate);
+        let previous_revision = config_revision(&previous)?;
+        let candidate_revision = config_revision(&candidate)?;
         self.backup_config_before_commit(&previous_revision).await?;
         self.write_config_file(&candidate).await?;
         match self
@@ -449,12 +449,47 @@ fn write_config_backup(
     Ok(())
 }
 
-fn config_revision(config: &GatewayConfig) -> String {
+fn config_revision(config: &GatewayConfig) -> Result<String, ToolError> {
+    config_revision_with(config, toml::to_string)
+}
+
+fn config_revision_with<E>(
+    config: &GatewayConfig,
+    serialize: impl FnOnce(&GatewayConfig) -> Result<String, E>,
+) -> Result<String, ToolError>
+where
+    E: std::fmt::Display,
+{
     use sha2::{Digest as _, Sha256};
 
-    let encoded = toml::to_string(config).unwrap_or_default();
+    let encoded = serialize(config).map_err(|error| {
+        ToolError::internal_message(format!(
+            "failed to serialize gateway config for transaction revision: {error}"
+        ))
+    })?;
     let digest = Sha256::digest(encoded.as_bytes());
-    hex::encode(&digest[..8])
+    Ok(hex::encode(&digest[..8]))
+}
+
+#[cfg(test)]
+mod config_revision_tests {
+    use super::*;
+
+    #[test]
+    fn serialization_failure_is_not_hashed_as_an_empty_config() {
+        let config = GatewayConfig::default();
+        let error = config_revision_with(&config, |_| {
+            Err::<String, _>("injected serialization failure")
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to serialize gateway config for transaction revision")
+        );
+        assert!(error.to_string().contains("injected serialization failure"));
+    }
 }
 
 fn mutation_lock_path(path: &std::path::Path) -> std::path::PathBuf {

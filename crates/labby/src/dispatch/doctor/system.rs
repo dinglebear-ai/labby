@@ -958,7 +958,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let started = Arc::new(AtomicBool::new(false));
-        let finished = Arc::new(AtomicBool::new(false));
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
         let mut probe = process_probe(
             "system",
             "disconnect",
@@ -971,9 +971,8 @@ mod tests {
         probe.before_run = Some(Box::new(move || {
             started_for_probe.store(true, Ordering::Release);
         }));
-        let finished_for_probe = Arc::clone(&finished);
         probe.after_run = Some(Box::new(move || {
-            finished_for_probe.store(true, Ordering::Release);
+            let _ = finished_tx.send(());
         }));
 
         let audit = tokio::spawn(run_bounded_process_probes(
@@ -994,12 +993,10 @@ mod tests {
 
         audit.abort();
         drop(audit.await);
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        assert!(
-            finished.load(Ordering::Acquire),
-            "dropping the audit detached its active process probe"
-        );
+        tokio::time::timeout(Duration::from_secs(1), finished_rx)
+            .await
+            .expect("dropping the audit detached its active process probe")
+            .expect("probe cleanup dropped its completion signal");
     }
 
     #[cfg(unix)]

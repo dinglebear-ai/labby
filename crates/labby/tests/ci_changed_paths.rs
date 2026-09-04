@@ -250,6 +250,21 @@ fn historical_doc_work_products_skip_docs_check() {
 }
 
 #[test]
+fn shipped_plugin_markdown_routes_to_documentation_checks() {
+    for path in [
+        "plugins/labby/README.md",
+        "plugins/labby/skills/using-labby/SKILL.md",
+        "plugins/labby/skills/using-labby/references/config-reference.md",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs"], "true", "{path}");
+        assert_eq!(out["docs_check"], "true", "{path}");
+        assert_eq!(out["rust_compile"], "false", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+    }
+}
+
+#[test]
 fn npm_launcher_changes_enable_npm_checks_only() {
     let out = classify("pull_request", &["packages/labby-mcp/lib/platform.js"]);
     assert_eq!(out["npm"], "true");

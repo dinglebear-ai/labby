@@ -110,9 +110,14 @@ const AGGREGATE_RESPONSE_BUDGET_PERMITS: usize =
     AGGREGATE_RESPONSE_BUDGET_BYTES / RESPONSE_BUDGET_QUANTUM;
 static GLOBAL_RESPONSE_BUDGET: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
+fn effective_response_limit(max_bytes: usize) -> usize {
+    max_bytes.min(AGGREGATE_RESPONSE_BUDGET_BYTES)
+}
+
 impl BodyCappedHttpClient {
     #[must_use]
     pub fn new(inner: reqwest::Client, max_bytes: usize) -> Self {
+        let max_bytes = effective_response_limit(max_bytes);
         let response_weight = max_bytes
             .div_ceil(RESPONSE_BUDGET_QUANTUM)
             .max(1)
@@ -294,6 +299,7 @@ pub async fn read_response_body_capped(
     response: reqwest::Response,
     max_bytes: usize,
 ) -> Result<Vec<u8>, CappedResponseBodyError> {
+    let max_bytes = effective_response_limit(max_bytes);
     let weight = max_bytes
         .div_ceil(RESPONSE_BUDGET_QUANTUM)
         .max(1)
@@ -744,6 +750,13 @@ mod tests {
             .build()
             .expect("client");
         BodyCappedHttpClient::new(inner, max_bytes)
+    }
+
+    #[test]
+    fn caller_limit_cannot_exceed_the_aggregate_budget() {
+        let client = build(AGGREGATE_RESPONSE_BUDGET_BYTES + 1);
+        assert_eq!(client.max_bytes(), AGGREGATE_RESPONSE_BUDGET_BYTES);
+        assert_eq!(build(1024).max_bytes(), 1024);
     }
 
     #[tokio::test]

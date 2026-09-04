@@ -752,12 +752,7 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
                 &remote_release_rollback_script(PREVIOUS_RELEASE_DIR),
             ],
         )?;
-        let remote_version = incus_exec_stdout(&container, &[REMOTE_BINARY_PATH, "--version"])
-            .ok()
-            .map(|value| value.trim().to_string());
-        let new_pid = service_main_pid(&container).ok().flatten();
-        let ready = new_pid.is_some();
-        let remote_sha256 = remote_sha256(&container).ok();
+        let (remote_version, new_pid, remote_sha256) = verify_explicit_rollback(&container)?;
         return Ok(IncusSyncOutcome {
             container,
             binary: PathBuf::from("<previous-release>"),
@@ -766,14 +761,14 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
             dry_run: false,
             fallback_restart_used: false,
             old_pid: None,
-            new_pid,
+            new_pid: Some(new_pid),
             local_sha256: None,
-            remote_sha256,
+            remote_sha256: Some(remote_sha256),
             local_version: None,
-            remote_version,
+            remote_version: Some(remote_version),
             local_web_index_sha256: None,
             served_web_index_sha256: None,
-            ready,
+            ready: true,
             check_url: options.check_url,
             check_url_ok: None,
             steps: vec!["restored and verified the retained previous Incus release".into()],
@@ -798,14 +793,15 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
             .map(|dir| file_sha256(&dir.join("index.html")))
             .transpose()?
     };
-    let local_version = command_stdout(
-        Command::new(&binary).arg("--version").bounded_output(),
+    let local_version = Some(require_version_output(
+        command_stdout(
+            Command::new(&binary).arg("--version").bounded_output(),
+            "incus_sync_local_version_failed",
+            "failed to read local labby version",
+        ),
         "incus_sync_local_version_failed",
-        "failed to read local labby version",
-    )
-    .ok()
-    .map(|value| value.trim().to_string())
-    .filter(|value| !value.is_empty());
+        "local labby --version",
+    )?);
     let mut steps = Vec::new();
     let mut fallback_restart_used = false;
 
@@ -995,19 +991,18 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     }
     steps.push("verified remote binary hash".to_string());
 
-    let remote_version = incus_exec_stdout(&container, &[REMOTE_BINARY_PATH, "--version"])
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    if local_version.is_some() && remote_version.is_some() && local_version != remote_version {
+    let remote_version = Some(activate!(require_version_output(
+        incus_exec_stdout(&container, &[REMOTE_BINARY_PATH, "--version"]),
+        "incus_sync_remote_version_failed",
+        "deployed labby --version",
+    )));
+    if local_version != remote_version {
         return Err(activation.failure(ToolError::Sdk {
             message: "remote labby version does not match local binary after sync".into(),
             sdk_kind: "incus_sync_version_mismatch".into(),
         }));
     }
-    if remote_version.is_some() {
-        steps.push("verified remote binary version".to_string());
-    }
+    steps.push("verified remote binary version".to_string());
 
     let check_url_ok = if let Some(url) = &options.check_url {
         activate!(curl_check_url(url));
@@ -1571,6 +1566,86 @@ fn remote_sha256(container: &str) -> Result<String, ToolError> {
         ],
     )?;
     Ok(raw.trim().to_string())
+}
+
+fn require_version_output(
+    output: Result<String, ToolError>,
+    kind: &'static str,
+    probe: &'static str,
+) -> Result<String, ToolError> {
+    let value = output.map_err(|error| ToolError::Sdk {
+        message: format!("{probe} failed: {}", error.user_message()),
+        sdk_kind: kind.into(),
+    })?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ToolError::Sdk {
+            message: format!("{probe} returned empty output"),
+            sdk_kind: kind.into(),
+        });
+    }
+    Ok(value.to_string())
+}
+
+fn verify_explicit_rollback(container: &str) -> Result<(String, u32, String), ToolError> {
+    verify_explicit_rollback_with(
+        || incus_exec_stdout(container, &[REMOTE_BINARY_PATH, "--version"]),
+        || service_main_pid(container),
+        || remote_sha256(container),
+        || wait_ready(container, Duration::from_secs(30)),
+    )
+}
+
+fn verify_explicit_rollback_with<V, P, H, R>(
+    version: V,
+    pid: P,
+    sha256: H,
+    readiness: R,
+) -> Result<(String, u32, String), ToolError>
+where
+    V: FnOnce() -> Result<String, ToolError>,
+    P: FnOnce() -> Result<Option<u32>, ToolError>,
+    H: FnOnce() -> Result<String, ToolError>,
+    R: FnOnce() -> Result<(), ToolError>,
+{
+    let version = require_version_output(
+        version(),
+        "incus_sync_rollback_version_failed",
+        "restored labby --version",
+    )?;
+    let pid = pid()
+        .map_err(|error| ToolError::Sdk {
+            message: format!(
+                "failed to verify restored labby MainPID: {}",
+                error.user_message()
+            ),
+            sdk_kind: "incus_sync_rollback_pid_failed".into(),
+        })?
+        .ok_or_else(|| ToolError::Sdk {
+            message: "restored labby service has no running MainPID".into(),
+            sdk_kind: "incus_sync_rollback_pid_failed".into(),
+        })?;
+    let sha256 = sha256().map_err(|error| ToolError::Sdk {
+        message: format!(
+            "failed to verify restored labby binary hash: {}",
+            error.user_message()
+        ),
+        sdk_kind: "incus_sync_rollback_hash_failed".into(),
+    })?;
+    if sha256.trim().is_empty() {
+        return Err(ToolError::Sdk {
+            message: "restored labby binary hash was empty".into(),
+            sdk_kind: "incus_sync_rollback_hash_failed".into(),
+        });
+    }
+    readiness().map_err(|error| ToolError::Sdk {
+        message: format!(
+            "failed to verify restored labby readiness: {}",
+            error.user_message()
+        ),
+        sdk_kind: "incus_sync_rollback_readiness_failed".into(),
+    })?;
+    Ok((version, pid, sha256.trim().to_string()))
 }
 
 fn file_sha256(path: &Path) -> Result<String, ToolError> {
@@ -2551,6 +2626,39 @@ fn run_bounded_target_jobs(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn process_is_running(pid: i32) -> bool {
+        use nix::errno::Errno;
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+
+        match kill(Pid::from_raw(pid), None) {
+            Err(Errno::ESRCH) => false,
+            Err(_) => true,
+            Ok(()) => {
+                // An orphaned descendant can briefly remain as a zombie until
+                // the platform's reaper collects it. `kill(pid, 0)` reports
+                // that PID as present even though it can no longer execute.
+                let output = Command::new("ps")
+                    .args(["-o", "stat=", "-p", &pid.to_string()])
+                    .output();
+                !matches!(output, Ok(output) if output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim_start().starts_with('Z'))
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_process_terminates(pid: i32) {
+        for _ in 0..80 {
+            if !process_is_running(pid) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("descendant process {pid} remained runnable after process-tree termination");
+    }
+
     #[test]
     fn deployment_code_has_no_direct_unbounded_command_execution() {
         let source = include_str!("incus.rs");
@@ -2590,10 +2698,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn command_timeout_kills_the_spawned_process_group() {
-        use nix::errno::Errno;
-        use nix::sys::signal::kill;
-        use nix::unistd::Pid;
-
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("grandchild.pid");
         let mut command = Command::new("sh");
@@ -2615,22 +2719,12 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        for _ in 0..20 {
-            match kill(Pid::from_raw(pid), None) {
-                Err(Errno::ESRCH) => return,
-                _ => thread::sleep(Duration::from_millis(25)),
-            }
-        }
-        panic!("grandchild process {pid} survived command timeout");
+        assert_process_terminates(pid);
     }
 
     #[cfg(unix)]
     #[test]
-    fn command_tree_guard_reaps_descendant_when_stdin_write_returns_early() {
-        use nix::errno::Errno;
-        use nix::sys::signal::kill;
-        use nix::unistd::Pid;
-
+    fn command_tree_guard_terminates_descendant_when_stdin_write_returns_early() {
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("early-return-grandchild.pid");
         let result = (|| -> std::io::Result<()> {
@@ -2667,16 +2761,12 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        assert_eq!(kill(Pid::from_raw(pid), None), Err(Errno::ESRCH));
+        assert_process_terminates(pid);
     }
 
     #[cfg(unix)]
     #[test]
     fn status_timeout_kills_the_spawned_process_group() {
-        use nix::errno::Errno;
-        use nix::sys::signal::kill;
-        use nix::unistd::Pid;
-
         let dir = tempfile::tempdir().unwrap();
         let pid_path = dir.path().join("status-grandchild.pid");
         let mut command = Command::new("sh");
@@ -2696,13 +2786,7 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        for _ in 0..20 {
-            match kill(Pid::from_raw(pid), None) {
-                Err(Errno::ESRCH) => return,
-                _ => thread::sleep(Duration::from_millis(25)),
-            }
-        }
-        panic!("status grandchild process {pid} survived timeout");
+        assert_process_terminates(pid);
     }
 
     #[test]
@@ -2896,6 +2980,131 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("candidate verification failed"));
         assert!(message.contains("restore denied"));
+    }
+
+    fn probe_failure(message: &str) -> ToolError {
+        ToolError::Sdk {
+            message: message.into(),
+            sdk_kind: "fixture_failure".into(),
+        }
+    }
+
+    #[test]
+    fn version_verification_rejects_command_failure_and_empty_output() {
+        for (output, expected) in [
+            (Err(probe_failure("command failed")), "command failed"),
+            (Ok(" \n\t".to_string()), "empty output"),
+        ] {
+            let error = require_version_output(
+                output,
+                "incus_sync_local_version_failed",
+                "local labby --version",
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), "incus_sync_local_version_failed");
+            assert!(error.to_string().contains(expected));
+        }
+
+        for (output, expected) in [
+            (
+                Err(probe_failure("remote command failed")),
+                "remote command failed",
+            ),
+            (Ok(String::new()), "empty output"),
+        ] {
+            let error = require_version_output(
+                output,
+                "incus_sync_remote_version_failed",
+                "deployed labby --version",
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), "incus_sync_remote_version_failed");
+            assert!(error.to_string().contains(expected));
+        }
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_version_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Err(probe_failure("version unavailable")),
+            || Ok(Some(42)),
+            || Ok("abc".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_version_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_absent_pid() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(None),
+            || Ok("abc".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_pid_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_pid_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Err(probe_failure("pid unavailable")),
+            || Ok("abc".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_pid_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_hash_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(Some(42)),
+            || Err(probe_failure("hash unavailable")),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_hash_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_empty_hash() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(Some(42)),
+            || Ok(" \n".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_hash_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_readiness_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(Some(42)),
+            || Ok("abc".into()),
+            || Err(probe_failure("not ready")),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_readiness_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_returns_only_fully_verified_state() {
+        let verified = verify_explicit_rollback_with(
+            || Ok(" labby 1.2.3\n".into()),
+            || Ok(Some(42)),
+            || Ok("abc\n".into()),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(verified, ("labby 1.2.3".into(), 42, "abc".into()));
     }
 
     #[test]

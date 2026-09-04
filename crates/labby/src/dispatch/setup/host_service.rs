@@ -1099,6 +1099,14 @@ fn unit_path() -> PathBuf {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    atomic_write_with_parent_sync(path, bytes, |dir| std::fs::File::open(dir)?.sync_all())
+}
+
+fn atomic_write_with_parent_sync(
+    path: &Path,
+    bytes: &[u8],
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), ToolError> {
     let dir = path.parent().ok_or_else(|| ToolError::Sdk {
         sdk_kind: "internal_error".into(),
         message: format!("cannot determine parent directory for `{}`", path.display()),
@@ -1107,9 +1115,14 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
     std::io::Write::write_all(&mut temp, bytes).map_err(io_error)?;
     temp.as_file_mut().sync_all().map_err(io_error)?;
     temp.persist(path).map_err(|err| io_error(err.error))?;
-    if let Ok(dir_file) = std::fs::File::open(dir) {
-        drop(dir_file.sync_all());
-    }
+    sync_parent(dir).map_err(|error| ToolError::Sdk {
+        sdk_kind: "host_service_parent_sync_failed".into(),
+        message: format!(
+            "persisted `{}`, but failed to sync parent directory `{}`: {error}; verify the file before retrying",
+            path.display(),
+            dir.display()
+        ),
+    })?;
     Ok(())
 }
 
@@ -1674,6 +1687,29 @@ fn io_error(err: std::io::Error) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_write_surfaces_parent_directory_sync_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("labby.service");
+        let error = atomic_write_with_parent_sync(&path, b"new unit", |_| {
+            Err(std::io::Error::other("injected directory fsync failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), "host_service_parent_sync_failed");
+        assert!(
+            error
+                .to_string()
+                .contains("injected directory fsync failure")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("verify the file before retrying")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"new unit");
+    }
 
     #[test]
     fn transaction_failure_distinguishes_successful_and_failed_rollback() {

@@ -364,7 +364,7 @@ After bootstrap or provisioning:
 ```bash
 incus exec labby -- systemctl status labby --no-pager
 incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
-incus exec labby -- su - lab
+incus exec labby -- su - labby
 ```
 
 For the first cutover from an existing host-native setup, copy the current

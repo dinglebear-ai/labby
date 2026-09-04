@@ -114,7 +114,21 @@ Describe 'Labby Windows installer contracts' {
         $toolDir = Join-Path $TestDrive 'cargo-bin'
         $installDir = Join-Path $TestDrive 'source-install'
         New-Item -ItemType Directory -Path $toolDir | Out-Null
-        $cargo = Join-Path $toolDir 'cargo'
+        $cargo = Join-Path $toolDir $(if ($IsWindows) { 'cargo.cmd' } else { 'cargo' })
+        if ($IsWindows) {
+            @'
+@echo off
+echo %* > "%LABBY_TEST_CARGO_ARGS%"
+:next
+if "%~1"=="" exit /b 64
+if "%~1"=="--root" goto root
+shift
+goto next
+:root
+mkdir "%~2\bin" 2>nul
+<nul set /p="source-pinned" > "%~2\bin\labby.exe"
+'@ | Set-Content -NoNewline $cargo
+        } else {
         @'
 #!/bin/sh
 printf '%s\n' "$*" >"$LABBY_TEST_CARGO_ARGS"
@@ -126,7 +140,8 @@ done
 mkdir -p "$root/bin"
 printf source-pinned >"$root/bin/labby.exe"
 '@ | Set-Content -NoNewline $cargo
-        & chmod 755 $cargo
+            & chmod 755 $cargo
+        }
         $oldPath = $env:PATH
         $env:PATH = "$toolDir$([IO.Path]::PathSeparator)$oldPath"
         $env:LABBY_TEST_CARGO_ARGS = Join-Path $TestDrive 'cargo.args'
