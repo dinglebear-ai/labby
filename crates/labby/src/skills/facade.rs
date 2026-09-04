@@ -355,12 +355,16 @@ pub(crate) async fn resolve_visible_skill(
             .then(|| provider_entry_to_wire(entry.clone())));
     }
 
+    // URI validity is part of the Skills contract even when gateway federation
+    // is not compiled in. Keep standalone Skills builds aligned with gateway
+    // builds instead of treating malformed identifiers as missing resources.
+    let parsed = parse_skill_uri(uri).map_err(|error| ToolError::InvalidParam {
+        message: error.to_string(),
+        param: "uri".to_string(),
+    })?;
+
     #[cfg(feature = "gateway")]
     {
-        let parsed = parse_skill_uri(uri).map_err(|error| ToolError::InvalidParam {
-            message: error.to_string(),
-            param: "uri".to_string(),
-        })?;
         let origin = parsed.origin().to_string();
         if !context.scope.allows_upstream(&origin) {
             return Ok(None);
@@ -456,8 +460,7 @@ pub(crate) async fn resolve_visible_skill(
 
     #[cfg(not(feature = "gateway"))]
     {
-        let _ = context;
-        let _ = uri;
+        drop(parsed);
         Ok(None)
     }
 }
