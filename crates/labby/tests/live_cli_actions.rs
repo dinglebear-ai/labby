@@ -177,6 +177,7 @@ fn validated_nonzero_domain_result(key: &str, body: &serde_json::Value) -> bool 
         "doctor:system.checks" => validated_findings_for_services(body, &["lab", "system"]),
         "doctor:auth.check" => validated_doctor_findings(body, "auth", "auth:"),
         "doctor:oauth.relay.check" => validated_doctor_findings(body, "oauth_relay", "registry:"),
+        "doctor:proxy.preflight" => validated_doctor_findings(body, "proxy", "proxy:"),
         _ => false,
     }
 }
@@ -244,6 +245,18 @@ fn nonzero_cli_domain_results_require_an_exact_action_schema() {
         }]
     });
     assert!(validated_nonzero_domain_result("doctor:auth.check", &valid));
+    let proxy = serde_json::json!({
+        "findings": [{
+            "service": "proxy",
+            "check": "proxy:config",
+            "severity": "fail",
+            "message": "proxy configuration is unavailable"
+        }]
+    });
+    assert!(validated_nonzero_domain_result(
+        "doctor:proxy.preflight",
+        &proxy
+    ));
     assert!(!validated_nonzero_domain_result(
         "doctor:system.checks",
         &valid
