@@ -1847,10 +1847,33 @@ fn write_gateway_config_replaces_permissive_parent_acl_with_private_active_and_l
 
     let blocked = dir.path().join("blocked.toml");
     std::fs::create_dir(&blocked).unwrap();
-    let before = std::fs::read_dir(dir.path()).unwrap().count();
-    assert!(write_gateway_config(&blocked, &GatewayConfig::default()).is_err());
-    let after = std::fs::read_dir(dir.path()).unwrap().count();
-    assert_eq!(after, before, "failed persist leaked a secret temp file");
+    let error = write_gateway_config(&blocked, &GatewayConfig::default()).unwrap_err();
+    assert!(
+        error.to_string().contains("failed to persist"),
+        "wrong failure phase: {error}"
+    );
+    assert!(
+        blocked.is_dir(),
+        "failed replacement must preserve its target"
+    );
+    assert_private_windows_acl(&lock_path(&blocked));
+    let remaining: std::collections::BTreeSet<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        remaining,
+        [
+            "config.toml",
+            "config.toml.lock",
+            "blocked.toml",
+            "blocked.toml.lock"
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect(),
+        "only the owned lock may remain after failed persistence; no secret temp file"
+    );
 }
 
 #[cfg(windows)]
