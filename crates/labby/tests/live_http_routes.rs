@@ -34,7 +34,12 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
     let mut failures = Vec::new();
     let mut expected_evidence = Vec::new();
 
-    for case in route_cases().expect("route recipes") {
+    let cases = route_cases()
+        .expect("route recipes")
+        .into_iter()
+        .filter(RouteCase::is_compiled)
+        .collect::<Vec<_>>();
+    for case in &cases {
         if tokio::time::Instant::now() >= deadline {
             failures.push(format!(
                 "absolute shard deadline exhausted before {}",
@@ -73,11 +78,7 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
             ),
         }
         if failures.is_empty() {
-            for (case, route) in route_cases()
-                .expect("route recipes for evidence")
-                .iter()
-                .zip(&expected_evidence)
-            {
+            for (case, route) in cases.iter().zip(&expected_evidence) {
                 record_route_outcome(case, route);
             }
         }

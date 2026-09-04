@@ -107,6 +107,7 @@ fn standalone_stdio_bootstraps_persisted_active_skills() {
         .env("LABBY_HOME", home.path())
         .env("LABBY_SERVER_URL", "")
         .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
+        .env("LABBY_MCP_HTTP_PORT", "0")
         .env("LABBY_LOG", "labby=info,warn")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
