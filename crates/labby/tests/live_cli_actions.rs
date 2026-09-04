@@ -41,13 +41,15 @@ struct CliActionCase {
 #[tokio::test]
 async fn every_cli_action_evidence_comes_from_its_compiled_binding() {
     tokio::time::timeout(MATRIX_DEADLINE, async {
-        let cases = cli_action_cases();
-        let authoritative = action_matrix::intents()
-            .iter()
+        let authoritative = action_matrix::compiled_intents()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Cli))
             .map(action_matrix::CaseIntent::key)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(cases.len(), action_matrix::EXPECTED_CLI_ACTIONS);
+        let cases = cli_action_cases()
+            .into_iter()
+            .filter(|case| authoritative.contains(case.key))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases.len(), authoritative.len());
         assert_eq!(
             cases
                 .iter()
@@ -146,8 +148,10 @@ fn record_asserted_cli_result((case, output): (CliActionCase, std::process::Outp
         let error_kind = body["error"]["kind"]
             .as_str()
             .unwrap_or_else(|| panic!("{} error omitted error.kind", case.key));
-        let outcome_kind = action_scenarios::dedicated_contract_reason(case.key)
-            .filter(|_| action_scenarios::dedicated_contract_accepts(case.key, error_kind))
+        let outcome_kind = action_scenarios::dedicated_contract_reason_for(case.key, Surface::Cli)
+            .filter(|_| {
+                action_scenarios::dedicated_contract_accepts_for(case.key, Surface::Cli, error_kind)
+            })
             .map_or_else(
                 || format!("compiled_cli_error:{error_kind}"),
                 |reason| format!("dedicated_contract:{reason}:{error_kind}"),

@@ -155,6 +155,31 @@ pub(crate) fn intents() -> &'static [CaseIntent] {
     })
 }
 
+pub(crate) fn compiled_shape() -> &'static str {
+    if cfg!(feature = "all") {
+        "all"
+    } else if cfg!(feature = "gateway") {
+        "gateway-host"
+    } else if cfg!(feature = "fs") {
+        "fs"
+    } else if cfg!(feature = "skills") {
+        "skills"
+    } else if cfg!(feature = "lab-admin") {
+        "lab-admin"
+    } else if cfg!(feature = "api-docs") {
+        "api-docs"
+    } else {
+        "no-default"
+    }
+}
+
+pub(crate) fn compiled_intents() -> impl Iterator<Item = &'static CaseIntent> {
+    let shape = compiled_shape();
+    intents()
+        .iter()
+        .filter(move |intent| intent.applicable_features.contains(shape))
+}
+
 pub(crate) fn intent_map() -> Result<BTreeMap<String, &'static CaseIntent>, Vec<String>> {
     intent_map_from(intents())
 }

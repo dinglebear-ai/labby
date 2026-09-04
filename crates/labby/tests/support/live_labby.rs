@@ -944,6 +944,10 @@ pub(crate) fn isolated_command(home: &Path) -> Command {
         .env("LABBY_HOME", home.join(".labby"))
         .env("LABBY_LOG_DIR", home.join("logs"))
         .env("TMPDIR", home.join("tmp"))
+        // Keep disposable CLI probes from attaching to an operator's daemon
+        // on the default port. Tests that intentionally exercise remote
+        // discovery override this value after constructing the command.
+        .env("LABBY_MCP_HTTP_PORT", "0")
         .env("PATH", std::env::var_os("PATH").unwrap_or_default());
     command
 }
@@ -1397,6 +1401,7 @@ mod tests {
                 "HOME".into(),
                 "LABBY_HOME".into(),
                 "LABBY_LOG_DIR".into(),
+                "LABBY_MCP_HTTP_PORT".into(),
                 "PATH".into(),
                 "TMPDIR".into(),
             ])

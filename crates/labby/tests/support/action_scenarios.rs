@@ -159,15 +159,18 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         include_str!("../fixtures/e2e_actions/snippets.json"),
         include_str!("../fixtures/e2e_actions/skills.json"),
     ];
+    let compiled_services = crate::action_matrix::compiled_intents()
+        .map(|intent| intent.service.clone())
+        .collect::<BTreeSet<_>>();
     let fixtures = values
         .into_iter()
         .map(|raw| {
             let fixture: ServiceFixture = serde_json::from_str(raw).expect("valid action fixture");
             (fixture.service.clone(), fixture)
         })
+        .filter(|(service, _)| compiled_services.contains(service))
         .collect::<BTreeMap<_, _>>();
-    let expected_services = crate::action_matrix::intents()
-        .iter()
+    let expected_services = crate::action_matrix::compiled_intents()
         .map(|intent| intent.service.clone())
         .collect::<BTreeSet<_>>();
     assert_eq!(
@@ -181,8 +184,7 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         .map(|entry| ((entry.service.as_str(), entry.action.as_str()), entry))
         .collect::<BTreeMap<_, _>>();
     for (service, fixture) in &fixtures {
-        let intents = crate::action_matrix::intents()
-            .iter()
+        let intents = crate::action_matrix::compiled_intents()
             .filter(|intent| &intent.service == service)
             .collect::<Vec<_>>();
         let required = intents
@@ -229,8 +231,7 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
 }
 
 pub(crate) fn exact_plans(surface: Surface) -> BTreeMap<String, Disposition> {
-    crate::action_matrix::intents()
-        .iter()
+    crate::action_matrix::compiled_intents()
         .filter(|intent| intent.applicable_surfaces.contains(&surface))
         .map(|intent| (intent.key(), disposition(intent)))
         .collect()
@@ -332,8 +333,7 @@ pub(crate) fn fixture_params(intent: &CaseIntent) -> Value {
 }
 
 pub(crate) fn services_for(surface: Surface) -> BTreeSet<String> {
-    crate::action_matrix::intents()
-        .iter()
+    crate::action_matrix::compiled_intents()
         .filter(|intent| intent.applicable_surfaces.contains(&surface))
         .map(|intent| intent.service.clone())
         .collect()
@@ -403,7 +403,7 @@ fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
             "unknown_service",
         )),
         "setup:services.status" => Some((
-            "requires_optional_claude_cli_inventory",
+            "requires_configured_external_plugin_service",
             "claude_cli_unavailable",
         )),
         "setup:settings.config.update" | "setup:settings.env.update" => {
@@ -435,6 +435,9 @@ pub(crate) fn dedicated_contract_accepts_for(
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    if key == "gateway:gateway.skills.list" && !cfg!(feature = "skills") {
+        return Some(("requires_skills_runtime", "feature_not_compiled"));
+    }
     if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
         return Some((
             "requires_mounted_publication_restart_generation",
@@ -443,6 +446,10 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     }
     if surface == Surface::Mcp {
         return match key {
+            "setup:services.status" => Some((
+                "requires_configured_external_plugin_service",
+                "internal_error",
+            )),
             "setup:bootstrap" => Some(("requires_host_bootstrap_authority", "forbidden")),
             "setup:plugin_connectivity" => {
                 Some(("requires_host_plugin_connectivity_authority", "forbidden"))

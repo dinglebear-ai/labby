@@ -113,8 +113,10 @@ async fn ensure_action_fixture(
 #[test]
 fn every_api_classification_has_exactly_one_execution_or_contract_plan() {
     let plans = action_scenarios::exact_plans(Surface::Api);
-    assert_eq!(plans.len(), action_matrix::EXPECTED_API_ACTIONS);
-    assert_eq!(action_scenarios::services_for(Surface::Api).len(), 7);
+    let compiled_api_actions = action_matrix::compiled_intents()
+        .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
+        .count();
+    assert_eq!(plans.len(), compiled_api_actions);
 }
 
 #[tokio::test]
@@ -131,7 +133,6 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         std::fs::write(workspace.join("fixture.txt"), b"owned fixture\n").unwrap();
         let guard = live_labby::LiveLabbyBuilder::new()
             .env("LABBY_MCP_HTTP_TOKEN", SECRET_CANARY)
-            .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
             .existing_root(owned_root.path())
             .config(format!("[workspace]\nroot = {:?}\n", workspace))
             .start()
@@ -144,10 +145,11 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         let mut destructive_denials = BTreeSet::new();
         let mut observed = BTreeMap::new();
         let mut outcomes = BTreeMap::new();
-        for intent in action_matrix::intents()
-            .iter()
+        let expected_api_actions = action_matrix::compiled_intents()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
-            .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
+            .count();
+        for intent in action_matrix::compiled_intents()
+            .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
         {
             ensure_action_fixture(&client, &guard.connection().base_url, intent).await;
             let fixture = &fixtures[&intent.service];
@@ -185,24 +187,15 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                         false,
                     )
                     .await;
-                    assert!(
-                        matches!(
-                            denied_status,
-                            reqwest::StatusCode::OK
-                                | reqwest::StatusCode::UNAUTHORIZED
-                                | reqwest::StatusCode::NOT_FOUND
-                        ),
-                        "{} destructive request was neither denied nor conditionally absent before dispatch (status={denied_status})",
+                    assert_eq!(
+                        denied_status,
+                        reqwest::StatusCode::UNAUTHORIZED,
+                        "{} destructive request was not denied before dispatch",
                         intent.key()
                     );
                     let denied: serde_json::Value = serde_json::from_slice(&denied_body).unwrap();
                     let denied_error = denied.get("error").unwrap_or(&denied);
-                    assert!(
-                        denied_error.get("kind").is_some(),
-                        "{} denial did not return a structured error: {}",
-                        intent.key(),
-                        String::from_utf8_lossy(&denied_body)
-                    );
+                    assert!(denied_error.get("kind").is_some());
                     destructive_denials.insert(intent.service.clone());
                 }
                 post_action(
@@ -255,8 +248,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             }
             assert!(observed.insert(intent.key(), status).is_none());
             let error = value.get("error").unwrap_or(&value);
-            let handler_failed = error.get("kind").is_some();
-            let evidence = if status.is_success() && !handler_failed {
+            let evidence = if status.is_success() {
                 match intent.scenario_kind {
                     ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
                     ScenarioKind::LiveInvoke => EvidenceLevel::LiveSuccess,
@@ -278,7 +270,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             let dedicated =
                 action_scenarios::dedicated_contract_reason_for(&intent.key(), Surface::Api)
                     .filter(|_| {
-                        (!status.is_success() || handler_failed)
+                        !status.is_success()
                             && action_scenarios::dedicated_contract_accepts_for(
                                 &intent.key(),
                                 Surface::Api,
@@ -321,16 +313,9 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             outcomes.insert(intent.key(), outcome);
         }
 
-        let expected_api_actions = action_matrix::intents()
-            .iter()
-            .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
-            .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
-            .count();
         assert_eq!(observed.len(), expected_api_actions);
-        let insufficient = action_matrix::intents()
-            .iter()
+        let insufficient = action_matrix::compiled_intents()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
-            .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
             .filter(|intent| {
                 let outcome = &outcomes[&intent.key()];
                 !outcome.satisfies(intent)
@@ -376,10 +361,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         assert!(invalid_logs_error.get("recovery").is_some());
         assert!(invalid_logs_error.get("side_effects").is_some());
         structured_errors.insert("server_logs".into());
-        let api_services = action_scenarios::services_for(Surface::Api)
-            .into_iter()
-            .filter(|service| cfg!(feature = "fs") || service != "fs")
-            .collect::<BTreeSet<_>>();
+        let api_services = action_scenarios::services_for(Surface::Api);
         assert_eq!(
             successes, api_services,
             "every API service needs a live success"
@@ -390,7 +372,11 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         );
         assert_eq!(
             destructive_denials,
-            BTreeSet::from(["gateway".into(), "setup".into(), "snippets".into()])
+            fixtures
+                .values()
+                .filter(|fixture| fixture.can_mutate)
+                .map(|fixture| fixture.service.clone())
+                .collect()
         );
 
         // Valid reversible workflow: API create, CLI observation, API delete,

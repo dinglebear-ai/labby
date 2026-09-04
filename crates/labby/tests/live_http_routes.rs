@@ -23,7 +23,6 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 #[tokio::test]
 async fn every_registered_route_is_live_or_declared_runtime_conditional() {
     let guard = LiveLabbyBuilder::new()
-        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -38,7 +37,7 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
     let cases = route_cases()
         .expect("route recipes")
         .into_iter()
-        .filter(route_is_compiled)
+        .filter(RouteCase::is_compiled)
         .collect::<Vec<_>>();
     for case in &cases {
         if tokio::time::Instant::now() >= deadline {
@@ -97,11 +96,6 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
         "route matrix failures:\n{}\n{diagnostics}",
         failures.join("\n")
     );
-}
-
-fn route_is_compiled(case: &RouteCase) -> bool {
-    (cfg!(feature = "fs") || case.descriptor.handler_group != "fs")
-        && (cfg!(feature = "api-docs") || case.descriptor.handler_group != "openapi")
 }
 
 fn record_route_outcome(case: &RouteCase, evidence: &ExpectedRouteEvidence) {
@@ -312,7 +306,6 @@ async fn verify_route_evidence(
 #[tokio::test]
 async fn public_routes_remain_public_with_an_invalid_bearer() {
     let guard = LiveLabbyBuilder::new()
-        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -373,7 +366,6 @@ async fn protected_routes_reach_their_route_class_with_a_public_credential() {
 #[tokio::test]
 async fn representative_route_class_negatives_fail_closed() {
     let guard = LiveLabbyBuilder::new()
-        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -450,7 +442,6 @@ async fn representative_route_class_negatives_fail_closed() {
 #[tokio::test]
 async fn public_and_protected_posture_survives_restart() {
     let mut guard = LiveLabbyBuilder::new()
-        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -492,7 +483,6 @@ async fn public_and_protected_posture_survives_restart() {
 #[tokio::test]
 async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
     let guard = LiveLabbyBuilder::new()
-        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -529,9 +519,23 @@ async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
         .header(header::CONTENT_TYPE, "application/json")
         .body(vec![b'x'; 2 * 1024 * 1024])
         .send()
-        .await
-        .expect("oversized request");
-    assert!(!oversized.status().is_success());
+        .await;
+    match oversized {
+        Ok(response) => assert!(!response.status().is_success()),
+        Err(error) => {
+            // The auth layer rejects this request before consuming its body.
+            // Depending on when the client finishes writing, Linux reports
+            // that fail-closed response as a broken pipe instead of exposing
+            // an HTTP status.
+            let message = error.to_string().to_ascii_lowercase();
+            assert!(
+                error.is_request()
+                    && (message.contains("broken pipe")
+                        || message.contains("pipe is being closed")),
+                "unexpected oversized-request transport error: {error:?}"
+            );
+        }
+    }
 
     for headers in [
         vec![
