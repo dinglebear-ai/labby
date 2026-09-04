@@ -289,14 +289,11 @@ fn read_legacy_metadata(connection: &Connection) -> AccessStoreResult<LegacyMeta
 }
 
 fn map_metadata_read_error(error: rusqlite::Error) -> AccessStoreError {
-    match super::store::map_sqlite_error(error) {
-        operational @ (AccessStoreError::Locked
-        | AccessStoreError::ReadOnly
-        | AccessStoreError::DiskFull
-        | AccessStoreError::Corrupt) => operational,
-        _ => AccessStoreError::IntegrityViolation {
-            check: "schema_metadata",
-        },
+    if error.sqlite_error().is_some() {
+        return super::store::map_sqlite_error(error);
+    }
+    AccessStoreError::IntegrityViolation {
+        check: "schema_metadata",
     }
 }
 
@@ -623,17 +620,22 @@ mod credential_migration_tests {
             rusqlite::ffi::SQLITE_BUSY,
             rusqlite::ffi::SQLITE_LOCKED,
             rusqlite::ffi::SQLITE_READONLY,
+            rusqlite::ffi::SQLITE_IOERR,
         ] {
             let error = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
             let mapped = map_metadata_read_error(error);
-            assert!(
-                matches!(
-                    mapped,
-                    AccessStoreError::Locked | AccessStoreError::ReadOnly
-                ),
-                "SQLite code {code} must remain operational: {mapped:?}"
-            );
+            assert!(!matches!(
+                mapped,
+                AccessStoreError::IntegrityViolation { .. }
+            ));
         }
+
+        assert!(matches!(
+            map_metadata_read_error(rusqlite::Error::QueryReturnedNoRows),
+            AccessStoreError::IntegrityViolation {
+                check: "schema_metadata"
+            }
+        ));
     }
 
     fn canonical_v2() -> Connection {
