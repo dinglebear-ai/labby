@@ -14,10 +14,8 @@
 //! Windows Job Object process-tree reaping integration test.
 //!
 //! This test requires a real Windows host to exercise the Win32 Job Object API.
-//! It is intended to run as part of the normal `windows-lab` self-hosted CI
-//! runner (the "Test (windows self-hosted)" job in `.github/workflows/ci.yml`),
-//! which compiles and runs the full test suite on a genuine Windows
-//! environment.
+//! It runs as part of the GitHub-hosted `windows-latest` CI job, which compiles
+//! and runs the full test suite on a genuine Windows environment.
 //!
 //! On Linux/macOS the test cannot run the Windows-only code, so the entire
 //! module is `#[cfg(windows)]`-gated, so non-Windows CI never sees a runnable

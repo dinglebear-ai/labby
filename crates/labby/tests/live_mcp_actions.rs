@@ -1,3 +1,4 @@
+#![cfg(feature = "gateway")]
 #![allow(clippy::panic, dead_code)]
 
 #[path = "support/action_matrix.rs"]

@@ -6,8 +6,8 @@ details there and keep this file focused on rules for editing `.github/`.
 
 ## Fleet invariants
 
-- Fast Linux jobs run on the self-hosted runner farm and include exactly one
-  `ci-pool-*` routing label.
+- All repository-defined CI jobs run on GitHub-hosted runners. Linux jobs use
+  the pinned `ubuntu-24.04` image, and Windows jobs use `windows-latest`.
 - Rust compilation uses `.github/actions/setup-rust-kache`, which connects
   trusted jobs to the shared MinIO cache identified by the org variable
   `KACHE_S3_ENDPOINT`. Jobs without cache
@@ -52,15 +52,18 @@ details there and keep this file focused on rules for editing `.github/`.
 
 | Surface | Runner |
 |---|---|
-| Rust compile, test, coverage, security | `ci-pool-rust` |
-| Node, pnpm, browser, frontend | `ci-pool-typescript` |
-| policy, labels, drift, metadata, aggregate gates | `ci-pool-ops` |
+| Rust compile, test, coverage, security | `ubuntu-24.04` |
+| Node, pnpm, browser, frontend | `ubuntu-24.04` |
+| policy, labels, drift, metadata, aggregate gates | `ubuntu-24.04` |
 | native Windows advisory checks | `windows-latest` |
 | release and publication jobs | pinned GitHub-hosted x86_64 image |
 
 `ci.yml` uses `scripts/ci/changed_paths.py` to route work. Scheduled and manual
 runs enable all categories. Pull-request CI validates container and release
 source contracts only; it never builds release binaries or container images.
+The reusable fleet policy and repository contract remain organization-managed
+workflow calls. Their execution environment is owned by the central workflows
+repository.
 
 ## Release flow
 
@@ -90,12 +93,11 @@ emulation, cross-platform image matrices, or QEMU setup.
 
 - Never set `CARGO_BUILD_JOBS` on a Rust job. Cargo forwards it to every build
   script as `NUM_JOBS`, and `aws-lc-sys` compiles 414 C and 902 assembly
-  sources through the `cc` crate — work kache cannot cache, because it wraps
-  `rustc`, not `cc`. Measured in a cgroup matching the runner container
-  (7 GiB, no swap): a full workspace build linking all 15 test harnesses peaks
-  at 5.03 GiB and `nextest run --workspace --all-features` peaks at 2.44 GiB,
-  so the limit is not the binding constraint. Use lld to hold link memory down
-  instead.
+  sources through the `cc` crate. Kache cannot cache those sources because it
+  wraps `rustc`, not `cc`. Hosted runner measurements show that a full
+  workspace build linking all 15 test harnesses peaks at 5.03 GiB, while
+  `nextest run --workspace --all-features` peaks at 2.44 GiB. Use lld to hold
+  link memory down.
 - Every local job needs a bounded `timeout-minutes`.
 - Keep `permissions` least-privileged at workflow and job scope.
 - Do not weaken immutable pins, checksum verification, provenance, signing,

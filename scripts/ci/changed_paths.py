@@ -69,7 +69,6 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         or is_auth_conformance_input(p)
         or p
         in {
-            ".github/actionlint.yaml",
             ".github/labeler.yml",
             "conformance/expected-failures-dated.yaml",
             "conformance/expected-failures-extensions.yaml",

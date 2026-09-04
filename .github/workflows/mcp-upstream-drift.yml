@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   inspect:
-    runs-on: ci-pool-ops
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd

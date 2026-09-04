@@ -85,57 +85,11 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.targets }}
 
-    - name: Detect persistent host Kache
-      id: kache-host
-      if: inputs.enable-cache == 'true' && runner.os == 'Linux'
-      shell: bash
-      run: "$GITHUB_ACTION_PATH/detect-persistent-host.sh"
-
-    - name: Reuse persistent host Kache
-      if: >-
-        inputs.enable-cache == 'true' &&
-        runner.os == 'Linux' &&
-        steps.kache-host.outputs.managed == 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        binary="${{ steps.kache-host.outputs.binary }}"
-        [ -x "$binary" ]
-        {
-          echo "RUSTC_WRAPPER=$binary"
-          echo "CARGO_BUILD_RUSTC_WRAPPER=$binary"
-        } >> "$GITHUB_ENV"
-        status="$("$binary" daemon status 2>&1)"
-        grep -q "Daemon:" <<<"$status"
-        ! grep -q "not running" <<<"$status"
-        stats="$("$binary" stats 2>&1)"
-        grep -Eq '^Remote:[[:space:]]+s3://kache/rust$' <<<"$stats"
-        # Every writer to the shared prefix must agree on how cache keys are
-        # computed. kache 0.13.0 fixed a key-soundness hole (env vars a proc
-        # macro reads during expansion were unkeyed, so a byte-identical
-        # command line could restore a stale expansion). A host still on an
-        # older kache would write into the same bucket under the old key
-        # regime, so refuse to reuse it rather than fail open into a
-        # silently-wrong hit.
-        host_version="$("$binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-        echo "Persistent host kache version: $host_version"
-        case "$host_version" in
-          0.1[3-9].*|0.[2-9][0-9].*|[1-9]*)
-            ;;
-          *)
-            echo "::error::persistent host kache $host_version predates the 0.13.0 cache-key fix; refusing to share the s3://kache/rust prefix" >&2
-            exit 1
-            ;;
-        esac
-
     - name: Check action tool cache writability
       id: tool-cache
       if: >-
         inputs.enable-cache == 'true' &&
-        runner.os == 'Linux' &&
-        steps.kache-host.outputs.managed != 'true' &&
-        env.KACHE_S3_ACCESS_KEY != '' &&
-        env.KACHE_S3_SECRET_KEY != ''
+        runner.os == 'Linux'
       shell: bash
       run: |
         set -euo pipefail
@@ -158,7 +112,6 @@ runs:
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
-        steps.kache-host.outputs.managed != 'true' &&
         steps.tool-cache.outputs.usable == 'true' &&
         env.KACHE_S3_ACCESS_KEY != '' &&
         env.KACHE_S3_SECRET_KEY != ''
@@ -181,60 +134,6 @@ runs:
         sync: "false"
         pr-comment: "false"
 
-    - name: Verify action-managed Kache remote
-      id: kache-action-health
-      if: >-
-        inputs.enable-cache == 'true' &&
-        runner.os == 'Linux' &&
-        steps.kache-host.outputs.managed != 'true' &&
-        steps.tool-cache.outputs.usable == 'true' &&
-        env.KACHE_S3_ACCESS_KEY != '' &&
-        env.KACHE_S3_SECRET_KEY != ''
-      shell: bash
-      run: |
-        set -euo pipefail
-        bucket="${KACHE_S3_BUCKET:-kache}"
-        prefix="${KACHE_S3_PREFIX:-rust}"
-        expected_remote="s3://$bucket/$prefix"
-        remote_matches() {
-          awk -v expected="$expected_remote" \
-            '$1 == "Remote:" && $2 == expected && NF == 2 { found = 1 } END { exit !found }'
-        }
-        stats="$(kache stats 2>&1 || true)"
-        printf '%s\n' "$stats"
-        if remote_matches <<<"$stats"; then
-          echo "usable=true" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        # kache-action can attach to a daemon left behind by an earlier job.
-        # The daemon's watched configuration wins over the current process
-        # configuration, so a stale daemon with no remote makes every rustc
-        # invocation fail even though action setup itself succeeded. Restart
-        # once so the daemon inherits this job's validated S3 configuration.
-        echo "::warning::Kache daemon is not connected to $expected_remote; restarting it"
-        kache daemon restart || true
-        for _attempt in {1..10}; do
-          sleep 1
-          stats="$(kache stats 2>&1 || true)"
-          if remote_matches <<<"$stats"; then
-            printf '%s\n' "$stats"
-            echo "usable=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-        done
-
-        # Cache is an optimization. If repair did not converge, fail open to
-        # bare Cargo for this job and let the GitHub Actions cache provide a
-        # safe fallback.
-        printf '%s\n' "$stats"
-        echo "::warning::Kache daemon still is not connected to $expected_remote; using bare Cargo"
-        {
-          echo "RUSTC_WRAPPER="
-          echo "CARGO_BUILD_RUSTC_WRAPPER="
-        } >> "$GITHUB_ENV"
-        echo "usable=false" >> "$GITHUB_OUTPUT"
-
     # Fork PRs (and any run without shared MinIO credentials) get the GitHub
     # Actions cache instead of building fully cold. Trusted paths above are
     # untouched: this step only fires when kache cannot be used.
@@ -242,12 +141,10 @@ runs:
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
-        steps.kache-host.outputs.managed != 'true' &&
         (
           env.KACHE_S3_ACCESS_KEY == '' ||
           env.KACHE_S3_SECRET_KEY == '' ||
-          steps.tool-cache.outputs.usable != 'true' ||
-          steps.kache-action-health.outputs.usable == 'false'
+          steps.tool-cache.outputs.usable != 'true'
         )
       uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       with:
@@ -258,15 +155,9 @@ runs:
       if: >-
         inputs.enable-cache != 'true' ||
         runner.os != 'Linux' ||
-        (
-          steps.kache-host.outputs.managed != 'true' &&
-          (
-            env.KACHE_S3_ACCESS_KEY == '' ||
-            env.KACHE_S3_SECRET_KEY == '' ||
-            steps.tool-cache.outputs.usable != 'true' ||
-            steps.kache-action-health.outputs.usable == 'false'
-          )
-        )
+        env.KACHE_S3_ACCESS_KEY == '' ||
+        env.KACHE_S3_SECRET_KEY == '' ||
+        steps.tool-cache.outputs.usable != 'true'
       shell: bash
       run: |
         {
@@ -278,15 +169,9 @@ runs:
       if: >-
         inputs.enable-cache == 'true' &&
         runner.os == 'Linux' &&
-        (
-          steps.kache-host.outputs.managed == 'true' ||
-          (
-            env.KACHE_S3_ACCESS_KEY != '' &&
-            env.KACHE_S3_SECRET_KEY != '' &&
-            steps.tool-cache.outputs.usable == 'true' &&
-            steps.kache-action-health.outputs.usable == 'true'
-          )
-        )
+        env.KACHE_S3_ACCESS_KEY != '' &&
+        env.KACHE_S3_SECRET_KEY != '' &&
+        steps.tool-cache.outputs.usable == 'true'
       shell: bash
       run: |
         kache --version
