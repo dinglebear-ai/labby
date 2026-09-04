@@ -14,6 +14,7 @@ use crate::error::AuthError;
 
 fn validate_restricted_file_path(path: &Path) -> Result<(), AuthError> {
     if !path.is_absolute()
+        || path.file_name().is_none()
         || path
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
@@ -158,6 +159,44 @@ fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> 
     Ok(!current.file_type().is_symlink()
         && opened.volume_serial_number() == current.volume_serial_number()
         && opened.file_index() == current.file_index())
+}
+
+#[cfg(windows)]
+fn guard_windows_ancestors(path: &Path) -> Result<Vec<std::fs::File>, AuthError> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+
+    let component_count = path.components().count();
+    let mut current = std::path::PathBuf::new();
+    let mut guards = Vec::new();
+    for component in path.components().take(component_count.saturating_sub(1)) {
+        current.push(component.as_os_str());
+        if current.parent().is_none() {
+            continue;
+        }
+        let directory = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&current)
+            .map_err(|error| {
+                AuthError::Storage(format!("open restricted file ancestor: {error}"))
+            })?;
+        let metadata = directory.metadata().map_err(|error| {
+            AuthError::Storage(format!("inspect restricted file ancestor: {error}"))
+        })?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(AuthError::Storage(
+                "restricted file ancestors must be ordinary directories".into(),
+            ));
+        }
+        guards.push(directory);
+    }
+    Ok(guards)
 }
 
 pub fn now_unix() -> i64 {
@@ -310,6 +349,8 @@ pub fn create_restricted_secret_file(path: &Path) -> Result<std::fs::File, AuthE
     reject_final_component_symlink(path)?;
     #[cfg(unix)]
     let file = open_restricted_unix(path, true)?.0;
+    #[cfg(windows)]
+    let _ancestor_guards = guard_windows_ancestors(path)?;
     #[cfg(not(unix))]
     let file = {
         let mut options = std::fs::OpenOptions::new();
@@ -365,6 +406,8 @@ where
     reject_final_component_symlink(path)?;
     #[cfg(unix)]
     let (file, existed) = open_restricted_unix(path, false)?;
+    #[cfg(windows)]
+    let _ancestor_guards = guard_windows_ancestors(path)?;
     #[cfg(not(unix))]
     let file = {
         let mut options = std::fs::OpenOptions::new();
@@ -387,9 +430,13 @@ where
     if let Err(error) = harden(&file, path) {
         drop(file);
         drop(remove);
-        let retained = if existed { "existing" } else { "newly-created" };
+        let retained = if existed {
+            "existing lock"
+        } else {
+            "newly-created empty lock"
+        };
         return Err(AuthError::Storage(format!(
-            "{error}; the {retained} empty lock was retained because pathname cleanup cannot be made race-free"
+            "{error}; the {retained} was retained because pathname cleanup cannot be made race-free"
         )));
     }
     Ok(file)
@@ -580,6 +627,13 @@ mod restricted_lock_tests {
     #[test]
     fn restricted_files_reject_relative_paths() {
         let error = create_restricted_secret_file(Path::new("secret.env")).unwrap_err();
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_files_reject_the_filesystem_root() {
+        let error = create_restricted_secret_file(Path::new("/")).unwrap_err();
         assert!(error.to_string().contains("absolute"));
     }
 
