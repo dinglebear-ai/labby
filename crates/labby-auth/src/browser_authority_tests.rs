@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
-struct Policy {
+pub(crate) struct Policy {
     epoch: AtomicU64,
     allowed: AtomicBool,
 }
@@ -34,7 +34,7 @@ impl BrowserPolicy for Policy {
     }
 }
 
-async fn store() -> (tempfile::TempDir, SqliteStore, BrowserSessionRow) {
+pub(crate) async fn store() -> (tempfile::TempDir, SqliteStore, BrowserSessionRow) {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(dir.path().join("auth.db")).await.unwrap();
     let now = crate::util::now_unix();

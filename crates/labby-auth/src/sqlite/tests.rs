@@ -1450,7 +1450,7 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        12
+        13
     );
 }
 
@@ -1506,7 +1506,7 @@ async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker
         })
         .await
         .unwrap();
-    assert_eq!(schema_version, 12);
+    assert_eq!(schema_version, 13);
     let row = migrated
         .find_google_provider_credential("google-subject-v7")
         .await
@@ -1641,6 +1641,36 @@ fn v12_migration_fault_rolls_back_columns_and_schema_version() {
             .unwrap()
     };
     assert_eq!(columns, vec!["state"]);
+}
+
+#[test]
+fn v13_proof_migration_rolls_back_and_preserves_existing_sessions() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE browser_sessions (session_id TEXT PRIMARY KEY, project_binding_json TEXT); INSERT INTO browser_sessions VALUES ('old-session', NULL); PRAGMA user_version = 12;").unwrap();
+    assert!(migrations::run_migrations_with_fault(&conn, "v13_before_commit").is_err());
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 12);
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'reauth_proofs')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!exists);
+    migrations::run_migrations(&conn).unwrap();
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 13);
+    let sessions: i64 = conn
+        .query_row("SELECT COUNT(*) FROM browser_sessions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(sessions, 1);
 }
 
 #[tokio::test]

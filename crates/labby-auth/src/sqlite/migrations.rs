@@ -289,6 +289,32 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
     // Repair databases that were stamped v12 by the initial project-session
     // migration even if the binding column was not durably installed.
     add_column_if_missing(conn, "browser_sessions", "project_binding_json", "TEXT")?;
+    if current < 13 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS reauth_proofs (
+               nonce_hash BLOB PRIMARY KEY NOT NULL CHECK(length(nonce_hash) = 32),
+               actor BLOB NOT NULL CHECK(length(actor) = 32),
+               session BLOB NOT NULL CHECK(length(session) = 32),
+               authority BLOB NOT NULL CHECK(length(authority) = 32),
+               purpose BLOB NOT NULL CHECK(length(purpose) = 32),
+               operation_id TEXT NOT NULL,
+               authenticated_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL,
+               state INTEGER NOT NULL DEFAULT 0 CHECK(state BETWEEN 0 AND 3)
+             );
+             CREATE INDEX IF NOT EXISTS reauth_proofs_session ON reauth_proofs(session);
+             CREATE TABLE IF NOT EXISTS reauth_attempts (kind TEXT NOT NULL CHECK(kind IN ('issue', 'verify')), actor BLOB NOT NULL CHECK(length(actor) = 32), at INTEGER NOT NULL);
+             CREATE INDEX IF NOT EXISTS reauth_attempts_window ON reauth_attempts(kind, at);
+             PRAGMA user_version = 13;"
+        ).map_err(sqlite_error)?;
+        if fault == Some("v13_before_commit") {
+            return Err(AuthError::Storage(
+                "injected v13 migration fault".to_string(),
+            ));
+        }
+        transaction.commit().map_err(sqlite_error)?;
+    }
     Ok(())
 }
 

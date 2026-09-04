@@ -3,7 +3,7 @@ use crate::sqlite::SqliteStore;
 use crate::types::BrowserSessionRow;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, KeyInit as _, Mac as _};
-use sha2::Sha256;
+use sha2::{Digest as _, Sha256};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
@@ -165,6 +165,25 @@ impl BrowserAuthority {
     }
     pub fn binding(&self) -> AuthorityBinding {
         self.binding
+    }
+    pub(crate) fn session_snapshot(&self) -> BrowserSessionRow {
+        self.session.clone()
+    }
+    pub(crate) fn proof_parts(&self) -> ([[u8; 32]; 3], i64) {
+        // Durable owner key is private store metadata, never a public capability.
+        // Unlike the permission/session MACs, rate accounting survives restart.
+        let mut owner = Sha256::new();
+        owner.update((self.source.len() as u64).to_be_bytes());
+        owner.update(self.source.as_bytes());
+        owner.update(self.session.subject.as_bytes());
+        (
+            [
+                owner.finalize().into(),
+                self.binding.session,
+                self.binding.authority,
+            ],
+            self.session.expires_at,
+        )
     }
     /// Public epoch is one-way and process-bound; it is not a session cookie.
     pub fn public_epoch(&self) -> String {
