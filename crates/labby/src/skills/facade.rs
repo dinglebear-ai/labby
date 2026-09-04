@@ -895,8 +895,7 @@ mod tests {
         )
     }
 
-    #[cfg(all(feature = "gateway", feature = "skills", feature = "proxy-testkit"))]
-    use labby_runtime::skills::digest::ResourceDigest;
+    use labby_runtime::skills::ResourceDigest;
 
     #[test]
     fn default_scope_is_first_party_only() {

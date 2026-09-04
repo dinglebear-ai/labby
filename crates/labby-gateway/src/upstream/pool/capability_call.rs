@@ -324,7 +324,10 @@ where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
     SizeFn: Fn(&R) -> usize,
 {
-    timed_capability_call_with_timeout_and_limit(
+    // Keep the generic RPC future off Tokio's worker stack. This wrapper is
+    // instantiated for every capability and can otherwise make connection
+    // probes overflow the default worker stack in debug builds.
+    Box::pin(timed_capability_call_with_timeout_and_limit(
         pool,
         request_timeout,
         upstream_name,
@@ -338,7 +341,7 @@ where
         timeout_message,
         cancel,
         max_response_bytes(),
-    )
+    ))
     .await
 }
 
@@ -363,7 +366,9 @@ where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
     SizeFn: Fn(&R) -> usize,
 {
-    timed_capability_call_with_timeout_and_limit(
+    // Match the ordinary-capability path above: Skills payloads make this
+    // instantiation especially large in debug builds.
+    Box::pin(timed_capability_call_with_timeout_and_limit(
         pool,
         pool.request_timeout,
         upstream_name,
@@ -377,7 +382,7 @@ where
         timeout_message,
         None,
         response_limit,
-    )
+    ))
     .await
 }
 
