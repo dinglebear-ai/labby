@@ -24,6 +24,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures::StreamExt;
@@ -99,17 +100,67 @@ fn extract_scope_from_header(header: &str) -> Option<String> {
 pub struct BodyCappedHttpClient {
     inner: reqwest::Client,
     max_bytes: usize,
+    response_budget: Arc<tokio::sync::Semaphore>,
+    response_weight: u32,
 }
+
+const RESPONSE_BUDGET_QUANTUM: usize = 1024;
+const AGGREGATE_RESPONSE_BUDGET_BYTES: usize = 80 * 1024 * 1024;
+const AGGREGATE_RESPONSE_BUDGET_PERMITS: usize =
+    AGGREGATE_RESPONSE_BUDGET_BYTES / RESPONSE_BUDGET_QUANTUM;
+static GLOBAL_RESPONSE_BUDGET: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
 impl BodyCappedHttpClient {
     #[must_use]
     pub fn new(inner: reqwest::Client, max_bytes: usize) -> Self {
-        Self { inner, max_bytes }
+        let response_weight = max_bytes
+            .div_ceil(RESPONSE_BUDGET_QUANTUM)
+            .max(1)
+            .min(AGGREGATE_RESPONSE_BUDGET_PERMITS);
+        let response_budget = Arc::clone(GLOBAL_RESPONSE_BUDGET.get_or_init(|| {
+            Arc::new(tokio::sync::Semaphore::new(
+                AGGREGATE_RESPONSE_BUDGET_PERMITS,
+            ))
+        }));
+        Self {
+            inner,
+            max_bytes,
+            response_budget,
+            response_weight: u32::try_from(response_weight).unwrap_or(u32::MAX),
+        }
     }
 
     #[must_use]
     pub fn max_bytes(&self) -> usize {
         self.max_bytes
+    }
+
+    async fn acquire_response_budget(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, StreamableHttpError<reqwest::Error>> {
+        Arc::clone(&self.response_budget)
+            .acquire_many_owned(self.response_weight)
+            .await
+            .map_err(|_| {
+                StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(
+                    "response_budget_closed",
+                ))
+            })
+    }
+
+    #[cfg(test)]
+    fn with_response_budget(
+        inner: reqwest::Client,
+        max_bytes: usize,
+        response_budget: Arc<tokio::sync::Semaphore>,
+    ) -> Self {
+        Self {
+            inner,
+            max_bytes,
+            response_budget,
+            response_weight: u32::try_from(max_bytes.div_ceil(RESPONSE_BUDGET_QUANTUM).max(1))
+                .unwrap(),
+        }
     }
 }
 
@@ -222,6 +273,64 @@ async fn read_body_capped(
     Ok(buf)
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum CappedResponseBodyError {
+    #[error("response_too_large: streamed {observed_bytes} bytes, max {max_bytes}")]
+    TooLarge {
+        observed_bytes: u64,
+        max_bytes: usize,
+    },
+    #[error("upstream response read failed: {0}")]
+    Transport(#[from] reqwest::Error),
+    #[error("response_budget_closed")]
+    BudgetClosed,
+    #[error("response decode failed: {0}")]
+    Decode(String),
+}
+
+/// Read a non-MCP HTTP response with the same pre-materialization and global
+/// aggregate memory bounds used by upstream MCP transports.
+pub async fn read_response_body_capped(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, CappedResponseBodyError> {
+    let weight = max_bytes
+        .div_ceil(RESPONSE_BUDGET_QUANTUM)
+        .max(1)
+        .min(AGGREGATE_RESPONSE_BUDGET_PERMITS);
+    let budget = Arc::clone(GLOBAL_RESPONSE_BUDGET.get_or_init(|| {
+        Arc::new(tokio::sync::Semaphore::new(
+            AGGREGATE_RESPONSE_BUDGET_PERMITS,
+        ))
+    }));
+    let _permit = budget
+        .acquire_many_owned(u32::try_from(weight).unwrap_or(u32::MAX))
+        .await
+        .map_err(|_| CappedResponseBodyError::BudgetClosed)?;
+    if let Some(declared) = response.content_length()
+        && declared > max_bytes as u64
+    {
+        return Err(CappedResponseBodyError::TooLarge {
+            observed_bytes: declared,
+            max_bytes,
+        });
+    }
+    let mut bytes =
+        Vec::with_capacity(response.content_length().unwrap_or(0).min(max_bytes as u64) as usize);
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(CappedResponseBodyError::TooLarge {
+                observed_bytes: bytes.len().saturating_add(chunk.len()) as u64,
+                max_bytes,
+            });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 /// Stream-error type for the per-event SSE body cap. `SseStream::from_byte_stream`
 /// is generic over any `E: std::error::Error`, so we don't need to synthesize
 /// a `reqwest::Error` — a dedicated enum that wraps reqwest errors AND our cap
@@ -275,27 +384,39 @@ fn per_event_capped_byte_stream(
 ) -> BoxStream<'static, Result<bytes::Bytes, CappedStreamError>> {
     use bytes::Bytes;
     let max_u64 = max_bytes as u64;
-    // State: (running event-byte count, did the previous chunk end with '\n')
-    let stream = inner.scan((0u64, false), move |state, chunk_res| {
-        let res = match chunk_res {
-            Ok(chunk) => match account_event_bytes(&chunk, state.0, state.1, max_u64) {
-                Ok((new_count, new_prev_lf)) => {
-                    *state = (new_count, new_prev_lf);
-                    Ok::<Bytes, _>(chunk)
-                }
-                Err(event_bytes) => {
-                    *state = (0, false);
-                    Err(CappedStreamError::TooLarge {
-                        event_bytes,
-                        max_bytes,
-                    })
-                }
-            },
-            Err(e) => Err(CappedStreamError::Reqwest(e)),
-        };
-        futures::future::ready(Some(res))
-    });
+    // State: (running event-byte count, line-ending state across chunks).
+    let stream = inner.scan(
+        (0u64, EventBoundaryState::default()),
+        move |state, chunk_res| {
+            let res = match chunk_res {
+                Ok(chunk) => match account_event_bytes(&chunk, state.0, state.1, max_u64) {
+                    Ok((new_count, new_boundary_state)) => {
+                        *state = (new_count, new_boundary_state);
+                        Ok::<Bytes, _>(chunk)
+                    }
+                    Err(event_bytes) => {
+                        *state = (0, EventBoundaryState::default());
+                        Err(CappedStreamError::TooLarge {
+                            event_bytes,
+                            max_bytes,
+                        })
+                    }
+                },
+                Err(e) => Err(CappedStreamError::Reqwest(e)),
+            };
+            futures::future::ready(Some(res))
+        },
+    );
     stream.boxed()
+}
+
+fn hold_response_budget(
+    stream: BoxStream<'static, Result<bytes::Bytes, CappedStreamError>>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> BoxStream<'static, Result<bytes::Bytes, CappedStreamError>> {
+    stream
+        .scan(permit, |_permit, item| futures::future::ready(Some(item)))
+        .boxed()
 }
 
 /// Account the bytes of `chunk` against the per-event counter, resetting
@@ -310,62 +431,54 @@ fn per_event_capped_byte_stream(
 /// (rather than discarding them as the naive "add full chunk, then reset"
 /// would). Detects boundaries that span chunks (prev ends '\n', this
 /// starts '\n').
+#[derive(Clone, Copy, Debug, Default)]
+struct EventBoundaryState {
+    previous_line_ended: bool,
+    pending_cr: bool,
+}
+
 fn account_event_bytes(
     chunk: &[u8],
     mut count: u64,
-    prev_ended_with_lf: bool,
+    mut state: EventBoundaryState,
     max_bytes: u64,
-) -> Result<(u64, bool), u64> {
-    // Handle the cross-chunk boundary case first: if the previous chunk ended
-    // with '\n' and this chunk begins with '\n', the byte at index 0 closes
-    // the previous event. Count that one byte toward the previous event (no
-    // cap re-check needed — we already approved the previous chunk), then
-    // reset and scan the rest.
-    let (mut idx, count_after_cross_boundary) =
-        if prev_ended_with_lf && chunk.first() == Some(&b'\n') {
-            (1usize, 0u64) // event closed at byte 0; skip past it, reset counter
-        } else {
-            (0usize, count)
-        };
-    count = count_after_cross_boundary;
+) -> Result<(u64, EventBoundaryState), u64> {
+    for &byte in chunk {
+        count = count.saturating_add(1);
+        if count > max_bytes {
+            return Err(count);
+        }
 
-    // Scan for intra-chunk "\n\n" delimiters. Between delimiters, accumulate
-    // per-event bytes; check the cap whenever the counter advances.
-    while idx < chunk.len() {
-        match memchr2(&chunk[idx..], b'\n') {
-            None => {
-                let advance = (chunk.len() - idx) as u64;
-                count = count.saturating_add(advance);
-                if count > max_bytes {
-                    return Err(count);
+        if state.pending_cr {
+            state.pending_cr = false;
+            if byte == b'\n' {
+                if state.previous_line_ended {
+                    count = 0;
+                    state.previous_line_ended = false;
+                } else {
+                    state.previous_line_ended = true;
                 }
-                idx = chunk.len();
+                continue;
             }
-            Some(pos) => {
-                // Advance up to and including the '\n' at relative `pos`.
-                let advance = (pos + 1) as u64;
-                count = count.saturating_add(advance);
-                if count > max_bytes {
-                    return Err(count);
-                }
-                idx += pos + 1;
-                // Look at the next byte (in this chunk) to detect "\n\n".
-                if chunk.get(idx) == Some(&b'\n') {
-                    count = 0; // event closed at this byte
-                    idx += 1; // skip the second '\n'
-                }
+            if state.previous_line_ended {
+                count = 0;
+                state.previous_line_ended = false;
+            } else {
+                state.previous_line_ended = true;
             }
         }
+
+        match byte {
+            b'\r' => state.pending_cr = true,
+            b'\n' if state.previous_line_ended => {
+                count = 0;
+                state.previous_line_ended = false;
+            }
+            b'\n' => state.previous_line_ended = true,
+            _ => state.previous_line_ended = false,
+        }
     }
-
-    let prev_ended_with_lf = chunk.last() == Some(&b'\n');
-    Ok((count, prev_ended_with_lf))
-}
-
-/// Find the first occurrence of `needle` in `haystack`. Inlined to avoid
-/// a `memchr` crate dep — the haystack is per-chunk so this is bounded.
-fn memchr2(haystack: &[u8], needle: u8) -> Option<usize> {
-    haystack.iter().position(|b| *b == needle)
+    Ok((count, state))
 }
 
 /// Legacy helper kept for the chunk_contains_event_boundary tests in
@@ -428,7 +541,11 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                 return Err(StreamableHttpError::UnexpectedContentType(None));
             }
         }
-        let capped = per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes);
+        let permit = self.acquire_response_budget().await?;
+        let capped = hold_response_budget(
+            per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes),
+            permit,
+        );
         Ok(SseStream::from_bytes_stream(capped).boxed())
     }
 
@@ -557,6 +674,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         }
         // Non-success: read body with cap so a hostile error response can't OOM.
         if !status.is_success() {
+            let _permit = self.acquire_response_budget().await?;
             let body_bytes = read_body_capped(response, self.max_bytes).await?;
             let body = String::from_utf8_lossy(&body_bytes).to_string();
             if content_type
@@ -575,13 +693,18 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         }
         match content_type.as_deref() {
             Some(ct) if ct.as_bytes().starts_with(EVENT_STREAM_MIME_TYPE.as_bytes()) => {
-                let capped = per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes);
+                let permit = self.acquire_response_budget().await?;
+                let capped = hold_response_budget(
+                    per_event_capped_byte_stream(response.bytes_stream(), self.max_bytes),
+                    permit,
+                );
                 Ok(StreamableHttpPostResponse::Sse(
                     SseStream::from_bytes_stream(capped).boxed(),
                     response_session_id,
                 ))
             }
             Some(ct) if ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()) => {
+                let _permit = self.acquire_response_budget().await?;
                 let body_bytes = read_body_capped(response, self.max_bytes).await?;
                 match serde_json::from_slice::<ServerJsonRpcMessage>(&body_bytes) {
                     Ok(message) => Ok(StreamableHttpPostResponse::Json(
@@ -621,6 +744,58 @@ mod tests {
             .build()
             .expect("client");
         BodyCappedHttpClient::new(inner, max_bytes)
+    }
+
+    #[tokio::test]
+    async fn aggregate_budget_bounds_near_cap_responses_at_fleet_scale() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        drop(rustls::crypto::ring::default_provider().install_default());
+        for request_count in [10_usize, 100, 1000] {
+            let per_response = 10 * 1024 * 1024;
+            let permits_per_response = per_response / RESPONSE_BUDGET_QUANTUM;
+            let budget = Arc::new(tokio::sync::Semaphore::new(permits_per_response * 8));
+            let client = BodyCappedHttpClient::with_response_budget(
+                reqwest::Client::new(),
+                per_response,
+                budget,
+            );
+            let active = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+            let mut tasks = tokio::task::JoinSet::new();
+            for _ in 0..request_count {
+                let client = client.clone();
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                tasks.spawn(async move {
+                    let _permit = client.acquire_response_budget().await.unwrap();
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+            while tasks.join_next().await.is_some() {}
+            assert!(peak.load(Ordering::SeqCst) <= 8, "scale={request_count}");
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_capped_reader_rejects_before_materializing_oversized_body() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/oversized"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 4096]))
+            .mount(&server)
+            .await;
+        let response = reqwest::Client::new()
+            .get(format!("{}/oversized", server.uri()))
+            .send()
+            .await
+            .unwrap();
+        let error = read_response_body_capped(response, 1024).await.unwrap_err();
+        assert!(matches!(error, CappedResponseBodyError::TooLarge { .. }));
     }
 
     fn jsonrpc_request() -> ClientJsonRpcMessage {
@@ -922,18 +1097,20 @@ mod tests {
     #[test]
     fn account_event_bytes_single_event_under_cap() {
         // 6-byte event in one chunk, no delimiter inside.
-        let (c, lf) = account_event_bytes(b"abcdef", 0, false, 100).unwrap();
+        let (c, state) =
+            account_event_bytes(b"abcdef", 0, EventBoundaryState::default(), 100).unwrap();
         assert_eq!(c, 6);
-        assert!(!lf);
+        assert!(!state.previous_line_ended);
     }
 
     #[test]
     fn account_event_bytes_intra_chunk_boundary_resets() {
         // First event "abc\n\n" (5 bytes accounted), then "def" starts next event.
-        let (c, lf) = account_event_bytes(b"abc\n\ndef", 0, false, 100).unwrap();
+        let (c, state) =
+            account_event_bytes(b"abc\n\ndef", 0, EventBoundaryState::default(), 100).unwrap();
         // After the "\n\n" the counter resets, then 3 bytes of next event.
         assert_eq!(c, 3, "counter must track bytes AFTER the \\n\\n");
-        assert!(!lf);
+        assert!(!state.previous_line_ended);
     }
 
     #[test]
@@ -941,17 +1118,26 @@ mod tests {
         // Previous chunk ended with '\n' and we already saw 4 bytes of an
         // event; this chunk starts with '\n', closing the event. Then
         // "next_event" accumulates from scratch.
-        let (c, lf) = account_event_bytes(b"\nnext", 4, true, 100).unwrap();
+        let (c, state) = account_event_bytes(
+            b"\nnext",
+            4,
+            EventBoundaryState {
+                previous_line_ended: true,
+                pending_cr: false,
+            },
+            100,
+        )
+        .unwrap();
         // After the cross-chunk "\n\n" the counter resets, then 4 bytes
         // of "next" accumulate.
         assert_eq!(c, 4);
-        assert!(!lf);
+        assert!(!state.previous_line_ended);
     }
 
     #[test]
     fn account_event_bytes_caps_oversized_event() {
         // Cap = 5 bytes. Chunk = "abcdefg" with no delimiter — should error.
-        let err = account_event_bytes(b"abcdefg", 0, false, 5).unwrap_err();
+        let err = account_event_bytes(b"abcdefg", 0, EventBoundaryState::default(), 5).unwrap_err();
         assert!(err > 5, "error must include exceeded byte count: got {err}");
     }
 
@@ -963,18 +1149,42 @@ mod tests {
         // chunk passes cleanly.
         let chunk = b"event1\n\nevent2\n\nevent3";
         // Cap = 10 bytes — each event is 6, total chunk is 22.
-        let (c, lf) = account_event_bytes(chunk, 0, false, 10).unwrap();
+        let (c, state) = account_event_bytes(chunk, 0, EventBoundaryState::default(), 10).unwrap();
         // After the trailing "event3" (no closing "\n\n"), counter = 6.
         assert_eq!(c, 6);
-        assert!(!lf);
+        assert!(!state.previous_line_ended);
     }
 
     #[test]
     fn account_event_bytes_tracks_trailing_lf() {
         // Chunk ends with '\n' — next chunk must be told to look for cross
         // boundary.
-        let (_c, lf) = account_event_bytes(b"abc\n", 0, false, 100).unwrap();
-        assert!(lf, "must report trailing '\\n' for cross-chunk detection");
+        let (_c, state) =
+            account_event_bytes(b"abc\n", 0, EventBoundaryState::default(), 100).unwrap();
+        assert!(
+            state.previous_line_ended,
+            "must track a trailing line ending across chunks"
+        );
+    }
+
+    #[test]
+    fn account_event_bytes_resets_at_crlf_boundaries_across_chunks() {
+        let (count, boundary_state) =
+            account_event_bytes(b"data: 1234\r\n\r", 0, EventBoundaryState::default(), 20).unwrap();
+        let (count, _) =
+            account_event_bytes(b"\ndata: 5678\r\n\r\n", count, boundary_state, 20).unwrap();
+
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn account_event_bytes_counts_multiline_crlf_event_across_chunks() {
+        let (count, boundary_state) =
+            account_event_bytes(b"data: 1234\r\n", 0, EventBoundaryState::default(), 20).unwrap();
+        let error = account_event_bytes(b"data: 5678\r\n\r\n", count, boundary_state, 20)
+            .expect_err("one multiline SSE event must use one cumulative byte budget");
+
+        assert!(error > 20);
     }
 
     /// SSE happy path through the full pipeline: server returns an

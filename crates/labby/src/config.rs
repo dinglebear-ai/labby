@@ -2,8 +2,8 @@
 //!
 //! Order of precedence (highest wins):
 //!   1. CLI flags / process environment variables
-//!   2. `~/.labby/.env` (loaded via `dotenvy`)
-//!   3. `config.toml` (searched: `./` → `~/.labby/` → `~/.config/labby/`)
+//!   2. `$LABBY_HOME/.env` (normally `~/.labby/.env`, loaded via `dotenvy`)
+//!   3. `$LABBY_HOME/config.toml` (normally `~/.labby/config.toml`)
 //!   4. Built-in defaults
 //!
 //! Service credentials and instance endpoints belong in `.env`. Non-secret
@@ -17,7 +17,7 @@
 pub mod env_merge;
 mod env_writer;
 mod paths;
-mod secret_files;
+pub(crate) mod secret_files;
 
 pub use env_writer::{EnvCredential, write_env_pairs, write_service_creds};
 #[cfg(test)]
@@ -48,6 +48,11 @@ use std::{
 // GatewayManager, but they must still hide raw built-in tools when the root
 // server is operating in Code Mode.
 static PROCESS_CODE_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
+
+const fn current_config_version() -> u32 {
+    CURRENT_CONFIG_VERSION
+}
 
 #[cfg(test)]
 static PROCESS_CODE_MODE_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -305,6 +310,34 @@ const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
 /// compilation, connection-pool checkout, response serialization — so the inner
 /// deadline is always the one that fires on a slow upstream.
 const HTTP_REQUEST_TIMEOUT_MARGIN: Duration = Duration::from_secs(30);
+const CONFIG_BACKUP_RETENTION: usize = 10;
+const CONFIG_BACKUP_MAX_AGE: Duration = Duration::from_hours(30 * 24);
+const CONFIG_BACKUP_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Clone, Debug)]
+struct ConfigBackupCandidate {
+    path: PathBuf,
+    modified: std::time::SystemTime,
+    bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ConfigBackupRetention {
+    max_count: usize,
+    max_age: Duration,
+    max_bytes: u64,
+}
+
+#[cfg(test)]
+impl ConfigBackupCandidate {
+    fn fixture(path: &str, bytes: u64, modified: std::time::SystemTime) -> Self {
+        Self {
+            path: PathBuf::from(path),
+            modified,
+            bytes,
+        }
+    }
+}
 
 #[cfg(test)]
 static TEST_CONFIG_TOML_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -316,8 +349,11 @@ pub(crate) fn set_test_config_toml_path(path: Option<PathBuf>) {
 }
 
 /// Fully-resolved `lab` configuration, assembled from env + TOML.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LabConfig {
+    /// Persisted configuration schema version. Missing legacy values migrate to v1.
+    #[serde(default = "current_config_version")]
+    pub config_version: u32,
     /// Default output format for CLI commands that print tables.
     #[serde(default)]
     pub output: OutputPreferences,
@@ -425,13 +461,21 @@ pub struct LabConfig {
     pub openapi: OpenApiTomlSection,
 }
 
+impl Default for LabConfig {
+    fn default() -> Self {
+        toml::from_str("").expect("the empty built-in LabConfig must deserialize")
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillLibraryPreferences {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SkillLibrarySourceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillLibrarySourceConfig {
     pub id: String,
     pub kind: SkillLibrarySourceKind,
@@ -452,6 +496,7 @@ pub enum SkillLibrarySourceKind {
 
 /// `[openapi]` config section: a list of `[[openapi.specs]]` tables.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpenApiTomlSection {
     /// Configured specs.
     #[serde(default)]
@@ -460,6 +505,7 @@ pub struct OpenApiTomlSection {
 
 /// One `[[openapi.specs]]` table. Non-secret fields only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpenApiSpecToml {
     /// Provider label (`openapi::<label>.<operationId>`).
     #[serde(default)]
@@ -562,6 +608,14 @@ impl From<&LabConfig> for GatewayConfig {
 
 impl LabConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.config_version != CURRENT_CONFIG_VERSION {
+            return Err(ConfigError::InvalidProxyConfig {
+                reason: format!(
+                    "config_version {} is unsupported; expected {}",
+                    self.config_version, CURRENT_CONFIG_VERSION
+                ),
+            });
+        }
         self.code_mode.validate()?;
         self.proxy
             .validate()
@@ -974,6 +1028,7 @@ pub use labby_runtime::gateway_config::canonicalize_upstream_url;
 
 /// Table/json formatting defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputPreferences {
     /// Default format: `human` or `json`. Honored unless `--json` overrides.
     #[serde(default)]
@@ -986,6 +1041,7 @@ pub struct OutputPreferences {
 
 /// MCP server defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct McpPreferences {
     /// Default transport (`stdio`, `http`, or `unix_socket`).
     #[serde(default)]
@@ -1041,6 +1097,7 @@ pub struct McpPreferences {
 ///
 /// Accessor: [`LabConfig::public_urls()`] returns a resolved [`ResolvedPublicUrls`].
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PublicUrlsConfig {
     /// Public app (UI + OAuth) base URL, e.g. `https://lab.example.com`.
     #[serde(default)]
@@ -1055,6 +1112,7 @@ pub struct PublicUrlsConfig {
 
 /// File-backed auth preferences merged with environment variables at startup.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthFileConfig {
     /// `bearer` preserves LABBY_MCP_HTTP_TOKEN; `oauth` enables the internal auth server.
     #[serde(default)]
@@ -1340,6 +1398,7 @@ fn insert_if_some(target: &mut HashMap<String, String>, key: &str, value: Option
 /// These map to `LABBY_LOG` and `LABBY_LOG_FORMAT` env vars but live in TOML so
 /// operators don't need to clutter `.env` with non-secret preferences.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogPreferences {
     /// Tracing filter directive (e.g. `"labby=info,labby_apis=warn"`).
     /// Overridden by `LABBY_LOG` env var.
@@ -1365,6 +1424,7 @@ pub struct LogPreferences {
 
 /// Local-master log store and retention preferences.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalLogsPreferences {
     /// Optional path override for the embedded log store.
     #[serde(default)]
@@ -1385,6 +1445,7 @@ pub struct LocalLogsPreferences {
 
 /// HTTP API preferences.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApiPreferences {
     /// Additional CORS origins (comma-separated string or TOML array).
     /// Loopback origins are always included.
@@ -1456,6 +1517,7 @@ fn parse_web_ui_auth_disabled_bool(name: &str, value: &str) -> Result<bool> {
 
 /// Shared workspace root for Lab-managed files.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspacePreferences {
     /// Root directory used by the supported filesystem browser.
     /// Defaults to `~/.labby/workspace`.
@@ -1465,6 +1527,7 @@ pub struct WorkspacePreferences {
 
 /// OAuth local relay preferences.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OauthPreferences {
     /// Named callback relay targets.
     #[serde(default)]
@@ -1473,6 +1536,7 @@ pub struct OauthPreferences {
 
 /// A named OAuth callback relay target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OauthMachineConfig {
     /// Full callback target base URL.
     pub target_url: String,
@@ -1486,6 +1550,7 @@ pub struct OauthMachineConfig {
 
 /// Admin tool settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdminPreferences {
     /// Enable the `lab_admin` MCP tool. Default: `false`.
     /// Overridden by `LABBY_ADMIN_ENABLED=1` env var.
@@ -1495,6 +1560,7 @@ pub struct AdminPreferences {
 
 /// Per-service preference overrides (non-secret values only).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServicePreferences {
     /// Enable built-in integrations that call external service APIs.
     ///
@@ -1518,6 +1584,7 @@ impl Default for ServicePreferences {
 
 /// Tailscale non-secret preferences.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TailscalePreferences {
     /// Tailnet name. Overridden by `TAILSCALE_TAILNET` env var.
     /// Default: `"-"` (auto-detect).
@@ -1530,6 +1597,7 @@ pub struct TailscalePreferences {
 /// These are non-secret capabilities that provision can install on demand,
 /// kept out of the baked Incus image to slim it. Env overrides still apply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SetupPreferences {
     /// Install `android-sdk` during provision. Needed only by the
     /// claude-in-mobile MCP server. Default: false.
@@ -1544,14 +1612,29 @@ pub struct SetupPreferences {
 /// preferences can feed into `init_tracing()`. Safe to call before any
 /// other subsystem.
 ///
-/// Config TOML resolution (first found wins):
-///   1. `./config.toml` (repo/CWD override)
-///   2. `~/.labby/config.toml` (user-level, colocated with `.env`)
-///   3. `~/.config/labby/config.toml` (XDG-style fallback)
+/// Config TOML resolves from the one installation root selected by
+/// `LABBY_HOME`, normally `~/.labby/config.toml`.
 pub fn load_toml(candidates: &[PathBuf]) -> Result<LabConfig> {
+    // Do not let an explicitly invalid LABBY_HOME silently fall through to a
+    // different installation's user-home config.
+    if std::env::var_os("LABBY_HOME").is_some_and(|value| !value.is_empty()) {
+        crate::installation::InstallationPaths::resolve().context("invalid explicit LABBY_HOME")?;
+    }
+    load_toml_from_paths(candidates)
+}
+
+/// Load an already-authoritative fixed path without consulting caller process
+/// root variables. Used for lifecycle management of the fixed daemon account.
+pub(crate) fn load_toml_from_fixed_root(candidates: &[PathBuf]) -> Result<LabConfig> {
+    load_toml_from_paths(candidates)
+}
+
+fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
     for path in candidates {
         match std::fs::read_to_string(path) {
             Ok(raw) => {
+                validate_top_level_extension_boundary(&raw)
+                    .with_context(|| format!("failed to parse {}", path.display()))?;
                 let mut cfg = toml::from_str::<LabConfig>(&raw)
                     .with_context(|| format!("failed to parse {}", path.display()))?;
                 cfg.normalize_protected_mcp_routes()
@@ -1572,6 +1655,48 @@ pub fn load_toml(candidates: &[PathBuf]) -> Result<LabConfig> {
         }
     }
     Ok(LabConfig::default())
+}
+
+fn validate_top_level_extension_boundary(raw: &str) -> Result<()> {
+    let table = raw.parse::<toml::Table>()?;
+    const OWNED: &[&str] = &[
+        "config_version",
+        "output",
+        "mcp",
+        "proxy",
+        "log",
+        "local_logs",
+        "api",
+        "web",
+        "workspace",
+        "oauth",
+        "admin",
+        "services",
+        "setup",
+        "auth",
+        "code_mode",
+        "mcp_apps",
+        "skill_library",
+        "upstream_request_timeout_ms",
+        "upstream_relay_timeout_ms",
+        "upstream",
+        "upstream_import_tombstones",
+        "upstream_pending",
+        "gateway_import_mode",
+        "loadouts",
+        "protected_mcp_routes",
+        "virtual_servers",
+        "quarantined_virtual_servers",
+        "public_urls",
+        "gateway",
+        "openapi",
+    ];
+    for (key, value) in table {
+        if !OWNED.contains(&key.as_str()) && !value.is_table() {
+            anyhow::bail!("unknown top-level scalar `{key}`; extensions must use a named table")
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1603,6 +1728,9 @@ impl ConfigScalarPatch {
 pub struct ConfigPatchOutcome {
     pub config: LabConfig,
     pub backup_path: Option<PathBuf>,
+    /// A durable commit succeeded, but best-effort backup maintenance did not.
+    /// Callers must report this without claiming the requested mutation failed.
+    pub maintenance_warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1707,12 +1835,8 @@ pub fn patch_config_scalars_checked(
     }
 
     let lock_path = config_lock_path(path);
-    let lock_file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("open {}", lock_path.display()))?;
+    let lock_file = labby_auth::util::open_restricted_lock_file(&lock_path)
+        .with_context(|| format!("open restricted config lock {}", lock_path.display()))?;
     let mut lock = fd_lock::RwLock::new(lock_file);
     let _guard = lock
         .try_write()
@@ -1750,6 +1874,9 @@ pub fn patch_config_scalars_checked(
         set_toml_scalar_path(&mut document, &entry.path, entry.value.clone())
             .with_context(|| format!("failed to patch {}", entry.path))?;
     }
+    if document.to_string() != raw && !document.contains_key("config_version") {
+        document["config_version"] = toml_edit::value(i64::from(CURRENT_CONFIG_VERSION));
+    }
     let patched = document.to_string();
     let mut cfg = toml::from_str::<LabConfig>(&patched)
         .with_context(|| format!("failed to parse patched {}", path.display()))?;
@@ -1762,6 +1889,7 @@ pub fn patch_config_scalars_checked(
         return Ok(ConfigPatchOutcome {
             config: cfg,
             backup_path: None,
+            maintenance_warning: None,
         });
     }
 
@@ -1770,33 +1898,140 @@ pub fn patch_config_scalars_checked(
     } else {
         None
     };
-    let old_mode = std::fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = NamedTempFile::new_in(parent)
         .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
+    secret_files::restrict_secret_file_permissions(tmp.path())
+        .context("failed to restrict temp config before writing")?;
     tmp.write_all(patched.as_bytes())
         .context("failed to write temp config")?;
     tmp.as_file()
         .sync_all()
         .context("failed to sync temp config")?;
-    if let Some(mode) = old_mode {
-        tmp.as_file()
-            .set_permissions(mode)
-            .context("failed to preserve config mode")?;
-    }
     tmp.persist(path)
         .map_err(|e| anyhow::Error::new(e.error))
         .with_context(|| format!("failed to persist {}", path.display()))?;
-    if let Ok(parent_dir) = OpenOptions::new().read(true).open(parent) {
-        drop(parent_dir.sync_all());
-    }
+    let maintenance_warning = (|| -> Result<()> {
+        #[cfg(test)]
+        if parent
+            .join(".labby-test-config-maintenance-failure")
+            .exists()
+        {
+            anyhow::bail!("injected post-commit maintenance failure");
+        }
+        sync_config_parent(parent)
+            .with_context(|| format!("parent sync failed for {}", path.display()))?;
+        if prune_config_backups(parent, path)? > 0 {
+            sync_config_parent(parent)
+                .with_context(|| format!("backup-prune sync failed for {}", path.display()))?;
+        }
+        Ok(())
+    })()
+    .err()
+    .map(|error| {
+        format!("configuration was committed, but post-commit maintenance failed: {error:#}")
+    });
 
     Ok(ConfigPatchOutcome {
         config: cfg,
         backup_path,
+        maintenance_warning,
     })
+}
+
+#[cfg(unix)]
+fn sync_config_parent(parent: &Path) -> std::io::Result<()> {
+    OpenOptions::new().read(true).open(parent)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_config_parent(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn prune_config_backups(parent: &Path, target: &Path) -> Result<usize> {
+    let Some(target_name) = target.file_name().and_then(|name| name.to_str()) else {
+        return Ok(0);
+    };
+    let prefix = format!("{target_name}.bak.");
+    let backups = std::fs::read_dir(parent)
+        .with_context(|| format!("read config backup directory {}", parent.display()))?
+        .map(|entry| {
+            entry.with_context(|| format!("read config backup entry in {}", parent.display()))
+        })
+        .filter_map(|entry| match entry {
+            Ok(entry) if entry.file_name().to_string_lossy().starts_with(&prefix) => {
+                Some(Ok(entry))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .map(|entry| {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = entry
+                .metadata()
+                .with_context(|| format!("inspect config backup {}", path.display()))?;
+            let modified = metadata
+                .modified()
+                .with_context(|| format!("inspect config backup {}", path.display()))?;
+            Ok(ConfigBackupCandidate {
+                path,
+                modified,
+                bytes: metadata.len(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let removals = select_config_backups_to_prune(
+        backups,
+        std::time::SystemTime::now(),
+        ConfigBackupRetention {
+            max_count: CONFIG_BACKUP_RETENTION,
+            max_age: CONFIG_BACKUP_MAX_AGE,
+            max_bytes: CONFIG_BACKUP_MAX_BYTES,
+        },
+    );
+    for backup in &removals {
+        std::fs::remove_file(backup)
+            .with_context(|| format!("remove old config backup {}", backup.display()))?;
+    }
+    Ok(removals.len())
+}
+
+fn select_config_backups_to_prune(
+    mut backups: Vec<ConfigBackupCandidate>,
+    now: std::time::SystemTime,
+    retention: ConfigBackupRetention,
+) -> Vec<PathBuf> {
+    backups.sort_by(|left, right| {
+        left.modified
+            .cmp(&right.modified)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let Some(newest) = backups.last().map(|candidate| candidate.path.clone()) else {
+        return Vec::new();
+    };
+    let mut retained_count = backups.len();
+    let mut retained_bytes = backups.iter().fold(0_u64, |total, candidate| {
+        total.saturating_add(candidate.bytes)
+    });
+    let mut removals = Vec::new();
+    for candidate in backups {
+        if candidate.path == newest {
+            continue;
+        }
+        let expired = now
+            .duration_since(candidate.modified)
+            .is_ok_and(|age| age > retention.max_age);
+        let over_count = retained_count > retention.max_count.max(1);
+        let over_bytes = retained_bytes > retention.max_bytes;
+        if expired || over_count || over_bytes {
+            retained_count = retained_count.saturating_sub(1);
+            retained_bytes = retained_bytes.saturating_sub(candidate.bytes);
+            removals.push(candidate.path);
+        }
+    }
+    removals
 }
 
 fn backup_config_file(path: &Path, raw: &str) -> Result<PathBuf> {
@@ -1816,6 +2051,13 @@ fn backup_config_file(path: &Path, raw: &str) -> Result<PathBuf> {
         }
         match options.open(&backup) {
             Ok(mut file) => {
+                if let Err(error) = secret_files::restrict_secret_file_permissions(&backup) {
+                    drop(file);
+                    drop(std::fs::remove_file(&backup));
+                    return Err(error).with_context(|| {
+                        format!("restrict backup {} before writing", backup.display())
+                    });
+                }
                 file.write_all(raw.as_bytes())
                     .with_context(|| format!("write backup {}", backup.display()))?;
                 file.sync_all()
@@ -1969,21 +2211,14 @@ fn config_lock_path(path: &Path) -> PathBuf {
 /// override config.toml values at the point of use (each consumer checks
 /// env first, then falls back to config).
 pub fn load_dotenv() -> Result<()> {
-    // Load ~/.labby/.env first (user-level secrets).
-    if let Some(env_path) = dotenv_path()
-        && env_path.exists()
-    {
-        dotenvy::from_path(&env_path)
-            .with_context(|| format!("failed to load {}", env_path.display()))?;
-    }
-
-    // Also load .env from the current working directory (dev convenience).
-    // Does not override vars already set by the user-level file.
-    let cwd_env = Path::new(".env");
-    if cwd_env.exists()
-        && let Err(e) = dotenvy::from_path(cwd_env)
-    {
-        tracing::debug!(path = ".env", error = %e, "failed to load local .env (skipping)");
+    // Candidates are ordered from authoritative installation state to the
+    // implicit development fallback. dotenvy preserves values loaded by an
+    // earlier candidate. An explicit LABBY_HOME excludes the CWD fallback.
+    for env_path in paths::dotenv_candidates()? {
+        if env_path.exists() {
+            dotenvy::from_path(&env_path)
+                .with_context(|| format!("failed to load {}", env_path.display()))?;
+        }
     }
 
     Ok(())
@@ -1992,7 +2227,7 @@ pub fn load_dotenv() -> Result<()> {
 /// Load `.env` + `config.toml` in a single call (convenience for tests).
 #[allow(dead_code)]
 pub fn load() -> Result<LabConfig> {
-    let cfg = load_toml(&toml_candidates())?;
+    let cfg = load_toml(&toml_candidates()?)?;
     load_dotenv()?;
     Ok(cfg)
 }
@@ -2232,6 +2467,167 @@ fn scan_instances_from(
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_section_typos_fail_while_foreign_top_level_extensions_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[mcp]\nporrt = 9876\n\n[external_extension]\nmode = \"custom\"\n",
+        )
+        .unwrap();
+
+        let error = load_toml(std::slice::from_ref(&path)).unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(detail.contains("porrt"), "{detail}");
+
+        std::fs::write(&path, "[external_extension]\nmode = \"custom\"\n").unwrap();
+        assert!(load_toml(&[path]).is_ok());
+    }
+
+    #[test]
+    fn top_level_scalar_typos_fail_but_named_extension_tables_survive() {
+        for typo in ["mcpp = 1\n", "config_verzion = 1\n"] {
+            let error = validate_top_level_extension_boundary(typo).unwrap_err();
+            assert!(error.to_string().contains("unknown top-level scalar"));
+        }
+        validate_top_level_extension_boundary("[vendor.example]\nenabled = true\n").unwrap();
+    }
+
+    #[test]
+    fn missing_config_version_migrates_to_current_and_future_versions_fail() {
+        let legacy: LabConfig = toml::from_str("[mcp]\nport = 9876\n").unwrap();
+        assert_eq!(legacy.config_version, CURRENT_CONFIG_VERSION);
+        legacy.validate().unwrap();
+
+        let future: LabConfig = toml::from_str("config_version = 999\n").unwrap();
+        let error = future.validate().unwrap_err();
+        assert!(error.to_string().contains("config_version 999"));
+    }
+
+    #[test]
+    fn patching_legacy_config_persists_the_migrated_format_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[mcp]\nport = 8765\n").unwrap();
+
+        patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(9876),
+            )],
+        )
+        .unwrap();
+
+        let persisted = std::fs::read_to_string(path).unwrap();
+        assert!(persisted.contains("config_version = 1"), "{persisted}");
+    }
+
+    #[test]
+    fn config_mutations_retain_only_the_ten_newest_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "config_version = 1\n[mcp]\nport = 8765\n").unwrap();
+        for port in 8800..8815 {
+            patch_config_scalars(
+                &path,
+                &[ConfigScalarPatch::new(
+                    "mcp.port",
+                    ConfigScalarValue::I64(port),
+                )],
+            )
+            .unwrap();
+        }
+
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".toml.bak."))
+            .count();
+        assert_eq!(backups, 10);
+    }
+
+    #[test]
+    fn committed_config_reports_post_commit_maintenance_failure_as_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "config_version = 1\n[mcp]\nport = 8765\n").unwrap();
+        std::fs::write(
+            dir.path().join(".labby-test-config-maintenance-failure"),
+            b"inject",
+        )
+        .unwrap();
+
+        let outcome = patch_config_scalars(
+            &path,
+            &[ConfigScalarPatch::new(
+                "mcp.port",
+                ConfigScalarValue::I64(9876),
+            )],
+        )
+        .expect("durable commit must not be reported as failed");
+
+        assert_eq!(outcome.config.mcp.port, Some(9876));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("port = 9876")
+        );
+        assert!(
+            outcome
+                .maintenance_warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("configuration was committed"))
+        );
+        assert!(outcome.backup_path.is_some());
+    }
+
+    #[test]
+    fn backup_retention_enforces_age_and_bytes_without_pruning_newest() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(10_000);
+        let candidates = vec![
+            ConfigBackupCandidate::fixture("old", 100, now - Duration::from_secs(5_000)),
+            ConfigBackupCandidate::fixture("large", 900, now - Duration::from_secs(20)),
+            ConfigBackupCandidate::fixture("newest", 900, now - Duration::from_secs(10)),
+        ];
+
+        let pruned = select_config_backups_to_prune(
+            candidates,
+            now,
+            ConfigBackupRetention {
+                max_count: 10,
+                max_age: Duration::from_secs(1_000),
+                max_bytes: 500,
+            },
+        );
+
+        assert_eq!(pruned, vec![PathBuf::from("old"), PathBuf::from("large")]);
+    }
+
+    #[test]
+    fn backup_retention_is_deterministic_for_equal_timestamps() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(10_000);
+        let modified = now - Duration::from_secs(10);
+        let candidates = vec![
+            ConfigBackupCandidate::fixture("c", 1, modified),
+            ConfigBackupCandidate::fixture("a", 1, modified),
+            ConfigBackupCandidate::fixture("b", 1, modified),
+        ];
+
+        let pruned = select_config_backups_to_prune(
+            candidates,
+            now,
+            ConfigBackupRetention {
+                max_count: 2,
+                max_age: Duration::MAX,
+                max_bytes: u64::MAX,
+            },
+        );
+
+        assert_eq!(pruned, vec![PathBuf::from("a")]);
+    }
 
     fn resolve_oauth_fixture(config: &AuthFileConfig) -> auth_config::AuthConfig {
         resolve_auth_with_env(
@@ -2531,10 +2927,28 @@ future = "keep"
                     & 0o777,
                 0o600
             );
+            assert_eq!(
+                std::fs::metadata(config_lock_path(&path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "the persistent config lock must use the secret-file policy"
+            );
         }
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("# keep"));
         assert!(raw.contains("port = 8765"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "the replacement must not preserve a group/world-readable source mode"
+            );
+        }
     }
 
     #[test]
@@ -3989,7 +4403,7 @@ services = ["removed-service"]
 
     #[test]
     fn usage_db_path_is_under_dot_labby_home_dir() {
-        let path = usage_db_path();
+        let path = usage_db_path().unwrap();
         assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("usage.db"));
         assert_eq!(
             path.parent()

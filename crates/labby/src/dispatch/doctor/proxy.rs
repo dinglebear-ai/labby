@@ -5,6 +5,8 @@ use crate::dispatch::error::ToolError;
 use super::params::ProxyCheckParams;
 use super::types::{Finding, Report, Severity};
 
+const DOCTOR_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+
 pub async fn check_proxy(params: ProxyCheckParams<'_>) -> Result<Report, ToolError> {
     // See api/state.rs::build_protected_mcp_http_client for why this call is
     // needed under "rustls-no-provider" -- idempotent, safe to ignore Err.
@@ -119,7 +121,16 @@ async fn check_resource_metadata(
     );
     match client.get(url).send().await {
         Ok(response) if response.status().is_success() => {
-            match response.json::<serde_json::Value>().await {
+            match labby_runtime::response_body::read_response_body_capped(
+                response,
+                DOCTOR_RESPONSE_MAX_BYTES,
+            )
+            .await
+            .and_then(|bytes| {
+                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+                    labby_runtime::response_body::CappedResponseBodyError::Decode(error.to_string())
+                })
+            }) {
                 Ok(json) => {
                     let resource = json.get("resource").and_then(serde_json::Value::as_str);
                     let has_expected_issuer = json
@@ -289,8 +300,13 @@ async fn check_backend_leak(
     match client.get(url).send().await {
         Ok(response) => {
             // Read the body to check for backend URL leakage; limit to 64 KiB.
-            let body = match response.bytes().await {
-                Ok(bytes) => String::from_utf8_lossy(&bytes[..bytes.len().min(65536)]).into_owned(),
+            let body = match labby_runtime::response_body::read_response_body_capped(
+                response,
+                DOCTOR_RESPONSE_MAX_BYTES,
+            )
+            .await
+            {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(_) => String::new(),
             };
             if body.contains(backend_origin) {

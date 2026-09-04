@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
 
 use crate::dispatch::error::ToolError;
 
@@ -166,6 +165,8 @@ impl<'de> Deserialize<'de> for SettingsUpdateEntry {
 pub struct SettingsMutationOutcome {
     pub state: SettingsStateResponse,
     pub backup_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -952,8 +953,8 @@ pub fn state_response(
     config_path: String,
     env_path: String,
     section: &str,
-) -> SettingsStateResponse {
-    let explicit_config_paths = explicit_config_paths(&config_path);
+) -> Result<SettingsStateResponse, ToolError> {
+    let explicit_config_paths = explicit_config_paths(&config_path)?;
     let env_path_ref = std::path::Path::new(&env_path);
     let mut values = BTreeMap::new();
     let mut sources = BTreeMap::new();
@@ -961,18 +962,18 @@ pub fn state_response(
         .into_iter()
         .filter(|field| field.section == section)
     {
-        let (value, source) = value_for_field(cfg, &field, &explicit_config_paths, env_path_ref);
+        let (value, source) = value_for_field(cfg, &field, &explicit_config_paths, env_path_ref)?;
         values.insert(field.key.to_string(), value);
         sources.insert(field.key.to_string(), source);
     }
-    SettingsStateResponse {
+    Ok(SettingsStateResponse {
         schema_version: SETTINGS_SCHEMA_VERSION,
         config_path,
         env_path,
         section: section.to_string(),
         values,
         sources,
-    }
+    })
 }
 
 fn value_for_field(
@@ -980,10 +981,10 @@ fn value_for_field(
     field: &SettingsFieldSpec,
     explicit_config_paths: &BTreeSet<String>,
     env_path: &std::path::Path,
-) -> (Value, SettingsValueSource) {
+) -> Result<(Value, SettingsValueSource), ToolError> {
     if field.backend == SettingsBackend::Env {
-        let value = env_current_value(env_path, field).unwrap_or(Value::Null);
-        return (
+        let value = env_current_value(env_path, field)?.unwrap_or(Value::Null);
+        return Ok((
             value.clone(),
             SettingsValueSource {
                 source: if value.is_null() {
@@ -993,9 +994,9 @@ fn value_for_field(
                 },
                 overridden_by_env: None,
             },
-        );
+        ));
     }
-    let override_source = env_override_source(env_path, field);
+    let override_source = env_override_source(env_path, field)?;
     let mut value = override_source.as_ref().map_or_else(
         || crate::config::config_json_value_for_path(cfg, field.key),
         |(_, value)| env_override_value(field, value),
@@ -1020,19 +1021,31 @@ fn value_for_field(
             overridden_by_env: None,
         }
     };
-    (value, source)
+    Ok((value, source))
 }
 
-fn explicit_config_paths(config_path: &str) -> BTreeSet<String> {
-    let Ok(raw) = std::fs::read_to_string(config_path) else {
-        return BTreeSet::new();
+fn explicit_config_paths(config_path: &str) -> Result<BTreeSet<String>, ToolError> {
+    let raw = match std::fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeSet::new());
+        }
+        Err(error) => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "config_read_error".into(),
+                message: format!("failed to read settings config {config_path}: {error}"),
+            });
+        }
     };
-    let Ok(document) = raw.parse::<toml_edit::DocumentMut>() else {
-        return BTreeSet::new();
-    };
+    let document = raw
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "config_parse_error".into(),
+            message: format!("failed to parse settings config {config_path}: {error}"),
+        })?;
     let mut paths = BTreeSet::new();
     collect_toml_paths(document.as_item(), "", &mut paths);
-    paths
+    Ok(paths)
 }
 
 fn collect_toml_paths(item: &toml_edit::Item, prefix: &str, paths: &mut BTreeSet<String>) {
@@ -1079,21 +1092,27 @@ fn env_process_value(field: &SettingsFieldSpec) -> Value {
     }
 }
 
-fn env_current_value(path: &std::path::Path, field: &SettingsFieldSpec) -> Option<Value> {
-    env_file_value(path, field).or_else(|| {
+fn env_current_value(
+    path: &std::path::Path,
+    field: &SettingsFieldSpec,
+) -> Result<Option<Value>, ToolError> {
+    let file_value = env_file_value(path, field)?;
+    Ok(file_value.or_else(|| {
         let value = env_process_value(field);
         (!value.is_null()).then_some(value)
-    })
+    }))
 }
 
 fn env_override_source(
     path: &std::path::Path,
     field: &SettingsFieldSpec,
-) -> Option<(&'static str, String)> {
-    let name = field.env_override?;
-    env_file_value_by_name(path, name)
+) -> Result<Option<(&'static str, String)>, ToolError> {
+    let Some(name) = field.env_override else {
+        return Ok(None);
+    };
+    Ok(env_file_value_by_name(path, name)?
         .or_else(|| crate::dispatch::helpers::env_non_empty(name))
-        .map(|value| (name, value))
+        .map(|value| (name, value)))
 }
 
 fn env_override_value(field: &SettingsFieldSpec, value: &str) -> Value {
@@ -1242,7 +1261,7 @@ pub fn config_patches_from_entries(
                 param: entry.key.clone(),
             });
         }
-        if let Some((name, _)) = env_override_source(&super::client::env_path(), field) {
+        if let Some((name, _)) = env_override_source(&super::client::env_path(), field)? {
             return Err(ToolError::InvalidParam {
                 message: format!(
                     "setting `{}` is overridden by env var `{name}` and cannot be edited here",
@@ -1424,7 +1443,7 @@ pub fn validate_env_previous(
             continue;
         };
         require_previous(entry)?;
-        let current = env_current_value(env_path, field).unwrap_or(Value::Null);
+        let current = env_current_value(env_path, field)?.unwrap_or(Value::Null);
         if current != entry.previous {
             return Err(ToolError::InvalidParam {
                 message: format!("setting `{}` changed since it was loaded", entry.key),
@@ -1455,115 +1474,150 @@ fn settings_fields_by_key() -> BTreeMap<&'static str, SettingsFieldSpec> {
         .collect()
 }
 
-fn env_file_value(path: &std::path::Path, field: &SettingsFieldSpec) -> Option<Value> {
-    let raw = env_file_value_by_name(path, field.key)?;
+fn env_file_value(
+    path: &std::path::Path,
+    field: &SettingsFieldSpec,
+) -> Result<Option<Value>, ToolError> {
+    let Some(raw) = env_file_value_by_name(path, field.key)? else {
+        return Ok(None);
+    };
     if field.control == SettingsControl::Number {
-        return raw
+        return Ok(raw
             .parse::<i64>()
-            .map_or_else(|_| Some(json!(raw)), |parsed| Some(json!(parsed)));
+            .map_or_else(|_| Some(json!(raw)), |parsed| Some(json!(parsed))));
     }
-    Some(json!(raw))
+    Ok(Some(json!(raw)))
 }
 
-fn env_file_value_by_name(path: &std::path::Path, name: &str) -> Option<String> {
-    let iter = dotenvy::from_path_iter(path).ok()?;
-    iter.filter_map(Result::ok)
-        .find_map(|(key, value)| (key == name).then_some(value))
+fn env_file_value_by_name(path: &std::path::Path, name: &str) -> Result<Option<String>, ToolError> {
+    let iter = match dotenvy::from_path_iter(path) {
+        Ok(iter) => iter,
+        Err(error) if error.not_found() => return Ok(None),
+        Err(error) => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "config_read_error".into(),
+                message: format!(
+                    "failed to read settings environment {}: {error}",
+                    path.display()
+                ),
+            });
+        }
+    };
+    let entries = iter
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| ToolError::Sdk {
+            sdk_kind: "config_parse_error".into(),
+            message: format!(
+                "failed to parse settings environment {}: {error}",
+                path.display()
+            ),
+        })?;
+    Ok(entries
+        .into_iter()
+        .find_map(|(key, value)| (key == name).then_some(value)))
 }
 
-pub fn env_schema() -> Vec<EnvSettingSpec> {
-    static ENV_SCHEMA: OnceLock<Vec<EnvSettingSpec>> = OnceLock::new();
-    ENV_SCHEMA.get_or_init(build_env_schema).clone()
-}
-
-fn build_env_schema() -> Vec<EnvSettingSpec> {
-    let mut by_key: BTreeMap<String, EnvSettingSpec> = BTreeMap::new();
-    let generated: Value = serde_json::from_str(include_str!(
+pub fn env_schema() -> Result<Vec<EnvSettingSpec>, ToolError> {
+    build_env_schema_from_json(include_str!(
         "../../../../../docs/generated/env-reference.json"
     ))
-    .unwrap_or_else(|_| Value::Array(Vec::new()));
-    if let Value::Array(entries) = generated {
-        for entry in entries {
-            let Some(key) = entry.get("env_var").and_then(Value::as_str) else {
-                continue;
-            };
-            by_key.insert(
-                key.to_string(),
-                EnvSettingSpec {
-                    service: entry
-                        .get("service")
-                        .and_then(Value::as_str)
-                        .unwrap_or("lab")
-                        .to_string(),
-                    key: key.to_string(),
-                    required: entry
-                        .get("required")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    secret: entry
-                        .get("secret")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    description: entry
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    example: entry
-                        .get("example")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    editable: is_editable_core_env(key),
-                },
-            );
+}
+
+fn build_env_schema_from_json(raw: &str) -> Result<Vec<EnvSettingSpec>, ToolError> {
+    let mut by_key: BTreeMap<String, EnvSettingSpec> = BTreeMap::new();
+    let generated: Value = serde_json::from_str(raw).map_err(|error| ToolError::Sdk {
+        sdk_kind: "config_schema_error".into(),
+        message: format!("generated environment catalog is invalid: {error}"),
+    })?;
+    let entries = generated.as_array().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "config_schema_error".into(),
+        message: "generated environment catalog must be a JSON array".into(),
+    })?;
+    for entry in entries {
+        let key = entry
+            .get("env_var")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: "generated environment catalog entry is missing env_var".into(),
+            })?;
+        if by_key.contains_key(key) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: format!("generated environment catalog contains duplicate `{key}`"),
+            });
         }
-    }
-    for (key, description, example, secret) in [
-        (
-            "LABBY_MCP_HTTP_HOST",
-            "HTTP MCP bind host.",
-            "127.0.0.1",
-            false,
-        ),
-        ("LABBY_MCP_HTTP_PORT", "HTTP MCP bind port.", "8765", false),
-        (
-            "LABBY_LOG",
-            "Tracing filter directive.",
-            "labby=info,labby_apis=warn",
-            false,
-        ),
-        ("LABBY_LOG_FORMAT", "Log format.", "json", false),
-        (
-            "LABBY_PUBLIC_URL",
-            "Public Lab app URL.",
-            "https://lab.example.com",
-            false,
-        ),
-        (
-            "LABBY_MCP_GATEWAY_URL",
-            "Public MCP gateway URL.",
-            "https://mcp.example.com",
-            false,
-        ),
-        (
-            "LABBY_MCP_HTTP_TOKEN",
-            "Bearer token for the HTTP MCP/API surface.",
-            "<token>",
-            true,
-        ),
-    ] {
-        by_key
-            .entry(key.to_string())
-            .or_insert_with(|| EnvSettingSpec {
-                service: "lab".to_string(),
+        let required_field = |name: &str| {
+            entry.get(name).ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: format!("generated environment catalog entry `{key}` is missing {name}"),
+            })
+        };
+        let service = required_field("service")?
+            .as_str()
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: format!("generated environment catalog entry `{key}` has invalid service"),
+            })?;
+        let required = required_field("required")?
+            .as_bool()
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: format!(
+                    "generated environment catalog entry `{key}` has invalid required"
+                ),
+            })?;
+        let secret = required_field("secret")?
+            .as_bool()
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: format!("generated environment catalog entry `{key}` has invalid secret"),
+            })?;
+        let description =
+            required_field("description")?
+                .as_str()
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "config_schema_error".into(),
+                    message: format!(
+                        "generated environment catalog entry `{key}` has invalid description"
+                    ),
+                })?;
+        let example = required_field("example")?
+            .as_str()
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: format!("generated environment catalog entry `{key}` has invalid example"),
+            })?;
+        by_key.insert(
+            key.to_string(),
+            EnvSettingSpec {
+                service: service.to_string(),
                 key: key.to_string(),
-                required: false,
+                required,
                 secret,
                 description: description.to_string(),
                 example: example.to_string(),
                 editable: is_editable_core_env(key),
+            },
+        );
+    }
+    for required in [
+        "LABBY_MCP_HTTP_HOST",
+        "LABBY_MCP_HTTP_PORT",
+        "LABBY_LOG",
+        "LABBY_LOG_FORMAT",
+        "LABBY_PUBLIC_URL",
+        "LABBY_MCP_GATEWAY_URL",
+        "LABBY_MCP_HTTP_TOKEN",
+    ] {
+        if !by_key.contains_key(required) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "config_schema_error".into(),
+                message: format!(
+                    "generated environment catalog is incomplete: missing `{required}`"
+                ),
             });
+        }
     }
     for entry in super::client::cached_registry().services() {
         if let Some(meta) = crate::registry::service_meta(entry.name) {
@@ -1592,7 +1646,7 @@ fn build_env_schema() -> Vec<EnvSettingSpec> {
     // ACP is retired from the gateway host; do not advertise stale env keys
     // even if generated env-reference.json still contains them.
     by_key.retain(|key, _| !(key.starts_with("LABBY_ACP_") || key.starts_with("ACP_")));
-    by_key.into_values().collect()
+    Ok(by_key.into_values().collect())
 }
 
 fn is_editable_core_env(key: &str) -> bool {
@@ -1611,6 +1665,30 @@ fn is_editable_core_env(key: &str) -> bool {
 mod tests {
     use super::*;
     use std::collections::{BTreeSet, HashMap};
+
+    #[test]
+    fn malformed_dotenv_and_generated_catalog_fail_visibly() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = dir.path().join(".env");
+        std::fs::write(&env, "MALFORMED LINE\nLABBY_LOG=labby=debug\n").unwrap();
+
+        assert!(env_file_value_by_name(&env, "LABBY_LOG").is_err());
+        assert!(build_env_schema_from_json("{").is_err());
+        assert!(build_env_schema_from_json("[{}]").is_err());
+        let duplicate = r#"[
+          {"env_var":"LABBY_DUP","service":"lab","required":false,"secret":false,"description":"a","example":"1"},
+          {"env_var":"LABBY_DUP","service":"lab","required":false,"secret":false,"description":"b","example":"2"}
+        ]"#;
+        assert!(build_env_schema_from_json(duplicate).is_err());
+        let mut incomplete: Value = serde_json::from_str(include_str!(
+            "../../../../../docs/generated/env-reference.json"
+        ))
+        .unwrap();
+        incomplete.as_array_mut().unwrap().retain(|entry| {
+            entry.get("env_var").and_then(Value::as_str) != Some("LABBY_MCP_HTTP_HOST")
+        });
+        assert!(build_env_schema_from_json(&incomplete.to_string()).is_err());
+    }
 
     #[test]
     fn settings_schema_keys_are_unique() {
@@ -1814,7 +1892,7 @@ mod tests {
 
     #[test]
     fn env_schema_merges_generated_reference_and_plugin_meta() {
-        let specs = env_schema();
+        let specs = env_schema().unwrap();
         let keys = vec!["LABBY_PUBLIC_URL", "LABBY_MCP_HTTP_TOKEN"];
         for key in keys {
             assert!(specs.iter().any(|spec| spec.key == key), "missing {key}");
@@ -1834,7 +1912,7 @@ mod tests {
 
     #[test]
     fn env_schema_only_marks_low_risk_core_env_editable() {
-        let specs = env_schema();
+        let specs = env_schema().unwrap();
         for key in ["LABBY_LOG", "LABBY_PUBLIC_URL", "LABBY_MCP_GATEWAY_URL"] {
             assert!(
                 specs.iter().find(|spec| spec.key == key).unwrap().editable,

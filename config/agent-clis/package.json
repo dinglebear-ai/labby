@@ -1,0 +1,9 @@
+{
+  "name": "labby-agent-clis",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.163",
+    "@openai/codex": "0.130.0"
+  }
+}

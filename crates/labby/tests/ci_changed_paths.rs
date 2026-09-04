@@ -138,7 +138,8 @@ fn linux_build_preflight_installs_nothing_when_prerequisites_are_present() {
     let action =
         fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
             .expect("read setup-rust-kache action");
-    let action: serde_yaml::Value = serde_yaml::from_str(&action).expect("parse composite action");
+    let action: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&action).expect("parse composite action");
     let preflight = action["runs"]["steps"]
         .as_sequence()
         .and_then(|steps| steps.first())
@@ -188,7 +189,8 @@ fn shared_rust_setup_does_not_require_desktop_packages() {
     let action =
         fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
             .expect("read setup-rust-kache action");
-    let action: serde_yaml::Value = serde_yaml::from_str(&action).expect("parse composite action");
+    let action: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&action).expect("parse composite action");
     let preflight = action["runs"]["steps"]
         .as_sequence()
         .and_then(|steps| steps.first())
@@ -794,8 +796,8 @@ fn ci_workflow_text() -> String {
     fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read ci.yml")
 }
 
-fn ci_workflow_yaml(text: &str) -> serde_yaml::Value {
-    serde_yaml::from_str(text).expect("parse ci.yml")
+fn ci_workflow_yaml(text: &str) -> serde_yaml_ng::Value {
+    serde_yaml_ng::from_str(text).expect("parse ci.yml")
 }
 
 #[test]
@@ -1366,8 +1368,8 @@ fn draft_releases_are_surfaced_without_being_auto_published() {
         fs::read_to_string(repo_root().join(".github/workflows/release-publish-reminder.yml"))
             .expect("read release publish reminder workflow");
 
-    // The reminder exists because unpublished drafts ship no artifacts. It must
-    // never resolve that by publishing one itself — approval stays manual.
+    // The reminder/reconciler observes publication state but must never perform
+    // promotion itself. Only the qualified tag workflow owns draft promotion.
     assert!(!reminder.contains("--draft=false"));
     assert!(!reminder.contains("updateRelease"));
     assert!(!reminder.contains("draft: false"));
@@ -1428,23 +1430,24 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(config.contains("\"draft\": true"));
     assert!(config.contains("\"force-tag-creation\": true"));
 
-    assert!(
-        release.lines().collect::<Vec<_>>().windows(2).any(|lines| {
-            lines[0].trim() == "release:" && lines[1].trim() == "types: [published]"
-        })
-    );
+    assert!(release.contains("push:\n    tags: ['v*']"));
+    assert!(!release.contains("types: [published]"));
     assert!(release.contains("--json isDraft --jq .isDraft"));
-    assert!(release.contains("gh release upload \"$RELEASE_TAG\" \"${files[@]}\" --clobber"));
-    assert!(!release.contains("gh release edit \"${GITHUB_REF_NAME}\" --draft=false"));
-    assert!(release.contains("if [[ -f /tmp/labby-new-version-image ]]"));
+    assert!(release.contains("scripts/ci/upload-immutable-release-assets.sh -- \"${files[@]}\""));
+    assert!(release.contains("scripts/ci/promote-release.sh"));
+    let promotion = fs::read_to_string(repo_root().join("scripts/ci/promote-release.sh"))
+        .expect("read release promotion helper");
+    assert!(promotion.contains("tag=${RELEASE_TAG:?RELEASE_TAG is required}"));
+    assert!(promotion.contains("gh release edit \"$tag\" --draft=false"));
+    assert!(release.contains("release-image-rollback.sh"));
     assert!(release.contains("LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}"));
     assert!(release.contains("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"));
     let npm_identity = release
         .find("name: Validate npm publication identity")
         .expect("release must authenticate to npm before publication");
     let artifact_upload = release
-        .find("name: Upload assets to the published release")
-        .expect("release must upload assets to the published release");
+        .find("name: Upload qualified assets to draft release")
+        .expect("release must upload qualified assets to the draft release");
     assert!(release.contains("run: npm whoami >/dev/null"));
     assert!(npm_identity < artifact_upload);
 }
@@ -1453,18 +1456,31 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
 fn rolling_incus_release_promotes_verified_immutable_assets_before_tag() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/build-incus-image.yml"))
         .expect("read Incus image workflow");
-    let upload = workflow
-        .find("gh release upload \"$ROLLING_TAG\" \"$verify_dir\"/* --clobber")
-        .expect("rolling release must receive immutable release assets");
-    let rolling_verify = workflow
-        .find("cd \"$rolling_verify\" && sha256sum --check --strict")
-        .expect("rolling assets must be downloaded and checksum-verified");
-    let advance = workflow
-        .find("git push -f")
-        .expect("rolling tag must advance explicitly");
     assert!(
-        upload < rolling_verify && rolling_verify < advance,
-        "rolling assets must be uploaded and remotely verified before the tag advances"
+        !workflow.contains("ROLLING_TAG"),
+        "candidate workflow must not mutate the public pointer"
+    );
+    let promotion = fs::read_to_string(repo_root().join("scripts/ci/promote-incus-pointer.sh"))
+        .expect("read Incus pointer promotion transaction");
+    assert!(workflow.contains("scripts/ci/upload-immutable-release-assets.sh -- \"${assets[@]}\""));
+    let upload = promotion
+        .find("release upload \"$release_tag\" \"$receipt/candidate/generation.json\"")
+        .expect("versioned release must receive the verified generation receipt");
+    let download = promotion
+        .find("release download \"$release_tag\" --dir \"$receipt/candidate\"")
+        .expect("versioned immutable assets must be downloaded before promotion");
+    let rolling_verify = promotion
+        .find("verify_generation \"$receipt/candidate\"")
+        .expect("rolling assets must be downloaded and manifest-verified");
+    let advance = promotion
+        .find("push_with_lease \"$GITHUB_SHA\"")
+        .expect("rolling tag must advance with compare-and-swap protection");
+    assert!(promotion.contains("git push --force-with-lease"));
+    assert!(promotion.contains("generation.json"));
+    assert!(!promotion.contains("release delete-asset"));
+    assert!(
+        download < rolling_verify && rolling_verify < upload && upload < advance,
+        "versioned assets must be downloaded, verified, and receipted before the tag advances"
     );
 }
 

@@ -471,7 +471,7 @@ fi'
 log "checking provision convergence"
 incus_cmd exec "$container_name" -- labby setup --provision --yes
 incus_cmd exec "$container_name" -- systemctl is-active labby
-incus_cmd exec "$container_name" -- curl -fsS http://127.0.0.1:8765/ready
+incus_cmd exec "$container_name" -- curl -fsS --connect-timeout 2 --max-time 10 http://127.0.0.1:8765/ready
 
 log "checking operator bootstrap path"
 storage_pool="$(default_storage_pool)"
@@ -486,7 +486,7 @@ bootstrap_cmd \
     --storage-pool "$storage_pool" \
     --skip-install
 incus_cmd exec "$bootstrap_container_name" -- systemctl is-active labby
-incus_cmd exec "$bootstrap_container_name" -- curl -fsS http://127.0.0.1:8765/ready
+incus_cmd exec "$bootstrap_container_name" -- curl -fsS --connect-timeout 2 --max-time 10 http://127.0.0.1:8765/ready
 assert_container_config "$bootstrap_container_name" snapshots.schedule "@daily"
 assert_container_config "$bootstrap_container_name" snapshots.expiry "14d"
 assert_container_config "$bootstrap_container_name" snapshots.pattern "labby-{{ creation_date|date:'2006-01-02_15-04-05' }}"

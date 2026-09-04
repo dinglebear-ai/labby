@@ -1,7 +1,7 @@
 name: lab
 
-# Local development stack. Reuses the production runtime definition, but runs a
-# dev image with the locally built Lab binary and frontend assets bind-mounted.
+# Local development stack. It mirrors the production safety controls explicitly
+# so rendering it never requires production-only image/configuration variables.
 #
 # Normal Rust changes only need `just dev` or `just dev-debug` plus a container
 # restart; image rebuilds are only needed when config/Dockerfile.fast or the
@@ -9,17 +9,26 @@ name: lab
 
 services:
   labby-master:
-    extends:
-      file: docker-compose.prod.yml
-      service: labby-master
     image: labby:dev
     pull_policy: build
     build:
       context: .
       dockerfile: config/Dockerfile.fast
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports:
+      - "127.0.0.1:${LABBY_HOST_PORT:-8765}:8765"
     volumes:
       # Hot-swap the locally built binary into the dev runtime.
       - ./bin/labby:/usr/local/bin/labby
+      - .:/workspace/lab:ro
+      - ${LABBY_CONFIG_DIR:-./config}:/home/labby/.config/labby:ro
+      - labby-home:/home/labby/.labby
+      - labby-data:/home/labby/.local
       # Persist the npm/uv package caches across container recreates. stdio MCP
       # upstreams are launched via `npx -y <pkg>` / `uvx <pkg>`, which install
       # into these caches on first cold spawn. Without persistence the caches
@@ -51,16 +60,33 @@ services:
       - ${ADB_PATH:-/dev/null}:/usr/local/bin/adb:ro
       # ssh client for zsnoop-mcp and other upstreams that need to reach fleet hosts.
       - /usr/bin/ssh:/usr/local/bin/ssh:ro
-    # extra_hosts (host.docker.internal:host-gateway) is inherited from
-    # docker-compose.prod.yml via `extends` above — see the comment there.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [lab, axon]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
     environment:
       # Serve frontend assets from the bind-mounted workspace so `pnpm build`
       # changes are reflected immediately without a binary rebuild.
       LABBY_WEB_ASSETS_DIR: "/workspace/lab/apps/gateway-admin/out"
       # Parallel upstream MCP server discovery. Default is 3; bump for fast warmup.
       LABBY_UPSTREAM_DISCOVERY_CONCURRENCY: "16"
+      LABBY_MCP_HTTP_HOST: "0.0.0.0"
+      LABBY_MCP_HTTP_PORT: "8765"
+      RUST_LOG: "labby=debug,warn"
+    healthcheck:
+      test: [CMD, /usr/local/bin/labby-healthcheck]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
 
 volumes:
+  labby-home:
+    driver: local
   labby-data:
     driver: local
   npm-cache:

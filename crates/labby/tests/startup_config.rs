@@ -81,3 +81,22 @@ fn labby_home_controls_config_secrets_and_durable_stores() {
         );
     }
 }
+
+#[test]
+fn present_invalid_labby_home_never_falls_back_to_home_for_config_or_state() {
+    let user_home = tempfile::tempdir().expect("user home");
+    let legacy_home = user_home.path().join(".labby");
+    write_invalid_config(&legacy_home, "/must-not-be-read");
+    let output = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        .env("LABBY_HOME", "relative/is/invalid")
+        .env("HOME", user_home.path())
+        .output()
+        .expect("run labby serve");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("absolute"), "unexpected error: {stderr}");
+    assert!(!stderr.contains("/must-not-be-read"));
+    assert!(!legacy_home.join("usage.db").exists());
+    assert!(!legacy_home.join("codemode_journal.db").exists());
+}

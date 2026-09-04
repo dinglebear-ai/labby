@@ -1803,3 +1803,72 @@ fn write_gateway_config_creates_file_with_0o600() {
         & 0o777;
     assert_eq!(mode, 0o600, "config.toml must be 0o600, got {mode:04o}");
 }
+
+#[test]
+fn documented_stdio_path_opt_in_is_valid_toml() {
+    let raw = r#"
+[[upstream]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+
+[upstream.env]
+UPSTREAM_STATE_DIR = "/var/lib/labby-upstreams/filesystem"
+UPSTREAM_READ_ONLY_PATHS = "/srv/data"
+"#;
+    let parsed: GatewayConfig = toml::from_str(raw).expect("documented opt-in TOML must parse");
+    assert_eq!(
+        parsed.upstream[0]
+            .env
+            .get("UPSTREAM_STATE_DIR")
+            .map(String::as_str),
+        Some("/var/lib/labby-upstreams/filesystem")
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn write_gateway_config_replaces_permissive_parent_acl_with_private_active_and_lock_acls() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[gateway]\n").unwrap();
+    let loosen = std::process::Command::new("icacls.exe")
+        .args([dir.path().as_os_str(), "/grant", "*S-1-1-0:(OI)(CI)(F)"])
+        .status()
+        .unwrap();
+    assert!(loosen.success());
+
+    write_gateway_config(&path, &GatewayConfig::default()).expect("write config");
+    let lock = super::lock_path(&path);
+    for protected in [&path, &lock] {
+        assert_private_windows_acl(protected);
+    }
+
+    let blocked = dir.path().join("blocked.toml");
+    std::fs::create_dir(&blocked).unwrap();
+    let before = std::fs::read_dir(dir.path()).unwrap().count();
+    assert!(write_gateway_config(&blocked, &GatewayConfig::default()).is_err());
+    let after = std::fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(after, before, "failed persist leaked a secret temp file");
+}
+
+#[cfg(windows)]
+pub(crate) fn assert_private_windows_acl(path: &std::path::Path) {
+    let script = r#"
+$acl = Get-Acl -LiteralPath $env:LABBY_ACL_TEST_PATH
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$rules = @($acl.Access)
+if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+    $rules[0].IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $sid) { exit 1 }
+"#;
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("LABBY_ACL_TEST_PATH", path)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "private ACL missing on {}",
+        path.display()
+    );
+}

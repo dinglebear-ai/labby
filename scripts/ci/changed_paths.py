@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 from collections.abc import Callable
@@ -33,6 +34,14 @@ def starts(path: str, *prefixes: str) -> bool:
 
 def any_match(paths: list[str], predicate: Callable[[str], bool]) -> bool:
     return any(predicate(path) for path in paths)
+
+
+def lifecycle_paths() -> set[str]:
+    inventory = Path("scripts/ci/lifecycle-scripts.json")
+    if not inventory.is_file():
+        return set()
+    data = json.loads(inventory.read_text())
+    return {path for values in data.values() for path in values}
 
 
 def is_auth_conformance_input(path: str) -> bool:
@@ -66,7 +75,9 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     workflow = any_match(
         paths,
         lambda p: starts(p, ".github/workflows/", ".github/actions/")
+        or p in lifecycle_paths()
         or is_auth_conformance_input(p)
+        or starts(p, "scripts/tests/", "scripts/ci/n-minus-one/")
         or p
         in {
             ".github/labeler.yml",
@@ -82,7 +93,16 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/test_auth_spec_matrix.py",
             "scripts/ci/refresh_mcp_auth_denominator.py",
             "scripts/ci/auth_backup_restore_drill.py",
+            "scripts/ci/lifecycle-scripts.json",
+            "scripts/ci/check-lifecycle-scripts.sh",
+            "scripts/ci/test_release_hardening.py",
             "crates/labby/tests/ci_changed_paths.rs",
+            "install.sh",
+            "scripts/install.sh",
+            "scripts/install.ps1",
+            "scripts/install-macos-service.sh",
+            "apps/gateway-admin/scripts/sync-install-script.mjs",
+            "apps/gateway-admin/scripts/sync-install-script.test.mjs",
         },
     )
     docs = any_match(
@@ -154,6 +174,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     docker_inputs = any_match(
         paths,
         lambda p: starts(p, "config/", "scripts/")
+        or p in lifecycle_paths()
         or p
         in {
             ".dockerignore",
@@ -205,6 +226,9 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             in {
                 ".github/workflows/ci.yml",
                 "scripts/ci/changed_paths.py",
+                "scripts/ci/lifecycle-scripts.json",
+                "scripts/ci/check-lifecycle-scripts.sh",
+                "scripts/ci/test_release_hardening.py",
             },
         )
         if fail_closed:

@@ -285,9 +285,7 @@ async fn run_proxy(args: DoctorProxyArgs, format: OutputFormat) -> Result<ExitCo
 // ---------------------------------------------------------------------------
 
 async fn run_system(format: OutputFormat) -> Result<ExitCode> {
-    let findings = tokio::task::spawn_blocking(run_system_checks)
-        .await
-        .map_err(|e| anyhow::anyhow!("system.checks panicked: {e}"))?;
+    let findings = run_system_checks().await;
 
     let report = Report { findings };
 

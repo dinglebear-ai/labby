@@ -1,35 +1,61 @@
 name: MCP Registry
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      ref:
-        description: Git ref containing the canonical manifest
+      release_tag:
         required: true
-        default: main
         type: string
-      expected-version:
-        description: Optional exact version or release tag
-        required: false
-        default: ""
-        type: string
+    outputs:
+      manifest_sha256:
+        value: ${{ jobs.candidate.outputs.manifest_sha256 }}
+    secrets:
+      MCP_PRIVATE_KEY:
+        required: true
 
 concurrency:
-  group: mcp-registry-${{ github.event.release.tag_name || github.ref }}
+  group: mcp-registry-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      manifest_sha256: ${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+      - id: manifest
+        name: Qualify immutable MCP manifest candidate
+        env:
+          EXPECTED_VERSION: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          python3 - "$EXPECTED_VERSION" <<'PY'
+          import json, sys
+          expected = sys.argv[1].removeprefix("v")
+          actual = json.load(open("server.json"))["version"]
+          if actual != expected:
+              raise SystemExit(f"server.json version {actual} != {expected}")
+          PY
+          # Bind the registry's JSON object independent of insignificant source
+          # whitespace; the observer computes the same canonical digest from
+          # the object returned by the public registry API.
+          manifest_sha256=$(python3 -c 'import hashlib,json; d=json.load(open("server.json")); print(hashlib.sha256(json.dumps(d,sort_keys=True,separators=(",",":")).encode()).hexdigest())')
+          [[ "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]
+          echo "sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
   publish:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    needs: candidate
     uses: dinglebear-ai/workflows/.github/workflows/mcp-registry-publish.yml@b2813662ca27ca8868752fb353d9dd568f2f97f9
     with:
-      checkout-ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.release.tag_name }}
-      expected-version: ${{ github.event_name == 'workflow_dispatch' && inputs.expected-version || github.event.release.tag_name }}
+      checkout-ref: ${{ inputs.release_tag }}
+      expected-version: ${{ inputs.release_tag }}
       manifest-path: server.json
       version-prefix: v
     secrets:

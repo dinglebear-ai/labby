@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+work_root="${RUNNER_TEMP:?RUNNER_TEMP is required}/labby-n-minus-one/macos"
+install_dir="$work_root/bin"
+labby_home="$work_root/home"
+state_digest="$work_root/persisted-state.sha256"
+
+hash_state() { (cd "$labby_home" && shasum -a 256 config.toml .env); }
+seed_persisted_state() {
+    mkdir -p "$labby_home"
+    cat >"$labby_home/config.toml" <<'EOF'
+config_version = 1
+[gateway]
+extra_stdio_commands = ["labby"]
+[[upstream]]
+id = "n-minus-one"
+name = "n-minus-one"
+transport = "stdio"
+command = "labby"
+args = ["mcp"]
+EOF
+    printf 'LABBY_MCP_HTTP_TOKEN=%064d\n' 0 >"$labby_home/.env"; chmod 600 "$labby_home/.env"
+    python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$labby_home"
+    hash_state >"$state_digest"
+}
+verify_persisted_state() {
+    python3 "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$labby_home"
+    hash_state | cmp - "$state_digest"
+    PATH="$install_dir:$PATH" LABBY_HOME="$labby_home" "$install_dir/labby" --json gateway list | grep -Fq '"id": "n-minus-one"'
+}
+
+service() {
+    LABBY_SERVICE_BIN="$install_dir/labby" LABBY_HOME="$labby_home" \
+        bash "$repo_root/scripts/install-macos-service.sh" "$1"
+}
+
+verify_version() {
+    local expected=${1#v}
+    "$install_dir/labby" --version | grep -Fq "$expected"
+}
+verify_provenance() {
+    : "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?exact candidate archive is required}"
+    : "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256:?exact candidate archive SHA-256 is required}"
+    "$repo_root/scripts/ci/verify-and-activate-release.sh" \
+        --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" --workflow release.yml \
+        --ref "${GITHUB_REF:?GITHUB_REF is required}" \
+        --artifact "$LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE" -- true
+}
+authenticated_action() {
+    token=$(sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$labby_home/.env")
+    curl -fsS -X POST -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        --data '{"action":"gateway.list","params":{}}' \
+        http://127.0.0.1:8765/v1/gateway >/dev/null
+}
+
+case "${1:-}" in
+    install-previous)
+        mkdir -p "$work_root"
+        LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" \
+            LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"
+        service install
+        ;;
+    seed-state) service restart; seed_persisted_state ;;
+    verify-previous) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state; service status >/dev/null ;;
+    verify-provenance) verify_provenance ;;
+    upgrade)
+        : "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?exact candidate binary is required}"
+        : "${LABBY_N_MINUS_ONE_CANDIDATE_SHA256:?exact candidate SHA-256 is required}"
+        "$repo_root/scripts/ci/verify-and-activate-release.sh" \
+            --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" \
+            --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?exact candidate archive is required}" -- \
+            env LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_VERSION="$LABBY_CANDIDATE_VERSION" \
+            LABBY_INSTALL_LOCAL_BINARY="$LABBY_N_MINUS_ONE_CANDIDATE_BINARY" \
+            LABBY_INSTALL_LOCAL_SHA256="$LABBY_N_MINUS_ONE_CANDIDATE_SHA256" sh "$repo_root/scripts/install.sh"
+        service restart
+        ;;
+    verify-candidate) verify_version "$LABBY_CANDIDATE_VERSION"; verify_persisted_state; service status >/dev/null ;;
+    authenticated-action) authenticated_action ;;
+    restart) service restart ;;
+    verify-restart) verify_version "$LABBY_CANDIDATE_VERSION"; verify_persisted_state; service status >/dev/null; authenticated_action ;;
+    rollback) LABBY_INSTALL_DIR="$install_dir" LABBY_INSTALL_ROLLBACK=1 sh "$repo_root/scripts/install.sh"; service restart ;;
+    verify-rollback) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state; service status >/dev/null ;;
+    *) echo "unknown stage: ${1:-}" >&2; exit 64 ;;
+esac

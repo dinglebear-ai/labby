@@ -1,6 +1,5 @@
 //! Serialized, rollback-capable gateway configuration transactions.
 
-use std::fs::OpenOptions;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -197,17 +196,7 @@ impl GatewayManager {
                         ))
                     })?;
                 }
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(&path)
-                    .map_err(|error| {
-                        ToolError::internal_message(format!(
-                            "failed to open gateway mutation lock {}: {error}",
-                            path.display()
-                        ))
-                    })?;
+                let file = open_config_mutation_lock(&path)?;
                 let mut lock = RwLock::new(file);
                 let _guard = lock.write().map_err(|error| {
                     ToolError::internal_message(format!(
@@ -391,61 +380,11 @@ impl GatewayManager {
         let source = self.path.clone();
         let backup = config_backup_path(&source);
         let backup_for_log = backup.clone();
-        tokio::task::spawn_blocking(move || match std::fs::read(&source) {
-            Ok(contents) => {
-                use std::io::Write as _;
-                let parent = backup.parent().unwrap_or_else(|| std::path::Path::new("."));
-                let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
-                    ToolError::internal_message(format!(
-                        "failed to create gateway config backup in {}: {error}",
-                        parent.display()
-                    ))
-                })?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt as _;
-                    temporary
-                        .as_file()
-                        .set_permissions(std::fs::Permissions::from_mode(0o600))
-                        .map_err(|error| {
-                            ToolError::internal_message(format!(
-                                "failed to restrict gateway config backup {}: {error}",
-                                backup.display()
-                            ))
-                        })?;
-                }
-                temporary.write_all(&contents).map_err(|error| {
-                    ToolError::internal_message(format!(
-                        "failed to write gateway config backup {}: {error}",
-                        backup.display()
-                    ))
-                })?;
-                temporary.as_file().sync_all().map_err(|error| {
-                    ToolError::internal_message(format!(
-                        "failed to sync gateway config backup {}: {error}",
-                        backup.display()
-                    ))
-                })?;
-                temporary.persist(&backup).map_err(|error| {
-                    ToolError::internal_message(format!(
-                        "failed to persist gateway config backup {}: {}",
-                        backup.display(),
-                        error.error
-                    ))
-                })?;
-                Ok(())
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(ToolError::internal_message(format!(
-                "failed to back up gateway config {} to {}: {error}",
-                source.display(),
-                backup.display()
-            ))),
-        })
-        .await
-        .map_err(|error| {
-            ToolError::internal_message(format!("gateway config backup task failed: {error}"))
-        })??;
+        tokio::task::spawn_blocking(move || write_config_backup(&source, &backup))
+            .await
+            .map_err(|error| {
+                ToolError::internal_message(format!("gateway config backup task failed: {error}"))
+            })??;
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -457,6 +396,57 @@ impl GatewayManager {
         );
         Ok(())
     }
+}
+
+fn write_config_backup(
+    source: &std::path::Path,
+    backup: &std::path::Path,
+) -> Result<(), ToolError> {
+    let contents = match std::fs::read(source) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(ToolError::internal_message(format!(
+                "failed to back up gateway config {} to {}: {error}",
+                source.display(),
+                backup.display()
+            )));
+        }
+    };
+    use std::io::Write as _;
+    let parent = backup.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+        ToolError::internal_message(format!(
+            "failed to create gateway config backup in {}: {error}",
+            parent.display()
+        ))
+    })?;
+    crate::gateway::config::set_file_permissions_600(temporary.path()).map_err(|error| {
+        ToolError::internal_message(format!(
+            "failed to restrict gateway config backup {} before writing: {error}",
+            backup.display()
+        ))
+    })?;
+    temporary.write_all(&contents).map_err(|error| {
+        ToolError::internal_message(format!(
+            "failed to write gateway config backup {}: {error}",
+            backup.display()
+        ))
+    })?;
+    temporary.as_file().sync_all().map_err(|error| {
+        ToolError::internal_message(format!(
+            "failed to sync gateway config backup {}: {error}",
+            backup.display()
+        ))
+    })?;
+    temporary.persist(backup).map_err(|error| {
+        ToolError::internal_message(format!(
+            "failed to persist gateway config backup {}: {}",
+            backup.display(),
+            error.error
+        ))
+    })?;
+    Ok(())
 }
 
 fn config_revision(config: &GatewayConfig) -> String {
@@ -477,6 +467,15 @@ fn mutation_lock_path(path: &std::path::Path) -> std::path::PathBuf {
     lock_path
 }
 
+fn open_config_mutation_lock(path: &std::path::Path) -> Result<std::fs::File, ToolError> {
+    labby_auth::util::open_restricted_lock_file(path).map_err(|error| {
+        ToolError::internal_message(format!(
+            "failed to open restricted gateway mutation lock {}: {error}",
+            path.display()
+        ))
+    })
+}
+
 fn config_backup_path(path: &std::path::Path) -> std::path::PathBuf {
     let mut backup = path.to_path_buf();
     let name = path
@@ -485,4 +484,52 @@ fn config_backup_path(path: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| "config.toml.bak".to_string());
     backup.set_file_name(name);
     backup
+}
+
+#[cfg(all(test, windows))]
+mod windows_acl_tests {
+    use super::*;
+
+    #[test]
+    fn backup_from_permissive_parent_has_private_acl_and_no_temp_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("config.toml");
+        let backup = config_backup_path(&source);
+        std::fs::write(&source, "secret = 'value'\n").unwrap();
+        let loosen = std::process::Command::new("icacls.exe")
+            .args([dir.path().as_os_str(), "/grant", "*S-1-1-0:(OI)(CI)(F)"])
+            .status()
+            .unwrap();
+        assert!(loosen.success());
+
+        write_config_backup(&source, &backup).unwrap();
+        crate::gateway::config::tests::assert_private_windows_acl(&backup);
+        let leftovers = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path() != source && entry.path() != backup)
+            .count();
+        assert_eq!(leftovers, 0, "backup temp file leaked");
+
+        std::fs::remove_file(&backup).unwrap();
+        std::fs::create_dir(&backup).unwrap();
+        let before = std::fs::read_dir(dir.path()).unwrap().count();
+        assert!(write_config_backup(&source, &backup).is_err());
+        let after = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(after, before, "failed backup leaked a secret temp file");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod mutation_lock_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn mutation_lock_is_restricted_before_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml.mutation.lock");
+        let file = open_config_mutation_lock(&path).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
 }

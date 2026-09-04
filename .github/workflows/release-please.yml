@@ -21,7 +21,9 @@ name: release-please
 # docs/sessions for the investigation if this needs revisiting upstream.
 #
 # So release-please here only manages CHANGELOG.md + the manifest + the git
-# tag/GitHub Release. The `sync-release-version` job below runs after it opens
+# tag/draft GitHub Release. The stable tag triggers candidate qualification;
+# only the final qualified release job promotes the draft. The
+# `sync-release-version` job below runs after it opens
 # or updates a release PR and separately patches [workspace.package].version,
 # the npm launcher package version, and MCP registry metadata before
 # regenerating Cargo.lock and pushing an extra commit onto that same PR branch.
@@ -53,8 +55,8 @@ permissions:
 
 env:
   CARGO_INCREMENTAL: "0"
-  KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
-  KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
+  KACHE_S3_ACCESS_KEY: ""
+  KACHE_S3_SECRET_KEY: ""
   KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
   KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
   KACHE_S3_PREFIX: ${{ vars.KACHE_S3_PREFIX }}

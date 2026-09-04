@@ -155,6 +155,68 @@ pub fn harden_secret_file(path: &Path) -> Result<(), AuthError> {
     set_restrictive_permissions(path)
 }
 
+/// Create a new, empty secret file and apply the platform-private access policy
+/// before returning the handle to code that can write sensitive bytes.
+pub fn create_restricted_secret_file(path: &Path) -> Result<std::fs::File, AuthError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path).map_err(|error| {
+        AuthError::Storage(format!(
+            "create restricted secret `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    if let Err(error) = harden_secret_file(path) {
+        drop(file);
+        drop(std::fs::remove_file(path));
+        return Err(error);
+    }
+    Ok(file)
+}
+
+/// Open a persistent secret-adjacent lock and harden it immediately. A lock
+/// created by this call is removed on hardening failure; both failures are
+/// retained when cleanup also fails.
+pub fn open_restricted_lock_file(path: &Path) -> Result<std::fs::File, AuthError> {
+    open_restricted_lock_file_with(path, harden_secret_file, |path| std::fs::remove_file(path))
+}
+
+#[doc(hidden)]
+pub fn open_restricted_lock_file_with<H, R>(
+    path: &Path,
+    harden: H,
+    remove: R,
+) -> Result<std::fs::File, AuthError>
+where
+    H: FnOnce(&Path) -> Result<(), AuthError>,
+    R: FnOnce(&Path) -> std::io::Result<()>,
+{
+    let existed = path.exists();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|error| AuthError::Storage(format!("open lock `{}`: {error}", path.display())))?;
+    if let Err(error) = harden(path) {
+        drop(file);
+        if !existed && let Err(cleanup) = remove(path) {
+            return Err(AuthError::Storage(format!(
+                "{error}; cleanup lock `{}` failed: {cleanup}",
+                path.display()
+            )));
+        }
+        return Err(error);
+    }
+    Ok(file)
+}
+
 /// Durably publish a secret through a restricted same-directory temporary
 /// file so the final path is never observable with default permissions or
 /// partially written contents.
@@ -172,14 +234,10 @@ pub(crate) fn write_secret_file_atomically(path: &Path, contents: &[u8]) -> Resu
             std::process::id(),
             now_unix()
         ));
-        let mut file = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-        {
+        let mut file = match create_restricted_secret_file(&temporary) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                last_collision = Some(error);
+            Err(AuthError::Storage(message)) if temporary.exists() => {
+                last_collision = Some(message);
                 continue;
             }
             Err(error) => {
@@ -204,7 +262,6 @@ pub(crate) fn write_secret_file_atomically(path: &Path, contents: &[u8]) -> Resu
                 ))
             })?;
             drop(file);
-            harden_secret_file(&temporary)?;
             std::fs::rename(&temporary, path).map_err(|error| {
                 AuthError::Storage(format!("publish secret `{}`: {error}", path.display()))
             })?;
@@ -229,9 +286,7 @@ pub(crate) fn write_secret_file_atomically(path: &Path, contents: &[u8]) -> Resu
     Err(AuthError::Storage(format!(
         "could not allocate a temporary secret beside `{}`: {}",
         path.display(),
-        last_collision
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "name collision".to_string())
+        last_collision.unwrap_or_else(|| "name collision".to_string())
     )))
 }
 
@@ -263,6 +318,55 @@ pub(crate) fn expires_at(
     created_at
         .checked_add(ttl)
         .ok_or_else(|| AuthError::Config(format!("{field} exceeds supported range")))
+}
+
+#[cfg(test)]
+mod restricted_lock_tests {
+    use super::*;
+
+    fn denied(_path: &Path) -> Result<(), AuthError> {
+        Err(AuthError::Storage("hardening denied".into()))
+    }
+
+    #[test]
+    fn new_lock_is_removed_when_hardening_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.lock");
+        let error =
+            open_restricted_lock_file_with(&path, denied, |path| std::fs::remove_file(path))
+                .unwrap_err();
+        assert!(error.to_string().contains("hardening denied"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_is_compounded_with_hardening_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.lock");
+        let error = open_restricted_lock_file_with(&path, denied, |_| {
+            Err(std::io::Error::other("cleanup denied"))
+        })
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("hardening denied"), "{message}");
+        assert!(message.contains("cleanup denied"), "{message}");
+    }
+
+    #[test]
+    fn preexisting_lock_is_preserved_when_hardening_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.lock");
+        std::fs::write(&path, b"sentinel").unwrap();
+        let mut removal_attempted = false;
+        let error = open_restricted_lock_file_with(&path, denied, |_| {
+            removal_attempted = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(!removal_attempted, "preexisting lock must not be removed");
+        assert!(error.to_string().contains("hardening denied"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -299,5 +403,58 @@ if ($ruleSid -ne $sid) { exit 4 }
             .status()
             .unwrap();
         assert!(status.success(), "unexpected ACL shape: {status}");
+    }
+
+    #[test]
+    fn newly_created_secret_is_private_before_callers_can_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new-secret.env");
+        let file = create_restricted_secret_file(&path).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        drop(file);
+
+        assert_private_windows_acl(&path);
+    }
+
+    fn assert_private_windows_acl(path: &Path) {
+        let script = r#"
+$acl = Get-Acl -LiteralPath $env:LABBY_SECRET_FILE_PATH
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+if (-not $acl.AreAccessRulesProtected) { exit 2 }
+if (@($acl.Access).Count -ne 1) { exit 3 }
+$ruleSid = $acl.Access[0].IdentityReference.Translate(
+  [System.Security.Principal.SecurityIdentifier]
+).Value
+if ($ruleSid -ne $sid) { exit 4 }
+"#;
+        let status = std::process::Command::new(windows_powershell())
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ])
+            .env_remove("PSModulePath")
+            .env("LABBY_SECRET_FILE_PATH", path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "unexpected ACL shape: {status}");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn newly_created_secret_is_private_before_callers_can_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new-secret.env");
+        let file = create_restricted_secret_file(&path).unwrap();
+
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     }
 }

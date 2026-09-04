@@ -14,12 +14,16 @@ use crate::dispatch::error::ToolError;
 mod microsandbox_image;
 
 const SERVICE_NAME: &str = "labby.service";
-const LABBY_HOME: &str = "/home/labby";
+const WATCHDOG_SERVICE_NAME: &str = "labby-watchdog.service";
+const WATCHDOG_TIMER_NAME: &str = "labby-watchdog.timer";
+const WATCHDOG_ESCALATION_NAME: &str = "labby-watchdog-escalation.service";
+const SERVICE_INSTALLATION_ROOT: &str = "/home/labby/.labby";
 const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const READY_POLL_INTERVAL: Duration = Duration::from_millis(300);
 const CAPTURE_BYTES: usize = 16 * 1024;
+const PREVIOUS_HOST_RELEASE_DIR: &str = "/var/lib/labby/host-service-previous";
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct HostServiceStatus {
@@ -54,6 +58,64 @@ struct CommandCapture {
     stderr: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CapturedActiveState {
+    Active,
+    Inactive,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CapturedUnitFileState {
+    Enabled,
+    EnabledRuntime,
+    Disabled,
+}
+
+impl CapturedActiveState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Inactive => "inactive",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, ToolError> {
+        match value {
+            "active" => Ok(Self::Active),
+            "inactive" => Ok(Self::Inactive),
+            "failed" => Ok(Self::Failed),
+            _ => Err(ToolError::Sdk {
+                sdk_kind: "host_service_previous_manifest_invalid".into(),
+                message: format!("invalid retained ActiveState `{value}`"),
+            }),
+        }
+    }
+}
+
+impl CapturedUnitFileState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::EnabledRuntime => "enabled-runtime",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, ToolError> {
+        match value {
+            "enabled" => Ok(Self::Enabled),
+            "enabled-runtime" => Ok(Self::EnabledRuntime),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(ToolError::Sdk {
+                sdk_kind: "host_service_previous_manifest_invalid".into(),
+                message: format!("invalid retained UnitFileState `{value}`"),
+            }),
+        }
+    }
+}
+
 pub(crate) async fn unit() -> Result<String, ToolError> {
     Ok(unit_text().to_string())
 }
@@ -63,25 +125,232 @@ pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
     let path = unit_path();
     let text = unit_text();
     std::fs::create_dir_all(unit_dir()).map_err(io_error)?;
+    let snapshot = HostServiceSnapshot::capture(&path).await?;
     let changed = std::fs::read_to_string(&path).ok().as_deref() != Some(text);
+    match install_commit(port, path.clone(), text, changed).await {
+        Ok(outcome) => Ok(outcome),
+        Err(primary) => match snapshot.rollback(&path).await {
+            Ok(()) => Err(host_transaction_failure(&primary, None)),
+            Err(rollback) => Err(host_transaction_failure(&primary, Some(&rollback))),
+        },
+    }
+}
+
+fn persist_previous_host_release(
+    binary: Option<&[u8]>,
+    state: Option<(CapturedActiveState, CapturedUnitFileState)>,
+) -> Result<(), ToolError> {
+    let (Some(binary), Some((active, enabled))) = (binary, state) else {
+        return Ok(());
+    };
+    let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
+    std::fs::create_dir_all(root).map_err(io_error)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).map_err(io_error)?;
+    }
+    restore_executable(&root.join("labby"), Some(binary))?;
+    atomic_write(
+        &root.join("manifest"),
+        format!("active={}\nenabled={}\n", active.as_str(), enabled.as_str()).as_bytes(),
+    )
+}
+
+pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, ToolError> {
+    let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
+    let prior = std::fs::read(root.join("labby")).map_err(|error| ToolError::Sdk {
+        sdk_kind: "host_service_no_previous_release".into(),
+        message: format!("no retained previous host release is available: {error}"),
+    })?;
+    let (desired_active, desired_enabled) = parse_previous_host_manifest(
+        &std::fs::read_to_string(root.join("manifest")).map_err(io_error)?,
+    )?;
+    let destination = Path::new("/usr/local/bin/labby");
+    let current = read_optional(destination)?;
+    let current_state = capture_systemd_state(SERVICE_NAME).await?;
+    restore_executable(destination, Some(&prior))?;
+    let activation = async {
+        restore_captured_unit_file_state(SERVICE_NAME, desired_enabled).await?;
+        restore_captured_active_state(SERVICE_NAME, desired_active).await
+    }
+    .await;
+    if let Err(primary) = activation {
+        let binary_restore = restore_executable(destination, current.as_deref());
+        let enabled_restore = restore_captured_unit_file_state(SERVICE_NAME, current_state.1).await;
+        let active_restore = restore_captured_active_state(SERVICE_NAME, current_state.0).await;
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_release_rollback_failed".into(),
+            message: format!(
+                "previous host release activation failed: {primary}; candidate restoration: binary={binary_restore:?}, enabled={enabled_restore:?}, active={active_restore:?}"
+            ),
+        });
+    }
+    std::fs::remove_dir_all(root).map_err(io_error)?;
+    Ok(HostServiceOutcome {
+        ok: true,
+        changed: true,
+        message: "restored the retained previous host release".into(),
+        unit_path: unit_path(),
+        stdout: String::new(),
+        stderr: String::new(),
+    })
+}
+
+fn parse_previous_host_manifest(
+    text: &str,
+) -> Result<(CapturedActiveState, CapturedUnitFileState), ToolError> {
+    let props = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect::<BTreeMap<_, _>>();
+    Ok((
+        CapturedActiveState::parse(props.get("active").copied().unwrap_or(""))?,
+        CapturedUnitFileState::parse(props.get("enabled").copied().unwrap_or(""))?,
+    ))
+}
+
+pub(crate) async fn install_self_transaction(
+    source: &Path,
+) -> Result<HostServiceOutcome, ToolError> {
+    let destination = Path::new("/usr/local/bin/labby");
+    let prior_binary = read_optional(destination)?;
+    let prior_state = if unit_path().is_file() {
+        Some(capture_systemd_state(SERVICE_NAME).await?)
+    } else {
+        None
+    };
+    install_executable(source, destination)?;
+    match install().await {
+        Ok(outcome) => {
+            persist_previous_host_release(prior_binary.as_deref(), prior_state)?;
+            Ok(outcome)
+        }
+        Err(primary) => {
+            let mut failures = Vec::new();
+            collect_restore(
+                &mut failures,
+                "prior binary",
+                restore_executable(destination, prior_binary.as_deref()),
+            );
+            if let Some((active, enabled)) = prior_state {
+                collect_restore(
+                    &mut failures,
+                    "prior binary enablement",
+                    restore_captured_unit_file_state(SERVICE_NAME, enabled).await,
+                );
+                collect_restore(
+                    &mut failures,
+                    "prior binary activity",
+                    restore_captured_active_state(SERVICE_NAME, active).await,
+                );
+            }
+            if failures.is_empty() {
+                Err(ToolError::Sdk {
+                    sdk_kind: "host_service_upgrade_rolled_back".into(),
+                    message: format!(
+                        "host-service upgrade failed and the prior binary/service state was restored: {primary}"
+                    ),
+                })
+            } else {
+                Err(ToolError::Sdk {
+                    sdk_kind: "host_service_upgrade_rollback_failed".into(),
+                    message: format!(
+                        "host-service upgrade failed: {primary}; rollback residuals: {}",
+                        failures.join("; ")
+                    ),
+                })
+            }
+        }
+    }
+}
+
+fn install_executable(source: &Path, destination: &Path) -> Result<(), ToolError> {
+    let bytes = std::fs::read(source).map_err(io_error)?;
+    atomic_write(destination, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o755))
+            .map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn restore_executable(destination: &Path, prior: Option<&[u8]>) -> Result<(), ToolError> {
+    match prior {
+        Some(bytes) => {
+            atomic_write(destination, bytes)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o755))
+                    .map_err(io_error)?;
+            }
+            Ok(())
+        }
+        None => match std::fs::remove_file(destination) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_error(error)),
+        },
+    }
+}
+
+async fn install_commit(
+    port: u16,
+    path: PathBuf,
+    text: &str,
+    changed: bool,
+) -> Result<HostServiceOutcome, ToolError> {
     if changed {
         atomic_write(&path, text.as_bytes())?;
+        host_checkpoint("unit-write")?;
     }
 
     let mut stdout = String::new();
     let mut stderr = String::new();
     append_optional_verify(&path, &mut stdout, &mut stderr).await?;
+    host_checkpoint("unit-verify")?;
     let daemon = run_systemctl(&["daemon-reload"]).await?;
     stdout.push_str(&daemon.stdout);
     stderr.push_str(&daemon.stderr);
+    host_checkpoint("daemon-reload")?;
     let enable = run_systemctl(&["enable", SERVICE_NAME]).await?;
     stdout.push_str(&enable.stdout);
     stderr.push_str(&enable.stderr);
+    host_checkpoint("enable")?;
+    if std::env::var_os("LABBY_HOST_WATCHDOG").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        atomic_write(
+            &unit_dir().join(WATCHDOG_SERVICE_NAME),
+            watchdog_service_text().as_bytes(),
+        )?;
+        atomic_write(
+            &unit_dir().join(WATCHDOG_TIMER_NAME),
+            watchdog_timer_text().as_bytes(),
+        )?;
+        atomic_write(
+            &unit_dir().join(WATCHDOG_ESCALATION_NAME),
+            watchdog_escalation_text().as_bytes(),
+        )?;
+        host_checkpoint("watchdog-units")?;
+        let reload = run_systemctl(&["daemon-reload"]).await?;
+        stdout.push_str(&reload.stdout);
+        stderr.push_str(&reload.stderr);
+        host_checkpoint("watchdog-reload")?;
+        let watchdog = run_systemctl(&["enable", "--now", WATCHDOG_TIMER_NAME]).await?;
+        stdout.push_str(&watchdog.stdout);
+        stderr.push_str(&watchdog.stderr);
+        host_checkpoint("watchdog-enable")?;
+    }
     provision_oauth_encryption_key_before_restart().await?;
+    host_checkpoint("credential-provision")?;
     microsandbox_image::prepare_before_restart().await?;
+    host_checkpoint("sandbox-prepare")?;
     let restart = run_systemctl(&["restart", SERVICE_NAME]).await?;
     stdout.push_str(&restart.stdout);
     stderr.push_str(&restart.stderr);
+    host_checkpoint("restart")?;
     if let Err(err) = poll_ready(port).await {
         stderr.push_str(&format!("\nreadiness failed: {err}"));
         return Err(ToolError::Sdk {
@@ -91,6 +360,7 @@ pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
             ),
         });
     }
+    host_checkpoint("readiness")?;
     Ok(HostServiceOutcome {
         ok: true,
         changed,
@@ -101,9 +371,417 @@ pub(crate) async fn install() -> Result<HostServiceOutcome, ToolError> {
     })
 }
 
+fn host_checkpoint(label: &str) -> Result<(), ToolError> {
+    host_checkpoint_from(
+        std::env::var("LABBY_HOST_SERVICE_FAIL_AFTER")
+            .ok()
+            .as_deref(),
+        label,
+    )
+}
+
+fn host_checkpoint_from(configured: Option<&str>, label: &str) -> Result<(), ToolError> {
+    if configured == Some(label) {
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_injected_failure".into(),
+            message: format!("injected host-service activation failure after {label}"),
+        });
+    }
+    Ok(())
+}
+
+struct HostServiceSnapshot {
+    unit: Option<Vec<u8>>,
+    watchdog_service: Option<Vec<u8>>,
+    watchdog_timer: Option<Vec<u8>>,
+    watchdog_escalation: Option<Vec<u8>>,
+    active: CapturedActiveState,
+    enabled: CapturedUnitFileState,
+    watchdog_active: CapturedActiveState,
+    watchdog_enabled: CapturedUnitFileState,
+    service_env: Option<Vec<u8>>,
+    env_backups: BTreeSet<PathBuf>,
+    dropins: DirectorySnapshot,
+}
+
+struct DirectorySnapshot {
+    existed: bool,
+    files: Vec<(std::ffi::OsString, Vec<u8>)>,
+}
+
+impl HostServiceSnapshot {
+    async fn capture(path: &Path) -> Result<Self, ToolError> {
+        let unit = read_optional(path)?;
+        let watchdog_service = read_optional(&unit_dir().join(WATCHDOG_SERVICE_NAME))?;
+        let watchdog_timer = read_optional(&unit_dir().join(WATCHDOG_TIMER_NAME))?;
+        let watchdog_escalation = read_optional(&unit_dir().join(WATCHDOG_ESCALATION_NAME))?;
+        let service_env_path = Path::new(SERVICE_INSTALLATION_ROOT).join(".env");
+        let service_env = read_optional(&service_env_path)?;
+        let env_backups = matching_sibling_files(&service_env_path, ".env.bak.")?;
+        let dropins = DirectorySnapshot::capture(Path::new("/etc/systemd/system/labby.service.d"))?;
+        let (active, enabled) = if unit.is_some() {
+            capture_systemd_state(SERVICE_NAME).await?
+        } else {
+            (
+                CapturedActiveState::Inactive,
+                CapturedUnitFileState::Disabled,
+            )
+        };
+        let (watchdog_active, watchdog_enabled) = if watchdog_timer.is_some() {
+            capture_systemd_state(WATCHDOG_TIMER_NAME).await?
+        } else {
+            (
+                CapturedActiveState::Inactive,
+                CapturedUnitFileState::Disabled,
+            )
+        };
+        Ok(Self {
+            unit,
+            watchdog_service,
+            watchdog_timer,
+            watchdog_escalation,
+            active,
+            enabled,
+            watchdog_active,
+            watchdog_enabled,
+            service_env,
+            env_backups,
+            dropins,
+        })
+    }
+
+    async fn rollback(&self, path: &Path) -> Result<(), ToolError> {
+        let mut failures = Vec::new();
+        collect_restore(
+            &mut failures,
+            "main unit",
+            restore_optional(path, self.unit.as_deref()),
+        );
+        let service_env_path = Path::new(SERVICE_INSTALLATION_ROOT).join(".env");
+        collect_restore(
+            &mut failures,
+            "service environment",
+            restore_optional(&service_env_path, self.service_env.as_deref()),
+        );
+        if self.service_env.is_some() {
+            collect_async(
+                &mut failures,
+                "service environment ownership",
+                run_command("chown", &["labby:labby", "/home/labby/.labby/.env"]).await,
+            );
+        }
+        collect_restore(
+            &mut failures,
+            "service environment backups",
+            remove_new_matching_siblings(&service_env_path, ".env.bak.", &self.env_backups),
+        );
+        collect_restore(
+            &mut failures,
+            "service drop-ins",
+            self.dropins
+                .restore(Path::new("/etc/systemd/system/labby.service.d")),
+        );
+        collect_restore(
+            &mut failures,
+            "watchdog service",
+            restore_optional(
+                &unit_dir().join(WATCHDOG_SERVICE_NAME),
+                self.watchdog_service.as_deref(),
+            ),
+        );
+        collect_restore(
+            &mut failures,
+            "watchdog escalation",
+            restore_optional(
+                &unit_dir().join(WATCHDOG_ESCALATION_NAME),
+                self.watchdog_escalation.as_deref(),
+            ),
+        );
+        collect_restore(
+            &mut failures,
+            "watchdog timer",
+            restore_optional(
+                &unit_dir().join(WATCHDOG_TIMER_NAME),
+                self.watchdog_timer.as_deref(),
+            ),
+        );
+        collect_async(
+            &mut failures,
+            "daemon reload",
+            run_systemctl(&["daemon-reload"]).await,
+        );
+        collect_restore(
+            &mut failures,
+            "main enablement",
+            restore_captured_unit_file_state(SERVICE_NAME, self.enabled).await,
+        );
+        collect_restore(
+            &mut failures,
+            "main activity",
+            restore_captured_active_state(SERVICE_NAME, self.active).await,
+        );
+        collect_restore(
+            &mut failures,
+            "watchdog enablement",
+            restore_captured_unit_file_state(WATCHDOG_TIMER_NAME, self.watchdog_enabled).await,
+        );
+        collect_restore(
+            &mut failures,
+            "watchdog activity",
+            restore_captured_active_state(WATCHDOG_TIMER_NAME, self.watchdog_active).await,
+        );
+        rollback_result(failures)
+    }
+}
+
+async fn restore_captured_active_state(
+    unit: &str,
+    state: CapturedActiveState,
+) -> Result<(), ToolError> {
+    match state {
+        CapturedActiveState::Active => {
+            run_systemctl(&["restart", unit]).await?;
+        }
+        CapturedActiveState::Inactive => {
+            run_systemctl(&["stop", unit]).await?;
+            run_systemctl(&["reset-failed", unit]).await?;
+        }
+        CapturedActiveState::Failed => {
+            // Starting the restored unit is the only supported way to recreate a
+            // systemd failed state. A successful start means exact restoration is
+            // impossible, so fail closed and retain the compound rollback error.
+            drop(run_systemctl(&["start", unit]).await);
+            let (actual, _) = capture_systemd_state(unit).await?;
+            if actual != CapturedActiveState::Failed {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "host_service_state_restore_failed".into(),
+                    message: format!(
+                        "restored {unit}, but could not reproduce prior failed state (found {actual:?})"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn restore_captured_unit_file_state(
+    unit: &str,
+    state: CapturedUnitFileState,
+) -> Result<(), ToolError> {
+    match state {
+        CapturedUnitFileState::Enabled => drop(run_systemctl(&["enable", unit]).await?),
+        CapturedUnitFileState::EnabledRuntime => {
+            drop(run_systemctl(&["disable", unit]).await?);
+            drop(run_systemctl(&["enable", "--runtime", unit]).await?);
+        }
+        CapturedUnitFileState::Disabled => drop(run_systemctl(&["disable", unit]).await?),
+    }
+    Ok(())
+}
+
+impl DirectorySnapshot {
+    fn capture(path: &Path) -> Result<Self, ToolError> {
+        if !path.exists() {
+            return Ok(Self {
+                existed: false,
+                files: Vec::new(),
+            });
+        }
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(path).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            if !entry.file_type().map_err(io_error)?.is_file() {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "host_service_state_capture_failed".into(),
+                    message: format!(
+                        "cannot transactionally snapshot non-file service drop-in `{}`",
+                        entry.path().display()
+                    ),
+                });
+            }
+            files.push((
+                entry.file_name(),
+                std::fs::read(entry.path()).map_err(io_error)?,
+            ));
+        }
+        Ok(Self {
+            existed: true,
+            files,
+        })
+    }
+
+    fn restore(&self, path: &Path) -> Result<(), ToolError> {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(error)),
+        }
+        if self.existed {
+            std::fs::create_dir_all(path).map_err(io_error)?;
+            for (name, bytes) in &self.files {
+                atomic_write(&path.join(name), bytes)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn matching_sibling_files(path: &Path, prefix: &str) -> Result<BTreeSet<PathBuf>, ToolError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut matches = BTreeSet::new();
+    match std::fs::read_dir(parent) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(io_error)?;
+                if entry.file_name().to_string_lossy().starts_with(prefix) {
+                    matches.insert(entry.path());
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error(error)),
+    }
+    Ok(matches)
+}
+
+fn remove_new_matching_siblings(
+    path: &Path,
+    prefix: &str,
+    prior: &BTreeSet<PathBuf>,
+) -> Result<(), ToolError> {
+    for candidate in matching_sibling_files(path, prefix)? {
+        if !prior.contains(&candidate) {
+            std::fs::remove_file(candidate).map_err(io_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_restore(failures: &mut Vec<String>, action: &str, result: Result<(), ToolError>) {
+    if let Err(error) = result {
+        failures.push(format!("{action}: {error}"));
+    }
+}
+
+fn collect_async(
+    failures: &mut Vec<String>,
+    action: &str,
+    result: Result<CommandCapture, ToolError>,
+) {
+    if let Err(error) = result {
+        failures.push(format!("{action}: {error}"));
+    }
+}
+
+fn rollback_result(failures: Vec<String>) -> Result<(), ToolError> {
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(ToolError::Sdk {
+            sdk_kind: "host_service_rollback_failed".into(),
+            message: format!(
+                "host-service rollback left residual failures: {}",
+                failures.join("; ")
+            ),
+        })
+    }
+}
+
+async fn capture_systemd_state(
+    unit: &str,
+) -> Result<(CapturedActiveState, CapturedUnitFileState), ToolError> {
+    let output = run_systemctl(&[
+        "show",
+        unit,
+        "--property=ActiveState,UnitFileState",
+        "--no-pager",
+    ])
+    .await?;
+    parse_captured_systemd_state(&output.stdout, unit)
+}
+
+fn parse_captured_systemd_state(
+    stdout: &str,
+    unit: &str,
+) -> Result<(CapturedActiveState, CapturedUnitFileState), ToolError> {
+    let props = parse_systemctl_show(stdout);
+    let active = props.get("ActiveState").ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "host_service_state_capture_failed".into(),
+        message: format!("systemctl did not report ActiveState for {unit}"),
+    })?;
+    let enabled = props.get("UnitFileState").ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "host_service_state_capture_failed".into(),
+        message: format!("systemctl did not report UnitFileState for {unit}"),
+    })?;
+    let active = match active.as_str() {
+        "active" => CapturedActiveState::Active,
+        "inactive" => CapturedActiveState::Inactive,
+        "failed" => CapturedActiveState::Failed,
+        other => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "host_service_state_capture_failed".into(),
+                message: format!("unsupported ActiveState `{other}` for {unit}"),
+            });
+        }
+    };
+    let enabled = match enabled.as_str() {
+        "enabled" => CapturedUnitFileState::Enabled,
+        "enabled-runtime" => CapturedUnitFileState::EnabledRuntime,
+        "disabled" => CapturedUnitFileState::Disabled,
+        other => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "host_service_state_capture_failed".into(),
+                message: format!("unsupported UnitFileState `{other}` for {unit}"),
+            });
+        }
+    };
+    Ok((active, enabled))
+}
+
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, ToolError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+fn restore_optional(path: &Path, bytes: Option<&[u8]>) -> Result<(), ToolError> {
+    match bytes {
+        Some(bytes) => atomic_write(path, bytes),
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_error(error)),
+        },
+    }
+}
+
+fn host_transaction_failure(primary: &ToolError, rollback: Option<&ToolError>) -> ToolError {
+    let (sdk_kind, message) = match rollback {
+        None => (
+            "host_service_install_rolled_back",
+            format!(
+                "host-service activation failed and the prior unit/service state was restored: {primary}"
+            ),
+        ),
+        Some(rollback) => (
+            "host_service_install_rollback_failed",
+            format!(
+                "host-service activation failed: {primary}; rollback also failed: {rollback}; inspect the system unit and service state before retrying"
+            ),
+        ),
+    };
+    ToolError::Sdk {
+        sdk_kind: sdk_kind.into(),
+        message,
+    }
+}
+
 pub(crate) async fn status() -> Result<HostServiceStatus, ToolError> {
     let path = unit_path();
-    let port = configured_local_port();
+    let port = configured_local_port()?;
     let installed = path.is_file();
     let (docker_labby_master_running, docker_labby_master_error) =
         match docker_labby_master_running().await {
@@ -180,7 +858,7 @@ pub(crate) async fn status() -> Result<HostServiceStatus, ToolError> {
 
 pub(crate) async fn installed_and_ready() -> Result<bool, ToolError> {
     let path = unit_path();
-    let port = configured_local_port();
+    let port = configured_local_port()?;
     if !unit_file_is_current(&path) || !Path::new("/usr/local/bin/labby").is_file() {
         return Ok(false);
     }
@@ -312,10 +990,12 @@ Environment=XDG_CACHE_HOME=/home/labby/.cache
 Environment=XDG_CONFIG_HOME=/home/labby/.config
 Environment=XDG_DATA_HOME=/home/labby/.local/share
 Environment=PATH=/home/labby/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=LABBY_STDIO_SANDBOX_REQUIRED=1
 EnvironmentFile=-/home/labby/.labby/.env
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/home/labby/.labby /home/labby/.local /home/labby/.cache /home/labby/.config /home/labby/.npm /home/labby/.codex /home/labby/.claude /home/labby/.gemini /home/labby/downloads
+ReadWritePaths=/home/labby/.labby
+InaccessiblePaths=-/home/labby/.codex -/home/labby/.claude -/home/labby/.gemini
 ProtectHome=read-only
 PrivateTmp=true
 RestrictNamespaces=true
@@ -335,6 +1015,75 @@ KillSignal=SIGINT
 [Install]
 WantedBy=multi-user.target
 "
+}
+
+fn watchdog_service_text() -> &'static str {
+    // `${...}` below is systemd/shell syntax, not a missing Rust formatting argument.
+    #[allow(clippy::literal_string_with_formatting_args)]
+    r#"[Unit]
+Description=Labby bounded readiness watchdog
+After=labby.service
+ConditionPathExists=!/run/labby-maintenance
+OnFailure=labby-watchdog-escalation.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+EnvironmentFile=-/home/labby/.labby/.env
+ExecStart=/bin/sh -c 'url="http://127.0.0.1:$${LABBY_MCP_HTTP_PORT:-8765}/ready"; /usr/bin/curl -fsS --max-time 3 "$url" && exit 0; sleep 5; systemctl restart labby.service || exit 1; for delay in 1 2 4 8; do sleep "$delay"; /usr/bin/curl -fsS --max-time 3 "$url" && exit 0; done; systemctl show labby.service --property=Result,NRestarts,ActiveState --no-pager >&2; exit 1'
+"#
+}
+
+fn watchdog_escalation_text() -> &'static str {
+    r#"[Unit]
+Description=Persist and escalate repeated Labby watchdog recovery failure
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'install -d -m 0700 /home/labby/.labby/watchdog; { date -u; systemctl show labby.service --property=Result,NRestarts,ActiveState --no-pager; journalctl -u labby.service -n 100 --no-pager; } >>/home/labby/.labby/watchdog/recovery-failures.log; systemd-cat -t labby-watchdog-escalation echo "Labby recovery exhausted; notification owner must alert on this tag"'
+"#
+}
+
+fn watchdog_timer_text() -> &'static str {
+    r"[Unit]
+Description=Periodically probe Labby readiness
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+RandomizedDelaySec=5s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+"
+}
+
+#[cfg(test)]
+fn exercise_watchdog<P, R>(
+    maintenance: bool,
+    delays: &[u64],
+    mut probe: P,
+    mut restart: R,
+) -> (bool, Vec<u64>)
+where
+    P: FnMut() -> bool,
+    R: FnMut() -> bool,
+{
+    if maintenance || probe() {
+        return (true, Vec::new());
+    }
+    if !restart() {
+        return (false, Vec::new());
+    }
+    let mut used = Vec::new();
+    for delay in delays {
+        used.push(*delay);
+        if probe() {
+            return (true, used);
+        }
+    }
+    (false, used)
 }
 
 fn unit_file_is_current(path: &Path) -> bool {
@@ -385,7 +1134,7 @@ async fn append_optional_verify(
 
 async fn preflight_port_available(operation: &str) -> Result<u16, ToolError> {
     let docker_running = docker_labby_master_running().await?;
-    let port = configured_local_port();
+    let port = configured_local_port()?;
     let holder = port_holder(port).await?;
     let (active_state, main_pid) = if holder.is_some() {
         systemctl_service_identity().await?
@@ -440,52 +1189,79 @@ fn preflight_decision(
     Ok(())
 }
 
-fn configured_local_port() -> u16 {
-    let env_file_port = env_file_value("LABBY_MCP_HTTP_PORT");
-    let config_port = crate::config::load_toml(&crate::config::toml_candidates())
-        .ok()
-        .and_then(|config| config.mcp.port);
-    let process_port = std::env::var("LABBY_MCP_HTTP_PORT").ok();
-    configured_local_port_from(
-        env_file_port.as_deref(),
-        config_port,
-        process_port.as_deref(),
-    )
+fn configured_local_port() -> Result<u16, ToolError> {
+    configured_local_port_at(Path::new(SERVICE_INSTALLATION_ROOT))
+}
+
+fn configured_local_port_at(service_root: &Path) -> Result<u16, ToolError> {
+    let env_file_port = env_file_value_at(&service_root.join(".env"), "LABBY_MCP_HTTP_PORT")?;
+    let config_port = crate::config::load_toml_from_fixed_root(&[service_root.join("config.toml")])
+        .map_err(|error| ToolError::InvalidParam {
+            message: format!("invalid host-service config: {error:#}"),
+            param: "config.toml".into(),
+        })?
+        .mcp
+        .port;
+    configured_local_port_from(env_file_port.as_deref(), config_port).map_err(|message| {
+        ToolError::InvalidParam {
+            message,
+            param: "LABBY_MCP_HTTP_PORT".into(),
+        }
+    })
 }
 
 fn configured_local_port_from(
     service_env: Option<&str>,
     config_port: Option<u16>,
-    process_env: Option<&str>,
-) -> u16 {
-    service_env
-        .and_then(|value| value.parse().ok())
-        .or(config_port)
-        .or_else(|| process_env.and_then(|value| value.parse().ok()))
-        .unwrap_or(8765)
+) -> Result<u16, String> {
+    fn parse_port(value: &str, source: &str) -> Result<u16, String> {
+        value
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| {
+                format!("{source} LABBY_MCP_HTTP_PORT must be an integer from 1 through 65535")
+            })
+    }
+
+    if let Some(value) = service_env {
+        return parse_port(value, "service environment");
+    }
+    if let Some(port) = config_port {
+        return (port != 0).then_some(port).ok_or_else(|| {
+            "config.toml mcp.port must be an integer from 1 through 65535".to_string()
+        });
+    }
+    Ok(8765)
 }
 
-fn env_file_value(key: &str) -> Option<String> {
-    let path = Path::new(LABBY_HOME).join(".labby/.env");
-    let text = std::fs::read_to_string(path).ok()?;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('#') || line.is_empty() {
-            continue;
+fn env_file_value_at(path: &Path, key: &str) -> Result<Option<String>, ToolError> {
+    let entries = match dotenvy::from_path_iter(path) {
+        Ok(entries) => entries,
+        Err(error) if error.not_found() => return Ok(None),
+        Err(error) => {
+            return Err(ToolError::InvalidParam {
+                message: format!(
+                    "authoritative service environment `{}` is unreadable: {error}",
+                    path.display()
+                ),
+                param: "LABBY_MCP_HTTP_PORT".into(),
+            });
         }
-        if let Some((name, value)) = line.split_once('=')
-            && name.trim() == key
-        {
-            return Some(
-                value
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string(),
-            );
+    };
+    for entry in entries {
+        let (name, value) = entry.map_err(|error| ToolError::InvalidParam {
+            message: format!(
+                "authoritative service environment `{}` is malformed: {error}",
+                path.display()
+            ),
+            param: "LABBY_MCP_HTTP_PORT".into(),
+        })?;
+        if name == key {
+            return Ok(Some(value));
         }
     }
-    None
+    Ok(None)
 }
 
 async fn port_holder(port: u16) -> Result<Option<String>, ToolError> {
@@ -900,6 +1676,291 @@ mod tests {
     use super::*;
 
     #[test]
+    fn transaction_failure_distinguishes_successful_and_failed_rollback() {
+        let primary = ToolError::Sdk {
+            sdk_kind: "probe_failed".into(),
+            message: "readiness timed out".into(),
+        };
+        assert_eq!(
+            host_transaction_failure(&primary, None).kind(),
+            "host_service_install_rolled_back"
+        );
+        let rollback = ToolError::Sdk {
+            sdk_kind: "restore_failed".into(),
+            message: "unit restore denied".into(),
+        };
+        let compound = host_transaction_failure(&primary, Some(&rollback));
+        assert_eq!(compound.kind(), "host_service_install_rollback_failed");
+        assert!(compound.to_string().contains("readiness timed out"));
+        assert!(compound.to_string().contains("unit restore denied"));
+    }
+
+    #[test]
+    fn opt_in_watchdog_is_bounded_and_maintenance_aware() {
+        let service = watchdog_service_text();
+        assert!(service.contains("ConditionPathExists=!/run/labby-maintenance"));
+        assert!(service.contains("TimeoutStartSec=60"));
+        assert!(service.contains("--max-time 3"));
+        assert!(service.contains("restart labby.service"));
+        assert!(service.contains("Result,NRestarts,ActiveState"));
+        assert!(service.contains("OnFailure=labby-watchdog-escalation.service"));
+        assert!(watchdog_escalation_text().contains("recovery-failures.log"));
+        assert!(watchdog_escalation_text().contains("systemd-cat -t labby-watchdog-escalation"));
+        let timer = watchdog_timer_text();
+        assert!(timer.contains("OnUnitActiveSec=30s"));
+        assert!(unit_text().contains("StartLimitBurst=5"));
+    }
+
+    #[test]
+    fn watchdog_behavior_covers_success_hang_exhaustion_backoff_and_maintenance() {
+        let (ok, delays) = exercise_watchdog(false, &[1, 2, 4, 8], || true, || panic!());
+        assert!(ok);
+        assert!(delays.is_empty());
+
+        let mut probes = 0;
+        let (ok, delays) = exercise_watchdog(
+            false,
+            &[1, 2, 4, 8],
+            || {
+                probes += 1;
+                probes == 4
+            },
+            || true,
+        );
+        assert!(ok);
+        assert_eq!(delays, vec![1, 2, 4]);
+
+        let (ok, delays) = exercise_watchdog(false, &[1, 2, 4, 8], || false, || true);
+        assert!(!ok);
+        assert_eq!(delays, vec![1, 2, 4, 8]);
+
+        let (ok, _) = exercise_watchdog(false, &[1, 2, 4, 8], || false, || false);
+        assert!(
+            !ok,
+            "restart/start-limit exhaustion must fail synchronously"
+        );
+        let (ok, delays) = exercise_watchdog(true, &[1], || panic!(), || panic!());
+        assert!(ok);
+        assert!(delays.is_empty());
+
+        for _ in 0..5 {
+            assert!(!exercise_watchdog(false, &[1], || false, || false).0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
+    fn generated_watchdog_shell_executes_restart_backoff_and_exhaustion() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = root.path().join("calls");
+        let count = root.path().join("count");
+        let hung_pid = root.path().join("hung.pid");
+        let write_exe = |name: &str, body: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let curl = write_exe(
+            "curl",
+            "#!/bin/sh\ncase \" $* \" in *' --max-time 3 '*) ;; *) exit 64;; esac\nif [ \"${HANG:-0}\" = 1 ]; then /bin/sleep 30 & child=$!; echo $child >\"$HUNG_PID\"; (/bin/sleep 0.05; kill $child 2>/dev/null || :) & timer=$!; wait $child 2>/dev/null || :; wait $timer; echo curl:bounded-timeout >>\"$CALLS\"; exit 28; fi\nn=$(cat \"$COUNT\" 2>/dev/null || echo 0); n=$((n+1)); echo $n >\"$COUNT\"; echo curl >>\"$CALLS\"; test $n -ge ${SUCCEED_AT:-999}\n",
+        );
+        let systemctl = write_exe(
+            "systemctl",
+            "#!/bin/sh\necho systemctl:$* >>\"$CALLS\"; test \"${RESTART_OK:-1}\" = 1\n",
+        );
+        let sleep = write_exe("sleep", "#!/bin/sh\necho sleep:$1 >>\"$CALLS\"\n");
+        let line = watchdog_service_text()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("ExecStart=/bin/sh -c '")
+                    .and_then(|v| v.strip_suffix('\''))
+            })
+            .unwrap();
+        let script = line
+            .replace("/usr/bin/curl", curl.to_str().unwrap())
+            .replace("systemctl ", &format!("{} ", systemctl.display()))
+            .replace("sleep ", &format!("{} ", sleep.display()))
+            .replace("$$", "$");
+        let run = |succeed_at: &str, hang: bool| {
+            drop(std::fs::remove_file(&log));
+            drop(std::fs::remove_file(&count));
+            std::process::Command::new("sh")
+                .args(["-c", &script])
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("CALLS", &log)
+                .env("COUNT", &count)
+                .env("SUCCEED_AT", succeed_at)
+                .env("HANG", if hang { "1" } else { "0" })
+                .env("HUNG_PID", &hung_pid)
+                .status()
+                .unwrap()
+        };
+        let started = std::time::Instant::now();
+        assert!(run("1", false).success());
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(!calls.contains("systemctl:restart"));
+        assert!(run("3", false).success());
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("systemctl:restart labby.service"));
+        assert!(calls.contains("sleep:1"));
+        assert!(!run("999", true).success());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("curl:bounded-timeout"));
+        let pid = std::fs::read_to_string(&hung_pid).unwrap();
+        let status = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap();
+        assert!(!status.success(), "hung curl child survived its timeout");
+        for delay in ["sleep:1", "sleep:2", "sleep:4", "sleep:8"] {
+            assert!(calls.contains(delay), "missing {delay}: {calls}");
+        }
+    }
+
+    #[test]
+    fn optional_unit_restore_is_exact_and_removes_new_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watchdog.timer");
+        restore_optional(&path, Some(b"prior\n")).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"prior\n");
+        restore_optional(&path, None).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn directory_snapshot_restores_exact_files_and_removes_transaction_additions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("dropins");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("prior.conf"), b"prior\n").unwrap();
+        let snapshot = DirectorySnapshot::capture(&path).unwrap();
+        std::fs::write(path.join("prior.conf"), b"candidate\n").unwrap();
+        std::fs::write(path.join("new.conf"), b"new\n").unwrap();
+        snapshot.restore(&path).unwrap();
+        assert_eq!(std::fs::read(path.join("prior.conf")).unwrap(), b"prior\n");
+        assert!(!path.join("new.conf").exists());
+    }
+
+    #[test]
+    fn rollback_backup_cleanup_preserves_prior_and_removes_new_backups() {
+        let root = tempfile::tempdir().unwrap();
+        let env = root.path().join(".env");
+        let prior = root.path().join(".env.bak.prior");
+        let created = root.path().join(".env.bak.created");
+        std::fs::write(&prior, b"prior").unwrap();
+        let before = matching_sibling_files(&env, ".env.bak.").unwrap();
+        std::fs::write(&created, b"created").unwrap();
+        remove_new_matching_siblings(&env, ".env.bak.", &before).unwrap();
+        assert!(prior.exists());
+        assert!(!created.exists());
+    }
+
+    #[test]
+    fn every_host_activation_boundary_can_be_fault_injected() {
+        for label in [
+            "unit-write",
+            "unit-verify",
+            "daemon-reload",
+            "enable",
+            "watchdog-units",
+            "watchdog-reload",
+            "watchdog-enable",
+            "credential-provision",
+            "sandbox-prepare",
+            "restart",
+            "readiness",
+        ] {
+            assert_eq!(
+                host_checkpoint_from(Some(label), label).unwrap_err().kind(),
+                "host_service_injected_failure"
+            );
+        }
+        assert!(host_checkpoint_from(None, "restart").is_ok());
+    }
+
+    #[test]
+    fn capture_requires_both_systemd_authorities() {
+        assert_eq!(
+            parse_captured_systemd_state("ActiveState=active\nUnitFileState=enabled\n", "x")
+                .unwrap(),
+            (CapturedActiveState::Active, CapturedUnitFileState::Enabled)
+        );
+        assert_eq!(
+            parse_captured_systemd_state("ActiveState=inactive\nUnitFileState=disabled\n", "x")
+                .unwrap(),
+            (
+                CapturedActiveState::Inactive,
+                CapturedUnitFileState::Disabled
+            )
+        );
+        assert_eq!(
+            parse_captured_systemd_state(
+                "ActiveState=failed\nUnitFileState=enabled-runtime\n",
+                "x"
+            )
+            .unwrap(),
+            (
+                CapturedActiveState::Failed,
+                CapturedUnitFileState::EnabledRuntime
+            )
+        );
+        assert_eq!(
+            parse_captured_systemd_state("ActiveState=active\n", "x")
+                .unwrap_err()
+                .kind(),
+            "host_service_state_capture_failed"
+        );
+    }
+
+    #[test]
+    fn retained_host_release_manifest_preserves_exact_systemd_states() {
+        for (active, enabled) in [
+            (CapturedActiveState::Active, CapturedUnitFileState::Enabled),
+            (
+                CapturedActiveState::Inactive,
+                CapturedUnitFileState::EnabledRuntime,
+            ),
+            (CapturedActiveState::Failed, CapturedUnitFileState::Disabled),
+        ] {
+            let text = format!("active={}\nenabled={}\n", active.as_str(), enabled.as_str());
+            assert_eq!(
+                parse_previous_host_manifest(&text).unwrap(),
+                (active, enabled)
+            );
+        }
+    }
+
+    #[test]
+    fn executable_restore_reinstates_prior_bytes_or_absence() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("labby");
+        restore_executable(&destination, Some(b"previous")).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous");
+        restore_executable(&destination, None).unwrap();
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn rollback_aggregates_every_independent_failure() {
+        let error = rollback_result(vec![
+            "main unit: denied".into(),
+            "daemon reload: timeout".into(),
+            "watchdog activity: exhausted".into(),
+        ])
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("main unit: denied"));
+        assert!(message.contains("daemon reload: timeout"));
+        assert!(message.contains("watchdog activity: exhausted"));
+    }
+
+    #[test]
     fn unit_uses_hardened_system_binary_and_lab_env() {
         let unit = unit_text();
 
@@ -923,6 +1984,31 @@ mod tests {
 
         assert!(!unit.contains("--host 0.0.0.0"));
         assert!(!unit.contains("--port 8765"));
+    }
+
+    #[test]
+    fn authoritative_service_dotenv_uses_dotenv_parser_and_reports_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "LABBY_MCP_HTTP_PORT='9123'\n").unwrap();
+        assert_eq!(
+            env_file_value_at(&path, "LABBY_MCP_HTTP_PORT")
+                .unwrap()
+                .as_deref(),
+            Some("9123")
+        );
+        std::fs::write(&path, "MALFORMED LINE\n").unwrap();
+        assert!(env_file_value_at(&path, "LABBY_MCP_HTTP_PORT").is_err());
+    }
+
+    #[test]
+    fn daemon_port_uses_one_fixed_service_root_for_dotenv_and_toml() {
+        let service = tempfile::tempdir().unwrap();
+        std::fs::write(service.path().join("config.toml"), "[mcp]\nport = 9001\n").unwrap();
+        assert_eq!(configured_local_port_at(service.path()).unwrap(), 9001);
+
+        std::fs::write(service.path().join(".env"), "LABBY_MCP_HTTP_PORT=9002\n").unwrap();
+        assert_eq!(configured_local_port_at(service.path()).unwrap(), 9002);
     }
 
     #[test]
@@ -961,6 +2047,26 @@ mod tests {
     }
 
     #[test]
+    fn unit_denies_agent_credential_stores_and_limits_writable_state() {
+        let unit = unit_text();
+        let writable = unit
+            .lines()
+            .find(|line| line.starts_with("ReadWritePaths="))
+            .expect("writable-path policy");
+        for forbidden in [".codex", ".claude", ".gemini", ".config", ".npm"] {
+            assert!(
+                !writable.contains(forbidden),
+                "agent or broad config path remained writable: {forbidden}"
+            );
+        }
+        assert_eq!(writable, "ReadWritePaths=/home/labby/.labby");
+        assert!(unit.contains(
+            "InaccessiblePaths=-/home/labby/.codex -/home/labby/.claude -/home/labby/.gemini"
+        ));
+        assert!(unit.contains("Environment=LABBY_STDIO_SANDBOX_REQUIRED=1"));
+    }
+
+    #[test]
     fn unit_path_lives_under_systemd_system_dir() {
         assert_eq!(
             unit_path(),
@@ -983,27 +2089,55 @@ mod tests {
     }
 
     #[test]
-    fn service_env_port_wins_over_process_env_port() {
+    fn lifecycle_port_uses_only_persisted_daemon_sources() {
         assert_eq!(
-            configured_local_port_from(Some("9876"), Some(7777), Some("1234")),
-            9876
+            configured_local_port_from(Some("9876"), Some(7777)),
+            Ok(9876)
+        );
+        assert_eq!(configured_local_port_from(None, Some(7777)), Ok(7777));
+        assert_eq!(configured_local_port_from(None, None), Ok(8765));
+    }
+
+    #[test]
+    fn conflicting_invoking_process_port_cannot_change_daemon_default() {
+        const CHILD: &str = "LABBY_TEST_HOST_PORT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(std::env::var("LABBY_MCP_HTTP_PORT").unwrap(), "65534");
+            assert_eq!(configured_local_port_from(None, None), Ok(8765));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "dispatch::setup::host_service::tests::conflicting_invoking_process_port_cannot_change_daemon_default",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("LABBY_MCP_HTTP_PORT", "65534")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn invalid_higher_precedence_ports_fail_closed() {
+        assert_eq!(
+            configured_local_port_from(Some("bad"), Some(7777)),
+            Err(
+                "service environment LABBY_MCP_HTTP_PORT must be an integer from 1 through 65535"
+                    .to_string()
+            )
         );
         assert_eq!(
-            configured_local_port_from(None, Some(7777), Some("1234")),
-            7777
-        );
-        assert_eq!(configured_local_port_from(None, None, Some("1234")), 1234);
-        assert_eq!(
-            configured_local_port_from(Some("bad"), Some(7777), Some("1234")),
-            7777
-        );
-        assert_eq!(
-            configured_local_port_from(Some("bad"), None, Some("1234")),
-            1234
-        );
-        assert_eq!(
-            configured_local_port_from(Some("bad"), None, Some("also-bad")),
-            8765
+            configured_local_port_from(Some("0"), None),
+            Err(
+                "service environment LABBY_MCP_HTTP_PORT must be an integer from 1 through 65535"
+                    .to_string()
+            )
         );
     }
 

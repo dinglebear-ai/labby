@@ -63,6 +63,8 @@ HTTP route, not a registered multi-surface service.
 - [Unraid plugin](./runtime/UNRAID.md)
 - [GitHub Actions runner](./runtime/ACTIONS_RUNNER.md)
 - [CI/CD](./runtime/CICD.md)
+- [Container runtime](./runtime/CONTAINERS.md)
+- [Durable-state disaster recovery](./runtime/DISASTER_RECOVERY.md)
 - [Operations](./OPERATIONS.md)
 - [Technology and Rust build](./TECH.md)
 

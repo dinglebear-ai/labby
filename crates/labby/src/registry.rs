@@ -543,7 +543,8 @@ fn lab_admin_enabled() -> bool {
     }
     // Fall back to config.toml — load is cheap (cached by the OS) and this
     // runs once at startup.
-    crate::config::load_toml(&crate::config::toml_candidates())
+    crate::config::toml_candidates()
+        .and_then(|paths| crate::config::load_toml(&paths))
         .map(|cfg| cfg.admin.enabled)
         .unwrap_or(false)
 }

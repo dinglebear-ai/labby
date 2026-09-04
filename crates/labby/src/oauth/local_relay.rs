@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 use url::form_urlencoded;
 
 const MAX_CALLBACK_QUERY_BYTES: usize = 8 * 1024;
+const MAX_CALLBACK_RESPONSE_BYTES: usize = 1024 * 1024;
 
 use crate::oauth::error::OauthRelayError;
 use crate::oauth::target::{
@@ -200,9 +201,22 @@ async fn relay_callback(
 
     let status = response.status();
     let response_headers = filter_hop_by_hop_response_headers(response.headers());
-    let response_body = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(error) if error.is_timeout() => {
+    let response_body = match labby_runtime::response_body::read_response_body_capped(
+        response,
+        MAX_CALLBACK_RESPONSE_BYTES,
+    )
+    .await
+    {
+        Ok(bytes) => Bytes::from(bytes),
+        Err(labby_runtime::response_body::CappedResponseBodyError::TooLarge { .. }) => {
+            return json_error(
+                StatusCode::BAD_GATEWAY,
+                "oauth relay target response_too_large",
+            );
+        }
+        Err(labby_runtime::response_body::CappedResponseBodyError::Transport(error))
+            if error.is_timeout() =>
+        {
             return json_error(
                 StatusCode::GATEWAY_TIMEOUT,
                 OauthRelayError::UpstreamTimeout {
@@ -215,7 +229,10 @@ async fn relay_callback(
         Err(error) => {
             return json_error(
                 StatusCode::BAD_GATEWAY,
-                format_upstream_error(&forward_url, &redact_forward_target(&forward_url), &error),
+                format!(
+                    "oauth relay target {} response read failed: {error}",
+                    redact_forward_target(&forward_url)
+                ),
             );
         }
     };

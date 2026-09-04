@@ -11,6 +11,14 @@ mod health;
 mod integrity;
 mod loadout;
 mod migrations;
+#[cfg(test)]
+pub(crate) mod migration_fixture {
+    pub(crate) const APPLICATION_ID: i64 = super::migrations::APPLICATION_ID;
+    pub(crate) const DOMAIN_SCHEMA: &str = super::migrations::DOMAIN_SCHEMA;
+    pub(crate) const V1_METADATA_SCHEMA: &str = super::migrations::V1_METADATA_SCHEMA;
+    pub(crate) const V1_SCHEMA_FINGERPRINT: &str = super::migrations::V1_SCHEMA_FINGERPRINT;
+    pub(crate) const V1_SCHEMA_VERSION: i64 = super::migrations::V1_SCHEMA_VERSION;
+}
 mod read;
 mod resolver;
 mod runtime;

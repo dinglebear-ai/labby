@@ -179,6 +179,12 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         ));
     }
     vars.extend([
+        core_env("LABBY_MCP_HTTP_HOST", false, false, "127.0.0.1", "HTTP MCP bind host"),
+        core_env("LABBY_MCP_HTTP_PORT", false, false, "8765", "HTTP MCP bind port"),
+        core_env("LABBY_LOG", false, false, "labby=info,labby_apis=warn", "Tracing filter directive"),
+        core_env("LABBY_LOG_FORMAT", false, false, "json", "Tracing output format"),
+        core_env("LABBY_RECOVERY_KEY_PATH", true, true, "/secure/labby-recovery.key", "External HMAC key for durable-state export, verification, and restore"),
+        core_env("LABBY_MCP_GATEWAY_URL", false, false, "https://mcp.example.com", "Canonical public MCP gateway URL"),
         auth_env("LABBY_AUTH_MODE", false, false, "bearer", "Inbound authentication mode: bearer or oauth"),
         auth_env("LABBY_PUBLIC_URL", true, false, "https://lab.example.com", "Canonical public application URL and OAuth issuer"),
         auth_env("LABBY_GOOGLE_CLIENT_ID", true, false, "google-client-id", "Google OAuth client identifier used in oauth mode"),
@@ -254,6 +260,18 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
 fn auth_env(name: &str, required: bool, secret: bool, example: &str, description: &str) -> EnvDoc {
     EnvDoc {
         service: "auth".to_string(),
+        env_var: name.to_string(),
+        required,
+        secret,
+        description: description.to_string(),
+        example: example.to_string(),
+        default_port: None,
+    }
+}
+
+fn core_env(name: &str, required: bool, secret: bool, example: &str, description: &str) -> EnvDoc {
+    EnvDoc {
+        service: "lab".to_string(),
         env_var: name.to_string(),
         required,
         secret,

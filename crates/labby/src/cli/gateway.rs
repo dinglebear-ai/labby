@@ -47,7 +47,7 @@ async fn build_manager_with_upstream_oauth_runtime(
 ) -> Result<Arc<GatewayManager>> {
     let runtime = GatewayRuntimeHandle::default();
     let usage_store = if crate::config::usage_telemetry_enabled() {
-        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()).await {
+        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()?).await {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
                 tracing::warn!(
@@ -78,7 +78,7 @@ async fn build_manager_with_upstream_oauth_runtime(
         runtime.swap(Some(pool)).await;
     }
 
-    let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
+    let config_path = config_toml_path()?;
     let live_config = Arc::new(std::sync::RwLock::new(config.clone()));
     let store: Arc<dyn labby_gateway::gateway::config_store::GatewayConfigStore> = Arc::new(
         LabConfigStore::new(Arc::clone(&live_config), config_path.clone())

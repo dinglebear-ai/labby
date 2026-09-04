@@ -1,16 +1,16 @@
 name: Release publish reminder
 
 # Release Please deliberately creates GitHub releases as drafts
-# (`release-please-config.json` sets `"draft": true`) so that a human approves
-# before the heavy release workflows run. Those workflows publish to npm, the
-# MCP Registry, and GHCR, and sign artifacts — npm and the MCP Registry cannot
-# delete an already-published version, so the approval gate is intentional.
+# (`release-please-config.json` sets `"draft": true`). The immutable tag starts
+# candidate qualification, and only release.yml promotes a fully qualified
+# draft. npm and the MCP Registry cannot delete a published version, so manual
+# draft publication is forbidden.
 #
 # The failure mode is silence: v1.5.0 through v1.8.2 sat as unpublished drafts
 # and never produced a single artifact, because nothing surfaced that a release
 # was waiting. This workflow keeps exactly one open issue describing every
 # pending draft release, and closes it once none remain. It never publishes a
-# release itself — approval stays manual by design.
+# release itself; promotion belongs exclusively to the qualification workflow.
 #
 # `contents: write` is REQUIRED and must not be tightened to `read`. GitHub's
 # REST API returns draft releases only to callers with push access, so a
@@ -23,7 +23,7 @@ on:
   schedule:
     - cron: "23 */6 * * *"
   workflow_run:
-    workflows: ["release-please"]
+    workflows: ["Release", "release-please"]
     types: [completed]
   workflow_dispatch:
 
@@ -102,17 +102,17 @@ jobs:
             const body = [
               `${drafts.length} release${drafts.length === 1 ? ' is' : 's are'} sitting unpublished.`,
               '',
-              'Publishing a release is what triggers `release.yml`, `mcp-registry.yml`,',
-              'and `build-incus-image.yml`. Until then the version ships **no artifacts**.',
+              '`release.yml` must complete every candidate publisher and',
+              'qualification gate before it promotes this draft.',
               '',
               '| Tag | Waiting | Assets |',
               '| --- | --- | --- |',
               ...rows,
               '',
-              'Publish from the release page linked above to ship a version.',
+              'Do not publish manually. Inspect the tag-triggered release workflow.',
               '',
-              'Publish only what you actually intend to ship — npm and the MCP Registry',
-              'cannot un-publish a version. Delete any draft that should never ship.',
+              'npm and the MCP Registry cannot un-publish a version. Delete any',
+              'draft that should never ship, or repair the failed qualification.',
               '',
               `<sub>Updated by ${context.workflow} · run ${context.runId}</sub>`,
             ].join('\n');
@@ -134,3 +134,67 @@ jobs:
               });
               core.notice(`Opened issue #${created.data.number}: ${drafts.length} draft release(s) pending.`);
             }
+
+  reconcile:
+    name: Reconcile complete release publication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Observe every manifest-bearing published release
+        id: observe
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-observations
+          observed_count=0
+          while IFS=$'\t' read -r tag is_draft; do
+            directory="release-observations/$tag"
+            mkdir -p "$directory/assets"
+            # Published releases predating the versioned manifest contract are
+            # outside this reconciler. Draft/redrafted versions are retained
+            # even before their manifest upload so irreversible npm/MCP
+            # publication can never disappear from incident visibility.
+            if ! gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fxq release-manifest.json; then
+              if [[ "$is_draft" == true ]]; then
+                printf '{"tag":"%s","complete":false,"error":"draft release is missing release-manifest.json"}\n' "$tag" \
+                  >"$directory/reconciliation.json"
+                observed_count=$((observed_count + 1))
+              else
+                rmdir "$directory/assets" "$directory"
+              fi
+              continue
+            fi
+            gh release download "$tag" --dir "$directory/assets"
+            python3 scripts/ci/observe-release.py \
+              --manifest "$directory/assets/release-manifest.json" \
+              --assets "$directory/assets" --output "$directory/observed.json"
+            if ! scripts/ci/reconcile-release.py \
+              --manifest "$directory/assets/release-manifest.json" \
+              --observed "$directory/observed.json" >"$directory/reconciliation.json"; then
+              : # Preserve the per-version failure for aggregate incident management.
+            fi
+            observed_count=$((observed_count + 1))
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | [.tag_name, .draft] | @tsv')
+          ((observed_count > 0))
+      - name: Reconcile machine-readable release manifest
+        id: reconcile
+        if: steps.observe.outcome == 'success'
+        continue-on-error: true
+        run: scripts/ci/reconcile-release-set.py --reports release-observations --output reconciliation.json
+      - name: Record observation failure
+        if: steps.observe.outcome != 'success'
+        run: |
+          printf '%s\n' '{"complete":false,"error":"observation failed before reconciliation"}' > reconciliation.json
+      - name: Idempotently open, update, or close the release incident
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ci/manage-release-incident.sh "${{ steps.observe.outcome == 'success' && steps.reconcile.outcome == 'success' }}"
+          [[ "${{ steps.observe.outcome }}" == success && "${{ steps.reconcile.outcome }}" == success ]]

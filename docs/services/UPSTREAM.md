@@ -26,7 +26,12 @@ The reusable upstream pool lives in `crates/labby-gateway/src/upstream/`; `crate
 
 ## What Operators Configure
 
-To proxy an upstream server through `lab`, you configure one or more `[[upstream]]` entries in `~/.config/labby/config.toml`, optionally provide bearer-token env vars in `~/.labby/.env`, then start `labby serve` normally.
+To proxy an upstream server through `lab`, prefer `labby gateway add` and
+`labby gateway update`. For offline editing, first identify the selected
+installation root: `LABBY_HOME` when set, otherwise `~/.labby`. Edit only its
+`config.toml`, optionally provide bearer-token env vars in its `.env`, then
+start `labby serve` normally. Labby does not merge a second XDG or
+current-directory configuration authority.
 
 `lab` will:
 
@@ -92,12 +97,46 @@ args = ["--port", "5000"]
 proxy_resources = false
 ```
 
-Stdio upstreams execute a local child process on the host running `lab`.
-Gateway admin actions that test or reconcile stdio definitions are marked
-destructive — including `gateway.test`, because probing a stdio gateway spawns
-its local command. MCP clients confirm through elicitation when available;
-clients without elicitation run without a parameter gate. See
+Stdio upstreams execute a local child process on the host running `labby`.
+Testing or reconciling a stdio definition requires admin authority and passes
+the spawn guard. Those actions are not destructive solely because they mutate
+restartable configuration or spawn a restartable child; permanent or
+hard-to-recover loss is the separate destructive criterion. Clients must use
+the flags in the generated action catalog as the policy authority. See
 [GATEWAY.md](./GATEWAY.md#stdio-gateways).
+
+The Linux host service requires filesystem isolation for every stdio child.
+Each child receives a private temporary directory and read-only access to the
+system runtime plus its resolved executable and safe absolute arguments. It
+cannot read Labby's home, user credential/configuration trees, `/proc`, or
+another upstream's temporary directory; only `/dev/null` is exposed from
+`/dev`. Other platforms fail closed when this required host-service sandbox is
+requested.
+
+Persistent or additional input paths are explicit, audited opt-ins in the
+upstream's `env` table:
+
+```toml
+[[upstream]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+
+[upstream.env]
+UPSTREAM_STATE_DIR = "/var/lib/labby-upstreams/filesystem"
+UPSTREAM_READ_ONLY_PATHS = "/srv/data"
+```
+
+`UPSTREAM_STATE_DIR` grants that one existing absolute directory read/write
+access; it must not be inside `LABBY_HOME` or the service user's home. Point a
+package runner's cache variable (for example `npm_config_cache`) at the same
+directory when it needs a writable cache. `UPSTREAM_READ_ONLY_PATHS` is a
+platform path-list of existing absolute inputs. It rejects the user/Labby home
+and overlapping credential trees such as `.ssh`, `.aws`, `.gnupg`, `.config`,
+and `.labby`. Absolute command arguments are subject to the same rejection.
+Grant only the narrow directory needed by that upstream; these values expand
+the child filesystem trust boundary and should be reviewed like executable or
+command changes.
 
 ### Config Fields
 
@@ -124,15 +163,13 @@ When `transport` is omitted, an HTTP/WebSocket `url` or stdio `command` preserve
 
 ### Config File Locations
 
-`lab` loads configuration from:
-
-1. process environment
-2. `~/.labby/.env`
-3. `~/.config/labby/config.toml`
+`lab` loads process environment over the selected installation root's `.env`,
+then its `config.toml`, then built-in defaults. `LABBY_HOME` selects that root;
+otherwise it is `~/.labby`.
 
 So a typical gateway setup looks like:
 
-`~/.config/labby/config.toml`
+`$LABBY_HOME/config.toml` (normally `~/.labby/config.toml`)
 
 ```toml
 [mcp]
@@ -154,7 +191,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
 proxy_resources = false
 ```
 
-`~/.labby/.env`
+`$LABBY_HOME/.env` (normally `~/.labby/.env`)
 
 ```bash
 LABBY_UPSTREAM_TOKEN=replace-me
@@ -488,9 +525,17 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 |---------|---------|
 | `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MB (10,485,760 bytes) |
 
-The check is **post-hoc** — rmcp materializes the full response in memory before lab can inspect it. The cap prevents forwarding oversized payloads to callers but cannot prevent the memory allocation itself. A streaming limit would require rmcp transport-level support.
+HTTP response bodies are rejected while streaming, before JSON/resource
+materialization. Labby also applies one process-wide 80 MiB weighted admission
+budget: a response reserves its configured maximum while a JSON/error body is
+read or for the lifetime of an SSE stream. With the default 10 MiB per-response
+limit, at most eight near-limit bodies can be materializing concurrently;
+additional reads wait without allocating their bodies. Stdio JSON lines use the
+same per-response cap and bounded line reader.
 
-The cap applies to both `call_tool` and `read_resource` responses.
+The transport cap applies before rmcp materializes `call_tool`,
+`read_resource`, discovery, OAuth-authenticated, and error responses. A second
+post-decode size check remains defense in depth for structured values.
 
 ## Resource Proxying
 
@@ -630,11 +675,14 @@ Keep this distinction explicit in operator docs:
 
 ### 1. Configure upstreams
 
-Add one or more `[[upstream]]` entries to `~/.config/labby/config.toml`.
+Prefer `labby gateway add`/`update`. For offline editing, add `[[upstream]]`
+entries to the selected `$LABBY_HOME/config.toml` (normally
+`~/.labby/config.toml`).
 
 ### 2. Provide any required secrets
 
-Set bearer-token env vars named by `bearer_token_env` in `~/.labby/.env` or the process environment.
+Set bearer-token env vars named by `bearer_token_env` in the selected
+`$LABBY_HOME/.env` or the process environment.
 
 ### 3. Start `labby`
 

@@ -8,13 +8,16 @@ details there and keep this file focused on rules for editing `.github/`.
 
 - All repository-defined CI jobs run on GitHub-hosted runners. Linux jobs use
   the pinned `ubuntu-24.04` image, and Windows jobs use `windows-latest`.
-- Rust compilation uses `.github/actions/setup-rust-kache`, which connects
-  trusted jobs to the shared MinIO cache identified by the org variable
-  `KACHE_S3_ENDPOINT`. Jobs without cache
-  credentials fail open to bare Cargo.
-- Release builds, container images, Incus images, publishing, signing, and
-  attestations run only from `release.published` events on GitHub-hosted
-  runners.
+- Rust compilation uses `.github/actions/setup-rust-kache` in credentialless
+  GitHub-cache mode. Repository-level shared MinIO credentials are forbidden:
+  same-repository pull requests can edit workflow content and must never be
+  able to name a repository secret that grants shared-cache access.
+- Binary/container candidate builds, stateful upgrade qualification, signing,
+  and attestations start from immutable stable-version tag pushes on
+  GitHub-hosted runners. The GitHub release remains draft until the final
+  qualification job promotes it. Incus and registry publishers are callable
+  gates that complete before promotion and are covered by aggregate
+  reconciliation.
 - Native Windows CI is GitHub-hosted and advisory to the stable `ci-gate`.
 - External actions and reusable workflows are pinned to full commit SHAs.
 - Fleet contract callers must pass the same exact workflows commit as
@@ -67,19 +70,23 @@ repository.
 
 ## Release flow
 
-Release Please maintains the version and changelog PR. Publishing the resulting
-stable GitHub release triggers the heavy release workflows:
+Release Please maintains the version and changelog PR, creates the immutable
+stable tag, and leaves the GitHub release as a draft. The tag triggers the
+heavy candidate workflow:
 
 - `release.yml` builds and smokes Linux, macOS, and Windows archives, builds and
-  scans the container, verifies and attaches artifacts, publishes npm and MCP
-  Registry metadata, and signs/attests release outputs.
-- `build-incus-image.yml` uses the central hosted Incus image workflow and
-  publishes checksum-verified image assets plus the rolling Incus alias.
+  scans the container, runs N-1 stateful upgrade/rollback adapters, emits an
+  SBOM per subject and a digest manifest, verifies provenance as a consumer,
+  publishes npm/GHCR, and only then promotes the draft GitHub release.
+- `build-incus-image.yml` exposes a callable, checksum-verified immutable image
+  candidate. Only the parent release transaction may advance the public Incus
+  rolling release/tag, and it must retain a rollback receipt.
 
-Releases are created as drafts (`"draft": true` in `release-please-config.json`)
-so publication stays a human decision. Do not make any workflow publish a draft
-release; `release.yml` asserts it was invoked from an already-published release.
-`release-publish-reminder.yml` only surfaces pending drafts as an issue.
+Releases are created as drafts (`"draft": true` in `release-please-config.json`).
+Do not publish one manually: `release.yml` is the sole promotion owner and may
+promote only after every declared candidate qualification succeeds.
+`release-publish-reminder.yml` surfaces stuck drafts and reconciles published
+assets against `release-manifest.json`; it never performs promotion.
 
 ARM64 workflow, installer, and package contracts are explicitly enabled for
 Labby through the pinned fleet policy and repository contract. Keep that opt-in

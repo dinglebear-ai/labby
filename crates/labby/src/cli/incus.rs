@@ -128,6 +128,9 @@ pub struct IncusSyncArgs {
     /// Print the resolved operation without mutating the container.
     #[arg(long)]
     pub dry_run: bool,
+    /// Restore the retained release that preceded the last successful sync.
+    #[arg(long, conflicts_with_all = ["binary", "web_assets_dir", "no_web_assets"])]
+    pub rollback: bool,
 }
 
 pub async fn run(args: IncusArgs, format: OutputFormat) -> Result<ExitCode> {
@@ -176,6 +179,7 @@ pub(crate) async fn run_sync(args: IncusSyncArgs, format: OutputFormat) -> Resul
             check_url: args.check_url,
             force_fallback: args.force_fallback || !args.no_force_fallback,
             dry_run: args.dry_run,
+            rollback: args.rollback,
         },
     )?;
     if format.is_json() {

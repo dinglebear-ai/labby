@@ -1,9 +1,14 @@
 # Configuration Reference
 
-Config lives in `~/.labby/.env`. Loaded at startup by `crates/labby/src/config.rs`.
+`LABBY_HOME` selects Labby's durable state root and must be absolute. It defaults
+to `~/.labby`. Labby reads `.env` and `config.toml` only from that selected root;
+it does not consult current-directory or conflicting home fallbacks.
 
-Runtime gateway settings live in `config.toml`; verify exact fields against
-`crates/labby/src/config.rs` before editing.
+Runtime precedence is CLI flags, process environment (including the selected
+`.env`), `config.toml`, then built-in defaults. Existing process values win over
+dotenv. Keep secrets in `$LABBY_HOME/.env` and non-secret product preferences in
+`$LABBY_HOME/config.toml`. Read `docs/runtime/CONFIG.md` for the complete contract
+and use generated environment docs for current keys.
 
 ## Env Var Naming Convention
 
@@ -48,13 +53,7 @@ does not retain raw results, and is not redaction.
 
 ## Config Mutation
 
-Use setup and gateway actions instead of direct `.env` edits when possible:
-
-```json
-{ "action": "gateway.service_config.get", "params": { "service": "deploy" } }
-{ "action": "gateway.service_config.set", "params": { "service": "deploy", "values": {} } }
-```
-
-For upstream MCP servers, use `labby gateway add`, `labby gateway update`,
+Use setup actions and the typed gateway commands instead of direct `.env`
+edits when possible. For upstream MCP servers, use `labby gateway add`, `labby gateway update`,
 `labby gateway discover`, `labby gateway import`, and `labby gateway reload`.
 For operational gateway examples, read `gateway-operations.md`.

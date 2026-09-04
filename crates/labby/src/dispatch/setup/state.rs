@@ -1,5 +1,6 @@
 //! First-run detection + state-machine evaluator for `setup.state`.
 
+use crate::dispatch::error::ToolError;
 use crate::dispatch::setup::{SetupSnapshot, SetupState};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,19 +26,18 @@ fn registry_required_keys(registry: &ToolRegistry) -> Vec<String> {
 }
 
 /// Build a `SetupSnapshot` describing the current state of `~/.labby/.env`.
-#[must_use]
-pub fn snapshot(registry: &ToolRegistry) -> SetupSnapshot {
+pub fn snapshot(registry: &ToolRegistry) -> Result<SetupSnapshot, ToolError> {
     let env = env_path();
     let draft = draft_path();
     let env_exists = env.exists();
     let has_draft = draft.exists();
     let draft_stale = draft_is_stale(&env, &draft);
-    let draft_metadata = draft_metadata(&env, &draft);
+    let draft_metadata = draft_metadata(&env, &draft)?;
 
     let state = if !env_exists {
         SetupState::Uninitialized
     } else {
-        let entries = draft::read_entries(&env);
+        let entries = draft::read_entries(&env)?;
         let registered: Vec<String> = registry_required_keys(registry);
         let missing: Vec<String> = registered
             .into_iter()
@@ -52,7 +52,7 @@ pub fn snapshot(registry: &ToolRegistry) -> SetupSnapshot {
         }
     };
 
-    SetupSnapshot {
+    Ok(SetupSnapshot {
         first_run: matches!(
             state,
             SetupState::Uninitialized | SetupState::ConfigMissing { .. }
@@ -66,7 +66,7 @@ pub fn snapshot(registry: &ToolRegistry) -> SetupSnapshot {
         env_mtime_unix_seconds: draft_metadata.env_mtime_unix_seconds,
         draft_mtime_unix_seconds: draft_metadata.draft_mtime_unix_seconds,
         state,
-    }
+    })
 }
 
 struct DraftMetadata {
@@ -75,12 +75,17 @@ struct DraftMetadata {
     draft_mtime_unix_seconds: Option<u64>,
 }
 
-fn draft_metadata(env: &Path, draft: &Path) -> DraftMetadata {
-    DraftMetadata {
-        draft_entry_count: draft::read_entries(draft).len(),
+fn draft_metadata(env: &Path, draft: &Path) -> Result<DraftMetadata, ToolError> {
+    let draft_entry_count = if draft.exists() {
+        draft::read_entries(draft)?.len()
+    } else {
+        0
+    };
+    Ok(DraftMetadata {
+        draft_entry_count,
         env_mtime_unix_seconds: unix_seconds(snapshot_mtime(env)),
         draft_mtime_unix_seconds: unix_seconds(snapshot_mtime(draft)),
-    }
+    })
 }
 
 fn unix_seconds(mtime: Option<SystemTime>) -> Option<u64> {
@@ -119,7 +124,7 @@ mod tests {
         std::fs::write(&env, "LABBY_MCP_HTTP_TOKEN=abc\n").unwrap();
         std::fs::write(&draft, "LABBY_TEST=1\n# comment\nOTHER=2\n").unwrap();
 
-        let metadata = draft_metadata(&env, &draft);
+        let metadata = draft_metadata(&env, &draft).unwrap();
 
         assert_eq!(metadata.draft_entry_count, 2);
         assert!(metadata.env_mtime_unix_seconds.is_some());

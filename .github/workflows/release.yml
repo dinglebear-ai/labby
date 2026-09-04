@@ -1,8 +1,10 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  # Release Please creates the immutable tag and a draft release. Qualification
+  # starts from the tag; the draft becomes public only in the final promotion.
+  push:
+    tags: ['v*']
 
 concurrency:
   group: release-${{ github.ref }}
@@ -15,8 +17,8 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
-  KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
+  KACHE_S3_ACCESS_KEY: ""
+  KACHE_S3_SECRET_KEY: ""
   KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
   KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
   KACHE_S3_PREFIX: ${{ vars.KACHE_S3_PREFIX }}
@@ -88,6 +90,10 @@ jobs:
     runs-on: ${{ fromJSON(matrix.runner) }}
     timeout-minutes: 90
     needs: frontend-assets
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -185,6 +191,11 @@ jobs:
             throw "Code Mode packaged smoke did not return expected result: $output"
           }
 
+      - name: Attest exact platform candidate archive
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: ${{ matrix.archive }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -208,6 +219,28 @@ jobs:
           name: gateway-admin-out
           path: apps/gateway-admin/out
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+      - name: Load immutable container supply inputs
+        id: container_supply
+        run: |
+          set -euo pipefail
+          source config/container-supply.conf
+          scripts/ci/validate-supply-manifest.py
+          {
+            echo "builder=$LABBY_BUILDER_IMAGE"
+            echo "runtime=$LABBY_RUNTIME_IMAGE"
+            echo "debian_snapshot=$LABBY_DEBIAN_SNAPSHOT"
+            echo "node_version=$LABBY_NODE_VERSION"
+            echo "node_sha256=$LABBY_NODE_SHA256"
+            echo "uv_version=$LABBY_UV_VERSION"
+            echo "uv_sha256=$LABBY_UV_SHA256"
+            echo "agent_clis_lock_sha256=$LABBY_AGENT_CLIS_LOCK_SHA256"
+            echo "npm_version=$LABBY_NPM_VERSION"
+            echo "npm_sha512=$LABBY_NPM_SHA512"
+            echo "npm_brace_expansion_version=$LABBY_NPM_BRACE_EXPANSION_VERSION"
+            echo "npm_brace_expansion_sha512=$LABBY_NPM_BRACE_EXPANSION_SHA512"
+            echo "npm_ip_address_version=$LABBY_NPM_IP_ADDRESS_VERSION"
+            echo "npm_ip_address_sha512=$LABBY_NPM_IP_ADDRESS_SHA512"
+          } >> "$GITHUB_OUTPUT"
       - name: Build private container candidate
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
@@ -217,6 +250,21 @@ jobs:
           push: false
           outputs: type=docker,dest=/tmp/lab-container-image.tar
           tags: lab:release-candidate
+          build-args: |
+            LABBY_BUILDER_IMAGE=${{ steps.container_supply.outputs.builder }}
+            LABBY_RUNTIME_IMAGE=${{ steps.container_supply.outputs.runtime }}
+            LABBY_DEBIAN_SNAPSHOT=${{ steps.container_supply.outputs.debian_snapshot }}
+            LABBY_NODE_VERSION=${{ steps.container_supply.outputs.node_version }}
+            LABBY_NODE_SHA256=${{ steps.container_supply.outputs.node_sha256 }}
+            LABBY_UV_VERSION=${{ steps.container_supply.outputs.uv_version }}
+            LABBY_UV_SHA256=${{ steps.container_supply.outputs.uv_sha256 }}
+            LABBY_AGENT_CLIS_LOCK_SHA256=${{ steps.container_supply.outputs.agent_clis_lock_sha256 }}
+            LABBY_NPM_VERSION=${{ steps.container_supply.outputs.npm_version }}
+            LABBY_NPM_SHA512=${{ steps.container_supply.outputs.npm_sha512 }}
+            LABBY_NPM_BRACE_EXPANSION_VERSION=${{ steps.container_supply.outputs.npm_brace_expansion_version }}
+            LABBY_NPM_BRACE_EXPANSION_SHA512=${{ steps.container_supply.outputs.npm_brace_expansion_sha512 }}
+            LABBY_NPM_IP_ADDRESS_VERSION=${{ steps.container_supply.outputs.npm_ip_address_version }}
+            LABBY_NPM_IP_ADDRESS_SHA512=${{ steps.container_supply.outputs.npm_ip_address_sha512 }}
           cache-from: type=gha,scope=labby-release-container
           cache-to: type=gha,mode=min,scope=labby-release-container
       - name: Load private container candidate
@@ -243,9 +291,174 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  upgrade-qualification:
+    name: N-1 stateful upgrade and rollback qualification (${{ matrix.deployment }})
+    needs: [build, container]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deployment: unix
+            runner: ubuntu-24.04
+            artifact: lab-x86_64-unknown-linux-gnu
+            archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+          - deployment: windows
+            runner: windows-latest
+            artifact: lab-x86_64-pc-windows-msvc
+            archive: lab-x86_64-pc-windows-msvc.zip
+            binary: labby.exe
+          - deployment: macos
+            runner: macos-15
+            artifact: lab-aarch64-apple-darwin
+            archive: lab-aarch64-apple-darwin.tar.gz
+            binary: labby
+          - deployment: compose
+            runner: ubuntu-24.04
+            artifact: lab-x86_64-unknown-linux-gnu
+            archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+          - deployment: incus
+            runner: ubuntu-24.04
+            artifact: lab-x86_64-unknown-linux-gnu
+            archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+          - deployment: host-service
+            runner: ubuntu-24.04
+            artifact: lab-x86_64-unknown-linux-gnu
+            archive: lab-x86_64-unknown-linux-gnu.tar.gz
+            binary: labby
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download exact tested candidate
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ${{ matrix.artifact }}
+          path: candidate-archive
+      - name: Verify exact archive provenance before extraction
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="$GITHUB_WORKSPACE/candidate-archive/${{ matrix.archive }}"
+          sidecar="$archive.sha256"
+          scripts/ci/verify-release-provenance.sh \
+            --repo "$GITHUB_REPOSITORY" --workflow release.yml \
+            --ref "$GITHUB_REF" --artifact "$archive"
+          expected=$(awk '{print $1}' "$sidecar")
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "$archive" | awk '{print $1}')
+          else
+            actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+          fi
+          [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" == "$expected" ]]
+          {
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE=$archive"
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256=$actual"
+          } >> "$GITHUB_ENV"
+      - name: Bind qualification to candidate binary and digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir candidate
+          case "${{ matrix.archive }}" in
+            *.zip) unzip -q "candidate-archive/${{ matrix.archive }}" -d candidate ;;
+            *.tar.gz) tar -C candidate -xzf "candidate-archive/${{ matrix.archive }}" ;;
+            *) echo "::error::unsupported candidate archive"; exit 1 ;;
+          esac
+          candidate="$GITHUB_WORKSPACE/candidate/${{ matrix.binary }}"
+          test -f "$candidate"
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest=$(sha256sum "$candidate" | awk '{print $1}')
+          else
+            digest=$(shasum -a 256 "$candidate" | awk '{print $1}')
+          fi
+          binding="$RUNNER_TEMP/labby-candidate-binding.json"
+          python3 - "$LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE" \
+            "$LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256" "$candidate" "$digest" "$binding" <<'PY'
+          import json, pathlib, sys
+          archive, archive_sha256, binary, binary_sha256, output = sys.argv[1:]
+          pathlib.Path(output).write_text(json.dumps({
+              "attested_archive": {"path": archive, "sha256": archive_sha256},
+              "extracted_binary": {"path": binary, "sha256": binary_sha256},
+          }, sort_keys=True) + "\n")
+          PY
+          {
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_BINARY=$candidate"
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_SHA256=$digest"
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_BINDING=$binding"
+          } >> "$GITHUB_ENV"
+      - name: Resolve N-1 release
+        id: previous
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous=$(git tag --sort=-version:refname --merged HEAD 'v*' | grep -Fxv "$GITHUB_REF_NAME" | head -1)
+          test -n "$previous"
+          echo "tag=$previous" >> "$GITHUB_OUTPUT"
+      - name: Download tested container candidate for Compose qualification
+        if: matrix.deployment == 'compose'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: lab-container-image
+          path: candidate-container
+      - name: Bind Compose qualification to immutable images
+        if: matrix.deployment == 'compose'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load --input candidate-container/lab-container-image.tar
+          candidate=$(docker image inspect lab:release-candidate --format '{{.Id}}')
+          previous=$(docker buildx imagetools inspect "ghcr.io/$GITHUB_REPOSITORY:${{ steps.previous.outputs.tag }}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          [[ "$candidate" == sha256:* && "$previous" == sha256:* ]]
+          {
+            echo "LABBY_N_MINUS_ONE_CANDIDATE_IMAGE=$candidate"
+            echo "LABBY_N_MINUS_ONE_PREVIOUS_IMAGE=ghcr.io/$GITHUB_REPOSITORY@$previous"
+          } >> "$GITHUB_ENV"
+      - name: N-1 stateful upgrade and rollback qualification
+        shell: bash
+        env:
+          # Each adapter is an executable deployment-path contract. Until a
+          # platform adapter exists, qualification fails closed rather than
+          # silently substituting a clean-install smoke.
+          LABBY_N_MINUS_ONE_INSTALL_PREVIOUS: scripts/ci/n-minus-one/${{ matrix.deployment }} install-previous
+          LABBY_N_MINUS_ONE_SEED_STATE: scripts/ci/n-minus-one/${{ matrix.deployment }} seed-state
+          LABBY_N_MINUS_ONE_VERIFY_PREVIOUS: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-previous
+          LABBY_N_MINUS_ONE_VERIFY_PROVENANCE: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-provenance
+          LABBY_N_MINUS_ONE_UPGRADE: scripts/ci/n-minus-one/${{ matrix.deployment }} upgrade
+          LABBY_N_MINUS_ONE_VERIFY_CANDIDATE: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-candidate
+          LABBY_N_MINUS_ONE_AUTHENTICATED_ACTION: scripts/ci/n-minus-one/${{ matrix.deployment }} authenticated-action
+          LABBY_N_MINUS_ONE_RESTART: scripts/ci/n-minus-one/${{ matrix.deployment }} restart
+          LABBY_N_MINUS_ONE_VERIFY_RESTART: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-restart
+          LABBY_N_MINUS_ONE_ROLLBACK: scripts/ci/n-minus-one/${{ matrix.deployment }} rollback
+          LABBY_N_MINUS_ONE_VERIFY_ROLLBACK: scripts/ci/n-minus-one/${{ matrix.deployment }} verify-rollback
+        run: scripts/ci/qualify-n-minus-one.sh "${{ matrix.deployment }}" "${{ steps.previous.outputs.tag }}" "$GITHUB_REF_NAME"
+
+  incus-candidate:
+    needs: upgrade-qualification
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-incus-image.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+    secrets: inherit
+
+  mcp-candidate:
+    needs: upgrade-qualification
+    uses: ./.github/workflows/mcp-registry.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+    secrets: inherit
+
   release:
     name: Publish validated release
-    needs: [build, container]
+    needs: [build, container, upgrade-qualification, incus-candidate, mcp-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -273,54 +486,39 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
       - name: Verify artifact checksums
         run: sha256sum --check --ignore-missing ./*.sha256
-      - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
-        with:
-          path: .
-          format: spdx-json
-          output-file: labby.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
-      - name: Upload assets to the published release
+      - name: Prepare immutable installer assets
+        run: |
+          cp scripts/install.sh labby-install.sh
+          cp scripts/install.ps1 labby-install.ps1
+          sha256sum labby-install.sh > labby-install.sh.sha256
+          sha256sum labby-install.ps1 > labby-install.ps1.sha256
+      - name: Install Syft for subject-specific SBOMs
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+      - name: Generate one SPDX SBOM per shipped subject
+        run: scripts/ci/generate-release-sboms.sh
+      - name: Qualify complete release candidate
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          files=(
-            lab-*.tar.gz
-            lab-*.tar.gz.sha256
-            lab-*.zip
-            lab-*.zip.sha256
-            labby.spdx.json
-          )
-          is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
-          if [[ "$is_draft" == "true" ]]; then
-            echo "::error::heavy release work must start from release.published"
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
-      - name: Attest release artifacts
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
-        with:
-          subject-path: |
-            lab-*.tar.gz
-            lab-*.zip
-            labby.spdx.json
+          test -s lab-container-image.spdx.json
+          gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' | grep -Fx true
       - name: Install Cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
       - name: Publish exact tested image
-        id: image
+        id: publication
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          echo "started=true" >> "$GITHUB_OUTPUT"
           echo "$GH_TOKEN" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           previous_latest="$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
           previous_release="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
           printf '%s\n' "${previous_latest:-none}" > /tmp/labby-previous-latest-digest
+          printf '%s\n' "${previous_release:-none}" > /tmp/labby-previous-release-digest
           if [[ "$previous_release" != sha256:* ]]; then
             touch /tmp/labby-new-version-image
           fi
@@ -338,8 +536,60 @@ jobs:
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
           subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.image.outputs.digest }}
+          subject-digest: ${{ steps.publication.outputs.digest }}
           push-to-registry: true
+      - name: Create immutable release manifest
+        env:
+          IMAGE_DIGEST: ${{ steps.publication.outputs.digest }}
+          INCUS_SHA256: ${{ needs.incus-candidate.outputs.asset_sha256 }}
+          MCP_MANIFEST_SHA256: ${{ needs.mcp-candidate.outputs.manifest_sha256 }}
+        run: >-
+          python3 scripts/ci/create-release-manifest.py
+          --tag "$GITHUB_REF_NAME"
+          --repository "$GITHUB_REPOSITORY"
+          --image "ghcr.io/$GITHUB_REPOSITORY"
+          --image-digest "$IMAGE_DIGEST"
+          --image-sbom lab-container-image.spdx.json
+          --incus-sha256 "$INCUS_SHA256"
+          --mcp-manifest-sha256 "$MCP_MANIFEST_SHA256"
+          lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json labby-install.*.spdx.json
+          labby-install.sh labby-install.ps1 labby-install.sh.sha256 labby-install.ps1.sha256
+      - name: Upload qualified assets to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          files=(lab-*.tar.gz lab-*.tar.gz.sha256 lab-*.zip lab-*.zip.sha256 lab-*.spdx.json lab-container-image.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json labby-install.ps1 labby-install.ps1.sha256 labby-install.ps1.spdx.json release-manifest.json)
+          gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true
+          scripts/ci/upload-immutable-release-assets.sh -- "${files[@]}"
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            lab-*.tar.gz
+            lab-*.zip
+            lab-*.spdx.json
+            lab-*.sha256
+            labby-install.*.spdx.json
+            labby-install.sh
+            labby-install.ps1
+            labby-install.sh.sha256
+            labby-install.ps1.sha256
+            lab-container-image.spdx.json
+            release-manifest.json
+      - name: Verify release provenance as a consumer
+        run: |
+          set -euo pipefail
+          for artifact in lab-*.tar.gz lab-*.zip lab-*.sha256 lab-*.spdx.json lab-container-image.spdx.json labby-install.sh labby-install.ps1 labby-install.*.sha256 labby-install.*.spdx.json release-manifest.json; do
+            scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
+          done
+      - name: Transactionally promote Incus rolling pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          INCUS_POINTER_RECEIPT: /tmp/labby-incus-pointer-receipt
+        run: scripts/ci/promote-incus-pointer.sh promote
       - name: Check whether npm version already exists
         id: npm-version
         run: |
@@ -347,6 +597,7 @@ jobs:
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
           if npm view "$package_name@$version" version >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            touch /tmp/labby-npm-candidate-published
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -355,24 +606,76 @@ jobs:
         env:
           LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public ./packages/labby-mcp
-      - name: Roll back partial publication
-        if: failure()
+        run: |
+          version="$(node -p "require('./packages/labby-mcp/package.json').version")"
+          npm publish --access public --tag "candidate-$version" ./packages/labby-mcp
+          touch /tmp/labby-npm-candidate-published
+      - name: Publish qualified draft release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
+        run: scripts/ci/promote-release.sh
+      - name: Advance npm stable pointer after release promotion
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          package_name="$(node -p "require('./packages/labby-mcp/package.json').name")"
+          version="$(node -p "require('./packages/labby-mcp/package.json').version")"
+          npm dist-tag add "$package_name@$version" latest
+          [[ "$(npm view "$package_name@latest" version)" == "$version" ]]
+      - name: Roll back partial publication
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          ROLLBACK_STATUS_FILE: /tmp/labby-release-rollback.json
+          IMAGE_ROLLBACK_STATUS_FILE: /tmp/labby-image-rollback.json
+          IMAGE_PUBLICATION_STARTED: ${{ steps.publication.outputs.started }}
+        run: |
+          set -u
+          package="${GITHUB_REPOSITORY#*/}"
+          version_id=""
           if [[ -f /tmp/labby-new-version-image ]]; then
-            package="${GITHUB_REPOSITORY#*/}"
-            version_id="$(gh api --paginate "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions" \
-              --jq ".[] | select(.metadata.container.tags | index(\"$RELEASE_TAG\")) | .id" | head -1)"
-            if [[ -n "$version_id" ]]; then
-              gh api --method DELETE "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions/${version_id}" || true
-            fi
+            version_id="$(gh api --paginate "/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}/versions" --jq ".[] | select(.metadata.container.tags | index(\"$RELEASE_TAG\")) | .id" | head -1 || true)"
           fi
           previous_latest="$(cat /tmp/labby-previous-latest-digest 2>/dev/null || printf none)"
-          if [[ -f /tmp/labby-image-publish-started && "$previous_latest" == sha256:* ]]; then
-            docker buildx imagetools create \
-              --tag "ghcr.io/${GITHUB_REPOSITORY}:latest" \
-              "ghcr.io/${GITHUB_REPOSITORY}@${previous_latest}" || true
+          previous_release="$(cat /tmp/labby-previous-release-digest 2>/dev/null || printf none)"
+          image_rc=0
+          export ROLLBACK_STATUS_FILE="$IMAGE_ROLLBACK_STATUS_FILE"
+          if [[ "$IMAGE_PUBLICATION_STARTED" == true ]]; then
+            scripts/ci/release-image-rollback.sh \
+              --image "ghcr.io/${GITHUB_REPOSITORY}" \
+              --tag "$RELEASE_TAG" \
+              --previous-latest "$previous_latest" \
+              --previous-release "$previous_release" \
+              --delete-version-id "$version_id" || image_rc=$?
+          else
+            printf '%s\n' '{"status":"ok","steps":{"image_publication":"not_started"}}' \
+              >"$IMAGE_ROLLBACK_STATUS_FILE"
           fi
+          pointer_rc=0
+          if [[ -f /tmp/labby-incus-pointer-receipt/state ]]; then
+            INCUS_POINTER_RECEIPT=/tmp/labby-incus-pointer-receipt \
+              scripts/ci/promote-incus-pointer.sh rollback || pointer_rc=$?
+          fi
+          github_rc=0
+          # Promotion may have succeeded remotely even when its visibility
+          # verification timed out. Restore and verify the safe draft state.
+          if ! gh release edit "$RELEASE_TAG" --draft=true ||
+             ! gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft | grep -Fx true; then
+            github_rc=1
+          fi
+          python3 scripts/ci/compound-release-rollback.py \
+            --image-record "$IMAGE_ROLLBACK_STATUS_FILE" \
+            --image-rc "$image_rc" --pointer-rc "$pointer_rc" --github-rc "$github_rc" \
+            --npm-candidate-published "$([[ -f /tmp/labby-npm-candidate-published ]] && printf true || printf false)" \
+            --mcp-version-published true \
+            --output "$ROLLBACK_STATUS_FILE"
+      - name: Persist compound rollback status
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-rollback-status
+          path: /tmp/labby-release-rollback.json
+          if-no-files-found: warn
+          retention-days: 30

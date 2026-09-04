@@ -42,6 +42,9 @@ pub enum AuthError {
     #[error("{0}")]
     Decode(String),
 
+    #[error("upstream response exceeded the {limit}-byte limit")]
+    ResponseTooLarge { limit: usize },
+
     #[error("{message}")]
     RateLimited {
         message: String,
@@ -69,6 +72,7 @@ impl AuthError {
             Self::Network(_) => "network_error",
             Self::Server(_) => "server_error",
             Self::Decode(_) => "decode_error",
+            Self::ResponseTooLarge { .. } => "response_too_large",
             Self::RateLimited { .. } => "rate_limited",
         }
     }
@@ -81,7 +85,9 @@ impl AuthError {
                 StatusCode::UNAUTHORIZED
             }
             Self::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::Network(_) | Self::Server(_) => StatusCode::BAD_GATEWAY,
+            Self::Network(_) | Self::Server(_) | Self::ResponseTooLarge { .. } => {
+                StatusCode::BAD_GATEWAY
+            }
             Self::Decode(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Config(_) | Self::Storage(_) | Self::InsecurePermissions { .. } => {

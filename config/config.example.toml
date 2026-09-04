@@ -102,7 +102,10 @@
 # If unset, `labby serve` auto-detects the repo-local fallback at apps/gateway-admin/out.
 # assets_dir = "/srv/labby/out"
 
-# Disable /v1/* auth for the hosted web UI. Only for trusted reverse-proxy setups.
+# Local development only: bypass /v1/* browser authentication only while the
+# server is bound directly to a loopback address. This must not be used on a
+# network-reachable deployment or behind a reverse proxy, even if that proxy
+# performs its own authentication.
 # Override with LABBY_WEB_UI_AUTH_DISABLED=true.
 # disable_auth = false                    # default: false
 

@@ -20,11 +20,18 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  KACHE_S3_ACCESS_KEY: ${{ secrets.KACHE_S3_ACCESS_KEY }}
-  KACHE_S3_SECRET_KEY: ${{ secrets.KACHE_S3_SECRET_KEY }}
+  # This pull_request-capable workflow never references shared credentials.
+  # Protected cache writers belong in a main-only environment whose deployment
+  # policy is enforced by GitHub, outside branch-controlled workflow content.
+  KACHE_S3_ACCESS_KEY: ""
+  KACHE_S3_SECRET_KEY: ""
   KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
   KACHE_S3_BUCKET: ${{ vars.KACHE_S3_BUCKET }}
-  KACHE_S3_PREFIX: ${{ vars.KACHE_S3_PREFIX }}
+  KACHE_S3_PREFIX: ""
+  # External prerequisite: the object-store policy must restrict these
+  # credentials to this prefix. Cache stays credentialless until an admin
+  # records that server-enforced capability in the repository variable.
+  KACHE_S3_PREFIX_ENFORCED: ${{ vars.KACHE_S3_PREFIX_ENFORCED }}
 
 jobs:
   fleet-policy:
@@ -44,6 +51,12 @@ jobs:
           python scripts/ci/check_workflow_policy.py
           --release-file-regex '(^|/)(release|build-incus-image)\.ya?ml$'
           --allow-arm64
+      - name: Enforce shared-cache capability boundary
+        run: >-
+          python scripts/ci/check-cache-boundary.py
+          --event '${{ github.event_name }}'
+          --ref '${{ github.ref }}'
+          --run-id '${{ github.run_id }}'
 
   # The repository contract runs once, from repository-contract.yml (the
   # required "Repository Contract" gate). Keep it separate from the policy
@@ -282,7 +295,38 @@ jobs:
           go version
           echo "actionlint=v1.7.7"
       - name: Test CI policy helpers
-        run: python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py
+        run: |
+          python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
+          python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py scripts/ci/test_release_hardening.py
+
+  lifecycle-static-analysis:
+    name: Lifecycle script static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.workflow == 'true' || needs.changes.outputs.release == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Analyze every shipped shell lifecycle script
+        run: scripts/ci/check-lifecycle-scripts.sh
+      - name: Install pinned PowerShell validation modules
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+      - name: Analyze every shipped PowerShell lifecycle script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inventory = Get-Content scripts/ci/lifecycle-scripts.json -Raw | ConvertFrom-Json
+          $results = @($inventory.powershell | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Warning,Error })
+          $results | Format-Table -AutoSize
+          if ($results.Count -ne 0) { throw "PSScriptAnalyzer found $($results.Count) issue(s)" }
+      - name: Run Windows installer behavioral contracts
+        shell: pwsh
+        run: Invoke-Pester scripts/tests/install.ps1.Tests.ps1 -Output Detailed
 
   frontend-assets:
     name: Frontend assets
@@ -523,6 +567,7 @@ jobs:
           trap 'rm -rf "$tool_dir"' EXIT
           archive="$tool_dir/cargo-deny.tar.gz"
           curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 300 \
             --retry 5 --retry-all-errors --retry-delay 2 \
             --output "$archive" \
             "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
@@ -1135,8 +1180,8 @@ jobs:
           $extractDir = Join-Path $env:RUNNER_TEMP "cargo-nextest"
           $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 
-          Invoke-WebRequest "$base/cargo-nextest-$version-$target.tar.gz" -OutFile $archive
-          Invoke-WebRequest "$base/cargo-nextest-$version-$target.sha256" -OutFile $shaFile
+          Invoke-WebRequest "$base/cargo-nextest-$version-$target.tar.gz" -OutFile $archive -TimeoutSec 300
+          Invoke-WebRequest "$base/cargo-nextest-$version-$target.sha256" -OutFile $shaFile -TimeoutSec 300
 
           $expected = (Get-Content $shaFile -Raw).Split(" ")[0].Trim().ToLowerInvariant()
           $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -1244,10 +1289,20 @@ jobs:
           test -f config/Dockerfile
           test -f .dockerignore
           test -f apps/gateway-admin/package.json
-          grep -Fq 'FROM rust:' config/Dockerfile
+          # These are literal Dockerfile contracts.
+          # shellcheck disable=SC2016
+          grep -Fq 'FROM ${LABBY_BUILDER_IMAGE}' config/Dockerfile
+          # shellcheck disable=SC2016
+          grep -Fq 'FROM ${LABBY_RUNTIME_IMAGE}' config/Dockerfile
+          set -a
+          source config/container-supply.conf
+          set +a
+          scripts/ci/validate-supply-manifest.py
+          LABBY_IMAGE="ghcr.io/dinglebear-ai/labby@sha256:$(printf 'a%.0s' {1..64})" scripts/ci/validate-container-inputs.sh
+          python3 scripts/ci/test-container-topology.py
           grep -Fq 'COPY apps/gateway-admin/out' config/Dockerfile
-          grep -Fq 'ARG NPM_VERSION="12.0.2"' config/Dockerfile
-          grep -Fq 'ARG NPM_SHA512="b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"' config/Dockerfile
+          grep -Fq 'ARG LABBY_NPM_VERSION' config/Dockerfile
+          grep -Fq 'ARG LABBY_NPM_SHA512' config/Dockerfile
           grep -Fq 'registry.npmjs.org/npm/-/npm-' config/Dockerfile
           grep -Fq 'tar/package.json' config/Dockerfile
           grep -Fq 'undici/package.json' config/Dockerfile
@@ -1409,6 +1464,7 @@ jobs:
       - changes
       - unraid-plugin-check
       - actionlint
+      - lifecycle-static-analysis
       - frontend-assets
       - gateway-admin-browser
       - live-e2e-core
@@ -1488,6 +1544,7 @@ jobs:
           require_success changes "${{ needs.changes.result }}"
           require_success_or_skipped unraid-plugin-check "${{ needs.unraid-plugin-check.result }}"
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
+          require_success_or_skipped lifecycle-static-analysis "${{ needs.lifecycle-static-analysis.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
           require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
           require_success_or_skipped live-e2e-core "${{ needs.live-e2e-core.result }}"

@@ -92,7 +92,13 @@ the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 Linux/macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.sh | sh
+version=vX.Y.Z
+base="https://github.com/dinglebear-ai/labby/releases/download/$version"
+curl -fSLO "$base/labby-install.sh"
+curl -fSLO "$base/labby-install.sh.sha256"
+gh attestation verify labby-install.sh --repo dinglebear-ai/labby
+shasum -a 256 -c labby-install.sh.sha256
+LABBY_INSTALL_VERSION="$version" sh ./labby-install.sh
 labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
@@ -106,19 +112,60 @@ npx -y @dinglebear/labby mcp
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.ps1 | iex
+$Version = "vX.Y.Z"
+$Base = "https://github.com/dinglebear-ai/labby/releases/download/$Version"
+Invoke-WebRequest "$Base/labby-install.ps1" -OutFile labby-install.ps1
+Invoke-WebRequest "$Base/labby-install.ps1.sha256" -OutFile labby-install.ps1.sha256
+gh attestation verify labby-install.ps1 --repo dinglebear-ai/labby
+$Expected = ((Get-Content labby-install.ps1.sha256) -split '\s+')[0]
+if ((Get-FileHash labby-install.ps1 -Algorithm SHA256).Hash.ToLower() -ne $Expected) { throw "installer digest mismatch" }
+$env:LABBY_INSTALL_VERSION = $Version
+& ./labby-install.ps1
 labby setup
 labby serve --host 127.0.0.1 --port 8765
 ```
 
-The install scripts download the requested GitHub Release asset, verify its
-checksum, and install `labby` onto the user PATH. They do **not** perform
+The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
+platform asset, require `gh`, verify the archive's attestation against the
+Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
+user PATH. They do **not** perform
 operator provisioning or environment setup. The scripts only install the binary
 (from a release or fallback source build); all first-run provisioning is handled
 inside `labby` via `labby serve` bootstrap and `labby setup`.
 
 Override install behavior with `LABBY_INSTALL_DIR`, `LABBY_INSTALL_VERSION`, or
-`LABBY_INSTALL_REPO`.
+`LABBY_INSTALL_REPO`. Source fallback is off by default. Opt in with
+`LABBY_ALLOW_SOURCE_FALLBACK=1`; a pinned `LABBY_INSTALL_VERSION` is passed to
+Cargo as the exact tag instead of silently building the default branch.
+
+Each successful install retains the verified binary by SHA-256 plus an
+owner-only receipt beneath `<install-dir>/.labby-install/`. At least the prior
+verified artifact remains available when distribution is unavailable. Restore
+it without downloading or changing `$LABBY_HOME`:
+
+```bash
+LABBY_INSTALL_ROLLBACK=1 sh scripts/install.sh
+```
+
+```powershell
+$env:LABBY_INSTALL_ROLLBACK = '1'
+& .\scripts\install.ps1
+```
+
+Rollback switches only the installed executable and receipt. It does not
+downgrade or delete configuration, credentials, databases, or other durable
+state. Inspect the receipt at `<install-dir>/.labby-install/receipt` on Unix or
+`receipt.json` on Windows.
+
+Release qualification can install an already-downloaded candidate without
+network or source fallback by setting `LABBY_INSTALL_LOCAL_BINARY` and its exact
+lowercase `LABBY_INSTALL_LOCAL_SHA256`. The installer copies that input once to
+private staging, verifies the staged bytes, and activates those same bytes. It
+also rehashes every existing cached artifact before reuse. Before changing the
+binary or either receipt, the installer writes a recovery journal beneath
+`.labby-install/`; a later invocation restores the complete pre-install
+snapshot when it finds an interrupted activation. If restoration fails, the
+installer stops and retains the journal for diagnosis.
 
 ### Build From Source
 
@@ -152,13 +199,20 @@ just macos-service-status
 ```
 
 This installs a `launchd` LaunchAgent that keeps Labby listening on
-`127.0.0.1:8765`, restarts it after login or exit, and writes logs under
-`~/.labby/`. Use `just macos-service-restart` after changing service settings
+`127.0.0.1:8765`, restarts it after login or exit, and uses the stable absolute
+`LABBY_HOME` (default `~/.labby`) as both working directory and durable
+configuration root. It never persists the directory from which installation
+was invoked. Logs default to the same root. Use `just macos-service-restart`
+after changing service settings
 or `just macos-service-uninstall` to remove it. The cross-platform
 `just service-install`, `just service-status`, `just service-restart`, and
 `just service-uninstall` bindings select launchd on macOS and systemd on
 Linux. This is suitable for a Tailscale Serve/Funnel route whose OAuth
 callback targets the local gateway.
+
+When overriding the launchd paths, `LABBY_SERVICE_BIN`, `LABBY_STATE_DIR`, and
+`LABBY_HOME` must all be absolute; relative paths fail before the plist or
+service is changed.
 
 ### First Run
 

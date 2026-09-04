@@ -24,7 +24,7 @@ pub struct HelpArgs {
 
 /// Run the help subcommand.
 pub fn run(args: HelpArgs, format: OutputFormat) -> Result<ExitCode> {
-    let config = load_toml(&crate::config::toml_candidates())?;
+    let config = load_toml(&crate::config::toml_candidates()?)?;
     let registry = filter_built_in_upstream_apis(
         build_default_registry(),
         config.services.built_in_upstream_apis_enabled,

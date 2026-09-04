@@ -3,11 +3,391 @@
 //! All file and env I/O lives here, never in `labby-apis`.
 
 use super::types::{Finding, Severity, service_env_checks};
+use futures::StreamExt as _;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+const DOCTOR_PROBE_CONCURRENCY: usize = 5;
+const DOCTOR_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const DOCTOR_AGGREGATE_TIMEOUT: Duration = Duration::from_secs(10);
+const DOCTOR_PROCESS_PROBE_GLOBAL_CONCURRENCY: usize = 5;
+static DOCTOR_PROCESS_PROBE_BUDGET: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+fn process_probe_budget() -> Arc<tokio::sync::Semaphore> {
+    Arc::clone(DOCTOR_PROCESS_PROBE_BUDGET.get_or_init(|| {
+        Arc::new(tokio::sync::Semaphore::new(
+            DOCTOR_PROCESS_PROBE_GLOBAL_CONCURRENCY,
+        ))
+    }))
+}
+
+#[cfg(test)]
+struct BlockingProbe {
+    check: String,
+    task: Box<dyn FnOnce(Arc<AtomicBool>) -> Finding + Send + 'static>,
+}
+
+#[cfg(test)]
+impl BlockingProbe {
+    fn new(
+        check: impl Into<String>,
+        task: impl FnOnce(Arc<AtomicBool>) -> Finding + Send + 'static,
+    ) -> Self {
+        Self {
+            check: check.into(),
+            task: Box::new(task),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ProbeLimits {
+    concurrency: usize,
+    per_probe: Duration,
+    aggregate: Duration,
+}
+
+struct ProbeCancellationGuard(Arc<AtomicBool>);
+
+impl Drop for ProbeCancellationGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+async fn run_bounded_probes(probes: Vec<BlockingProbe>, limits: ProbeLimits) -> Vec<Finding> {
+    let probe_count = probes.len();
+    let probe_names: Vec<String> = probes.iter().map(|probe| probe.check.clone()).collect();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let _cancellation_guard = ProbeCancellationGuard(Arc::clone(&cancellation));
+    let mut results = vec![None; probe_count];
+    let mut pending = futures::stream::iter(probes.into_iter().enumerate())
+        .map(|(index, probe)| {
+            let cancellation = Arc::clone(&cancellation);
+            async move {
+                let check = probe.check;
+                if cancellation.load(Ordering::Acquire) {
+                    return (index, probe_failure(&check, "probe cancelled".into()));
+                }
+                let task_cancellation = Arc::clone(&cancellation);
+                let mut task = tokio::task::spawn_blocking(move || (probe.task)(task_cancellation));
+                let finding = match tokio::time::timeout(limits.per_probe, &mut task).await {
+                    Ok(Ok(finding)) => finding,
+                    Ok(Err(error)) => {
+                        probe_failure(&check, format!("probe task panicked: {error}"))
+                    }
+                    Err(_) => {
+                        cancellation.store(true, Ordering::Release);
+                        // `spawn_blocking` tasks cannot be aborted safely.  Every
+                        // production probe receives the cancellation token, so
+                        // retain ownership and join it before the audit returns;
+                        // dropping the handle here would detach filesystem or
+                        // subprocess work into the runtime's blocking pool.
+                        drop(task.await);
+                        probe_failure(
+                            &check,
+                            format!(
+                                "probe timed out after {:.3}s",
+                                limits.per_probe.as_secs_f64()
+                            ),
+                        )
+                    }
+                };
+                (index, finding)
+            }
+        })
+        .buffer_unordered(limits.concurrency.max(1));
+    let aggregate_deadline = tokio::time::Instant::now() + limits.aggregate;
+    loop {
+        match tokio::time::timeout_at(aggregate_deadline, pending.next()).await {
+            Ok(Some((index, finding))) => results[index] = Some(finding),
+            Ok(None) => break,
+            Err(_) => {
+                cancellation.store(true, Ordering::Release);
+                break;
+            }
+        }
+    }
+    if cancellation.load(Ordering::Acquire) {
+        // Do not detach already-started blocking probes. Their cooperative
+        // cancellation paths must finish and be joined before returning.
+        while let Some((index, finding)) = pending.next().await {
+            results[index] = Some(finding);
+        }
+    }
+    drop(pending);
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(index, finding)| {
+            finding.unwrap_or_else(|| {
+                probe_failure(
+                    &probe_names[index],
+                    format!(
+                        "doctor aggregate timed out after {:.3}s",
+                        limits.aggregate.as_secs_f64()
+                    ),
+                )
+            })
+        })
+        .collect()
+}
+
+struct ProcessProbe {
+    check: String,
+    command: std::process::Command,
+    success: Finding,
+    failure: Finding,
+    #[cfg(test)]
+    before_run: Option<Box<dyn FnOnce() + Send + 'static>>,
+    #[cfg(test)]
+    after_run: Option<Box<dyn FnOnce() + Send + 'static>>,
+}
+
+async fn run_bounded_process_probes(
+    probes: Vec<ProcessProbe>,
+    limits: ProbeLimits,
+) -> Vec<Finding> {
+    run_bounded_process_probes_with_budget(probes, limits, process_probe_budget()).await
+}
+
+async fn run_bounded_process_probes_with_budget(
+    probes: Vec<ProcessProbe>,
+    limits: ProbeLimits,
+    budget: Arc<tokio::sync::Semaphore>,
+) -> Vec<Finding> {
+    let probe_count = probes.len();
+    let probe_names: Vec<String> = probes.iter().map(|probe| probe.check.clone()).collect();
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let _cancellation_guard = ProbeCancellationGuard(Arc::clone(&cancellation));
+    let mut results = vec![None; probe_count];
+    let deadline = tokio::time::Instant::now() + limits.aggregate;
+    let mut pending = futures::stream::iter(probes.into_iter().enumerate())
+        .map(|(index, mut probe)| {
+            let cancellation = Arc::clone(&cancellation);
+            let budget = Arc::clone(&budget);
+            async move {
+                let check = probe.check;
+                let permit = match tokio::time::timeout_at(deadline, budget.acquire_owned()).await {
+                    Ok(Ok(permit)) => permit,
+                    Err(_) => {
+                        return (
+                            index,
+                            probe_failure(
+                                &check,
+                                format!(
+                                    "doctor aggregate timed out after {:.3}s",
+                                    limits.aggregate.as_secs_f64()
+                                ),
+                            ),
+                        );
+                    }
+                    Ok(Err(_)) => {
+                        return (
+                            index,
+                            probe_failure(&check, "probe admission closed".into()),
+                        );
+                    }
+                };
+                if cancellation.load(Ordering::Acquire) || tokio::time::Instant::now() >= deadline {
+                    drop(permit);
+                    return (index, probe_failure(&check, "probe cancelled".into()));
+                }
+                let task_cancellation = Arc::clone(&cancellation);
+                let mut task = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    #[cfg(test)]
+                    if let Some(before_run) = probe.before_run.take() {
+                        before_run();
+                    }
+                    let finding =
+                        if cancellable_command_status(&mut probe.command, &task_cancellation) {
+                            probe.success
+                        } else {
+                            probe.failure
+                        };
+                    #[cfg(test)]
+                    if let Some(after_run) = probe.after_run.take() {
+                        after_run();
+                    }
+                    finding
+                });
+                let finding = match tokio::time::timeout(limits.per_probe, &mut task).await {
+                    Ok(Ok(finding)) => finding,
+                    Ok(Err(error)) => {
+                        probe_failure(&check, format!("probe task panicked: {error}"))
+                    }
+                    Err(_) => {
+                        cancellation.store(true, Ordering::Release);
+                        // The process probe owns a cancellation-aware child and
+                        // cannot outlive its audit. Awaiting the blocking task is
+                        // mandatory: dropping this handle would detach the child
+                        // cleanup into Tokio's blocking pool.
+                        drop(task.await);
+                        probe_failure(
+                            &check,
+                            format!(
+                                "probe timed out after {:.3}s",
+                                limits.per_probe.as_secs_f64()
+                            ),
+                        )
+                    }
+                };
+                (index, finding)
+            }
+        })
+        .buffer_unordered(limits.concurrency.max(1));
+    while let Ok(Some((index, finding))) = tokio::time::timeout_at(deadline, pending.next()).await {
+        results[index] = Some(finding);
+    }
+    cancellation.store(true, Ordering::Release);
+    // Every started process probe has a closed kill/reap path. Drain all of
+    // them after cancellation so no JoinHandle or child can be detached.
+    while let Some((index, finding)) = pending.next().await {
+        results[index] = Some(finding);
+    }
+    drop(pending);
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(index, finding)| {
+            finding.unwrap_or_else(|| {
+                probe_failure(
+                    &probe_names[index],
+                    format!(
+                        "doctor aggregate timed out after {:.3}s",
+                        limits.aggregate.as_secs_f64()
+                    ),
+                )
+            })
+        })
+        .collect()
+}
+
+fn probe_failure(check: &str, message: String) -> Finding {
+    Finding {
+        service: "system".into(),
+        check: check.into(),
+        severity: Severity::Fail,
+        message,
+    }
+}
+
+fn process_probe(
+    service: &str,
+    check: &str,
+    command: std::process::Command,
+    success_message: String,
+    failure_severity: Severity,
+    failure_message: String,
+) -> ProcessProbe {
+    ProcessProbe {
+        check: check.into(),
+        command,
+        success: Finding {
+            service: service.into(),
+            check: check.into(),
+            severity: Severity::Ok,
+            message: success_message,
+        },
+        failure: Finding {
+            service: service.into(),
+            check: check.into(),
+            severity: failure_severity,
+            message: failure_message,
+        },
+        #[cfg(test)]
+        before_run: None,
+        #[cfg(test)]
+        after_run: None,
+    }
+}
+
+fn path_test_command(path: &str, writable: bool) -> std::process::Command {
+    #[cfg(unix)]
+    {
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            if writable {
+                "test -w \"$1\""
+            } else {
+                "test -e \"$1\""
+            },
+            "sh",
+            path,
+        ]);
+        command
+    }
+    #[cfg(windows)]
+    {
+        let mut command = std::process::Command::new("powershell.exe");
+        let expression = if writable {
+            "if (Test-Path -LiteralPath $args[0]) { try { [IO.File]::Open($args[0], 'Open', 'Read', 'ReadWrite').Dispose(); exit 0 } catch { exit 1 } } else { exit 1 }"
+        } else {
+            "if (Test-Path -LiteralPath $args[0]) { exit 0 } else { exit 1 }"
+        };
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            expression,
+            path,
+        ]);
+        command
+    }
+}
+
+fn executable_test_command(program: &str, args: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    command
+}
+
+fn command_available_command(program: &str) -> std::process::Command {
+    #[cfg(unix)]
+    let mut command = std::process::Command::new("which");
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("where.exe");
+    command.arg(program);
+    command
+}
+
+fn backup_retention_command(config_path: &str) -> std::process::Command {
+    #[cfg(unix)]
+    {
+        let mut command = std::process::Command::new("sh");
+        command.args([
+            "-c",
+            "dir=${1%/*}; base=${1##*/}; set -- \"$dir/$base\".bak.*; test ! -e \"$1\" && exit 0; count=$#; bytes=$(du -ck \"$@\" | awk 'END {print $1 * 1024}'); test \"$count\" -le 10 && test \"$bytes\" -le 67108864",
+            "sh",
+            config_path,
+        ]);
+        command
+    }
+    #[cfg(windows)]
+    {
+        let mut command = std::process::Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$p=[IO.FileInfo]$args[0]; $b=@(Get-ChildItem -LiteralPath $p.DirectoryName -Filter ($p.Name + '.bak.*') -File); $n=($b | Measure-Object).Count; $s=($b | Measure-Object Length -Sum).Sum; if ($n -le 10 -and $s -le 67108864) { exit 0 } else { exit 1 }",
+            config_path,
+        ]);
+        command
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn path_check(service: &str, label: &str, path: &str, severity_on_missing: Severity) -> Finding {
     let exists = std::path::Path::new(path).exists();
     Finding {
@@ -26,6 +406,7 @@ fn path_check(service: &str, label: &str, path: &str, severity_on_missing: Sever
     }
 }
 
+#[cfg(test)]
 fn writable_check(service: &str, label: &str, path: &str) -> Finding {
     let path_obj = std::path::Path::new(path);
     if !path_obj.exists() {
@@ -65,12 +446,144 @@ fn writable_check(service: &str, label: &str, path: &str) -> Finding {
     }
 }
 
-fn command_check(service: &str, label: &str, cmd: &str) -> Finding {
-    let found = std::process::Command::new("which")
-        .arg(cmd)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+#[cfg(test)]
+#[allow(dead_code)]
+fn config_backup_check(config_path: &str) -> Finding {
+    let path = std::path::Path::new(config_path);
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let prefix = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("{name}.bak."))
+        .unwrap_or_default();
+    let backups = std::fs::read_dir(parent)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let bytes = backups
+        .iter()
+        .filter_map(|entry| entry.metadata().ok())
+        .fold(0_u64, |total, metadata| {
+            total.saturating_add(metadata.len())
+        });
+    let healthy = backups.len() <= 10 && bytes <= 64 * 1024 * 1024;
+    Finding {
+        service: "system".into(),
+        check: "config:backup-retention".into(),
+        severity: if healthy {
+            Severity::Ok
+        } else {
+            Severity::Warn
+        },
+        message: if healthy {
+            format!(
+                "{} retained config backup(s), {} bytes",
+                backups.len(),
+                bytes
+            )
+        } else {
+            format!(
+                "{} config backups remain after retention; preserve the newest recovery point and remove older files after verifying config.toml",
+                backups.len()
+            )
+        },
+    }
+}
+
+fn terminate_probe_process(child: &mut std::process::Child) {
+    drop(child.kill());
+    drop(child.wait());
+}
+
+#[cfg(unix)]
+struct ProbeProcessGuard {
+    process_group: i32,
+}
+
+#[cfg(unix)]
+impl Drop for ProbeProcessGuard {
+    fn drop(&mut self) {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(self.process_group),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+}
+
+#[cfg(unix)]
+fn probe_process_guard(child: &mut std::process::Child) -> Option<ProbeProcessGuard> {
+    i32::try_from(child.id())
+        .ok()
+        .map(|process_group| ProbeProcessGuard { process_group })
+}
+
+#[cfg(windows)]
+struct ProbeProcessGuard {
+    job: labby_winjob::JobObject,
+}
+
+#[cfg(windows)]
+fn probe_process_guard(child: &mut std::process::Child) -> Option<ProbeProcessGuard> {
+    labby_winjob::JobObject::assign(child.id())
+        .map(|job| ProbeProcessGuard { job })
+        .ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+struct ProbeProcessGuard;
+
+#[cfg(not(any(unix, windows)))]
+fn probe_process_guard(_child: &mut std::process::Child) -> Option<ProbeProcessGuard> {
+    Some(ProbeProcessGuard)
+}
+
+fn cancellable_command_status(
+    command: &mut std::process::Command,
+    cancellation: &AtomicBool,
+) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let Some(tree_guard) = probe_process_guard(&mut child) else {
+        terminate_probe_process(&mut child);
+        return false;
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if cancellation.load(Ordering::Acquire) => {
+                drop(tree_guard);
+                terminate_probe_process(&mut child);
+                return false;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => {
+                drop(tree_guard);
+                terminate_probe_process(&mut child);
+                return false;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn command_check(service: &str, label: &str, cmd: &str, cancellation: &AtomicBool) -> Finding {
+    let found =
+        cancellable_command_status(std::process::Command::new("which").arg(cmd), cancellation);
     Finding {
         service: service.to_string(),
         check: label.to_string(),
@@ -88,12 +601,13 @@ fn command_check(service: &str, label: &str, cmd: &str) -> Finding {
 ///
 /// Runs `docker compose version` and treats a non-zero exit (or missing
 /// binary) as the plugin being unavailable.
-fn compose_plugin_check() -> Finding {
-    let found = std::process::Command::new("docker")
-        .args(["compose", "version"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+#[cfg(test)]
+#[allow(dead_code)]
+fn compose_plugin_check(cancellation: &AtomicBool) -> Finding {
+    let found = cancellable_command_status(
+        std::process::Command::new("docker").args(["compose", "version"]),
+        cancellation,
+    );
     Finding {
         service: "system".to_string(),
         check: "docker:compose-plugin".to_string(),
@@ -114,7 +628,7 @@ fn compose_plugin_check() -> Finding {
 ///
 /// Order: env-var checks first (preserves current `labby doctor` output), then
 /// system-level checks.
-pub fn run_system_checks() -> Vec<Finding> {
+pub async fn run_system_checks() -> Vec<Finding> {
     let mut findings: Vec<Finding> = Vec::new();
 
     // --- Env var checks (current labby doctor behaviour; preserved for output parity) ---
@@ -138,104 +652,546 @@ pub fn run_system_checks() -> Vec<Finding> {
         }
     }
 
-    // --- Lab config files ---
     let home = std::env::var("HOME").unwrap_or_default();
     let env_path = format!("{home}/.labby/.env");
-    findings.push(path_check(
+    let lab_dir = format!("{home}/.labby");
+    let config_path = format!("{home}/.labby/config.toml");
+    let mut probes = Vec::new();
+    probes.push(process_probe(
         "lab",
         "config:~/.labby/.env",
-        &env_path,
+        path_test_command(&env_path, false),
+        format!("{env_path} found"),
         Severity::Warn,
+        format!("{env_path} not found"),
     ));
-    findings.push(writable_check(
+    probes.push(process_probe(
         "lab",
         "config:~/.labby/.env:writable",
-        &env_path,
+        path_test_command(&env_path, true),
+        format!("{env_path} is writable"),
+        Severity::Fail,
+        format!("{env_path} is NOT writable or is missing"),
     ));
-
-    let lab_dir = format!("{home}/.labby");
-    findings.push(writable_check("lab", "config:~/.labby:writable", &lab_dir));
-
-    findings.push(path_check(
+    probes.push(process_probe(
+        "lab",
+        "config:~/.labby:writable",
+        path_test_command(&lab_dir, true),
+        format!("{lab_dir} is writable"),
+        Severity::Fail,
+        format!("{lab_dir} is NOT writable or is missing"),
+    ));
+    probes.push(process_probe(
         "lab",
         "config:~/.labby/config.toml",
-        &format!("{home}/.labby/config.toml"),
+        path_test_command(&config_path, false),
+        format!("{config_path} found"),
         Severity::Warn,
+        format!("{config_path} not found"),
+    ));
+    probes.push(process_probe(
+        "system",
+        "config:backup-retention",
+        backup_retention_command(&config_path),
+        "config backup retention is within count and byte budgets".into(),
+        Severity::Warn,
+        "config backups exceed the count or byte retention budget".into(),
     ));
 
-    // --- AI assistant configs (informational) ---
     for (name, rel_path) in [
         (".claude", "claude"),
         (".codex", "codex"),
         (".gemini", "gemini"),
     ] {
         let full = format!("{home}/{name}");
-        let exists = std::path::Path::new(&full).exists();
-        findings.push(Finding {
-            service: "lab".into(),
-            check: format!("config:~/{name}"),
-            severity: Severity::Ok,
-            message: if exists {
-                format!("~/{name} present ({rel_path} detected)")
-            } else {
-                format!("~/{name} not present")
-            },
-        });
+        probes.push(process_probe(
+            "lab",
+            &format!("config:~/{name}"),
+            path_test_command(&full, false),
+            format!("~/{name} present ({rel_path} detected)"),
+            Severity::Ok,
+            format!("~/{name} not present"),
+        ));
     }
-
-    // --- Docker ---
-    findings.push(path_check(
+    probes.push(process_probe(
         "system",
         "docker:socket",
-        "/var/run/docker.sock",
+        path_test_command("/var/run/docker.sock", false),
+        "/var/run/docker.sock found".into(),
         Severity::Warn,
+        "/var/run/docker.sock not found".into(),
     ));
-    findings.push(command_check("system", "docker:cli", "docker"));
-    findings.push(compose_plugin_check());
-
-    // --- Rust toolchain ---
-    findings.push(command_check("system", "rust:cargo", "cargo"));
-
-    // --- Disk space: warn when / exceeds 90 % used ---
-    disk_check(&mut findings);
-
+    probes.push(process_probe(
+        "system",
+        "docker:cli",
+        command_available_command("docker"),
+        "`docker` is available".into(),
+        Severity::Warn,
+        "`docker` not found on PATH".into(),
+    ));
+    probes.push(process_probe(
+        "system",
+        "docker:compose-plugin",
+        executable_test_command("docker", &["compose", "version"]),
+        "`docker compose` plugin is available".into(),
+        Severity::Warn,
+        "`docker compose` plugin not available".into(),
+    ));
+    probes.push(process_probe(
+        "system",
+        "rust:cargo",
+        command_available_command("cargo"),
+        "`cargo` is available".into(),
+        Severity::Warn,
+        "`cargo` not found on PATH".into(),
+    ));
+    let mut disk_command = std::process::Command::new("sh");
+    disk_command.args(["-c", "used=$(df -P / | awk 'NR==2 {gsub(/%/, \"\", $5); print $5}'); test -n \"$used\" && test \"$used\" -lt 90"]);
+    probes.push(process_probe(
+        "system",
+        "disk:/",
+        disk_command,
+        "/ disk use is below 90%".into(),
+        Severity::Warn,
+        "/ disk use is at least 90% or could not be determined".into(),
+    ));
+    findings.extend(
+        run_bounded_process_probes(
+            probes,
+            ProbeLimits {
+                concurrency: DOCTOR_PROBE_CONCURRENCY,
+                per_probe: DOCTOR_PROBE_TIMEOUT,
+                aggregate: DOCTOR_AGGREGATE_TIMEOUT,
+            },
+        )
+        .await,
+    );
     findings
 }
 
 #[cfg(target_os = "linux")]
-fn disk_check(findings: &mut Vec<Finding>) {
-    let Ok(output) = std::process::Command::new("df")
-        .args(["-h", "--output=pcent", "/"])
-        .output()
-    else {
-        return;
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let pct: Option<u64> = stdout
-        .lines()
-        .nth(1)
-        .and_then(|l| l.trim().trim_end_matches('%').parse().ok());
-    if let Some(used) = pct {
-        findings.push(Finding {
-            service: "system".into(),
-            check: "disk:/".into(),
-            severity: if used >= 90 {
-                Severity::Warn
-            } else {
-                Severity::Ok
-            },
-            message: format!("/ is {used}% used"),
-        });
-    }
+#[cfg(test)]
+#[allow(dead_code)]
+fn disk_check(findings: &mut Vec<Finding>, cancellation: &AtomicBool) {
+    let below_warning_threshold = cancellable_command_status(
+        std::process::Command::new("sh").args([
+            "-c",
+            "used=$(df -P / | awk 'NR==2 {gsub(/%/, \"\", $5); print $5}'); test -n \"$used\" && test \"$used\" -lt 90",
+        ]),
+        cancellation,
+    );
+    findings.push(Finding {
+        service: "system".into(),
+        check: "disk:/".into(),
+        severity: if below_warning_threshold {
+            Severity::Ok
+        } else {
+            Severity::Warn
+        },
+        message: if below_warning_threshold {
+            "/ disk use is below 90%".into()
+        } else {
+            "/ disk use is at least 90% or could not be determined".into()
+        },
+    });
 }
 
 #[cfg(not(target_os = "linux"))]
-fn disk_check(_findings: &mut Vec<Finding>) {}
+#[cfg(test)]
+#[allow(dead_code)]
+fn disk_check(_findings: &mut Vec<Finding>, _cancellation: &AtomicBool) {}
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use std::thread;
+
+    static PROCESS_PROBE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellable_command_kills_a_hanging_process_group() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancelled);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            trigger.store(true, Ordering::Release);
+        });
+        let started = std::time::Instant::now();
+        let status = cancellable_command_status(
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg("sleep 30 & wait"),
+            &cancelled,
+        );
+
+        assert!(!status);
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_probe_runner_cancels_and_reaps_a_noncooperative_child() {
+        let _serial = PROCESS_PROBE_TEST_LOCK.lock().await;
+        let probe = process_probe(
+            "system",
+            "hung-process",
+            executable_test_command("sh", &["-c", "sleep 30 & wait"]),
+            "unexpected success".into(),
+            Severity::Fail,
+            "cancelled".into(),
+        );
+        let started = std::time::Instant::now();
+        let findings = run_bounded_process_probes(
+            vec![probe],
+            ProbeLimits {
+                concurrency: 1,
+                per_probe: Duration::from_millis(50),
+                aggregate: Duration::from_millis(100),
+            },
+        )
+        .await;
+
+        assert!(started.elapsed() < Duration::from_millis(400));
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(findings[0].severity, Severity::Fail));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_probe_runner_never_detaches_cleanup_after_timeout() {
+        let _serial = PROCESS_PROBE_TEST_LOCK.lock().await;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let cleanup_finished = Arc::new(AtomicBool::new(false));
+        let cleanup_finished_for_task = Arc::clone(&cleanup_finished);
+        let mut probe = process_probe(
+            "system",
+            "mandatory-join",
+            executable_test_command("sh", &["-c", "sleep 30 & wait"]),
+            "unexpected success".into(),
+            Severity::Fail,
+            "cancelled".into(),
+        );
+        probe.after_run = Some(Box::new(move || {
+            thread::sleep(Duration::from_millis(350));
+            cleanup_finished_for_task.store(true, Ordering::Release);
+        }));
+
+        let findings = run_bounded_process_probes(
+            vec![probe],
+            ProbeLimits {
+                concurrency: 1,
+                per_probe: Duration::from_millis(20),
+                aggregate: Duration::from_millis(40),
+            },
+        )
+        .await;
+
+        assert_eq!(findings.len(), 1);
+        assert!(
+            cleanup_finished.load(Ordering::Acquire),
+            "the audit returned while its blocking probe cleanup was detached"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_audits_share_one_process_wide_probe_limit() {
+        let _serial = PROCESS_PROBE_TEST_LOCK.lock().await;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const EXPECTED_GLOBAL_LIMIT: usize = 5;
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let budget = Arc::new(tokio::sync::Semaphore::new(EXPECTED_GLOBAL_LIMIT));
+        let mut audits = Vec::new();
+        for audit in 0..4 {
+            let mut probes = Vec::new();
+            for probe_index in 0..5 {
+                let mut probe = process_probe(
+                    "system",
+                    &format!("audit-{audit}-probe-{probe_index}"),
+                    executable_test_command("sh", &["-c", "sleep 0.1"]),
+                    "ok".into(),
+                    Severity::Fail,
+                    "failed".into(),
+                );
+                let active_before = Arc::clone(&active);
+                let peak_before = Arc::clone(&peak);
+                probe.before_run = Some(Box::new(move || {
+                    let current = active_before.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak_before.fetch_max(current, Ordering::SeqCst);
+                }));
+                let active_after = Arc::clone(&active);
+                probe.after_run = Some(Box::new(move || {
+                    active_after.fetch_sub(1, Ordering::SeqCst);
+                }));
+                probes.push(probe);
+            }
+            audits.push(tokio::spawn(run_bounded_process_probes_with_budget(
+                probes,
+                ProbeLimits {
+                    concurrency: 5,
+                    per_probe: Duration::from_secs(1),
+                    aggregate: Duration::from_secs(2),
+                },
+                Arc::clone(&budget),
+            )));
+        }
+        for audit in audits {
+            assert_eq!(audit.await.unwrap().len(), 5);
+        }
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(
+            peak.load(Ordering::SeqCst) <= EXPECTED_GLOBAL_LIMIT,
+            "concurrent audits launched {} process probes",
+            peak.load(Ordering::SeqCst)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_an_audit_cancels_and_joins_its_active_process_probe() {
+        let _serial = PROCESS_PROBE_TEST_LOCK.lock().await;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let started = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let mut probe = process_probe(
+            "system",
+            "disconnect",
+            executable_test_command("sh", &["-c", "sleep 0.5"]),
+            "unexpected success".into(),
+            Severity::Fail,
+            "cancelled".into(),
+        );
+        let started_for_probe = Arc::clone(&started);
+        probe.before_run = Some(Box::new(move || {
+            started_for_probe.store(true, Ordering::Release);
+        }));
+        let finished_for_probe = Arc::clone(&finished);
+        probe.after_run = Some(Box::new(move || {
+            finished_for_probe.store(true, Ordering::Release);
+        }));
+
+        let audit = tokio::spawn(run_bounded_process_probes(
+            vec![probe],
+            ProbeLimits {
+                concurrency: 1,
+                per_probe: Duration::from_secs(1),
+                aggregate: Duration::from_secs(1),
+            },
+        ));
+        tokio::time::timeout(Duration::from_millis(200), async {
+            while !started.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        audit.abort();
+        drop(audit.await);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            finished.load(Ordering::Acquire),
+            "dropping the audit detached its active process probe"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probes_queued_past_deadline_return_without_starting() {
+        let _serial = PROCESS_PROBE_TEST_LOCK.lock().await;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let budget = Arc::new(tokio::sync::Semaphore::new(
+            DOCTOR_PROCESS_PROBE_GLOBAL_CONCURRENCY,
+        ));
+        let held = Arc::clone(&budget)
+            .acquire_many_owned(DOCTOR_PROCESS_PROBE_GLOBAL_CONCURRENCY as u32)
+            .await
+            .unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            drop(held);
+        });
+        let started = Arc::new(AtomicUsize::new(0));
+        let mut probe = process_probe(
+            "system",
+            "queued",
+            executable_test_command("sh", &["-c", "true"]),
+            "ok".into(),
+            Severity::Fail,
+            "failed".into(),
+        );
+        let started_for_probe = Arc::clone(&started);
+        probe.before_run = Some(Box::new(move || {
+            started_for_probe.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        let began = tokio::time::Instant::now();
+        let findings = run_bounded_process_probes_with_budget(
+            vec![probe],
+            ProbeLimits {
+                concurrency: 1,
+                per_probe: Duration::from_secs(1),
+                aggregate: Duration::from_millis(50),
+            },
+            budget,
+        )
+        .await;
+
+        assert!(began.elapsed() < Duration::from_millis(150));
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].message.contains("aggregate timed out"));
+        release.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_probe_runner_honors_single_worker_limit() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let probes = (0..10)
+            .map(|index| {
+                let active = Arc::clone(&active);
+                let peak = Arc::clone(&peak);
+                BlockingProbe::new(format!("probe-{index}"), move |_| {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(current, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(2));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Finding {
+                        service: "test".into(),
+                        check: format!("probe-{index}"),
+                        severity: Severity::Ok,
+                        message: "ok".into(),
+                    }
+                })
+            })
+            .collect();
+
+        let findings = run_bounded_probes(
+            probes,
+            ProbeLimits {
+                concurrency: 1,
+                per_probe: Duration::from_secs(1),
+                aggregate: Duration::from_secs(1),
+            },
+        )
+        .await;
+
+        assert_eq!(findings.len(), 10);
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_probe_runner_returns_one_ordered_result_for_one_hundred_probes() {
+        let probes = (0..100)
+            .map(|index| {
+                BlockingProbe::new(format!("probe-{index:03}"), move |_| Finding {
+                    service: "test".into(),
+                    check: format!("probe-{index:03}"),
+                    severity: Severity::Ok,
+                    message: "ok".into(),
+                })
+            })
+            .collect();
+
+        let findings = run_bounded_probes(
+            probes,
+            ProbeLimits {
+                concurrency: 5,
+                per_probe: Duration::from_secs(1),
+                aggregate: Duration::from_secs(2),
+            },
+        )
+        .await;
+
+        assert_eq!(findings.len(), 100);
+        assert_eq!(findings[0].check, "probe-000");
+        assert_eq!(findings[99].check, "probe-099");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_probe_runner_surfaces_per_probe_timeout() {
+        let probes = vec![BlockingProbe::new("hung", |cancelled| {
+            while !cancelled.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Finding {
+                service: "test".into(),
+                check: "hung".into(),
+                severity: Severity::Ok,
+                message: "late".into(),
+            }
+        })];
+
+        let findings = run_bounded_probes(
+            probes,
+            ProbeLimits {
+                concurrency: 1,
+                per_probe: Duration::from_millis(10),
+                aggregate: Duration::from_millis(50),
+            },
+        )
+        .await;
+
+        assert_eq!(findings.len(), 1);
+        assert!(matches!(findings[0].severity, Severity::Fail));
+        assert!(findings[0].message.contains("timed out"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bounded_probe_runner_cancels_and_drains_active_work_at_aggregate_deadline() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let probes = (0..100)
+            .map(|index| {
+                let active = Arc::clone(&active);
+                BlockingProbe::new(format!("hung-{index}"), move |cancelled| {
+                    active.fetch_add(1, Ordering::SeqCst);
+                    while !cancelled.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    probe_failure(&format!("hung-{index}"), "cancelled".into())
+                })
+            })
+            .collect();
+
+        let started_at = std::time::Instant::now();
+        let findings = run_bounded_probes(
+            probes,
+            ProbeLimits {
+                concurrency: 5,
+                per_probe: Duration::from_secs(1),
+                aggregate: Duration::from_millis(20),
+            },
+        )
+        .await;
+
+        assert_eq!(findings.len(), 100);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(
+            started_at.elapsed() >= Duration::from_millis(20),
+            "aggregate must not return before cancellation and worker join"
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| matches!(finding.severity, Severity::Fail))
+        );
+    }
 
     #[test]
     fn writable_check_warns_when_target_is_missing() {

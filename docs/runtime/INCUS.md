@@ -35,7 +35,9 @@ local binary, but they should not expect the same prebuilt cold-start path.
 Use Incus for normal self-hosting:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh | sh
+# First download labby-install.sh and its checksum from one explicit vX.Y.Z
+# release and verify its GitHub attestation and SHA-256 sidecar.
+LABBY_INSTALL_VERSION=vX.Y.Z sh ./labby-install.sh
 labby setup
 ```
 
@@ -80,7 +82,8 @@ with `--storage-source`, or the legacy ZFS dataset source with
 Install Labby, then run the host-side Incus bootstrap:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh | sh
+# Use the verified labby-install.sh from one explicit vX.Y.Z release.
+LABBY_INSTALL_VERSION=vX.Y.Z sh ./labby-install.sh
 labby setup
 ```
 
@@ -126,10 +129,9 @@ container that owns its own `/home/labby/.labby` state. For an existing single-u
 host setup, seed `/home/labby/.labby` once, fix any host-specific paths once, then
 preserve that container with Incus snapshots/backups.
 
-The web app also serves the installer at `https://labby.dinglebear.ai/install.sh`
-for convenience. The canonical pipe-to-shell source remains the GitHub-hosted
-script at
-`https://raw.githubusercontent.com/dinglebear-ai/labby/main/install.sh`.
+Do not pipe the web-served or repository branch copy into a shell. The canonical
+operator path is the explicit release asset workflow in the root README: verify
+the installer attestation and separately downloaded digest before execution.
 
 For PR validation before a release exists, push a local binary instead:
 
@@ -158,6 +160,17 @@ binary deploys into an existing container, use `labby incus sync`.
 When a local export exists, sync copies it into `/home/labby/.labby/web-assets`.
 When no local export exists, sync moves the remote filesystem export aside so
 the embedded assets in the updated binary are used instead.
+
+Each successful sync retains one verified prior release inside the container.
+Restore that binary, web assets, and supported systemd state through the same
+transactional path with:
+
+```bash
+labby incus sync --container labby --rollback
+```
+
+The retained release is removed only after a successful rollback and is
+replaced by the next successful sync.
 
 When an export is synced, deployment is not considered successful until the
 restarted container serves an `index.html` whose SHA-256 matches the freshly
@@ -230,6 +243,23 @@ copy-on-write snapshots and clones; the dir driver is useful as a universal
 fallback but does not provide the same storage-level efficiency. Deleting a
 container deletes that container filesystem unless you first snapshot, copy, or
 export it.
+
+Bootstrap and release activation are transactions. Before mutating an existing
+target, Labby validates inputs and Incus reachability and captures prior values
+in a private mutation journal. If a later mutation or verifier fails, inverses
+run in reverse order. If an inverse fails, the command reports both failures,
+the retained journal path, and residual actions instead of claiming recovery.
+Residual reports are written mode `0600` under
+`/var/tmp/labby-incus-rollback-residual-*.txt` so a failed rollback remains
+actionable after the bootstrap process exits.
+
+`LABBY_INCUS_FAIL_AFTER` is a qualification-only fault hook. It accepts a named
+checkpoint (`storage`, `profile`, `container-launch`, `container-start`,
+`backup-config`, `hostname`, `binary`, `provision`, `readiness`, `tailscale-key`,
+`tailscale-up`, or `tailscale-cleanup`) or mutation
+number. Do not set it during normal deployment.
+`LABBY_INCUS_SYNC_FAIL_AFTER` similarly exercises binary, assets,
+`service-start`, and readiness boundaries in the release-sync transaction.
 
 ## Tailscale
 
@@ -386,7 +416,12 @@ runtime as the recommended self-host path.
 
 ## Rollback
 
-Rollback from Incus by stopping or deleting the container:
+Activation rollback restores the captured pre-activation binary, web assets,
+owned `/home/labby/.labby` state, netplan bytes, network service state, and
+customized Incus values, and happens automatically on verification failure.
+Stopping and deleting a container is **teardown**, not rollback: it
+destroys the target filesystem unless state was first snapshotted or exported.
+To intentionally tear down the target:
 
 ```bash
 incus stop labby

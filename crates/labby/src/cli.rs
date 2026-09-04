@@ -25,6 +25,7 @@ pub mod setup;
 pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+pub mod state;
 pub mod style;
 pub mod update;
 // [lab-scaffold: cli-modules]
@@ -84,6 +85,8 @@ pub enum Command {
     Incus(incus::IncusArgs),
     /// Update labby from the latest GitHub release.
     Update(update::UpdateArgs),
+    /// Export, verify, or restore the complete durable installation state offline.
+    State(state::StateArgs),
     /// Generate shell completions.
     Completions(completions::CompletionsArgs),
     /// Manage proxied upstream MCP gateways.
@@ -123,6 +126,7 @@ impl Command {
             Self::Setup(_) => "setup",
             Self::Incus(_) => "incus",
             Self::Update(_) => "update",
+            Self::State(_) => "state",
             Self::Completions(_) => "completions",
             #[cfg(feature = "gateway")]
             Self::Gateway(_) => "gateway",
@@ -156,6 +160,7 @@ pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
         Command::Setup(args) => setup::run(args, format).await,
         Command::Incus(args) => incus::run(args, format).await,
         Command::Update(args) => update::run(args, format).await,
+        Command::State(args) => state::run(args, format),
         Command::Completions(args) => completions::run(&args),
         #[cfg(feature = "gateway")]
         Command::Gateway(args) => gateway::run(args, format, &config).await,

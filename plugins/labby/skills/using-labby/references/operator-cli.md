@@ -3,7 +3,7 @@
 Use this reference when operating Labby from the shell. Generated help in
 `docs/generated/cli-help.md` is authoritative.
 
-## Current Commands
+## Common Commands
 
 | Command | Use |
 | --- | --- |
@@ -12,8 +12,11 @@ Use this reference when operating Labby from the shell. Generated help in
 | `labby gateway` | Manage upstreams, protected routes, OAuth, reload, and Code Mode. |
 | `labby setup` | Bootstrap, repair, provision, plugin hooks, and host service operations. |
 | `labby doctor` | Audit supported configuration and runtime health. |
-| `labby server-logs` | Inspect local Labby server logs. |
+| `labby logs` | Inspect local Labby server logs. |
 | `labby snippets` | Manage Code Mode snippets. |
+| `labby state` | Export, verify, or restore complete durable installation state offline. |
+| `labby skills` | Read Agent Skills visible to the local CLI. |
+| `labby proxy` | Proxy a stdio MCP server to Streamable HTTP. |
 | `labby docs` | Generate or verify code-owned docs. |
 | `labby health` | Quick local health check. |
 | `labby oauth` | Run local OAuth callback relay helpers. |
@@ -22,7 +25,11 @@ Use this reference when operating Labby from the shell. Generated help in
 | `labby completions` | Generate shell completions. |
 
 Use `labby --help` and `labby <command> --help` before scripting against a
-subcommand. Prefer global `--json` for machine-readable output.
+subcommand. This table is deliberately selective; generated help is the full
+inventory. Prefer global `--json` for machine-readable output.
+
+For disaster recovery, read `docs/runtime/DISASTER_RECOVERY.md` before using
+`labby state export`, `verify`, or `restore`.
 
 ## Common Workflow
 
@@ -50,6 +57,6 @@ for current command/action availability.
 
 ## Removed Commands
 
-Do not invoke ACP, Marketplace, Registry-browser, Fleet/node, Deploy-product, or
-Stash commands. Those product surfaces are retired rather than hidden behind
-feature flags.
+Do not infer commands from historical documentation. Product surfaces absent
+from generated help and the live action catalog are unsupported rather than
+hidden behind feature flags.

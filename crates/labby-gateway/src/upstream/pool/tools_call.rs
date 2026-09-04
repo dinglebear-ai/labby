@@ -419,18 +419,14 @@ impl UpstreamPool {
     /// Enforces a response size cap (`LABBY_UPSTREAM_MAX_RESPONSE_BYTES`, default 10 MB).
     ///
     /// Cap layering by transport:
-    /// - **HTTP non-OAuth**: cap is enforced at the rmcp transport layer by
+    /// - **HTTP (OAuth and non-OAuth)**: cap is enforced at the rmcp transport layer by
     ///   `BodyCappedHttpClient` (see `dispatch/upstream/http_client.rs`) —
-    ///   bytes are checked during streaming, *before* allocation.
-    /// - **stdio**: cap is post-hoc here (rmcp's stdio transport buffers the
-    ///   full JSON response before we see it). The check at the end of this
-    ///   function guards against forwarding oversized payloads but cannot
-    ///   prevent the underlying allocation.
-    /// - **HTTP OAuth**: also post-hoc for now — threading the cap through
-    ///   `OauthClientCache` is tracked as a follow-up.
+    ///   bytes are checked during streaming, before full-body materialization.
+    /// - **stdio**: `DiagnosticChildTransport` caps each newline-delimited
+    ///   JSON-RPC frame while reading, before rmcp deserializes it.
     ///
-    /// The post-hoc check below is therefore defense-in-depth for HTTP
-    /// non-OAuth and the primary line of defense for stdio / OAuth.
+    /// The structured-value check below remains defense-in-depth for every
+    /// transport and protects callers backed by an injected test peer.
     pub async fn call_tool(
         &self,
         upstream_name: &str,

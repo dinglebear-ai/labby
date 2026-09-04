@@ -32,7 +32,7 @@ The workspace metadata in the root `Cargo.toml` is authoritative:
 | HTTP client | `reqwest` with rustls |
 | TLS provider | `rustls` with `ring` |
 | URL handling | `url::Url` |
-| serialization | `serde`, `serde_json`, `serde_yaml`, `toml` |
+| serialization | `serde`, `serde_json`, `serde_yaml_ng`, `toml` |
 | library errors | `thiserror` |
 | application errors | `anyhow` |
 | time | `jiff` |

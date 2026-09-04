@@ -266,7 +266,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     };
     let unix_listener_config = resolve_unix_listener_config(transport, &config.mcp)?;
     let peer_auth_enabled = unix_peer_auth_enabled(unix_listener_config.as_ref());
-    let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
+    let config_path = config_toml_path()?;
     tracing::info!(
         subsystem = "startup",
         phase = "bootstrap.start",
@@ -362,7 +362,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // secrets are read.  heal_env_file_permissions is idempotent and a no-op on
     // non-Unix targets.  Do NOT call this after secrets are already in memory —
     // only the on-disk file mode matters here.
-    if let Some(env_path) = dotenv_path() {
+    if let Ok(env_path) = dotenv_path() {
         heal_env_file_permissions(&env_path);
     }
 
@@ -1503,7 +1503,7 @@ async fn build_gateway_runtime(
     );
     crate::config::set_process_code_mode_enabled(config.code_mode.enabled);
     let usage_store = if crate::config::usage_telemetry_enabled() {
-        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()).await {
+        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()?).await {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
                 tracing::warn!(
@@ -1518,7 +1518,7 @@ async fn build_gateway_runtime(
     };
     let step_journal = if crate::config::codemode_journal_enabled() {
         match labby_gateway::codemode_journal::StepJournalStore::open(
-            crate::config::codemode_journal_db_path(),
+            crate::config::codemode_journal_db_path()?,
         )
         .await
         {
@@ -1569,7 +1569,7 @@ async fn build_gateway_runtime(
             .run_upstream_notifications(gateway_runtime.clone()),
     );
     let _catalog_notifier_task = tokio::spawn(notifier.clone().run(notify_rx));
-    let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
+    let config_path = config_toml_path()?;
     let live_config = Arc::new(std::sync::RwLock::new(config.clone()));
     let store: Arc<dyn labby_gateway::gateway::config_store::GatewayConfigStore> = Arc::new(
         LabConfigStore::new(Arc::clone(&live_config), config_path.clone())

@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 use labby_gateway::gateway::config_store::{GatewayConfigStore, StoreFuture};
 use labby_runtime::gateway_config::{GatewayConfig, ResolvedPublicUrls};
 
-use crate::config::{EnvCredential, LabConfig, home_dir};
+use crate::config::{EnvCredential, LabConfig};
 use crate::dispatch::clients::SharedServiceClients;
 use crate::dispatch::error::ToolError;
 
@@ -60,9 +60,11 @@ impl LabConfigStore {
     }
 
     fn resolved_env_path(&self) -> PathBuf {
-        home_dir()
-            .map(|h| h.join(".labby").join(".env"))
-            .unwrap_or_else(|| PathBuf::from(".env"))
+        self.config_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(".env")
     }
 
     /// Backup-first atomic write of `creds` via the canonical
@@ -274,11 +276,9 @@ pub(crate) fn test_gateway_manager(
 /// merge it into the existing document so foreign top-level keys (sections
 /// `LabConfig` does not model) survive byte-for-byte.
 mod host_config {
-    use std::fs::OpenOptions;
     use std::io::Write as _;
     use std::path::Path;
 
-    use anyhow::Context as _;
     use fd_lock::RwLock;
     use tempfile::NamedTempFile;
 
@@ -289,6 +289,7 @@ mod host_config {
     /// existing document and rewritten from the struct; every other foreign
     /// key is preserved byte-for-byte.
     const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
+        "config_version",
         "mcp",
         "log",
         "local_logs",
@@ -367,15 +368,12 @@ mod host_config {
         }
 
         let lock_path = lock_path(path);
-        let lock_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .with_context(|| format!("open {}", lock_path.display()))
-            .map_err(|e| ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: e.to_string(),
+        let lock_file =
+            labby_auth::util::open_restricted_lock_file(&lock_path).map_err(|error| {
+                ToolError::Sdk {
+                    sdk_kind: "internal_error".to_string(),
+                    message: format!("failed to open restricted gateway config lock: {error}"),
+                }
             })?;
         let mut lock = RwLock::new(lock_file);
         let _guard = lock.try_write().map_err(|_| ToolError::Sdk {
@@ -390,6 +388,7 @@ mod host_config {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to create temp file in {}: {e}", parent.display()),
         })?;
+        restrict_config_file_permissions(tmp.path())?;
         tmp.write_all(raw.as_bytes()).map_err(|e| ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
             message: format!("failed to write temp gateway config: {e}"),
@@ -439,19 +438,12 @@ mod host_config {
     }
 
     fn restrict_config_file_permissions(path: &Path) -> Result<(), ToolError> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
-                |e| ToolError::Sdk {
-                    sdk_kind: "internal_error".to_string(),
-                    message: format!("failed to chmod {}: {e}", path.display()),
-                },
-            )?;
-        }
-        #[cfg(not(unix))]
-        let _ = path;
-        Ok(())
+        crate::config::secret_files::restrict_secret_file_permissions(path).map_err(|e| {
+            ToolError::Sdk {
+                sdk_kind: "internal_error".to_string(),
+                message: format!("failed to restrict {}: {e}", path.display()),
+            }
+        })
     }
 }
 
@@ -476,6 +468,18 @@ mod tests {
             .join("config.toml");
 
         assert_eq!(isolated_test_config_path(explicit.clone()), explicit);
+    }
+
+    #[test]
+    fn credentials_share_the_selected_config_installation_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("selected-installation/config.toml");
+        let store = LabConfigStore::new(Arc::new(RwLock::new(LabConfig::default())), config_path);
+
+        assert_eq!(
+            GatewayConfigStore::env_path(&store),
+            dir.path().join("selected-installation/.env")
+        );
     }
 
     /// Trust invariant: persisting a gateway mutation through the host store must
@@ -601,5 +605,45 @@ url = \"https://alpha.example.com/mcp\"
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+        let lock_mode = std::fs::metadata(path.with_extension("toml.lock"))
+            .expect("lock metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            lock_mode, 0o600,
+            "config lock must use the secret-file policy"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn persist_restricts_windows_config_and_lock_acls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[gateway]\n").expect("write initial config");
+        let loaded = load_gateway_config(&path).expect("load config");
+        let store = LabConfigStore::new(Arc::new(RwLock::new(loaded.clone())), path.clone());
+        store.persist(&loaded.to_gateway_config()).expect("persist");
+        let lock_path = path.with_extension("toml.lock");
+        for protected in [&path, &lock_path] {
+            let script = "\
+$acl = Get-Acl -LiteralPath $env:LABBY_ACL_TEST_PATH
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$rules = @($acl.Access)
+if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+    $rules[0].IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $sid) { exit 1 }
+";
+            let status = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", script])
+                .env("LABBY_ACL_TEST_PATH", protected)
+                .status()
+                .expect("run ACL assertion");
+            assert!(
+                status.success(),
+                "private ACL missing on {}",
+                protected.display()
+            );
+        }
     }
 }

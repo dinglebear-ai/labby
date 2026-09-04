@@ -204,7 +204,7 @@ pub fn parse_skill_md_frontmatter(content: &str) -> Result<Map<String, Value>, T
     }
 
     let block = raw.join("\n");
-    let parsed: Value = serde_yaml::from_str(&block)
+    let parsed: Value = serde_yaml_ng::from_str(&block)
         .map_err(|err| invalid(format!("SKILL.md frontmatter is not valid YAML: {err}")))?;
     match parsed {
         Value::Object(map) => Ok(map),
