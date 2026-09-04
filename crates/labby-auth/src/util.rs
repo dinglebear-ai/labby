@@ -25,6 +25,45 @@ fn validate_restricted_file_path(path: &Path) -> Result<(), AuthError> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File, bool), AuthError> {
+    use rustix::fs::{Mode, OFlags, openat};
+    use std::os::fd::AsFd;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| AuthError::Storage("restricted file path has no parent".into()))?;
+    let parent = std::fs::canonicalize(parent)
+        .map_err(|error| AuthError::Storage(format!("resolve restricted file parent: {error}")))?;
+    let parent = std::fs::File::open(parent)
+        .map_err(|error| AuthError::Storage(format!("open restricted file parent: {error}")))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| AuthError::Storage("restricted file path has no file name".into()))?;
+    let base = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+
+    if !create_new {
+        match openat(parent.as_fd(), name, base, Mode::empty()) {
+            Ok(fd) => return Ok((std::fs::File::from(fd), true)),
+            Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => {
+                return Err(AuthError::Storage(format!(
+                    "open existing restricted file: {error}"
+                )));
+            }
+        }
+    }
+
+    let fd = openat(
+        parent.as_fd(),
+        name,
+        base | OFlags::CREATE | OFlags::EXCL,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .map_err(|error| AuthError::Storage(format!("create restricted file: {error}")))?;
+    Ok((std::fs::File::from(fd), false))
+}
+
 fn reject_final_component_symlink(path: &Path) -> Result<bool, AuthError> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(AuthError::Storage(
@@ -36,6 +75,68 @@ fn reject_final_component_symlink(path: &Path) -> Result<bool, AuthError> {
             "inspect restricted file path: {error}"
         ))),
     }
+}
+
+#[cfg(unix)]
+fn harden_open_file(file: &std::fs::File, _path: &Path) -> Result<(), AuthError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| AuthError::Storage(format!("harden open restricted file: {error}")))
+}
+
+#[cfg(windows)]
+fn harden_open_file(file: &std::fs::File, path: &Path) -> Result<(), AuthError> {
+    harden_secret_file(path)?;
+    if same_open_file(file, path)? {
+        Ok(())
+    } else {
+        Err(AuthError::Storage(
+            "restricted file changed while its ACL was hardened".into(),
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let opened = file
+        .metadata()
+        .map_err(|error| AuthError::Storage(format!("inspect open restricted file: {error}")))?;
+    let current = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(AuthError::Storage(format!(
+                "inspect restricted file path: {error}"
+            )));
+        }
+    };
+    Ok(!current.file_type().is_symlink()
+        && opened.dev() == current.dev()
+        && opened.ino() == current.ino())
+}
+
+#[cfg(windows)]
+fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> {
+    use std::os::windows::fs::MetadataExt;
+
+    let opened = file
+        .metadata()
+        .map_err(|error| AuthError::Storage(format!("inspect open restricted file: {error}")))?;
+    let current = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(AuthError::Storage(format!(
+                "inspect restricted file path: {error}"
+            )));
+        }
+    };
+    Ok(!current.file_type().is_symlink()
+        && opened.volume_serial_number() == current.volume_serial_number()
+        && opened.file_index() == current.file_index())
 }
 
 pub fn now_unix() -> i64 {
@@ -186,24 +287,42 @@ pub fn harden_secret_file(path: &Path) -> Result<(), AuthError> {
 pub fn create_restricted_secret_file(path: &Path) -> Result<std::fs::File, AuthError> {
     validate_restricted_file_path(path)?;
     reject_final_component_symlink(path)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-    }
-    let file = options.open(path).map_err(|error| {
-        AuthError::Storage(format!(
-            "create restricted secret `{}`: {error}",
-            path.display()
-        ))
-    })?;
-    if let Err(error) = harden_secret_file(path) {
+    let file = open_restricted_unix(path, true)?.0;
+    #[cfg(not(unix))]
+    let file = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+            options
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        options.open(path).map_err(|error| {
+            AuthError::Storage(format!(
+                "create restricted secret `{}`: {error}",
+                path.display()
+            ))
+        })?
+    };
+    if let Err(error) = harden_open_file(&file, path) {
+        let still_same = same_open_file(&file, path).map_err(|identity_error| {
+            AuthError::Storage(format!(
+                "{error}; verify failed restricted file before cleanup: {identity_error}"
+            ))
+        })?;
         drop(file);
-        drop(std::fs::remove_file(path));
+        if still_same && let Err(cleanup) = std::fs::remove_file(path) {
+            return Err(AuthError::Storage(format!(
+                "{error}; cleanup newly-created restricted file failed: {cleanup}"
+            )));
+        }
         return Err(error);
     }
     Ok(file)
@@ -213,7 +332,7 @@ pub fn create_restricted_secret_file(path: &Path) -> Result<std::fs::File, AuthE
 /// created by this call is removed on hardening failure; both failures are
 /// retained when cleanup also fails.
 pub fn open_restricted_lock_file(path: &Path) -> Result<std::fs::File, AuthError> {
-    open_restricted_lock_file_with(path, harden_secret_file, |path| std::fs::remove_file(path))
+    open_restricted_lock_file_with(path, harden_open_file, |path| std::fs::remove_file(path))
 }
 
 #[doc(hidden)]
@@ -223,24 +342,42 @@ pub fn open_restricted_lock_file_with<H, R>(
     remove: R,
 ) -> Result<std::fs::File, AuthError>
 where
-    H: FnOnce(&Path) -> Result<(), AuthError>,
+    H: FnOnce(&std::fs::File, &Path) -> Result<(), AuthError>,
     R: FnOnce(&Path) -> std::io::Result<()>,
 {
     validate_restricted_file_path(path)?;
+    #[cfg(not(unix))]
     let existed = reject_final_component_symlink(path)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
-    }
-    let file = options
-        .open(path)
-        .map_err(|error| AuthError::Storage(format!("open lock `{}`: {error}", path.display())))?;
-    if let Err(error) = harden(path) {
+    reject_final_component_symlink(path)?;
+    #[cfg(unix)]
+    let (file, existed) = open_restricted_unix(path, false)?;
+    #[cfg(not(unix))]
+    let file = {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+            const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+            options
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        options.open(path).map_err(|error| {
+            AuthError::Storage(format!("open lock `{}`: {error}", path.display()))
+        })?
+    };
+    if let Err(error) = harden(&file, path) {
+        let still_same = same_open_file(&file, path)?;
         drop(file);
-        if !existed && let Err(cleanup) = remove(path) {
+        if !existed
+            && still_same
+            && let Err(cleanup) = remove(path)
+        {
             return Err(AuthError::Storage(format!(
                 "{error}; cleanup lock `{}` failed: {cleanup}",
                 path.display()
@@ -358,7 +495,7 @@ pub(crate) fn expires_at(
 mod restricted_lock_tests {
     use super::*;
 
-    fn denied(_path: &Path) -> Result<(), AuthError> {
+    fn denied(_file: &std::fs::File, _path: &Path) -> Result<(), AuthError> {
         Err(AuthError::Storage("hardening denied".into()))
     }
 
@@ -402,10 +539,48 @@ mod restricted_lock_tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn replacement_is_not_removed_after_hardening_race() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.lock");
+        let displaced = dir.path().join("displaced.lock");
+        let error = open_restricted_lock_file_with(
+            &path,
+            |_, path| {
+                std::fs::rename(path, &displaced).unwrap();
+                std::fs::write(path, b"replacement").unwrap();
+                Err(AuthError::Storage("hardening denied".into()))
+            },
+            |path| std::fs::remove_file(path),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("hardening denied"));
+        assert_eq!(std::fs::read(path).unwrap(), b"replacement");
+        assert!(displaced.exists());
+    }
+
     #[test]
     fn restricted_files_reject_relative_paths() {
         let error = create_restricted_secret_file(Path::new("secret.env")).unwrap_err();
         assert!(error.to_string().contains("absolute"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_files_resolve_symbolic_link_ancestors_before_opening() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let file = create_restricted_secret_file(&link.join("secret.env")).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        assert!(target.join("secret.env").exists());
     }
 
     #[cfg(unix)]
