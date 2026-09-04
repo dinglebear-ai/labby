@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "skills")]
 use std::time::Duration;
 
+use base64::Engine as _;
 use rmcp::model::{
     CustomRequest, CustomResult, ErrorCode, ErrorData, ServerCapabilities, ServerInfo,
 };
@@ -71,6 +72,20 @@ fn entry_with_supporting(origin: &str, name: &str) -> Value {
     })
 }
 
+fn entry_with_binary(origin: &str, name: &str, bytes: &[u8]) -> Value {
+    let uri = format!("skill://{origin}/{name}/SKILL.md");
+    let asset = format!("skill://{origin}/{name}/assets/example.png");
+    let body = skill_md_body(name);
+    json!({
+        "uri": uri,
+        "frontmatter": { "name": name, "description": "a test skill" },
+        "resources": [
+            { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire(), "size": body.len() },
+            { "uri": asset, "digest": ResourceDigest::of_bytes(bytes).to_wire(), "size": bytes.len() }
+        ]
+    })
+}
+
 /// A skills-capable upstream whose `skills/list` behavior is scripted per test.
 #[derive(Clone)]
 struct SkillsServer {
@@ -81,6 +96,7 @@ struct SkillsServer {
     get_calls: Arc<AtomicUsize>,
     /// When set, `skills/get` answers with this entry; otherwise -32602.
     get_entry: Arc<Option<Value>>,
+    omit_get_result_type: bool,
     /// When false, the handshake omits the skills extension entirely.
     declares_extension: bool,
     /// When true, resources/read serves bytes that do not match the digest.
@@ -89,6 +105,7 @@ struct SkillsServer {
     /// whose frontmatter disagrees with the published entry while its digest
     /// still matches.
     forged_frontmatter: Option<String>,
+    binary_asset: Option<Vec<u8>>,
     stall_list: bool,
     stall_get: bool,
     stall_read: bool,
@@ -101,9 +118,11 @@ impl SkillsServer {
             list_calls: Arc::new(AtomicUsize::new(0)),
             get_calls: Arc::new(AtomicUsize::new(0)),
             get_entry: Arc::new(None),
+            omit_get_result_type: false,
             declares_extension: true,
             tamper: false,
             forged_frontmatter: None,
+            binary_asset: None,
             stall_list: false,
             stall_get: false,
             stall_read: false,
@@ -115,6 +134,11 @@ impl SkillsServer {
         self
     }
 
+    fn omitting_get_result_type(mut self) -> Self {
+        self.omit_get_result_type = true;
+        self
+    }
+
     fn tampering(mut self) -> Self {
         self.tamper = true;
         self
@@ -123,6 +147,11 @@ impl SkillsServer {
     /// Serve a `SKILL.md` whose frontmatter differs from the published entry.
     fn serving_body(mut self, body: &str) -> Self {
         self.forged_frontmatter = Some(body.to_string());
+        self
+    }
+
+    fn serving_binary(mut self, bytes: &[u8]) -> Self {
+        self.binary_asset = Some(bytes.to_vec());
         self
     }
 
@@ -172,6 +201,17 @@ impl ServerHandler for SkillsServer {
         if self.stall_read {
             std::future::pending::<()>().await;
         }
+        if request.uri.ends_with("/assets/example.png") {
+            let bytes = self.binary_asset.as_deref().unwrap_or_default();
+            return Ok(rmcp::model::ReadResourceResult::new(vec![
+                rmcp::model::ResourceContents::blob(
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                    request.uri.clone(),
+                )
+                .with_mime_type("image/png"),
+            ])
+            .into());
+        }
         // The honest body's digest is what `entry()` publishes, so serving
         // anything else is a genuine mismatch a gateway must catch.
         let name = request
@@ -211,16 +251,12 @@ impl ServerHandler for SkillsServer {
                     std::future::pending::<()>().await;
                 }
                 let index = self.list_calls.fetch_add(1, Ordering::SeqCst);
-                let mut page = self
+                let page = self
                     .pages
                     .get(index)
                     .or_else(|| self.pages.last())
                     .cloned()
                     .unwrap_or_else(|| json!({ "skills": [] }));
-                if let Some(page) = page.as_object_mut() {
-                    page.entry("resultType")
-                        .or_insert_with(|| json!("complete"));
-                }
                 Ok(CustomResult::new(page))
             }
             "skills/get" => {
@@ -229,16 +265,21 @@ impl ServerHandler for SkillsServer {
                 }
                 self.get_calls.fetch_add(1, Ordering::SeqCst);
                 match self.get_entry.as_ref() {
-                    Some(entry) => Ok(CustomResult::new(json!({
-                        "resultType": "complete",
-                        "skill": entry,
-                        "_meta": {
-                            "io.modelcontextprotocol/serverInfo": {
-                                "name": "depot-shaped-skills-server",
-                                "version": "1.0.0"
+                    Some(entry) => {
+                        let mut result = json!({
+                            "skill": entry,
+                            "_meta": {
+                                "io.modelcontextprotocol/serverInfo": {
+                                    "name": "depot-shaped-skills-server",
+                                    "version": "1.0.0"
+                                }
                             }
+                        });
+                        if !self.omit_get_result_type {
+                            result["resultType"] = json!("complete");
                         }
-                    }))),
+                        Ok(CustomResult::new(result))
+                    }
                     None => Err(ErrorData::new(
                         ErrorCode::INVALID_PARAMS,
                         "unknown skill".to_string(),
@@ -584,6 +625,41 @@ async fn skills_get_resolves_a_skill_that_never_appeared_in_a_listing() {
         .expect("skills/get succeeds")
         .expect("an unlisted skill still resolves");
     assert_eq!(fetched.name, "unlisted");
+}
+
+#[tokio::test]
+async fn missing_result_type_defaults_to_complete_on_list_and_get_paths() {
+    let server = SkillsServer::new(vec![json!({ "skills": [entry("up", "listed")] })])
+        .with_get(entry("up", "unlisted"))
+        .omitting_get_result_type();
+    let pool = catalog_pool_with_server("up", server).await;
+    let peer = peer_for(&pool, "up").await;
+
+    let listed = pool
+        .fetch_upstream_skills("up", &peer)
+        .await
+        .expect("a missing list resultType defaults to complete");
+    assert_eq!(listed.skills.len(), 1);
+    let fetched = pool
+        .fetch_upstream_skill("up", &peer, "skill://up/unlisted/SKILL.md", None)
+        .await
+        .expect("a missing get resultType defaults to complete")
+        .expect("skill resolves");
+    assert_eq!(fetched.name, "unlisted");
+}
+
+#[tokio::test]
+async fn unknown_result_type_is_rejected_on_the_client_path() {
+    let server = SkillsServer::new(vec![json!({
+        "resultType": "future-shape",
+        "skills": []
+    })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let error = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect_err("unknown resultType values must not be silently accepted");
+    assert!(error.contains("malformed"), "{error}");
 }
 
 #[tokio::test]
@@ -1419,7 +1495,48 @@ async fn a_proxied_skill_file_is_readable_and_digest_verified() {
         .read_proxied_skill_file(&config, None, "skill://up/alpha/SKILL.md")
         .await
         .expect("a listed skill file is readable through the gateway");
-    assert_eq!(verified.text, skill_md_body("alpha"));
+    assert_eq!(verified.bytes, skill_md_body("alpha").as_bytes());
+}
+
+#[tokio::test]
+async fn a_binary_skill_asset_is_decoded_size_checked_and_digest_verified() {
+    let bytes = b"\x89PNG\r\n\x1a\n\0binary";
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry_with_binary("up", "alpha", bytes)]
+    })])
+    .serving_binary(bytes);
+    let pool = catalog_pool_with_server("up", server).await;
+    let verified = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/assets/example.png",
+        )
+        .await
+        .expect("binary supporting assets are valid Agent Skill resources");
+    assert_eq!(verified.bytes, bytes);
+    assert!(verified.is_blob);
+    assert_eq!(verified.mime_type.as_deref(), Some("image/png"));
+}
+
+#[tokio::test]
+async fn a_resource_whose_raw_size_disagrees_with_its_manifest_is_refused() {
+    let mut listed = entry("up", "alpha");
+    listed["resources"][0]["size"] = json!(1);
+    let server = SkillsServer::new(vec![json!({ "skills": [listed] })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let error = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
+        .await
+        .expect_err("manifest size is verified independently of its digest");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH
+    );
 }
 
 #[tokio::test]
@@ -1610,7 +1727,7 @@ async fn a_native_scheme_upstream_is_aggregated_not_silently_dropped() {
         )
         .await
         .expect("the native URI remains readable through its indexed binding");
-    assert_eq!(verified.text, body);
+    assert_eq!(verified.bytes, body.as_bytes());
 }
 
 #[tokio::test]

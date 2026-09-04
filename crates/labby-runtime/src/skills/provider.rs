@@ -276,6 +276,14 @@ impl SkillResourceReadRequest {
     }
 }
 
+/// MCP representation used for the exact resource bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SkillResourceRepresentation {
+    #[default]
+    Text,
+    Blob,
+}
+
 /// Exact bytes returned by a bounded resource read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillResourceReadResult {
@@ -283,6 +291,7 @@ pub struct SkillResourceReadResult {
     pub resource_id: String,
     pub bytes: Vec<u8>,
     pub media_type: Option<String>,
+    pub representation: SkillResourceRepresentation,
 }
 
 impl SkillResourceReadResult {
@@ -481,6 +490,7 @@ mod tests {
             resource_id: "SKILL.md".to_string(),
             bytes: b"12345".to_vec(),
             media_type: None,
+            representation: SkillResourceRepresentation::Text,
         };
         assert!(matches!(
             oversized.validate_for(&request),
@@ -498,6 +508,7 @@ mod tests {
             resource_id: "other.md".to_string(),
             bytes: b"1234".to_vec(),
             media_type: None,
+            representation: SkillResourceRepresentation::Text,
         };
         assert!(matches!(
             wrong_identity.validate_for(&request),

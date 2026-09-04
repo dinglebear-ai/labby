@@ -135,63 +135,33 @@ pub(crate) fn mint_proxied_entries(
     skills: &[ValidatedSkill],
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
 ) -> MintedEntries {
-    // A skill is identified by its `uri`, and a resource URI must resolve to
-    // exactly one owner. Exclude every owner of a collision instead of letting
-    // iteration order decide which instructions or bytes a client receives.
-    let mut minted: Vec<SkillEntry> = Vec::with_capacity(skills.len());
-    let mut owners: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    // A skill is identified by its manifest URI within its server origin.
+    // Supporting-resource overlap is valid: a nested skill's files are also
+    // supporting files of its parent and therefore appear in both manifests.
+    let mut candidates: Vec<SkillEntry> = Vec::with_capacity(skills.len());
+    let mut manifest_counts = BTreeMap::<String, usize>::new();
     for skill in skills {
         let Some(entry) = mint_proxied_entry(&config.name, skill, meta) else {
             continue;
         };
-        let owner = minted.len();
-        owners.entry(entry.uri.clone()).or_default().insert(owner);
-        if let Some(resources) = &entry.resources {
-            for resource in resources {
-                owners
-                    .entry(resource.uri.clone())
-                    .or_default()
-                    .insert(owner);
-            }
-        }
-        minted.push(entry);
+        *manifest_counts.entry(entry.uri.clone()).or_default() += 1;
+        candidates.push(entry);
     }
-    let colliding_owners: BTreeSet<usize> = owners
-        .values()
-        .filter(|owners| owners.len() > 1)
-        .flatten()
-        .copied()
-        .collect();
-    // Poison every URI owned by an excluded skill, not just its entry URI.
-    // Otherwise an unlisted `skills/get` response could later reuse one of the
-    // excluded skill's supporting-file URIs and make manifest ownership
-    // depend on which path the caller used to resolve it.
-    let excluded_uris = owners
-        .iter()
-        .filter(|(_, uri_owners)| {
-            uri_owners
-                .iter()
-                .any(|owner| colliding_owners.contains(owner))
-        })
-        .map(|(uri, _)| uri.clone())
-        .collect();
-    if !colliding_owners.is_empty() {
-        for (uri, owners) in &owners {
-            if owners.len() <= 1 {
-                continue;
-            }
-            tracing::warn!(
-                upstream = %config.name,
-                skill = %uri,
-                "excluding skills that mint to an ambiguously owned URI"
-            );
-        }
-        minted = minted
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, entry)| (!colliding_owners.contains(&index)).then_some(entry))
-            .collect();
+    let excluded_uris = manifest_counts
+        .into_iter()
+        .filter_map(|(uri, count)| (count > 1).then_some(uri))
+        .collect::<BTreeSet<_>>();
+    for uri in &excluded_uris {
+        tracing::warn!(
+            upstream = %config.name,
+            skill = %uri,
+            "excluding every duplicate publication of one skill identity"
+        );
     }
+    let minted = candidates
+        .into_iter()
+        .filter(|entry| !excluded_uris.contains(&entry.uri))
+        .collect::<Vec<_>>();
     let excluded_count = skills.len().saturating_sub(minted.len());
     MintedEntries {
         entries: minted,
@@ -216,25 +186,9 @@ impl MintedEntries {
     /// the current published set or with a skill already excluded for a
     /// collision.
     pub(crate) fn conflicts_with(&self, candidate: &SkillEntry) -> bool {
-        let published_uris: BTreeSet<String> = self
-            .entries
-            .iter()
-            .flat_map(entry_owned_uris)
-            .map(str::to_owned)
-            .collect();
-        entry_owned_uris(candidate)
-            .any(|uri| self.excluded_uris.contains(uri) || published_uris.contains(uri))
+        self.excluded_uris.contains(&candidate.uri)
+            || self.entries.iter().any(|entry| entry.uri == candidate.uri)
     }
-}
-
-fn entry_owned_uris(entry: &SkillEntry) -> impl Iterator<Item = &str> {
-    std::iter::once(entry.uri.as_str()).chain(
-        entry
-            .resources
-            .iter()
-            .flatten()
-            .map(|resource| resource.uri.as_str()),
-    )
 }
 
 #[cfg(test)]
@@ -411,7 +365,46 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_resource_uris_exclude_every_owning_skill() {
+    fn duplicate_manifest_identity_excludes_every_publication() {
+        let duplicate = upstream_skill("acme", "refunds");
+        let result = mint_proxied_entries(
+            &UpstreamConfig {
+                name: "gh".to_string(),
+                ..minimal_config()
+            },
+            &[duplicate.clone(), duplicate],
+            None,
+        );
+        assert!(result.entries.is_empty());
+        assert_eq!(result.excluded_count, 2);
+        assert_eq!(
+            result.excluded_uris,
+            BTreeSet::from(["skill://gh/skill/acme/refunds/SKILL.md".to_string()])
+        );
+    }
+
+    #[test]
+    fn conflicting_duplicate_manifest_identity_excludes_every_publication() {
+        let first = upstream_skill("acme", "refunds");
+        let mut second = first.clone();
+        second.entry.frontmatter.insert(
+            "description".to_string(),
+            serde_json::Value::String("conflicting publication".to_string()),
+        );
+        let result = mint_proxied_entries(
+            &UpstreamConfig {
+                name: "gh".to_string(),
+                ..minimal_config()
+            },
+            &[first, second],
+            None,
+        );
+        assert!(result.entries.is_empty());
+        assert_eq!(result.excluded_count, 2);
+    }
+
+    #[test]
+    fn nested_skills_may_publish_overlapping_supporting_resources() {
         let mut parent = upstream_skill("acme", "parent");
         let mut child = upstream_skill("acme/parent", "child");
         let shared = "skill://acme/parent/child/shared.md";
@@ -443,23 +436,13 @@ mod tests {
             &[parent, child],
             None,
         );
-        assert!(result.entries.is_empty());
-        assert_eq!(result.excluded_count, 2);
-        assert_eq!(
-            result.excluded_uris.len(),
-            5,
-            "every entry/resource URI owned by either excluded skill stays poisoned"
-        );
-        assert!(
-            result
-                .excluded_uris
-                .contains("skill://gh/skill/acme/parent/child/shared.md"),
-            "the shared supporting-file URI must remain poisoned too"
-        );
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.excluded_count, 0);
+        assert!(result.excluded_uris.is_empty());
     }
 
     #[test]
-    fn unlisted_candidate_cannot_reuse_a_published_resource_uri() {
+    fn unlisted_candidate_may_reuse_a_supporting_resource_uri() {
         let published = upstream_skill("acme", "published");
         let result = mint_proxied_entries(
             &UpstreamConfig {
@@ -484,7 +467,7 @@ mod tests {
             size: b"candidate".len() as u64,
         }]);
 
-        assert!(result.conflicts_with(&candidate));
+        assert!(!result.conflicts_with(&candidate));
     }
 
     #[test]

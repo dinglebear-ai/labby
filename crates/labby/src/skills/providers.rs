@@ -113,16 +113,17 @@ impl SnapshotSkill {
     }
 }
 
-/// One immutable first-party registry snapshot. Bundled Skills win any name,
-/// manifest URI, or resource URI collision with operator-local content.
+/// One immutable first-party registry snapshot. Skill names are labels and
+/// supporting-resource overlap is valid for nested skills; only duplicate
+/// manifest identities collide within this single local origin.
 #[derive(Debug, Clone)]
 pub(crate) struct FirstPartySkillProviders {
     bundled: SnapshotSkillProvider,
     operator_local: SnapshotSkillProvider,
     merged: Vec<SkillProviderEntry>,
-    uri_index: BTreeMap<String, usize>,
+    uri_index: BTreeMap<String, Vec<usize>>,
     collision_rejections: Vec<CollisionRejection>,
-    artifact_access: BTreeMap<String, ArtifactSkillAccess>,
+    artifact_access: BTreeMap<String, Vec<ArtifactSkillAccess>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,9 +140,7 @@ pub(crate) struct CollisionRejection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollisionKind {
-    Name,
     ManifestUri,
-    ResourceUri,
 }
 
 impl FirstPartySkillProviders {
@@ -151,13 +150,7 @@ impl FirstPartySkillProviders {
     ) -> Self {
         let (merged, collision_rejections) =
             merge_bundled_first(bundled.entries(), operator_local.entries());
-        let mut uri_index = BTreeMap::new();
-        for (index, entry) in merged.iter().enumerate() {
-            uri_index.insert(entry.descriptor().id.source_id().to_string(), index);
-            for resource in entry.resources() {
-                uri_index.insert(resource.source_id, index);
-            }
-        }
+        let uri_index = build_uri_index(&merged);
         Self {
             bundled,
             operator_local,
@@ -234,13 +227,7 @@ impl FirstPartySkillProviders {
             id: legacy.id,
             skills: operator_skills,
         };
-        let mut uri_index = BTreeMap::new();
-        for (index, entry) in merged.iter().enumerate() {
-            uri_index.insert(entry.descriptor().id.source_id().to_string(), index);
-            for resource in entry.resources() {
-                uri_index.insert(resource.source_id, index);
-            }
-        }
+        let uri_index = build_uri_index(&merged);
         let mut providers = Self {
             bundled: self.bundled.clone(),
             operator_local,
@@ -252,21 +239,20 @@ impl FirstPartySkillProviders {
         for entry in &providers.merged {
             let manifest = entry.descriptor().id.source_id();
             if let Some(access) = access_by_manifest.get(manifest) {
-                providers
-                    .artifact_access
-                    .insert(manifest.to_owned(), access.clone());
-                for resource in entry.resources() {
+                for uri in bound_uris(entry) {
                     providers
                         .artifact_access
-                        .insert(resource.source_id.clone(), access.clone());
+                        .entry(uri)
+                        .or_default()
+                        .push(access.clone());
                 }
             }
         }
         providers
     }
 
-    pub(crate) fn artifact_access(&self, uri: &str) -> Option<&ArtifactSkillAccess> {
-        self.artifact_access.get(uri)
+    pub(crate) fn artifact_access(&self, uri: &str) -> Option<&[ArtifactSkillAccess]> {
+        self.artifact_access.get(uri).map(Vec::as_slice)
     }
 
     pub(crate) fn has_artifact_skills(&self) -> bool {
@@ -278,7 +264,19 @@ impl FirstPartySkillProviders {
     }
 
     pub(crate) fn find(&self, uri: &str) -> Option<&SkillProviderEntry> {
-        self.uri_index.get(uri).map(|index| &self.merged[*index])
+        self.uri_index
+            .get(uri)
+            .and_then(|indices| indices.first())
+            .map(|index| &self.merged[*index])
+    }
+
+    pub(crate) fn find_all(&self, uri: &str) -> Vec<&SkillProviderEntry> {
+        self.uri_index
+            .get(uri)
+            .into_iter()
+            .flatten()
+            .map(|index| &self.merged[*index])
+            .collect()
     }
 
     pub(crate) async fn read(
@@ -324,6 +322,26 @@ impl FirstPartySkillProviders {
     }
 }
 
+fn bound_uris(entry: &SkillProviderEntry) -> impl Iterator<Item = String> + '_ {
+    let manifest = entry.descriptor().id.source_id();
+    std::iter::once(manifest.to_string()).chain(
+        entry
+            .resources()
+            .map(|resource| resource.source_id)
+            .filter(move |uri| uri != manifest),
+    )
+}
+
+fn build_uri_index(entries: &[SkillProviderEntry]) -> BTreeMap<String, Vec<usize>> {
+    let mut index: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (owner, entry) in entries.iter().enumerate() {
+        for uri in bound_uris(entry) {
+            index.entry(uri).or_default().push(owner);
+        }
+    }
+    index
+}
+
 impl SnapshotSkillProvider {
     fn entries(&self) -> Vec<SkillProviderEntry> {
         self.skills
@@ -349,23 +367,15 @@ fn merge_bundled_first(
     bundled: Vec<SkillProviderEntry>,
     local: Vec<SkillProviderEntry>,
 ) -> (Vec<SkillProviderEntry>, Vec<CollisionRejection>) {
-    let mut names = std::collections::BTreeSet::new();
-    let mut uris = std::collections::BTreeSet::new();
+    let mut manifest_uris = std::collections::BTreeSet::new();
     let mut merged = Vec::with_capacity(bundled.len() + local.len());
     let mut rejections = Vec::new();
     for entry in bundled.into_iter().chain(local) {
         if !entry.is_available() {
             continue;
         }
-        let collision = if names.contains(&entry.descriptor().name) {
-            Some(CollisionKind::Name)
-        } else if uris.contains(entry.descriptor().id.source_id()) {
+        let collision = if manifest_uris.contains(entry.descriptor().id.source_id()) {
             Some(CollisionKind::ManifestUri)
-        } else if entry
-            .resources()
-            .any(|resource| uris.contains(&resource.source_id))
-        {
-            Some(CollisionKind::ResourceUri)
         } else {
             None
         };
@@ -381,9 +391,7 @@ fn merge_bundled_first(
             });
             continue;
         }
-        names.insert(entry.descriptor().name.clone());
-        uris.insert(entry.descriptor().id.source_id().to_string());
-        uris.extend(entry.resources().map(|resource| resource.source_id.clone()));
+        manifest_uris.insert(entry.descriptor().id.source_id().to_string());
         merged.push(entry);
     }
     (merged, rejections)
@@ -466,6 +474,7 @@ impl SkillProvider for SnapshotSkillProvider {
                 resource_id: request.resource_id.clone(),
                 bytes: bytes.clone(),
                 media_type: None,
+                representation: labby_runtime::skills::SkillResourceRepresentation::Text,
             };
             ensure_deadline(started, request.deadline.timeout)?;
             result.validate_for(request)?;
@@ -578,9 +587,9 @@ mod tests {
             projected
                 .collision_rejections()
                 .iter()
-                .filter(|rejection| rejection.kind == CollisionKind::Name)
+                .filter(|rejection| rejection.kind == CollisionKind::ManifestUri)
                 .count(),
-            2
+            0
         );
         assert_eq!(
             projected
@@ -725,7 +734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bundled_entries_win_name_and_uri_collisions() {
+    async fn same_names_survive_while_duplicate_manifest_uris_are_rejected() {
         let provider = SnapshotSkillProvider::bundled();
         let bundled = provider
             .discover(&SkillDiscoverRequest::default())
@@ -756,13 +765,13 @@ mod tests {
 
         let (merged, rejections) =
             merge_bundled_first(vec![bundled.clone()], vec![same_name, same_uri]);
-        assert_eq!(merged, vec![bundled]);
-        assert_eq!(rejections.len(), 2);
-        assert_eq!(rejections[0].kind, CollisionKind::Name);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(rejections.len(), 1);
+        assert_eq!(rejections[0].kind, CollisionKind::ManifestUri);
     }
 
     #[test]
-    fn bundled_collision_winner_never_inherits_artifact_visibility() {
+    fn same_named_artifact_remains_distinct_and_keeps_its_visibility() {
         let manifest = "skill://labby/operator/using-labby/SKILL.md";
         let body = "---\nname: using-labby\ndescription: collision\n---\n";
         let local = local::LocalSkill {
@@ -788,19 +797,17 @@ mod tests {
         };
         let providers = FirstPartySkillProviders::from_artifact_skills([(local, access)]);
 
-        assert!(providers.artifact_access(manifest).is_none());
+        assert!(providers.artifact_access(manifest).is_some());
         assert!(
             providers
                 .artifact_access("skill://labby/using-labby/SKILL.md")
                 .is_none()
         );
-        assert!(providers.collision_rejections().iter().any(|rejection| {
-            rejection.skill == "using-labby" && rejection.kind == CollisionKind::Name
-        }));
+        assert!(providers.collision_rejections().is_empty());
     }
 
     #[test]
-    fn auxiliary_resource_only_collision_excludes_the_later_owner() {
+    fn nested_auxiliary_resource_overlap_keeps_both_owners() {
         let shared = "skill://test/first/second/notes.md";
         let first = provider_with("first", Some(shared))
             .entries()
@@ -823,8 +830,8 @@ mod tests {
             validate_skill_entry(&second_wire).unwrap(),
         );
         let (merged, rejections) = merge_bundled_first(vec![first.clone()], vec![second]);
-        assert_eq!(merged, vec![first]);
-        assert_eq!(rejections[0].kind, CollisionKind::ResourceUri);
+        assert_eq!(merged.len(), 2);
+        assert!(rejections.is_empty());
     }
 
     #[test]
