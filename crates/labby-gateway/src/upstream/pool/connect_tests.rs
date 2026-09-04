@@ -1032,7 +1032,7 @@ async fn ordered_relay_raw_receive_preserves_order_cancellation_and_result_body(
     release.add_permits(1);
     let message = transport.receive_raw().await.expect("raw response");
     assert!(
-        matches!(&message, RawRxJsonRpcMessage::<RoleClient>::Response(_)),
+        matches!(message, RawRxJsonRpcMessage::<RoleClient>::Response(_)),
         "expected raw response"
     );
     let RawRxJsonRpcMessage::<RoleClient>::Response(response) = message else {

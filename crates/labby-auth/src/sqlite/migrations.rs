@@ -287,12 +287,6 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
     Ok(())
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
-pub(super) fn run_migrations_with_fault(conn: &Connection, fault: &str) -> Result<(), AuthError> {
-    run_migrations_inner(conn, Some(fault))
-}
-
 fn repair_falsely_stamped_v8(conn: &Connection) -> Result<(), AuthError> {
     require_columns(
         conn,

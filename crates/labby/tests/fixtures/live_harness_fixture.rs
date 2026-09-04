@@ -1,4 +1,4 @@
-//! Test fixture process used by the live browser harness integration tests.
+//! Small process fixture used by the live E2E harness.
 
 #![allow(clippy::panic)]
 
