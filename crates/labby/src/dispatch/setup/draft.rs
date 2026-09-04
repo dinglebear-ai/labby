@@ -86,8 +86,7 @@ impl DraftSnapshot {
 
     /// Atomically move the verified draft aside so later path replacement can
     /// never cause commit cleanup to unlink an attacker-controlled substitute.
-    /// Unix builds require the `fs` feature for the OS atomic no-replace
-    /// primitive; without it, commit fails closed with [`DraftReadError::Unsupported`].
+    /// Unix builds use the OS atomic no-replace primitive in every product slice.
     pub fn claim(&self, path: &Path) -> Result<ClaimedDraft, DraftReadError> {
         let claimed = quarantine_path(path);
         self.claim_to(path, &claimed)
@@ -259,9 +258,9 @@ fn restore_quarantine_with(
 /// Move a regular draft without ever replacing the destination.
 ///
 /// `renameat2(RENAME_NOREPLACE)`/`renamex_np(RENAME_EXCL)` is used through
-/// rustix whenever the `fs` product slice is enabled. Builds without an OS
-/// atomic no-replace primitive fail closed and leave both paths untouched.
-#[cfg(all(unix, feature = "fs"))]
+/// rustix on Unix. Builds without an OS atomic no-replace primitive fail closed
+/// and leave both paths untouched.
+#[cfg(unix)]
 fn move_noreplace(source: &Path, destination: &Path) -> Result<(), DraftReadError> {
     use rustix::fs::{RenameFlags, renameat_with};
 
@@ -287,12 +286,7 @@ fn move_noreplace(source: &Path, destination: &Path) -> Result<(), DraftReadErro
     }
 }
 
-#[cfg(all(unix, not(feature = "fs")))]
-fn move_noreplace(source: &Path, destination: &Path) -> Result<(), DraftReadError> {
-    unsupported_move_noreplace(source, destination)
-}
-
-#[cfg(any(test, all(unix, not(feature = "fs"))))]
+#[cfg(test)]
 fn unsupported_move_noreplace(source: &Path, _destination: &Path) -> Result<(), DraftReadError> {
     Err(DraftReadError::Unsupported(source.to_path_buf()))
 }
@@ -420,7 +414,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "LABBY_LOG=evil\n");
     }
 
-    #[cfg(any(feature = "fs", windows))]
+    #[cfg(any(unix, windows))]
     #[test]
     fn claimed_draft_cleanup_never_deletes_a_replacement_at_the_original_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -462,21 +456,6 @@ mod tests {
         ));
         assert_eq!(fs::read_to_string(&source).unwrap(), "SOURCE\n");
         assert_eq!(fs::read_to_string(&destination).unwrap(), "DESTINATION\n");
-    }
-
-    #[cfg(all(unix, not(feature = "fs")))]
-    #[test]
-    fn draft_claim_without_fs_feature_is_typed_unsupported_and_preserves_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".env.draft");
-        fs::write(&path, "ORIGINAL=1\n").unwrap();
-        let snapshot = read_snapshot(&path).unwrap();
-
-        assert!(matches!(
-            snapshot.claim(&path),
-            Err(DraftReadError::Unsupported(_))
-        ));
-        assert_eq!(fs::read_to_string(&path).unwrap(), "ORIGINAL=1\n");
     }
 
     #[cfg(unix)]
@@ -526,7 +505,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), "SECRET=untouched\n");
     }
 
-    #[cfg(all(unix, feature = "fs"))]
+    #[cfg(unix)]
     #[test]
     fn symlink_swap_between_snapshot_and_claim_never_traverses_target() {
         use std::os::unix::fs::symlink;
