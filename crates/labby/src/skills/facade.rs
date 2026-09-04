@@ -917,16 +917,17 @@ mod tests {
             "resources": [
                 {
                     "uri": native_skill_uri,
-                    "digest": ResourceDigest::of_bytes(skill_body.as_bytes()).to_wire()
+                    "digest": ResourceDigest::of_bytes(skill_body.as_bytes()).to_wire(),
+                    "size": skill_body.len()
                 },
-                { "uri": native_notes_uri, "digest": notes_digest }
+                { "uri": native_notes_uri, "digest": notes_digest, "size": "supporting notes".len() }
             ]
         });
 
         let pool = Arc::new(UpstreamPool::new());
         pool.insert_scripted_skills_server_for_tests(
             "up",
-            json!({ "skills": [] }),
+            json!({ "resultType": "complete", "skills": [] }),
             unlisted_entry,
             HashMap::from([
                 (native_skill_uri.to_string(), skill_body.to_string()),

@@ -130,7 +130,7 @@ pub(crate) async fn run() {
         "owned_upstream_patch_observed",
     );
 
-    let skills = success(
+    let skills = asserted(
         owned.path(),
         &[
             "gateway",
@@ -142,12 +142,21 @@ pub(crate) async fn run() {
         ],
     )
     .await;
-    assert_eq!(skills[0]["upstream"], UPSTREAM);
-    record(
-        "gateway:gateway.skills.list",
-        EvidenceLevel::LiveSuccess,
-        "owned_skills_status_observed",
-    );
+    if cfg!(feature = "skills") {
+        assert!(
+            skills.output.status.success(),
+            "gateway skills list failed: {}",
+            skills.body
+        );
+        assert_eq!(skills.body[0]["upstream"], UPSTREAM);
+        record(
+            "gateway:gateway.skills.list",
+            EvidenceLevel::LiveSuccess,
+            "owned_skills_status_observed",
+        );
+    } else {
+        record_exact_error("gateway:gateway.skills.list", &skills.body);
+    }
 
     let tested = success(
         owned.path(),
@@ -451,8 +460,8 @@ fn assert_error_kind(result: &AssertedOutput, expected: &str) {
 fn record_exact_error(key: &str, body: &Value) {
     assert_eq!(body["ok"], false, "{key}: {body}");
     let kind = body["error"]["kind"].as_str().expect("stable error kind");
-    let reason = action_scenarios::dedicated_contract_reason(key)
-        .filter(|_| action_scenarios::dedicated_contract_accepts(key, kind))
+    let reason = action_scenarios::dedicated_contract_reason_for(key, Surface::Cli)
+        .filter(|_| action_scenarios::dedicated_contract_accepts_for(key, Surface::Cli, kind))
         .unwrap_or_else(|| panic!("{key}: unexpected dedicated error {kind}"));
     record(
         key,

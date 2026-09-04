@@ -444,15 +444,15 @@ mod tests {
             kib * 1024
         }
         let mut logical = Vec::with_capacity(crate::skills::limits::MAX_RESOURCES_PER_SKILL);
+        let bytes_per_resource = crate::skills::limits::MAX_SKILL_TOTAL_BYTES as usize
+            / crate::skills::limits::MAX_RESOURCES_PER_SKILL;
         let mut skill_md = "---\nname: maximal\ndescription: Maximal\n---\n".to_owned();
-        skill_md.push_str(
-            &"x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES - skill_md.len()),
-        );
+        skill_md.push_str(&"x".repeat(bytes_per_resource - skill_md.len()));
         logical.push(LogicalSkillFile::new("SKILL.md", skill_md));
         for index in 1..crate::skills::limits::MAX_RESOURCES_PER_SKILL {
             logical.push(LogicalSkillFile::new(
                 format!("resource-{index:02}.txt"),
-                "x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES),
+                "x".repeat(bytes_per_resource),
             ));
         }
         let acquisition = acquisition_from_materialized(

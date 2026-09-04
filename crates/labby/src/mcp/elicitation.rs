@@ -292,7 +292,7 @@ mod tests {
 
         assert!(matches!(
             destructive_confirmation(&request, "danger", "danger.delete", "binding-c", "owner-d"),
-            DestructiveConfirmation::Proceed
+            DestructiveConfirmation::Refused
         ));
     }
 }
