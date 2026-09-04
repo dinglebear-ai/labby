@@ -35,11 +35,13 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertIn("key: palette-tauri-windows-v1", block)
         self.assertIn("cache-on-failure: true", block)
 
-    def test_windows_jobs_are_advisory_to_ci_gate(self) -> None:
+    def test_workspace_windows_job_is_required_and_palette_is_advisory(self) -> None:
+        windows = job_block(self.workflow, "test-windows", "release-contract")
+        self.assertIn("if: ${{ needs.changes.outputs.rust_test == 'true' }}", windows)
         block = self.workflow[self.workflow.index("  ci-gate:\n") :]
-        self.assertNotIn("      - test-windows\n", block)
+        self.assertIn("      - test-windows\n", block)
         self.assertNotIn("      - palette-windows\n", block)
-        self.assertNotIn("needs.test-windows.result", block)
+        self.assertIn("needs.test-windows.result", block)
         self.assertNotIn("needs.palette-windows.result", block)
 
     def test_repository_workflows_use_hosted_runners(self) -> None:
