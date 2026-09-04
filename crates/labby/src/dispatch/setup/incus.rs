@@ -1430,7 +1430,14 @@ fn verify_web_index_hash(expected: &str, actual: &str) -> Result<(), ToolError> 
 }
 
 fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
-    let raw = incus_exec_stdout(
+    service_main_pid_with_timeout(container, DEPLOYMENT_COMMAND_TIMEOUT)
+}
+
+fn service_main_pid_with_timeout(
+    container: &str,
+    timeout: Duration,
+) -> Result<Option<u32>, ToolError> {
+    let raw = incus_exec_stdout_with_timeout(
         container,
         &[
             "systemctl",
@@ -1440,6 +1447,7 @@ fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
             "MainPID",
             "--value",
         ],
+        timeout,
     )?;
     parse_service_main_pid(&raw)
 }
@@ -1493,7 +1501,10 @@ fn wait_service_pid(
 ) -> Result<u32, ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(pid) = service_main_pid(container)? {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if let Some(pid) =
+            service_main_pid_with_timeout(container, remaining.min(Duration::from_secs(2)))?
+        {
             if Some(pid) != old_pid {
                 return Ok(pid);
             }
@@ -1509,8 +1520,28 @@ fn wait_service_pid(
 fn wait_ready(container: &str, timeout: Duration) -> Result<(), ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if incus_exec(container, &["curl", "-fsS", READY_URL]).is_ok() {
-            return Ok(());
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let state = incus_exec_stdout_with_timeout(
+            container,
+            &[
+                "sh",
+                "-lc",
+                &format!(
+                    "if curl -fsS {} >/dev/null; then printf ready; else printf not-ready; fi",
+                    shell_quote(READY_URL)
+                ),
+            ],
+            remaining.min(Duration::from_secs(2)),
+        )?;
+        match state.trim() {
+            "ready" => return Ok(()),
+            "not-ready" => {}
+            value => {
+                return Err(ToolError::Sdk {
+                    message: format!("readiness probe returned invalid state: {value}"),
+                    sdk_kind: "incus_sync_ready_probe_invalid".into(),
+                });
+            }
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -1550,9 +1581,25 @@ fn reap_lingering_service_processes(container: &str) -> Result<(), ToolError> {
 fn wait_no_labby_serve(container: &str, timeout: Duration) -> Result<(), ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        let alive = incus_exec(container, &["pgrep", "-f", "^/usr/local/bin/labby serve"]).is_ok();
-        if !alive {
-            return Ok(());
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let state = incus_exec_stdout_with_timeout(
+            container,
+            &[
+                "sh",
+                "-lc",
+                "if pgrep -f '^/usr/local/bin/labby serve' >/dev/null; then printf alive; elif [ $? -eq 1 ]; then printf gone; else exit 2; fi",
+            ],
+            remaining.min(Duration::from_secs(2)),
+        )?;
+        match state.trim() {
+            "gone" => return Ok(()),
+            "alive" => {}
+            value => {
+                return Err(ToolError::Sdk {
+                    message: format!("lingering-process probe returned invalid state: {value}"),
+                    sdk_kind: "incus_sync_lingering_process_probe_invalid".into(),
+                });
+            }
         }
         thread::sleep(Duration::from_millis(250));
     }

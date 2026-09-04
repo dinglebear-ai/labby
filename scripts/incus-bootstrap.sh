@@ -717,11 +717,11 @@ else
     fi
 fi
 
-if [ "$INCUS_AVAILABLE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ] && ! printf '%s\n' "$container_names" | grep -qx "$NAME"; then
+if [ "$INCUS_AVAILABLE" -eq 1 ] && ! printf '%s\n' "$container_names" | grep -qx "$NAME"; then
     record_rollback "incus delete -f $(quote "$NAME")"
     run incus launch "$IMAGE" "$NAME" --profile default --profile "$PROFILE_NAME"
     checkpoint container-launch
-elif [ "$INCUS_AVAILABLE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+elif [ "$INCUS_AVAILABLE" -eq 1 ]; then
     say "container exists: $NAME"
     ensure_container_profile
     if ! container_status="$(incus list "$NAME" -c s --format csv)"; then

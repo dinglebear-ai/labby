@@ -50,7 +50,7 @@
   <!ENTITY unmountingMD5 "5f87086ec9b5fd743d47a39a845ffc51">
   <!ENTITY incusProfileMD5 "0419cfb5166a433dfc8149cbefcc3e48">
   <!ENTITY incusEnvMD5     "bae86ad48f8f091e0708469f75b45aeb">
-  <!ENTITY incusInitMD5    "b1bab54a07130aebb8ceb32e33f1d924">
+  <!ENTITY incusInitMD5    "65762feea938a605c106b681c241a92b">
   <!-- Brand icons (dinglebear-ai mark system). images/labby.png is the
        460px avatar used by the Plugins page, the Settings panel grid, and
        Community Applications; icons/labby.png is the 64px favicon cut the
