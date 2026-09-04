@@ -28,6 +28,18 @@ fn validate_restricted_file_path(path: &Path) -> Result<(), AuthError> {
 
 #[cfg(unix)]
 fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File, bool), AuthError> {
+    open_restricted_unix_with_before_create(path, create_new, || {})
+}
+
+#[cfg(unix)]
+fn open_restricted_unix_with_before_create<F>(
+    path: &Path,
+    create_new: bool,
+    before_create: F,
+) -> Result<(std::fs::File, bool), AuthError>
+where
+    F: FnOnce(),
+{
     use rustix::fs::{Mode, OFlags, openat};
     use std::os::fd::AsFd;
 
@@ -77,6 +89,7 @@ fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File,
         }
     }
 
+    before_create();
     let fd = match openat(
         parent.as_fd(),
         name,
@@ -630,6 +643,40 @@ mod restricted_lock_tests {
         assert!(!removal_attempted, "preexisting lock must not be removed");
         assert!(error.to_string().contains("hardening denied"));
         assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_lock_creator_is_reopened_as_preexisting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = test_root(&dir).join("config.lock");
+        let (file, existed) = open_restricted_unix_with_before_create(&path, false, || {
+            std::fs::write(&path, b"winner").unwrap();
+        })
+        .unwrap();
+
+        assert!(existed);
+        assert!(file.metadata().unwrap().is_file());
+        assert_eq!(std::fs::read(path).unwrap(), b"winner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_symlink_creator_is_never_followed() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = test_root(&dir);
+        let path = root.join("config.lock");
+        let target = root.join("target");
+        std::fs::write(&target, b"sentinel").unwrap();
+        let error = open_restricted_unix_with_before_create(&path, false, || {
+            symlink(&target, &path).unwrap();
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("concurrently-created"));
+        assert_eq!(std::fs::read(target).unwrap(), b"sentinel");
     }
 
     #[cfg(unix)]
