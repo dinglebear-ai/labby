@@ -1,5 +1,7 @@
 ---
 title: "Unraid Core integration contract"
+created: "2026-09-04"
+updated: "2026-09-04"
 status: implemented-unbundled
 version: 1
 ---
