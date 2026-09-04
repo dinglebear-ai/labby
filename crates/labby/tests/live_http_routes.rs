@@ -23,6 +23,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 #[tokio::test]
 async fn every_registered_route_is_live_or_declared_runtime_conditional() {
     let guard = LiveLabbyBuilder::new()
+        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -305,6 +306,7 @@ async fn verify_route_evidence(
 #[tokio::test]
 async fn public_routes_remain_public_with_an_invalid_bearer() {
     let guard = LiveLabbyBuilder::new()
+        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -365,6 +367,7 @@ async fn protected_routes_reach_their_route_class_with_a_public_credential() {
 #[tokio::test]
 async fn representative_route_class_negatives_fail_closed() {
     let guard = LiveLabbyBuilder::new()
+        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -441,6 +444,7 @@ async fn representative_route_class_negatives_fail_closed() {
 #[tokio::test]
 async fn public_and_protected_posture_survives_restart() {
     let mut guard = LiveLabbyBuilder::new()
+        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");
@@ -482,6 +486,7 @@ async fn public_and_protected_posture_survives_restart() {
 #[tokio::test]
 async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
     let guard = LiveLabbyBuilder::new()
+        .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
         .start()
         .await
         .expect("start live Labby");

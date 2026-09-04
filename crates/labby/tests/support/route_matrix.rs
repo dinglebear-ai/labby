@@ -107,9 +107,9 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
     },
 ];
 
-pub(crate) const PINNED_ROUTE_COUNT: usize = 84;
+pub(crate) const PINNED_ROUTE_COUNT: usize = 88;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "57142bad25e7e16ba31da3e2a8fd55ae6b82b6d1894fd659ce8d6b805bfd8057";
+    "8007a4e19c70169faef857244f71a1f79a6c889fb52e036c0b27302bf1690306";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
