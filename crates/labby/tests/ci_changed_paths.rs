@@ -419,6 +419,31 @@ fn secondary_workflow_changes_enable_only_their_own_categories() {
 }
 
 #[test]
+fn new_lifecycle_entrypoints_fail_closed_into_workflow_checks() {
+    for path in ["scripts/new-lifecycle.sh", "scripts/new-lifecycle.ps1"] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["workflow"], "true", "{path} must enable workflow");
+    }
+}
+
+#[test]
+fn lifecycle_test_inventory_runner_handles_every_declared_extension() {
+    let runner = fs::read_to_string(repo_root().join("scripts/ci/check-lifecycle-scripts.sh"))
+        .expect("read lifecycle runner");
+    for contract in [
+        "*.sh)",
+        "*.py)",
+        "*.ps1)",
+        "unsupported lifecycle test type",
+    ] {
+        assert!(
+            runner.contains(contract),
+            "lifecycle runner must retain `{contract}`"
+        );
+    }
+}
+
+#[test]
 fn auth_matrix_changes_route_to_conformance() {
     for path in [
         "conformance/auth-requirements.json",

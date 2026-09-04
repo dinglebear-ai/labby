@@ -50,13 +50,14 @@ validate_service_paths() {
 }
 
 xml_escape() {
-    local value="$1"
-    value=${value//&/&amp;}
-    value=${value//</&lt;}
-    value=${value//>/&gt;}
-    value=${value//\"/&quot;}
-    value=${value//\'/&apos;}
-    printf '%s' "$value"
+    # Bash changed the meaning of `&` in parameter-substitution replacements;
+    # sed keeps this identical on macOS Bash 3.2 and current Linux Bash.
+    printf '%s' "$1" | sed \
+        -e 's/&/\&amp;/g' \
+        -e 's/</\&lt;/g' \
+        -e 's/>/\&gt;/g' \
+        -e 's/"/\&quot;/g' \
+        -e "s/'/\\&apos;/g"
 }
 
 write_plist() {

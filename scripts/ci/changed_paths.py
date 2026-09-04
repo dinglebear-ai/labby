@@ -74,6 +74,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         paths,
         lambda p: starts(p, ".github/workflows/", ".github/actions/")
         or p in lifecycle_paths()
+        or (starts(p, "scripts/") and p.endswith((".sh", ".ps1")))
         or is_auth_conformance_input(p)
         or starts(p, "scripts/tests/", "scripts/ci/n-minus-one/")
         or p

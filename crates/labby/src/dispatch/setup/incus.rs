@@ -868,7 +868,7 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     steps.push(format!(
         "prepared prior-release manifest at {deployment_dir}/manifest.env"
     ));
-    let old_pid = service_main_pid(&container).ok().flatten();
+    let old_pid = activate!(service_main_pid(&container));
     steps.push(format!(
         "old {SERVICE_NAME} MainPID: {}",
         old_pid
@@ -1441,16 +1441,42 @@ fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
             "--value",
         ],
     )?;
-    let pid = raw.trim().parse::<u32>().ok().filter(|pid| *pid > 0);
-    Ok(pid)
+    parse_service_main_pid(&raw)
+}
+
+fn parse_service_main_pid(raw: &str) -> Result<Option<u32>, ToolError> {
+    let pid = raw.trim().parse::<u32>().map_err(|error| ToolError::Sdk {
+        message: format!("systemctl returned an invalid {SERVICE_NAME} MainPID: {error}"),
+        sdk_kind: "incus_sync_main_pid_invalid".into(),
+    })?;
+    Ok((pid > 0).then_some(pid))
 }
 
 fn wait_pid_gone(container: &str, pid: u32, timeout: Duration) -> Result<(), ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        let alive = incus_exec(container, &["sh", "-lc", &format!("kill -0 {pid}")]).is_ok();
-        if !alive {
-            return Ok(());
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let probe_timeout = remaining.min(Duration::from_secs(2));
+        let state = incus_exec_stdout_with_timeout(
+            container,
+            &[
+                "sh",
+                "-lc",
+                &format!("if [ -d /proc/{pid} ]; then printf alive; else printf gone; fi"),
+            ],
+            probe_timeout,
+        )?;
+        match state.trim() {
+            "gone" => return Ok(()),
+            "alive" => {}
+            value => {
+                return Err(ToolError::Sdk {
+                    message: format!(
+                        "old {SERVICE_NAME} MainPID probe returned invalid state: {value}"
+                    ),
+                    sdk_kind: "incus_sync_old_pid_probe_invalid".into(),
+                });
+            }
         }
         thread::sleep(Duration::from_millis(250));
     }
@@ -1697,10 +1723,18 @@ fn incus_exec(container: &str, args: &[&str]) -> Result<(), ToolError> {
 }
 
 fn incus_exec_stdout(container: &str, args: &[&str]) -> Result<String, ToolError> {
+    incus_exec_stdout_with_timeout(container, args, DEPLOYMENT_COMMAND_TIMEOUT)
+}
+
+fn incus_exec_stdout_with_timeout(
+    container: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, ToolError> {
     let mut command = Command::new("incus");
     command.arg("exec").arg(container).arg("--").args(args);
     command_stdout(
-        command.bounded_output(),
+        command_output_with_timeout(&mut command, "incus_command_failed", timeout),
         "incus_sync_exec_failed",
         "failed to run command inside Incus container",
     )
@@ -2625,6 +2659,20 @@ fn run_bounded_target_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_main_pid_accepts_only_numeric_systemd_output() {
+        assert_eq!(parse_service_main_pid("0\n").unwrap(), None);
+        assert_eq!(parse_service_main_pid("42\n").unwrap(), Some(42));
+        assert_eq!(
+            parse_service_main_pid("not-a-pid").unwrap_err().kind(),
+            "incus_sync_main_pid_invalid"
+        );
+        assert_eq!(
+            parse_service_main_pid("").unwrap_err().kind(),
+            "incus_sync_main_pid_invalid"
+        );
+    }
 
     #[cfg(unix)]
     fn process_is_running(pid: i32) -> bool {

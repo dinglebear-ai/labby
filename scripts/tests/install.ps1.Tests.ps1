@@ -9,9 +9,6 @@ AfterAll {
 }
 
 Describe 'Labby Windows installer contracts' {
-    BeforeEach {
-        Mock Test-LabbyReleaseProvenance {}
-    }
     It 'fails when the release API cannot resolve latest' {
         Mock Invoke-RestMethod { throw 'fixture API unavailable' }
         { Resolve-LabbyReleaseVersion -Repo example/labby -RequestedVersion latest `
@@ -127,6 +124,7 @@ goto next
 :root
 mkdir "%~2\bin" 2>nul
 <nul set /p="source-pinned" > "%~2\bin\labby.exe"
+exit /b 0
 '@ | Set-Content -NoNewline $cargo
         } else {
         @'

@@ -1,5 +1,7 @@
 ---
 title: "Container Runtime Contract"
+created: "2026-09-04"
+updated: "2026-09-04"
 ---
 
 # Container Runtime Contract

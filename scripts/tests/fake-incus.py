@@ -32,6 +32,7 @@ elif args[:3] == ["profile", "device", "get"]:
     out(state["storage_name"])
 elif args and args[0] == "list":
     column = args[args.index("-c") + 1]
+    if os.environ.get("FAKE_INCUS_FAIL_LIST_COLUMN") == column: fail()
     if state["container"]:
         out(state["name"] if column == "n" else ("RUNNING" if state["running"] else "STOPPED"))
 elif args and args[0] == "launch":

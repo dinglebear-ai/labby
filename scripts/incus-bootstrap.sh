@@ -711,14 +711,23 @@ checkpoint profile
 
 if [ "$INCUS_AVAILABLE" -eq 0 ] && [ "$DRY_RUN" -eq 1 ]; then
     run incus launch "$IMAGE" "$NAME" --profile default --profile "$PROFILE_NAME"
-elif ! incus list "$NAME" -c n --format csv 2>/dev/null | grep -qx "$NAME"; then
+else
+    if ! container_names="$(incus list "$NAME" -c n --format csv)"; then
+        fail "failed to query Incus container inventory for $NAME"
+    fi
+fi
+
+if [ "$INCUS_AVAILABLE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ] && ! printf '%s\n' "$container_names" | grep -qx "$NAME"; then
     record_rollback "incus delete -f $(quote "$NAME")"
     run incus launch "$IMAGE" "$NAME" --profile default --profile "$PROFILE_NAME"
     checkpoint container-launch
-else
+elif [ "$INCUS_AVAILABLE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
     say "container exists: $NAME"
     ensure_container_profile
-    if ! incus list "$NAME" -c s --format csv 2>/dev/null | grep -qx RUNNING; then
+    if ! container_status="$(incus list "$NAME" -c s --format csv)"; then
+        fail "failed to query Incus container status for $NAME"
+    fi
+    if ! printf '%s\n' "$container_status" | grep -qx RUNNING; then
         record_rollback "incus stop $(quote "$NAME")"
         run incus start "$NAME"
         checkpoint container-start
