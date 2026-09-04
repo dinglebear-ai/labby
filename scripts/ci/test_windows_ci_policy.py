@@ -29,6 +29,9 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertIn("shard: [1, 2, 3, 4]", block)
         self.assertIn("cargo test --workspace --all-features --locked --no-run", block)
         self.assertIn("--partition hash:${{ matrix.shard }}/4", block)
+        self.assertIn("if: matrix.shard == 1", block)
+        self.assertIn("--test windows_job_object_reaping", block)
+        self.assertIn("--run-ignored ignored-only", block)
         self.assertNotIn("--no-tests pass", block)
 
     def test_palette_windows_job_is_hosted_cached_and_bounded(self) -> None:
