@@ -144,6 +144,8 @@ fn harden_open_file(file: &std::fs::File, path: &Path) -> Result<(), AuthError> 
 fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> {
     use std::os::windows::fs::MetadataExt;
 
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
     let opened = file
         .metadata()
         .map_err(|error| AuthError::Storage(format!("inspect open restricted file: {error}")))?;
@@ -156,17 +158,21 @@ fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> 
             )));
         }
     };
-    Ok(!current.file_type().is_symlink()
+    Ok(opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        && current.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        && !current.file_type().is_symlink()
         && opened.volume_serial_number() == current.volume_serial_number()
         && opened.file_index() == current.file_index())
 }
 
 #[cfg(windows)]
 fn guard_windows_ancestors(path: &Path) -> Result<Vec<std::fs::File>, AuthError> {
+    use std::os::windows::fs::MetadataExt;
     use std::os::windows::fs::OpenOptionsExt;
 
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
 
@@ -189,7 +195,10 @@ fn guard_windows_ancestors(path: &Path) -> Result<Vec<std::fs::File>, AuthError>
         let metadata = directory.metadata().map_err(|error| {
             AuthError::Storage(format!("inspect restricted file ancestor: {error}"))
         })?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        if !metadata.is_dir()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || metadata.file_type().is_symlink()
+        {
             return Err(AuthError::Storage(
                 "restricted file ancestors must be ordinary directories".into(),
             ));
@@ -719,6 +728,42 @@ if ($ruleSid -ne $sid) { exit 4 }
         drop(file);
 
         assert_private_windows_acl(&path);
+    }
+
+    #[test]
+    fn restricted_files_reject_junction_ancestors() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let junction = dir.path().join("junction");
+        std::fs::create_dir(&target).unwrap();
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .status()
+            .unwrap();
+        assert!(status.success(), "create test junction: {status}");
+
+        let secret = create_restricted_secret_file(&junction.join("secret.env")).unwrap_err();
+        assert!(secret.to_string().contains("ordinary directories"));
+        let lock = open_restricted_lock_file(&junction.join("config.lock")).unwrap_err();
+        assert!(lock.to_string().contains("ordinary directories"));
+        assert!(!target.join("secret.env").exists());
+        assert!(!target.join("config.lock").exists());
+    }
+
+    #[test]
+    fn ancestor_guards_prevent_directory_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let guarded = dir.path().join("guarded");
+        let replacement = dir.path().join("replacement");
+        std::fs::create_dir(&guarded).unwrap();
+        let guards = guard_windows_ancestors(&guarded.join("secret.env")).unwrap();
+
+        let error = std::fs::rename(&guarded, &replacement).unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+        drop(guards);
+        std::fs::rename(&guarded, &replacement).unwrap();
     }
 
     fn assert_private_windows_acl(path: &Path) {

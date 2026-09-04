@@ -1094,13 +1094,12 @@ jobs:
           retention-days: 14
 
   test-windows:
-    name: Test (Windows advisory)
+    name: Test (Windows)
     runs-on: windows-latest
     needs: [changes, frontend-assets]
-    # Advisory portability signal, intentionally excluded from ci-gate. Runs
-    # on main pushes and scheduled/manual runs only — not per-PR — to keep
-    # hosted Windows minutes off the PR critical path.
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.rust_test == 'true' }}
+    # Windows filesystem and process-containment behavior is platform-specific;
+    # Rust changes must prove it natively before the shared gate can pass.
+    if: ${{ needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -1516,6 +1515,7 @@ jobs:
       - rustdoc
       - clippy
       - test
+      - test-windows
       - test-fork
       - codemode-runner-smoke
       - mcp-regressions
@@ -1598,6 +1598,7 @@ jobs:
           require_success_or_skipped rustdoc "${{ needs.rustdoc.result }}"
           require_success_or_skipped clippy "${{ needs.clippy.result }}"
           require_success_or_skipped test "${{ needs.test.result }}"
+          require_success_or_skipped test-windows "${{ needs.test-windows.result }}"
           require_success_or_skipped test-fork "${{ needs.test-fork.result }}"
           require_success_or_skipped codemode-runner-smoke "${{ needs.codemode-runner-smoke.result }}"
           require_success_or_skipped mcp-regressions "${{ needs.mcp-regressions.result }}"
