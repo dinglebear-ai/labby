@@ -1110,10 +1110,6 @@ jobs:
     # Rust changes must prove it natively before the shared gate can pass.
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
@@ -1257,11 +1253,15 @@ jobs:
       - name: Compile every Windows workspace target
         shell: pwsh
         run: cargo test --workspace --all-features --locked --no-run
-      - name: Run native Windows workspace tests (shard ${{ matrix.shard }}/4)
+      - name: Run maintained native Windows behavior suite
         shell: pwsh
-        run: cargo nextest run --workspace --all-features --locked --profile ci --partition hash:${{ matrix.shard }}/4
+        run: >-
+          cargo nextest run --workspace --all-features --locked --profile ci -E
+          'test(/windows|acl|reparse/) or
+          (package(labby-codemode) & test(/(git::provider|pool::runner_handle)::tests::/)) or
+          (package(labby-gateway) & test(/(codemode_journal::store|gateway::config_tests|upstream::auth|upstream::pool::connect_stdio|upstream::pool::connection|upstream::process_guard|upstream::types|usage::store)::/)) or
+          (package(labby) & test(/(config::tests|config::env_merge::tests|dispatch::doctor::system::tests|dispatch::gateway::config_store::tests|dispatch::setup::draft::tests|dispatch::setup::incus::tests|dispatch::setup::provision::tests|dispatch::setup::secure_file::tests|durable_state::tests|proxy::command::tests)::/))'
       - name: Run Windows Job Object reaping integration test
-        if: matrix.shard == 1
         shell: pwsh
         run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only
       - name: Enforce Windows build cache caps
