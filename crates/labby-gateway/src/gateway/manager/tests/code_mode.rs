@@ -1094,10 +1094,22 @@ async fn palette_execute_binds_oauth_catalog_and_call_to_the_same_subject() {
         .expect("Alice executes against Alice's subject connection");
 
     assert_eq!(response.receipt.request_id, "req-123");
+    assert_eq!(
+        serde_json::to_value(&response.receipt).unwrap()["executionMode"],
+        "exact"
+    );
     assert_eq!(response.receipt.tool_id, id);
     assert_eq!(response.receipt.contract_hash, alice_hash);
     let receipt = serde_json::to_string(&response.receipt).expect("receipt serializes");
-    for forbidden in ["alice", "TOKEN-CANARY", "oauth", "params", "result"] {
+    for forbidden in [
+        "alice",
+        "TOKEN-CANARY",
+        "oauth",
+        "params",
+        "result",
+        "llmInvocations",
+        "auditId",
+    ] {
         assert!(
             !receipt.contains(forbidden),
             "receipt leaked {forbidden}: {receipt}"
