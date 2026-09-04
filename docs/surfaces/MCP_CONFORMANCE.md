@@ -32,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | pinned Git revision `e3bc6c71` |
+| Labby rmcp dependency | pinned Git revision `0665dcac` |
 | rmcp conformance fixture | `3.1.0` |
 | rmcp fixture tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
 | MCP conformance package | `0.2.0-alpha.10` |
