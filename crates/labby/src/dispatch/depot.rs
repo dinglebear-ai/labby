@@ -11,6 +11,7 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const QUEUE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_INTERACTIVE_REQUESTS: usize = 16;
+const COMPATIBILITY_SCHEMA_VERSION: &str = "labby.depot-compatibility/v1";
 
 #[derive(Clone)]
 pub struct DepotClient {
@@ -139,6 +140,7 @@ impl DepotClient {
             actor,
         )
         .await
+        .and_then(compatibility_envelope)
     }
 
     async fn request(
@@ -182,6 +184,36 @@ impl DepotClient {
             DepotError::Unavailable(category)
         })?;
         decode_response(response).await
+    }
+}
+
+fn compatibility_envelope(value: Value) -> Result<Value, DepotError> {
+    let Value::Object(mut response) = value else {
+        return Err(DepotError::InvalidResponse);
+    };
+    prune_null_object_fields(&mut response);
+    response.insert(
+        "schemaVersion".to_string(),
+        Value::String(COMPATIBILITY_SCHEMA_VERSION.to_string()),
+    );
+    response.insert("contractVersion".to_string(), Value::from(1));
+    Ok(Value::Object(response))
+}
+
+fn prune_null_object_fields(object: &mut serde_json::Map<String, Value>) {
+    object.retain(|_, value| !value.is_null());
+    for value in object.values_mut() {
+        match value {
+            Value::Object(nested) => prune_null_object_fields(nested),
+            Value::Array(items) => {
+                for item in items {
+                    if let Value::Object(nested) = item {
+                        prune_null_object_fields(nested);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -270,6 +302,41 @@ mod tests {
         assert!(!allowed_operation("depot.ingest.start"));
         assert!(!allowed_operation("depot.artifacts.delete"));
         assert!(!allowed_operation("depot.admin.execute"));
+    }
+
+    #[test]
+    fn operation_results_are_wrapped_in_the_labby_compatibility_contract() {
+        let response = compatibility_envelope(json!({
+            "result": {
+                "artifacts": [{
+                    "lineage": {
+                        "following": false,
+                        "upstreamArtifactId": null
+                    }
+                }],
+                "nextCursor": null,
+                "total": 1
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(response["schemaVersion"], COMPATIBILITY_SCHEMA_VERSION);
+        assert_eq!(response["contractVersion"], 1);
+        assert_eq!(response["result"]["total"], 1);
+        assert!(response["result"].get("nextCursor").is_none());
+        assert!(
+            response["result"]["artifacts"][0]["lineage"]
+                .get("upstreamArtifactId")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn non_object_operation_results_fail_closed() {
+        assert!(matches!(
+            compatibility_envelope(json!([])),
+            Err(DepotError::InvalidResponse)
+        ));
     }
 
     #[test]
