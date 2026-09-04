@@ -1,6 +1,6 @@
 [package]
 name = "labby-winjob"
-description = "Windows Job Object FFI boundary for lab — sanctioned unsafe crate exposing a safe process-tree reaping API."
+description = "Safe Windows process containment and verified filesystem primitives behind Labby's sanctioned FFI boundary."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,8 @@ workspace-lints-exception = "unsafe-ffi"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
   # Test-support helpers (`pid_is_alive`, `find_first_child_pid`) walk the

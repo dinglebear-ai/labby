@@ -72,7 +72,7 @@ The current Rust workspace is composed of:
 - `labby-primitives` — leaf metadata and security primitives
 - `labby-runtime` — reusable runtime/config/skills contracts
 - `labby-web` — embedded static web assets and resolution helpers
-- `labby-winjob` — Windows job/process support
+- `labby-winjob` — Windows process containment and verified filesystem primitives
 - `xtask` — repository automation
 
 The binary should compose these crates; leaf/shared crates should not reach back
