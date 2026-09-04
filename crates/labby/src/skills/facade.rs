@@ -818,13 +818,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolution_preserves_invalid_uri_and_missing_runtime_errors() {
+    async fn resolution_preserves_invalid_uri_errors() {
         let context = SkillRegistryContext::first_party_only();
         let invalid = resolve_visible_skill(&context, "not a skill uri")
             .await
             .expect_err("malformed identifiers are not reported as absence");
         assert!(matches!(invalid, ToolError::InvalidParam { .. }));
+    }
 
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn resolution_preserves_missing_runtime_errors() {
         let mut root_context = SkillRegistryContext::first_party_only();
         root_context.scope = SkillCallerScope::root(None, ToolAccess::Direct);
         let unavailable = resolve_visible_skill(&root_context, "skill://remote/demo/SKILL.md")
