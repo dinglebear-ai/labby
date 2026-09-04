@@ -1,7 +1,9 @@
 //! `labby serve` — start the MCP server.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+#[cfg(any(feature = "skills", target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;

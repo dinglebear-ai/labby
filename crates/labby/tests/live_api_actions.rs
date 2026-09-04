@@ -183,16 +183,29 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                         false,
                     )
                     .await;
-                    assert_eq!(
-                        denied_status,
-                        reqwest::StatusCode::UNAUTHORIZED,
-                        "{} destructive request was not denied before dispatch",
-                        intent.key()
-                    );
+                    if intent.service == "bundles" {
+                        assert!(
+                            matches!(
+                                denied_status,
+                                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::NOT_FOUND
+                            ),
+                            "{} destructive request did not fail closed before dispatch: {denied_status}",
+                            intent.key()
+                        );
+                    } else {
+                        assert_eq!(
+                            denied_status,
+                            reqwest::StatusCode::UNAUTHORIZED,
+                            "{} destructive request was not denied before dispatch",
+                            intent.key()
+                        );
+                    }
                     let denied: serde_json::Value = serde_json::from_slice(&denied_body).unwrap();
                     let denied_error = denied.get("error").unwrap_or(&denied);
                     assert!(denied_error.get("kind").is_some());
-                    destructive_denials.insert(intent.service.clone());
+                    if denied_status == reqwest::StatusCode::UNAUTHORIZED {
+                        destructive_denials.insert(intent.service.clone());
+                    }
                 }
                 post_action(
                     &client,
@@ -374,14 +387,17 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             structured_errors, api_services,
             "every API service needs an invalid/error path"
         );
-        assert_eq!(
-            destructive_denials,
-            BTreeSet::from([
-                "bundles".into(),
-                "gateway".into(),
-                "setup".into(),
-                "snippets".into(),
-            ])
+        let required_destructive_denials =
+            BTreeSet::from(["gateway".into(), "setup".into(), "snippets".into()]);
+        assert!(
+            required_destructive_denials.is_subset(&destructive_denials),
+            "mounted destructive services must deny unauthenticated dispatch"
+        );
+        assert!(
+            destructive_denials
+                .difference(&required_destructive_denials)
+                .all(|service| service == "bundles"),
+            "only the optional provider-backed bundles service may add a denial"
         );
 
         // Valid reversible workflow: API create, CLI observation, API delete,

@@ -282,6 +282,9 @@ impl LabMcpServer {
         action: &str,
         registered: bool,
     ) -> Option<CallToolResponse> {
+        #[cfg(not(feature = "skills"))]
+        let _ = context;
+
         let action_allowed = if service == "artifacts" && action.starts_with("artifacts.") {
             #[cfg(feature = "skills")]
             {

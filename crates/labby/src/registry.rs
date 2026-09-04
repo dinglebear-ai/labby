@@ -406,7 +406,10 @@ pub fn filter_built_in_upstream_apis(registry: ToolRegistry, enabled: bool) -> T
     let mut filtered = ToolRegistry::new();
     for service in registry.services() {
         if service.kind == RegisteredServiceKind::BootstrapOperator {
+            #[cfg(feature = "skills")]
             let mut service = service.clone();
+            #[cfg(not(feature = "skills"))]
+            let service = service.clone();
             #[cfg(feature = "skills")]
             if service.name == "artifacts" {
                 service.actions = &crate::dispatch::skill_library::catalog::LOCAL_ACTIONS;
