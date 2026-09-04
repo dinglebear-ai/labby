@@ -249,6 +249,18 @@ fn nonzero_cli_domain_results_require_an_exact_action_schema() {
         }]
     });
     assert!(validated_nonzero_domain_result("doctor:auth.check", &valid));
+    let proxy = serde_json::json!({
+        "findings": [{
+            "service": "proxy",
+            "check": "proxy:config",
+            "severity": "fail",
+            "message": "proxy configuration is unavailable"
+        }]
+    });
+    assert!(validated_nonzero_domain_result(
+        "doctor:proxy.preflight",
+        &proxy
+    ));
     assert!(!validated_nonzero_domain_result(
         "doctor:system.checks",
         &valid

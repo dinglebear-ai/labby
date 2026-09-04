@@ -21,6 +21,7 @@ pub mod access_credentials;
 
 /// `GET /v1/catalog` — filtered service+action catalog for the ⌘K palette.
 pub mod catalog;
+pub mod depot;
 pub mod doctor;
 #[cfg(feature = "gateway")]
 pub mod gateway;

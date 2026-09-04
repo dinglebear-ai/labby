@@ -1011,6 +1011,35 @@ test('normalizeServerView ignores custom gateway resource discovery method-not-f
   assert.deepEqual(gateway.warnings, [])
 })
 
+test('normalizeServerView treats catalog warming as advisory for a connected gateway', () => {
+  const gateway = normalizeServerView({
+    id: 'context7',
+    name: 'context7',
+    source: 'custom_gateway',
+    configured: true,
+    enabled: true,
+    connected: true,
+    discovered_tool_count: 0,
+    exposed_tool_count: 0,
+    warnings: [
+      {
+        code: 'catalog_warming',
+        message: 'upstream is healthy but its capability catalog has not been materialized yet',
+      },
+    ],
+    config_summary: {
+      transport: 'http',
+      target: 'https://mcp.context7.com/mcp',
+    },
+  })
+
+  assert.equal(gateway.status.connected, true)
+  assert.equal(gateway.status.healthy, true)
+  assert.equal(gateway.status.last_error, undefined)
+  assert.equal(gateway.status.catalog_warming, true)
+  assert.deepEqual(gateway.warnings, [])
+})
+
 test('normalizeGateway does not fabricate created_at or updated_at when backend does not supply them', () => {
   const gateway = normalizeGateway(
     {

@@ -86,26 +86,26 @@ export function LoadoutFormDialog({ open, loadout, gatewayOptions, gatewayOption
 
   return <Dialog open={open} onOpenChange={next => !saving && onOpenChange(next)}>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[760px]">
-      <DialogHeader><DialogTitle>{loadout ? 'Edit Loadout' : 'Add Loadout'}</DialogTitle><DialogDescription>Reusable projection for gateway targets and MCP capability categories.</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>{loadout ? 'Edit Loadout' : 'New Loadout'}</DialogTitle><DialogDescription>Curate a portable bundle for agents and harnesses. You can export it through APM, publish it in Depot, or optionally host it behind a Labby route.</DialogDescription></DialogHeader>
       <div className="space-y-5 py-2">
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field><FieldLabel htmlFor="loadout-name">Name</FieldLabel><Input id="loadout-name" value={draft.name} onChange={e => setDraft(c => ({ ...c, name: e.target.value }))} placeholder="operations" /><FieldDescription>Referenced by protected gateway routes.</FieldDescription></Field>
+          <Field><FieldLabel htmlFor="loadout-name">Name</FieldLabel><Input id="loadout-name" value={draft.name} onChange={e => setDraft(c => ({ ...c, name: e.target.value }))} placeholder="operations" /><FieldDescription>Portable identity used by APM, Depot, and optional route targets.</FieldDescription></Field>
           <Field><FieldLabel htmlFor="loadout-description">Description</FieldLabel><Textarea id="loadout-description" rows={3} value={draft.description ?? ''} onChange={e => setDraft(c => ({ ...c, description: e.target.value || null }))} placeholder="Operations-focused projection" /></Field>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="space-y-2">
-            <SelectionGroup title="Upstream MCP servers" description="Only selected upstreams are visible." options={gatewayOptions} selected={draft.upstreams} onChange={upstreams => setDraft(c => ({ ...c, upstreams }))} />
+            <SelectionGroup title="MCP servers and tools" description="Bundle these servers; their allowed tools follow each server's exposure policy." options={gatewayOptions} selected={draft.upstreams} onChange={upstreams => setDraft(c => ({ ...c, upstreams }))} />
             {gatewayOptionsLoading && <p className="text-sm text-aurora-text-muted">Loading gateway options…</p>}
             {gatewayOptionsError && <p className="text-sm text-destructive">{gatewayOptionsError}</p>}
           </div>
-          <SelectionGroup title="Lab services" description="Built-in services exposed to this projection." options={serviceOptions} selected={draft.services} onChange={services => setDraft(c => ({ ...c, services }))} />
+          <SelectionGroup title="Lab plugins" description="Bundle built-in Labby service plugins with this portable Loadout." options={serviceOptions} selected={draft.services} onChange={services => setDraft(c => ({ ...c, services }))} />
         </div>
         <div className="grid gap-3 lg:grid-cols-2">{LOADOUT_CAPABILITIES.map(([key, label, description, Icon]) => <Field key={key} orientation="horizontal" className="rounded-lg border bg-aurora-control-surface/10 p-3"><Icon className="size-4 shrink-0 text-aurora-text-muted" /><FieldContent><FieldTitle>{label}</FieldTitle><FieldDescription>{description}</FieldDescription></FieldContent><Switch aria-label={label} checked={draft[key]} onCheckedChange={value => cap(key, value)} /></Field>)}</div>
         {skillsNeedResources && <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">Agent Skills require Resources because skill files are read through MCP resources. Enable Resources or disable Skills.</div>}
         {enabledCount === 0 && <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">Enable at least one capability category.</div>}
         {error && <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
       </div>
-      <DialogFooter><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={!canSave} onClick={async () => { setSaving(true); setError(null); try { await onSave(loadout?.name ?? null, { name: draft.name.trim(), description: draft.description?.trim() || null, upstreams: uniq(draft.upstreams), services: uniq(draft.services), expose_tools: draft.expose_tools, expose_resources: draft.expose_resources, expose_prompts: draft.expose_prompts, expose_skills: draft.expose_skills, expose_code_mode: draft.expose_code_mode }); onOpenChange(false) } catch (e) { setError(getErrorMessage(e, 'Failed to save Loadout')) } finally { setSaving(false) } }}>{saving && <Loader2 className="size-4 animate-spin" />}{loadout ? 'Save changes' : 'Add Loadout'}</Button></DialogFooter>
+      <DialogFooter><Button variant="outline" disabled={saving} onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={!canSave} onClick={async () => { setSaving(true); setError(null); try { await onSave(loadout?.name ?? null, { name: draft.name.trim(), description: draft.description?.trim() || null, upstreams: uniq(draft.upstreams), services: uniq(draft.services), expose_tools: draft.expose_tools, expose_resources: draft.expose_resources, expose_prompts: draft.expose_prompts, expose_skills: draft.expose_skills, expose_code_mode: draft.expose_code_mode }); onOpenChange(false) } catch (e) { setError(getErrorMessage(e, 'Failed to save Loadout')) } finally { setSaving(false) } }}>{saving && <Loader2 className="size-4 animate-spin" />}{loadout ? 'Save changes' : 'Create Loadout'}</Button></DialogFooter>
     </DialogContent>
   </Dialog>
 }

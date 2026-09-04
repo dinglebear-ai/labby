@@ -1217,9 +1217,11 @@ impl LabMcpServer {
                             .map(|subject| subject.into_owned()),
                         };
                         if synthetic_action == "refresh" {
-                            manager
-                                .refresh_gateway_status_catalog(&enrichment_scope, None)
-                                .await;
+                            drop(
+                                manager
+                                    .refresh_gateway_status_catalog(&enrichment_scope, None)
+                                    .await,
+                            );
                         }
                         Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,

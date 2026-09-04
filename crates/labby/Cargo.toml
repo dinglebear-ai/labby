@@ -152,10 +152,15 @@ gateway = [
   "dep:labby-gateway",
   "dep:labby-openapi",
   "web-ui",
+  # The gateway and its embedded operator UI expose Skills as a core surface;
+  # every gateway-shaped build must therefore compile the implementation too.
+  "skills",
 ]
 gateway-host = ["gateway"]
 web-ui = ["dep:labby-web"]
 api-docs = ["dep:utoipa"]
+# Agent Skills flow through `gateway`, so both plain production builds and
+# explicit gateway feature slices cannot ship a disabled Skills surface.
 default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []

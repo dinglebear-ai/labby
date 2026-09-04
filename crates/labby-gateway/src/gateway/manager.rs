@@ -127,6 +127,9 @@ pub struct GatewayManager {
     /// live config publication, including rollback and ABA.
     pub(super) runtime_config_generation: Arc<AtomicU64>,
     pub(super) config_mutation: Arc<Mutex<()>>,
+    /// Scope-keyed single-flight and terminal-failure state for full-fleet MCP discovery.
+    pub(super) mcp_catalog_refresh_inflight: Arc<Mutex<std::collections::HashSet<String>>>,
+    pub(super) mcp_catalog_refresh_failures: Arc<Mutex<std::collections::HashSet<String>>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,

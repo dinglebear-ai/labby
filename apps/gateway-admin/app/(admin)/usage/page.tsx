@@ -295,9 +295,9 @@ function UsageExplorer() {
         ) : null}
 
         <DashboardPanel
-          title="Filters"
+          title="Upstream calls"
           icon={<SlidersHorizontal className="size-4" />}
-          meta={WINDOW_LABELS[window]}
+          meta={`${tableMeta} · ${WINDOW_LABELS[window]}`}
         >
           <div className="space-y-3">
             <p className="text-[11px] leading-[1.35] text-aurora-text-muted">
@@ -318,7 +318,7 @@ function UsageExplorer() {
                 </button>
               </div>
             ) : null}
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_12rem_10rem_auto]">
               <div className="relative min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
                 <Input value={search} onChange={(event) => { setSearch(event.target.value); resetPaging() }} placeholder="Search target, operation, agent, error…" className="h-10 pl-9" />
@@ -327,45 +327,27 @@ function UsageExplorer() {
                 <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Server" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All servers</SelectItem>{upstreamOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
               </Select>
-              <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger>
-                <SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
-              </Select>
-              <Select value={capability} onValueChange={(value) => { setCapability(value); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Capability" /></SelectTrigger>
-                <SelectContent><SelectItem value={ALL}>All capabilities</SelectItem>{capabilityOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
-              </Select>
-              <Select value={operation} onValueChange={(value) => { setOperation(value); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Operation" /></SelectTrigger>
-                <SelectContent><SelectItem value={ALL}>All operations</SelectItem>{operationOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent>
-              </Select>
-              <Select value={subjectScope} onValueChange={(value) => { setSubjectScope(value); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Scope" /></SelectTrigger>
-                <SelectContent><SelectItem value={ALL}>All scopes</SelectItem><SelectItem value="shared">Shared</SelectItem><SelectItem value="subject">OAuth subject</SelectItem></SelectContent>
-              </Select>
-              <Select value={agent} onValueChange={(value) => { setAgent(value); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Agent" /></SelectTrigger>
-                <SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agentOptions.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent>
-              </Select>
               <Select value={outcome} onValueChange={(value) => { setOutcome(value); if (value !== 'failed') setErrorKind(ALL); resetPaging() }}>
                 <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Outcome" /></SelectTrigger>
                 <SelectContent><SelectItem value={ALL}>All outcomes</SelectItem><SelectItem value="ok">Succeeded</SelectItem><SelectItem value="failed">Failed</SelectItem></SelectContent>
               </Select>
-              <Select value={errorKind} onValueChange={(value) => { setErrorKind(value); if (value !== ALL) setOutcome('failed'); resetPaging() }}>
-                <SelectTrigger className="h-10 w-full"><SelectValue placeholder="Failure kind" /></SelectTrigger>
-                <SelectContent><SelectItem value={ALL}>All failure kinds</SelectItem>{errorOptions.map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}</SelectContent>
-              </Select>
-              {showIps ? (
-                <Select value={ip} onValueChange={(value) => { setIp(value); resetPaging() }}>
-                  <SelectTrigger className="h-10 w-full"><SelectValue placeholder="IP" /></SelectTrigger>
-                  <SelectContent><SelectItem value={ALL}>All IPs</SelectItem>{ipOptions.map((addr) => <SelectItem key={addr} value={addr}>{addr}</SelectItem>)}</SelectContent>
-                </Select>
-              ) : null}
+              <details className="group relative">
+                <summary className="flex h-10 cursor-pointer list-none items-center justify-center gap-2 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm font-medium text-aurora-text-muted hover:text-aurora-text-primary [&::-webkit-details-marker]:hidden">
+                  <SlidersHorizontal className="size-4" /> More filters
+                </summary>
+                <div className="absolute right-0 z-30 mt-2 grid w-[min(44rem,85vw)] grid-cols-2 gap-2 rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-strong p-3 shadow-aurora-panel md:grid-cols-3">
+                  <Select value={tool} onValueChange={(value) => { setTool(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Target" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All targets</SelectItem>{toolOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
+                  <Select value={capability} onValueChange={(value) => { setCapability(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Capability" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All capabilities</SelectItem>{capabilityOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
+                  <Select value={operation} onValueChange={(value) => { setOperation(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Operation" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All operations</SelectItem>{operationOptions.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
+                  <Select value={subjectScope} onValueChange={(value) => { setSubjectScope(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Scope" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All scopes</SelectItem><SelectItem value="shared">Shared</SelectItem><SelectItem value="subject">OAuth subject</SelectItem></SelectContent></Select>
+                  <Select value={agent} onValueChange={(value) => { setAgent(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Agent" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agentOptions.map(([id, label]) => <SelectItem key={id} value={id}>{label}</SelectItem>)}</SelectContent></Select>
+                  <Select value={errorKind} onValueChange={(value) => { setErrorKind(value); if (value !== ALL) setOutcome('failed'); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="Failure kind" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All failure kinds</SelectItem>{errorOptions.map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}</SelectContent></Select>
+                  {showIps ? <Select value={ip} onValueChange={(value) => { setIp(value); resetPaging() }}><SelectTrigger className="h-10 w-full"><SelectValue placeholder="IP" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All IPs</SelectItem>{ipOptions.map((addr) => <SelectItem key={addr} value={addr}>{addr}</SelectItem>)}</SelectContent></Select> : null}
+                </div>
+              </details>
             </div>
           </div>
-        </DashboardPanel>
-
-        <DashboardPanel title="Upstream calls" icon={<Activity className="size-4" />} meta={tableMeta}>
+          <div className="my-3 border-t border-aurora-border-subtle" />
           <div className="md:hidden">
             <UsageCallCards calls={data?.calls} isLoading={isLoading} error={error} onRetry={() => { void mutate() }} />
           </div>

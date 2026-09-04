@@ -7,6 +7,7 @@ import { EditorView } from '@codemirror/view'
 import { collectEditorAutocomplete, collectEditorDiagnostics } from '@/lib/editor/diagnostics-registry'
 import type { EditorDiagnostic, EditorLanguage } from '@/lib/editor/types'
 import { loadLanguageExtension } from '@/lib/editor/language-registry'
+import { cn } from '@/lib/utils'
 import {
   baseTextSurfaceExtensions,
   diagnosticsCompartment,
@@ -27,16 +28,21 @@ export interface TextSurfaceProps {
   onSave?: () => void
   onDeploy?: () => void
   onCopy?: () => void
+  embedded?: boolean
+  showToolbar?: boolean
 }
 
 function createState(doc: string, editable: boolean, diagnostics: EditorDiagnostic[]): EditorState {
   return EditorState.create({
     doc,
-    extensions: baseTextSurfaceExtensions({ editable, diagnostics }),
+    extensions: [
+      ...baseTextSurfaceExtensions({ editable, diagnostics }),
+      EditorView.contentAttributes.of({ 'aria-label': 'Artifact source editor' }),
+    ],
   })
 }
 
-export function TextSurface({ path, value, mode, language, dirty = false, diagnostics, onChange, onSave, onDeploy, onCopy }: TextSurfaceProps) {
+export function TextSurface({ path, value, mode, language, dirty = false, diagnostics, onChange, onSave, onDeploy, onCopy, embedded = false, showToolbar = true }: TextSurfaceProps) {
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const viewRef = React.useRef<EditorView | null>(null)
   const onChangeRef = React.useRef(onChange)
@@ -120,8 +126,11 @@ export function TextSurface({ path, value, mode, language, dirty = false, diagno
   }, [language, path, value])
 
   return (
-    <div className="aurora-text-surface flex h-full min-h-0 flex-col overflow-hidden rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-strong shadow-[var(--aurora-shadow-strong),var(--aurora-highlight-strong)]">
-      <TextSurfaceToolbar
+    <div className={cn(
+      'aurora-text-surface flex h-full min-h-0 flex-col overflow-hidden bg-aurora-panel-strong',
+      !embedded && 'rounded-aurora-2 border border-aurora-border-strong shadow-[var(--aurora-shadow-strong),var(--aurora-highlight-strong)]',
+    )}>
+      {showToolbar ? <TextSurfaceToolbar
         path={path}
         language={language}
         dirty={dirty}
@@ -130,7 +139,7 @@ export function TextSurface({ path, value, mode, language, dirty = false, diagno
         onSave={onSave}
         onDeploy={onDeploy}
         onCopy={onCopy}
-      />
+      /> : null}
       <div className="min-h-0 flex-1 overflow-hidden bg-aurora-page-bg">
         <div ref={hostRef} className="cm-editor h-full" aria-label="Code editor" />
       </div>
