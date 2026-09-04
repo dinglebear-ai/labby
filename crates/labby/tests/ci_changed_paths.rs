@@ -103,21 +103,26 @@ fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
 fn rustfmt_lane_selects_writable_rust_homes_before_toolchain_install() {
     let workflow =
         fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read CI workflow");
-    let fmt = workflow
-        .split("  fmt:\n")
-        .nth(1)
-        .and_then(|section| section.split("\n  deny:\n").next())
-        .expect("Format job must remain present");
-
-    let homes = fmt
-        .split("- name: Select writable Rust homes for rustfmt")
-        .nth(1)
-        .and_then(|section| {
-            section
-                .split("\n      - name: Install Rust toolchain with rustfmt")
-                .next()
-        })
-        .expect("rustfmt lane must select writable homes before rustup runs");
+    let workflow: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&workflow).expect("valid CI workflow YAML");
+    let steps = workflow["jobs"]["fmt"]["steps"]
+        .as_sequence()
+        .expect("Format job steps must remain present");
+    let homes_index = steps
+        .iter()
+        .position(|step| step["name"] == "Select writable Rust homes for rustfmt")
+        .expect("rustfmt must select writable homes");
+    let install_index = steps
+        .iter()
+        .position(|step| step["name"] == "Install Rust toolchain with rustfmt")
+        .expect("rustfmt toolchain install must remain present");
+    assert!(
+        homes_index < install_index,
+        "writable homes must precede rustup"
+    );
+    let homes = steps[homes_index]["run"]
+        .as_str()
+        .expect("writable-home script");
     for contract in [
         "rustup_home=\"$RUNNER_TEMP/rustup\"",
         "cargo_home=\"$RUNNER_TEMP/cargo\"",
@@ -1538,7 +1543,13 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(config.contains("\"draft\": true"));
     assert!(config.contains("\"force-tag-creation\": true"));
 
-    assert!(release.contains("push:\n    tags: ['v*']"));
+    let release_config: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&release).expect("valid release workflow YAML");
+    assert_eq!(
+        release_config["on"]["push"]["tags"],
+        serde_yaml_ng::to_value(["v*"]).expect("tag filter YAML"),
+        "release publication must be triggered by version tags"
+    );
     assert!(!release.contains("types: [published]"));
     assert!(release.contains("--json isDraft --jq .isDraft"));
     assert!(release.contains("scripts/ci/upload-immutable-release-assets.sh -- \"${files[@]}\""));

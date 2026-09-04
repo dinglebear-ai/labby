@@ -627,23 +627,9 @@ url = \"https://alpha.example.com/mcp\"
         store.persist(&loaded.to_gateway_config()).expect("persist");
         let lock_path = path.with_extension("toml.lock");
         for protected in [&path, &lock_path] {
-            let script = "\
-$acl = Get-Acl -LiteralPath $env:LABBY_ACL_TEST_PATH
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$rules = @($acl.Access)
-if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
-    $rules[0].IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $sid) { exit 1 }
-";
-            let status = std::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", script])
-                .env("LABBY_ACL_TEST_PATH", protected)
-                .status()
-                .expect("run ACL assertion");
-            assert!(
-                status.success(),
-                "private ACL missing on {}",
-                protected.display()
-            );
+            let file = labby_winjob::fs::open_read(protected, false).expect("open protected file");
+            labby_winjob::fs::verify_current_user_only_dacl(&file)
+                .expect("private current-user FullControl ACL");
         }
     }
 }

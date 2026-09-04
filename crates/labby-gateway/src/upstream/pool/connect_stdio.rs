@@ -312,11 +312,7 @@ fn sandboxed_stdio_command(
     command: StdioCommandSpec,
     sandbox_binary: PathBuf,
 ) -> anyhow::Result<StdioCommandSpec> {
-    let protected = [std::env::var_os("LABBY_HOME"), std::env::var_os("HOME")]
-        .into_iter()
-        .flatten()
-        .map(PathBuf::from)
-        .collect::<Vec<_>>();
+    let protected = protected_sandbox_roots();
     sandboxed_stdio_command_against(command, sandbox_binary, &protected)
 }
 
@@ -475,12 +471,18 @@ fn resolve_stdio_program(program: &std::ffi::OsStr) -> anyhow::Result<PathBuf> {
 }
 
 fn ensure_not_protected_sandbox_path(path: &std::path::Path) -> anyhow::Result<()> {
-    let protected = [std::env::var_os("LABBY_HOME"), std::env::var_os("HOME")]
+    ensure_not_protected_sandbox_path_against(path, protected_sandbox_roots())
+}
+
+fn protected_sandbox_roots() -> Vec<PathBuf> {
+    [std::env::var_os("LABBY_HOME"), std::env::var_os("HOME")]
         .into_iter()
         .flatten()
         .map(PathBuf::from)
-        .collect::<Vec<_>>();
-    ensure_not_protected_sandbox_path_against(path, &protected)
+        // Windows commonly has USERPROFILE but no HOME. Protect its native
+        // user directory as well as any explicitly configured Unix-style HOME.
+        .chain(dirs::home_dir())
+        .collect()
 }
 
 fn ensure_not_protected_sandbox_path_against<P>(
@@ -790,7 +792,14 @@ mod conformance_tests {
             runtime_owner: None,
         };
 
-        let wrapped = sandboxed_stdio_command(command, "/opt/labby/bin/labby".into()).unwrap();
+        // The fixture tests explicit path projection independently of the real
+        // host home; Windows temporary directories normally live under it.
+        let wrapped = sandboxed_stdio_command_against(
+            command,
+            "/opt/labby/bin/labby".into(),
+            std::iter::empty::<&PathBuf>(),
+        )
+        .unwrap();
         assert_eq!(wrapped.program, OsString::from("/opt/labby/bin/labby"));
         let canonical_state = std::fs::canonicalize(state.path()).unwrap();
         assert!(wrapped.args.windows(2).any(|pair| {
@@ -817,10 +826,12 @@ mod conformance_tests {
                 "shared namespace remained exposed: {forbidden}"
             );
         }
-        assert!(
+        assert_eq!(
             wrapped.args.windows(2).any(|pair| {
                 pair == [OsString::from("--read-write"), OsString::from("/dev/null")]
-            })
+            }),
+            std::path::Path::new("/dev/null").exists(),
+            "only an existing null device belongs in the sandbox projection"
         );
         let private_tmp = wrapped
             .env
@@ -833,10 +844,16 @@ mod conformance_tests {
 
     #[test]
     fn required_sandbox_rejects_absolute_arguments_in_protected_home_state() {
-        let protected = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+        let protected = dirs::home_dir().expect("native user home");
         assert!(protected.is_dir(), "test requires the process home");
+        #[cfg(unix)]
+        let program = OsString::from("/bin/sh");
+        #[cfg(windows)]
+        let program = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32/cmd.exe")
+            .into_os_string();
         let command = StdioCommandSpec {
-            program: OsString::from("/bin/sh"),
+            program,
             args: vec![protected.into_os_string()],
             cwd: None,
             env: Vec::new(),
@@ -859,11 +876,10 @@ mod conformance_tests {
 
     #[test]
     fn required_sandbox_rejects_missing_absolute_arguments_and_cwd() {
-        let missing = std::env::temp_dir().join("labby-missing-sandbox-path");
-        drop(std::fs::remove_file(&missing));
-        drop(std::fs::remove_dir_all(&missing));
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing");
         let make = |args: Vec<OsString>, cwd: Option<PathBuf>| StdioCommandSpec {
-            program: OsString::from("/bin/sh"),
+            program: std::env::current_exe().unwrap().into_os_string(),
             args,
             cwd,
             env: Vec::new(),
@@ -873,20 +889,24 @@ mod conformance_tests {
             runtime_origin: None,
             runtime_owner: None,
         };
-        assert!(
-            sandboxed_stdio_command(
+        for (command, expected) in [
+            (
                 make(vec![missing.clone().into_os_string()], None),
-                "/opt/labby/bin/labby".into()
+                "sandbox argument path",
+            ),
+            (make(Vec::new(), Some(missing)), "sandbox cwd"),
+        ] {
+            let error = sandboxed_stdio_command_against(
+                command,
+                std::env::current_exe().unwrap(),
+                std::iter::empty::<&PathBuf>(),
             )
-            .is_err()
-        );
-        assert!(
-            sandboxed_stdio_command(
-                make(Vec::new(), Some(missing)),
-                "/opt/labby/bin/labby".into()
-            )
-            .is_err()
-        );
+            .err()
+            .expect("missing sandbox path must fail")
+            .to_string();
+            assert!(error.contains(expected), "wrong failure boundary: {error}");
+            assert!(error.contains("does not exist"), "wrong failure: {error}");
+        }
     }
 
     #[test]

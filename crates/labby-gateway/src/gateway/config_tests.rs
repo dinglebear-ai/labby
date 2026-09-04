@@ -1855,21 +1855,7 @@ fn write_gateway_config_replaces_permissive_parent_acl_with_private_active_and_l
 
 #[cfg(windows)]
 pub(crate) fn assert_private_windows_acl(path: &Path) {
-    let script = r#"
-$acl = Get-Acl -LiteralPath $env:LABBY_ACL_TEST_PATH
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$rules = @($acl.Access)
-if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
-    $rules[0].IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -ne $sid) { exit 1 }
-"#;
-    let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .env("LABBY_ACL_TEST_PATH", path)
-        .status()
-        .unwrap();
-    assert!(
-        status.success(),
-        "private ACL missing on {}",
-        path.display()
-    );
+    let file = labby_winjob::fs::open_read(path, false).expect("open protected file");
+    labby_winjob::fs::verify_current_user_only_dacl(&file)
+        .expect("private current-user FullControl ACL");
 }

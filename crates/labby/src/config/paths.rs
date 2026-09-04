@@ -197,17 +197,21 @@ mod tests {
 
     #[test]
     fn access_database_uses_explicit_labby_home_and_canonical_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
         assert_eq!(
-            access_db_path_for(Some("/srv/labby".into()), Some("/home/operator".into())).unwrap(),
-            PathBuf::from("/srv/labby/access.db")
+            access_db_path_for(Some(root.join("labby")), Some(root.join("operator"))).unwrap(),
+            root.join("labby/access.db")
         );
     }
 
     #[test]
     fn access_database_uses_the_default_labby_state_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(dir.path()).unwrap();
         assert_eq!(
-            access_db_path_for(None, Some("/home/operator".into())).unwrap(),
-            PathBuf::from("/home/operator/.labby/access.db")
+            access_db_path_for(None, Some(home.clone())).unwrap(),
+            home.join(".labby/access.db")
         );
     }
 

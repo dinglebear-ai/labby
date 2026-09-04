@@ -529,10 +529,11 @@ fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(windows)]
-fn sync_parent_directory(_parent: &Path) -> std::io::Result<()> {
-    // Atomic replacement is provided by the Windows filesystem API. Rust does
-    // not expose a safe directory handle that can be passed to FlushFileBuffers.
-    Ok(())
+fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
+    // File data is flushed before atomic replacement. Windows does not provide
+    // the Unix directory-fsync guarantee here; still reject an absent,
+    // non-directory, or reparse-point parent rather than reporting success.
+    labby_winjob::fs::open_directory(parent).map(drop)
 }
 
 #[cfg(unix)]
