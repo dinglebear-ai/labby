@@ -254,7 +254,8 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             }
             assert!(observed.insert(intent.key(), status).is_none());
             let error = value.get("error").unwrap_or(&value);
-            let evidence = if status.is_success() {
+            let handler_failed = error.get("kind").is_some();
+            let evidence = if status.is_success() && !handler_failed {
                 match intent.scenario_kind {
                     ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
                     ScenarioKind::LiveInvoke => EvidenceLevel::LiveSuccess,
@@ -276,7 +277,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             let dedicated =
                 action_scenarios::dedicated_contract_reason_for(&intent.key(), Surface::Api)
                     .filter(|_| {
-                        !status.is_success()
+                        (!status.is_success() || handler_failed)
                             && action_scenarios::dedicated_contract_accepts_for(
                                 &intent.key(),
                                 Surface::Api,
