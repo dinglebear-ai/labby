@@ -8,6 +8,7 @@ import { invoke } from "./invoke";
 export interface PaletteConfig {
   serverUrl: string;
   staticToken?: string | null;
+  projectId?: string | null;
   shortcut: string;
   theme: "system" | "dark" | "light";
   hideOnBlur: boolean;

@@ -101,6 +101,14 @@ export function SettingsPanel({
                 placeholder="http://localhost:8765"
               />
             </Field>
+            <Field label="Project" hint="LABBY_PROJECT_ID — required for Skill Library imports">
+              <TextInput
+                value={draftConfig.projectId ?? ""}
+                onChange={(value) => updateConfig("projectId", value || null)}
+                mono
+                placeholder="team-project"
+              />
+            </Field>
             <div className="settings-toggle-row">
               <span>
                 <span>Test connection</span>
