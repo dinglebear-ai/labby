@@ -30,7 +30,7 @@ use state_snapshot::PublicCatalogObservation;
 #[test]
 fn every_current_multi_surface_service_has_a_parity_partition() {
     let mut surfaces = BTreeMap::<String, BTreeSet<Surface>>::new();
-    for intent in action_matrix::intents() {
+    for intent in action_matrix::compiled_intents() {
         surfaces
             .entry(intent.service.clone())
             .or_default()
@@ -41,18 +41,24 @@ fn every_current_multi_surface_service_has_a_parity_partition() {
         .filter(|(_, surfaces)| surfaces.len() > 1)
         .map(|(service, _)| service.as_str())
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        multi,
-        BTreeSet::from([
-            "doctor",
-            "fs",
-            "gateway",
-            "server_logs",
-            "setup",
-            "skills",
-            "snippets"
-        ])
-    );
+    if cfg!(feature = "all") {
+        assert_eq!(
+            multi,
+            BTreeSet::from([
+                "artifacts",
+                "bundles",
+                "doctor",
+                "fs",
+                "gateway",
+                "jobs",
+                "server_logs",
+                "setup",
+                "snippets",
+                "sources",
+                "uploads"
+            ])
+        );
+    }
     for service in multi {
         assert!(
             action_scenarios::fixtures().contains_key(service),

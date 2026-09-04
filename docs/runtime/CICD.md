@@ -117,11 +117,9 @@ rather than adding another required context. Separate required contexts are
 reserved for controls, like the protected-docs guard and repository contract,
 that intentionally execute from a trusted workflow boundary.
 
-Vendored rmcp trust-boundary changes have a second trusted-base workflow,
-`Vendored rmcp policy`. It requires `vendor-rmcp-approved`, removes that label
-whenever the pull-request head changes, and fails until a maintainer reviews and
-relabels the exact new head. It is a separate required `pull_request_target`
-context rather than part of the branch-controlled `ci-gate`.
+The rmcp dependency is pinned by immutable Git revision in Cargo metadata, so
+the ordinary manifest, lockfile, security, and conformance checks cover SDK
+changes without a copied vendor tree or a separate vendor-approval workflow.
 
 ## CI Checks
 
@@ -132,13 +130,12 @@ jobs when their changed-path category is enabled:
 |-------|----------|---------|
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
-| Vendored rmcp policy | separate required `pull_request_target` workflow | invalidates prior approval on every new head and blocks vendor/provenance/checker/policy changes until a maintainer reapplies `vendor-rmcp-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
-| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` at the same concurrency so the heavy normal library is reused; gateway and fs retain their focused runtime tests |
+| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; gateway, fs, and skills retain focused runtime tests |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
@@ -150,10 +147,17 @@ jobs when their changed-path category is enabled:
 | Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
+| MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
 | Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
+
+Every distributable or deployable Labby binary must include the `skills`
+feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
+default `gateway-host`, the sealed `integrated-gateway`, and `all` profiles all
+include it. Featureless and non-gateway slices exist only to verify dependency
+boundaries. Release binaries, the production container, and the Incus image
+each run a packaged-artifact smoke that proves the Skills CLI surface exists.
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 

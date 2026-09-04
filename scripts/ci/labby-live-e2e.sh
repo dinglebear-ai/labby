@@ -62,6 +62,12 @@ terminate_children() {
   done
   for group in "${owned_groups[@]:-}"; do group_identity_matches "$group" && group_alive "$group" && kill -KILL -- "-$group" 2>/dev/null || true; done
   for pid in "${active_pids[@]:-}"; do wait "$pid" 2>/dev/null || true; done
+  for _ in {1..20}; do
+    alive=0; for group in "${owned_groups[@]:-}"; do group_alive "$group" && alive=1; done
+    [ "$alive" -eq 0 ] && break
+    sleep 0.05
+  done
+  for group in "${owned_groups[@]:-}"; do group_alive "$group" && cleanup=1; done
   active_pids=()
 }
 finish() {

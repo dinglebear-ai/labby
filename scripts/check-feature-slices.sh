@@ -26,7 +26,10 @@ run cargo check -p labby-runtime --no-default-features --all-targets
 labby_product_features=(
   ""
   "gateway"
+  "gateway-host"
+  "integrated-gateway"
   "fs"
+  "skills"
   "all"
 )
 

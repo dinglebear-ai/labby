@@ -127,6 +127,9 @@ pub struct GatewayManager {
     /// live config publication, including rollback and ABA.
     pub(super) runtime_config_generation: Arc<AtomicU64>,
     pub(super) config_mutation: Arc<Mutex<()>>,
+    /// Scope-keyed single-flight and terminal-failure state for full-fleet MCP discovery.
+    pub(super) mcp_catalog_refresh_inflight: Arc<Mutex<std::collections::HashSet<String>>>,
+    pub(super) mcp_catalog_refresh_failures: Arc<Mutex<std::collections::HashSet<String>>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,
@@ -230,6 +233,9 @@ pub struct GatewayManager {
     pub(super) openapi_registry: labby_openapi::OpenApiRegistry,
     /// Hardened `reqwest` client for `openapi` dispatch. Cheap `Arc` clone.
     pub(super) openapi_http_client: reqwest::Client,
+    /// Optional private Unraid Core provider. It augments Code Mode only and
+    /// is never registered as an MCP upstream.
+    pub(super) core_provider_client: Option<crate::core_provider::CoreProviderClient>,
     /// Live inbound MCP client/session registry, populated by `labby`'s MCP
     /// transport layer (`rmcp`-dependent, cannot live in this crate) and read
     /// by `gateway.clients.list`. `Default` (empty, no-op) when not wired —

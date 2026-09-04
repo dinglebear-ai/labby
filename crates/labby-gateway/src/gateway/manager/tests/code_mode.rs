@@ -324,13 +324,12 @@ async fn advertised_subject_scoped_oauth_tool_normalizes_metadata_and_executes()
     let description = resolved.tool.description.as_deref().expect("description");
     assert!(!description.contains("###"));
     assert!(!description.contains('\u{2066}'));
+    assert!(!description.contains('\u{2069}'));
     let query_schema = &resolved.tool.input_schema["properties"]["query"];
-    assert!(
-        !query_schema["description"]
-            .as_str()
-            .unwrap()
-            .contains("###")
-    );
+    let query_description = query_schema["description"].as_str().unwrap();
+    assert!(!query_description.contains("###"));
+    assert!(!query_description.contains('\u{2066}'));
+    assert!(!query_description.contains('\u{2069}'));
     // Documentation is normalized, but schema values remain exact. Both the
     // discovery contract and the final peer check must use this representation.
     assert_eq!(query_schema["enum"], json!(["\u{2066}exact\u{2069}"]));

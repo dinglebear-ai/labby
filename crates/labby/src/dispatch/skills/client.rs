@@ -1,4 +1,4 @@
-//! Runtime context construction for the Skills compatibility service.
+//! Runtime context construction for the native Agent Skills protocol.
 //!
 //! Context-free dispatch is intentionally first-party-only. Surface adapters
 //! that hold a live GatewayManager must call the explicit scoped dispatch path.

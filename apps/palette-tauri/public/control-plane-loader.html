@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Labby Control Plane</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #171914; color: #f2f4ed; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; }
+      main { width: min(38rem, calc(100vw - 4rem)); padding: 2rem; border: 1px solid #3d4236; border-radius: 1rem; background: #20231c; }
+      h1 { margin: 0 0 .75rem; font-size: 1.25rem; }
+      p { margin: 0; color: #b6bdac; line-height: 1.55; overflow-wrap: anywhere; }
+      .pulse { width: .75rem; height: .75rem; margin-bottom: 1rem; border-radius: 50%; background: #b8e36e; animation: pulse 1.2s infinite alternate; }
+      .error .pulse { background: #ff7b72; animation: none; }
+      @keyframes pulse { to { opacity: .3; } }
+    </style>
+  </head>
+  <body>
+    <main id="status"><div class="pulse"></div><h1>Connecting to Labby…</h1><p>Checking the configured Control Plane before opening it.</p></main>
+    <script>
+      window.showControlPlaneError = (detail) => {
+        const status = document.getElementById('status')
+        status.classList.add('error')
+        status.querySelector('h1').textContent = 'Control Plane unavailable'
+        status.querySelector('p').textContent = detail
+      }
+    </script>
+  </body>
+</html>

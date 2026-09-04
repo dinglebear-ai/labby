@@ -405,6 +405,9 @@ pub struct SkillLibraryRecord {
     pub latest_revision_id: String,
     #[serde(default)]
     pub latest_revision_files: Vec<SkillLibraryFile>,
+    /// Descriptor metadata normalized into the durable snapshot search index.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_metadata: Vec<String>,
     #[serde(default)]
     pub provenance_provider: Option<String>,
     #[serde(default)]
@@ -495,6 +498,7 @@ impl LegacyLibrarySnapshot {
                             active_revision_id: record.active_revision_id,
                             latest_revision_id: String::new(),
                             latest_revision_files: Vec::new(),
+                            search_metadata: Vec::new(),
                             provenance_provider: None,
                             materialized: false,
                             created_at: record.created_at,
@@ -632,7 +636,7 @@ impl LibraryDurableAudit {
             || self.correlation_id.len() > 256
             || self.correlation_id.chars().any(char::is_control)
             || !matches!(
-                (self.action.strip_prefix("skill_library."), receipt.action.as_str()),
+                (self.action.strip_prefix("artifacts."), receipt.action.as_str()),
                 (Some(product), runtime) if product == runtime
                     || (product == "import" && runtime == "create")
             )
@@ -961,6 +965,10 @@ impl LibrarySnapshot {
 
 /// One durable compare-and-swap mutation.
 #[derive(Debug, Clone)]
+// Create owns the complete bounded record so the transaction journal can be
+// cloned and validated atomically; boxing it would complicate the durable
+// mutation vocabulary without reducing retained data.
+#[allow(clippy::large_enum_variant)]
 pub enum LibraryMutation {
     Create {
         record: SkillLibraryRecord,
@@ -2023,15 +2031,18 @@ mod tests {
 
     fn maximal_materialized(name: &str) -> MaterializedSkill {
         let mut logical = Vec::with_capacity(crate::skills::limits::MAX_RESOURCES_PER_SKILL);
-        let mut skill_md = format!("---\nname: {name}\ndescription: Maximal\n---\n");
-        skill_md.push_str(
-            &"x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES - skill_md.len()),
-        );
+        let skill_md = format!("---\nname: {name}\ndescription: Maximal\n---\n");
+        let mut remaining =
+            usize::try_from(crate::skills::limits::MAX_SKILL_TOTAL_BYTES).unwrap() - skill_md.len();
         logical.push(LogicalSkillFile::new("SKILL.md", skill_md));
-        for index in 1..crate::skills::limits::MAX_RESOURCES_PER_SKILL {
+        let supporting = crate::skills::limits::MAX_RESOURCES_PER_SKILL - 1;
+        for index in 1..=supporting {
+            let files_left = supporting - index + 1;
+            let bytes = remaining.div_ceil(files_left);
+            remaining -= bytes;
             logical.push(LogicalSkillFile::new(
                 format!("resource-{index:02}.txt"),
-                "x".repeat(crate::skills::limits::MAX_SKILL_RESOURCE_BYTES),
+                "x".repeat(bytes),
             ));
         }
         materialize_logical_skill(name, logical, ArtifactProvenance::default()).unwrap()
@@ -2045,7 +2056,7 @@ mod tests {
         LibraryDurableAudit {
             schema_version: 1,
             correlation_id: "correlation-1".to_owned(),
-            action: "skill_library.create".to_owned(),
+            action: "artifacts.create".to_owned(),
             target_digest: canonical_json::digest(&artifact_id).unwrap(),
             revision_digest: None,
             tenant_id: owner.tenant_id.clone(),
@@ -2085,6 +2096,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: candidate.interchange.revision.id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -2153,6 +2165,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: revision_id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2187,7 +2200,7 @@ mod tests {
         let candidate = maximal_materialized("maximal");
         assert_eq!(
             candidate.resources.values().map(Vec::len).sum::<usize>(),
-            super::super::validation::MAX_SKILL_PACKAGE_BYTES
+            usize::try_from(crate::skills::limits::MAX_SKILL_TOTAL_BYTES).unwrap()
         );
         let artifact_id = candidate.interchange.descriptor.id.clone();
         let revision_id = candidate.interchange.revision.id.clone();
@@ -2206,6 +2219,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: revision_id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2277,6 +2291,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: overflow.interchange.revision.id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2321,6 +2336,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: candidate.interchange.revision.id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2431,6 +2447,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: revision_id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -2490,6 +2507,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: candidate.interchange.revision.id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -2568,6 +2586,7 @@ mod tests {
                 active_revision_id: None,
                 latest_revision_id: first.interchange.revision.id.clone(),
                 latest_revision_files: Vec::new(),
+                search_metadata: Vec::new(),
                 provenance_provider: None,
                 materialized: false,
                 created_at: ts("2026-08-26T00:00:00Z"),
@@ -2671,6 +2690,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: revision_id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -3545,6 +3565,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: candidate.interchange.revision.id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),

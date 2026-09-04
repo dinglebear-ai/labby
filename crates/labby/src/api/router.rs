@@ -3,9 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
-#[cfg(feature = "gateway")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "api-docs")]
 use axum::response::Html;
@@ -1870,6 +1868,7 @@ fn is_public_relay_reserved_path(path: &str) -> bool {
 fn build_v1_router(
     state: &AppState,
     api_auth_configured: bool,
+    integrated_trusted_host: bool,
 ) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::{RouteAuth, RouteDescriptor, RouteGroup};
     #[cfg(feature = "api-docs")]
@@ -1884,7 +1883,7 @@ fn build_v1_router(
     let mut v1 = RouteGroup::empty().route(
         RouteDescriptor::new(
             "GET",
-            "/{service}/actions",
+            concat!("/", "{service}", "/actions"),
             "service_actions",
             "services",
             RouteAuth::V1,
@@ -1892,14 +1891,23 @@ fn build_v1_router(
         get(service_actions),
     );
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
-    if api_auth_configured {
+    v1 = v1.nest("/depot", services::depot::routes(state.clone()));
+    if api_auth_configured && !integrated_trusted_host {
         v1 = v1.nest(
             "/oauth/relay",
             services::oauth_relay::admin_routes(state.clone()),
         );
         #[cfg(feature = "skills")]
         {
-            v1 = v1.nest("/skills", services::skills::routes(state.clone()));
+            v1 = v1.nest("/artifacts", services::skills::routes(state.clone()));
+            for service in ["bundles", "jobs", "sources", "uploads"] {
+                if state.enabled_services.contains(service) {
+                    v1 = v1.nest(
+                        &format!("/{service}"),
+                        services::remote_control::routes(service, state.clone()),
+                    );
+                }
+            }
         }
     } else {
         #[cfg(feature = "skills")]
@@ -1915,7 +1923,7 @@ fn build_v1_router(
     {
         // upstream oauth must be nested before /gateway so its more-specific prefix wins;
         // only mount when the gateway manager is present (oauth requires it).
-        if state.gateway_manager.is_some() {
+        if state.gateway_manager.is_some() && !integrated_trusted_host {
             v1 = v1.nest(
                 "/gateway/oauth",
                 crate::api::upstream_oauth::gateway_routes(state.clone()),
@@ -2214,7 +2222,12 @@ pub(crate) fn build_router_with_external_auth(
         );
     }
 
-    let v1 = build_v1_router(&state, protected_route_auth_configured);
+    let integrated_trusted_host = state.trusted_host_verifier.is_some();
+    let v1 = build_v1_router(
+        &state,
+        protected_route_auth_configured,
+        integrated_trusted_host,
+    );
 
     let x_request_id = HeaderName::from_static("x-request-id");
 
@@ -2290,7 +2303,6 @@ pub(crate) fn build_router_with_external_auth(
     // Desired execution order (outermost → innermost → handler):
     //   SetRequestId → TraceLayer → PropagateRequestId → Timeout → Compression → CORS → handler
     use crate::api::route_registry::{RouteAuth, RouteDescriptor};
-    let public_relay = services::oauth_relay::public_routes(state.clone());
     let public_core = crate::api::route_registry::RouteGroup::empty()
         .route(
             RouteDescriptor::new("GET", "/health", "health", "health", RouteAuth::Public),
@@ -2309,16 +2321,18 @@ pub(crate) fn build_router_with_external_auth(
                 RouteAuth::Public,
             ),
             get(labby_discovery),
-        )
-        .merge(public_relay);
+        );
     let mut route_group = public_core.merge(v1_protected);
+    if !integrated_trusted_host {
+        route_group = route_group.merge(services::oauth_relay::public_routes(state.clone()));
+    }
     #[cfg(feature = "gateway")]
-    {
+    if !integrated_trusted_host {
         let browser_oauth = crate::api::upstream_oauth::browser_routes(state.clone());
         let well_known_oauth = crate::api::upstream_oauth::well_known_routes(state.clone());
         route_group = route_group.merge(browser_oauth).merge(well_known_oauth);
     }
-    if let Some(mcp) = mcp_protected {
+    if let Some(mcp) = mcp_protected.filter(|_| !integrated_trusted_host) {
         route_group = route_group.merge_runtime_router(
             mcp,
             [
@@ -2353,38 +2367,40 @@ pub(crate) fn build_router_with_external_auth(
     // /v1/* access (gated separately by the configured auth boundary), but it does render an
     // "authenticated" admin UI shell for unauthenticated visitors. Tracked
     // in lab-0bl3m — not fixed here.
-    route_group = route_group
-        .route(
-            RouteDescriptor::new(
-                "GET",
-                "/auth/session",
-                "auth_session",
-                "oauth",
-                RouteAuth::BrowserSession,
-            ),
-            get(crate::api::browser_session::auth_session),
-        )
-        .route(
-            RouteDescriptor::new(
-                "POST",
-                "/auth/logout",
-                "auth_logout",
-                "oauth",
-                RouteAuth::BrowserSession,
-            ),
-            post(crate::api::browser_session::auth_logout),
+    if !integrated_trusted_host {
+        route_group = route_group
+            .route(
+                RouteDescriptor::new(
+                    "GET",
+                    "/auth/session",
+                    "auth_session",
+                    "oauth",
+                    RouteAuth::BrowserSession,
+                ),
+                get(crate::api::browser_session::auth_session),
+            )
+            .route(
+                RouteDescriptor::new(
+                    "POST",
+                    "/auth/logout",
+                    "auth_logout",
+                    "oauth",
+                    RouteAuth::BrowserSession,
+                ),
+                post(crate::api::browser_session::auth_logout),
+            );
+        let local_session_routes = services::local_session::routes(state.clone())
+            .map_router(|router| router.route_layer(make_auth_layer(true)));
+        route_group = route_group.merge(local_session_routes);
+        route_group = route_group.nest(
+            "/auth/bootstrap",
+            services::access_bootstrap_proof::routes(state.clone()),
         );
-    let local_session_routes = services::local_session::routes(state.clone())
-        .map_router(|router| router.route_layer(make_auth_layer(true)));
-    route_group = route_group.merge(local_session_routes);
-    route_group = route_group.nest(
-        "/auth/bootstrap",
-        services::access_bootstrap_proof::routes(state.clone()),
-    );
-    if let Some(auth_state) = auth_state.as_ref() {
+    }
+    if !integrated_trusted_host && let Some(auth_state) = auth_state.as_ref() {
         let _ = auth_state;
         let mut descriptors = crate::api::route_registry::oauth_protocol_descriptors().into_iter();
-        let auth_routes = crate::api::route_registry::RouteGroup::empty()
+        let mut auth_routes = crate::api::route_registry::RouteGroup::empty()
             .route(
                 descriptors.next().unwrap(),
                 get(auth_authorization_server_metadata),
@@ -2397,8 +2413,12 @@ pub(crate) fn build_router_with_external_auth(
                 descriptors.next().unwrap(),
                 get(auth_protected_resource_metadata),
             )
-            .route(descriptors.next().unwrap(), get(auth_jwks))
-            .route(descriptors.next().unwrap(), post(auth_register))
+            .route(descriptors.next().unwrap(), get(auth_jwks));
+        let registration = descriptors.next().unwrap();
+        if auth_state.config.enable_dynamic_registration {
+            auth_routes = auth_routes.route(registration, post(auth_register));
+        }
+        auth_routes = auth_routes
             .route(descriptors.next().unwrap(), get(auth_authorize))
             .route(descriptors.next().unwrap(), get(auth_browser_login))
             .route(descriptors.next().unwrap(), get(auth_callback))
@@ -2424,80 +2444,86 @@ pub(crate) fn build_router_with_external_auth(
     // Development mockups are registered before the Next.js static fallback so
     // `/dev/mockup*` resolves from ~/.superpowers/brainstorm/content rather than
     // being swallowed by the SPA. See docs/design/component-development.md.
-    let dev_routes = crate::api::route_registry::RouteGroup::empty()
-        .route(
-            RouteDescriptor::new(
-                "GET",
-                "/dev/mockup",
-                "dev_mockup",
-                "dev",
-                RouteAuth::BrowserSession,
+    if !integrated_trusted_host {
+        let dev_routes = crate::api::route_registry::RouteGroup::empty()
+            .route(
+                RouteDescriptor::new(
+                    "GET",
+                    "/dev/mockup",
+                    "dev_mockup",
+                    "dev",
+                    RouteAuth::BrowserSession,
+                )
+                .aliases(&["/dev/mockup/"])
+                .when("development/mockup routes"),
+                get(dev_mockup),
             )
-            .aliases(&["/dev/mockup/"])
-            .when("development/mockup routes"),
-            get(dev_mockup),
-        )
-        .route(
+            .route(
+                RouteDescriptor::new(
+                    "GET",
+                    "/dev/mockup/{name}",
+                    "dev_mockup_named",
+                    "dev",
+                    RouteAuth::BrowserSession,
+                )
+                .aliases(&["/dev/mockup/{name}/"])
+                .when("development/mockup routes"),
+                get(dev_mockup_named),
+            );
+        let dev_routes = if credential_auth_configured {
+            dev_routes.map_router(|router| router.route_layer(make_auth_layer(true)))
+        } else {
+            dev_routes
+        };
+        route_group = route_group.merge(dev_routes);
+
+        route_group = route_group.route(
             RouteDescriptor::new(
                 "GET",
-                "/dev/mockup/{name}",
-                "dev_mockup_named",
-                "dev",
-                RouteAuth::BrowserSession,
-            )
-            .aliases(&["/dev/mockup/{name}/"])
-            .when("development/mockup routes"),
-            get(dev_mockup_named),
-        );
-    let dev_routes = if credential_auth_configured {
-        dev_routes.map_router(|router| router.route_layer(make_auth_layer(true)))
-    } else {
-        dev_routes
-    };
-    route_group = route_group.merge(dev_routes);
-
-    route_group = route_group.route(
-        RouteDescriptor::new(
-            "GET",
-            LABBY_APP_HOST_JS_ROUTE,
-            "labby_app_host_js",
-            "apps",
-            RouteAuth::Public,
-        ),
-        get(labby_app_host_js),
-    );
-
-    let app_routes = crate::api::route_registry::RouteGroup::empty()
-        .route(
-            RouteDescriptor::new(
-                "GET",
-                APPS_LAUNCHER_ROUTE,
-                "apps_launcher_page",
+                LABBY_APP_HOST_JS_ROUTE,
+                "labby_app_host_js",
                 "apps",
-                RouteAuth::BrowserSession,
-            )
-            .aliases(&[&format!("{APPS_LAUNCHER_ROUTE}/")]),
-            get(apps_launcher_page),
-        )
-        .route(
-            RouteDescriptor::new(
-                "GET",
-                SERVER_LOGS_BROWSER_ROUTE,
-                "server_logs_app_page",
-                "apps",
-                RouteAuth::BrowserSession,
-            )
-            .aliases(&[&format!("{SERVER_LOGS_BROWSER_ROUTE}/")]),
-            get(server_logs_app_page),
+                RouteAuth::Public,
+            ),
+            get(labby_app_host_js),
         );
-    let app_routes = if credential_auth_configured {
-        app_routes.map_router(|router| router.route_layer(make_auth_layer(true)))
-    } else {
-        app_routes
-    };
-    route_group = route_group.merge(app_routes);
 
-    let declared_descriptors = crate::api::route_registry::build_route_descriptors();
+        let app_routes = crate::api::route_registry::RouteGroup::empty()
+            .route(
+                RouteDescriptor::new(
+                    "GET",
+                    APPS_LAUNCHER_ROUTE,
+                    "apps_launcher_page",
+                    "apps",
+                    RouteAuth::BrowserSession,
+                )
+                .aliases(&[&format!("{APPS_LAUNCHER_ROUTE}/")]),
+                get(apps_launcher_page),
+            )
+            .route(
+                RouteDescriptor::new(
+                    "GET",
+                    SERVER_LOGS_BROWSER_ROUTE,
+                    "server_logs_app_page",
+                    "apps",
+                    RouteAuth::BrowserSession,
+                )
+                .aliases(&[&format!("{SERVER_LOGS_BROWSER_ROUTE}/")]),
+                get(server_logs_app_page),
+            );
+        let app_routes = if credential_auth_configured {
+            app_routes.map_router(|router| router.route_layer(make_auth_layer(true)))
+        } else {
+            app_routes
+        };
+        route_group = route_group.merge(app_routes);
+    }
+
+    let declared_descriptors = if integrated_trusted_host {
+        crate::api::route_registry::build_integrated_trusted_host_route_descriptors()
+    } else {
+        crate::api::route_registry::build_route_descriptors()
+    };
     crate::api::route_registry::validate_mounted_inventory(
         &route_group.descriptors,
         &declared_descriptors,
@@ -2512,8 +2538,9 @@ pub(crate) fn build_router_with_external_auth(
         &route_group.descriptors,
         declared_descriptors,
     );
+    let trusted_host_verifier = state.trusted_host_verifier.clone();
     let mut router = route_group.router;
-    if state.web_assets_enabled() {
+    if state.web_assets_enabled() && !integrated_trusted_host {
         router = router.fallback(crate::api::web::serve_web_request);
     }
 
@@ -2521,6 +2548,19 @@ pub(crate) fn build_router_with_external_auth(
     let protected_proxy_state = state.clone();
     let request_timeout_state = state.clone();
     let router = router.with_state(state);
+    // A verifier is installed only by the sealed integrated UDS profile. The
+    // listener independently verifies SO_PEERCRED; this inner layer proves the
+    // original Core actor on every request and replaces the synthetic peer
+    // identity before a handler observes it.
+    let router = if let Some(verifier) = trusted_host_verifier {
+        router
+            .layer(axum::middleware::from_fn(
+                labby_auth::trusted_host::require_delegated_actor,
+            ))
+            .layer(Extension(verifier))
+    } else {
+        router
+    };
     #[cfg(feature = "gateway")]
     let router = router.layer(axum::middleware::from_fn_with_state(
         protected_proxy_state,
@@ -2708,7 +2748,8 @@ mod tests {
         let path = match service {
             "lab_admin" => return None,
             "fs" => "/v1/fs/list".to_string(),
-            name @ ("doctor" | "gateway" | "server_logs" | "setup" | "skills" | "snippets") => {
+            name @ ("artifacts" | "bundles" | "doctor" | "gateway" | "jobs" | "server_logs"
+            | "setup" | "snippets" | "sources" | "uploads") => {
                 format!("/v1/{name}")
             }
             unknown => panic!(
@@ -2721,6 +2762,28 @@ mod tests {
             Method::POST
         };
         Some((method, path))
+    }
+
+    #[tokio::test]
+    async fn integrated_trusted_host_requires_a_fresh_core_assertion_on_health() {
+        let verifier = Arc::new(labby_auth::trusted_host::TrustedHostVerifier::new(1, []));
+        let app = build_router_with_bearer(
+            AppState::new().with_trusted_host_verifier(verifier),
+            None,
+            None,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -2738,6 +2801,9 @@ mod tests {
                 Some("registry-denominator-secret".into()),
                 None,
             )
+            .layer(axum::extract::connect_info::MockConnectInfo(
+                SocketAddr::from(([127, 0, 0, 1], 9001)),
+            ))
             .oneshot(
                 Request::builder()
                     .method(method)
@@ -2782,6 +2848,9 @@ mod tests {
                 Some("route-denominator-secret".into()),
                 None,
             )
+            .layer(axum::extract::connect_info::MockConnectInfo(
+                SocketAddr::from(([127, 0, 0, 1], 9001)),
+            ))
             .oneshot(
                 Request::builder()
                     .method(method)
@@ -2823,16 +2892,10 @@ mod tests {
                 }
                 _ => {}
             }
-            let unavailable_without_runtime =
-                route.runtime_condition.as_deref().is_some_and(|condition| {
-                    condition == crate::docs::routes::OAUTH_MODE_ONLY
-                        || condition == crate::docs::routes::BOOTSTRAP_OWNER_RUNTIME_CONDITION
-                        || condition == crate::docs::routes::DEV_RUNTIME_CONDITION
-                        || condition == crate::docs::routes::GATEWAY_RUNTIME_CONDITION
-                        || condition == crate::docs::routes::FS_RUNTIME_CONDITION
-                });
+            let unavailable_without_runtime = route.runtime_condition.is_some();
             assert!(
                 status == StatusCode::UNAUTHORIZED
+                    || (status == StatusCode::FORBIDDEN && route.bootstrap_proof)
                     || (status == StatusCode::NOT_FOUND && unavailable_without_runtime),
                 "OAI-CLAUSE-001: inventoried sensitive route {} {} did not authenticate before dispatch (status={}, group={}, runtime_condition={:?})",
                 route.method,
@@ -3835,7 +3898,9 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let read_only_token =
             issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:read");
-        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]).layer(
+            axum::extract::connect_info::MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))),
+        );
 
         let response = app
             .oneshot(
@@ -4348,6 +4413,7 @@ mod tests {
         assert_eq!(json["authenticated"], true);
         assert_eq!(json["user"]["sub"], "browser-user");
         assert_eq!(json["csrf_token"], "csrf-123");
+        assert_eq!(json["project_id"], serde_json::Value::Null);
     }
 
     // lab-cfl3v: /auth/session and /auth/logout must work without OAuth
@@ -4729,12 +4795,22 @@ mod tests {
                     .method("POST")
                     .uri("/register")
                     .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))))
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(register.status(), StatusCode::NOT_FOUND);
+        let status = register.status();
+        let body = axum::body::to_bytes(register.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "unexpected registration response: {}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[test]

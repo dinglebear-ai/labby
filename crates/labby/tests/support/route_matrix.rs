@@ -8,6 +8,7 @@ pub(crate) struct RouteDescriptor {
     pub(crate) path: String,
     pub(crate) handler_group: String,
     pub(crate) handler_identity: String,
+    pub(crate) feature: Option<String>,
     pub(crate) runtime_condition: Option<String>,
     pub(crate) auth_required: bool,
     pub(crate) bearer_only: bool,
@@ -51,6 +52,18 @@ impl RouteCase {
 
     pub(crate) fn permits_runtime_absence(&self) -> bool {
         self.descriptor.runtime_condition.is_some()
+            || self
+                .descriptor
+                .feature
+                .as_deref()
+                .is_some_and(|feature| !feature_is_compiled(feature))
+    }
+
+    pub(crate) fn is_compiled(&self) -> bool {
+        self.descriptor
+            .feature
+            .as_deref()
+            .is_none_or(feature_is_compiled)
     }
 }
 
@@ -107,9 +120,9 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
     },
 ];
 
-pub(crate) const PINNED_ROUTE_COUNT: usize = 84;
+pub(crate) const PINNED_ROUTE_COUNT: usize = 93;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "57142bad25e7e16ba31da3e2a8fd55ae6b82b6d1894fd659ce8d6b805bfd8057";
+    "40973653cb3b952ccb14c61465588e09f3e31c93fd6977cb98d6844c49bd4fcf";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
@@ -120,8 +133,10 @@ impl SecurityInvariant {
             }
             RequestClass::Bearer => (true, false, false, false, false, false),
             RequestClass::BrowserSession => {
-                let host = matches!(route.handler_group.as_str(), "doctor" | "setup")
-                    || route.path == "/auth/local-session";
+                let host = matches!(
+                    route.handler_group.as_str(),
+                    "doctor" | "setup" | "bundles" | "jobs" | "sources" | "uploads"
+                ) || route.path == "/auth/local-session";
                 (true, false, false, true, mutation, host)
             }
             RequestClass::BootstrapProof => (true, false, true, false, false, true),
@@ -247,6 +262,15 @@ fn classify(route: &RouteDescriptor) -> RequestClass {
     }
 }
 
+fn feature_is_compiled(feature: &str) -> bool {
+    (feature == "gateway" && cfg!(feature = "gateway"))
+        || (feature == "fs" && cfg!(feature = "fs"))
+        || (feature == "skills" && cfg!(feature = "skills"))
+        || (feature == "lab-admin" && cfg!(feature = "lab-admin"))
+        || (feature == "api-docs" && cfg!(feature = "api-docs"))
+        || (feature == "systemd" && cfg!(feature = "systemd"))
+}
+
 fn request_body(route: &RouteDescriptor) -> Option<&'static str> {
     match (route.method.as_str(), route.handler_group.as_str()) {
         ("POST", "mcp") => Some(
@@ -262,6 +286,7 @@ fn sample_path(template: &str) -> Result<String, String> {
         ("{machine_id}", "missing-machine"),
         ("{credential_id}", "missing-credential"),
         ("{email}", "nobody%40example.invalid"),
+        ("{id}", "missing-upload"),
         ("{name}", "missing"),
         ("{service}", "doctor"),
         ("{*route}", "missing"),

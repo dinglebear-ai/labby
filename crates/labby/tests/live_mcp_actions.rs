@@ -22,14 +22,13 @@ mod support {
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use action_matrix::{EvidenceLevel, ScenarioKind, Surface, intents};
+use action_matrix::{EvidenceLevel, ScenarioKind, Surface, compiled_intents, intents};
 use mcp_action_runner::BuiltinMcpRunner;
 
 const ACTION_CATALOG: &str = include_str!("../../../docs/generated/action-catalog.json");
 
 fn mcp_intents() -> Vec<&'static action_matrix::CaseIntent> {
-    intents()
-        .iter()
+    compiled_intents()
         .filter(|intent| intent.applicable_surfaces.contains(&Surface::Mcp))
         .collect()
 }
@@ -37,6 +36,7 @@ fn mcp_intents() -> Vec<&'static action_matrix::CaseIntent> {
 fn expected_service_tools() -> BTreeSet<String> {
     mcp_intents()
         .into_iter()
+        .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
         .map(|intent| intent.service.clone())
         .collect()
 }
@@ -326,7 +326,7 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
 #[test]
 fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
     let cases = mcp_intents();
-    assert_eq!(cases.len(), 146);
+    let case_count = cases.len();
     let mut plans = BTreeMap::new();
     for intent in cases {
         let disposition = match intent.scenario_kind {
@@ -342,7 +342,7 @@ fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
         assert!(!intent.scenario_id.is_empty());
         assert!(!intent.fixture_params.fixture.is_empty());
     }
-    assert_eq!(plans.len(), 146);
+    assert_eq!(plans.len(), case_count);
 }
 
 #[test]
@@ -373,7 +373,12 @@ async fn raw_mode_catalog_is_exact_and_builtin_help_executes_live() {
     let all_services = expected_service_tools();
     let expected = all_services
         .iter()
-        .filter(|service| service.as_str() != "lab_admin")
+        .filter(|service| {
+            !matches!(
+                service.as_str(),
+                "lab_admin" | "bundles" | "jobs" | "sources" | "uploads"
+            )
+        })
         .cloned()
         .collect::<BTreeSet<_>>();
     let advertised_services = advertised
@@ -463,7 +468,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         // exercised through the HTTP MCP route owned by this runner.
         .filter(|intent| intent.service != "lab_admin")
         .collect::<Vec<_>>();
-    assert_eq!(expected.len(), 143);
+    let expected_count = expected.len();
 
     let mut consumed = BTreeSet::new();
     for intent in expected {
@@ -556,13 +561,15 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         .record();
         assert!(consumed.insert(intent.key()), "duplicate action execution");
     }
-    assert_eq!(consumed.len(), 143);
+    assert_eq!(consumed.len(), expected_count);
 
     let cleanup = runner.finish().await;
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
 }
 
+#[cfg(feature = "lab-admin")]
 #[tokio::test]
+#[cfg(feature = "lab-admin")]
 async fn local_stdio_executes_all_lab_admin_intents_before_recording_evidence() {
     let root = tempfile::tempdir().expect("local stdio MCP root");
     std::fs::create_dir_all(root.path().join("tmp")).unwrap();
@@ -581,6 +588,7 @@ async fn local_stdio_executes_all_lab_admin_intents_before_recording_evidence() 
         .into_iter()
         .filter(|intent| intent.service == "lab_admin")
         .collect::<Vec<_>>();
+    let intent_count = intents.len();
     assert_eq!(intents.len(), 3);
     let mut consumed = BTreeSet::new();
     for intent in intents {
@@ -626,7 +634,7 @@ async fn local_stdio_executes_all_lab_admin_intents_before_recording_evidence() 
         .record();
         assert!(consumed.insert(intent.key()), "duplicate stdio execution");
     }
-    assert_eq!(consumed.len(), 3);
+    assert_eq!(consumed.len(), intent_count);
     let cleanup = runner.finish().await;
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
 }

@@ -119,7 +119,7 @@ function statusPresentation(status: SkillsRowStatus) {
   }
 }
 
-export function SkillsPageContent({ upstream }: { upstream?: string }) {
+export function SkillsPageContent({ upstream, embedded = false }: { upstream?: string; embedded?: boolean }) {
   const router = useRouter()
   const { updateGateway } = useGatewayMutations()
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
@@ -213,13 +213,13 @@ export function SkillsPageContent({ upstream }: { upstream?: string }) {
 
   return (
     <>
-      <AppHeader
+      {!embedded ? <AppHeader
         breadcrumbs={
           upstream
             ? [{ label: 'Skills', href: '/skills' }, { label: upstream }]
             : [{ label: 'Skills' }]
         }
-      />
+      /> : null}
       <div className={`${AURORA_PAGE_SHELL} flex-1`}>
         <div className={AURORA_PAGE_FRAME}>
           {/* Hero — the mock's eyebrow + title + action cluster with the stat

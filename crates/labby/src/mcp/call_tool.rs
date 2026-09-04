@@ -59,10 +59,22 @@ use crate::mcp::result_format::{
 use crate::mcp::server::LabMcpServer;
 
 #[cfg(feature = "skills")]
-#[derive(Debug)]
 pub(super) struct SkillLibraryCallbackBoundary {
     pub(super) identity: labby_auth::VerifiedIdentity,
     pub(super) scopes: Vec<String>,
+    pub(super) product_credential_bound: bool,
+}
+
+#[cfg(feature = "skills")]
+impl std::fmt::Debug for SkillLibraryCallbackBoundary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SkillLibraryCallbackBoundary")
+            .field("authenticator", &self.identity.authenticator())
+            .field("scope_count", &self.scopes.len())
+            .field("product_bound", &self.product_credential_bound)
+            .finish()
+    }
 }
 
 /// Project only host-established authentication facts into the Skill Library
@@ -100,9 +112,36 @@ pub(super) fn skill_library_callback_boundary(
             message: "Skill Library requires a verified host identity".to_owned(),
             required_scopes: Vec::new(),
         })?;
+    let product_credential_bound =
+        if identity.authenticator() == labby_auth::Authenticator::ProductCredential {
+            let source = parts
+                .extensions
+                .get::<labby_primitives::product_credential::ProductCredentialGrant>();
+            let bound = parts
+                .extensions
+                .get::<labby_primitives::product_credential::BoundAccessGrant>();
+            match source.zip(bound) {
+                Some((source, bound))
+                    if crate::dispatch::skill_library::auth::product_grants_are_route_bound(
+                        source, bound,
+                    ) =>
+                {
+                    true
+                }
+                _ => {
+                    return Err(ToolError::Forbidden {
+                        message: "Skill Library product credential binding is invalid".to_owned(),
+                        required_scopes: Vec::new(),
+                    });
+                }
+            }
+        } else {
+            false
+        };
     Ok(SkillLibraryCallbackBoundary {
         identity,
         scopes: auth.scopes.clone(),
+        product_credential_bound,
     })
 }
 
@@ -269,10 +308,10 @@ impl LabMcpServer {
         action: &str,
     ) -> bool {
         self.skill_library_http_management_visible(context)
-            && crate::dispatch::skills::MCP_ACTIONS
+            && crate::dispatch::artifacts::ACTIONS
                 .iter()
                 .any(|spec| spec.name == action)
-            && self.action_allowed_on_mcp("skills", action).await
+            && self.action_allowed_on_mcp("artifacts", action).await
     }
 
     async fn mcp_action_policy_denial(
@@ -282,7 +321,10 @@ impl LabMcpServer {
         action: &str,
         registered: bool,
     ) -> Option<CallToolResponse> {
-        let action_allowed = if service == "skills" && action.starts_with("skill_library.") {
+        #[cfg(not(feature = "skills"))]
+        let _ = context;
+
+        let action_allowed = if service == "artifacts" && action.starts_with("artifacts.") {
             #[cfg(feature = "skills")]
             {
                 self.skill_library_http_action_allowed(context, action)
@@ -307,7 +349,7 @@ impl LabMcpServer {
             );
         }
         #[cfg(feature = "skills")]
-        if service == "skills" && action.starts_with("skill_library.") {
+        if service == "artifacts" && action.starts_with("artifacts.") {
             extra.insert(
                 "correlation_id".to_owned(),
                 Value::String(skill_library_safe_callback_correlation(context)),
@@ -610,6 +652,16 @@ impl LabMcpServer {
                 transport,
                 identity,
             } => {
+                #[cfg(feature = "skills")]
+                if is_project_artifact_management_call(&request) {
+                    if let Some(response) =
+                        Box::pin(self.destructive_confirmation_response(&request, &context)).await
+                    {
+                        return Ok(response);
+                    }
+                    return Box::pin(self.call_tool_response_dispatch_impl(request, context, true))
+                        .await;
+                }
                 return self
                     .call_project_regular_tool_terminal(
                         request,
@@ -1217,9 +1269,11 @@ impl LabMcpServer {
                             .map(|subject| subject.into_owned()),
                         };
                         if synthetic_action == "refresh" {
-                            manager
-                                .refresh_gateway_status_catalog(&enrichment_scope, None)
-                                .await;
+                            drop(
+                                manager
+                                    .refresh_gateway_status_catalog(&enrichment_scope, None)
+                                    .await,
+                            );
                         }
                         Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
                             manager,
@@ -1335,6 +1389,16 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope).into());
         }
 
+        if service == "skills" && svc.is_none() {
+            let envelope = build_error(
+                &service,
+                &action,
+                "not_found",
+                "service `skills` is not enabled on the mcp surface",
+            );
+            return Ok(error_result_from_envelope(envelope).into());
+        }
+
         if let Some(response) =
             Box::pin(self.mcp_action_policy_denial(&context, &service, &action, svc.is_some()))
                 .await
@@ -1431,7 +1495,7 @@ impl LabMcpServer {
             }
         }
 
-        if service == "skills"
+        if matches!(service.as_str(), "skills" | "artifacts")
             && !matches!(action.as_str(), "help" | "schema")
             && !resolve_caller_authorization(
                 auth_context_from_extensions(&context.extensions),
@@ -1527,10 +1591,10 @@ impl LabMcpServer {
                     .await
                     .map(Into::into);
             }
-            let result = if service == "skills" {
+            let result = if service == "artifacts" {
                 #[cfg(feature = "skills")]
                 {
-                    self.dispatch_compat_tool_boxed(
+                    self.dispatch_artifact_tool_boxed(
                         &context,
                         request.meta.as_ref(),
                         &action,
@@ -1982,6 +2046,54 @@ impl LabMcpServer {
         }
 
         crate::config::code_mode_widget_callbacks_enabled()
+    }
+}
+
+#[cfg(feature = "skills")]
+fn is_project_artifact_management_call(request: &CallToolRequestParams) -> bool {
+    request.name.as_ref() == "artifacts"
+        && request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("action"))
+            .and_then(Value::as_str)
+            .is_some_and(|action| {
+                crate::dispatch::skill_library::catalog::LOCAL_ACTIONS
+                    .iter()
+                    .any(|candidate| candidate.name == action)
+            })
+}
+
+#[cfg(all(test, feature = "skills"))]
+mod project_artifact_routing_tests {
+    use rmcp::model::CallToolRequestParams;
+    use serde_json::json;
+
+    use super::is_project_artifact_management_call;
+
+    fn request(name: &str, action: &str) -> CallToolRequestParams {
+        CallToolRequestParams::new(name.to_owned()).with_arguments(
+            json!({"action": action, "params": {}})
+                .as_object()
+                .expect("fixture arguments")
+                .clone(),
+        )
+    }
+
+    #[test]
+    fn project_artifact_library_calls_use_the_access_authorized_builtin_path() {
+        assert!(is_project_artifact_management_call(&request(
+            "artifacts",
+            "artifacts.import",
+        )));
+        assert!(!is_project_artifact_management_call(&request(
+            "artifacts",
+            "artifacts.search_remote",
+        )));
+        assert!(!is_project_artifact_management_call(&request(
+            "gateway",
+            "artifacts.import",
+        )));
     }
 }
 

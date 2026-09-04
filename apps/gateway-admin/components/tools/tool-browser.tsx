@@ -1,7 +1,10 @@
 'use client'
 
 import { FormEvent, useEffect, useRef, useState } from 'react'
-import { SearchCode, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { Search, SearchCode, ShieldCheck, TriangleAlert, Wrench } from 'lucide-react'
+import { AppHeader } from '@/components/app-header'
+import { ConsoleHero } from '@/components/console/console-hero'
+import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL, AURORA_STRONG_PANEL } from '@/components/aurora/tokens'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { subscribeToBrowserSession } from '@/lib/auth/session-store'
@@ -155,36 +158,63 @@ export function ToolBrowser({ initialQuery = '' }: { initialQuery?: string } = {
     codeModeConfigFailed: Boolean(codeModeConfigError),
   })
 
-  return <main className="mx-auto w-full max-w-7xl p-6 lg:p-10">
-    <div className="mb-8 flex items-start gap-4">
-      <div className="rounded-xl border border-aurora-accent-primary/30 bg-aurora-accent-primary/10 p-3"><SearchCode className="size-6 text-aurora-accent-primary" /></div>
-      <div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-aurora-accent-primary">Live catalog</p><h1 className="text-3xl font-semibold text-aurora-text-primary">Code Mode tools</h1><p className="mt-2 max-w-2xl text-sm text-aurora-text-secondary">Search the tools visible to this authenticated admin session. Safety facts are advisory; live dispatch remains authoritative.</p></div>
-    </div>
-    <form className="flex gap-3" onSubmit={(event: FormEvent) => { event.preventDefault(); void runSearch(query) }}>
-      <Input aria-label="Search tools" maxLength={1024} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by tool, namespace, description, or tag" />
-      <Button type="submit" disabled={loading}>{loading ? 'Loading…' : query.trim() ? 'Search' : 'Browse all'}</Button>
-    </form>
-    {error && <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && error.retry && <Button variant="ghost" size="sm" onClick={error.retry}>Retry</Button>}</div>}
-    <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
-      <section aria-label="Tool results" className="space-y-3">
-        <p className="text-xs text-aurora-text-muted">{summary}</p>
-        {results.map((hit) => <button key={hit.id} type="button" onClick={() => void selectTool(hit)} className="block w-full rounded-xl border border-aurora-border-default bg-aurora-panel-medium p-4 text-left transition hover:border-aurora-accent-primary/50 hover:bg-aurora-panel-strong">
-          <div className="flex items-center justify-between gap-3"><code className="text-sm font-semibold text-aurora-accent-primary">{hit.path}</code><Safety safety={hit.safety} /></div>
-          <p className="mt-2 line-clamp-2 text-sm text-aurora-text-secondary">{hit.description || 'No description provided.'}</p>
-          <p className="mt-2 truncate font-mono text-xs text-aurora-text-muted">{hit.signature}</p>
-        </button>)}
-      </section>
-      <aside aria-label="Tool details" className="min-h-72 rounded-xl border border-aurora-border-default bg-aurora-panel-medium p-5">
-        {!detail ? <div className="flex h-full min-h-64 items-center justify-center text-sm text-aurora-text-muted">Select a tool to inspect its live definition.</div> : <div>
-          <div className="flex items-center justify-between gap-3"><code className="text-lg font-semibold text-aurora-accent-primary">{detail.path}</code><Safety safety={detail.safety} /></div>
-          <p className="mt-3 text-sm text-aurora-text-secondary">{detail.description}</p>
-          <dl className="mt-5 grid gap-2 text-xs"><div><dt className="text-aurora-text-muted">ID</dt><dd className="font-mono">{detail.id}</dd></div><div><dt className="text-aurora-text-muted">Helper</dt><dd className="font-mono">{detail.helper}</dd></div></dl>
-          <h2 className="mt-6 text-sm font-semibold">Parameters (TypeScript)</h2>
-          {detail.typescript ? <pre className="mt-2 max-h-[32rem] overflow-auto rounded-lg border border-aurora-border-default bg-aurora-bg-primary p-4 text-xs"><code>{detail.typescript}</code></pre> : <p className="mt-2 text-sm text-aurora-text-muted">Parameters unavailable{detail.typescript_omitted === 'size_limit' ? ' because the declaration exceeds the response limit.' : '.'}</p>}
-        </div>}
-      </aside>
-    </div>
-  </main>
+  const readOnlyCount = results.filter((hit) => hit.safety?.read_only).length
+  const destructiveCount = results.filter((hit) => hit.safety?.destructive).length
+
+  return <>
+    <AppHeader breadcrumbs={[{ label: 'Catalog' }, { label: 'Tools' }]} />
+    <main className={`${AURORA_PAGE_SHELL} flex-1`}>
+      <div className={AURORA_PAGE_FRAME}>
+        <ConsoleHero
+          eyebrow="Live catalog"
+          title="Tools"
+          pulse={codeModeConfig?.enabled ? { color: 'var(--aurora-success)', label: 'Code Mode enabled' } : undefined}
+          stats={[
+            { label: 'Matches', value: total, icon: <Wrench className="size-3" /> },
+            { label: 'Visible', value: results.length, icon: <SearchCode className="size-3" /> },
+            { label: 'Read only', value: readOnlyCount, icon: <ShieldCheck className="size-3" /> },
+            { label: 'Destructive', value: destructiveCount, tone: 'var(--aurora-error)', icon: <TriangleAlert className="size-3" /> },
+          ]}
+        />
+
+        <section className={AURORA_STRONG_PANEL}>
+          <form className="flex items-center gap-2 border-b border-aurora-border-default p-3" onSubmit={(event: FormEvent) => { event.preventDefault(); void runSearch(query) }}>
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-aurora-text-muted" />
+              <Input className="pl-9" aria-label="Search tools" maxLength={1024} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search tools, namespaces, descriptions, or tags…" />
+            </div>
+            <Button type="submit" disabled={loading}>{loading ? 'Loading…' : query.trim() ? 'Search' : 'Browse all'}</Button>
+            <span className="hidden min-w-28 text-right text-xs text-aurora-text-muted md:block">{summary}</span>
+          </form>
+
+          {error && <div role="alert" className="m-3 flex items-center gap-2 rounded-aurora-1 border border-aurora-error/40 bg-aurora-error/10 p-3 text-sm"><TriangleAlert className="size-4" /><span>{error.message}{error.requestId ? ` Request ID: ${error.requestId}` : ''}</span>{error.status !== 401 && error.status !== 403 && error.retry && <Button variant="ghost" size="sm" onClick={error.retry}>Retry</Button>}</div>}
+
+          <div className="grid min-h-[32rem] lg:grid-cols-[minmax(0,1.15fr)_minmax(22rem,0.85fr)]">
+            <section aria-label="Tool results" className="min-w-0 border-r border-aurora-border-default">
+              <p className="border-b border-aurora-border-subtle px-4 py-2 text-xs text-aurora-text-muted md:hidden">{summary}</p>
+              {results.length === 0 && !loading ? <div className="grid min-h-64 place-items-center px-6 text-center text-sm text-aurora-text-muted">Browse the live catalog or search for a tool.</div> : null}
+              <div className="divide-y divide-aurora-border-subtle">
+                {results.map((hit) => <button key={hit.id} type="button" onClick={() => void selectTool(hit)} className="block w-full px-4 py-3 text-left transition hover:bg-aurora-hover-bg focus-visible:bg-aurora-selected-bg">
+                  <div className="flex items-center justify-between gap-3"><code className="truncate text-sm font-semibold text-aurora-accent-primary">{hit.path}</code><Safety safety={hit.safety} /></div>
+                  <p className="mt-1 line-clamp-1 text-sm text-aurora-text-secondary">{hit.description || 'No description provided.'}</p>
+                  <p className="mt-1 truncate font-mono text-[11px] text-aurora-text-muted">{hit.signature}</p>
+                </button>)}
+              </div>
+            </section>
+            <aside aria-label="Tool details" className="min-w-0 bg-aurora-panel-medium/35 p-5 lg:sticky lg:top-14 lg:self-start">
+              {!detail ? <div className="flex min-h-64 items-center justify-center text-center text-sm text-aurora-text-muted">Select a tool to inspect its live definition.</div> : <div>
+                <div className="flex items-center justify-between gap-3"><code className="min-w-0 break-all text-lg font-semibold text-aurora-accent-primary">{detail.path}</code><Safety safety={detail.safety} /></div>
+                <p className="mt-3 text-sm text-aurora-text-secondary">{detail.description}</p>
+                <dl className="mt-5 grid gap-3 text-xs"><div><dt className="uppercase tracking-wider text-aurora-text-muted">ID</dt><dd className="mt-1 break-all font-mono text-aurora-text-primary">{detail.id}</dd></div><div><dt className="uppercase tracking-wider text-aurora-text-muted">Helper</dt><dd className="mt-1 break-all font-mono text-aurora-text-primary">{detail.helper}</dd></div></dl>
+                <h2 className="mt-6 text-xs font-semibold uppercase tracking-wider text-aurora-text-muted">Parameters · TypeScript</h2>
+                {detail.typescript ? <pre className="mt-2 max-h-[32rem] overflow-auto rounded-aurora-1 border border-aurora-border-default bg-aurora-page-bg p-4 text-xs text-aurora-text-primary"><code>{detail.typescript}</code></pre> : <p className="mt-2 text-sm text-aurora-text-muted">Parameters unavailable{detail.typescript_omitted === 'size_limit' ? ' because the declaration exceeds the response limit.' : '.'}</p>}
+              </div>}
+            </aside>
+          </div>
+        </section>
+      </div>
+    </main>
+  </>
 }
 
 function Safety({ safety }: { safety?: { read_only?: boolean; destructive?: boolean } }) {

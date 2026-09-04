@@ -15,6 +15,32 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
+fn distributable_labby_feature_profiles_always_include_skills() {
+    let manifest_text = fs::read_to_string(repo_root().join("crates/labby/Cargo.toml"))
+        .expect("read Labby manifest");
+    let manifest = toml::from_str::<toml::Value>(&manifest_text).expect("parse Labby manifest");
+    let features = manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .expect("Labby feature table");
+    let members = |feature: &str| {
+        features
+            .get(feature)
+            .and_then(toml::Value::as_array)
+            .map_or([].as_slice(), Vec::as_slice)
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert!(members("gateway").contains("skills"));
+    assert!(members("gateway-host").contains("gateway"));
+    assert!(members("integrated-gateway").contains("gateway"));
+    assert!(members("default").contains("gateway-host"));
+    assert!(members("all").contains("skills"));
+}
+
+#[test]
 fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
     let action =
         fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
@@ -409,32 +435,15 @@ fn auth_matrix_changes_route_to_conformance() {
         "scripts/ci/test_auth_spec_matrix.py",
         "conformance/mcp-auth-normative.json",
         "conformance/openai-auth-normative.json",
-        "conformance/vendor-rmcp-provenance.json",
         "scripts/ci/refresh_mcp_auth_denominator.py",
         "scripts/ci/refresh_openai_auth_denominator.py",
         "scripts/ci/publish_mcp_auth_disposition.py",
         "scripts/ci/openai-auth-conformance.sh",
-        "scripts/ci/check_vendor_rmcp_provenance.py",
         "scripts/ci/auth_backup_restore_drill.py",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path}");
         assert_eq!(out["rust_test"], "true", "{path}");
-    }
-}
-
-#[test]
-fn vendored_rmcp_changes_run_compile_test_security_and_conformance() {
-    for path in [
-        "vendor/rmcp-3.1.0-labby/Cargo.toml",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
-        "vendor/rmcp-3.1.0-labby/tests/test_tool_security_schemes.rs",
-    ] {
-        let out = classify("pull_request", &[path]);
-        assert_eq!(out["workflow"], "true", "{path}");
-        assert_eq!(out["rust_compile"], "true", "{path}");
-        assert_eq!(out["rust_test"], "true", "{path}");
-        assert_eq!(out["security"], "true", "{path}");
     }
 }
 
@@ -636,6 +645,15 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "the fs slice must execute its no-gateway regression in CI"
     );
     assert!(
+        feature_slices.contains("slice: [gateway, gateway-host, integrated-gateway, fs, skills]"),
+        "CI must compile every distributable gateway profile and the standalone Skills slice"
+    );
+    assert!(
+        feature_slices.contains("if: matrix.slice == 'skills'")
+            && feature_slices.contains("--no-default-features --features skills"),
+        "the standalone Skills slice must retain its focused runtime regression"
+    );
+    assert!(
         feature_slices.contains(
             "cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight"
         ),
@@ -712,6 +730,24 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     assert!(
         mcp_regressions.contains("cargo build -p labby --all-features --lib --bins --locked"),
         "MCP regressions must warm normal Labby/Gateway targets before test harness compilation"
+    );
+
+    let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
+        .expect("read release workflow");
+    assert!(
+        release.matches("skills --help").count() >= 3
+            && release
+                .matches("Read Agent Skills visible to the local CLI")
+                .count()
+                >= 3,
+        "Unix, Windows, and container release artifacts must prove the compiled Skills surface"
+    );
+    let incus_smoke = fs::read_to_string(repo_root().join("scripts/ci/smoke-incus-image.sh"))
+        .expect("read Incus smoke script");
+    assert!(
+        incus_smoke.contains("labby skills --help")
+            && incus_smoke.contains("Read Agent Skills visible to the local CLI"),
+        "the baked Incus binary must prove the compiled Skills surface"
     );
 
     let test_job = workflow

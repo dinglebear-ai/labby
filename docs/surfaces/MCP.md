@@ -297,13 +297,13 @@ and a client must not call `resources/directory/read` against it.
 | `skills/get` | One entry by URI. `-32602` means the URI is not a skill this server serves |
 | `resources/read` | Serves `skill://` files. Skill URIs do **not** appear in `resources/list`; the manifest is the discovery surface |
 
-### Compatibility tool
+### Product surfaces
 
-When the `skills` feature is enabled, Labby also registers exactly one ordinary MCP service/tool named `skills`. It exposes `skills.list`, `skills.search`, `skills.get`, and `skills.read` through the same caller-scoped registry used by the native extension. Adding more skills never adds more MCP tools.
-
-`skills.search` ranks only already-discovered metadata; it does not load `SKILL.md` bodies. Direct MCP calls preserve protected-route upstream allowlists and OAuth subject isolation. Code Mode carries the outer caller authorization and namespace scope across Labby's private in-process peer so the same fixed tool can safely discover proxied skills without enabling raw upstream tools. Missing propagation fails closed to first-party-only visibility.
-
-The authenticated HTTP API projects the same actions at `POST /v1/skills`; the route is not mounted when API authentication is disabled. The CLI projects them as `labby skills list|search|get|read`.
+Labby does not register a duplicate `skills` action tool. Agents use the native
+`skills/list`, `skills/get`, and `resources/read` protocol methods. The local
+CLI offers `labby skills list|search|get|read` for operator inspection. Managed
+Artifact lifecycle operations are separate and are exposed through the
+authenticated `artifacts` tool and `POST /v1/artifacts`.
 
 ### Authorization
 

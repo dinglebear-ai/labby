@@ -328,7 +328,7 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         ),
         RouteDescriptor::new(
             "GET",
-            "/v1/{service}/actions",
+            concat!("/v1/", "{service}", "/actions"),
             "service_actions",
             "services",
             RouteAuth::V1,
@@ -423,6 +423,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         crate::api::services::doctor::descriptors(),
     ));
     routes.extend(prefixed(
+        "/v1/depot",
+        crate::api::services::depot::descriptors(),
+    ));
+    routes.extend(prefixed(
         "/v1/setup",
         crate::api::services::setup::descriptors(),
     ));
@@ -446,9 +450,16 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
 
     #[cfg(feature = "skills")]
     routes.extend(prefixed(
-        "/v1/skills",
+        "/v1/artifacts",
         crate::api::services::skills::descriptors(),
     ));
+    #[cfg(feature = "skills")]
+    for service in ["bundles", "jobs", "sources", "uploads"] {
+        routes.extend(prefixed(
+            &format!("/v1/{service}"),
+            crate::api::services::remote_control::descriptors(service),
+        ));
+    }
     #[cfg(feature = "fs")]
     routes.extend(prefixed("/v1/fs", crate::api::services::fs::descriptors()));
     #[cfg(feature = "gateway")]
@@ -506,6 +517,31 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
     routes.sort_by(|a, b| (a.path.as_str(), a.method).cmp(&(b.path.as_str(), b.method)));
     validate_descriptors(&routes).expect("global route inventory contains conflicts");
     routes
+}
+
+/// Inventory for the sealed Core-to-Labby Unix-socket profile.
+///
+/// Core owns browser navigation, sessions, OAuth hand-offs, and the native
+/// Gateway admin UI in this deployment. Labby therefore exposes only its
+/// service/API surface behind a fresh delegated-actor assertion; it must not
+/// accidentally retain a second standalone web or OAuth entry point.
+pub fn build_integrated_trusted_host_route_descriptors() -> Vec<RouteDescriptor> {
+    build_route_descriptors()
+        .into_iter()
+        .filter(|route| {
+            !matches!(
+                route.mount,
+                "oauth" | "dev" | "mcp" | "oauth_relay" | "protected_mcp" | "upstream_oauth"
+            ) && !matches!(
+                route.handler,
+                "labby_app_host_js"
+                    | "apps_launcher_page"
+                    | "server_logs_app_page"
+                    | "local_session_create"
+                    | "local_session_logout"
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
@@ -602,6 +638,34 @@ mod tests {
     }
 
     #[test]
+    fn trusted_host_inventory_excludes_standalone_identity_and_browser_surfaces() {
+        let routes = build_integrated_trusted_host_route_descriptors();
+
+        for path in [
+            "/auth/session",
+            "/auth/login",
+            "/auth/local-session",
+            "/auth/upstream/callback",
+            "/callback/{machine_id}",
+            "/mcp",
+            "/dev/mockup",
+            "/apps",
+        ] {
+            assert!(
+                !routes.iter().any(|route| route.path == path),
+                "sealed trusted-host inventory unexpectedly retained {path}"
+            );
+        }
+
+        assert!(
+            routes
+                .iter()
+                .any(|route| route.path == "/v1/gateway" && route.handler == "handle"),
+            "Core must retain the authenticated management API surface"
+        );
+    }
+
+    #[test]
     fn compiled_feature_shape_has_expected_conditional_groups() {
         let routes = build_route_descriptors();
         let paths = routes
@@ -613,7 +677,7 @@ mod tests {
             cfg!(feature = "api-docs")
         );
         assert_eq!(paths.contains("/v1/fs/list"), cfg!(feature = "fs"));
-        assert_eq!(paths.contains("/v1/skills"), cfg!(feature = "skills"));
+        assert_eq!(paths.contains("/v1/artifacts"), cfg!(feature = "skills"));
         assert_eq!(paths.contains("/v1/gateway"), cfg!(feature = "gateway"));
         assert_eq!(
             paths.contains("/{runtime_protected_mcp_route}"),

@@ -1895,6 +1895,7 @@ async fn browser_session_round_trip_succeeds() {
         csrf_token: "csrf_123".into(),
         created_at: 1,
         expires_at: now_unix() + 9_999,
+        project_binding: None,
     };
 
     store.upsert_browser_session(row.clone()).await.unwrap();
@@ -2226,6 +2227,7 @@ async fn revoking_browser_session_removes_it() {
         csrf_token: "csrf_123".into(),
         created_at: 1,
         expires_at: now_unix() + 9_999,
+        project_binding: None,
     };
 
     store.upsert_browser_session(row).await.unwrap();

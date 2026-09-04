@@ -9,7 +9,8 @@
 //! branches live in `resource_proxy.rs` and are reached via the same
 //! guard ordering as the original (gateway → upstream → subject-scoped).
 //!
-//! No behavior change — relocation only.
+//! Skill resources are converted here into their exact MCP text/blob wire
+//! representation after the shared registry and digest checks succeed.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -350,7 +351,7 @@ pub(crate) const SKILL_LIBRARY_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor
         uri: SKILL_LIBRARY_APP_URI,
         name: "skill-library/app",
         runtime: CodeModeRuntime::McpApp,
-        tool_name: Some("skills"),
+        tool_name: Some("artifacts"),
         resource_description: "MCP App shell for the authenticated Labby Skill Library",
         skybridge_widget_description: None,
     },
@@ -358,7 +359,7 @@ pub(crate) const SKILL_LIBRARY_APP_RESOURCE_DESCRIPTORS: &[AppResourceDescriptor
         uri: SKILL_LIBRARY_APP_SKYBRIDGE_URI,
         name: "skill-library/app.skybridge",
         runtime: CodeModeRuntime::Skybridge,
-        tool_name: Some("skills"),
+        tool_name: Some("artifacts"),
         resource_description: "MCP App shell for the authenticated Labby Skill Library",
         skybridge_widget_description: Some(
             "Manage personal and shared Labby Skills through authenticated host callbacks.",
@@ -881,7 +882,7 @@ impl LabMcpServer {
         if !resources.finished()
             && self.route_scope.exposes_skills()
             && code_mode_read_scope_allowed(auth)
-            && self.route_scope.allows_service("skills")
+            && self.route_scope.allows_service("artifacts")
             && self.service_visible_on_mcp("skills").await
         {
             for resource in skill_library_app_resources() {
@@ -1570,10 +1571,7 @@ impl LabMcpServer {
                 elapsed_ms = start.elapsed().as_millis(),
                 "dispatch finish"
             );
-            let mut contents = ResourceContents::text(file.text, uri.clone());
-            if let Some(mime_type) = file.mime_type {
-                contents = contents.with_mime_type(mime_type);
-            }
+            let contents = visible_skill_resource_contents(file, &uri);
             return Ok(ReadResourceResult::new(vec![contents]).into());
         }
 
@@ -1924,7 +1922,7 @@ impl LabMcpServer {
         context: &RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
         if !self.route_scope.exposes_skills()
-            || !self.route_scope.allows_service("skills")
+            || !self.route_scope.allows_service("artifacts")
             || !self.service_visible_on_mcp("skills").await
         {
             return Err(unknown_resource_error(uri, true));
@@ -2465,6 +2463,29 @@ impl LabMcpServer {
 }
 
 #[cfg(feature = "skills")]
+fn visible_skill_resource_contents(
+    file: crate::skills::facade::VisibleSkillFile,
+    uri: &str,
+) -> ResourceContents {
+    let mut contents = match file.content {
+        crate::skills::facade::VisibleSkillContent::Text(text) => {
+            ResourceContents::text(text, uri.to_string())
+        }
+        crate::skills::facade::VisibleSkillContent::Blob(bytes) => {
+            use base64::Engine as _;
+            ResourceContents::blob(
+                base64::engine::general_purpose::STANDARD.encode(bytes),
+                uri.to_string(),
+            )
+        }
+    };
+    if let Some(mime_type) = file.mime_type {
+        contents = contents.with_mime_type(mime_type);
+    }
+    contents
+}
+
+#[cfg(feature = "skills")]
 pub(crate) async fn read_skill_resource_with_registry(
     registry: &crate::skills::facade::SkillRegistryContext,
     uri: &str,
@@ -2734,6 +2755,31 @@ fn build_app_resource_meta(
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_resource_read_emits_one_binary_content_with_mime_type() {
+        use crate::skills::facade::{VisibleSkillContent, VisibleSkillFile};
+
+        let uri = "skill://up/demo/asset.png";
+        let content = visible_skill_resource_contents(
+            VisibleSkillFile {
+                uri: uri.into(),
+                skill_uri: "skill://up/demo/SKILL.md".into(),
+                origin: "up".into(),
+                digest: "sha256:test".into(),
+                mime_type: Some("image/png".into()),
+                content: VisibleSkillContent::Blob(vec![0, 1, 2, 3]),
+            },
+            uri,
+        );
+        let result = ReadResourceResult::new(vec![content]);
+        let wire = serde_json::to_value(result).unwrap();
+        assert_eq!(wire["contents"].as_array().unwrap().len(), 1);
+        assert_eq!(wire["contents"][0]["blob"], "AAECAw==");
+        assert_eq!(wire["contents"][0]["mimeType"], "image/png");
+        assert!(wire["contents"][0].get("text").is_none());
+    }
     use crate::dispatch::upstream::pool::{
         InProcessConnector, InProcessRegistration, UpstreamConnection, UpstreamPool,
     };
@@ -3719,7 +3765,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         assert_eq!(ui["csp"]["resourceDomains"], json!([]));
         assert_eq!(ui["csp"]["frameDomains"], json!([]));
 
-        let skybridge_uri = skill_library_app_skybridge_uri_for_tool("skills")
+        let skybridge_uri = skill_library_app_skybridge_uri_for_tool("artifacts")
             .expect("versioned Skill Library Skybridge URI");
         let skybridge = complete_resource(
             running
@@ -3850,9 +3896,9 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
     #[test]
     fn skill_library_registration_is_versioned_bounded_and_runtime_specific() {
         let app = skill_library_app();
-        let mcp_uri =
-            skill_library_app_resource_uri_for_tool("skills").expect("MCP Apps Skill Library URI");
-        let skybridge_uri = skill_library_app_skybridge_uri_for_tool("skills")
+        let mcp_uri = skill_library_app_resource_uri_for_tool("artifacts")
+            .expect("MCP Apps Artifact Library URI");
+        let skybridge_uri = skill_library_app_skybridge_uri_for_tool("artifacts")
             .expect("Skybridge Skill Library URI");
         assert!(mcp_uri.starts_with(SKILL_LIBRARY_APP_URI));
         assert!(skybridge_uri.starts_with(SKILL_LIBRARY_APP_SKYBRIDGE_URI));
@@ -3900,10 +3946,10 @@ assert(t.recovery("publish_failed").includes("publication"),"publication recover
 let resized=0;globalThis.__host.requestResize=()=>resized++;
 t.openWorkspace();assert(globalThis.__focused==="main","expanded view receives focus");
 t.closeWorkspace();assert(globalThis.__focused==="quickCreate","collapsed card restores focus");
-const retryKey=t.requestKey("skill_library.save","new");
+const retryKey=t.requestKey("artifacts.save","new");
 windowListeners.get("message")({source:parentWindow,data:{method:"ui/resource-teardown",id:41}});
 assert(t.state.disposed,"teardown aborts in-flight rendering");
-assert(t.state.pending.get("skill_library.save:new")===retryKey,"teardown retains ambiguous retry identity");
+assert(t.state.pending.get("artifacts.save:new")===retryKey,"teardown retains ambiguous retry identity");
 assert(resized>0,"host resize was invoked");
 assert(globalThis.__parentMessages[0].message.id===41&&globalThis.__parentMessages[0].origin==="*","teardown was acknowledged");
 "#,
@@ -3916,13 +3962,13 @@ assert(globalThis.__parentMessages[0].message.id===41&&globalThis.__parentMessag
         let body = r##"
 const t=globalThis.__skillTest;
 for(let offset=0;offset<=10000;offset+=50)await t.loadList(String(offset));
-const listCalls=globalThis.__calls.filter(x=>x.action==="skill_library.list");
+const listCalls=globalThis.__calls.filter(x=>x.action==="artifacts.list");
 if(listCalls.length!==201)throw new Error(`expected 200 pages plus cap probe, got ${listCalls.length}`);
-if(listCalls.some(x=>x.service!=="skills"||x.params.limit!==50))throw new Error("unbounded or wrong host wiring");
+if(listCalls.some(x=>x.service!=="artifacts"||x.params.limit!==50))throw new Error("unbounded or wrong host wiring");
 if(t.state.items[0].artifact_id!=="item-10000"||t.state.next!==null)throw new Error("cap+1 page truth lost");
 t.state.detail={artifact_id:"skill-1"};
 await t.loadHistory("skill-1",null);await t.loadHistory("skill-1","50");
-const historyCalls=globalThis.__calls.filter(x=>x.action==="skill_library.history");
+const historyCalls=globalThis.__calls.filter(x=>x.action==="artifacts.history");
 if(historyCalls.length!==2||historyCalls.some(x=>x.params.limit!==50))throw new Error("history pagination not bounded");
 if(t.state.history.length!==2)throw new Error("history continuation replaced prior revisions");
 "##;
@@ -3931,8 +3977,8 @@ if(t.state.history.length!==2)throw new Error("history continuation replaced pri
 globalThis.__calls=[];
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action,params)=>{
   globalThis.__calls.push({service,action,params});
-  if(action==="skill_library.list")return {items:[{artifact_id:`item-${params.cursor}`,name:"skill"}],next_cursor:params.cursor==="10000"?null:String(Number(params.cursor)+50),library_version:91};
-  if(action==="skill_library.history")return {items:[{revision_id:`r-${params.cursor??0}`}],next_cursor:params.cursor==="10000"?null:String(Number(params.cursor??0)+50)};
+  if(action==="artifacts.list")return {items:[{artifact_id:`item-${params.cursor}`,name:"skill"}],next_cursor:params.cursor==="10000"?null:String(Number(params.cursor)+50),library_version:91};
+  if(action==="artifacts.history")return {items:[{revision_id:`r-${params.cursor??0}`}],next_cursor:params.cursor==="10000"?null:String(Number(params.cursor??0)+50)};
   throw new Error(action);
 }};
 "##;
@@ -3945,14 +3991,14 @@ globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>
         let body = r#"
 const t=globalThis.__skillTest;t.state.selected={artifact_id:"skill-1"};t.state.detail={artifact_id:"skill-1",revision_id:"r2"};
  t.state.libraryVersion=12;
-const first=t.requestKey("skill_library.activate","skill-1"),again=t.requestKey("skill_library.activate","skill-1");
+const first=t.requestKey("artifacts.activate","skill-1"),again=t.requestKey("artifacts.activate","skill-1");
 if(first!==again)throw new Error("retry changed idempotency key");
 globalThis.__failMutation=true;
-await t.mutate("skill_library.activate",t.mutationParams("skill_library.activate","r2"),"active");
-if(t.requestKey("skill_library.activate","skill-1")!==first)throw new Error("ambiguous failure discarded idempotency key");
+await t.mutate("artifacts.activate",t.mutationParams("artifacts.activate","r2"),"active");
+if(t.requestKey("artifacts.activate","skill-1")!==first)throw new Error("ambiguous failure discarded idempotency key");
 globalThis.__failMutation=false;
-await t.mutate("skill_library.activate",t.mutationParams("skill_library.activate","r2"),"active");
-if(t.requestKey("skill_library.activate","skill-1")!==first)throw new Error("deterministic fallback changed after host state cleared");
+await t.mutate("artifacts.activate",t.mutationParams("artifacts.activate","r2"),"active");
+if(t.requestKey("artifacts.activate","skill-1")!==first)throw new Error("deterministic fallback changed after host state cleared");
 globalThis.__deferLists=true;
 const old=t.loadList("old"),fresh=t.loadList("fresh");
 globalThis.__resolvers[1]({items:[{artifact_id:"fresh",name:"fresh"}],next_cursor:null,library_version:14});await fresh;
@@ -3964,8 +4010,8 @@ if(t.state.items[0].artifact_id!=="fresh"||t.state.libraryVersion!==14)throw new
 globalThis.__calls=[];globalThis.__resolvers=[];
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:(service,action,params)=>{
   globalThis.__calls.push({service,action,params});
-  if(action==="skill_library.activate"&&globalThis.__failMutation)return Promise.reject(Object.assign(new Error("ambiguous transport result"),{kind:"conflict"}));
-  if(action==="skill_library.list"&&globalThis.__deferLists)return new Promise(resolve=>globalThis.__resolvers.push(resolve));
+  if(action==="artifacts.activate"&&globalThis.__failMutation)return Promise.reject(Object.assign(new Error("ambiguous transport result"),{kind:"conflict"}));
+  if(action==="artifacts.list"&&globalThis.__deferLists)return new Promise(resolve=>globalThis.__resolvers.push(resolve));
   return Promise.resolve({items:[],next_cursor:null,library_version:12,committed_library_version:12,published_library_version:12});
 }};
 "#;
@@ -3992,7 +4038,7 @@ globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>
             "state.disposed=true",
             "Object.keys(state.seq).forEach",
             "postMessage({jsonrpc:\"2.0\",id:data.id,result:{}},\"*\")",
-            "host.callAction(\"skills\",action,params)",
+            "host.callAction(\"artifacts\",action,params)",
             "relist_required",
             "published_library_version",
         ] {
@@ -4041,7 +4087,7 @@ await a;
 if(t.state.selected?.artifact_id!=="skill-b"||t.state.detail?.artifact_id!=="skill-b")throw new Error("selection A overwrote selection B");
 if(t.state.libraryVersion!==8)throw new Error("stale selection lowered authoritative version");
 await t.command({dataset:{command:"activate"}});
-const activation=globalThis.__calls.find(x=>x.action==="skill_library.activate");
+const activation=globalThis.__calls.find(x=>x.action==="artifacts.activate");
 if(activation?.params.expected_revision_id!=="b2")throw new Error("activation did not target selected latest revision");
 if(activation?.params.artifact_id!=="skill-b")throw new Error("activation crossed the selected artifact guard");
 "#;
@@ -4050,10 +4096,10 @@ if(activation?.params.artifact_id!=="skill-b")throw new Error("activation crosse
 globalThis.__calls=[];globalThis.__gets=new Map();
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:(service,action,params)=>{
   globalThis.__calls.push({service,action,params});
-  if(action==="skill_library.get")return new Promise(resolve=>globalThis.__gets.set(params.artifact_id,resolve));
-  if(action==="skill_library.activate")return Promise.resolve({committed_library_version:9,published_library_version:9,new_generation:3});
-  if(action==="skill_library.list")return Promise.resolve({items:[{artifact_id:"skill-b",name:"B",latest_revision_id:"b2",can_mutate:true}],next_cursor:null,library_version:9});
-  if(action==="skill_library.history")return Promise.resolve({items:[],next_cursor:null,library_version:9});
+  if(action==="artifacts.get")return new Promise(resolve=>globalThis.__gets.set(params.artifact_id,resolve));
+  if(action==="artifacts.activate")return Promise.resolve({committed_library_version:9,published_library_version:9,new_generation:3});
+  if(action==="artifacts.list")return Promise.resolve({items:[{artifact_id:"skill-b",name:"B",latest_revision_id:"b2",can_mutate:true}],next_cursor:null,library_version:9});
+  if(action==="artifacts.history")return Promise.resolve({items:[],next_cursor:null,library_version:9});
   throw new Error(action);
 }};
 "#;
@@ -4079,7 +4125,7 @@ if(t.state.files[2].content!==undefined)throw new Error("unselected file was eag
         let host = r#"
 globalThis.__reads=[];
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action,params)=>{
-  if(action==="skill_library.read"){globalThis.__reads.push(params);return {path:params.path,text:`body:${params.path}`,library_version:21};}
+  if(action==="artifacts.read"){globalThis.__reads.push(params);return {path:params.path,text:`body:${params.path}`,library_version:21};}
   throw new Error(action);
 }};
 "#;
@@ -4101,7 +4147,7 @@ if(!globalThis.__lastHtml.includes("Personal library")||!globalThis.__lastHtml.i
         let harness = skill_library_node_harness(body);
         let host = r#"
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action)=>{
-  if(action==="skill_library.list")return {items:[],next_cursor:null,library_version:4,capabilities:{can_create_personal:true,can_create_shared:true,can_import:true,default_visibility:"personal",create_visibilities:["personal","shared"],actions:["skill_library.create"]}};
+  if(action==="artifacts.list")return {items:[],next_cursor:null,library_version:4,capabilities:{can_create_personal:true,can_create_shared:true,can_import:true,default_visibility:"personal",create_visibilities:["personal","shared"],actions:["artifacts.create"]}};
   throw new Error(action);
 }};
 "#;
@@ -4122,16 +4168,16 @@ t.state.libraryVersion=100;
 await t.loadList();
 if(t.state.libraryVersion!==100)throw new Error("older list response regressed the monotonic library version");
 t.state.selected={artifact_id:"one"};t.state.detail={artifact_id:"one",latest_revision_id:"r2",can_mutate:true};
-const params=t.mutationParams("skill_library.activate","r2");
+const params=t.mutationParams("artifacts.activate","r2");
 const key=params.idempotency_key;
-await t.mutate("skill_library.activate",params,"active");
-if(t.requestKey("skill_library.activate","one")===key)throw new Error("definitive validation failure retained a consumed retry key");
+await t.mutate("artifacts.activate",params,"active");
+if(t.requestKey("artifacts.activate","one")===key)throw new Error("definitive validation failure retained a consumed retry key");
 "#;
         let harness = skill_library_node_harness(body);
         let host = r#"
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action)=>{
-  if(action==="skill_library.list")return {items:[],next_cursor:null,library_version:90};
-  if(action==="skill_library.activate")throw Object.assign(new Error("invalid revision"),{kind:"validation_failed",definitive:true});
+  if(action==="artifacts.list")return {items:[],next_cursor:null,library_version:90};
+  if(action==="artifacts.activate")throw Object.assign(new Error("invalid revision"),{kind:"validation_failed",definitive:true});
   throw new Error(action);
 }};
 "#;
@@ -4145,12 +4191,12 @@ globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>
             r#"
 const t=globalThis.__skillTest;
 t.state.selected={artifact_id:"one"};
-const key=t.requestKey("skill_library.save","one");
+const key=t.requestKey("artifacts.save","one");
 const teardown=windowListeners.get("message");
 teardown({source:parentWindow,data:{method:"ui/resource-teardown",id:51}});
 teardown({source:parentWindow,data:{method:"ui/resource-teardown",id:51}});
 if(!t.state.disposed)throw new Error("teardown did not dispose the app");
-if(t.state.pending.get("skill_library.save:one")!==key)throw new Error("ambiguous retry identity was discarded during teardown");
+if(t.state.pending.get("artifacts.save:one")!==key)throw new Error("ambiguous retry identity was discarded during teardown");
 if(globalThis.__parentMessages.length!==2||globalThis.__parentMessages.some(x=>x.message.id!==51))throw new Error("repeated teardown was not safely acknowledged");
 "#,
         ));
@@ -4202,7 +4248,7 @@ if(t.state.history.at(-1)?.revision_id!=="r10000"||t.state.historyNext!==null)th
         let host = r#"
 globalThis.__historyCalls=[];globalThis.__seen=[];
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},callAction:async(service,action,params)=>{
-  if(action!=="skill_library.history")throw new Error(action);
+  if(action!=="artifacts.history")throw new Error(action);
   globalThis.__historyCalls.push(params);
   const start=params.cursor===null?0:Number(params.cursor),count=start===10000?1:50;
   const items=Array.from(new Array(count),(_,i)=>({revision_id:`r${start+i}`,created_at:`t${start+i}`}));
@@ -4224,21 +4270,21 @@ document.getElementById("filePath").value="SKILL.md";document.getElementById("fi
 await t.command({dataset:{command:"add-file"}});
 document.getElementById("filePath").value="references/guide.md";document.getElementById("fileBody").value="support";
 await t.validate();await t.save({preventDefault(){}});
-const create=globalThis.__calls.find(x=>x.action==="skill_library.create");
+const create=globalThis.__calls.find(x=>x.action==="artifacts.create");
 if(create.params.files.length!==2||create.params.files[1].path!=="references/guide.md")throw new Error("create lost supporting file");
-if(!globalThis.__calls.some(x=>x.action==="skill_library.validate"))throw new Error("validate was not called");
+if(!globalThis.__calls.some(x=>x.action==="artifacts.validate"))throw new Error("validate was not called");
 t.state.selected=globalThis.__summary;t.state.detail=globalThis.__summary;t.state.version=3;
 await t.command({dataset:{command:"activate"}});
-if(!globalThis.__calls.some(x=>x.action==="skill_library.activate"&&x.params.expected_revision_id==="rev-1"))throw new Error("latest revision was not activated");
+if(!globalThis.__calls.some(x=>x.action==="artifacts.activate"&&x.params.expected_revision_id==="rev-1"))throw new Error("latest revision was not activated");
 for(const [kind,phrase] of [["stale_version","truth"],["collision","unique"],["forbidden","owner"],["source_unavailable","optional"],["refresh_failed","publication"]]){
   globalThis.__failure=kind;
-  await t.mutate("skill_library.archive",{artifact_id:"artifact-1",expected_library_version:t.state.version,idempotency_key:t.requestKey("skill_library.archive","artifact-1")},"archived","artifact-1");
+  await t.mutate("artifacts.archive",{artifact_id:"artifact-1",expected_library_version:t.state.version,idempotency_key:t.requestKey("artifacts.archive","artifact-1")},"archived","artifact-1");
   if(!elements.get("notice").innerHTML.toLowerCase().includes(phrase))throw new Error(`${kind} recovery was not rendered`);
 }
 for(const dto of [
-  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"owner"},can_mutate:true,allowed_actions:["skill_library.read","skill_library.activate","skill_library.deactivate","skill_library.archive","skill_library.history"]},
-  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"administrator"},can_mutate:true,allowed_actions:["skill_library.read","skill_library.activate","skill_library.deactivate","skill_library.archive","skill_library.history"]},
-  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"member"},can_mutate:false,allowed_actions:["skill_library.history"]}
+  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"owner"},can_mutate:true,allowed_actions:["artifacts.read","artifacts.activate","artifacts.deactivate","artifacts.archive","artifacts.history"]},
+  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"administrator"},can_mutate:true,allowed_actions:["artifacts.read","artifacts.activate","artifacts.deactivate","artifacts.archive","artifacts.history"]},
+  {...globalThis.__summary,active_revision_id:"rev-0",owner:{relationship:"member"},can_mutate:false,allowed_actions:["artifacts.history"]}
 ]){
   t.state.detail=dto;t.state.selected=dto;t.renderDetail();const html=elements.get("main").innerHTML;
   if(!html.includes(dto.owner.relationship))throw new Error("owner relationship DTO was not rendered");
@@ -4250,17 +4296,17 @@ for(const dto of [
         let harness = skill_library_node_harness(body);
         let host = r##"
 globalThis.__calls=[];
-globalThis.__summary={artifact_id:"artifact-1",name:"Host Flow",visibility:"shared",latest_revision_id:"rev-1",active_revision_id:null,current_generation:3,published_library_version:3,latest_revision_files:[{path:"SKILL.md"},{path:"references/guide.md"}],can_mutate:true,allowed_actions:["skill_library.read","skill_library.activate","skill_library.deactivate","skill_library.archive","skill_library.history"]};
+globalThis.__summary={artifact_id:"artifact-1",name:"Host Flow",visibility:"shared",latest_revision_id:"rev-1",active_revision_id:null,current_generation:3,published_library_version:3,latest_revision_files:[{path:"SKILL.md"},{path:"references/guide.md"}],can_mutate:true,allowed_actions:["artifacts.read","artifacts.activate","artifacts.deactivate","artifacts.archive","artifacts.history"]};
 globalThis.__host={hasBridge:()=>false,requestResize:()=>{},requestTeardown:()=>{},readState:()=>null,writeState:()=>{},callAction:async(service,action,params)=>{
   globalThis.__calls.push({service,action,params});
-  if(globalThis.__failure&&action==="skill_library.archive"){const kind=globalThis.__failure;globalThis.__failure=null;const messages={stale_version:"stale version",collision:"collision choose unique",forbidden:"forbidden owner",source_unavailable:"source unavailable",refresh_failed:"refresh publication failed"};throw Object.assign(new Error(messages[kind]),{kind,definitive:true});}
-  if(action==="skill_library.list")return {items:[globalThis.__summary],next_cursor:null,library_version:3,capabilities:{can_create_personal:true,can_create_shared:true,default_visibility:"personal",allowed_actions:["skill_library.create","skill_library.validate"]}};
-  if(action==="skill_library.validate")return {valid:true,revision_id:"candidate"};
-  if(action==="skill_library.create")return {artifact_id:"artifact-1",committed_library_version:3,published_library_version:3,new_generation:2};
-  if(action==="skill_library.activate")return {artifact_id:"artifact-1",committed_library_version:4,published_library_version:4,new_generation:4};
-  if(action==="skill_library.get")return {item:globalThis.__summary,library_version:3};
-  if(action==="skill_library.history")return {items:[],next_cursor:null,library_version:3};
-  if(action==="skill_library.read")return {path:params.path,text:params.path==="SKILL.md"?"# Host flow":"support",library_version:3};
+  if(globalThis.__failure&&action==="artifacts.archive"){const kind=globalThis.__failure;globalThis.__failure=null;const messages={stale_version:"stale version",collision:"collision choose unique",forbidden:"forbidden owner",source_unavailable:"source unavailable",refresh_failed:"refresh publication failed"};throw Object.assign(new Error(messages[kind]),{kind,definitive:true});}
+  if(action==="artifacts.list")return {items:[globalThis.__summary],next_cursor:null,library_version:3,capabilities:{can_create_personal:true,can_create_shared:true,default_visibility:"personal",allowed_actions:["artifacts.create","artifacts.validate"]}};
+  if(action==="artifacts.validate")return {valid:true,revision_id:"candidate"};
+  if(action==="artifacts.create")return {artifact_id:"artifact-1",committed_library_version:3,published_library_version:3,new_generation:2};
+  if(action==="artifacts.activate")return {artifact_id:"artifact-1",committed_library_version:4,published_library_version:4,new_generation:4};
+  if(action==="artifacts.get")return {item:globalThis.__summary,library_version:3};
+  if(action==="artifacts.history")return {items:[],next_cursor:null,library_version:3};
+  if(action==="artifacts.read")return {path:params.path,text:params.path==="SKILL.md"?"# Host flow":"support",library_version:3};
   throw new Error(action);
 }};
 "##;
@@ -4281,11 +4327,11 @@ function boot(){{
   const window={{parent,LabbyAppHost:host,addEventListener:(k,v)=>listeners.set(k,v),removeEventListener:()=>{{}}}},document={{getElementById:element,querySelector:()=>null}},context={{window,document,confirm:()=>true,requestAnimationFrame:fn=>{{fn();return 1}},crypto,structuredClone,console,setTimeout,clearTimeout}};context.globalThis=context;vm.createContext(context);vm.runInContext({source},context);return{{context,listeners}};
 }}
 const first=boot(),t1=first.context.__skillTest;t1.state.selected={{artifact_id:"persist"}};t1.state.detail={{artifact_id:"persist",latest_revision_id:"r1"}};t1.state.version=1;
-const key=t1.requestKey("skill_library.save","persist");
-t1.mutate("skill_library.save",{{artifact_id:"persist",expected_library_version:1,idempotency_key:key}},"saved","persist").then(()=>{{
+const key=t1.requestKey("artifacts.save","persist");
+t1.mutate("artifacts.save",{{artifact_id:"persist",expected_library_version:1,idempotency_key:key}},"saved","persist").then(()=>{{
   first.listeners.get("message")({{source:first.context.window.parent,data:{{method:"ui/resource-teardown",id:9}}}});
   const second=boot(),t2=second.context.__skillTest;
-  if(t2.state.pending.get("skill_library.save:persist")!==key)throw new Error("fresh instance did not restore idempotency key");
+  if(t2.state.pending.get("artifacts.save:persist")!==key)throw new Error("fresh instance did not restore idempotency key");
   if(t2.state.reconciliation?.idempotency_key!==key||t2.state.reconciliation?.artifact_id!=="persist")throw new Error("fresh instance did not restore reconciliation");
 }}).catch(e=>{{console.error(e);process.exitCode=1}});
 "#
@@ -4300,14 +4346,14 @@ t1.mutate("skill_library.save",{{artifact_id:"persist",expected_library_version:
             r##"
 const t=globalThis.__skillTest;
 const intent={artifact_id:"persist",expected_revision_id:"r1",expected_library_version:7,files:[{path:"SKILL.md",content:"# Stable"},{path:"notes.md",content:"same intent"}]};
-const first=t.deterministicIdempotencyKey("skill_library.save","persist",intent);
-const reordered=t.deterministicIdempotencyKey("skill_library.save","persist",{files:intent.files,expected_library_version:7,expected_revision_id:"r1",artifact_id:"persist"});
+const first=t.deterministicIdempotencyKey("artifacts.save","persist",intent);
+const reordered=t.deterministicIdempotencyKey("artifacts.save","persist",{files:intent.files,expected_library_version:7,expected_revision_id:"r1",artifact_id:"persist"});
 if(first!==reordered)throw new Error("canonical field order changed retry key");
-if(first!==t.requestKey("skill_library.save","persist",intent))throw new Error("request did not use deterministic key");
+if(first!==t.requestKey("artifacts.save","persist",intent))throw new Error("request did not use deterministic key");
 t.state.pending.clear();
-const fresh=t.requestKey("skill_library.save","persist",structuredClone(intent));
+const fresh=t.requestKey("artifacts.save","persist",structuredClone(intent));
 if(fresh!==first)throw new Error("fresh instance cannot rederive retry key");
-const changed=t.deterministicIdempotencyKey("skill_library.save","persist",{...intent,files:[{path:"SKILL.md",content:"# Changed"}]});
+const changed=t.deterministicIdempotencyKey("artifacts.save","persist",{...intent,files:[{path:"SKILL.md",content:"# Changed"}]});
 if(changed===first)throw new Error("changed intent reused retry key");
 "##,
         ));
@@ -4321,10 +4367,10 @@ if(changed===first)throw new Error("changed intent reused retry key");
 const t=globalThis.__skillTest;
 t.state.version=8;
 t.state.detail={artifact_id:"saved",name:"stable",latest_revision_id:"r-new"};
-if(!t.authoredMutationAlreadySatisfied("skill_library.save","saved","r-new"))throw new Error("committed save was not reconciled");
-if(t.authoredMutationAlreadySatisfied("skill_library.save","saved","r-other"))throw new Error("different save was incorrectly reconciled");
+if(!t.authoredMutationAlreadySatisfied("artifacts.save","saved","r-new"))throw new Error("committed save was not reconciled");
+if(t.authoredMutationAlreadySatisfied("artifacts.save","saved","r-other"))throw new Error("different save was incorrectly reconciled");
 let calls=0;
-globalThis.__host.callAction=async(_service,action,params)=>{if(action!=="skill_library.get"||params.artifact_id!=="created")throw new Error(action);calls++;return {item:{artifact_id:"created",name:"stable",latest_revision_id:"r-new",visibility:"shared"},library_version:8};};
+globalThis.__host.callAction=async(_service,action,params)=>{if(action!=="artifacts.get"||params.artifact_id!=="created")throw new Error(action);calls++;return {item:{artifact_id:"created",name:"stable",latest_revision_id:"r-new",visibility:"shared"},library_version:8};};
 const found=await t.findCommittedCreate("created","stable","r-new","shared");
 if(found?.artifact_id!=="created"||calls!==1)throw new Error("committed create was not reconciled by exact identity");
 calls=0;

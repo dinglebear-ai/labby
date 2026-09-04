@@ -508,7 +508,7 @@
       "applicability": "applicable",
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
@@ -538,7 +538,7 @@
       "applicability": "applicable",
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "test_id": "transport::auth::tests::select_scopes_prefers_exact_challenge_over_resource_metadata_catalog",
@@ -568,7 +568,7 @@
       "applicability": "applicable",
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
@@ -598,7 +598,7 @@
       "applicability": "applicable",
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
@@ -657,7 +657,7 @@
       "applicability": "applicable",
       "implementation": "The client preserves user-approved and operation-required scopes without expanding the request to the authorization server's complete scope catalog.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::select_scopes_does_not_expand_user_request_to_entire_server_catalog",
       "status": "pass",
@@ -686,7 +686,7 @@
       "applicability": "applicable",
       "implementation": "Initial client scope selection prefers an exact challenge, then protected-resource metadata, and omits scope when neither supplies one.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::initial_scope_selection_prefers_challenge_then_resource_metadata_then_omission",
       "status": "pass",
@@ -809,7 +809,7 @@
       "applicability": "applicable",
       "implementation": "The selected exact issuer and requested scopes persist through authorization state and callback validation.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::issuer_mismatch_is_rejected_before_any_token_endpoint_request",
       "status": "pass",
@@ -1022,7 +1022,7 @@
       "applicability": "applicable",
       "implementation": "The client uses the protected-resource document's canonical resource URI in its authorization request.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::authorization_url_uses_discovered_resource",
       "status": "pass",
@@ -1516,7 +1516,7 @@
       "applicability": "applicable",
       "implementation": "The DCR client metadata declares authorization_code and refresh_token grants together.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
       "status": "pass",
@@ -1545,7 +1545,7 @@
       "applicability": "applicable",
       "implementation": "An expired client access token without a refresh token triggers reauthorization instead of assuming refresh material exists.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::get_access_token_requires_reauth_when_expired_and_no_refresh_token",
       "status": "pass",
@@ -1604,7 +1604,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
       "status": "pass",
@@ -1644,7 +1644,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
       "status": "pass",
@@ -1790,7 +1790,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::extract_www_authenticate_params_insufficient_scope",
       "status": "pass",
@@ -1825,7 +1825,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::scope_upgrade_adds_offline_access_when_as_supports_it",
       "status": "pass",
@@ -1855,7 +1855,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit",
       "status": "pass",
@@ -1885,7 +1885,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::scope_upgrade_attempt_counter_tracks_requests_and_stops_at_limit",
       "status": "pass",
@@ -1915,7 +1915,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "middleware::tests::broader_admin_scope_satisfies_read_scope_hierarchy",
       "status": "pass",
@@ -2278,7 +2278,7 @@
       "applicability": "applicable",
       "implementation": "Protected-resource and authorization-server discovery preserves path priority and rejects non-identical issuers.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::path_bearing_authorization_server_discovery_uses_required_order_and_stops",
       "status": "pass",
@@ -2457,7 +2457,7 @@
       "applicability": "applicable",
       "implementation": "CIMD parsing, exact client-id/redirect validation, caching, and SSRF controls implement client metadata registration.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
       "status": "pass",
@@ -2830,7 +2830,7 @@
       "applicability": "applicable",
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::preregistered_client_takes_priority_over_cimd",
       "status": "pass",
@@ -2859,7 +2859,7 @@
       "applicability": "applicable",
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::preregistered_client_skips_registration_endpoint",
       "status": "pass",
@@ -2888,7 +2888,7 @@
       "applicability": "applicable",
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
       "status": "pass",
@@ -2917,7 +2917,7 @@
       "applicability": "applicable",
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::native_dcr_registration_sends_native_application_type",
       "status": "pass",
@@ -2946,7 +2946,7 @@
       "applicability": "applicable",
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::dcr_registration_declares_application_type_and_authorization_code_refresh_grants",
       "status": "pass",
@@ -2975,7 +2975,7 @@
       "applicability": "applicable",
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure",
       "status": "pass",
@@ -3004,7 +3004,7 @@
       "applicability": "applicable",
       "implementation": "The client chooses and transmits the requested DCR application type and surfaces registration failures.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "transport::auth::tests::dcr_recovers_unauthorized_state_after_registration_failure",
       "status": "pass",
@@ -3091,7 +3091,7 @@
       "applicability": "applicable",
       "implementation": "Registration and authorization state is issuer-bound and cannot be silently reused across authorization servers.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-auth/src/upstream/store.rs"
       ],
       "test_id": "transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server",
@@ -3121,7 +3121,7 @@
       "applicability": "applicable",
       "implementation": "Registration and authorization state is issuer-bound and cannot be silently reused across authorization servers.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-auth/src/upstream/store.rs"
       ],
       "test_id": "transport::auth::tests::issuer_change_surfaces_mismatch_then_reregisters_with_new_server",

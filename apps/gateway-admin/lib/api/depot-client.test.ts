@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { depotCall, depotStatus } from './depot-client.ts'
+
+async function withFetch(response: Response, run: () => Promise<void>) {
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => response) as typeof fetch
+  try { await run() } finally { globalThis.fetch = original }
+}
+const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status })
+const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
+
+test('accepts complete status, list, and detail contracts', async () => {
+  await withFetch(json({ depot: { configured: true, enabled: true, mutationAuthority: false, maxResponseBytes: 1_048_576 } }), async () => assert.equal((await depotStatus()).configured, true))
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [artifact], total: 1 } }), async () => assert.equal((await depotCall<{result:{artifacts:Array<{id:string}>}}>('depot.artifacts.list', {})).result.artifacts[0]?.id, 'artifact-1'))
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact } }), async () => assert.equal((await depotCall<{result:{artifact:{id:string}}}>('depot.artifacts.get', {})).result.artifact.id, 'artifact-1'))
+})
+
+test('rejects invalid JSON even for successful HTTP responses', async () => {
+  await withFetch(new Response('<html>', { status: 200 }), async () => assert.rejects(depotStatus(), /invalid JSON \(200\)/))
+})
+
+test('rejects missing status fields and wrong field types', async () => {
+  await withFetch(json({ depot: { configured: true, enabled: 'yes', mutationAuthority: false } }), async () => assert.rejects(depotStatus(), /incompatible status response.*enabled/i))
+})
+
+test('requires result envelopes and typed pagination fields', async () => {
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1' }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /artifact list response.*result/i))
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [], total: '4' } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /artifact list response.*total/i))
+})
+
+test('rejects artifacts without identity in list and detail results', async () => {
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifacts: [{ name: 'anonymous' }] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /artifact identity is missing/i))
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v1', result: { artifact: { descriptor: { name: 'anonymous' } } } }), async () => assert.rejects(depotCall('depot.artifacts.get', {}), /artifact identity is missing/i))
+})
+
+test('rejects incompatible contracts and unknown operations', async () => {
+  await withFetch(json({ result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /schemaVersion/i))
+  await withFetch(json({ schemaVersion: 'labby.depot-compatibility/v2', result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.artifacts.list', {}), /schemaVersion/i))
+  await withFetch(json({ result: { artifacts: [] } }), async () => assert.rejects(depotCall('depot.admin.execute', {}), /Unsupported Depot operation/))
+})
+
+test('preserves server error codes', async () => {
+  await withFetch(json({ error: 'depot_unavailable' }, 502), async () => assert.rejects(depotStatus(), /depot_unavailable/))
+})

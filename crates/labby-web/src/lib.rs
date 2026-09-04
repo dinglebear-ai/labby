@@ -139,7 +139,7 @@ mod tests {
 
     #[tokio::test]
     async fn embedded_install_script_is_shell_and_not_immutable_when_present() {
-        if !embedded_assets_available() {
+        if embedded_asset("install.sh").is_none() {
             eprintln!(
                 "skipping: apps/gateway-admin/out/install.sh missing — \
                  run `pnpm --filter gateway-admin build` to populate"

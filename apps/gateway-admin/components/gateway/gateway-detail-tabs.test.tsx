@@ -11,12 +11,12 @@ import {
 test('DetailCapabilityCluster renders all capabilities as unknown by default', () => {
   const markup = renderToStaticMarkup(<DetailCapabilityCluster />)
 
-  assert.equal(DETAIL_CAPABILITIES.length, 12)
+  assert.equal(DETAIL_CAPABILITIES.length, 11)
   assert.match(markup, /Capabilities — not reported/)
   assert.match(markup, /Tools — not reported/)
   assert.match(markup, /Progress — not reported/)
-  assert.match(markup, />—<\/span>/)
-  assert.equal((markup.match(/border:1px dashed/g) ?? []).length, 12)
+  assert.doesNotMatch(markup, /Roots —/)
+  assert.equal((markup.match(/background:var\(--gw0-0_30\)/g) ?? []).length, 11)
 })
 
 test('DetailCapabilityCluster distinguishes advertised and unavailable capabilities', () => {
@@ -29,7 +29,7 @@ test('DetailCapabilityCluster distinguishes advertised and unavailable capabilit
     />,
   )
 
-  assert.match(markup, /1 of 12 capabilities advertised in initialize/)
+  assert.match(markup, /1 of 11 capabilities advertised in initialize/)
   assert.match(markup, /Tools — supported/)
   assert.match(markup, /Prompts — not advertised/)
   assert.doesNotMatch(markup, />—<\/span>/)

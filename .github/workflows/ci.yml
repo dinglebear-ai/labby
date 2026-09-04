@@ -427,6 +427,17 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
+      - run: pnpm --dir apps/gateway-admin install --frozen-lockfile
+      - name: Install Playwright browser and runtime libraries
+        run: pnpm --dir apps/gateway-admin exec playwright install --with-deps chromium
       - name: Download immutable Gateway Admin assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -627,20 +638,18 @@ jobs:
     # all-features `check`/`clippy`/`test` jobs above remain the authoritative
     # warning-clean signal.
     # Retired ACP, Registry, Marketplace, Deploy, Fleet, and Stash product
-    # surfaces are deleted from the workspace. Gateway and fs are the only
-    # standalone product slices left on `labby` itself.
-    # Slices are compile checks, EXCEPT gateway: the flagship slice also runs
-    # its test suite so omission-side tests (#[cfg(not(feature = ...))] —
-    # registry omission tests, the no-feature rejection helpers) actually
-    # execute somewhere in CI instead of only ever being compiled. The fs
-    # slice also executes its focused no-gateway proxy preflight regression.
+    # surfaces are deleted from the workspace. The matrix below covers every
+    # supported standalone and composed Labby product slice.
+    # Every slice compiles. Gateway also runs its suite so omission-side tests
+    # execute; fs and skills run focused behavioral regressions for their
+    # feature boundaries.
     env:
       # lld only; see the `test` job for why CARGO_BUILD_JOBS must stay unset.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     strategy:
       fail-fast: false
       matrix:
-        slice: [gateway, fs]
+        slice: [gateway, gateway-host, integrated-gateway, fs, skills]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -688,6 +697,11 @@ jobs:
       - name: Run fs-slice proxy preflight regression
         if: matrix.slice == 'fs'
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
+      - name: Run standalone skills-slice regressions
+        if: matrix.slice == 'skills'
+        run: >-
+          cargo test -p labby --no-default-features --features skills --locked
+          mcp::skills
 
   extracted-crate-slices:
     name: Extracted crate slices
@@ -853,6 +867,12 @@ jobs:
         run: |
           cargo test -p labby --all-features --locked cli::serve::tests::http_mcp_
           cargo test -p labby --all-features --locked stateless_subscription_receives_catalog_notifications
+      - name: Accepted SEP-2640 server, client, and intermediary behavior
+        run: |
+          cargo test -p labby-runtime --all-features --locked --test skills_contract_conformance
+          cargo test -p labby-runtime --all-features --locked --test sep_2640_uri_conformance
+          cargo test -p labby-gateway --all-features --locked skills
+          cargo test -p labby --all-features --locked mcp::skills
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
@@ -892,8 +912,6 @@ jobs:
         run: python3 scripts/ci/refresh_mcp_auth_denominator.py --check
       - name: Verify current OpenAI authentication source denominator
         run: python3 scripts/ci/refresh_openai_auth_denominator.py --check
-      - name: Verify vendored rmcp base and explicit patch provenance
-        run: python3 scripts/ci/check_vendor_rmcp_provenance.py
       - name: Verify requirement-specific OpenAI authentication contracts
         run: scripts/ci/openai-auth-conformance.sh
       - name: Verify requirement-specific MCP authorization contracts

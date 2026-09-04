@@ -14,7 +14,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "conformance/mcp-auth-normative.json"
 COVERAGE = ROOT / "conformance/mcp-auth-coverage-manifest.json"
-VENDOR = ROOT / "vendor/rmcp-3.1.0-labby/Cargo.toml"
+
+def rmcp_manifest() -> Path:
+    """Resolve the pinned Git dependency checkout populated by Cargo."""
+    metadata = json.loads(
+        subprocess.check_output(
+            ["cargo", "metadata", "--format-version", "1", "--locked"],
+            cwd=ROOT,
+            text=True,
+        )
+    )
+    matches = [
+        Path(package["manifest_path"])
+        for package in metadata["packages"]
+        if package["name"] == "rmcp" and str(package.get("source", "")).startswith("git+")
+    ]
+    if len(matches) != 1:
+        raise SystemExit(f"expected one pinned Git rmcp package, found {len(matches)}")
+    return matches[0]
 
 PACKAGES = {
     "upstream::manager::url_tests::published_metadata_rejects_issuer_not_identical_to_selected_server": "labby-auth",
@@ -244,7 +261,7 @@ def run(command: list[str]) -> None:
 def run_one(test_id: str) -> None:
     if test_id in VENDOR_TESTS:
         run([
-            "cargo", "test", "--manifest-path", str(VENDOR), "--lib",
+            "cargo", "test", "--manifest-path", str(rmcp_manifest()), "--lib",
             "--features", "auth,client", test_id, "--", "--exact",
         ])
         return
@@ -282,7 +299,7 @@ def run_all(matrix_rows: dict[str, dict]) -> None:
         "-E", exact_expression(repo),
     ])
     run([
-        "cargo", "nextest", "run", "--manifest-path", str(VENDOR), "--lib",
+        "cargo", "nextest", "run", "--manifest-path", str(rmcp_manifest()), "--lib",
         "--features", "auth,client", "-E", exact_expression(vendor),
     ])
 

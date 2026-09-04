@@ -25,7 +25,7 @@ run_requirement() {
       run_test labby-auth metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri
       ;;
     OAI-AUTH-002)
-      run_test labby mcp::permanent_tools::tests::builtin_service_tool_advertises_top_level_security_schemes
+      run_test labby mcp::permanent_tools::tests::builtin_service_tool_advertises_security_schemes_extension
       run_test labby mcp::permanent_tools::tests::protected_boundary_rebinds_upstream_descriptor_security_policy
       run_test labby mcp::handlers_tools::tests::raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths
       ;;
@@ -34,7 +34,7 @@ run_requirement() {
       run_test labby mcp::result_format::tests::forbidden_and_non_auth_errors_publish_only_applicable_challenges
       ;;
     OAI-AUTH-004)
-      run_test labby mcp::permanent_tools::tests::builtin_service_tool_mirrors_security_schemes_in_legacy_meta
+      run_test labby mcp::permanent_tools::tests::builtin_service_tool_keeps_security_schemes_in_meta
       ;;
     OAI-AUTH-005)
       run_test labby config::tests::resolve_auth_uses_curated_client_redirects_by_default
@@ -134,10 +134,10 @@ readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_ca
 | test(=token::tests::revocation_endpoint_invalidates_refresh_token_and_is_idempotent)
 | test(=token::tests::refresh_grant_does_not_elevate_legacy_scope)
 | test(=token::tests::refresh_grant_replay_rejects_a_revoked_replacement_token)
-| test(=mcp::permanent_tools::tests::builtin_service_tool_advertises_top_level_security_schemes)
+| test(=mcp::permanent_tools::tests::builtin_service_tool_advertises_security_schemes_extension)
 | test(=mcp::permanent_tools::tests::protected_boundary_rebinds_upstream_descriptor_security_policy)
 | test(=mcp::handlers_tools::tests::raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths)
-| test(=mcp::permanent_tools::tests::builtin_service_tool_mirrors_security_schemes_in_legacy_meta)
+| test(=mcp::permanent_tools::tests::builtin_service_tool_keeps_security_schemes_in_meta)
 | test(=mcp::result_format::tests::auth_errors_carry_mcp_reauthentication_metadata)
 | test(=mcp::result_format::tests::forbidden_and_non_auth_errors_publish_only_applicable_challenges)
 | test(=api::router::tests::protected_mcp_route_metadata_uses_host_and_path_resource)

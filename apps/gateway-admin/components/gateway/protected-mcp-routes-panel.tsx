@@ -201,7 +201,7 @@ function protectedRouteDraftHints(
   return hints
 }
 
-export function ProtectedMcpRoutesPanel() {
+export function ProtectedMcpRoutesPanel({ upstreamNames }: { upstreamNames?: string[] } = {}) {
   const { data: routes = [], isLoading, error } = useProtectedMcpRoutes()
   const { data: loadouts = [] } = useLoadouts()
   const {
@@ -221,9 +221,13 @@ export function ProtectedMcpRoutesPanel() {
   const [smokeResult, setSmokeResult] = useState<DoctorReport | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
 
+  const visibleRoutes = useMemo(
+    () => upstreamNames?.length ? routes.filter((route) => route.upstream && upstreamNames.includes(route.upstream)) : routes,
+    [routes, upstreamNames],
+  )
   const sortedRoutes = useMemo(
-    () => [...routes].sort((left, right) => left.name.localeCompare(right.name)),
-    [routes],
+    () => [...visibleRoutes].sort((left, right) => left.name.localeCompare(right.name)),
+    [visibleRoutes],
   )
   const isEditing = editingName !== null
   const pendingRestartCount = routes.filter((route) => route.restart_required).length
@@ -247,7 +251,7 @@ export function ProtectedMcpRoutesPanel() {
 
   const startCreate = () => {
     setEditingName(null)
-    setDraft(EMPTY_DRAFT)
+    setDraft({ ...EMPTY_DRAFT, upstream: upstreamNames?.[0] ?? '' })
     setTestResult(null)
     setSmokeResult(null)
     setFormError(null)

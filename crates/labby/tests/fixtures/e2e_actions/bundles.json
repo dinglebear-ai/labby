@@ -1,0 +1,1 @@
+{"service":"bundles","api_path":"/v1/bundles","cli_probe":null,"can_mutate":true,"success_action":"bundles.list","invalid_action":"schema","policy_action":"bundles.delete","workflow":[],"parameters":{"action":"help","slug":"matrix-bundle","namespace":"matrix","name":"artifact","visibility":"oauth"},"action_params":{}}

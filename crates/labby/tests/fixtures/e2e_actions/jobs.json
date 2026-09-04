@@ -1,0 +1,1 @@
+{"service":"jobs","api_path":"/v1/jobs","cli_probe":null,"can_mutate":true,"success_action":"jobs.list","invalid_action":"schema","policy_action":"jobs.start","workflow":[],"parameters":{"action":"help","id":"matrix-job","kind":"repo","arguments":{"url":"https://example.invalid/repo.git"}},"action_params":{}}

@@ -4,6 +4,7 @@ export type EditorLanguage =
   | 'markdown'
   | 'bash'
   | 'toml'
+  | 'dotenv'
   | 'javascript'
   | 'typescript'
   | 'text'

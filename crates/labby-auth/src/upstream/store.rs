@@ -20,7 +20,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use oauth2::TokenResponse as _;
+use oauth2::{CsrfToken, PkceCodeVerifier, TokenResponse as _};
 use rmcp::transport::auth::{
     AuthError, CredentialStore, StateStore, StoredAuthorizationState, StoredCredentials,
 };
@@ -219,8 +219,8 @@ impl StateStore for SqliteStateStore {
                     "authorization state timestamp exceeds SQLite range".to_string(),
                 )
             })?;
-            let expected_issuer = state.expected_issuer().map(str::to_owned);
-            let require_issuer = state.requires_issuer();
+            let expected_issuer = state.expected_issuer.clone();
+            let require_issuer = state.require_issuer;
             let row = UpstreamOauthStateRow {
                 upstream_name: self.upstream_name.clone(),
                 subject: self.subject.clone(),
@@ -268,15 +268,22 @@ impl StateStore for SqliteStateStore {
                         "persisted authorization state has a negative created_at".to_string(),
                     )
                 })?;
-                StoredAuthorizationState::try_from_persisted(
-                    r.pkce_verifier,
-                    r.csrf_token,
+                if r.require_issuer && r.expected_issuer.is_none() {
+                    return Err(AuthError::AuthorizationFailed(
+                        "persisted authorization state requires a missing issuer".to_string(),
+                    ));
+                }
+                let pkce_verifier = PkceCodeVerifier::new(r.pkce_verifier);
+                let csrf_token = CsrfToken::new(r.csrf_token);
+                let mut state = StoredAuthorizationState::new_with_expected_issuer(
+                    &pkce_verifier,
+                    &csrf_token,
                     r.expected_issuer,
                     r.require_issuer,
-                    created_at,
-                    r.requested_scopes,
-                )
-                .map(Some)
+                );
+                state.created_at = created_at;
+                state.requested_scopes = r.requested_scopes;
+                Ok(Some(state))
             })
             .unwrap_or(Ok(None))
         })
@@ -396,10 +403,10 @@ mod tests {
         store.save(csrf, state).await.unwrap();
         let loaded = store.load(csrf).await.unwrap().unwrap();
         assert_eq!(
-            loaded.expected_issuer(),
+            loaded.expected_issuer.as_deref(),
             Some("https://auth.example/tenant")
         );
-        assert!(loaded.requires_issuer());
+        assert!(loaded.require_issuer);
         assert_eq!(loaded.requested_scopes, ["mcp:read", "mcp:write"]);
     }
 

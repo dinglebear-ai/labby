@@ -201,6 +201,10 @@ impl McpRouteScope {
         matches!(self, Self::Root)
     }
 
+    pub(crate) fn matches_product_route(&self, route_id: &str) -> bool {
+        matches!(self, Self::ProtectedSubset { route_name, .. } if route_name == route_id)
+    }
+
     pub(crate) fn exposes_code_mode(&self) -> bool {
         match self {
             Self::Root => true,
@@ -265,6 +269,14 @@ mod tests {
         assert!(scope.exposes_code_mode());
         assert!(!scope.is_root());
         assert_eq!(scope.label(), "protected:ops");
+    }
+
+    #[test]
+    fn product_route_binding_matches_only_the_exact_protected_route() {
+        let scope = McpRouteScope::protected_subset("team", ["depot"], ["skills"], false);
+        assert!(scope.matches_product_route("team"));
+        assert!(!scope.matches_product_route("other"));
+        assert!(!McpRouteScope::Root.matches_product_route("team"));
     }
 
     #[test]
