@@ -91,6 +91,7 @@ struct DashboardCatalogResponder {
     discover_requests: std::sync::Arc<AtomicUsize>,
     list_requests: std::sync::Arc<AtomicUsize>,
     tool_count: std::sync::Arc<AtomicUsize>,
+    delay_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for DashboardCatalogResponder {
@@ -99,6 +100,7 @@ impl Default for DashboardCatalogResponder {
             discover_requests: std::sync::Arc::new(AtomicUsize::new(0)),
             list_requests: std::sync::Arc::new(AtomicUsize::new(0)),
             tool_count: std::sync::Arc::new(AtomicUsize::new(1)),
+            delay_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
@@ -115,18 +117,22 @@ impl Respond for DashboardCatalogResponder {
         match method {
             "server/discover" => {
                 self.discover_requests.fetch_add(1, Ordering::SeqCst);
-                ResponseTemplate::new(200).set_body_json(json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "resultType": "complete",
-                        "supportedVersions": ["2026-07-28"],
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "dashboard-test", "version": "1.0.0"},
-                        "ttlMs": 0,
-                        "cacheScope": "private"
-                    }
-                }))
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(
+                        self.delay_ms.load(Ordering::SeqCst),
+                    ))
+                    .set_body_json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "resultType": "complete",
+                            "supportedVersions": ["2026-07-28"],
+                            "capabilities": {"tools": {}},
+                            "serverInfo": {"name": "dashboard-test", "version": "1.0.0"},
+                            "ttlMs": 0,
+                            "cacheScope": "private"
+                        }
+                    }))
             }
             "tools/list" => {
                 self.list_requests.fetch_add(1, Ordering::SeqCst);
@@ -2555,7 +2561,8 @@ async fn gateway_list_and_mcp_runtime_are_snapshot_only_until_status_refresh() {
 
     manager
         .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
-        .await;
+        .await
+        .expect("catalog refresh");
     let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))
         .await
         .expect("refreshed list");
@@ -2641,7 +2648,8 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
 
     manager
         .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
-        .await;
+        .await
+        .expect("catalog refresh");
     let initial = dispatch_with_manager(&manager, "gateway.list", json!({}))
         .await
         .expect("initial refreshed list");
@@ -2672,7 +2680,8 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
             &GatewayEnrichmentScope::default(),
             Some("different-upstream"),
         )
-        .await;
+        .await
+        .expect("filtered catalog refresh");
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     manager
@@ -2685,12 +2694,14 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
             },
             None,
         )
-        .await;
+        .await
+        .expect("scoped catalog refresh");
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 1);
 
     manager
         .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
-        .await;
+        .await
+        .expect("catalog refresh");
 
     let refreshed = dispatch_with_manager(&manager, "gateway.list", json!({}))
         .await
@@ -2705,6 +2716,169 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
     assert_eq!(refreshed_row["exposed_tool_count"], 3);
     assert_eq!(responder.list_requests.load(Ordering::SeqCst), 2);
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_fleet_catalog_refresh_coalesces_while_one_is_inflight() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let scope = GatewayEnrichmentScope::default();
+    let refresh_key = format!(
+        "{:?}\0{:?}",
+        scope.route_visible_upstreams, scope.oauth_subject
+    );
+    manager
+        .mcp_catalog_refresh_inflight
+        .lock()
+        .await
+        .insert(refresh_key);
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        manager.refresh_gateway_status_catalog(&scope, None),
+    )
+    .await
+    .expect("a concurrent refresh should attach to the active fleet warm-up")
+    .expect("coalesced refresh result");
+}
+
+#[tokio::test]
+async fn fleet_catalog_refresh_does_not_coalesce_distinct_actor_scopes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let first = GatewayEnrichmentScope {
+        route_visible_upstreams: None,
+        oauth_subject: Some("actor-a".into()),
+    };
+    let second = GatewayEnrichmentScope {
+        route_visible_upstreams: None,
+        oauth_subject: Some("actor-b".into()),
+    };
+    let first_key = format!(
+        "{:?}\0{:?}",
+        first.route_visible_upstreams, first.oauth_subject
+    );
+    manager
+        .mcp_catalog_refresh_inflight
+        .lock()
+        .await
+        .insert(first_key);
+
+    manager
+        .refresh_gateway_status_catalog(&second, None)
+        .await
+        .expect("distinct actor refresh");
+}
+
+#[tokio::test]
+async fn fleet_catalog_refresh_retries_immediately_after_terminal_failure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let scope = GatewayEnrichmentScope::default();
+    let key = format!(
+        "{:?}\0{:?}",
+        scope.route_visible_upstreams, scope.oauth_subject
+    );
+    manager
+        .mcp_catalog_refresh_failures
+        .lock()
+        .await
+        .insert(key.clone());
+
+    manager
+        .refresh_gateway_status_catalog(&scope, None)
+        .await
+        .expect("retry refresh");
+    assert!(
+        !manager
+            .mcp_catalog_refresh_failures
+            .lock()
+            .await
+            .contains(&key)
+    );
+    assert!(
+        !manager
+            .mcp_catalog_refresh_inflight
+            .lock()
+            .await
+            .contains(&key)
+    );
+}
+
+#[tokio::test]
+async fn fleet_catalog_refresh_continues_after_response_timeout() {
+    let server = MockServer::start().await;
+    let responder = DashboardCatalogResponder::default();
+    responder.delay_ms.store(75, Ordering::SeqCst);
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = GatewayRuntimeHandle::default();
+    let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
+    manager
+        .replace_config_for_tests(vec![UpstreamConfig {
+            enabled: true,
+            name: "slow-http".into(),
+            url: Some(format!("{}/mcp", server.uri())),
+            transport: None,
+            socket_path: None,
+            headers: Default::default(),
+            bearer_token_env: None,
+            command: None,
+            args: vec![],
+            env: Default::default(),
+            proxy_resources: false,
+            proxy_prompts: false,
+            expose_tools: None,
+            expose_resources: None,
+            expose_prompts: None,
+            proxy_skills: false,
+            expose_skills: None,
+            code_mode_hint: None,
+            oauth: None,
+            imported_from: None,
+            priority: 1.0,
+        }])
+        .await;
+    manager
+        .config
+        .write()
+        .await
+        .gateway
+        .mcp_list_warm_timeout_ms = Some(10);
+    runtime
+        .swap(Some(std::sync::Arc::new(
+            crate::upstream::pool::UpstreamPool::new(),
+        )))
+        .await;
+
+    manager
+        .refresh_gateway_status_catalog(&GatewayEnrichmentScope::default(), None)
+        .await
+        .expect("timeout is advisory");
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let rows = dispatch_with_manager(&manager, "gateway.list", json!({}))
+        .await
+        .expect("list");
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "slow-http")
+        .unwrap();
+    assert_eq!(row["discovered_tool_count"], 1);
 }
 
 #[tokio::test]

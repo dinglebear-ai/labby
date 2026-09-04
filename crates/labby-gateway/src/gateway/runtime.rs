@@ -498,7 +498,7 @@ impl GatewayManager {
         }
     }
 
-    async fn refresh_mcp_runtime_catalog(
+    pub(super) async fn refresh_mcp_runtime_catalog(
         &self,
         cfg: &GatewayConfig,
         pool: Option<&UpstreamPool>,
@@ -654,7 +654,7 @@ impl GatewayManager {
     }
 }
 
-fn mcp_runtime_warm_timeout(cfg: &GatewayConfig) -> Duration {
+pub(super) fn mcp_runtime_warm_timeout(cfg: &GatewayConfig) -> Duration {
     std::env::var("LABBY_GATEWAY_MCP_LIST_WARM_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

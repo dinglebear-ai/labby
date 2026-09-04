@@ -43,7 +43,7 @@ export function CodeModeHeaderToggle() {
     <div
       className={cn(
         gatewayActionTone(),
-        'hidden h-10 items-center gap-2 rounded-aurora-1 px-2.5 lg:inline-flex',
+        'hidden h-9 items-center gap-2 rounded-aurora-1 px-2.5 lg:inline-flex',
         error && 'border-aurora-error/45 text-aurora-error',
         codeModeConfig?.enabled && 'border-aurora-accent-primary/45 text-aurora-accent-strong',
       )}

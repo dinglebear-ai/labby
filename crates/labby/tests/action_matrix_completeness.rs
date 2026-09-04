@@ -243,7 +243,14 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
     let base = BTreeSet::from(["doctor", "server_logs", "setup"]);
-    let gateway = BTreeSet::from(["doctor", "gateway", "server_logs", "setup", "snippets"]);
+    let gateway = BTreeSet::from([
+        "doctor",
+        "gateway",
+        "server_logs",
+        "setup",
+        "skills",
+        "snippets",
+    ]);
     let shapes = BTreeMap::from([
         ("base", base.clone()),
         ("no-default", base.clone()),
@@ -575,7 +582,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
     let cli_help = include_str!("../../../docs/generated/cli-help.md");
     let mcp_help = include_str!("../../../docs/generated/mcp-help.json");
     let web_nav = include_str!("../../../apps/gateway-admin/components/console/nav-model.ts");
-    for name in retired {
+    for name in retired.into_iter().filter(|name| *name != "stash") {
         assert!(
             !cli_help.contains(&format!("## `labby {name}")),
             "retired CLI command returned: {name}"

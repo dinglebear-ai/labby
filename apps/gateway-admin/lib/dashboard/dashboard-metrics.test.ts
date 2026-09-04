@@ -12,6 +12,7 @@ import {
 } from './dashboard-metrics.ts'
 
 function gateway(overrides: {
+  enabled?: boolean
   connected?: boolean
   healthy?: boolean
   discovered?: number
@@ -22,6 +23,7 @@ function gateway(overrides: {
     id: 'gw',
     name: 'gw',
     transport: 'http',
+    enabled: overrides.enabled ?? true,
     config: {},
     status: {
       healthy: overrides.healthy ?? true,
@@ -62,6 +64,17 @@ test('buildLiveFleetStats handles empty fleet', () => {
   assert.equal(stats.totalServers, 0)
   assert.equal(stats.connectedServers, 0)
   assert.equal(stats.offlineServers, 0)
+})
+
+test('buildLiveFleetStats does not report intentionally disabled servers as offline', () => {
+  const stats = buildLiveFleetStats([
+    gateway({ enabled: false, connected: false, healthy: false }),
+    gateway({ enabled: true, connected: false, healthy: false }),
+  ])
+
+  assert.equal(stats.totalServers, 2)
+  assert.equal(stats.connectedServers, 0)
+  assert.equal(stats.offlineServers, 1)
 })
 
 test('formatCompactNumber abbreviates and trims trailing zero', () => {

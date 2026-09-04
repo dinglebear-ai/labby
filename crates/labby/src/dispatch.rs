@@ -1,5 +1,6 @@
 pub(crate) mod access_bootstrap;
 pub mod clients;
+pub mod depot;
 pub mod doctor;
 pub mod error;
 pub mod fs;

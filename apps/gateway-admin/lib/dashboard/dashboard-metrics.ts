@@ -26,7 +26,12 @@ export function buildLiveFleetStats(gateways: Gateway[]): LiveFleetStats {
   return {
     totalServers: gateways.length,
     connectedServers,
-    offlineServers: gateways.length - connectedServers,
+    // Disabled servers are intentionally inactive, not offline. Counting them
+    // as outages made the overview disagree with the Gateway status facets and
+    // inflated the attention count whenever an operator parked a server.
+    offlineServers: gateways.filter(
+      (g) => g.enabled && (!g.status.connected || !g.status.healthy),
+    ).length,
     discoveredTools: gateways.reduce(
       (sum, g) => sum + g.status.discovered_tool_count,
       0,

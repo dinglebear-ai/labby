@@ -5,15 +5,15 @@ import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
 import {
   ChevronDown,
+  ChevronsUpDown,
+  Check,
   ChevronLeft,
   ChevronRight,
-  ChevronsUpDown,
   LogOut,
   Moon,
   Palette,
   Pin,
   ScrollText,
-  Settings,
   Sun,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
@@ -25,10 +25,7 @@ import {
   isNavItemActive,
   type ConsoleNavItem,
 } from '@/components/console/nav-model'
-import {
-  sessionAvatarFallback,
-  sessionPrimaryEmail,
-} from '@/lib/auth/session-presenter'
+import { sessionPrimaryEmail } from '@/lib/auth/session-presenter'
 import { logoutBrowserSession, useBrowserSession } from '@/lib/auth/session'
 
 const PINNED_KEY = 'labby-nav-pinned'
@@ -36,13 +33,20 @@ const FOLDED_KEY = 'labby-nav-folded'
 const ORDER_KEY = 'labby-nav-order-v2'
 
 // Measured off the rendered mock (`Gateway Console.dc.html`), not inferred.
-const SIDEBAR_WIDTH_EXPANDED = '224px'
-const SIDEBAR_WIDTH_COLLAPSED = '58px'
+const SIDEBAR_WIDTH_EXPANDED = '220px'
+const SIDEBAR_WIDTH_COLLAPSED = '52px'
 
 /** The sidebar's own tinted plate — the mock lifts it off the page background. */
 const SIDEBAR_BG = 'color-mix(in srgb, #0f2334 48%, transparent)'
 /** Ring colour for status pips, matched to the sidebar plate rather than the page. */
 const PIP_RING = 'color-mix(in srgb, #0f2334 80%, var(--aurora-page-bg))'
+
+const NAV_PIPS: Record<string, string> = {
+  Gateway: 'var(--aurora-warn)',
+  Logs: 'var(--aurora-error)',
+  Library: 'var(--aurora-accent-primary)',
+  Agents: 'var(--aurora-success)',
+}
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -148,6 +152,7 @@ function NavItem({
         }}
       >
         <Icon size={16} strokeWidth={1.8} />
+        {NAV_PIPS[item.id] ? <span aria-hidden style={{ position: 'absolute', right: -2, top: -2, width: 7, height: 7, borderRadius: 999, background: NAV_PIPS[item.id], boxShadow: `0 0 0 2px ${PIP_RING}, 0 0 7px ${NAV_PIPS[item.id]}` }} /> : null}
       </span>
 
       {collapsed ? null : (
@@ -249,7 +254,8 @@ function NavItem({
 
 // ── Account card ──────────────────────────────────────────────────────────────
 
-function AccountCard({ collapsed }: { collapsed: boolean }) {
+export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' | 'topbar' }) {
+  const collapsed = placement === 'topbar'
   const session = useBrowserSession()
   const [open, setOpen] = React.useState(false)
   const [hovered, setHovered] = React.useState(false)
@@ -278,7 +284,6 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
 
   const user = session.status === 'authenticated' ? session.user : null
   const email = user ? sessionPrimaryEmail(user) : 'Not signed in'
-  const initial = user ? sessionAvatarFallback(user) : '?'
   const name = user ? email.split('@')[0] : 'Anonymous'
   const isDark = !mounted || resolvedTheme !== 'light'
 
@@ -313,15 +318,17 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
     <div
       ref={rootRef}
       data-accountmenu="1"
-      style={{ padding: '10px 10px 12px', minWidth: 0, position: 'relative' }}
+      style={{ padding: placement === 'topbar' ? 0 : '10px 10px 12px', minWidth: 0, position: 'relative' }}
     >
       {open ? (
         <div
           data-anim="menu"
           style={{
             position: 'fixed',
-            bottom: 64,
-            left: 10,
+            top: placement === 'topbar' ? 48 : undefined,
+            right: placement === 'topbar' ? 12 : undefined,
+            bottom: placement === 'sidebar' ? 64 : undefined,
+            left: placement === 'sidebar' ? 10 : undefined,
             width: 236,
             zIndex: 70,
             borderRadius: 'var(--radius-2)',
@@ -361,7 +368,7 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
                 color: 'var(--aurora-accent-strong)',
               }}
             >
-              {initial}
+              <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }} />
             </div>
             <div style={{ minWidth: 0, lineHeight: 1.3 }}>
               <div
@@ -491,9 +498,10 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
           display: 'flex',
           alignItems: 'center',
           gap: 9,
-          width: '100%',
-          padding: '7px 8px',
-          borderRadius: 'var(--radius-1)',
+          width: placement === 'topbar' ? 38 : '100%',
+          height: placement === 'topbar' ? 38 : undefined,
+          padding: placement === 'topbar' ? 3 : '7px 8px',
+          borderRadius: placement === 'topbar' ? 999 : 'var(--radius-1)',
           border: `1px solid ${
             hovered
               ? 'var(--aurora-border-strong)'
@@ -532,7 +540,7 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
             color: 'var(--aurora-accent-strong)',
           }}
         >
-          {initial}
+          <img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }} />
           <span
             style={{
               position: 'absolute',
@@ -603,11 +611,6 @@ function AccountCard({ collapsed }: { collapsed: boolean }) {
               />
               PROD
             </span>
-            <ChevronsUpDown
-              size={13}
-              strokeWidth={1.7}
-              style={{ flexShrink: 0, color: 'var(--aurora-text-muted)' }}
-            />
           </>
         )}
       </button>
@@ -626,6 +629,7 @@ export function ConsoleSidebar() {
   const [folded, setFolded] = React.useState<Record<string, boolean>>({})
   const [order, setOrder] = React.useState<Record<string, string[]>>({})
   const [toggleHovered, setToggleHovered] = React.useState(false)
+  const [workspaceOpen, setWorkspaceOpen] = React.useState(false)
   const dragRef = React.useRef<{ section: string; id: string } | null>(null)
 
   React.useEffect(() => {
@@ -706,8 +710,6 @@ export function ConsoleSidebar() {
     },
     [order],
   )
-
-  const settingsActive = isNavItemActive('/settings', pathname)
 
   return (
     <aside
@@ -812,7 +814,7 @@ export function ConsoleSidebar() {
               placeItems: 'center',
             }}
           >
-            <LabbyIcon size={30} />
+            <LabbyIcon size={24} />
           </div>
           {collapsed ? null : (
             <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -825,7 +827,7 @@ export function ConsoleSidebar() {
                   whiteSpace: 'nowrap',
                 }}
               >
-                Lab<span style={{ color: 'var(--aurora-accent-strong)' }}>by</span>
+                Depot
               </div>
               <span
                 style={{
@@ -835,19 +837,44 @@ export function ConsoleSidebar() {
                   padding: '0 5px',
                   borderRadius: 4,
                   border:
-                    '1px solid color-mix(in srgb, var(--aurora-accent-primary) 30%, transparent)',
-                  background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, transparent)',
+                    '1px solid color-mix(in srgb, var(--aurora-error) 42%, transparent)',
+                  background: 'color-mix(in srgb, var(--aurora-error) 10%, transparent)',
                   fontSize: 8,
                   fontWeight: 700,
                   letterSpacing: '0.12em',
-                  color: 'var(--aurora-accent-strong)',
+                  color: 'color-mix(in srgb, var(--aurora-error) 72%, white)',
                 }}
               >
-                LAB
+                LABBY
               </span>
             </div>
           )}
         </Link>
+
+        {/* Workspace switcher */}
+        <div style={{ position: 'relative', padding: collapsed ? '7px 8px 4px' : '7px 6px 4px' }}>
+          <button
+            type="button"
+            aria-label="Switch workspace"
+            aria-expanded={workspaceOpen}
+            onClick={() => setWorkspaceOpen((value) => !value)}
+            style={{
+              width: '100%', minHeight: collapsed ? 40 : 38, borderRadius: 10,
+              border: workspaceOpen ? '1px solid var(--aurora-warn)' : '1px solid color-mix(in srgb, var(--aurora-border-strong) 75%, transparent)',
+              boxShadow: workspaceOpen ? '0 0 0 1px var(--aurora-warn), inset 0 1px 0 rgba(255,255,255,.05)' : 'inset 0 1px 0 rgba(255,255,255,.04)',
+              background: 'linear-gradient(180deg,var(--aurora-panel-medium-top),var(--aurora-panel-medium))',
+              color: 'var(--aurora-text-primary)', display: 'flex', alignItems: 'center', gap: 8,
+              padding: collapsed ? 4 : '4px 8px', cursor: 'pointer', textAlign: 'left',
+            }}
+          >
+            <span style={{ width: 27, height: 27, borderRadius: 999, display: 'grid', placeItems: 'center', flexShrink: 0, overflow: 'hidden', border: '1px solid color-mix(in srgb,var(--aurora-accent-primary) 45%,transparent)', boxShadow: '0 0 8px rgba(244,114,182,.16)' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span>
+            {collapsed ? null : <><span style={{ minWidth: 0, flex: 1, lineHeight: 1.08 }}><small style={{ display: 'block', fontSize: 8.5, fontWeight: 750, letterSpacing: '.12em', color: 'var(--aurora-text-muted)' }}>WORKSPACE</small><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong></span><ChevronsUpDown size={13} color="var(--aurora-text-muted)"/></>}
+          </button>
+          {workspaceOpen && !collapsed ? <div data-anim="menu" style={{ position: 'absolute', zIndex: 60, top: 51, left: 6, right: 6, padding: 5, borderRadius: 11, border: '1px solid var(--aurora-border-strong)', background: 'linear-gradient(180deg, #173549, #102939)', boxShadow: 'var(--aurora-shadow-strong), inset 0 1px 0 rgba(255,255,255,.05)' }}>
+            <button type="button" data-menurow="1" onClick={() => setWorkspaceOpen(false)} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr 16px', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: 'var(--aurora-selected-bg)', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 28, height: 28, borderRadius: 999, display: 'grid', placeItems: 'center', overflow: 'hidden' }}><img src="/labby-avatar.png" alt="" style={{ width: '100%', height: '100%', borderRadius: 999, objectFit: 'cover' }}/></span><span><strong style={{ display: 'block', fontSize: 12.5 }}>Personal</strong><small style={{ display: 'block', maxWidth: 125, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--aurora-text-muted)' }}>your artifacts, agents and loadouts</small></span><Check size={14} color="var(--aurora-accent-strong)"/></button>
+            <button type="button" data-menurow="1" onClick={() => setWorkspaceOpen(false)} style={{ width: '100%', display: 'grid', gridTemplateColumns: '30px 1fr', alignItems: 'center', gap: 7, padding: '7px 8px', border: 0, borderRadius: 8, background: 'transparent', color: 'var(--aurora-text-primary)', textAlign: 'left', cursor: 'pointer' }}><span style={{ width: 27, height: 27, borderRadius: 7, display: 'grid', placeItems: 'center', background: 'color-mix(in srgb,var(--aurora-success) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--aurora-success) 30%,transparent)', color: 'var(--aurora-success)', fontSize: 10 }}>TO</span><span><strong style={{ display: 'block', fontSize: 12.5 }}>tootie.tv</strong><small style={{ color: 'var(--aurora-text-muted)' }}>9 members · hosted Labby</small></span></button>
+          </div> : null}
+        </div>
 
         {/* Nav */}
         <nav
@@ -948,59 +975,8 @@ export function ConsoleSidebar() {
           })}
 
           <div style={{ flex: 1 }} />
-
-          <Link
-            href="/settings"
-            data-navitem="1"
-            data-tip="Settings"
-            aria-current={settingsActive ? 'true' : 'false'}
-            title={collapsed ? '' : 'Settings'}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              width: '100%',
-              minHeight: 34,
-              margin: '4px 0 8px',
-              padding: '3px 10px',
-              borderRadius: 10,
-              borderWidth: 1,
-              borderStyle: 'solid',
-              borderColor: settingsActive
-                ? 'color-mix(in srgb, var(--aurora-accent-primary) 26%, transparent)'
-                : 'transparent',
-              background: settingsActive
-                ? 'color-mix(in srgb, var(--aurora-accent-primary) 12%, transparent)'
-                : 'none',
-              boxShadow: settingsActive ? 'inset 0 1px 0 rgba(255,255,255,0.04)' : undefined,
-              fontFamily: 'inherit',
-              fontSize: 13,
-              fontWeight: 560,
-              color: settingsActive
-                ? 'var(--aurora-text-primary)'
-                : 'var(--aurora-text-muted)',
-              textDecoration: 'none',
-              whiteSpace: 'nowrap',
-              cursor: 'pointer',
-              transition: 'background 150ms, color 150ms',
-            }}
-          >
-            <span
-              style={{
-                flexShrink: 0,
-                display: 'grid',
-                placeItems: 'center',
-                width: 18,
-                height: 18,
-              }}
-            >
-              <Settings size={16} strokeWidth={1.8} />
-            </span>
-            {collapsed ? null : <span style={{ whiteSpace: 'nowrap' }}>Settings</span>}
-          </Link>
         </nav>
 
-        <AccountCard collapsed={collapsed} />
       </div>
     </aside>
   )
