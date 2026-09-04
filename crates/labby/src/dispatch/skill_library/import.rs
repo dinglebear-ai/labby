@@ -1112,6 +1112,7 @@ mod tests {
     fn duplicate_connection_ids_are_rejected() {
         use std::net::{IpAddr, Ipv4Addr};
 
+        drop(rustls::crypto::ring::default_provider().install_default());
         let root = tempfile::tempdir().unwrap();
         let source = crate::config::ArtifactSourceConfig {
             id: "duplicate-source".to_owned(),
