@@ -126,13 +126,24 @@ pub fn validate_frontmatter(
         return Err(invalid("frontmatter `license` must be a string"));
     }
 
-    if let Some(allowed_tools) = frontmatter.get("allowed-tools")
-        && !allowed_tools.is_string()
-    {
-        // Agent Skills defines this as a space-separated string, not a list.
-        return Err(invalid(
-            "frontmatter `allowed-tools` must be a space-separated string",
-        ));
+    if let Some(allowed_tools) = frontmatter.get("allowed-tools") {
+        // Agent Skills defines a space-separated string. Claude-compatible
+        // team repositories also commonly encode the same bounded vocabulary
+        // as a YAML string list; retain those exact source bytes instead of
+        // rewriting the Skill during durable import.
+        let compatible_list = allowed_tools.as_array().is_some_and(|tools| {
+            !tools.is_empty()
+                && tools.len() <= 64
+                && tools.iter().all(|tool| {
+                    tool.as_str()
+                        .is_some_and(|tool| !tool.is_empty() && tool.len() <= 128)
+                })
+        });
+        if !allowed_tools.is_string() && !compatible_list {
+            return Err(invalid(
+                "frontmatter `allowed-tools` must be a space-separated string or bounded string list",
+            ));
+        }
     }
 
     if let Some(metadata) = frontmatter.get("metadata") {
@@ -321,12 +332,22 @@ mod tests {
     fn rejects_wrongly_typed_optional_fields() {
         for fm in [
             json!({ "name": "x", "description": "d", "license": 5 }),
-            json!({ "name": "x", "description": "d", "allowed-tools": ["a", "b"] }),
+            json!({ "name": "x", "description": "d", "allowed-tools": ["a", 2] }),
             json!({ "name": "x", "description": "d", "metadata": "flat" }),
             json!({ "name": "x", "description": "d", "metadata": { "k": 1 } }),
         ] {
             assert!(validate_frontmatter(&object(fm), None).is_err());
         }
+    }
+
+    #[test]
+    fn accepts_bounded_claude_compatible_allowed_tools_lists() {
+        let fm = object(json!({
+            "name": "x",
+            "description": "d",
+            "allowed-tools": ["Bash", "Read", "Grep"]
+        }));
+        validate_frontmatter(&fm, None).expect("bounded string list is compatible");
     }
 
     #[test]

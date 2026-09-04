@@ -700,14 +700,18 @@ fn validate_transport(
         | SkillLibrarySurface::Resource => {
             matches!(
                 identity_transport,
-                Authenticator::OauthBearer | Authenticator::StaticBearer
+                Authenticator::OauthBearer
+                    | Authenticator::StaticBearer
+                    | Authenticator::ProductCredential
             ) && caller.transport.audience_bound
                 && scope_allowed
         }
         SkillLibrarySurface::AppCallback => {
             matches!(
                 identity_transport,
-                Authenticator::OauthBearer | Authenticator::StaticBearer
+                Authenticator::OauthBearer
+                    | Authenticator::StaticBearer
+                    | Authenticator::ProductCredential
             ) && caller.transport.audience_bound
                 && caller.transport.host_established_callback
                 && scope_allowed
@@ -924,6 +928,42 @@ mod tests {
             denied,
             Err(SkillLibraryAuthorizationError::Denied)
         ));
+    }
+
+    #[tokio::test]
+    async fn project_bootstrap_credential_can_use_the_bearer_skill_library_surface() {
+        let directory = secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        let owner = VerifiedIdentity::local_credential(
+            Authenticator::ProductCredential,
+            "bootstrap-project-credential",
+        )
+        .unwrap();
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+
+        let decision = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                owner,
+                ["lab:read".to_string(), "lab:admin".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::ApiBearer, true),
+            ),
+            "bootstrap-default",
+            SkillLibraryAction::List,
+            "library",
+            SkillLibraryTarget::SharedActive,
+            "project-credential-list",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(decision.ownership.owner_id.as_str(), "bootstrap-owner");
     }
 
     #[tokio::test]
