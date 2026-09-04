@@ -87,7 +87,7 @@ separate `skill_library.activate` mutation.
 [[skill_library.sources]]
 id = "unraid-team-depot"
 kind = "depot"
-endpoint = "https://notification-worker-depot-canary.jmagar.workers.dev/depot/artifacts/acquire"
+endpoint = "https://depot.example.invalid/artifacts/acquire"
 pinned_addresses = ["203.0.113.10", "2001:db8::10"]
 bearer_token_env = "UNRAID_TEAM_DEPOT_TOKEN"
 ```

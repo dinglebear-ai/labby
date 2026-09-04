@@ -59,10 +59,22 @@ use crate::mcp::result_format::{
 use crate::mcp::server::LabMcpServer;
 
 #[cfg(feature = "skills")]
-#[derive(Debug)]
 pub(super) struct SkillLibraryCallbackBoundary {
     pub(super) identity: labby_auth::VerifiedIdentity,
     pub(super) scopes: Vec<String>,
+    pub(super) product_credential_bound: bool,
+}
+
+#[cfg(feature = "skills")]
+impl std::fmt::Debug for SkillLibraryCallbackBoundary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SkillLibraryCallbackBoundary")
+            .field("authenticator", &self.identity.authenticator())
+            .field("scope_count", &self.scopes.len())
+            .field("product_bound", &self.product_credential_bound)
+            .finish()
+    }
 }
 
 /// Project only host-established authentication facts into the Skill Library
@@ -100,9 +112,36 @@ pub(super) fn skill_library_callback_boundary(
             message: "Skill Library requires a verified host identity".to_owned(),
             required_scopes: Vec::new(),
         })?;
+    let product_credential_bound = if identity.authenticator()
+        == labby_auth::Authenticator::ProductCredential
+    {
+        let source = parts
+            .extensions
+            .get::<labby_primitives::product_credential::ProductCredentialGrant>();
+        let bound = parts
+            .extensions
+            .get::<labby_primitives::product_credential::BoundAccessGrant>();
+        match source.zip(bound) {
+            Some((source, bound))
+                if crate::dispatch::skill_library::auth::product_grants_match(source, bound)
+                    && bound.audience == bound.resource =>
+            {
+                true
+            }
+            _ => {
+                return Err(ToolError::Forbidden {
+                    message: "Skill Library product credential binding is invalid".to_owned(),
+                    required_scopes: Vec::new(),
+                });
+            }
+        }
+    } else {
+        false
+    };
     Ok(SkillLibraryCallbackBoundary {
         identity,
         scopes: auth.scopes.clone(),
+        product_credential_bound,
     })
 }
 

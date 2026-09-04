@@ -201,6 +201,10 @@ impl McpRouteScope {
         matches!(self, Self::Root)
     }
 
+    pub(crate) fn matches_product_route(&self, route_id: &str) -> bool {
+        matches!(self, Self::ProtectedSubset { route_name, .. } if route_name == route_id)
+    }
+
     pub(crate) fn exposes_code_mode(&self) -> bool {
         match self {
             Self::Root => true,

@@ -13,9 +13,9 @@ const V3_SCHEMA_VERSION: i64 = 3;
 const V3_SCHEMA_FINGERPRINT: &str = "labby-access-v3-20260827";
 pub(super) const V1_SCHEMA_VERSION: i64 = 1;
 pub(super) const V1_SCHEMA_FINGERPRINT: &str = "labby-access-v1-20260823";
-const V2_SCHEMA_VERSION: i64 = 2;
-const V2_SCHEMA_FINGERPRINT: &str = "labby-access-v2-20260823";
-const V2_METADATA_SCHEMA: &str = "
+pub(super) const V2_SCHEMA_VERSION: i64 = 2;
+pub(super) const V2_SCHEMA_FINGERPRINT: &str = "labby-access-v2-20260823";
+pub(super) const V2_METADATA_SCHEMA: &str = "
 CREATE TABLE access_metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     schema_version INTEGER NOT NULL CHECK(schema_version = 2),
@@ -169,6 +169,18 @@ pub(super) fn migrate(connection: &mut Connection) -> AccessStoreResult<()> {
             .map_err(super::store::map_sqlite_error)?;
     }
     Ok(())
+}
+
+pub(super) fn validate_migratable(connection: &Connection, version: i64) -> AccessStoreResult<()> {
+    match version {
+        V1_SCHEMA_VERSION => super::integrity::validate_v1_before_migration(connection),
+        V2_SCHEMA_VERSION => validate_v2_before_migration(connection),
+        V3_SCHEMA_VERSION => validate_v3_before_migration(connection),
+        V4_SCHEMA_VERSION => validate_v4_before_migration(connection),
+        _ => Err(AccessStoreError::IntegrityViolation {
+            check: "schema_metadata",
+        }),
+    }
 }
 
 fn validate_v4_before_migration(connection: &Connection) -> AccessStoreResult<()> {

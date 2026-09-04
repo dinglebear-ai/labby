@@ -7,7 +7,8 @@ use axum::{
     http::HeaderMap,
     routing::post,
 };
-use labby_auth::VerifiedIdentity;
+use labby_auth::{Authenticator, VerifiedIdentity};
+use labby_primitives::product_credential::{BoundAccessGrant, ProductCredentialGrant};
 use serde_json::Value;
 
 use crate::api::error::ApiError;
@@ -162,12 +163,169 @@ fn require_read_scope(
     })
 }
 
+fn product_credential_allows_skills(
+    source: &ProductCredentialGrant,
+    bound: &BoundAccessGrant,
+    project_id: &str,
+    config: &crate::config::LabConfig,
+) -> bool {
+    if !crate::dispatch::skill_library::auth::product_grants_match(source, bound)
+        || bound.project_id != project_id
+        || bound.audience != bound.resource
+    {
+        return false;
+    }
+    config.protected_mcp_routes.iter().any(|route| {
+        if !route.enabled
+            || route.name != bound.route_id
+            || route.public_resource() != bound.resource
+        {
+            return false;
+        }
+        let Some(target) = route.gateway_subset_target() else {
+            return false;
+        };
+        if target
+            .project_id
+            .as_deref()
+            .is_some_and(|id| id != bound.project_id)
+            || target
+                .loadout
+                .as_deref()
+                .is_some_and(|id| id != bound.loadout_id)
+            || !route
+                .scopes
+                .iter()
+                .all(|scope| bound.scopes.iter().any(|granted| granted == scope))
+        {
+            return false;
+        }
+        crate::mcp::route_scope::McpRouteScope::from_protected_route(route, &config.loadouts)
+            .ok()
+            .flatten()
+            .is_some_and(|scope| scope.allows_service("skills") && scope.exposes_skills())
+    })
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod product_credential_binding_tests {
+    use super::*;
+
+    fn fixture() -> (
+        ProductCredentialGrant,
+        BoundAccessGrant,
+        crate::config::LabConfig,
+    ) {
+        let mut config: crate::config::LabConfig = toml::from_str(
+            r#"
+[[loadouts]]
+name = "team-skills"
+upstreams = []
+services = ["skills"]
+expose_skills = true
+
+[[protected_mcp_routes]]
+name = "team"
+enabled = true
+public_host = "team.example.com"
+public_path = "/mcp"
+scopes = ["lab:read", "lab:admin"]
+
+[protected_mcp_routes.target]
+kind = "gateway_subset"
+project_id = "project-1"
+loadout = "team-skills"
+"#,
+        )
+        .expect("fixture config");
+        config
+            .normalize_protected_mcp_routes()
+            .expect("fixture routes normalize");
+        let resource = config.protected_mcp_routes[0].public_resource();
+        let source = ProductCredentialGrant {
+            issuer: "local".into(),
+            subject: "operator-1".into(),
+            credential_id: "credential-1".into(),
+            credential_generation: 1,
+            scopes: vec!["lab:read".into(), "lab:admin".into()],
+            resource: resource.clone(),
+            audience: resource.clone(),
+            expires_at: 4_000_000_000,
+        };
+        let bound = BoundAccessGrant {
+            installation_id: "installation-1".into(),
+            issuer: source.issuer.clone(),
+            subject: source.subject.clone(),
+            principal_id: "principal-1".into(),
+            organization_id: "organization-1".into(),
+            project_id: "project-1".into(),
+            loadout_id: "team-skills".into(),
+            loadout_generation: 1,
+            assignment_generation: 1,
+            catalog_generation: 1,
+            route_id: "team".into(),
+            route_generation: 1,
+            membership_epoch: 1,
+            organization_policy_epoch: 0,
+            project_policy_epoch: 0,
+            credential_id: source.credential_id.clone(),
+            credential_generation: source.credential_generation,
+            scopes: source.scopes.clone(),
+            resource: resource.clone(),
+            audience: resource,
+            expires_at: source.expires_at,
+            requires_admin: false,
+            destructive: false,
+        };
+        (source, bound, config)
+    }
+
+    #[test]
+    fn product_credential_requires_exact_skill_route_binding() {
+        let (source, bound, config) = fixture();
+        assert!(product_credential_allows_skills(
+            &source,
+            &bound,
+            "project-1",
+            &config
+        ));
+
+        let mut mismatches = Vec::new();
+        let mut mismatch = bound.clone();
+        mismatch.project_id = "project-2".into();
+        mismatches.push(mismatch);
+        let mut mismatch = bound.clone();
+        mismatch.route_id = "other-route".into();
+        mismatches.push(mismatch);
+        let mut mismatch = bound.clone();
+        mismatch.resource = "https://other.example.com/mcp".into();
+        mismatches.push(mismatch);
+        let mut mismatch = bound.clone();
+        mismatch.audience = "https://other.example.com/mcp".into();
+        mismatches.push(mismatch);
+        let mut mismatch = bound.clone();
+        mismatch.loadout_id = "other-loadout".into();
+        mismatches.push(mismatch);
+
+        for mismatch in mismatches {
+            assert!(!product_credential_allows_skills(
+                &source,
+                &mismatch,
+                "project-1",
+                &config
+            ));
+        }
+    }
+}
+
 async fn handle(
     State(state): State<AppState>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
     identity: Option<Extension<VerifiedIdentity>>,
+    product_source: Option<Extension<ProductCredentialGrant>>,
+    product_bound: Option<Extension<BoundAccessGrant>>,
     Json(req): Json<ActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let request_id = headers
@@ -190,6 +348,20 @@ async fn handle(
     let correlation = request_id.map(str::to_owned);
     let auth_for_library = auth.clone().map(|Extension(value)| value);
     let library_headers = headers.clone();
+    let product_source = product_source.map(|Extension(value)| value);
+    let product_bound = product_bound.map(|Extension(value)| value);
+    let config = Arc::clone(&state.config);
+    let product_credential_bound = verified_identity
+        .as_ref()
+        .is_some_and(|identity| identity.authenticator() == Authenticator::ProductCredential)
+        && project_id.as_deref().is_some_and(|project_id| {
+            product_source
+                .as_ref()
+                .zip(product_bound.as_ref())
+                .is_some_and(|(source, bound)| {
+                    product_credential_allows_skills(source, bound, project_id, &config)
+                })
+        });
 
     handle_action_with_meta(
         "skills",
@@ -242,6 +414,12 @@ async fn handle(
                     crate::dispatch::skill_library::auth::SkillLibraryTransport::browser(
                         true,
                         csrf_verified,
+                    )
+                } else if identity.authenticator() == Authenticator::ProductCredential
+                    && product_credential_bound
+                {
+                    crate::dispatch::skill_library::auth::SkillLibraryTransport::product_bearer(
+                        crate::dispatch::skill_library::auth::SkillLibrarySurface::ApiBearer,
                     )
                 } else {
                     crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
@@ -332,6 +510,7 @@ async fn handle(
                     visibility_auth,
                     visibility_project.as_deref(),
                     visibility_correlation.as_deref(),
+                    product_credential_bound,
                 )
                 .await;
                 return dispatch_at_api_boundary(&registry, &action, params).await;
@@ -344,6 +523,7 @@ async fn handle(
                 visibility_auth,
                 visibility_project.as_deref(),
                 visibility_correlation.as_deref(),
+                product_credential_bound,
             )
             .await;
             dispatch_at_api_boundary(&registry, &action, params).await
@@ -359,12 +539,17 @@ async fn attach_artifact_access(
     auth: Option<AuthContext>,
     project_id: Option<&str>,
     correlation: Option<&str>,
+    product_credential_bound: bool,
 ) -> crate::skills::facade::SkillRegistryContext {
     let (Some(identity), Some(auth), Some(project_id)) = (identity, auth, project_id) else {
         return registry;
     };
     let transport = if auth.via_session {
         crate::dispatch::skill_library::auth::SkillLibraryTransport::browser(true, true)
+    } else if product_credential_bound {
+        crate::dispatch::skill_library::auth::SkillLibraryTransport::product_bearer(
+            crate::dispatch::skill_library::auth::SkillLibrarySurface::ApiBearer,
+        )
     } else {
         crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
             crate::dispatch::skill_library::auth::SkillLibrarySurface::ApiBearer,

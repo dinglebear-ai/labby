@@ -232,8 +232,8 @@ fn inspect_connection(connection: &Connection) -> AccessHealth {
     if version > super::migrations::SCHEMA_VERSION {
         return AccessHealth::new(AccessHealthStatus::NewerSchema, "upgrade_labby");
     }
-    if version == super::migrations::V1_SCHEMA_VERSION {
-        return match super::integrity::validate_v1_before_migration(connection) {
+    if version > 0 && version < super::migrations::SCHEMA_VERSION {
+        return match super::migrations::validate_migratable(connection, version) {
             Ok(()) => AccessHealth::new(
                 AccessHealthStatus::Uninitialized,
                 "initialize_or_migrate_access_store",
@@ -591,6 +591,77 @@ mod tests {
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             super::super::migrations::V1_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn canonical_v2_store_is_migratable_not_corrupt_and_is_not_mutated() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_path(&directory);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(super::super::migrations::V2_METADATA_SCHEMA)
+            .unwrap();
+        connection
+            .execute_batch(super::super::migrations::DOMAIN_SCHEMA)
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO access_metadata VALUES (1, ?1, ?2, 0, unixepoch(), 0, NULL)",
+                rusqlite::params![
+                    super::super::migrations::V2_SCHEMA_VERSION,
+                    super::super::migrations::V2_SCHEMA_FINGERPRINT
+                ],
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "application_id",
+                super::super::migrations::APPLICATION_ID,
+            )
+            .unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::V2_SCHEMA_VERSION,
+            )
+            .unwrap();
+        drop(connection);
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        assert_eq!(
+            inspect_health(&path),
+            AccessHealth::new(
+                AccessHealthStatus::Uninitialized,
+                "initialize_or_migrate_access_store"
+            )
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn malformed_v2_store_is_corrupt_not_migratable() {
+        let directory = super::super::test_support::secure_tempdir();
+        let path = secure_path(&directory);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                super::super::migrations::V2_SCHEMA_VERSION,
+            )
+            .unwrap();
+        drop(connection);
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert_eq!(
+            inspect_health(&path),
+            AccessHealth::new(AccessHealthStatus::Corrupt, "repair_access_store")
         );
     }
 
