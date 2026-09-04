@@ -94,7 +94,7 @@ impl SqliteStore {
         Ok(store)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "http-axum"))]
     pub(crate) async fn reopen_for_test(&self) -> Result<Self, AuthError> {
         Self::open_with_key(self.path.as_ref().clone(), self.enc_key.as_deref().cloned()).await
     }
