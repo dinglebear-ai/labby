@@ -52,6 +52,10 @@ impl WebSocketTransportConfig {
     #[must_use]
     pub fn with_max_message_size(mut self, max_message_size: usize) -> Self {
         self.max_message_size = max_message_size;
+        // Peers may send a complete JSON response in one frame. Keeping the
+        // smaller default frame cap would reject otherwise permitted Skills
+        // resources before the capability-specific size check can run.
+        self.max_frame_size = max_message_size;
         self
     }
 }
@@ -263,7 +267,39 @@ mod tests {
         let config =
             WebSocketTransportConfig::new("wss://example.com/mcp").with_max_message_size(limit);
         assert_eq!(config.max_message_size, limit);
-        assert_eq!(config.max_frame_size, DEFAULT_MAX_FRAME_SIZE);
+        assert_eq!(config.max_frame_size, limit);
+    }
+
+    #[tokio::test]
+    async fn configured_limit_accepts_large_single_frames_and_rejects_oversized_frames() {
+        use tokio_tungstenite::WebSocketStream;
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        let limit = 256 * 1024;
+        for size in [limit, limit + 1] {
+            let transport =
+                WebSocketTransportConfig::new("ws://localhost").with_max_message_size(limit);
+            let mut config = WebSocketConfig::default();
+            config.max_message_size = Some(transport.max_message_size);
+            config.max_frame_size = Some(transport.max_frame_size);
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let mut client =
+                WebSocketStream::from_raw_socket(client_io, Role::Client, Some(config)).await;
+            let mut server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+            let sender =
+                tokio::spawn(
+                    async move { server.send(Message::Text("x".repeat(size).into())).await },
+                );
+            let received = client.next().await.expect("response frame");
+            if size == limit {
+                assert_eq!(received.unwrap().into_text().unwrap().len(), limit);
+                sender.await.unwrap().unwrap();
+            } else {
+                assert!(matches!(received, Err(tungstenite::Error::Capacity(_))));
+                drop(client);
+                drop(sender.await.unwrap());
+            }
+        }
     }
 
     #[test]

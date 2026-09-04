@@ -486,19 +486,21 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 
 | Setting | Default |
 |---------|---------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MiB (10,485,760 bytes); Skills capability responses receive a 24 MiB wire allowance when this is unset |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MiB (10,485,760 bytes); manifest-bound Skills resource reads receive a 24 MiB wire allowance when no environment or config override is set |
 
 HTTP bodies and WebSocket messages are capped before MCP deserialization. The
 capability-specific semantic check still runs after parsing, so stdio and
 in-process transports rely on that guard and HTTP/WebSocket receive both layers.
 Because one HTTP/WebSocket connection multiplexes ordinary and Skills calls,
-its transport ceiling uses the larger 24 MiB allowance when Skills support is
-compiled; ordinary capabilities are still rejected at 10 MiB after parsing.
+its transport ceiling uses the larger 24 MiB allowance; ordinary capabilities
+are still rejected at 10 MiB after parsing.
 Isolating the pre-parse ceilings would require a dedicated Skills connection or
 request-aware transport framing.
 
-The ordinary cap applies to `call_tool` and `read_resource`; the Skills cap
-applies to `skills/list`, `skills/get`, and their manifest resource reads.
+The ordinary cap applies to `call_tool` and ordinary `read_resource`; the larger
+Skills cap applies to manifest-bound resource reads. `skills/list` and
+`skills/get` use the same transport ceiling and separate manifest validation
+and discovery budgets.
 
 ## Resource Proxying
 
@@ -711,7 +713,7 @@ Then an MCP client connected to `lab` should see the upstream tools in `list_too
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum ordinary response size from upstream servers. When unset, Skills capability responses use a separate 24 MiB wire allowance for a 16 MiB SEP-2640 binary resource after base64 expansion; an explicit value overrides both limits. |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum ordinary response size from upstream servers. Without an environment or config override, manifest-bound Skills resource reads use a separate 24 MiB wire allowance for a 16 MiB SEP-2640 binary resource after base64 expansion; an explicit value overrides both limits. |
 | (per `bearer_token_env`) | — | Bearer token for each upstream, named in config. |
 
 ## Observability
