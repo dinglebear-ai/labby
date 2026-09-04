@@ -1022,6 +1022,7 @@ mod tests {
 
     use super::*;
     use crate::core::auth::Auth;
+    use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::fmt::MakeWriter;
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
@@ -1068,8 +1069,10 @@ mod tests {
         let dispatch = tracing::Dispatch::new(subscriber);
         let client = make_client(&server.uri());
 
-        let _guard = tracing::dispatcher::set_default(&dispatch);
-        let result = client.get_json::<serde_json::Value>("/failure").await;
+        let result = client
+            .get_json::<serde_json::Value>("/failure")
+            .with_subscriber(dispatch)
+            .await;
 
         assert!(result.is_err());
         let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();

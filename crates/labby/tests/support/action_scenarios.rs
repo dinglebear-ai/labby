@@ -445,7 +445,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     if key == "gateway:gateway.skills.list" && !cfg!(feature = "skills") {
         return Some(("requires_skills_runtime", "feature_not_compiled"));
     }
-    if matches!(surface, Surface::Api | Surface::Mcp)
+    if surface == Surface::Api
         && matches!(
             key,
             "artifacts:artifacts.search"
@@ -463,12 +463,54 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.refresh"
         )
     {
-        let error_kind = match surface {
-            Surface::Api => "forbidden",
-            Surface::Mcp => "internal_error",
-            _ => unreachable!("surface is constrained above"),
-        };
-        return Some(("requires_project_bound_artifact_authority", error_kind));
+        return Some(("requires_project_bound_artifact_authority", "forbidden"));
+    }
+    if surface == Surface::Mcp
+        && matches!(
+            key,
+            "artifacts:artifacts.get"
+                | "artifacts:artifacts.read"
+                | "artifacts:artifacts.history"
+                | "artifacts:artifacts.save"
+                | "artifacts:artifacts.activate"
+                | "artifacts:artifacts.deactivate"
+                | "artifacts:artifacts.archive"
+                | "artifacts:artifacts.rollback"
+        )
+    {
+        return Some(("requires_project_bound_artifact_authority", "forbidden"));
+    }
+    if surface == Surface::Mcp
+        && matches!(
+            key,
+            "artifacts:artifacts.search"
+                | "artifacts:artifacts.list"
+                | "artifacts:artifacts.validate"
+                | "artifacts:artifacts.create"
+                | "artifacts:artifacts.refresh"
+                | "artifacts:artifacts.import"
+                | "artifacts:artifacts.authority_status"
+                | "artifacts:artifacts.follow"
+                | "artifacts:artifacts.fork"
+                | "artifacts:artifacts.get_remote"
+                | "artifacts:artifacts.intake_candidate"
+                | "artifacts:artifacts.list_acp_registry"
+                | "artifacts:artifacts.list_candidates"
+                | "artifacts:artifacts.list_connections"
+                | "artifacts:artifacts.list_mcp_registry"
+                | "artifacts:artifacts.list_remote"
+                | "artifacts:artifacts.search_ard"
+                | "artifacts:artifacts.search_marketplace"
+                | "artifacts:artifacts.search_remote"
+                | "artifacts:artifacts.search_skills_sh"
+                | "artifacts:artifacts.set_license"
+                | "artifacts:artifacts.set_publication"
+        )
+    {
+        return Some((
+            "requires_project_bound_artifact_authority",
+            "internal_error",
+        ));
     }
     if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
         return Some((
