@@ -55,6 +55,91 @@ fn assert_no_local_gateway_state(home: &std::path::Path) {
     assert!(!home.join("auth.db").exists());
 }
 
+fn small_stack_command(home: &std::path::Path) -> Command {
+    // Match Windows' default main-thread stack on Unix as well. The command
+    // dispatcher previously overflowed this budget before entering any arm.
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "ulimit -s 1024 && exec \"$@\"", "labby-small-stack"])
+            .arg(env!("CARGO_BIN_EXE_labby"));
+        command
+    };
+    #[cfg(not(unix))]
+    let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
+    command
+        .kill_on_drop(true)
+        .env("LABBY_HOME", home)
+        .env("LABBY_LOG_DIR", home.join("logs"))
+        .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
+        .env("LABBY_SERVER_URL", "")
+        .env("LABBY_MCP_HTTP_TOKEN", "")
+        .env("LABBY_MCP_HTTP_HOST", "127.0.0.1")
+        .env("LABBY_MCP_HTTP_PORT", "9");
+    command
+}
+
+#[tokio::test]
+async fn local_gateway_list_fits_a_one_mebibyte_main_stack() {
+    let home = tempfile::tempdir().unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        small_stack_command(home.path())
+            .args(["gateway", "list", "--json"])
+            .output(),
+    )
+    .await
+    .expect("local CLI dispatch must finish promptly")
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "small-stack CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value.is_array(),
+        "gateway list must retain its JSON contract"
+    );
+}
+
+#[tokio::test]
+async fn local_stdio_discovery_fits_a_one_mebibyte_main_stack() {
+    use rmcp::model::ProtocolVersion;
+    use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
+
+    let home = tempfile::tempdir().unwrap();
+    let mut command = small_stack_command(home.path());
+    command.arg("mcp");
+    let transport = rmcp::transport::TokioChildProcess::new(command).unwrap();
+    let client = tokio::time::timeout(
+        Duration::from_secs(30),
+        ().serve_with_lifecycle(
+            transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        ),
+    )
+    .await
+    .expect("small-stack stdio discovery must finish promptly")
+    .expect("small-stack stdio discovery must succeed");
+    let page = tokio::time::timeout(Duration::from_secs(10), client.list_tools(None))
+        .await
+        .expect("tools/list must finish promptly")
+        .unwrap();
+    let exposes_gateway = page.tools.iter().any(|tool| tool.name == "gateway");
+    tokio::time::timeout(Duration::from_secs(10), client.cancel())
+        .await
+        .expect("stdio shutdown must finish promptly")
+        .unwrap();
+    assert!(
+        exposes_gateway,
+        "stdio discovery must retain the gateway tool"
+    );
+}
+
 #[tokio::test]
 async fn explicit_malformed_gateway_list_never_falls_back_locally() {
     let home = tempfile::tempdir().unwrap();
