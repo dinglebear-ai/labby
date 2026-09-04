@@ -18,7 +18,7 @@ use crate::mcp::context::{
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::admin_app_resources_visible;
 use crate::mcp::peer_contract::{PeerCatalogAudience, PeerContract};
-#[cfg(test)]
+#[cfg(all(test, feature = "proxy-testkit"))]
 use crate::mcp::prompts::list_all as list_builtin_prompts;
 
 /// Primary Code Mode tool. It has no static UI but can return a nested upstream MCP App.
@@ -71,7 +71,7 @@ impl CodeModeVisibility {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "proxy-testkit"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CatalogSnapshot {
     pub(crate) tools: BTreeSet<String>,
@@ -370,7 +370,7 @@ impl LabMcpServer {
             || gateway_available
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "proxy-testkit"))]
     pub(crate) fn builtin_prompt_names(&self) -> Vec<String> {
         list_builtin_prompts()
             .prompts
@@ -379,7 +379,7 @@ impl LabMcpServer {
             .collect()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "proxy-testkit"))]
     pub(crate) async fn builtin_resource_identifiers(&self) -> BTreeSet<String> {
         let mut resources = BTreeSet::from(["lab://catalog".to_string()]);
         for svc in self.registry.services() {
@@ -451,7 +451,7 @@ impl LabMcpServer {
         Ok(serde_json::to_value(entry.actions)?)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "proxy-testkit"))]
     pub(crate) async fn snapshot_catalog(&self) -> CatalogSnapshot {
         let visibility = self.code_mode_visibility().await;
         let mut tools = BTreeSet::new();
@@ -523,7 +523,7 @@ impl LabMcpServer {
     }
 
     /// Full client-visible tool contract for trusted/local test paths.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "proxy-testkit"))]
     pub(crate) async fn snapshot_tool_catalog(&self) -> ToolCatalogSnapshot {
         self.peer_contract().visible_contract().await
     }

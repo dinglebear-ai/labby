@@ -85,7 +85,7 @@ toml = "1.1"
 serde_yaml = "0.9"
 
 # mcp
-rmcp = { version = "=3.1.0", features = [
+rmcp = { git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "0665dcac527abd6828a6bdc805821e820841e491", features = [
   "server",
   "transport-io",
   "transport-child-process",
@@ -271,15 +271,6 @@ bare_urls = "warn"
 private_intra_doc_links = "warn"
 redundant_explicit_links = "warn"
 unescaped_backticks = "warn"
-
-# Temporary rmcp compatibility fixes for custom extension results carrying
-# protocol-generic `resultType` / `_meta`, optional OpenAI tool-level
-# `securitySchemes`, and exact OAuth authorization-server issuer validation.
-# Vendored from the immutable fork commit recorded in
-# `vendor/rmcp-3.1.0-labby/README.labby.md`; remove only after every listed
-# compatibility delta ships upstream and the conformance matrix passes there.
-[patch.crates-io]
-rmcp = { path = "vendor/rmcp-3.1.0-labby" }
 
 [profile.release]
 lto = "thin"

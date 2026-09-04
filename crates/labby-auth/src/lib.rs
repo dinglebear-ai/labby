@@ -28,6 +28,7 @@ pub mod sqlite;
 pub mod state;
 #[cfg(feature = "http-axum")]
 pub mod token;
+pub mod trusted_host;
 pub mod types;
 #[cfg(feature = "upstream-oauth-rmcp")]
 pub mod upstream;

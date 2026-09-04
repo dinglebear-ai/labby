@@ -16,6 +16,7 @@
 //! as a compatibility shim for existing Labby callers.
 
 pub mod codemode_journal;
+pub mod core_provider;
 pub mod dispatch_helpers;
 pub mod gateway;
 pub mod net;

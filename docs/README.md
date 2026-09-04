@@ -86,6 +86,11 @@ Normative cross-surface contracts live under [contracts/](./contracts/):
 - [Gateway schema resources](./contracts/gateway-schema-resources.md)
 - [Skills extension](./contracts/skills-extension.md)
 - [Stdio MCP proxy](./contracts/stdio-mcp-proxy.md)
+- [Unraid Core integration](./contracts/unraid-core-integration-v1.md) —
+  implemented unbundled appliance boundary; not an authorization to package
+  Labby.
+- [Core provider protocol](./contracts/core-provider-protocol-v1.md) —
+  implemented private Core capability boundary for Labby Code Mode.
 
 ## Product Design
 

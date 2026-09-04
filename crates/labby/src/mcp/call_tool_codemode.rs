@@ -642,9 +642,18 @@ impl LabMcpServer {
             Some(auth) => {
                 let capabilities = code_mode_capabilities_for_scopes(&auth.scopes);
                 let sub = self.request_subject(context).map(ToOwned::to_owned);
-                CodeModeCaller::Scoped {
-                    capabilities,
-                    sub: sub.clone(),
+                if let (Some(provider_token), Some(provider_request_id)) = (
+                    self.request_host_provider_token(context),
+                    self.request_host_provider_request_id(context),
+                ) {
+                    CodeModeCaller::ScopedHostProvider {
+                        capabilities,
+                        sub,
+                        provider_token: provider_token.to_string(),
+                        provider_request_id: provider_request_id.to_string(),
+                    }
+                } else {
+                    CodeModeCaller::Scoped { capabilities, sub }
                 }
             }
         };

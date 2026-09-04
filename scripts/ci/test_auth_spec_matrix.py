@@ -254,25 +254,9 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
                 self.assertTrue(row.get("verification_commands"))
                 self.assertFalse(any("cargo test -p" in command for command in row["verification_commands"]))
 
-    def test_source_refresh_and_vendor_provenance_are_required_ci_gates(self) -> None:
+    def test_source_refresh_is_a_required_ci_gate(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.assertIn("python3 scripts/ci/refresh_mcp_auth_denominator.py --check", workflow)
-        self.assertIn("python3 scripts/ci/check_vendor_rmcp_provenance.py", workflow)
-        provenance = json.loads((ROOT / "conformance/vendor-rmcp-provenance.json").read_text())
-        provenance_checker = (ROOT / "scripts/ci/check_vendor_rmcp_provenance.py").read_text()
-        self.assertNotIn("upstream_repository", provenance)
-        self.assertNotIn("upstream_archive_url", provenance)
-        self.assertIn(
-            'TRUSTED_UPSTREAM_REPOSITORY = "https://github.com/dinglebear-ai/rust-sdk"',
-            provenance_checker,
-        )
-        self.assertIn('archive_url = f"{TRUSTED_ARCHIVE_PREFIX}{commit}.tar.gz"', provenance_checker)
-        self.assertIn("difflib.diff_bytes", provenance_checker)
-        self.assertNotIn("subprocess.run", provenance_checker)
-        self.assertRegex(provenance["upstream_commit"], r"^[0-9a-f]{40}$")
-        self.assertRegex(provenance["upstream_archive_sha256"], r"^[0-9a-f]{64}$")
-        self.assertRegex(provenance["unified_diff_sha256"], r"^[0-9a-f]{64}$")
-        self.assertGreaterEqual(len(provenance["patches"]), 5)
 
     def test_pr_coverage_gate_has_meaningful_auth_floor(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

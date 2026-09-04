@@ -519,6 +519,31 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
     routes
 }
 
+/// Inventory for the sealed Core-to-Labby Unix-socket profile.
+///
+/// Core owns browser navigation, sessions, OAuth hand-offs, and the native
+/// Gateway admin UI in this deployment. Labby therefore exposes only its
+/// service/API surface behind a fresh delegated-actor assertion; it must not
+/// accidentally retain a second standalone web or OAuth entry point.
+pub fn build_integrated_trusted_host_route_descriptors() -> Vec<RouteDescriptor> {
+    build_route_descriptors()
+        .into_iter()
+        .filter(|route| {
+            !matches!(
+                route.mount,
+                "oauth" | "dev" | "mcp" | "oauth_relay" | "protected_mcp" | "upstream_oauth"
+            ) && !matches!(
+                route.handler,
+                "labby_app_host_js"
+                    | "apps_launcher_page"
+                    | "server_logs_app_page"
+                    | "local_session_create"
+                    | "local_session_logout"
+            )
+        })
+        .collect()
+}
+
 pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
     let condition = "mounted only when OAuth is configured";
     [
@@ -610,6 +635,34 @@ mod tests {
         );
         assert_eq!(routes[0].path, "/v1/example");
         assert_eq!(routes[0].aliases, ["/v1/example/alternate"]);
+    }
+
+    #[test]
+    fn trusted_host_inventory_excludes_standalone_identity_and_browser_surfaces() {
+        let routes = build_integrated_trusted_host_route_descriptors();
+
+        for path in [
+            "/auth/session",
+            "/auth/login",
+            "/auth/local-session",
+            "/auth/upstream/callback",
+            "/callback/{machine_id}",
+            "/mcp",
+            "/dev/mockup",
+            "/apps",
+        ] {
+            assert!(
+                !routes.iter().any(|route| route.path == path),
+                "sealed trusted-host inventory unexpectedly retained {path}"
+            );
+        }
+
+        assert!(
+            routes
+                .iter()
+                .any(|route| route.path == "/v1/gateway" && route.handler == "handle"),
+            "Core must retain the authenticated management API surface"
+        );
     }
 
     #[test]
