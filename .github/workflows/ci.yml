@@ -1418,7 +1418,7 @@ jobs:
     runs-on: windows-latest
     needs: changes
     # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
-    # only (see test-windows).
+    # only. Native Rust test-windows is separately required on pull requests.
     if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs

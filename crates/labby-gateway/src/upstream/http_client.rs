@@ -109,6 +109,7 @@ const AGGREGATE_RESPONSE_BUDGET_BYTES: usize = 80 * 1024 * 1024;
 const AGGREGATE_RESPONSE_BUDGET_PERMITS: usize =
     AGGREGATE_RESPONSE_BUDGET_BYTES / RESPONSE_BUDGET_QUANTUM;
 static GLOBAL_RESPONSE_BUDGET: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+const RESPONSE_BUDGET_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn effective_response_limit(max_bytes: usize) -> usize {
     max_bytes.min(AGGREGATE_RESPONSE_BUDGET_BYTES)
@@ -143,13 +144,13 @@ impl BodyCappedHttpClient {
     async fn acquire_response_budget(
         &self,
     ) -> Result<tokio::sync::OwnedSemaphorePermit, StreamableHttpError<reqwest::Error>> {
-        Arc::clone(&self.response_budget)
-            .acquire_many_owned(self.response_weight)
+        acquire_response_permit(Arc::clone(&self.response_budget), self.response_weight)
             .await
-            .map_err(|_| {
-                StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(
-                    "response_budget_closed",
-                ))
+            .map_err(|error| {
+                StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(match error {
+                    CappedResponseBodyError::BudgetExhausted => "response_budget_exhausted",
+                    _ => "response_budget_closed",
+                }))
             })
     }
 
@@ -289,8 +290,22 @@ pub enum CappedResponseBodyError {
     Transport(#[from] reqwest::Error),
     #[error("response_budget_closed")]
     BudgetClosed,
+    #[error("response_budget_exhausted")]
+    BudgetExhausted,
     #[error("response decode failed: {0}")]
     Decode(String),
+}
+
+async fn acquire_response_permit(
+    budget: Arc<tokio::sync::Semaphore>,
+    weight: u32,
+) -> Result<tokio::sync::OwnedSemaphorePermit, CappedResponseBodyError> {
+    // SSE streams can retain their permits indefinitely. A response waiting
+    // behind those streams must terminate even when no caller deadline exists.
+    tokio::time::timeout(RESPONSE_BUDGET_WAIT, budget.acquire_many_owned(weight))
+        .await
+        .map_err(|_| CappedResponseBodyError::BudgetExhausted)?
+        .map_err(|_| CappedResponseBodyError::BudgetClosed)
 }
 
 /// Read a non-MCP HTTP response with the same pre-materialization and global
@@ -309,10 +324,8 @@ pub async fn read_response_body_capped(
             AGGREGATE_RESPONSE_BUDGET_PERMITS,
         ))
     }));
-    let _permit = budget
-        .acquire_many_owned(u32::try_from(weight).unwrap_or(u32::MAX))
-        .await
-        .map_err(|_| CappedResponseBodyError::BudgetClosed)?;
+    let _permit =
+        acquire_response_permit(budget, u32::try_from(weight).unwrap_or(u32::MAX)).await?;
     if let Some(declared) = response.content_length()
         && declared > max_bytes as u64
     {
@@ -757,6 +770,33 @@ mod tests {
         let client = build(AGGREGATE_RESPONSE_BUDGET_BYTES + 1);
         assert_eq!(client.max_bytes(), AGGREGATE_RESPONSE_BUDGET_BYTES);
         assert_eq!(build(1024).max_bytes(), 1024);
+    }
+
+    #[tokio::test]
+    async fn retained_stream_budget_fails_with_bounded_admission_and_recovers() {
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let retained = Arc::clone(&budget).acquire_owned().await.unwrap();
+        let result = tokio::time::timeout(
+            RESPONSE_BUDGET_WAIT * 3,
+            acquire_response_permit(Arc::clone(&budget), 1),
+        )
+        .await
+        .expect("admission must not wait for a long-lived SSE stream to close");
+        assert!(matches!(
+            result,
+            Err(CappedResponseBodyError::BudgetExhausted)
+        ));
+        drop(retained);
+        drop(
+            acquire_response_permit(Arc::clone(&budget), 1)
+                .await
+                .unwrap(),
+        );
+        budget.close();
+        assert!(matches!(
+            acquire_response_permit(budget, 1).await,
+            Err(CappedResponseBodyError::BudgetClosed)
+        ));
     }
 
     #[tokio::test]

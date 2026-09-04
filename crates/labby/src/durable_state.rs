@@ -279,6 +279,15 @@ fn restore_bundle_locked_with_cleanup(
     bundle: &Path,
     cleanup_file: &mut dyn FnMut(&Path) -> std::io::Result<()>,
 ) -> Result<DurableStateRestore> {
+    restore_bundle_locked_with_hooks(paths, bundle, cleanup_file, &mut |_| Ok(()))
+}
+
+fn restore_bundle_locked_with_hooks(
+    paths: &InstallationPaths,
+    bundle: &Path,
+    cleanup_file: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    after_prior_moved: &mut dyn FnMut(&Path) -> Result<()>,
+) -> Result<DurableStateRestore> {
     let manifest = verify_bundle_locked(bundle, None)?;
     ensure!(
         manifest.installation_root == paths.root(),
@@ -298,6 +307,16 @@ fn restore_bundle_locked_with_cleanup(
         let expected: BTreeSet<_> = destinations.iter().cloned().collect();
         let mut current = Vec::new();
         collect_files(paths.root(), paths.root(), &mut current)?;
+        // External SQLite sidecars are part of the same snapshot as the database.
+        // Keeping a newer WAL beside a restored database can replay post-backup data.
+        for path in &external {
+            if !path.starts_with(paths.root()) && path.exists() {
+                validate_regular_source(path)?;
+                current.push(path.clone());
+            }
+        }
+        current.sort();
+        current.dedup();
         for extra in current.into_iter().filter(|path| !expected.contains(path)) {
             let name = extra
                 .file_name()
@@ -315,8 +334,9 @@ fn restore_bundle_locked_with_cleanup(
             });
             persist_journal(&journal_path, &journal)?;
             fs::rename(&extra, &prior)?;
+            installed.push((extra.clone(), Some(prior)));
+            after_prior_moved(&extra)?;
             sync_parent(&extra)?;
-            installed.push((extra, Some(prior)));
             journal.entries.last_mut().unwrap().phase = RestorePhase::PriorMoved;
             persist_journal(&journal_path, &journal)?;
         }
@@ -340,33 +360,20 @@ fn restore_bundle_locked_with_cleanup(
             });
             persist_journal(&journal_path, &journal)?;
             secure_copy_and_digest(&bundle.join(&entry.payload), &staged)?;
-            let backup = if destination.exists() {
+            if destination.exists() {
                 validate_regular_source(destination)?;
                 fs::rename(destination, &prior)
                     .with_context(|| format!("stage rollback for {}", destination.display()))?;
+                installed.push((destination.clone(), Some(prior)));
+                after_prior_moved(destination)?;
                 sync_parent(destination)?;
-                journal.entries.last_mut().unwrap().phase = RestorePhase::PriorMoved;
-                persist_journal(&journal_path, &journal)?;
-                Some(prior)
             } else {
-                journal.entries.last_mut().unwrap().phase = RestorePhase::PriorMoved;
-                persist_journal(&journal_path, &journal)?;
-                None
-            };
-            if let Err(error) = fs::rename(&staged, destination) {
-                if let Some(prior) = &backup {
-                    fs::rename(prior, destination).with_context(|| {
-                        format!(
-                            "restore rollback for {} after activation failure",
-                            destination.display()
-                        )
-                    })?;
-                    sync_parent(destination)?;
-                }
-                return Err(error)
-                    .with_context(|| format!("atomically restore {}", destination.display()));
+                installed.push((destination.clone(), None));
             }
-            installed.push((destination.clone(), backup));
+            journal.entries.last_mut().unwrap().phase = RestorePhase::PriorMoved;
+            persist_journal(&journal_path, &journal)?;
+            fs::rename(&staged, destination)
+                .with_context(|| format!("atomically restore {}", destination.display()))?;
             set_mode(destination, entry.mode)?;
             sync_parent(destination)?;
             journal.entries.last_mut().unwrap().phase = RestorePhase::Activated;
@@ -388,6 +395,19 @@ fn restore_bundle_locked_with_cleanup(
                 } else if let Err(rollback) = sync_parent(&target) {
                     rollback_errors.push(format!("sync {}: {rollback}", target.display()));
                 }
+            }
+        }
+        for staged in journal
+            .entries
+            .iter()
+            .filter_map(|entry| entry.staged.as_ref())
+        {
+            if let Err(cleanup) = cleanup_file(staged) {
+                if cleanup.kind() != std::io::ErrorKind::NotFound {
+                    rollback_errors.push(format!("remove staged {}: {cleanup}", staged.display()));
+                }
+            } else if let Err(cleanup) = sync_parent(staged) {
+                rollback_errors.push(format!("sync staged {}: {cleanup}", staged.display()));
             }
         }
         if rollback_errors.is_empty() {
@@ -466,8 +486,13 @@ fn recover_interrupted_restore(paths: &InstallationPaths) -> Result<()> {
         let uncommitted_new_target_activation = entry.phase == RestorePhase::PriorMoved
             && entry.prior.is_none()
             && entry.target.exists();
+        // In-process rollback may already have moved the prior back before a
+        // later cleanup/sync failure retained this journal. Without a remaining
+        // prior, an existing target can be the only surviving original copy.
+        let can_replace_target = entry.prior.as_ref().is_none_or(|prior| prior.exists());
         if !committed
             && (entry.phase == RestorePhase::Activated || uncommitted_new_target_activation)
+            && can_replace_target
             && entry.target.exists()
         {
             if let Err(error) = fs::remove_file(&entry.target) {
@@ -1005,11 +1030,17 @@ mod tests {
 
         fs::write(root.join("state.db"), b"broken").unwrap();
         fs::write(&external_db, b"broken").unwrap();
+        let external_wal = external_db.with_extension("db-wal");
+        let external_shm = external_db.with_extension("db-shm");
+        write_private(&external_wal, b"post-backup WAL").unwrap();
+        write_private(&external_shm, b"post-backup shared memory").unwrap();
         write_private(&root.join("post-backup"), b"remove-me").unwrap();
         restore_bundle_locked(&paths, &bundle).unwrap();
         assert_eq!(fs::read(root.join("state.db")).unwrap(), b"state-v1");
         assert_eq!(fs::read(external_db).unwrap(), b"auth-v1");
         assert!(!root.join("post-backup").exists());
+        assert!(!external_wal.exists());
+        assert!(!external_shm.exists());
 
         let payload = bundle.join(&manifest.entries[0].payload);
         fs::write(payload, b"tampered").unwrap();
@@ -1576,6 +1607,52 @@ mod tests {
     }
 
     #[test]
+    fn retained_journal_after_completed_rollback_preserves_original_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = InstallationPaths::from_root(temp.path().join("installation")).unwrap();
+        private_dir(paths.root()).unwrap();
+        for name in ["a", "b"] {
+            write_private(&paths.root().join(name), b"backup").unwrap();
+        }
+        let bundle = temp.path().join("bundle");
+        private_dir(&bundle).unwrap();
+        private_dir(&bundle.join("payload")).unwrap();
+        export_locked(&paths, &bundle).unwrap();
+        for name in ["a", "b"] {
+            fs::write(paths.root().join(name), b"current original").unwrap();
+        }
+        let mut moved = 0;
+        let error = restore_bundle_locked_with_hooks(
+            &paths,
+            &bundle,
+            &mut |path| {
+                if path.exists() && path.to_string_lossy().contains(".labby-restore-") {
+                    Err(std::io::Error::other("injected staged cleanup failure"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+            &mut |_| {
+                moved += 1;
+                ensure!(moved != 2, "injected failure after first target activation");
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("injected staged cleanup failure"));
+        assert!(paths.root().join("restore.journal.json").exists());
+        recover_interrupted_restore(&paths).unwrap();
+        for name in ["a", "b"] {
+            assert_eq!(
+                fs::read(paths.root().join(name)).unwrap(),
+                b"current original"
+            );
+        }
+        assert!(!paths.root().join("restore.journal.json").exists());
+        assert_eq!(fs::read_dir(paths.root()).unwrap().count(), 2);
+    }
+
+    #[test]
     fn committed_journal_finishes_cleanup_without_rolling_back() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("installation");
@@ -1601,6 +1678,45 @@ mod tests {
         recover_interrupted_restore(&paths).unwrap();
         assert_eq!(fs::read(target).unwrap(), b"replacement");
         assert!(!prior.exists());
+    }
+
+    #[test]
+    fn failure_after_moving_prior_restores_original_files() {
+        for remove_extra in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("installation");
+            private_dir(&root).unwrap();
+            write_private(&root.join("state"), b"backup").unwrap();
+            let paths = InstallationPaths::from_root(&root).unwrap();
+            let bundle = temp.path().join("bundle");
+            private_dir(&bundle).unwrap();
+            private_dir(&bundle.join("payload")).unwrap();
+            export_locked(&paths, &bundle).unwrap();
+            fs::write(root.join("state"), b"current").unwrap();
+            if remove_extra {
+                write_private(&root.join("extra"), b"extra-current").unwrap();
+            }
+            let error = restore_bundle_locked_with_hooks(
+                &paths,
+                &bundle,
+                &mut |path| fs::remove_file(path),
+                &mut |_| bail!("injected failure before directory sync"),
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("prior files rolled back"));
+            assert_eq!(fs::read(root.join("state")).unwrap(), b"current");
+            if remove_extra {
+                assert_eq!(fs::read(root.join("extra")).unwrap(), b"extra-current");
+            }
+            assert!(!root.join("restore.journal.json").exists());
+            assert!(fs::read_dir(&root).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".labby-")
+            }));
+        }
     }
 
     #[test]

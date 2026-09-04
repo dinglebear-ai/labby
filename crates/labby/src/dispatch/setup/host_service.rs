@@ -140,21 +140,70 @@ fn persist_previous_host_release(
     binary: Option<&[u8]>,
     state: Option<(CapturedActiveState, CapturedUnitFileState)>,
 ) -> Result<(), ToolError> {
+    persist_previous_host_release_at(Path::new(PREVIOUS_HOST_RELEASE_DIR), binary, state)
+}
+
+fn persist_previous_host_release_at(
+    root: &Path,
+    binary: Option<&[u8]>,
+    state: Option<(CapturedActiveState, CapturedUnitFileState)>,
+) -> Result<(), ToolError> {
+    persist_previous_host_release_with_checkpoint(root, binary, state, || Ok(()))
+}
+
+fn persist_previous_host_release_with_checkpoint(
+    root: &Path,
+    binary: Option<&[u8]>,
+    state: Option<(CapturedActiveState, CapturedUnitFileState)>,
+    after_binary_write: impl FnOnce() -> Result<(), ToolError>,
+) -> Result<(), ToolError> {
     let (Some(binary), Some((active, enabled))) = (binary, state) else {
         return Ok(());
     };
-    let root = Path::new(PREVIOUS_HOST_RELEASE_DIR);
+    let binary_path = root.join("labby");
+    let manifest_path = root.join("manifest");
+    let previous_binary = read_optional(&binary_path)?;
+    let previous_manifest = read_optional(&manifest_path)?;
     std::fs::create_dir_all(root).map_err(io_error)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).map_err(io_error)?;
     }
-    restore_executable(&root.join("labby"), Some(binary))?;
-    atomic_write(
-        &root.join("manifest"),
-        format!("active={}\nenabled={}\n", active.as_str(), enabled.as_str()).as_bytes(),
-    )
+    let publication = (|| {
+        restore_executable(&binary_path, Some(binary))?;
+        after_binary_write()?;
+        atomic_write(
+            &manifest_path,
+            format!("active={}\nenabled={}\n", active.as_str(), enabled.as_str()).as_bytes(),
+        )
+    })();
+    if let Err(primary) = publication {
+        // Retention is a pair: preserving active service state is insufficient
+        // if a failed upgrade leaves an older manifest beside a newer binary.
+        let mut failures = Vec::new();
+        collect_restore(
+            &mut failures,
+            "retained binary",
+            restore_executable(&binary_path, previous_binary.as_deref()),
+        );
+        collect_restore(
+            &mut failures,
+            "retained manifest",
+            restore_optional(&manifest_path, previous_manifest.as_deref()),
+        );
+        if failures.is_empty() {
+            return Err(primary);
+        }
+        return Err(ToolError::Sdk {
+            sdk_kind: "host_service_previous_release_restore_failed".into(),
+            message: format!(
+                "previous release retention failed: {primary}; restoring retained release failed: {}",
+                failures.join("; ")
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) async fn rollback_previous_release() -> Result<HostServiceOutcome, ToolError> {
@@ -213,38 +262,59 @@ fn parse_previous_host_manifest(
 pub(crate) async fn install_self_transaction(
     source: &Path,
 ) -> Result<HostServiceOutcome, ToolError> {
+    let port = preflight_port_available("install").await?;
+    let path = unit_path();
+    let text = unit_text();
+    std::fs::create_dir_all(unit_dir()).map_err(io_error)?;
+    let snapshot = HostServiceSnapshot::capture(&path).await?;
     let destination = Path::new("/usr/local/bin/labby");
     let prior_binary = read_optional(destination)?;
-    let prior_state = if unit_path().is_file() {
-        Some(capture_systemd_state(SERVICE_NAME).await?)
-    } else {
-        None
-    };
-    install_executable(source, destination)?;
-    match install().await {
-        Ok(outcome) => {
+    let prior_state = snapshot
+        .unit
+        .as_ref()
+        .map(|_| (snapshot.active, snapshot.enabled));
+    let changed = snapshot.unit.as_deref() != Some(text.as_bytes());
+    run_self_install_transaction(
+        destination,
+        prior_binary.as_deref(),
+        async {
+            install_executable(source, destination)?;
+            let outcome = install_commit(port, path.clone(), text, changed).await?;
             persist_previous_host_release(prior_binary.as_deref(), prior_state)?;
             Ok(outcome)
-        }
+        },
+        || snapshot.rollback(&path),
+    )
+    .await
+}
+
+/// Binary replacement, activation, and recovery retention share one rollback
+/// boundary, including failures after an atomic file replacement committed.
+async fn run_self_install_transaction<F, R, RF>(
+    destination: &Path,
+    prior_binary: Option<&[u8]>,
+    operation: F,
+    restore_service: R,
+) -> Result<HostServiceOutcome, ToolError>
+where
+    F: Future<Output = Result<HostServiceOutcome, ToolError>>,
+    R: FnOnce() -> RF,
+    RF: Future<Output = Result<(), ToolError>>,
+{
+    match operation.await {
+        Ok(outcome) => Ok(outcome),
         Err(primary) => {
             let mut failures = Vec::new();
             collect_restore(
                 &mut failures,
                 "prior binary",
-                restore_executable(destination, prior_binary.as_deref()),
+                restore_executable(destination, prior_binary),
             );
-            if let Some((active, enabled)) = prior_state {
-                collect_restore(
-                    &mut failures,
-                    "prior binary enablement",
-                    restore_captured_unit_file_state(SERVICE_NAME, enabled).await,
-                );
-                collect_restore(
-                    &mut failures,
-                    "prior binary activity",
-                    restore_captured_active_state(SERVICE_NAME, active).await,
-                );
-            }
+            collect_restore(
+                &mut failures,
+                "prior service snapshot",
+                restore_service().await,
+            );
             if failures.is_empty() {
                 Err(ToolError::Sdk {
                     sdk_kind: "host_service_upgrade_rolled_back".into(),
@@ -266,14 +336,28 @@ pub(crate) async fn install_self_transaction(
 }
 
 fn install_executable(source: &Path, destination: &Path) -> Result<(), ToolError> {
+    install_executable_with_permissions(source, destination, set_executable_permissions)
+}
+
+fn install_executable_with_permissions(
+    source: &Path,
+    destination: &Path,
+    permissions: impl FnOnce(&Path) -> Result<(), ToolError>,
+) -> Result<(), ToolError> {
     let bytes = std::fs::read(source).map_err(io_error)?;
     atomic_write(destination, &bytes)?;
+    permissions(destination)
+}
+
+fn set_executable_permissions(destination: &Path) -> Result<(), ToolError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o755))
             .map_err(io_error)?;
     }
+    #[cfg(not(unix))]
+    let _ = destination;
     Ok(())
 }
 
@@ -281,13 +365,7 @@ fn restore_executable(destination: &Path, prior: Option<&[u8]>) -> Result<(), To
     match prior {
         Some(bytes) => {
             atomic_write(destination, bytes)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o755))
-                    .map_err(io_error)?;
-            }
-            Ok(())
+            set_executable_permissions(destination)
         }
         None => match std::fs::remove_file(destination) {
             Ok(()) => Ok(()),
@@ -1687,6 +1765,155 @@ fn io_error(err: std::io::Error) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_retention_publication_preserves_previous_recovery_pair() {
+        for existing in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("previous");
+            let old_manifest = b"active=inactive\nenabled=disabled\n";
+            if existing {
+                std::fs::create_dir(&root).unwrap();
+                std::fs::write(root.join("labby"), b"older retained binary").unwrap();
+                std::fs::write(root.join("manifest"), old_manifest).unwrap();
+            }
+            let error = persist_previous_host_release_with_checkpoint(
+                &root,
+                Some(b"newly retained binary"),
+                Some((CapturedActiveState::Active, CapturedUnitFileState::Enabled)),
+                || {
+                    assert_eq!(
+                        std::fs::read(root.join("labby")).unwrap(),
+                        b"newly retained binary"
+                    );
+                    Err(io_error(std::io::Error::other(
+                        "injected manifest publication failure",
+                    )))
+                },
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected manifest publication failure")
+            );
+            if existing {
+                assert_eq!(
+                    std::fs::read(root.join("labby")).unwrap(),
+                    b"older retained binary"
+                );
+                assert_eq!(std::fs::read(root.join("manifest")).unwrap(), old_manifest);
+            } else {
+                assert!(!root.join("labby").exists());
+                assert!(!root.join("manifest").exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn self_install_rolls_back_activation_when_previous_release_retention_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("candidate");
+        let destination = dir.path().join("labby");
+        let unit = dir.path().join("labby.service");
+        let retained = dir.path().join("previous");
+        std::fs::write(&source, b"candidate binary").unwrap();
+        std::fs::write(&destination, b"prior binary").unwrap();
+        std::fs::write(&unit, b"prior service").unwrap();
+        // A real filesystem failure after activation, without global hooks or
+        // touching the machine's service manager.
+        std::fs::write(&retained, b"not a directory").unwrap();
+        let error = run_self_install_transaction(
+            &destination,
+            Some(b"prior binary"),
+            async {
+                install_executable(&source, &destination)?;
+                std::fs::write(&unit, b"candidate service").map_err(io_error)?;
+                persist_previous_host_release_at(
+                    &retained,
+                    Some(b"prior binary"),
+                    Some((CapturedActiveState::Active, CapturedUnitFileState::Enabled)),
+                )?;
+                panic!("retention must fail");
+            },
+            || async {
+                assert_eq!(std::fs::read(&destination).unwrap(), b"prior binary");
+                assert_eq!(std::fs::read(&unit).unwrap(), b"candidate service");
+                std::fs::write(&unit, b"prior service").map_err(io_error)
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "host_service_upgrade_rolled_back");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"prior binary");
+        assert_eq!(std::fs::read(&unit).unwrap(), b"prior service");
+    }
+
+    #[tokio::test]
+    async fn self_install_rolls_back_binary_when_permissions_fail_after_replacement() {
+        for prior in [Some(b"prior binary".as_slice()), None] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("candidate");
+            let destination = dir.path().join("labby");
+            std::fs::write(&source, b"candidate binary").unwrap();
+            if let Some(prior) = prior {
+                std::fs::write(&destination, prior).unwrap();
+            }
+            let restored = std::cell::Cell::new(false);
+            let error = run_self_install_transaction(
+                &destination,
+                prior,
+                async {
+                    install_executable_with_permissions(&source, &destination, |path| {
+                        assert_eq!(std::fs::read(path).unwrap(), b"candidate binary");
+                        Err(io_error(std::io::Error::other("injected chmod failure")))
+                    })?;
+                    panic!("activation must not follow failed executable installation");
+                },
+                || async {
+                    assert_eq!(read_optional(&destination).unwrap().as_deref(), prior);
+                    restored.set(true);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.kind(), "host_service_upgrade_rolled_back");
+            assert!(error.to_string().contains("injected chmod failure"));
+            assert!(restored.get());
+            assert_eq!(read_optional(&destination).unwrap().as_deref(), prior);
+        }
+    }
+
+    #[tokio::test]
+    async fn self_install_reports_service_rollback_failure_after_restoring_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("labby");
+        let error = run_self_install_transaction(
+            &destination,
+            Some(b"prior binary"),
+            async {
+                Err(io_error(std::io::Error::other(
+                    "injected activation failure",
+                )))
+            },
+            || async {
+                assert_eq!(std::fs::read(&destination).unwrap(), b"prior binary");
+                Err(io_error(std::io::Error::other(
+                    "injected service rollback failure",
+                )))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "host_service_upgrade_rollback_failed");
+        assert!(error.to_string().contains("injected activation failure"));
+        assert!(
+            error
+                .to_string()
+                .contains("injected service rollback failure")
+        );
+    }
 
     #[test]
     fn atomic_write_surfaces_parent_directory_sync_failure() {

@@ -31,6 +31,29 @@ fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File,
     open_restricted_unix_with_before_create(path, create_new, || {})
 }
 
+#[cfg(target_os = "macos")]
+fn macos_system_path(path: &Path) -> std::borrow::Cow<'_, Path> {
+    // macOS supplies these root-owned aliases (including the default TMPDIR's
+    // /var prefix). Resolve only the expected system mapping, then retain the
+    // no-follow walk for every component below /private. Canonicalizing the
+    // whole parent here would also admit attacker-controlled symlinks.
+    for (alias, target) in [
+        ("/var", "/private/var"),
+        ("/tmp", "/private/tmp"),
+        ("/etc", "/private/etc"),
+    ] {
+        let Ok(suffix) = path.strip_prefix(alias) else {
+            continue;
+        };
+        if std::fs::read_link(alias)
+            .is_ok_and(|link| link == Path::new(target) || link == Path::new(&target[1..]))
+        {
+            return std::borrow::Cow::Owned(Path::new(target).join(suffix));
+        }
+    }
+    std::borrow::Cow::Borrowed(path)
+}
+
 #[cfg(unix)]
 fn open_restricted_unix_with_before_create<F>(
     path: &Path,
@@ -43,6 +66,10 @@ where
     use rustix::fs::{Mode, OFlags, openat};
     use std::os::fd::AsFd;
 
+    #[cfg(target_os = "macos")]
+    let normalized = macos_system_path(path);
+    #[cfg(target_os = "macos")]
+    let path = normalized.as_ref();
     let components: Vec<_> = path.components().collect();
     let mut parent = std::fs::File::open("/")
         .map_err(|error| AuthError::Storage(format!("open filesystem root: {error}")))?;
@@ -426,9 +453,9 @@ pub fn create_restricted_secret_file(path: &Path) -> Result<std::fs::File, AuthE
     Ok(file)
 }
 
-/// Open a persistent secret-adjacent lock and harden it immediately. A lock
-/// created by this call is removed on hardening failure; both failures are
-/// retained when cleanup also fails.
+/// Open a persistent secret-adjacent lock and harden it immediately. On hardening
+/// failure, retain the empty or existing lock and report the error; deleting by
+/// pathname after releasing the handle could remove a replacement file.
 pub fn open_restricted_lock_file(path: &Path) -> Result<std::fs::File, AuthError> {
     open_restricted_lock_file_with(path, harden_open_file, |path| std::fs::remove_file(path))
 }
@@ -599,6 +626,42 @@ mod restricted_lock_tests {
 
     fn denied(_file: &std::fs::File, _path: &Path) -> Result<(), AuthError> {
         Err(AuthError::Storage("hardening denied".into()))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_temp_alias_supports_secret_and_lock_creation() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let secret = dir.path().join("secret.pem");
+        write_secret_file_atomically(&secret, b"private key").unwrap();
+        assert_eq!(std::fs::read(&secret).unwrap(), b"private key");
+        let lock = open_restricted_lock_file(&dir.path().join("config.lock")).unwrap();
+        assert!(lock.metadata().unwrap().is_file());
+
+        assert_eq!(
+            macos_system_path(Path::new("/var/folders/example/key.pem")),
+            Path::new("/private/var/folders/example/key.pem")
+        );
+        assert_eq!(
+            macos_system_path(Path::new("/etc/example/key.pem")),
+            Path::new("/private/etc/example/key.pem")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_alias_does_not_allow_nested_symlink_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let link = dir.path().join("alias");
+        symlink(&target, &link).unwrap();
+        assert!(create_restricted_secret_file(&link.join("secret.pem")).is_err());
+        assert!(open_restricted_lock_file(&link.join("config.lock")).is_err());
+        assert!(!target.join("secret.pem").exists());
+        assert!(!target.join("config.lock").exists());
     }
 
     #[test]

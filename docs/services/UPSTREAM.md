@@ -526,11 +526,13 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 | `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MB (10,485,760 bytes) |
 
 HTTP response bodies are rejected while streaming, before JSON/resource
-materialization. Labby also applies one process-wide 80 MiB weighted admission
+materialization. The upstream HTTP transport also applies a process-wide 80 MiB weighted admission
 budget: a response reserves its configured maximum while a JSON/error body is
 read or for the lifetime of an SSE stream. With the default 10 MiB per-response
 limit, at most eight near-limit bodies can be materializing concurrently;
-additional reads wait without allocating their bodies. Stdio JSON lines use the
+additional reads wait up to one second without allocating their bodies, then
+return `response_budget_exhausted` if capacity remains unavailable. This bounds
+waiting even when long-lived SSE streams hold the reservations. Stdio JSON lines use the
 same per-response cap and bounded line reader.
 
 The transport cap applies before rmcp materializes `call_tool`,
@@ -743,7 +745,8 @@ Then an MCP client connected to `lab` should see the upstream tools in `list_too
 - Upstream tool schemas are cached from discovery and reused for MCP tool metadata.
 - Upstream calls preserve the original MCP argument payload rather than forcing it through `lab`'s `action` + `params` wrapper.
 - Upstream errors are normalized into `lab` envelopes and usually surface as `upstream_error`, `network_error`, `server_error`, `decode_error`, or `internal_error`.
-- Response-size limits are enforced after the upstream response is materialized in memory.
+- Response-size limits are enforced while streaming, before JSON materialization;
+  structured values receive an additional post-decode check.
 
 ## Environment Variables
 

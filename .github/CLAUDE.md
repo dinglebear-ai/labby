@@ -18,7 +18,8 @@ details there and keep this file focused on rules for editing `.github/`.
   qualification job promotes it. Incus and registry publishers are callable
   gates that complete before promotion and are covered by aggregate
   reconciliation.
-- Native Windows CI is GitHub-hosted and advisory to the stable `ci-gate`.
+- Native Windows Rust tests and installer contracts are GitHub-hosted and
+  required by the stable `ci-gate`; Palette's Windows check remains advisory.
 - External actions and reusable workflows are pinned to full commit SHAs.
 - Fleet contract callers must pass the same exact workflows commit as
   `implementation-ref`.
@@ -58,7 +59,7 @@ details there and keep this file focused on rules for editing `.github/`.
 | Rust compile, test, coverage, security | `ubuntu-24.04` |
 | Node, pnpm, browser, frontend | `ubuntu-24.04` |
 | policy, labels, drift, metadata, aggregate gates | `ubuntu-24.04` |
-| native Windows advisory checks | `windows-latest` |
+| native Windows required tests and advisory Palette check | `windows-latest` |
 | release and publication jobs | pinned GitHub-hosted x86_64 image |
 
 `ci.yml` uses `scripts/ci/changed_paths.py` to route work. Scheduled and manual

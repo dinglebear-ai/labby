@@ -307,7 +307,14 @@ async fn check_backend_leak(
             .await
             {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-                Err(_) => String::new(),
+                Err(_) => {
+                    return Finding {
+                        service: "doctor".to_string(),
+                        check: "proxy:backend-leak".to_string(),
+                        severity: Severity::Fail,
+                        message: "Could not inspect the protected response within the backend-leak probe limits; backend-origin privacy is unverified".to_string(),
+                    };
+                }
             };
             if body.contains(backend_origin) {
                 Finding {
@@ -532,6 +539,34 @@ mod tests {
         .unwrap();
 
         assert_finding_severity(&report, "proxy:backend-leak", Severity::Fail);
+    }
+
+    #[tokio::test]
+    async fn backend_leak_probe_cannot_pass_an_oversized_response() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let backend_url = "http://private-backend.invalid:3100";
+        for prefix in [backend_url, "public error"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/telemetry"))
+                .respond_with(
+                    ResponseTemplate::new(502).set_body_string(format!(
+                        "{prefix}{}",
+                        "x".repeat(DOCTOR_RESPONSE_MAX_BYTES)
+                    )),
+                )
+                .mount(&server)
+                .await;
+            let finding = check_backend_leak(
+                &reqwest::Client::new(),
+                &server.uri(),
+                "/telemetry",
+                backend_url,
+            )
+            .await;
+            assert!(matches!(finding.severity, Severity::Fail));
+            assert!(!finding.message.contains(backend_url));
+        }
     }
 
     #[tokio::test]

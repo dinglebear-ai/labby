@@ -229,10 +229,7 @@ async fn relay_callback(
         Err(error) => {
             return json_error(
                 StatusCode::BAD_GATEWAY,
-                format!(
-                    "oauth relay target {} response read failed: {error}",
-                    redact_forward_target(&forward_url)
-                ),
+                format_response_body_error(&forward_url, &error),
             );
         }
     };
@@ -322,6 +319,19 @@ fn format_upstream_error(
         "failed to reach oauth relay target `{}`: {}",
         redacted_target, sanitized_source
     )
+}
+
+fn format_response_body_error(
+    url: &reqwest::Url,
+    error: &labby_runtime::response_body::CappedResponseBodyError,
+) -> String {
+    let redacted = redact_forward_target(url);
+    match error {
+        labby_runtime::response_body::CappedResponseBodyError::Transport(error) => {
+            format_upstream_error(url, &redacted, error)
+        }
+        _ => format!("oauth relay target {redacted} response read failed: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -676,6 +686,27 @@ mod tests {
         assert!(!body.contains(&"x".repeat(128)));
 
         relay.abort();
+    }
+
+    #[test]
+    fn response_body_transport_error_redacts_callback_credentials() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let url = reqwest::Url::parse(
+            "http://127.0.0.1:8765/callback/node?code=private-code&state=private-state",
+        )
+        .unwrap();
+        let transport_error = reqwest::Client::new()
+            .get("http://[invalid")
+            .build()
+            .unwrap_err()
+            .with_url(url.clone());
+        assert!(transport_error.to_string().contains("private-code"));
+        let error =
+            labby_runtime::response_body::CappedResponseBodyError::Transport(transport_error);
+        let rendered = format_response_body_error(&url, &error);
+        assert!(rendered.contains("127.0.0.1:8765/callback/node"));
+        assert!(!rendered.contains("private-code"));
+        assert!(!rendered.contains("private-state"));
     }
 
     #[test]
