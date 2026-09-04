@@ -285,9 +285,19 @@ fn read_legacy_metadata(connection: &Connection) -> AccessStoreResult<LegacyMeta
                 })
             },
         )
-        .map_err(|_| AccessStoreError::IntegrityViolation {
+        .map_err(map_metadata_read_error)
+}
+
+fn map_metadata_read_error(error: rusqlite::Error) -> AccessStoreError {
+    match super::store::map_sqlite_error(error) {
+        operational @ (AccessStoreError::Locked
+        | AccessStoreError::ReadOnly
+        | AccessStoreError::DiskFull
+        | AccessStoreError::Corrupt) => operational,
+        _ => AccessStoreError::IntegrityViolation {
             check: "schema_metadata",
-        })
+        },
+    }
 }
 
 fn validate_pre_migration_integrity(connection: &Connection) -> AccessStoreResult<()> {
@@ -377,9 +387,7 @@ fn validate_v2_before_migration(connection: &Connection) -> AccessStoreResult<()
                 ))
             },
         )
-        .map_err(|_| AccessStoreError::IntegrityViolation {
-            check: "schema_metadata",
-        })?;
+        .map_err(map_metadata_read_error)?;
     let bootstrap_valid = matches!((&metadata.3, metadata.4.as_deref()), (0, None))
         || matches!((&metadata.3, metadata.4.as_deref()), (1, Some(value)) if !value.is_empty());
     if application_id != APPLICATION_ID
@@ -608,6 +616,25 @@ CREATE TABLE access_audit (
 #[cfg(test)]
 mod credential_migration_tests {
     use super::*;
+
+    #[test]
+    fn legacy_metadata_reader_preserves_operational_sqlite_errors() {
+        for code in [
+            rusqlite::ffi::SQLITE_BUSY,
+            rusqlite::ffi::SQLITE_LOCKED,
+            rusqlite::ffi::SQLITE_READONLY,
+        ] {
+            let error = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None);
+            let mapped = map_metadata_read_error(error);
+            assert!(
+                matches!(
+                    mapped,
+                    AccessStoreError::Locked | AccessStoreError::ReadOnly
+                ),
+                "SQLite code {code} must remain operational: {mapped:?}"
+            );
+        }
+    }
 
     fn canonical_v2() -> Connection {
         let connection = Connection::open_in_memory().unwrap();

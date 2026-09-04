@@ -140,7 +140,7 @@ name = "team-skills"
 enabled = true
 public_host = "labby.example.invalid"
 public_path = "/mcp/team-skills"
-scopes = ["lab:read"]
+scopes = ["lab"]
 
 [protected_mcp_routes.target]
 kind = "gateway_subset"
@@ -150,6 +150,8 @@ loadout = "team-skills"
 
 The ProductCredential resource and audience must exactly match this route's
 public URL (`https://labby.example.invalid/mcp/team-skills`).
+The `lab:read` scope is sufficient for listing and reading Skills, but imports,
+activation, and other mutations require `lab` or `lab:admin`.
 
 `import-request.json` contains:
 

@@ -10,6 +10,9 @@ use tracing::warn;
 
 mod allowlist;
 mod assertions;
+#[cfg(test)]
+#[path = "sqlite/tests.rs"]
+mod extracted_tests;
 mod google_credentials;
 mod migrations;
 mod oauth;
