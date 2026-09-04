@@ -8,7 +8,8 @@ use axum::{
 use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::palette::{
     CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
-    PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionReceipt,
+    PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionMode,
+    PaletteExecutionReceipt,
 };
 use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
@@ -658,6 +659,7 @@ async fn execute_labby_action(
             tool_id: request.id.clone(),
             contract_hash: contract_hash.clone(),
             catalog_revision: contract_hash,
+            execution_mode: PaletteExecutionMode::LabbyAction,
             truncated: false,
         },
         id: request.id,
@@ -2027,6 +2029,9 @@ mod tests {
         assert_eq!(value["id"], "labby:demo::echo.run");
         assert_eq!(value["result"]["name"], "labby");
         assert_eq!(value["receipt"]["contractHash"], contract_hash);
+        assert_eq!(value["receipt"]["executionMode"], "labby_action");
+        assert!(value["receipt"].get("llmInvocations").is_none());
+        assert!(value["receipt"].get("auditId").is_none());
     }
 
     #[tokio::test]
@@ -2071,6 +2076,7 @@ mod tests {
             .unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["kind"], "missing_param");
+        assert!(value.get("receipt").is_none());
     }
 
     #[tokio::test]
@@ -2108,6 +2114,7 @@ mod tests {
             .unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["kind"], "contract_changed");
+        assert!(value.get("receipt").is_none());
     }
 
     #[tokio::test]

@@ -22,7 +22,17 @@ proxy the whole Streamable HTTP MCP route to a backend. Use
 [GATEWAY.md — Gateway-Managed Protected MCP Routes](./GATEWAY.md#gateway-managed-protected-mcp-routes)
 for that setup instead of `[[upstream]]` tool merging.
 
-The reusable upstream pool lives in `crates/labby-gateway/src/upstream/`; `crates/labby/src/dispatch/upstream.rs` is the Labby product compatibility and adaptation boundary. The runtime proxy path described in this document is wired into the MCP surface. The HTTP API now exposes `/v1/gateway` for gateway management, but it still does not proxy arbitrary upstream MCP tools.
+The reusable upstream pool lives in `crates/labby-gateway/src/upstream/`; `crates/labby/src/dispatch/upstream.rs` is the Labby product compatibility and adaptation boundary. The runtime proxy path described in this document is wired into the MCP surface. The HTTP API exposes `/v1/gateway` for gateway management and authenticated `/v1/palette/execute` for bounded, contract-checked launcher calls.
+
+## Palette execution receipts
+
+The authenticated `POST /v1/palette/execute` response includes an
+`executionMode` in its receipt: `exact` for a contract-checked upstream MCP tool
+call, or `labby_action` for a registered Labby action. This identifies the
+launcher dispatch path, not the tool's internal implementation, model usage,
+retry count, or a separate durable audit record. Existing request IDs remain
+correlation identifiers. Older servers may omit this additive field; desktop
+launch history preserves known modes without inventing a mode for old receipts.
 
 ## What Operators Configure
 
