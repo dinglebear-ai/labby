@@ -261,15 +261,12 @@ fn classify(route: &RouteDescriptor) -> RequestClass {
 }
 
 fn feature_is_compiled(feature: &str) -> bool {
-    match feature {
-        "gateway" => cfg!(feature = "gateway"),
-        "fs" => cfg!(feature = "fs"),
-        "skills" => cfg!(feature = "skills"),
-        "lab-admin" => cfg!(feature = "lab-admin"),
-        "api-docs" => cfg!(feature = "api-docs"),
-        "systemd" => cfg!(feature = "systemd"),
-        other => panic!("route inventory references unknown feature {other}"),
-    }
+    (feature == "gateway" && cfg!(feature = "gateway"))
+        || (feature == "fs" && cfg!(feature = "fs"))
+        || (feature == "skills" && cfg!(feature = "skills"))
+        || (feature == "lab-admin" && cfg!(feature = "lab-admin"))
+        || (feature == "api-docs" && cfg!(feature = "api-docs"))
+        || (feature == "systemd" && cfg!(feature = "systemd"))
 }
 
 fn request_body(route: &RouteDescriptor) -> Option<&'static str> {
