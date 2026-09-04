@@ -67,5 +67,8 @@ wiremock.workspace = true
 rsa.workspace = true
 rand.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+labby-winjob = { path = "../labby-winjob" }
+
 [lints]
 workspace = true

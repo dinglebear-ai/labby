@@ -1940,6 +1940,7 @@ dependencies = [
  "jsonwebtoken",
  "labby-primitives",
  "labby-runtime",
+ "labby-winjob",
  "oauth2",
  "rand 0.10.2",
  "reqwest",
@@ -2103,6 +2104,7 @@ dependencies = [
 name = "labby-winjob"
 version = "1.14.1"
 dependencies = [
+ "tempfile",
  "tracing",
  "windows-sys 0.59.0",
 ]

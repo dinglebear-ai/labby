@@ -39,3 +39,6 @@ tracing.workspace = true
 # callers never write `unsafe`.
 [lints.rust]
 unsafe_code = "allow"
+
+[dev-dependencies]
+tempfile = "3.27"

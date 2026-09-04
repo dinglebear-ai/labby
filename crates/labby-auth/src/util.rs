@@ -184,47 +184,11 @@ fn harden_open_file(file: &std::fs::File, _path: &Path) -> Result<(), AuthError>
 
 #[cfg(windows)]
 fn harden_open_file(file: &std::fs::File, path: &Path) -> Result<(), AuthError> {
-    if !file
-        .metadata()
-        .map_err(|error| AuthError::Storage(format!("inspect open restricted file: {error}")))?
-        .is_file()
-        || !same_open_file(file, path)?
-    {
-        return Err(AuthError::Storage(
-            "restricted path does not identify the opened regular file".into(),
-        ));
-    }
-    harden_secret_file(path)?;
-    if same_open_file(file, path)? {
-        Ok(())
-    } else {
-        Err(AuthError::Storage(
-            "restricted file changed while its ACL was hardened".into(),
-        ))
-    }
-}
-
-#[cfg(windows)]
-fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> {
-    use std::os::windows::fs::MetadataExt;
-
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-
-    let opened = file
-        .metadata()
-        .map_err(|error| AuthError::Storage(format!("inspect open restricted file: {error}")))?;
-    let current = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(AuthError::Storage(format!(
-                "inspect restricted file path: {error}"
-            )));
-        }
-    };
-    Ok(opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-        && current.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
-        && !current.file_type().is_symlink())
+    labby_winjob::fs::identity(file, false).map_err(|error| {
+        AuthError::Storage(format!("inspect open restricted regular file: {error}"))
+    })?;
+    labby_winjob::fs::harden_current_user_dacl(path, Some(file))
+        .map_err(|error| AuthError::Storage(format!("harden open restricted file ACL: {error}")))
 }
 
 #[cfg(windows)]
@@ -327,87 +291,15 @@ pub(crate) fn set_restrictive_permissions(path: &Path) -> Result<(), AuthError> 
     harden_secret_file(path)
 }
 
-#[cfg(windows)]
-fn windows_powershell() -> std::path::PathBuf {
-    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-    std::path::PathBuf::from(system_root)
-        .join("System32")
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe")
-}
-
-/// Apply the platform's current-user-only file policy to a secret-bearing file.
-///
-/// On Windows this replaces inherited and explicit ACEs with one FullControl
-/// rule for the current user. Passing the path through an environment variable
-/// avoids interpolating attacker-controlled characters into PowerShell code.
+/// Apply a protected current-user-only DACL without changing object ownership.
+/// Native handle operations work without PowerShell or a loaded user profile.
 #[cfg(windows)]
 pub fn harden_secret_file(path: &Path) -> Result<(), AuthError> {
-    const SCRIPT: &str = r#"
-$ErrorActionPreference = 'Stop'
-$path = $env:LABBY_SECRET_FILE_PATH
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
-function Invoke-Icacls {
-  & $icacls @args | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "icacls failed with exit code $LASTEXITCODE for arguments: $args"
-  }
+    let absolute = std::path::absolute(path)
+        .map_err(|error| AuthError::Storage(format!("resolve restricted ACL path: {error}")))?;
+    labby_winjob::fs::harden_current_user_dacl(&absolute, None)
+        .map_err(|error| AuthError::Storage(format!("harden restricted object ACL: {error}")))
 }
-# Reset removes every prior explicit ACE, then removing inheritance leaves an
-# empty DACL before the current user SID receives the sole FullControl rule.
-Invoke-Icacls $path '/reset'
-Invoke-Icacls $path '/inheritance:r'
-Invoke-Icacls $path '/grant:r' ("*" + $sid + ':(F)')
-$verified = Get-Acl -LiteralPath $path
-if (-not $verified.AreAccessRulesProtected) {
-  throw 'secret file ACL still inherits access rules'
-}
-$rules = @($verified.Access)
-if ($rules.Count -ne 1) {
-  throw "secret file ACL contains $($rules.Count) access rules instead of one"
-}
-$ruleSid = $rules[0].IdentityReference.Translate(
-  [System.Security.Principal.SecurityIdentifier]
-).Value
-if ($ruleSid -ne $sid -or
-    $rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
-    ($rules[0].FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne
-      [System.Security.AccessControl.FileSystemRights]::FullControl) {
-  throw 'secret file ACL is not a current-user-only FullControl rule'
-}
-"#;
-    let output = std::process::Command::new(windows_powershell())
-        .args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            SCRIPT,
-        ])
-        // A PowerShell 7 host can export an incompatible PSModulePath to this
-        // Windows PowerShell child. Let Windows PowerShell rebuild its native
-        // module path so Microsoft.PowerShell.Security can load reliably.
-        .env_remove("PSModulePath")
-        .env("LABBY_SECRET_FILE_PATH", path)
-        .output()
-        .map_err(|error| {
-            AuthError::Storage(format!(
-                "start Windows ACL hardening for `{}`: {error}",
-                path.display()
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(AuthError::Storage(format!(
-            "Windows ACL hardening failed for `{}`: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 pub fn harden_secret_file(path: &Path) -> Result<(), AuthError> {
     set_restrictive_permissions(path)
@@ -818,35 +710,51 @@ mod windows_tests {
     use super::*;
 
     #[test]
+    fn native_acl_hardening_works_with_empty_child_environment() {
+        const CHILD: &str = "LABBY_TEST_NATIVE_ACL_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let path = Path::new("relative-secret");
+            std::fs::write(path, b"sentinel").unwrap();
+            harden_secret_file(path).unwrap();
+            assert_private_windows_acl(path);
+            let directory = Path::new("private-directory");
+            std::fs::create_dir(directory).unwrap();
+            harden_secret_file(directory).unwrap();
+            let handle = labby_winjob::fs::open_directory(directory).unwrap();
+            labby_winjob::fs::verify_current_user_only_dacl(&handle).unwrap();
+            assert!(harden_open_file(&handle, &std::path::absolute(directory).unwrap()).is_err());
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "util::windows_tests::native_acl_hardening_works_with_empty_child_environment",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated native ACL fixture: {output:?}"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("relative-secret")).unwrap(),
+            b"sentinel"
+        );
+    }
+
+    #[test]
     fn secret_acl_is_protected_and_contains_only_current_user_rule() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secret.env");
         std::fs::write(&path, "TOKEN=secret\n").unwrap();
         harden_secret_file(&path).unwrap();
 
-        let script = r#"
-$acl = Get-Acl -LiteralPath $env:LABBY_SECRET_FILE_PATH
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-if (-not $acl.AreAccessRulesProtected) { exit 2 }
-if (@($acl.Access).Count -ne 1) { exit 3 }
-$ruleSid = $acl.Access[0].IdentityReference.Translate(
-  [System.Security.Principal.SecurityIdentifier]
-).Value
-if ($ruleSid -ne $sid) { exit 4 }
-"#;
-        let status = std::process::Command::new(windows_powershell())
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-            ])
-            .env_remove("PSModulePath")
-            .env("LABBY_SECRET_FILE_PATH", &path)
-            .status()
-            .unwrap();
-        assert!(status.success(), "unexpected ACL shape: {status}");
+        assert_private_windows_acl(&path);
     }
 
     #[test]
@@ -899,29 +807,8 @@ if ($ruleSid -ne $sid) { exit 4 }
     }
 
     fn assert_private_windows_acl(path: &Path) {
-        let script = r#"
-$acl = Get-Acl -LiteralPath $env:LABBY_SECRET_FILE_PATH
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-if (-not $acl.AreAccessRulesProtected) { exit 2 }
-if (@($acl.Access).Count -ne 1) { exit 3 }
-$ruleSid = $acl.Access[0].IdentityReference.Translate(
-  [System.Security.Principal.SecurityIdentifier]
-).Value
-if ($ruleSid -ne $sid) { exit 4 }
-"#;
-        let status = std::process::Command::new(windows_powershell())
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-            ])
-            .env_remove("PSModulePath")
-            .env("LABBY_SECRET_FILE_PATH", path)
-            .status()
-            .unwrap();
-        assert!(status.success(), "unexpected ACL shape: {status}");
+        let file = std::fs::File::open(path).unwrap();
+        labby_winjob::fs::verify_current_user_only_dacl(&file).unwrap();
     }
 }
 

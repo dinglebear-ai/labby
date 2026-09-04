@@ -73,6 +73,13 @@ Startup also fails if:
 - `LABBY_AUTH_ADMIN_EMAIL` is missing — fail-closed default so no Google account can authenticate without explicit permission
 - the auth database or signing key has insecure file permissions
 
+Windows secret-file hardening uses native handle-based ACL operations, without
+PowerShell, `icacls`, or a loaded shell profile. It installs a protected,
+non-inheriting current-user-only FullControl DACL without changing existing
+ownership. Ancestors are pinned, reparse points and file hard links are refused,
+and an already-open secret is checked by its full filesystem identity before
+the ACL changes. Unix permission handling remains unchanged.
+
 ## Owner bootstrap and project-bound credentials
 
 Labby supports two separate first-owner flows:

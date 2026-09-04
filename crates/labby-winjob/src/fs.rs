@@ -263,7 +263,99 @@ pub fn set_created_owner(path: &Path, original: &File, directory: bool) -> io::R
     })
 }
 
+/// Verify the protected, non-inheriting current-user-only DACL without imposing
+/// an owner policy. Existing-object hardening never changes ownership.
+pub fn verify_current_user_only_dacl(file: &File) -> io::Result<()> {
+    verify_acl_policy(file, false, false)
+}
+
+/// Atomically replace only the DACL, never ownership, on a pinned regular file
+/// or directory. An optional original handle binds the mutation to its full ID.
+pub fn harden_current_user_dacl(path: &Path, original: Option<&File>) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW,
+        SetSecurityInfo, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, READ_CONTROL, WRITE_DAC};
+
+    let _parents = AncestorGuard::for_file(path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    let directory = metadata.is_dir();
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let expected = identity(&file, directory)?;
+    if let Some(original) = original
+        && identity(original, directory)? != expected
+    {
+        return Err(io::Error::other(
+            "restricted object identity changed before ACL hardening",
+        ));
+    }
+    with_current_user(|user| {
+        let rule = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: FILE_ALL_ACCESS,
+            grfAccessMode: SET_ACCESS,
+            grfInheritance: 0,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: std::ptr::null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                ptstrName: user.cast(),
+            },
+        };
+        struct Acl(*mut windows_sys::Win32::Security::ACL);
+        impl Drop for Acl {
+            fn drop(&mut self) {
+                // SAFETY: SetEntriesInAclW allocates its output with LocalAlloc.
+                unsafe {
+                    LocalFree(self.0.cast());
+                }
+            }
+        }
+        let mut acl = std::ptr::null_mut();
+        // SAFETY: the rule borrows the live token SID. A null old ACL constructs
+        // a new ACL, not a null DACL; no mutation happens until allocation succeeds.
+        let status = unsafe { SetEntriesInAclW(1, &rule, std::ptr::null(), &mut acl) };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        let acl = Acl(acl);
+        if acl.0.is_null() {
+            return Err(io::Error::other("ACL construction returned no ACL"));
+        }
+        // SAFETY: the target handle, ACL, and token remain live. Only the DACL
+        // bits are selected, so null owner/group inputs cannot modify ownership.
+        let status = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                acl.0,
+                std::ptr::null_mut(),
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32));
+        }
+        verify_current_user_only_dacl(&file)
+    })
+}
+
 fn verify_acl(file: &File, directory: bool) -> io::Result<()> {
+    verify_acl_policy(file, directory, true)
+}
+
+fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::Result<()> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
@@ -325,7 +417,7 @@ fn verify_acl(file: &File, directory: bool) -> io::Result<()> {
                 || dacl.is_null()
                 || IsValidSid(owner) == 0
                 || IsValidAcl(dacl) == 0
-                || !trusted(owner)
+                || (require_owner && !trusted(owner))
             {
                 return Err(denied());
             }
@@ -368,6 +460,9 @@ fn verify_acl(file: &File, directory: bool) -> io::Result<()> {
                 if !directory && header.AceFlags & 0x18 != 0 {
                     return Err(denied());
                 } // INHERIT_ONLY / INHERITED
+                if !require_owner && header.AceFlags != 0 {
+                    return Err(denied());
+                }
                 if directory && header.AceFlags & 0x08 != 0 {
                     continue;
                 } // does not apply to parent itself
@@ -408,4 +503,95 @@ fn verify_acl(file: &File, directory: bool) -> io::Result<()> {
             Ok(())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owner_sid(file: &File) -> Vec<u8> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{GetLengthSid, OWNER_SECURITY_INFORMATION};
+        let mut owner = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: live file handle and valid output pointers; returned SID is
+        // copied before the owning security descriptor is freed.
+        unsafe {
+            assert_eq!(
+                GetSecurityInfo(
+                    file.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION,
+                    &mut owner,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut descriptor
+                ),
+                0
+            );
+            assert!(!owner.is_null());
+            let bytes =
+                std::slice::from_raw_parts(owner.cast::<u8>(), GetLengthSid(owner) as usize)
+                    .to_vec();
+            LocalFree(descriptor);
+            bytes
+        }
+    }
+
+    #[test]
+    fn native_dacl_hardening_preserves_file_and_directory_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("secret");
+        std::fs::write(&path, b"sentinel").unwrap();
+        for (path, directory) in [(path.as_path(), false), (temp.path(), true)] {
+            let file = if directory {
+                open_directory(path).unwrap()
+            } else {
+                File::open(path).unwrap()
+            };
+            let before = owner_sid(&file);
+            harden_current_user_dacl(path, Some(&file)).unwrap();
+            verify_current_user_only_dacl(&file).unwrap();
+            assert_eq!(owner_sid(&file), before);
+        }
+        assert_eq!(std::fs::read(path).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn native_dacl_hardening_refuses_other_handle_and_hard_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::write(&first, b"first").unwrap();
+        std::fs::write(&second, b"second").unwrap();
+        let original = File::open(&first).unwrap();
+        assert!(harden_current_user_dacl(&second, Some(&original)).is_err());
+        let alias = temp.path().join("alias");
+        std::fs::hard_link(&first, &alias).unwrap();
+        assert!(harden_current_user_dacl(&first, Some(&original)).is_err());
+        assert_eq!(std::fs::read(first).unwrap(), b"first");
+        assert_eq!(std::fs::read(second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn native_dacl_hardening_refuses_junction_ancestors() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("sentinel");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let junction = temp.path().join("junction");
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "create test junction: {output:?}");
+        assert!(harden_current_user_dacl(&junction, None).is_err());
+        assert!(harden_current_user_dacl(&junction.join("sentinel"), None).is_err());
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"unchanged");
+        std::fs::remove_dir(junction).unwrap();
+    }
 }

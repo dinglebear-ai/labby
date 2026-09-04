@@ -1,6 +1,6 @@
 # labby-winjob — Windows Process Containment
 
-This crate is the workspace's sanctioned unsafe boundary for Windows Job Object FFI used to reap spawned process trees and the small `fs` module used for verified bootstrap file identity and handle-based deletion.
+This crate is the workspace's sanctioned unsafe boundary for Windows Job Object FFI used to reap spawned process trees and the small `fs` module used for verified bootstrap file identity, handle-based deletion, and native DACL operations.
 
 Keep the public API safe. Raw `windows-sys` calls and required `unsafe` stay encapsulated here; do not move them into `labby` or `labby-gateway`.
 
