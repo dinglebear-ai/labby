@@ -2106,6 +2106,32 @@ fn build_v1_router(
     // stdio-spawning gateway admin without auth. Operator-facing recovery
     // belongs in the startup warnings (which do name the skipped service) and
     // in the error contract's own `recovery` guidance, not here.
+    if !integrated_trusted_host
+        && (state.bearer_token.is_some() || state.oauth_state.is_some())
+        && let Some(installation_id) = state.installation_id.as_deref()
+    {
+        let mounted_services = state
+            .registry
+            .services()
+            .iter()
+            .filter(|service| {
+                v1.descriptors
+                    .iter()
+                    .any(|route| route.mount == service.name)
+            })
+            .map(|service| service.name.to_string())
+            .collect();
+        let snapshot = crate::integration_identity::IntegrationIdentity::snapshot(
+            installation_id,
+            state.bearer_token.is_some(),
+            state.oauth_state.as_deref(),
+            mounted_services,
+        );
+        v1 = v1.nest(
+            "/integration",
+            services::integration_identity::routes(snapshot),
+        );
+    }
     v1.router = v1.router.fallback(v1_route_not_found);
     v1
 }
@@ -6341,6 +6367,107 @@ mod tests {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
         assert!(content_type.contains("application/json"));
+    }
+
+    #[tokio::test]
+    async fn integration_identity_is_authenticated_and_bound_to_mounted_runtime() {
+        let default_registry = crate::registry::build_default_registry();
+        let doctor = default_registry.service("doctor").unwrap().clone();
+        let mut registry = crate::registry::ToolRegistry::new();
+        registry.register(doctor.clone());
+        let mut unmounted = doctor;
+        unmounted.name = "unmounted_fixture";
+        registry.register(unmounted);
+        let mut state = AppState::from_registry(registry);
+        state.installation_id = Some(Arc::from("fixture-installation"));
+        for (authenticated, trusted) in [(false, false), (true, true)] {
+            let mut candidate = state.clone();
+            if authenticated {
+                candidate = candidate.with_bearer_token(Some(Arc::from("fixture-token")));
+            }
+            assert!(
+                !build_v1_router(&candidate, authenticated, trusted)
+                    .descriptors
+                    .iter()
+                    .any(|route| route.mount == "integration")
+            );
+        }
+        let mut uninitialized = state.clone();
+        uninitialized.installation_id = None;
+        uninitialized = uninitialized.with_bearer_token(Some(Arc::from("fixture-token")));
+        assert!(
+            !build_v1_router(&uninitialized, true, false)
+                .descriptors
+                .iter()
+                .any(|route| route.mount == "integration")
+        );
+        let app = build_router(state, Some("fixture-token".into()), None, None, &[]);
+        let request = |authenticated: bool| {
+            let mut request = Request::builder()
+                .uri("/v1/integration/identity")
+                .header(header::HOST, "localhost");
+            if authenticated {
+                request = request.header(header::AUTHORIZATION, "Bearer fixture-token");
+            }
+            request.body(Body::empty()).unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(request(false)).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let response = app.oneshot(request(true)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 65_536)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/contracts/integration-identity-v1.schema.json"
+        ))
+        .unwrap();
+        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
+        assert_eq!(value["auth"]["modes"], serde_json::json!(["static_bearer"]));
+        assert_eq!(value["capabilities"], serde_json::json!(["doctor"]));
+        assert!(!value.to_string().contains("fixture-token"));
+        assert!(!value.to_string().contains("fixture-installation"));
+        assert!(
+            !crate::api::route_registry::build_integrated_trusted_host_route_descriptors()
+                .iter()
+                .any(|route| route.mount == "integration")
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_identity_uses_actual_oauth_resource_and_origin() {
+        let mut oauth = test_lab_auth_state().await;
+        let config = Arc::make_mut(&mut oauth.config);
+        config.public_url = Some(url::Url::parse("https://lab.example.com/issuer").unwrap());
+        config.resource_path = "/custom/mcp".into();
+        let snapshot = crate::integration_identity::IntegrationIdentity::snapshot(
+            "fixture",
+            true,
+            Some(&oauth),
+            vec![],
+        );
+        assert_eq!(
+            snapshot.auth.issuer.as_deref(),
+            Some("https://lab.example.com/issuer")
+        );
+        assert_eq!(
+            snapshot.auth.audience.as_deref(),
+            Some(labby_auth::metadata::canonical_resource_url(&oauth).as_str())
+        );
+        assert_eq!(
+            snapshot.auth.token_endpoint_origin.as_deref(),
+            Some("https://lab.example.com")
+        );
+        assert_eq!(snapshot.auth.modes, ["static_bearer", "oauth2"]);
+        assert!(snapshot.auth.credential_generation.is_none());
+        assert!(snapshot.auth.principal_cache_scope.is_none());
     }
 
     async fn test_lab_auth_state() -> labby_auth::state::AuthState {

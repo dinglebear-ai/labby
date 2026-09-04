@@ -83,6 +83,7 @@ HTTP route, not a registered multi-surface service.
 Normative cross-surface contracts live under [contracts/](./contracts/):
 
 - [Agent error contract](./contracts/agent-error-contract.md)
+- [Integration identity](./contracts/integration-identity-v1.md) — authenticated installation and mounted-service discovery without credential-cache authority.
 - [Code Mode tool errors](./contracts/code-mode-tool-errors.md)
 - [MCP tool output](./contracts/mcp-tool-output.md)
 - [Gateway schema resources](./contracts/gateway-schema-resources.md)

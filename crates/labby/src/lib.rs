@@ -40,6 +40,7 @@ pub mod docs;
 pub mod durable_state;
 mod entrypoint;
 pub mod installation;
+pub(crate) mod integration_identity;
 #[cfg(feature = "gateway")]
 #[allow(unreachable_pub)]
 pub mod live_gateway;

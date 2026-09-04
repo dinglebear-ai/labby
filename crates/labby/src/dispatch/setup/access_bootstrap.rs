@@ -562,14 +562,21 @@ fn normalize_text(field: &str, value: &str) -> anyhow::Result<String> {
     Ok(value.to_owned())
 }
 
-fn installation_id(paths: &InstallationPaths) -> anyhow::Result<String> {
+/// Load the one durable installation identity. Daemon callers hold the existing
+/// installation lifecycle lock; atomic publication also handles concurrent creators.
+pub(crate) fn installation_id(paths: &InstallationPaths) -> anyhow::Result<String> {
     let path = paths.root().join(INSTALLATION_ID_FILE);
     match existing_installation_id(paths) {
         Ok(value) => Ok(value),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let id = ulid::Ulid::new().to_string();
-            publish_new(&path, id.as_bytes())?;
-            Ok(id)
+            match publish_new(&path, id.as_bytes()) {
+                Ok(_) => Ok(id),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    existing_installation_id(paths).map_err(Into::into)
+                }
+                Err(error) => Err(error.into()),
+            }
         }
         Err(error) => Err(error.into()),
     }
@@ -742,6 +749,45 @@ fn unix_seconds() -> anyhow::Result<i64> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn installation_identity_concurrent_creators_share_complete_winner() {
+        let directory = tempfile::tempdir().unwrap();
+        create_private_dir(directory.path()).unwrap();
+        let paths = InstallationPaths::from_root(directory.path()).unwrap();
+        let barrier = std::sync::Barrier::new(8);
+        let identities = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let paths = &paths;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        installation_id(paths).unwrap()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(!identities[0].is_empty());
+        assert!(identities.iter().all(|identity| identity == &identities[0]));
+        assert_eq!(installation_id(&paths).unwrap(), identities[0]);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn invalid_existing_installation_identity_is_preserved() {
+        let directory = tempfile::tempdir().unwrap();
+        create_private_dir(directory.path()).unwrap();
+        let paths = InstallationPaths::from_root(directory.path()).unwrap();
+        let path = paths.root().join(INSTALLATION_ID_FILE);
+        publish_new(&path, b"invalid identity").unwrap();
+        assert!(installation_id(&paths).is_err());
+        assert_eq!(read_private(&path).unwrap(), b"invalid identity");
+    }
+
     fn request() -> AccessBootstrapPrepare {
         AccessBootstrapPrepare {
             proof_file: "/tmp/proof".into(),
@@ -896,6 +942,29 @@ mod tests {
         };
         write_journal(paths, &journal).unwrap();
         journal
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_reconciliation_with_missing_identity_preserves_journal_and_outputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = InstallationPaths::from_root(temp.path().join("home")).unwrap();
+        let output_dir = temp.path().join("outputs");
+        create_private_dir(&output_dir).unwrap();
+        let output = output_dir.join("proof.json");
+        let journal = crashed_allocating_prepare(&paths, &output);
+        let identity_path = paths.root().join(INSTALLATION_ID_FILE);
+        fs::remove_file(&identity_path).unwrap();
+        let journal_path = paths
+            .root()
+            .join(JOURNAL_DIR)
+            .join(format!("{}.json", journal.prepare_id));
+        let original_journal = fs::read(&journal_path).unwrap();
+        let original_output = fs::read(&output).unwrap();
+        assert!(reconcile_daemon_prepares(&paths).await.is_err());
+        assert!(!identity_path.exists());
+        assert_eq!(fs::read(journal_path).unwrap(), original_journal);
+        assert_eq!(fs::read(output).unwrap(), original_output);
     }
 
     #[cfg(unix)]

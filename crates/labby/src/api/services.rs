@@ -9,6 +9,7 @@
 
 /// Shared dispatch wrapper: confirmation gate, timing, logging.
 pub mod helpers;
+pub(crate) mod integration_identity;
 pub mod local_session;
 
 pub(crate) fn require_session_csrf(

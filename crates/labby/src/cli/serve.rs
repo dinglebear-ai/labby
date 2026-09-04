@@ -347,6 +347,11 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     crate::dispatch::setup::access_bootstrap::reconcile_daemon_prepares(&installation_paths)
         .await
         .context("reconcile access-bootstrap prepare journal before serving")?;
+    // Reconcile first: an existing journal with a missing identity must remain
+    // a recovery error, not cause a new identity to be invented before refusal.
+    let installation_id =
+        crate::dispatch::setup::access_bootstrap::installation_id(&installation_paths)
+            .context("load durable Labby installation identity")?;
 
     let access_runtime = match access_db_path() {
         Ok(path) => Arc::new(AccessRuntime::initialize(path).await),
@@ -614,6 +619,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         )
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_http_bind_host(host.clone());
+    state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
     {
         state = state
