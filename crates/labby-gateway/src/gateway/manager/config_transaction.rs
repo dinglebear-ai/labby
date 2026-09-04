@@ -532,7 +532,8 @@ mod windows_acl_tests {
         let backup = config_backup_path(&source);
         std::fs::write(&source, "secret = 'value'\n").unwrap();
         let loosen = std::process::Command::new("icacls.exe")
-            .args([dir.path().as_os_str(), "/grant", "*S-1-1-0:(OI)(CI)(F)"])
+            .arg(dir.path())
+            .args(["/grant", "*S-1-1-0:(OI)(CI)(F)"])
             .status()
             .unwrap();
         assert!(loosen.success());

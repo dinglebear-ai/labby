@@ -800,7 +800,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
-const ADVISORY_JOBS: &[&str] = &["test-windows", "palette-windows"];
+const ADVISORY_JOBS: &[&str] = &["palette-windows"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow

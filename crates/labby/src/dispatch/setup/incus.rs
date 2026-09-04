@@ -2519,6 +2519,7 @@ enum TargetJobFixture {
     Cooperative {
         started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     },
+    #[cfg(unix)]
     HangingProcess,
     FailFirst {
         started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -2588,6 +2589,7 @@ impl TargetJobFixture {
                 }
                 Ok(target.alias.clone())
             }
+            #[cfg(unix)]
             Self::HangingProcess => {
                 let mut command = Command::new("sh");
                 command.args(["-c", "sleep 30 & wait"]);

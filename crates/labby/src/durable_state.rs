@@ -692,6 +692,8 @@ fn validate_secure_metadata(path: &Path, metadata: &fs::Metadata) -> Result<()> 
             path.display()
         );
     }
+    #[cfg(not(unix))]
+    let _ = (path, metadata);
     Ok(())
 }
 
@@ -707,6 +709,8 @@ fn validate_recovery_key_metadata(path: &Path) -> Result<()> {
             path.display()
         );
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 fn reject_symlink_chain(path: &Path) -> Result<()> {
@@ -897,6 +901,8 @@ fn sync_parent(path: &Path) -> Result<()> {
         let parent = path.parent().context("path has no parent directory")?;
         fs::File::open(parent)?.sync_all()?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 

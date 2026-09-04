@@ -1833,13 +1833,14 @@ fn write_gateway_config_replaces_permissive_parent_acl_with_private_active_and_l
     let path = dir.path().join("config.toml");
     std::fs::write(&path, "[gateway]\n").unwrap();
     let loosen = std::process::Command::new("icacls.exe")
-        .args([dir.path().as_os_str(), "/grant", "*S-1-1-0:(OI)(CI)(F)"])
+        .arg(dir.path())
+        .args(["/grant", "*S-1-1-0:(OI)(CI)(F)"])
         .status()
         .unwrap();
     assert!(loosen.success());
 
     write_gateway_config(&path, &GatewayConfig::default()).expect("write config");
-    let lock = super::lock_path(&path);
+    let lock = lock_path(&path);
     for protected in [&path, &lock] {
         assert_private_windows_acl(protected);
     }
@@ -1853,7 +1854,7 @@ fn write_gateway_config_replaces_permissive_parent_acl_with_private_active_and_l
 }
 
 #[cfg(windows)]
-pub(crate) fn assert_private_windows_acl(path: &std::path::Path) {
+pub(crate) fn assert_private_windows_acl(path: &Path) {
     let script = r#"
 $acl = Get-Acl -LiteralPath $env:LABBY_ACL_TEST_PATH
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value

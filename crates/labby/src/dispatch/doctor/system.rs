@@ -523,13 +523,13 @@ fn probe_process_guard(child: &mut std::process::Child) -> Option<ProbeProcessGu
 
 #[cfg(windows)]
 struct ProbeProcessGuard {
-    job: labby_winjob::JobObject,
+    _job: labby_winjob::JobObject,
 }
 
 #[cfg(windows)]
 fn probe_process_guard(child: &mut std::process::Child) -> Option<ProbeProcessGuard> {
     labby_winjob::JobObject::assign(child.id())
-        .map(|job| ProbeProcessGuard { job })
+        .map(|job| ProbeProcessGuard { _job: job })
         .ok()
 }
 
@@ -807,6 +807,7 @@ mod tests {
     use super::*;
     use std::thread;
 
+    #[cfg(unix)]
     static PROCESS_PROBE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[cfg(unix)]

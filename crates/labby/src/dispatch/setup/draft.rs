@@ -110,7 +110,7 @@ impl DraftSnapshot {
     }
 }
 
-#[cfg(any(test, not(unix)))]
+#[cfg(any(test, not(any(unix, windows))))]
 fn reject_symlink(path: &Path) -> Result<(), DraftReadError> {
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(DraftReadError::InsecurePath(path.to_path_buf()));
@@ -245,7 +245,7 @@ fn restore_quarantine(claimed: &Path, original: &Path) -> Result<(), DraftReadEr
     move_noreplace(claimed, original)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn restore_quarantine_with(
     claimed: &Path,
     original: &Path,
