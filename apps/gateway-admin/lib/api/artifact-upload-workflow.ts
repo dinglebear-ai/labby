@@ -7,14 +7,14 @@ export class ArtifactUploadWorkflowError extends Error {
   }
 }
 
-export async function runArtifactUpload<T extends Record<string, unknown>>(input: {
+export async function runArtifactUpload<TCreated extends Record<string, unknown>, TResult>(input: {
   file: File
   namespace: string
-  create: (filename: string) => Promise<T>
-  uploadId: (created: T) => string
+  create: (filename: string) => Promise<TCreated>
+  uploadId: (created: TCreated) => string
   putBytes: (uploadId: string, file: File) => Promise<unknown>
-  startJob: (params: Record<string, unknown>) => Promise<T>
-  onCreated: (created: T, uploadId: string) => void
+  startJob: (params: Record<string, unknown>) => Promise<TResult>
+  onCreated: (created: TCreated, uploadId: string) => void
 }) {
   let stage: ArtifactUploadStage = 'creating the upload slot'
   let uploadId = ''
