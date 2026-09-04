@@ -289,7 +289,20 @@ fn read_legacy_metadata(connection: &Connection) -> AccessStoreResult<LegacyMeta
 }
 
 fn map_metadata_read_error(error: rusqlite::Error) -> AccessStoreError {
-    if error.sqlite_error().is_some() {
+    if let Some(failure) = error.sqlite_error()
+        && matches!(
+            failure.code,
+            rusqlite::ErrorCode::DatabaseBusy
+                | rusqlite::ErrorCode::DatabaseLocked
+                | rusqlite::ErrorCode::ReadOnly
+                | rusqlite::ErrorCode::DiskFull
+                | rusqlite::ErrorCode::DatabaseCorrupt
+                | rusqlite::ErrorCode::NotADatabase
+                | rusqlite::ErrorCode::OutOfMemory
+                | rusqlite::ErrorCode::SystemIoFailure
+                | rusqlite::ErrorCode::CannotOpen
+        )
+    {
         return super::store::map_sqlite_error(error);
     }
     AccessStoreError::IntegrityViolation {
