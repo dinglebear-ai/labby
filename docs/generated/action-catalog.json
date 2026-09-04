@@ -1,5 +1,1715 @@
 [
   {
+    "service": "artifacts",
+    "action": "artifacts.activate",
+    "description": "Activate an exact stored revision as a new generation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      },
+      {
+        "name": "expected_revision_id",
+        "ty": "string",
+        "required": true,
+        "description": "Expected immutable revision precondition"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.archive",
+    "description": "Archive a Skill while retaining immutable revision storage",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.authority_status",
+    "description": "Return the configured Artifact authority's health and catalog status",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      }
+    ],
+    "returns": "ArtifactAuthorityStatus",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.create",
+    "description": "Create a stored Skill without activating it; visibility defaults to private",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Skill name"
+      },
+      {
+        "name": "files",
+        "ty": "array",
+        "required": true,
+        "description": "Bounded logical UTF-8 Skill files; bodies are never returned by list/history"
+      },
+      {
+        "name": "visibility",
+        "ty": "string",
+        "required": false,
+        "description": "Creation scope: private by default, or explicitly shared"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.deactivate",
+    "description": "Deactivate a Skill while retaining immutable revisions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.follow",
+    "description": "Follow or unfollow an upstream Artifact while preserving revision identity",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      },
+      {
+        "name": "upstream_artifact_id",
+        "ty": "string",
+        "required": false,
+        "description": "Upstream Artifact identifier when following"
+      },
+      {
+        "name": "upstream_revision_id",
+        "ty": "string",
+        "required": false,
+        "description": "Optional exact upstream revision or digest"
+      },
+      {
+        "name": "following",
+        "ty": "boolean",
+        "required": false,
+        "description": "True to follow; false to unfollow"
+      }
+    ],
+    "returns": "RemoteArtifact",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.fork",
+    "description": "Fork an exact Artifact revision into a new hosted Artifact",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "source_artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Source Artifact identifier"
+      },
+      {
+        "name": "revision_id",
+        "ty": "string",
+        "required": false,
+        "description": "Optional exact source revision or digest"
+      },
+      {
+        "name": "namespace",
+        "ty": "string",
+        "required": true,
+        "description": "Target namespace"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Target Artifact name"
+      },
+      {
+        "name": "following",
+        "ty": "boolean",
+        "required": false,
+        "description": "Whether the fork follows its source"
+      }
+    ],
+    "returns": "RemoteArtifact",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.get",
+    "description": "Get one stored Skill summary without file bodies",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      }
+    ],
+    "returns": "VersionedSkillLibrarySummary",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.get_remote",
+    "description": "Get one remote Artifact by stable identifier",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "RemoteArtifact",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.history",
+    "description": "List immutable revision summaries in stable order",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque bounded pagination cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, default 50 and maximum 100"
+      }
+    ],
+    "returns": "VersionedRevisionPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.import",
+    "description": "Import an exact revision through a server-configured source without implicit activation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "source",
+        "ty": "object",
+        "required": true,
+        "description": "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.import_batch",
+    "description": "Import a bounded batch of exact revisions through server-configured sources without implicit activation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "sources",
+        "ty": "array",
+        "required": true,
+        "description": "One to 100 exact immutable source selectors; each acquisition is committed before the next begins"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "ArtifactImportBatchReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.intake_candidate",
+    "description": "Validate and persist bounded Artifact candidate evidence",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "candidate",
+        "ty": "object",
+        "required": true,
+        "description": "dinglebear.artifact-candidate/v1 payload"
+      }
+    ],
+    "returns": "ArtifactCandidate",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.list",
+    "description": "List caller-visible stored Skill summaries",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque bounded pagination cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, default 50 and maximum 100"
+      }
+    ],
+    "returns": "VersionedSkillLibraryPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.list_acp_registry",
+    "description": "List ACP Registry agents available for Artifact ingestion",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      }
+    ],
+    "returns": "AcpRegistryPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.list_candidates",
+    "description": "List remote discovery candidates awaiting intake",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque remote continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded remote page size"
+      }
+    ],
+    "returns": "ArtifactCandidatePage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.list_connections",
+    "description": "List safe configured Artifact authority identifiers",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "ArtifactAuthorityConnectionPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.list_mcp_registry",
+    "description": "List MCP Registry servers available for Artifact ingestion",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "query",
+        "ty": "string",
+        "required": false,
+        "description": "Search query"
+      },
+      {
+        "name": "category",
+        "ty": "string",
+        "required": false,
+        "description": "Category filter"
+      },
+      {
+        "name": "tag",
+        "ty": "string",
+        "required": false,
+        "description": "Tag filter"
+      },
+      {
+        "name": "version",
+        "ty": "string",
+        "required": false,
+        "description": "Exact version or latest"
+      },
+      {
+        "name": "updated_since",
+        "ty": "string",
+        "required": false,
+        "description": "RFC 3339 update watermark"
+      },
+      {
+        "name": "include_deleted",
+        "ty": "boolean",
+        "required": false,
+        "description": "Include deleted registry entries"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque remote continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded remote page size"
+      }
+    ],
+    "returns": "McpRegistryPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.list_remote",
+    "description": "List the combined hosted and projected remote Artifact catalog",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque remote continuation cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded remote page size"
+      }
+    ],
+    "returns": "RemoteArtifactPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.read",
+    "description": "Read one bounded file from an immutable stored revision",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      },
+      {
+        "name": "revision_id",
+        "ty": "string",
+        "required": true,
+        "description": "Immutable revision id"
+      },
+      {
+        "name": "path",
+        "ty": "string",
+        "required": true,
+        "description": "Manifest-bound logical file path"
+      }
+    ],
+    "returns": "VersionedRevisionFile",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.refresh",
+    "description": "Explicitly rebuild and reconcile the committed active generation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.rollback",
+    "description": "Activate a prior immutable revision as a new generation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      },
+      {
+        "name": "expected_revision_id",
+        "ty": "string",
+        "required": true,
+        "description": "Expected immutable revision precondition"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.save",
+    "description": "Save a new immutable revision without activating it",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "artifact_id",
+        "ty": "string",
+        "required": true,
+        "description": "Canonical Skill Artifact id"
+      },
+      {
+        "name": "expected_revision_id",
+        "ty": "string",
+        "required": true,
+        "description": "Expected immutable revision precondition"
+      },
+      {
+        "name": "files",
+        "ty": "array",
+        "required": true,
+        "description": "Bounded logical UTF-8 Skill files; bodies are never returned by list/history"
+      },
+      {
+        "name": "expected_library_version",
+        "ty": "integer",
+        "required": true,
+        "description": "Expected committed Skill Library version"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Bounded request idempotency key (maximum 256 bytes)"
+      }
+    ],
+    "returns": "SkillMutationReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.search",
+    "description": "Search caller-visible stored Artifacts by indexed identity, description, tags, and provenance metadata",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "query",
+        "ty": "string",
+        "required": true,
+        "description": "Non-empty metadata query, maximum 256 bytes"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque bounded pagination cursor"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, default 50 and maximum 100"
+      }
+    ],
+    "returns": "VersionedArtifactPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.search_ard",
+    "description": "Search an Agentic Resource Discovery registry without ingesting",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "registry",
+        "ty": "string",
+        "required": true,
+        "description": "ARD registry base URL or domain"
+      },
+      {
+        "name": "query",
+        "ty": "string",
+        "required": true,
+        "description": "Search query"
+      },
+      {
+        "name": "page_token",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque registry page token"
+      }
+    ],
+    "returns": "RemoteArtifactSearch",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.search_marketplace",
+    "description": "Resolve a plugin marketplace into the Artifact targets it exposes",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "source",
+        "ty": "string",
+        "required": true,
+        "description": "Marketplace repository or manifest URL"
+      },
+      {
+        "name": "ref",
+        "ty": "string",
+        "required": false,
+        "description": "Optional Git ref"
+      },
+      {
+        "name": "only",
+        "ty": "array",
+        "required": false,
+        "description": "Optional plugin names to include"
+      }
+    ],
+    "returns": "RemoteArtifactSearch",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.search_remote",
+    "description": "Search the configured remote Artifact catalog",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "query",
+        "ty": "string",
+        "required": true,
+        "description": "Case-insensitive remote catalog query"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded remote page size"
+      }
+    ],
+    "returns": "RemoteArtifactSearch",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.search_skills_sh",
+    "description": "Search the public skills.sh catalog without ingesting",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "query",
+        "ty": "string",
+        "required": true,
+        "description": "Search query"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded remote page size"
+      }
+    ],
+    "returns": "RemoteArtifactSearch",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.set_license",
+    "description": "Set authoritative license review, redistribution, and takedown policy",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      },
+      {
+        "name": "declared",
+        "ty": "string|null",
+        "required": false,
+        "description": "Declared license; null clears it"
+      },
+      {
+        "name": "detected",
+        "ty": "array",
+        "required": false,
+        "description": "Detected license evidence"
+      },
+      {
+        "name": "notices",
+        "ty": "array",
+        "required": false,
+        "description": "License notice evidence"
+      },
+      {
+        "name": "redistribution",
+        "ty": "string",
+        "required": false,
+        "description": "Authoritative redistribution class"
+      },
+      {
+        "name": "review_state",
+        "ty": "unreviewed|reviewed|disputed",
+        "required": false,
+        "description": "License review state"
+      },
+      {
+        "name": "takedown_state",
+        "ty": "none|requested|restricted|removed",
+        "required": false,
+        "description": "Takedown state"
+      },
+      {
+        "name": "evidence_at",
+        "ty": "string",
+        "required": false,
+        "description": "RFC 3339 evidence timestamp"
+      },
+      {
+        "name": "metadata",
+        "ty": "object",
+        "required": false,
+        "description": "Bounded policy metadata"
+      }
+    ],
+    "returns": "RemoteArtifact",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.set_publication",
+    "description": "Change publication state under the authority's redistribution policy",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      },
+      {
+        "name": "state",
+        "ty": "draft|listed|published|withdrawn",
+        "required": false,
+        "description": "Publication state"
+      },
+      {
+        "name": "visibility",
+        "ty": "private|unlisted|public",
+        "required": false,
+        "description": "Publication visibility"
+      },
+      {
+        "name": "distribution",
+        "ty": "metadata|bytes",
+        "required": false,
+        "description": "Distribution mode"
+      }
+    ],
+    "returns": "RemoteArtifact",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.validate",
+    "description": "Validate logical Skill files without storing or activating",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Skill name"
+      },
+      {
+        "name": "files",
+        "ty": "array",
+        "required": true,
+        "description": "Bounded logical UTF-8 Skill files; bodies are never returned by list/history"
+      }
+    ],
+    "returns": "SkillValidation",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "artifacts",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "artifacts",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.add",
+    "description": "Add an Artifact to a bundle draft",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "slug",
+        "ty": "string",
+        "required": true,
+        "description": "Bundle slug"
+      },
+      {
+        "name": "namespace",
+        "ty": "string",
+        "required": true,
+        "description": "Artifact namespace"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Artifact name"
+      }
+    ],
+    "returns": "Bundle",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.create",
+    "description": "Create an empty curated Artifact bundle",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "slug",
+        "ty": "string",
+        "required": true,
+        "description": "Bundle slug"
+      },
+      {
+        "name": "description",
+        "ty": "string",
+        "required": false,
+        "description": "Human-readable bundle description"
+      },
+      {
+        "name": "visibility",
+        "ty": "public|bearer|oauth",
+        "required": false,
+        "description": "Bundle access mode"
+      }
+    ],
+    "returns": "Bundle",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.delete",
+    "description": "Delete a bundle and its published manifests",
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "slug",
+        "ty": "string",
+        "required": true,
+        "description": "Bundle slug"
+      }
+    ],
+    "returns": "DeleteReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.get",
+    "description": "Get a bundle draft and immutable published versions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "slug",
+        "ty": "string",
+        "required": true,
+        "description": "Bundle slug"
+      }
+    ],
+    "returns": "Bundle",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.list",
+    "description": "List curated Artifact bundles with publication drift",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      }
+    ],
+    "returns": "Bundle[]",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.publish",
+    "description": "Publish an immutable bundle snapshot",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "slug",
+        "ty": "string",
+        "required": true,
+        "description": "Bundle slug"
+      }
+    ],
+    "returns": "BundlePublishReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.remove",
+    "description": "Remove an Artifact from a bundle draft",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "slug",
+        "ty": "string",
+        "required": true,
+        "description": "Bundle slug"
+      },
+      {
+        "name": "namespace",
+        "ty": "string",
+        "required": true,
+        "description": "Artifact namespace"
+      },
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Artifact name"
+      }
+    ],
+    "returns": "Bundle",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "bundles.set_visibility",
+    "description": "Change bundle access mode",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "slug",
+        "ty": "string",
+        "required": true,
+        "description": "Bundle slug"
+      },
+      {
+        "name": "visibility",
+        "ty": "public|bearer|oauth",
+        "required": true,
+        "description": "Bundle access mode"
+      }
+    ],
+    "returns": "Bundle",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "bundles",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "bundles",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
     "service": "doctor",
     "action": "access.check",
     "description": "Inspect access-control store readiness and safety without modifying it",
@@ -2991,12 +4701,246 @@
       "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": false
+      "web_ui": true
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
+  },
+  {
+    "service": "jobs",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "jobs",
+    "action": "jobs.cancel",
+    "description": "Request cooperative cancellation of an active ingestion job",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "IngestJob",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "jobs",
+    "action": "jobs.get",
+    "description": "Get ingestion progress and terminal outcome",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "IngestJob",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "jobs",
+    "action": "jobs.list",
+    "description": "List recent durable ingestion jobs",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Bounded remote page size"
+      }
+    ],
+    "returns": "IngestJob[]",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "jobs",
+    "action": "jobs.retry",
+    "description": "Retry a terminal ingestion job from its persisted selectors",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "IngestJob",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "jobs",
+    "action": "jobs.start",
+    "description": "Start a durable asynchronous Artifact ingestion job",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "kind",
+        "ty": "string",
+        "required": true,
+        "description": "Supported ingestion source kind"
+      },
+      {
+        "name": "arguments",
+        "ty": "object",
+        "required": true,
+        "description": "Kind-specific source selectors; secret values are forbidden"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": false,
+        "description": "Stable idempotency key, maximum 256 bytes"
+      }
+    ],
+    "returns": "IngestJobReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "jobs",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
   },
   {
     "service": "lab_admin",
@@ -3737,7 +5681,7 @@
       "cli": false,
       "mcp": true,
       "api": true,
-      "web_ui": false
+      "web_ui": true
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
@@ -4041,179 +5985,6 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "skills",
-    "action": "help",
-    "description": "Show this action catalog",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "params": [],
-    "returns": "Catalog",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "skills",
-    "action": "schema",
-    "description": "Return the parameter schema for a named action",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "params": [
-      {
-        "name": "action",
-        "ty": "string",
-        "required": true,
-        "description": "Action name to describe"
-      }
-    ],
-    "returns": "Schema",
-    "surface_availability": {
-      "cli": false,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "skills",
-    "action": "skills.get",
-    "description": "Resolve one caller-visible skill entry by published URI",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "params": [
-      {
-        "name": "uri",
-        "ty": "string",
-        "required": true,
-        "description": "Published skill or skill-file URI"
-      }
-    ],
-    "returns": "SkillGetResponse",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "skills",
-    "action": "skills.list",
-    "description": "List compact metadata for caller-visible Agent Skills",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "params": [
-      {
-        "name": "origin",
-        "ty": "string",
-        "required": false,
-        "description": "Optional visible origin label to restrict results"
-      },
-      {
-        "name": "limit",
-        "ty": "integer",
-        "required": false,
-        "description": "Maximum results, default 100 and maximum 500"
-      }
-    ],
-    "returns": "SkillListResponse",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "skills",
-    "action": "skills.read",
-    "description": "Read one manifest-bound verified text file from a caller-visible skill",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "params": [
-      {
-        "name": "uri",
-        "ty": "string",
-        "required": true,
-        "description": "Published skill or skill-file URI"
-      }
-    ],
-    "returns": "VisibleSkillFile",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
-    "inventory_scope": "global_inventory_not_active_runtime_exposure",
-    "builtin": false
-  },
-  {
-    "service": "skills",
-    "action": "skills.search",
-    "description": "Search caller-visible Agent Skills by metadata without loading bodies",
-    "destructive": false,
-    "requires_admin": false,
-    "required_scopes": [],
-    "params": [
-      {
-        "name": "query",
-        "ty": "string",
-        "required": true,
-        "description": "Non-empty metadata search query"
-      },
-      {
-        "name": "origin",
-        "ty": "string",
-        "required": false,
-        "description": "Optional visible origin label to restrict results"
-      },
-      {
-        "name": "limit",
-        "ty": "integer",
-        "required": false,
-        "description": "Maximum matches, default 20 and maximum 100"
-      }
-    ],
-    "returns": "SkillSearchResponse",
-    "surface_availability": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -4547,6 +6318,349 @@
       "mcp": true,
       "api": true,
       "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "sources",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "sources",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "sources",
+    "action": "sources.configure",
+    "description": "Enable, pause, or schedule a remote ingestion source",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      },
+      {
+        "name": "enabled",
+        "ty": "boolean",
+        "required": false,
+        "description": "Whether scheduled refresh is enabled"
+      },
+      {
+        "name": "interval_seconds",
+        "ty": "integer",
+        "required": false,
+        "description": "Refresh interval in seconds"
+      }
+    ],
+    "returns": "Source",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "sources",
+    "action": "sources.delete",
+    "description": "Delete a source while retaining ingested Artifacts",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "DeleteReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "sources",
+    "action": "sources.list",
+    "description": "List configured ingestion sources and refresh state",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      }
+    ],
+    "returns": "Source[]",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "sources",
+    "action": "sources.refresh",
+    "description": "Schedule an immediate source refresh",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "SourceRefreshReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "uploads",
+    "action": "help",
+    "description": "Show service actions",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [],
+    "returns": "HelpPayload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "uploads",
+    "action": "schema",
+    "description": "Show the schema for a specific action",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "params": [
+      {
+        "name": "action",
+        "ty": "string",
+        "required": true,
+        "description": "Action name to describe"
+      }
+    ],
+    "returns": "ActionSpec",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": true
+  },
+  {
+    "service": "uploads",
+    "action": "uploads.create",
+    "description": "Create a short-lived upload slot for Artifact ingestion",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "filename",
+        "ty": "string",
+        "required": true,
+        "description": "Original archive or manifest filename"
+      }
+    ],
+    "returns": "Upload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "uploads",
+    "action": "uploads.delete",
+    "description": "Delete a pending or ready upload slot",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "DeleteReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "uploads",
+    "action": "uploads.get",
+    "description": "Inspect a principal-owned upload slot",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "params": [
+      {
+        "name": "connection_id",
+        "ty": "string",
+        "required": false,
+        "description": "Configured remote Artifact authority; optional when exactly one is configured"
+      },
+      {
+        "name": "id",
+        "ty": "string",
+        "required": true,
+        "description": "Stable item identifier"
+      }
+    ],
+    "returns": "Upload",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",

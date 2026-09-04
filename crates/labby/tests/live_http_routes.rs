@@ -527,7 +527,10 @@ async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
             // Depending on when the client finishes writing, Linux reports
             // that fail-closed response as a broken pipe instead of exposing
             // an HTTP status.
-            let message = error.to_string().to_ascii_lowercase();
+            // reqwest's Display output stops at the high-level request error,
+            // while the platform-specific broken-pipe cause is retained in
+            // the debug/source chain.
+            let message = format!("{error:?}").to_ascii_lowercase();
             assert!(
                 error.is_request()
                     && (message.contains("broken pipe")
@@ -549,8 +552,22 @@ async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
         for (name, value) in headers {
             request = request.header(name, value);
         }
-        let response = request.send().await.expect("duplicate header request");
-        assert!(!response.status().is_success());
+        match request.send().await {
+            Ok(response) => assert!(!response.status().is_success()),
+            Err(error) => {
+                // Rejecting malformed duplicate security headers may close the
+                // connection before Hyper has parsed a complete response.
+                // That transport outcome is still fail-closed.
+                let message = format!("{error:?}").to_ascii_lowercase();
+                assert!(
+                    error.is_request()
+                        && (message.contains("incompletemessage")
+                            || message.contains("connection reset")
+                            || message.contains("connection closed")),
+                    "unexpected duplicate-header transport error: {error:?}"
+                );
+            }
+        }
     }
 
     let forwarded = client

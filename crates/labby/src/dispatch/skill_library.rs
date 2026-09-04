@@ -23,6 +23,7 @@ type ProcessSkillLibrary = dispatch::SkillLibraryService<FirstPartyGeneration>;
 pub(crate) struct ProcessSkillLibraryRuntime {
     pub(crate) service: Arc<ProcessSkillLibrary>,
     pub(crate) imports: Arc<import::ImportCoordinator>,
+    pub(crate) controls: Arc<crate::dispatch::artifact_control::ArtifactControlPlane>,
 }
 
 static PROCESS_SKILL_LIBRARY_RUNTIME: OnceLock<Arc<ProcessSkillLibraryRuntime>> = OnceLock::new();
@@ -43,6 +44,13 @@ pub(crate) fn process_imports() -> Option<Arc<import::ImportCoordinator>> {
     PROCESS_SKILL_LIBRARY_RUNTIME
         .get()
         .map(|runtime| Arc::clone(&runtime.imports))
+}
+
+pub(crate) fn process_controls()
+-> Option<Arc<crate::dispatch::artifact_control::ArtifactControlPlane>> {
+    PROCESS_SKILL_LIBRARY_RUNTIME
+        .get()
+        .map(|runtime| Arc::clone(&runtime.controls))
 }
 
 /// Closed, redacted projection of internal management failures to the shared surface contract.

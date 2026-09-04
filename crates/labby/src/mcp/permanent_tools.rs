@@ -54,21 +54,13 @@ fn builtin_action_schema() -> Arc<serde_json::Map<String, Value>> {
 }
 
 #[cfg(feature = "skills")]
-fn skill_action_schema(
-    management: bool,
-    allowed_actions: Option<&[String]>,
-) -> Arc<serde_json::Map<String, Value>> {
-    static COMPAT: LazyLock<Arc<serde_json::Map<String, Value>>> =
-        LazyLock::new(|| action_enum_schema(crate::dispatch::skills::ACTIONS));
+fn skill_action_schema(allowed_actions: Option<&[String]>) -> Arc<serde_json::Map<String, Value>> {
     static MANAGEMENT: LazyLock<Arc<serde_json::Map<String, Value>>> =
-        LazyLock::new(|| action_enum_schema(crate::dispatch::skills::MCP_ACTIONS));
-    if !management {
-        return Arc::clone(&COMPAT);
-    }
+        LazyLock::new(|| action_enum_schema(&crate::dispatch::artifacts::ACTIONS));
     let Some(allowed) = allowed_actions else {
         return Arc::clone(&MANAGEMENT);
     };
-    let actions = crate::dispatch::skills::MCP_ACTIONS
+    let actions = crate::dispatch::artifacts::ACTIONS
         .iter()
         .filter(|action| {
             matches!(action.name, "help" | "schema")
@@ -140,7 +132,7 @@ pub(crate) enum PermanentToolId {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum SkillLibraryDescriptorMode<'a> {
     #[default]
-    Compatibility,
+    Hidden,
     Management {
         app_visible: bool,
         allowed_actions: Option<&'a [String]>,
@@ -219,7 +211,8 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
         "fs" | "lab_admin" => (true, derived_destructive, true, false),
         "skills" => (true, derived_destructive, true, true),
         "doctor" => (false, derived_destructive, true, true),
-        "gateway" | "setup" | "snippets" => (false, derived_destructive, false, true),
+        "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs" | "sources"
+        | "uploads" => (false, derived_destructive, false, true),
         // `server_logs` is operationally read-only, but advertising it as such
         // would bypass the conservative next-hop gate described above.
         SERVER_LOGS_TOOL_NAME => (false, true, false, false),
@@ -302,7 +295,7 @@ impl PermanentToolRegistry {
         skill_library_mode: SkillLibraryDescriptorMode<'_>,
     ) -> Tool {
         #[cfg(feature = "skills")]
-        if service.name == "skills" {
+        if service.name == "artifacts" {
             return self.skill_library_tool(service, skill_library_mode);
         }
         #[cfg(not(feature = "skills"))]
@@ -318,7 +311,7 @@ impl PermanentToolRegistry {
         with_labby_security(tool)
     }
 
-    /// Canonical descriptor for the existing `skills` service with its Skill
+    /// Canonical descriptor for the `artifacts` service with its Artifact
     /// Library presentation binding. The underlying service remains callable
     /// as ordinary text on hosts that do not render MCP Apps.
     #[cfg(feature = "skills")]
@@ -328,27 +321,22 @@ impl PermanentToolRegistry {
         service: &RegisteredService,
         mode: SkillLibraryDescriptorMode<'_>,
     ) -> Tool {
-        debug_assert_eq!(service.name, "skills");
-        let management = matches!(mode, SkillLibraryDescriptorMode::Management { .. });
+        debug_assert_eq!(service.name, "artifacts");
         let allowed_actions = match mode {
             SkillLibraryDescriptorMode::Management {
                 allowed_actions, ..
             } => allowed_actions,
-            SkillLibraryDescriptorMode::Compatibility => None,
+            SkillLibraryDescriptorMode::Hidden => None,
         };
-        let annotations = if management {
-            ToolAnnotations::new()
-                .read_only(false)
-                .destructive(true)
-                .idempotent(false)
-                .open_world(true)
-        } else {
-            builtin_service_annotations(service)
-        };
+        let annotations = ToolAnnotations::new()
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(true);
         let tool = Tool::new(
             service.name,
             skill_library_tool_description(service.description),
-            skill_action_schema(management, allowed_actions),
+            skill_action_schema(allowed_actions),
         )
         .with_annotations(annotations)
         .with_raw_output_schema(dispatch_envelope_output_schema());
@@ -356,7 +344,7 @@ impl PermanentToolRegistry {
             SkillLibraryDescriptorMode::Management {
                 app_visible: true, ..
             } => tool.with_meta(skill_library_tool_meta(service.name)),
-            SkillLibraryDescriptorMode::Compatibility
+            SkillLibraryDescriptorMode::Hidden
             | SkillLibraryDescriptorMode::Management {
                 app_visible: false, ..
             } => tool,
@@ -582,7 +570,7 @@ mod tests {
         let tool = registry.builtin_service_tool(
             &service("gateway-alpha"),
             true,
-            SkillLibraryDescriptorMode::Compatibility,
+            SkillLibraryDescriptorMode::Hidden,
         );
         let schema = tool.output_schema.as_ref().expect("outputSchema");
         assert_eq!(schema["properties"]["ok"]["const"], serde_json::json!(true));
@@ -598,19 +586,22 @@ mod tests {
     }
 
     #[test]
-    fn builtin_service_tool_advertises_top_level_security_schemes() {
+    fn builtin_service_tool_advertises_security_schemes_extension() {
         let registry = PermanentToolRegistry::new();
         let tool = registry.builtin_service_tool(
             &service("gateway-alpha"),
             false,
-            SkillLibraryDescriptorMode::Compatibility,
+            SkillLibraryDescriptorMode::Hidden,
         );
         let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
         let serialized = serde_json::to_value(&tool).expect("Tool descriptor serializes");
-        assert_eq!(serialized["securitySchemes"], expected, "OAI-AUTH-002");
+        assert_eq!(
+            serialized["_meta"]["securitySchemes"], expected,
+            "OAI-AUTH-002"
+        );
         let round_trip: Tool = serde_json::from_value(serialized).expect("Tool round trips");
         assert_eq!(
-            Value::Array(round_trip.security_schemes.expect("canonical schemes")),
+            round_trip.meta.expect("auth metadata").0["securitySchemes"],
             expected
         );
     }
@@ -627,14 +618,11 @@ mod tests {
                 "registered customer-facing service `{}` must expose an auditable action denominator",
                 service.name
             );
-            let tool = permanent.builtin_service_tool(
-                service,
-                true,
-                SkillLibraryDescriptorMode::Compatibility,
-            );
+            let tool =
+                permanent.builtin_service_tool(service, true, SkillLibraryDescriptorMode::Hidden);
             let serialized = serde_json::to_value(tool).expect("Tool descriptor serializes");
             assert_eq!(
-                serialized["securitySchemes"], expected,
+                serialized["_meta"]["securitySchemes"], expected,
                 "OAI-CLAUSE-001: registered MCP service `{}` lacks the OAuth scope required before dispatch",
                 service.name
             );
@@ -642,17 +630,14 @@ mod tests {
     }
 
     #[test]
-    fn builtin_service_tool_mirrors_security_schemes_in_legacy_meta() {
+    fn builtin_service_tool_keeps_security_schemes_in_meta() {
         let tool = PermanentToolRegistry::new().builtin_service_tool(
             &service("gateway-alpha"),
             false,
-            SkillLibraryDescriptorMode::Compatibility,
+            SkillLibraryDescriptorMode::Hidden,
         );
         let serialized = serde_json::to_value(tool).expect("Tool descriptor serializes");
-        assert_eq!(
-            serialized["_meta"]["securitySchemes"], serialized["securitySchemes"],
-            "OAI-AUTH-004 compatibility mirror must match canonical declaration"
-        );
+        assert!(serialized["_meta"]["securitySchemes"].is_array());
     }
 
     #[test]
@@ -673,7 +658,6 @@ mod tests {
 
         let serialized = serde_json::to_value(with_labby_security(upstream)).unwrap();
         let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
-        assert_eq!(serialized["securitySchemes"], expected);
         assert_eq!(serialized["_meta"]["securitySchemes"], expected);
     }
 
@@ -683,13 +667,13 @@ mod tests {
         let visible = registry.builtin_service_tool(
             &service(SERVER_LOGS_TOOL_NAME),
             true,
-            SkillLibraryDescriptorMode::Compatibility,
+            SkillLibraryDescriptorMode::Hidden,
         );
         assert!(visible.meta.is_some(), "admin-visible server_logs has meta");
         let hidden = registry.builtin_service_tool(
             &service(SERVER_LOGS_TOOL_NAME),
             false,
-            SkillLibraryDescriptorMode::Compatibility,
+            SkillLibraryDescriptorMode::Hidden,
         );
         assert!(
             hidden
@@ -711,13 +695,17 @@ mod tests {
     /// rather than a silent conservative default.
     const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
         ("doctor", false, false, true, true),
+        ("artifacts", false, true, false, true),
+        ("bundles", false, true, false, true),
         ("fs", true, false, true, false),
         ("gateway", false, true, false, true),
+        ("jobs", false, false, false, true),
         ("lab_admin", true, false, true, false),
         ("server_logs", false, true, false, false),
         ("setup", false, true, false, true),
-        ("skills", true, false, true, true),
         ("snippets", false, true, false, true),
+        ("sources", false, false, false, true),
+        ("uploads", false, false, false, true),
     ];
 
     /// Pinned action sets for services advertising `readOnlyHint: true`.
@@ -732,17 +720,6 @@ mod tests {
     const READ_ONLY_SERVICE_ACTIONS: &[(&str, &[&str])] = &[
         ("fs", &["fs.list"]),
         ("lab_admin", &["help", "schema", "onboarding.audit"]),
-        (
-            "skills",
-            &[
-                "help",
-                "schema",
-                "skills.list",
-                "skills.search",
-                "skills.get",
-                "skills.read",
-            ],
-        ),
     ];
 
     fn expected_annotation_row(name: &str) -> Option<(bool, bool, bool, bool)> {
@@ -771,14 +748,14 @@ mod tests {
                 );
             };
             let annotations = permanent
-                .builtin_service_tool(service, true, SkillLibraryDescriptorMode::Compatibility)
+                .builtin_service_tool(service, true, SkillLibraryDescriptorMode::Hidden)
                 .annotations
                 .expect("every Labby-owned service tool must carry annotations");
             assert_eq!(annotations.read_only_hint, Some(read_only), "{name}");
             assert_eq!(annotations.destructive_hint, Some(destructive), "{name}");
             assert_eq!(annotations.idempotent_hint, Some(idempotent), "{name}");
             assert_eq!(annotations.open_world_hint, Some(open_world), "{name}");
-            if name != SERVER_LOGS_TOOL_NAME {
+            if !matches!(name, SERVER_LOGS_TOOL_NAME | "artifacts") {
                 assert_eq!(
                     destructive,
                     service.actions.iter().any(|action| action.destructive),
@@ -864,9 +841,9 @@ mod tests {
     #[test]
     fn skill_library_descriptor_has_versioned_dual_host_binding_and_text_fallback() {
         let permanent = PermanentToolRegistry::new();
-        let skills = service("skills");
+        let artifacts = service("artifacts");
         let tool = permanent.skill_library_tool(
-            &skills,
+            &artifacts,
             SkillLibraryDescriptorMode::Management {
                 app_visible: true,
                 allowed_actions: None,
@@ -875,7 +852,7 @@ mod tests {
         assert_eq!(
             tool,
             permanent.builtin_service_tool(
-                &skills,
+                &artifacts,
                 false,
                 SkillLibraryDescriptorMode::Management {
                     app_visible: true,
@@ -884,7 +861,7 @@ mod tests {
             ),
             "every service-advertisement path must reuse the canonical Skill Library builder"
         );
-        assert_eq!(tool.name.as_ref(), "skills");
+        assert_eq!(tool.name.as_ref(), "artifacts");
         assert!(
             tool.description
                 .as_deref()
@@ -897,7 +874,7 @@ mod tests {
                 .as_array()
                 .expect("bounded action enum")
                 .len(),
-            19
+            31
         );
         let annotations = tool.annotations.as_ref().expect("mixed-operation hints");
         assert_eq!(annotations.read_only_hint, Some(false));
@@ -924,7 +901,7 @@ mod tests {
         );
 
         let hidden_app = permanent.skill_library_tool(
-            &skills,
+            &artifacts,
             SkillLibraryDescriptorMode::Management {
                 app_visible: false,
                 allowed_actions: None,
@@ -937,26 +914,6 @@ mod tests {
                 .is_some_and(|meta| !meta.0.contains_key("ui"))
         );
         assert_eq!(hidden_app.input_schema, tool.input_schema);
-
-        let compatibility =
-            permanent.skill_library_tool(&skills, SkillLibraryDescriptorMode::Compatibility);
-        assert!(
-            compatibility
-                .meta
-                .as_ref()
-                .is_some_and(|meta| !meta.0.contains_key("ui"))
-        );
-        assert_eq!(
-            compatibility.input_schema["properties"]["action"]["enum"]
-                .as_array()
-                .expect("bounded compatibility action enum")
-                .len(),
-            6
-        );
-        let annotations = compatibility.annotations.expect("compatibility-only hints");
-        assert_eq!(annotations.read_only_hint, Some(true));
-        assert_eq!(annotations.destructive_hint, Some(false));
-        assert_eq!(annotations.idempotent_hint, Some(true));
     }
 
     /// F9 regression guard — the compensating control for accepting the widened
@@ -986,9 +943,11 @@ mod tests {
         let expected_callable = [
             "doctor",
             "fs",
+            "jobs",
             "lab_admin",
             "mcp_app",
-            "skills",
+            "sources",
+            "uploads",
             "gateway_status",
             CODE_MODE_READ_TOOL_NAME,
         ];
@@ -997,11 +956,7 @@ mod tests {
             .services()
             .iter()
             .map(|service| {
-                permanent.builtin_service_tool(
-                    service,
-                    true,
-                    SkillLibraryDescriptorMode::Compatibility,
-                )
+                permanent.builtin_service_tool(service, true, SkillLibraryDescriptorMode::Hidden)
             })
             .collect();
         descriptors.extend([
@@ -1117,12 +1072,6 @@ pub(crate) fn with_labby_security(mut tool: Tool) -> Tool {
         scopes: DISCOVERY_SCOPES,
     }])
     .expect("static OAuth security scheme serializes");
-    tool.security_schemes = Some(
-        schemes
-            .as_array()
-            .expect("static OAuth security schemes are an array")
-            .clone(),
-    );
     tool.meta
         .get_or_insert_with(|| MetaObject(serde_json::Map::new()))
         .0

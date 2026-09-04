@@ -373,7 +373,12 @@ async fn raw_mode_catalog_is_exact_and_builtin_help_executes_live() {
     let all_services = expected_service_tools();
     let expected = all_services
         .iter()
-        .filter(|service| service.as_str() != "lab_admin")
+        .filter(|service| {
+            !matches!(
+                service.as_str(),
+                "lab_admin" | "bundles" | "jobs" | "sources" | "uploads"
+            )
+        })
         .cloned()
         .collect::<BTreeSet<_>>();
     let advertised_services = advertised

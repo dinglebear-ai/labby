@@ -823,9 +823,9 @@ mod tests {
         let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();
-        let unsupported_version = super::super::migrations::SCHEMA_VERSION + 1;
+        let unsupported = super::super::migrations::SCHEMA_VERSION + 1;
         connection
-            .pragma_update(None, "user_version", unsupported_version)
+            .pragma_update(None, "user_version", unsupported)
             .unwrap();
         drop(connection);
         restrict_permissions(&path).unwrap();
@@ -833,9 +833,8 @@ mod tests {
             AccessStore::open(path.clone()).await,
             Err(AccessStoreError::UnsupportedSchema {
                 found,
-                supported,
-            }) if found == unsupported_version
-                && supported == super::super::migrations::SCHEMA_VERSION
+                supported
+            }) if found == unsupported && supported == super::super::migrations::SCHEMA_VERSION
         ));
     }
 
@@ -868,7 +867,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn canonical_v1_migrates_to_current_schema_and_preserves_revision() {
+    async fn canonical_v1_migrates_to_current_and_preserves_revision() {
         let directory = super::super::test_support::secure_tempdir();
         let path = secure_test_path(&directory);
         let connection = Connection::open(&path).unwrap();

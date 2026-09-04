@@ -353,22 +353,22 @@ declared `directoryRead: true`. Labby does not declare it.
 `skills/list` returns `skills[]` plus `nextCursor`, `ttlMs`, and `cacheScope`.
 Digests are `sha256:{hex}` with exactly 64 lowercase hex characters.
 
-## Labby-owned Skill Library extension
+## Labby-owned Artifact Library extension
 
 SEP-2640 defines discovery and reading; it does not define authoring,
 revisioning, activation, visibility, or import. Labby keeps those product
-operations outside the SEP namespace as actions on its existing `skills` tool:
+operations outside the SEP namespace as actions on its `artifacts` tool:
 
-- read metadata: `skill_library.list`, `.get`, `.history`, `.read`;
+- search and read metadata: `artifacts.search`, `.list`, `.get`, `.history`, `.read`;
 - author without implicit activation: `.validate`, `.create`, `.save`;
 - publish exact revisions: `.activate`, `.deactivate`, `.rollback`, `.refresh`;
-- acquire without implicit activation: `.import`;
+- acquire without implicit activation: `.import`, `.import_batch`;
 - retain revisions while retiring catalog visibility: `.archive`.
 
 These actions are a Labby extension and must not be presented as SEP-2640
 methods. They share the same immutable published generation as native
-`skills/list`, `skills/get`, and `resources/read`, and as the compatibility
-`skills.list`, `skills.get`, and `skills.read` actions.
+`skills/list`, `skills/get`, and `resources/read`. Labby does not expose a
+duplicate `skills.*` action-tool compatibility namespace.
 
 The management surface is versioned and optimistic: mutations require an
 expected library version and idempotency key, and revision-sensitive mutations

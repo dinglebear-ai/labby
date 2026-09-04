@@ -11,10 +11,7 @@
 
 use axum::http::request::Parts;
 use labby_auth::auth_context::AuthContext;
-use labby_runtime::caller_auth::{
-    CALLER_AUTH_META_KEY, CALLER_UPSTREAM_SCOPE_META_KEY, PropagatedCallerAuth,
-    PropagatedCallerUpstreamScope,
-};
+use labby_runtime::caller_auth::{CALLER_AUTH_META_KEY, PropagatedCallerAuth};
 use rmcp::RoleServer;
 use rmcp::service::RequestContext;
 use sha2::{Digest, Sha256};
@@ -62,6 +59,30 @@ impl LabMcpServer {
         context: &'a RequestContext<RoleServer>,
     ) -> Option<&'a str> {
         actor_key_from_extensions(&context.extensions)
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn request_host_provider_token<'a>(
+        &self,
+        context: &'a RequestContext<RoleServer>,
+    ) -> Option<&'a str> {
+        let parts = context.extensions.get::<Parts>()?;
+        parts
+            .extensions
+            .get::<labby_auth::trusted_host::DelegatedActorCredential>()
+            .map(|credential| credential.0.as_ref())
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn request_host_provider_request_id<'a>(
+        &self,
+        context: &'a RequestContext<RoleServer>,
+    ) -> Option<&'a str> {
+        let parts = context.extensions.get::<Parts>()?;
+        parts
+            .extensions
+            .get::<labby_auth::trusted_host::DelegatedActorContext>()
+            .map(|delegated| delegated.request_id.as_str())
     }
 
     #[cfg(feature = "gateway")]
@@ -266,15 +287,6 @@ pub(crate) fn propagated_caller_auth(
     meta: Option<&rmcp::model::RequestMetaObject>,
 ) -> Option<PropagatedCallerAuth> {
     let value = meta?.get(CALLER_AUTH_META_KEY)?;
-    serde_json::from_value(value.clone()).ok()
-}
-
-/// Read the caller-visible upstream namespace scope propagated across the
-/// private in-process peer hop. Never honor this metadata on network transports.
-pub(crate) fn propagated_caller_upstream_scope(
-    meta: Option<&rmcp::model::RequestMetaObject>,
-) -> Option<PropagatedCallerUpstreamScope> {
-    let value = meta?.get(CALLER_UPSTREAM_SCOPE_META_KEY)?;
     serde_json::from_value(value.clone()).ok()
 }
 

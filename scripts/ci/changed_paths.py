@@ -51,16 +51,14 @@ def is_auth_conformance_input(path: str) -> bool:
         "conformance/mcp-auth-coverage-manifest.json",
         "conformance/mcp-auth-normative.json",
         "conformance/openai-auth-normative.json",
-        "conformance/vendor-rmcp-provenance.json",
         "scripts/ci/test_auth_spec_matrix.py",
-    } or starts(path, "vendor/rmcp-3.1.0-labby/") or starts(
+    } or starts(
         path,
         "scripts/ci/mcp_auth_",
         "scripts/ci/openai-auth-",
         "scripts/ci/refresh_mcp_auth_",
         "scripts/ci/refresh_openai_auth_",
         "scripts/ci/publish_mcp_auth_",
-        "scripts/ci/check_vendor_rmcp_",
         "scripts/ci/auth_backup_restore_",
     )
 
@@ -144,9 +142,6 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             ".cargo/",
         )
     )
-    vendored_rust_sources = any_match(
-        paths, lambda p: starts(p, "vendor/rmcp-3.1.0-labby/")
-    )
     rust_manifests = any_match(
         paths,
         lambda p: p
@@ -160,16 +155,16 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "deny.toml",
         },
     )
-    rust_compile = rust_sources or vendored_rust_sources or rust_manifests
+    rust_compile = rust_sources or rust_manifests
     # Dependency, lockfile, toolchain, and build-policy changes can alter test
     # compilation and runtime behavior just as directly as a Rust source edit.
-    rust_test = rust_sources or vendored_rust_sources or rust_manifests
+    rust_test = rust_sources or rust_manifests
     rust_test = rust_test or any_match(paths, is_auth_conformance_input)
     security = any_match(
         paths,
         lambda p: p in {"Cargo.lock", "deny.toml"} or starts(p, ".cargo/"),
     )
-    security = security or rust_sources or vendored_rust_sources
+    security = security or rust_sources
     docs_check = docs_check or rust_sources
     docker_inputs = any_match(
         paths,

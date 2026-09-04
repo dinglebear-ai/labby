@@ -177,7 +177,7 @@ impl SkillRegistryContext {
         }
     }
 
-    #[cfg(all(test, feature = "gateway"))]
+    #[cfg(all(test, feature = "gateway", feature = "proxy-testkit"))]
     #[must_use]
     pub(crate) fn from_generation_with_manager(
         first_party: Arc<FirstPartyGeneration>,

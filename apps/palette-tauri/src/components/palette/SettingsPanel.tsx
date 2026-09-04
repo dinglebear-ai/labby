@@ -56,7 +56,8 @@ export function SettingsPanel({
         return;
       }
       const services = result.catalog.services?.length ?? 0;
-      const actions = result.catalog.services?.reduce((n, s) => n + (s.actions?.length ?? 0), 0) ?? 0;
+      const actions =
+        result.catalog.services?.reduce((n, s) => n + (s.actions?.length ?? 0), 0) ?? 0;
       setConnectionTest({
         status: "connected",
         detail: `Connected — ${services} service${services === 1 ? "" : "s"}, ${actions} action${actions === 1 ? "" : "s"}.`,
@@ -101,6 +102,25 @@ export function SettingsPanel({
                 placeholder="http://localhost:8765"
               />
             </Field>
+            <Field
+              label="Control plane"
+              hint="Origin that serves the Labby WebUI; it may differ from the API origin"
+            >
+              <TextInput
+                value={draftConfig.controlPlaneUrl}
+                onChange={(value) => updateConfig("controlPlaneUrl", value)}
+                mono
+                placeholder="https://labby.example.com"
+              />
+            </Field>
+            <Field label="Project" hint="LABBY_PROJECT_ID — required for Skill Library imports">
+              <TextInput
+                value={draftConfig.projectId ?? ""}
+                onChange={(value) => updateConfig("projectId", value || null)}
+                mono
+                placeholder="team-project"
+              />
+            </Field>
             <div className="settings-toggle-row">
               <span>
                 <span>Test connection</span>
@@ -124,7 +144,10 @@ export function SettingsPanel({
           <SettingsAuthBlock />
           <div className="settings-stack">
             <span className="settings-section-label">Fallback auth</span>
-            <Field label="Static bearer token" hint="LABBY_MCP_HTTP_TOKEN — used when OAuth isn't signed in">
+            <Field
+              label="Static bearer token"
+              hint="LABBY_MCP_HTTP_TOKEN — used when OAuth isn't signed in"
+            >
               <SecretInput
                 value={draftConfig.staticToken ?? ""}
                 onChange={(value) => updateConfig("staticToken", value || null)}
@@ -158,15 +181,20 @@ export function SettingsPanel({
 
       <footer className="settings-footer">
         <span className="settings-footer-meta">
-          <Activity size={14} /> OAuth is the primary auth path; the static token is a
-          dev-mode fallback.
+          <Activity size={14} /> OAuth is the primary auth path; the static token is a dev-mode
+          fallback.
         </span>
         {configError && <span className="settings-error">{configError}</span>}
         <div className="settings-footer-actions">
           <Button size="sm" variant="neutral" onClick={onClose}>
             Close
           </Button>
-          <Button size="sm" variant="aurora" onClick={() => void handleSave()} disabled={saveState === "saving"}>
+          <Button
+            size="sm"
+            variant="aurora"
+            onClick={() => void handleSave()}
+            disabled={saveState === "saving"}
+          >
             {saveState === "saved" ? (
               <>
                 <Check size={13} /> Saved
@@ -185,7 +213,15 @@ export function SettingsPanel({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     // biome-ignore lint/a11y/noLabelWithoutControl: the form control is passed as `children` and rendered inside this wrapping label (implicit association)
     <label className="settings-field">

@@ -1,7 +1,9 @@
 //! `labby serve` — start the MCP server.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+#[cfg(any(feature = "skills", target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -160,6 +162,10 @@ fn bootstrap_skill_library(
         .library_snapshot()
         .context("load Skill Library metadata")?;
     let imports = configure_skill_library_imports(config, &artifacts_root)?;
+    let controls = Arc::new(
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_config(&config.artifacts)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    );
     let blocking = BoundedBlockingExecutor::new(8, Duration::from_secs(2), Duration::from_secs(30))
         .map_err(|_| anyhow::anyhow!("invalid Skill Library blocking executor configuration"))?;
     initialize_first_party_generation_manager(GenerationSeed {
@@ -184,7 +190,7 @@ fn bootstrap_skill_library(
     coordinator.reconcile(candidate, snapshot.version);
     tracing::info!(
         subsystem = "startup",
-        phase = "skill_library.ready",
+        phase = "artifacts.ready",
         library_version = snapshot.version,
         active_skill_count = snapshot
             .records
@@ -199,8 +205,11 @@ fn bootstrap_skill_library(
         coordinator,
         projection,
     ));
-    let runtime =
-        Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime { service, imports });
+    let runtime = Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime {
+        service,
+        imports,
+        controls,
+    });
     crate::dispatch::skill_library::install_process_runtime(Arc::clone(&runtime))
         .map_err(|_| anyhow::anyhow!("Skill Library runtime was already initialized"))?;
 
@@ -213,7 +222,7 @@ fn configure_skill_library_imports(
     artifacts_root: &Path,
 ) -> Result<Arc<crate::dispatch::skill_library::import::ImportCoordinator>> {
     crate::dispatch::skill_library::import::ImportCoordinator::from_config(
-        &config.skill_library,
+        &config.artifacts,
         &artifacts_root.join("acquisition"),
     )
     .map(Arc::new)
@@ -225,7 +234,10 @@ fn bootstrap_selected_skill_library_with<T>(
     registry: &ToolRegistry,
     bootstrap: impl FnOnce() -> Result<T>,
 ) -> Result<Option<T>> {
-    if registry.service("skills").is_some() {
+    if ["artifacts", "bundles", "jobs", "sources", "uploads"]
+        .iter()
+        .any(|service| registry.service(service).is_some())
+    {
         bootstrap().map(Some)
     } else {
         Ok(None)
@@ -266,6 +278,9 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     };
     let unix_listener_config = resolve_unix_listener_config(transport, &config.mcp)?;
     let peer_auth_enabled = unix_peer_auth_enabled(unix_listener_config.as_ref());
+    let trusted_host_verifier =
+        resolve_trusted_host_verifier(transport, unix_listener_config.as_ref(), peer_auth_enabled)?;
+    let integrated_trusted_host = trusted_host_verifier.is_some();
     let config_path = config_toml_path()?;
     tracing::info!(
         subsystem = "startup",
@@ -379,6 +394,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         registry.clone(),
         notifier.clone(),
         resource_registry.clone(),
+        integrated_trusted_host,
     )
     .await?;
     #[cfg(feature = "gateway")]
@@ -514,6 +530,11 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
 
     let credential_auth_configured =
         bearer_token.is_some() || matches!(auth_config.mode, AuthMode::OAuth);
+    if integrated_trusted_host && credential_auth_configured {
+        anyhow::bail!(
+            "integrated trusted-host mode cannot combine Labby bearer or OAuth identity paths"
+        );
+    }
     if peer_auth_enabled && credential_auth_configured {
         anyhow::bail!(
             "Unix peer-credential authorization cannot be combined with bearer or OAuth authentication"
@@ -647,7 +668,10 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         state = state.with_gateway_manager(Arc::clone(&gateway_manager));
     }
     state = state.with_auth_config(auth_config);
-    let web_ui_auth_disabled = if peer_auth_enabled {
+    if let Some(verifier) = trusted_host_verifier {
+        state = state.with_trusted_host_verifier(verifier);
+    }
+    let web_ui_auth_disabled = if peer_auth_enabled || integrated_trusted_host {
         false
     } else {
         resolve_web_ui_auth_disabled(
@@ -860,6 +884,86 @@ fn unix_peer_auth_enabled(config: Option<&HostedUnixConfig>) -> bool {
 #[cfg(not(unix))]
 fn unix_peer_auth_enabled(_config: Option<&HostedUnixConfig>) -> bool {
     false
+}
+
+#[cfg(unix)]
+fn resolve_trusted_host_verifier(
+    transport: Transport,
+    listener: Option<&HostedUnixConfig>,
+    peer_auth_enabled: bool,
+) -> Result<Option<Arc<labby_auth::trusted_host::TrustedHostVerifier>>> {
+    let enabled = std::env::var("LABBY_INTEGRATED_TRUSTED_HOST")
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"));
+    if !enabled {
+        return Ok(None);
+    }
+    if !matches!(transport, Transport::UnixSocket) || !peer_auth_enabled {
+        anyhow::bail!(
+            "integrated trusted-host mode requires Unix socket transport with a peer UID or GID policy"
+        );
+    }
+    let listener =
+        listener.ok_or_else(|| anyhow::anyhow!("integrated trusted-host listener is missing"))?;
+    if listener.abstract_socket() {
+        anyhow::bail!(
+            "integrated trusted-host mode requires a pathname Unix socket, not an abstract socket"
+        );
+    }
+    let key_id = std::env::var("LABBY_TRUSTED_HOST_CURRENT_KEY_ID")
+        .context("integrated trusted-host mode requires LABBY_TRUSTED_HOST_CURRENT_KEY_ID")?;
+    let public_key = std::env::var("LABBY_TRUSTED_HOST_CURRENT_PUBLIC_KEY")
+        .context("integrated trusted-host mode requires LABBY_TRUSTED_HOST_CURRENT_PUBLIC_KEY")?;
+    let generation = std::env::var("LABBY_TRUSTED_HOST_AUTHORITY_GENERATION")
+        .context("integrated trusted-host mode requires LABBY_TRUSTED_HOST_AUTHORITY_GENERATION")?
+        .parse::<u64>()
+        .context("LABBY_TRUSTED_HOST_AUTHORITY_GENERATION must be an unsigned integer")?;
+    let key = labby_auth::trusted_host::TrustedHostKey::from_base64url(key_id, &public_key)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "LABBY_TRUSTED_HOST_CURRENT_PUBLIC_KEY is not a valid Ed25519 base64url key"
+            )
+        })?;
+    let previous_key_id = std::env::var("LABBY_TRUSTED_HOST_PREVIOUS_KEY_ID").ok();
+    let previous_public_key = std::env::var("LABBY_TRUSTED_HOST_PREVIOUS_PUBLIC_KEY").ok();
+    let previous = match (previous_key_id, previous_public_key) {
+        (None, None) => None,
+        (Some(previous_key_id), Some(public_key)) => {
+            if previous_key_id == key.key_id {
+                anyhow::bail!("integrated trusted-host current and previous key IDs must differ");
+            }
+            Some(
+                labby_auth::trusted_host::TrustedHostKey::from_base64url(
+                    previous_key_id,
+                    &public_key,
+                )
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "LABBY_TRUSTED_HOST_PREVIOUS_PUBLIC_KEY is not a valid Ed25519 base64url key"
+                    )
+                })?,
+            )
+        }
+        _ => anyhow::bail!(
+            "integrated trusted-host key overlap requires both LABBY_TRUSTED_HOST_PREVIOUS_KEY_ID and LABBY_TRUSTED_HOST_PREVIOUS_PUBLIC_KEY"
+        ),
+    };
+    let keys = std::iter::once(key).chain(previous);
+    Ok(Some(Arc::new(
+        labby_auth::trusted_host::TrustedHostVerifier::new(generation, keys),
+    )))
+}
+
+#[cfg(not(unix))]
+fn resolve_trusted_host_verifier(
+    _transport: Transport,
+    _listener: Option<&HostedUnixConfig>,
+    _peer_auth_enabled: bool,
+) -> Result<Option<Arc<labby_auth::trusted_host::TrustedHostVerifier>>> {
+    if std::env::var_os("LABBY_INTEGRATED_TRUSTED_HOST").is_some() {
+        anyhow::bail!("integrated trusted-host mode requires Unix socket support");
+    }
+    Ok(None)
 }
 
 fn should_run_stdio(transport: Transport, command: Option<&ServeCommand>) -> bool {
@@ -1461,6 +1565,7 @@ async fn build_gateway_runtime(
     registry: ToolRegistry,
     notifier: PeerNotifier,
     resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
+    integrated_trusted_host: bool,
 ) -> Result<Arc<GatewayManager>> {
     let gateway_runtime = GatewayRuntimeHandle::default();
     let upstream_oauth_runtime = if suppress_upstream_runtime {
@@ -1621,6 +1726,13 @@ async fn build_gateway_runtime(
     let mut gateway_manager = gateway_manager
         .with_openapi(openapi_registry, openapi_http_client)
         .with_client_registry(client_registry);
+    if integrated_trusted_host {
+        let socket_path = std::env::var("LABBY_CORE_PROVIDER_SOCKET_PATH")
+            .context("integrated trusted-host mode requires LABBY_CORE_PROVIDER_SOCKET_PATH")?;
+        let provider = labby_gateway::core_provider::CoreProviderClient::new(socket_path)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        gateway_manager = gateway_manager.with_core_provider_client(provider);
+    }
     if let Some(store) = step_journal.clone() {
         gateway_manager = gateway_manager.with_step_journal(store);
     }
@@ -2365,10 +2477,10 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn excluded_skills_service_does_not_run_skill_library_bootstrap() {
+    fn excluded_artifacts_service_does_not_run_skill_library_bootstrap() {
         let registry = filter_registry(build_default_registry(), &["doctor".to_owned()]).unwrap();
         let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<()> {
-            panic!("excluded skills service must not touch Skill Library storage")
+            panic!("excluded artifacts service must not touch Artifact Library storage")
         })
         .unwrap();
         assert!(result.is_none());
@@ -2376,26 +2488,32 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn selected_skills_service_runs_skill_library_bootstrap() {
-        let registry = filter_registry(build_default_registry(), &["skills".to_owned()]).unwrap();
-        let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
-        assert_eq!(result, Some(41));
+    fn every_artifact_control_service_runs_skill_library_bootstrap_independently() {
+        for service in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
+            let registry =
+                filter_registry(build_default_registry(), &[service.to_owned()]).unwrap();
+            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
+            assert_eq!(
+                result,
+                Some(41),
+                "{service} must initialize the shared runtime"
+            );
+        }
     }
 
     #[cfg(feature = "skills")]
     #[test]
     fn failed_import_construction_can_retry_before_runtime_publication() {
-        use crate::config::{
-            SkillLibraryPreferences, SkillLibrarySourceConfig, SkillLibrarySourceKind,
-        };
+        use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
         let root = tempfile::tempdir().unwrap();
         let mut config = LabConfig {
-            skill_library: SkillLibraryPreferences {
-                sources: vec![SkillLibrarySourceConfig {
+            artifacts: ArtifactPreferences {
+                sources: vec![ArtifactSourceConfig {
                     id: "depot".to_owned(),
-                    kind: SkillLibrarySourceKind::Depot,
+                    kind: ArtifactSourceKind::Depot,
                     endpoint: "not a url".to_owned(),
+                    control_plane_url: None,
                     pinned_addresses: Vec::new(),
                     bearer_token_env: None,
                 }],
@@ -2404,7 +2522,7 @@ mod tests {
         };
         assert!(configure_skill_library_imports(&config, root.path()).is_err());
 
-        config.skill_library = SkillLibraryPreferences::default();
+        config.artifacts = ArtifactPreferences::default();
         assert!(configure_skill_library_imports(&config, root.path()).is_ok());
     }
 

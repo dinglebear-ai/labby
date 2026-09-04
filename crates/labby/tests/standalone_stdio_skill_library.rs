@@ -53,6 +53,7 @@ fn persist_active_skill(home: &std::path::Path) {
                     active_revision_id: None,
                     latest_revision_id: revision_id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: now.clone(),
@@ -103,7 +104,7 @@ fn standalone_stdio_bootstraps_persisted_active_skills() {
     persist_active_skill(home.path());
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
-        .args(["mcp", "--services", "skills"])
+        .args(["mcp", "--services", "artifacts"])
         .env("LABBY_HOME", home.path())
         .env("LABBY_SERVER_URL", "")
         .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
@@ -138,7 +139,7 @@ fn standalone_stdio_bootstraps_persisted_active_skills() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("skill_library.ready") && stderr.contains("active_skill_count=1"),
+        stderr.contains("artifacts.ready") && stderr.contains("active_skill_count=1"),
         "standalone stdio did not bootstrap the persisted active generation: {stderr}"
     );
 }

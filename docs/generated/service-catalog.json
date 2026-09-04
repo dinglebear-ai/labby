@@ -1,5 +1,43 @@
 [
   {
+    "name": "artifacts",
+    "display_name": "artifacts",
+    "description": "Search, import, revise, validate, and activate durable Artifacts",
+    "category": "bootstrap",
+    "status": "available",
+    "feature": null,
+    "exposure": "always_on",
+    "surfaces": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "default_port": null,
+    "docs_url": null,
+    "supports_multi_instance": false,
+    "metadata_source": "registry synthetic metadata"
+  },
+  {
+    "name": "bundles",
+    "display_name": "bundles",
+    "description": "Curate and publish immutable Artifact bundles",
+    "category": "bootstrap",
+    "status": "available",
+    "feature": null,
+    "exposure": "always_on",
+    "surfaces": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "default_port": null,
+    "docs_url": null,
+    "supports_multi_instance": false,
+    "metadata_source": "registry synthetic metadata"
+  },
+  {
     "name": "doctor",
     "display_name": "Doctor",
     "description": "Comprehensive health audit: env vars, system, access store, gateway, and OAuth relay checks",
@@ -45,6 +83,25 @@
     "status": "available",
     "feature": "gateway",
     "exposure": "feature_gated",
+    "surfaces": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "default_port": null,
+    "docs_url": null,
+    "supports_multi_instance": false,
+    "metadata_source": "registry synthetic metadata"
+  },
+  {
+    "name": "jobs",
+    "display_name": "jobs",
+    "description": "Run and inspect durable Artifact ingestion jobs",
+    "category": "bootstrap",
+    "status": "available",
+    "feature": null,
+    "exposure": "always_on",
     "surfaces": {
       "cli": true,
       "mcp": true,
@@ -133,25 +190,6 @@
     "metadata_source": "registry + PluginMeta"
   },
   {
-    "name": "skills",
-    "display_name": "skills",
-    "description": "Discover, read, and manage Agent Skills through one shared service",
-    "category": "bootstrap",
-    "status": "available",
-    "feature": null,
-    "exposure": "always_on",
-    "surfaces": {
-      "cli": true,
-      "mcp": true,
-      "api": true,
-      "web_ui": false
-    },
-    "default_port": null,
-    "docs_url": null,
-    "supports_multi_instance": false,
-    "metadata_source": "registry synthetic metadata"
-  },
-  {
     "name": "snippets",
     "display_name": "snippets",
     "description": "Manage executable Code Mode snippets",
@@ -164,6 +202,44 @@
       "mcp": true,
       "api": true,
       "web_ui": false
+    },
+    "default_port": null,
+    "docs_url": null,
+    "supports_multi_instance": false,
+    "metadata_source": "registry synthetic metadata"
+  },
+  {
+    "name": "sources",
+    "display_name": "sources",
+    "description": "Manage remote Artifact ingestion sources",
+    "category": "bootstrap",
+    "status": "available",
+    "feature": null,
+    "exposure": "always_on",
+    "surfaces": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "default_port": null,
+    "docs_url": null,
+    "supports_multi_instance": false,
+    "metadata_source": "registry synthetic metadata"
+  },
+  {
+    "name": "uploads",
+    "display_name": "uploads",
+    "description": "Manage staged Artifact ingestion uploads",
+    "category": "bootstrap",
+    "status": "available",
+    "feature": null,
+    "exposure": "always_on",
+    "surfaces": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
     },
     "default_port": null,
     "docs_url": null,

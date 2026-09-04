@@ -127,6 +127,39 @@ pub async fn auth_session(
 
     if let Some(Extension(context)) = auth {
         let is_admin = context.scopes.iter().any(|scope| scope == "lab:admin");
+        let mut project_id = None;
+        let mut expires_at = DEV_SESSION_EXPIRES_AT;
+        if context.via_session
+            && let Some(session_state) = state.project_session_state.as_ref()
+            && let Some(session_id) =
+                labby_auth::session::read_cookie(&headers, &session_state.cookie_name)
+        {
+            match session_state.store.find_browser_session(&session_id).await {
+                Ok(Some(session)) => {
+                    project_id = session
+                        .project_binding
+                        .as_ref()
+                        .map(|binding| binding.project_id.clone());
+                    expires_at =
+                        u64::try_from(session.expires_at).unwrap_or(DEV_SESSION_EXPIRES_AT);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::error!(
+                        error = %error,
+                        "failed to load authenticated project session"
+                    );
+                    log_auth_dispatch(
+                        "session.get",
+                        request_id.as_deref(),
+                        start,
+                        Some("internal_error"),
+                        context.actor_key.as_deref(),
+                    );
+                    return internal_error_response("failed to load browser session");
+                }
+            }
+        }
         let response = no_store_json(serde_json::json!({
             "authenticated": true,
             "login_available": false,
@@ -135,8 +168,9 @@ pub async fn auth_session(
                 "sub": context.sub,
                 "email": context.email,
             },
-            "expires_at": DEV_SESSION_EXPIRES_AT,
-            "csrf_token": "",
+            "project_id": project_id,
+            "expires_at": expires_at,
+            "csrf_token": context.csrf_token.unwrap_or_default(),
         }));
         log_auth_dispatch(
             "session.get",
@@ -146,6 +180,56 @@ pub async fn auth_session(
             context.actor_key.as_deref(),
         );
         return response;
+    }
+
+    // This route intentionally remains outside the auth middleware so an
+    // anonymous browser can discover login availability. Resolve Labby's
+    // project-bound cookie explicitly before the development UI fallback;
+    // otherwise bearer-only deployments render an authenticated-but-unbound
+    // shell even though the browser holds a valid project session.
+    if let Some(session_state) = state.project_session_state.as_ref()
+        && let Some(session_id) =
+            labby_auth::session::read_cookie(&headers, &session_state.cookie_name)
+    {
+        match session_state.store.find_browser_session(&session_id).await {
+            Ok(Some(session)) if session.project_binding.is_some() => {
+                let actor_key = actor_key_for_session(&state, &session);
+                let binding = session.project_binding.as_ref().expect("guarded above");
+                let is_admin = binding.scopes.iter().any(|scope| scope == "lab:admin");
+                let response = no_store_json(serde_json::json!({
+                    "authenticated": true,
+                    "login_available": state.oauth_state.is_some(),
+                    "is_admin": is_admin,
+                    "user": {
+                        "sub": binding.principal_id,
+                        "email": session.email,
+                    },
+                    "project_id": binding.project_id,
+                    "expires_at": session.expires_at,
+                    "csrf_token": session.csrf_token,
+                }));
+                log_auth_dispatch(
+                    "session.get",
+                    request_id.as_deref(),
+                    start,
+                    None,
+                    actor_key.as_deref(),
+                );
+                return response;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(error = %error, "failed to load project browser session");
+                log_auth_dispatch(
+                    "session.get",
+                    request_id.as_deref(),
+                    start,
+                    Some("internal_error"),
+                    None,
+                );
+                return internal_error_response("failed to load browser session");
+            }
+        }
     }
 
     if state.web_ui_auth_disabled {
@@ -208,6 +292,10 @@ pub async fn auth_session(
     match load_browser_session(&auth_state, &headers).await {
         Ok(Some(session)) => {
             let actor_key = actor_key_for_session(&state, &session);
+            let project_id = session
+                .project_binding
+                .as_ref()
+                .map(|binding| binding.project_id.as_str());
             let is_admin = session
                 .email
                 .as_deref()
@@ -220,6 +308,7 @@ pub async fn auth_session(
                     "sub": session.subject,
                     "email": session.email,
                 },
+                "project_id": project_id,
                 "expires_at": session.expires_at,
                 "csrf_token": session.csrf_token,
             });
@@ -334,4 +423,95 @@ pub async fn auth_logout(State(state): State<AppState>, headers: HeaderMap) -> i
         actor_key.as_deref(),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+    use labby_auth::types::{BrowserSessionRow, ProjectSessionBinding};
+
+    #[tokio::test]
+    async fn authenticated_project_session_preserves_binding_and_expiry() {
+        let directory = tempfile::tempdir().unwrap();
+        let session_state = labby_auth::project_session::ProjectSessionState::open(
+            directory.path().join("auth.db"),
+            "__Host-labby-session",
+        )
+        .await
+        .unwrap();
+        let expires_at = 2_000_000_000_i64;
+        let session = BrowserSessionRow {
+            session_id: "project-session".into(),
+            subject: "subject".into(),
+            email: None,
+            csrf_token: "csrf-token".into(),
+            created_at: 1,
+            expires_at,
+            project_binding: Some(ProjectSessionBinding {
+                installation_id: "installation".into(),
+                issuer: "issuer".into(),
+                subject: "subject".into(),
+                principal_id: "principal".into(),
+                organization_id: "organization".into(),
+                project_id: "project-42".into(),
+                loadout_id: "loadout".into(),
+                loadout_generation: 1,
+                assignment_generation: 1,
+                catalog_generation: 1,
+                route_id: "route".into(),
+                route_generation: 1,
+                membership_epoch: 1,
+                organization_policy_epoch: 1,
+                project_policy_epoch: 1,
+                source_credential_id: "credential".into(),
+                source_credential_generation: 1,
+                scopes: vec!["lab:read".into()],
+                resource: "https://lab.example.com".into(),
+                audience: "labby".into(),
+                source_credential_expires_at: u64::try_from(expires_at).unwrap(),
+            }),
+        };
+        session_state
+            .store
+            .upsert_browser_session(session)
+            .await
+            .unwrap();
+        let state = AppState::new().with_project_session_state(session_state);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-labby-session=project-session"),
+        );
+        let auth = AuthContext {
+            sub: "principal".into(),
+            actor_key: None,
+            scopes: vec!["lab:read".into()],
+            issuer: "issuer".into(),
+            via_session: true,
+            csrf_token: Some("csrf-token".into()),
+            email: None,
+        };
+
+        let response = auth_session(State(state.clone()), headers.clone(), None)
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["project_id"], "project-42");
+        assert_eq!(json["expires_at"], expires_at);
+        assert_eq!(json["csrf_token"], "csrf-token");
+
+        let response = auth_session(State(state), headers, Some(Extension(auth)))
+            .await
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["project_id"], "project-42");
+    }
 }

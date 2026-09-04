@@ -239,6 +239,7 @@ impl GatewayManager {
             code_mode_runner_pool: Arc::new(crate::gateway::code_mode::RunnerPool::from_env()?),
             openapi_registry: labby_openapi::OpenApiRegistry::default(),
             openapi_http_client: labby_openapi::http::build_dispatch_client()?,
+            core_provider_client: None,
             client_registry: labby_runtime::client_registry::ClientRegistryHandle::default(),
         })
     }
@@ -255,6 +256,28 @@ impl GatewayManager {
         self.openapi_registry = registry;
         self.openapi_http_client = client;
         self
+    }
+
+    /// Attach the private Core provider used to augment Labby's existing Code
+    /// Mode host. This does not register another MCP upstream or tool surface.
+    #[must_use]
+    pub fn with_core_provider_client(
+        mut self,
+        client: crate::core_provider::CoreProviderClient,
+    ) -> Self {
+        self.core_provider_client = Some(client);
+        self
+    }
+
+    /// Probe the configured Core provider without requiring actor authority.
+    pub async fn core_provider_health(
+        &self,
+    ) -> Result<(), crate::core_provider::CoreProviderError> {
+        let provider = self
+            .core_provider_client
+            .as_ref()
+            .ok_or(crate::core_provider::CoreProviderError::Configuration)?;
+        provider.health().await
     }
 
     /// Override the subprocess used for Code Mode runner execution.

@@ -47,7 +47,7 @@ validated. Do not carry validated service endpoints as raw strings.
 | Concern | Current choice |
 | --- | --- |
 | CLI | `clap` |
-| MCP | `rmcp 3.1.0` |
+| MCP | pinned `rmcp` Git revision `0665dcac` |
 | HTTP/WebSocket | `axum`, `tower`, `tower-http`, `tokio-tungstenite` |
 | OpenAPI | `utoipa` |
 | CLI color | `owo-colors` |

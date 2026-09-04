@@ -1340,6 +1340,16 @@ textarea {
   white-space: normal;
 }
 
+.control-plane-error {
+  margin: 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-status-error) 45%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--color-status-error);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
 .settings-footer-actions {
   grid-area: actions;
   display: flex;

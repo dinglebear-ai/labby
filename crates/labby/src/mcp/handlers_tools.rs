@@ -245,7 +245,7 @@ impl LabMcpServer {
             && self.service_visible_on_mcp("setup").await;
         let mut builtin_names = HashSet::new();
         #[cfg(feature = "skills")]
-        let skill_library_allowed_actions = self.allowed_mcp_actions("skills").await;
+        let skill_library_allowed_actions = self.allowed_mcp_actions("artifacts").await;
         #[cfg(feature = "skills")]
         let skill_library_mode = if self.skill_library_http_management_visible(&context) {
             let skills_auth = auth_context_from_extensions(&context.extensions);
@@ -255,10 +255,10 @@ impl LabMcpServer {
                 allowed_actions: skill_library_allowed_actions.as_deref(),
             }
         } else {
-            SkillLibraryDescriptorMode::Compatibility
+            SkillLibraryDescriptorMode::Hidden
         };
         #[cfg(not(feature = "skills"))]
-        let skill_library_mode = SkillLibraryDescriptorMode::Compatibility;
+        let skill_library_mode = SkillLibraryDescriptorMode::Hidden;
         for svc in self.registry.services() {
             // `service_visible_on_mcp` already checks `route_scope.allows_service`.
             if self.service_visible_on_mcp(svc.name).await {
@@ -835,7 +835,7 @@ fn owned_app_tool_meta(resource_uri: String, skybridge_uri: Option<String>) -> M
 #[cfg(feature = "skills")]
 pub(crate) fn skill_library_tool_description(service_description: &str) -> String {
     format!(
-        "{service_description} This tool also opens Labby's Skill Library app on compatible hosts. On non-App hosts, call the documented skills.* and skill_library.* actions directly with the same action and params envelope. Save and import do not activate a Skill."
+        "{service_description} This tool also opens Labby's Artifact Library app on compatible hosts. On non-App hosts, call the documented artifacts.* actions directly with the same action and params envelope. Save and import do not activate an Artifact."
     )
 }
 

@@ -36,7 +36,8 @@ use super::blocking::{
     NoFaultInjector,
 };
 use super::params::{
-    ArtifactParams, PageParams, ReadRevisionParams, ValidateParams, page_limit, validate_cursor,
+    ArtifactParams, PageParams, ReadRevisionParams, SearchParams, ValidateParams, normalized_query,
+    page_limit, validate_cursor,
 };
 use super::types::{
     CreateVisibility, CursorPage, MutationReceipt, OwnerSummary, ProvenanceSummary,
@@ -134,8 +135,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let now = LibraryTimestamp::parse(jiff::Timestamp::now().to_string())?;
         let revision_id = materialized.interchange.revision.id.clone();
         let name = materialized.interchange.descriptor.name.clone();
+        let search_metadata = descriptor_search_metadata(&materialized.interchange.descriptor);
         let request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
-            "action":"skill_library.import", "artifact_id":target_id,
+            "action":"artifacts.import", "artifact_id":target_id,
             "revision_id": revision_id,
             "expected_library_version":expected_library_version,
             "idempotency_key":idempotency_key
@@ -173,6 +175,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         active_revision_id: None,
                         latest_revision_id: revision_id.clone(),
                         latest_revision_files: library_files(&materialized.interchange.revision),
+                        search_metadata,
                         provenance_provider: materialized.interchange.provenance.provider.clone(),
                         materialized: true,
                         created_at: now.clone(),
@@ -565,6 +568,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             latest_revision_files: library_files(
                                 &candidate_artifact.interchange.revision,
                             ),
+                            search_metadata: descriptor_search_metadata(
+                                &candidate_artifact.interchange.descriptor,
+                            ),
                             provenance_provider: candidate_artifact
                                 .interchange
                                 .provenance
@@ -644,7 +650,45 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, SkillLibraryDispatchError> {
         match action {
-            "skill_library.list" => {
+            "artifacts.search" => {
+                let params: SearchParams = parse(params)?;
+                let query = normalized_query(params.query).map_err(|reason| {
+                    ArtifactError::InvalidField {
+                        field: "query",
+                        reason,
+                    }
+                })?;
+                let decision = authorize_at_boundary(
+                    runtime,
+                    caller,
+                    project_id,
+                    SkillLibraryAction::Search,
+                    &CanonicalArtifactId::parse("library")?,
+                    SkillLibraryTarget::SharedActive,
+                    correlation_id,
+                )
+                .await?;
+                let store = Arc::clone(&self.store);
+                let published_library_version = published_version(&self.publication);
+                let page = self
+                    .blocking
+                    .run("artifact_search", move || {
+                        let snapshot = store.library_snapshot()?;
+                        list_page_visible(
+                            &store,
+                            &snapshot,
+                            &decision,
+                            params.cursor,
+                            params.limit,
+                            published_library_version,
+                            Some(&query),
+                        )
+                    })
+                    .await
+                    .map_err(map_blocking)?;
+                serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
+            }
+            "artifacts.list" => {
                 let params: PageParams = parse(params)?;
                 let decision = authorize_at_boundary(
                     runtime,
@@ -669,13 +713,14 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             params.cursor,
                             params.limit,
                             published_library_version,
+                            None,
                         )
                     })
                     .await
                     .map_err(map_blocking)?;
                 serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.get" => {
+            "artifacts.get" => {
                 let params: ArtifactParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
                 let store = Arc::clone(&self.store);
@@ -737,7 +782,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(item).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.read" => {
+            "artifacts.read" => {
                 let params: ReadRevisionParams = parse(params)?;
                 let target = CanonicalArtifactId::parse(params.artifact_id.clone())?;
                 let target_store = Arc::clone(&self.store);
@@ -812,7 +857,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 })
                 .map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.history" => {
+            "artifacts.history" => {
                 #[derive(serde::Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct History {
@@ -874,7 +919,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     .map_err(map_blocking)?;
                 serde_json::to_value(page).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.validate" => {
+            "artifacts.validate" => {
                 let params: ValidateParams = parse(params)?;
                 authorize_at_boundary(
                     runtime,
@@ -923,7 +968,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 };
                 serde_json::to_value(response).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
-            "skill_library.refresh" => {
+            "artifacts.refresh" => {
                 #[derive(serde::Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Refresh {
@@ -947,7 +992,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.activate" | "skill_library.rollback" => {
+            "artifacts.activate" | "artifacts.rollback" => {
                 let params: super::params::RevisionMutationParams = parse(params)?;
                 let action = if action.ends_with("activate") {
                     SkillLibraryAction::Activate
@@ -967,7 +1012,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.create" => {
+            "artifacts.create" => {
                 let params: super::params::CreateParams = parse(params)?;
                 self.create_or_save(
                     runtime,
@@ -984,7 +1029,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 )
                 .await
             }
-            "skill_library.save" => {
+            "artifacts.save" => {
                 let params: super::params::SaveParams = parse(params)?;
                 let store = Arc::clone(&self.store);
                 let artifact_id = params.artifact_id.clone();
@@ -1018,8 +1063,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             // Import is intentionally unavailable through the generic JSON dispatcher. Public
             // adapters parse a server-side source selector and the sealed coordinator passes the
             // owned, verified acquisition to `import_acquired` without serializing its bytes.
-            "skill_library.import" => Err(SkillLibraryDispatchError::InvalidParams),
-            "skill_library.deactivate" | "skill_library.archive" => {
+            "artifacts.import" | "artifacts.import_batch" => {
+                Err(SkillLibraryDispatchError::InvalidParams)
+            }
+            "artifacts.deactivate" | "artifacts.archive" => {
                 let params: super::params::LibraryMutationParams = parse(params)?;
                 let action = if action.ends_with("deactivate") {
                     SkillLibraryAction::Deactivate
@@ -1197,19 +1244,13 @@ fn provenance_source(provider: Option<&str>) -> &'static str {
 }
 
 fn item_allowed_actions(personal: bool, active: bool) -> Vec<&'static str> {
-    let mut actions = vec![
-        "skill_library.get",
-        "skill_library.read",
-        "skill_library.history",
-    ];
+    let mut actions = vec!["artifacts.get", "artifacts.read", "artifacts.history"];
     if personal {
-        actions.extend(["skill_library.save", "skill_library.archive"]);
-        actions.push(if active {
-            "skill_library.deactivate"
-        } else {
-            "skill_library.activate"
-        });
-        actions.push("skill_library.rollback");
+        actions.extend(["artifacts.save", "artifacts.archive", "artifacts.activate"]);
+        if active {
+            actions.push("artifacts.deactivate");
+        }
+        actions.push("artifacts.rollback");
     }
     actions
 }
@@ -1235,12 +1276,13 @@ fn read_target(record: &SkillLibraryRecord) -> Result<SkillLibraryTarget<'_>, Ar
 }
 
 fn list_page_visible(
-    _store: &ArtifactStore,
+    store: &ArtifactStore,
     snapshot: &LibrarySnapshot,
     decision: &super::auth::SkillLibraryAuthorizationDecision,
     cursor: Option<String>,
     limit: Option<usize>,
     published_library_version: u64,
+    query: Option<&str>,
 ) -> Result<VersionedSkillLibraryPage, ArtifactError> {
     let cursor = validate_cursor(cursor).map_err(|reason| ArtifactError::InvalidField {
         field: "cursor",
@@ -1264,6 +1306,7 @@ fn list_page_visible(
                 record.active_revision_id.is_some(),
             )
         })
+        .filter(|record| artifact_matches(store, record, query))
         .take(limit + 1)
         .collect::<Vec<_>>();
     let has_more = page_records.len() > limit;
@@ -1291,14 +1334,57 @@ fn list_page_visible(
         published_library_version,
         can_create: true,
         create_visibilities: vec!["private", "shared"],
-        allowed_actions: vec![
-            "skill_library.validate",
-            "skill_library.create",
-            "skill_library.import",
-        ],
+        allowed_actions: vec!["artifacts.validate", "artifacts.create", "artifacts.import"],
         items,
         next_cursor,
     })
+}
+
+fn artifact_matches(
+    store: &ArtifactStore,
+    record: &SkillLibraryRecord,
+    query: Option<&str>,
+) -> bool {
+    let Some(query) = query else {
+        return true;
+    };
+    if record.artifact_id.to_lowercase().contains(query)
+        || record.name.to_lowercase().contains(query)
+        || record
+            .provenance_provider
+            .as_deref()
+            .is_some_and(|provider| provider.to_lowercase().contains(query))
+        || record
+            .search_metadata
+            .iter()
+            .any(|value| value.to_lowercase().contains(query))
+    {
+        return true;
+    }
+    // Records written before the snapshot search index was introduced deserialize with an empty
+    // index. Consult durable descriptor data only for those records; newly indexed libraries keep
+    // the scan filesystem-free.
+    if !record.search_metadata.is_empty() {
+        return false;
+    }
+    let Ok(artifact) = store.get(&record.artifact_id) else {
+        return false;
+    };
+    descriptor_search_metadata(&artifact.descriptor)
+        .iter()
+        .any(|value| value.to_lowercase().contains(query))
+}
+
+fn descriptor_search_metadata(
+    descriptor: &labby_runtime::artifacts::ArtifactDescriptor,
+) -> Vec<String> {
+    descriptor
+        .title
+        .iter()
+        .chain(descriptor.description.iter())
+        .chain(descriptor.tags.iter())
+        .cloned()
+        .collect()
 }
 
 fn validation_rejection(error: ArtifactError) -> Result<ValidationRejection, ArtifactError> {
@@ -1342,7 +1428,7 @@ fn validation_rejection(error: ArtifactError) -> Result<ValidationRejection, Art
     })
 }
 
-/// Revision history is metadata-only; bodies remain exclusive to `skill_library.read`.
+/// Revision history is metadata-only; bodies remain exclusive to `artifacts.read`.
 pub(crate) fn history_page(
     store: &ArtifactStore,
     record: &SkillLibraryRecord,
@@ -1813,6 +1899,54 @@ mod tests {
     use crate::dispatch::skill_library::auth::SkillLibraryTransport;
 
     #[test]
+    fn active_owned_artifacts_still_advertise_revision_activation() {
+        let actions = item_allowed_actions(true, true);
+        assert!(actions.contains(&"artifacts.activate"));
+        assert!(actions.contains(&"artifacts.deactivate"));
+    }
+
+    #[test]
+    fn artifact_search_matches_only_snapshot_indexed_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(root.path().join("artifacts")).unwrap();
+        let timestamp = LibraryTimestamp::parse("2026-01-01T00:00:00Z").unwrap();
+        let record = SkillLibraryRecord {
+            artifact_id: "artifact-fleet-health".to_owned(),
+            name: "fleet-health".to_owned(),
+            ownership: labby_runtime::artifacts::LibraryOwnership::canonical(
+                labby_runtime::artifacts::LibraryTenantId::from_canonical_projection("tenant-1")
+                    .unwrap(),
+                labby_runtime::artifacts::LibraryActorId::from_canonical_projection("owner-1")
+                    .unwrap(),
+            ),
+            visibility: SkillVisibility::Private,
+            archived: false,
+            active_revision_id: None,
+            latest_revision_id: "revision-1".to_owned(),
+            latest_revision_files: Vec::new(),
+            search_metadata: vec![
+                "Fleet Health".to_owned(),
+                "Monitor storage fleet health".to_owned(),
+                "monitoring".to_owned(),
+            ],
+            provenance_provider: Some("repository".to_owned()),
+            materialized: true,
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+        };
+
+        assert!(artifact_matches(&store, &record, Some("fleet")));
+        assert!(artifact_matches(&store, &record, Some("repository")));
+        assert!(artifact_matches(&store, &record, Some("storage")));
+        assert!(artifact_matches(&store, &record, Some("monitoring")));
+        assert!(!artifact_matches(
+            &store,
+            &record,
+            Some("descriptor-only-value")
+        ));
+    }
+
+    #[test]
     fn history_window_is_page_bounded_and_preserves_newest_first_cursor_order() {
         let revisions = (0..10_000)
             .map(|index| format!("rev-{index:05}"))
@@ -1966,7 +2100,7 @@ mod tests {
             &service,
             &runtime,
             &identity,
-            "skill_library.create",
+            "artifacts.create",
             params.clone(),
             "timeout-recovery-first",
         )
@@ -1999,7 +2133,7 @@ mod tests {
             &service,
             &runtime,
             &identity,
-            "skill_library.create",
+            "artifacts.create",
             params,
             "timeout-recovery-replay",
         )
@@ -2076,7 +2210,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.create",
+                "artifacts.create",
                 first_params.clone(),
                 &SkillLibraryCorrelationId::parse("lost-response-1").unwrap(),
             )
@@ -2107,7 +2241,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.create",
+                "artifacts.create",
                 json!({
                     "name": "newer-generation",
                     "files": [{"path":"SKILL.md", "content":"---\nname: newer-generation\ndescription: second\n---\nsecond\n"}],
@@ -2129,7 +2263,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.create",
+                "artifacts.create",
                 first_params,
                 &SkillLibraryCorrelationId::parse("lost-response-1").unwrap(),
             )
@@ -2177,7 +2311,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.list",
+                "artifacts.list",
                 json!({}),
                 &SkillLibraryCorrelationId::parse("versioned-list").unwrap(),
             )
@@ -2210,14 +2344,14 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|action| action == "skill_library.create")
+                .any(|action| action == "artifacts.create")
         );
         assert!(
             summary["allowed_actions"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|action| action == "skill_library.activate")
+                .any(|action| action == "artifacts.activate")
         );
         assert!(summary.get("ownership").is_none());
 
@@ -2226,7 +2360,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.validate",
+                "artifacts.validate",
                 json!({
                     "name": "bad",
                     "files": [{"path":"../secret", "content":"nope"}]
@@ -2241,10 +2375,10 @@ mod tests {
         assert!(invalid["rejections"][0].get("code").is_some());
 
         for (action, params) in [
-            ("skill_library.get", json!({"artifact_id": artifact_id})),
-            ("skill_library.history", json!({"artifact_id": artifact_id})),
+            ("artifacts.get", json!({"artifact_id": artifact_id})),
+            ("artifacts.history", json!({"artifact_id": artifact_id})),
             (
-                "skill_library.read",
+                "artifacts.read",
                 json!({
                     "artifact_id": artifact_id,
                     "revision_id": revision_id,
@@ -2270,7 +2404,7 @@ mod tests {
                 &runtime,
                 caller(),
                 "bootstrap-default",
-                "skill_library.archive",
+                "artifacts.archive",
                 json!({
                     "artifact_id": artifact_id,
                     "expected_library_version": 2,
@@ -2281,10 +2415,10 @@ mod tests {
             .await
             .unwrap();
         for (action, params) in [
-            ("skill_library.get", json!({"artifact_id": artifact_id})),
-            ("skill_library.history", json!({"artifact_id": artifact_id})),
+            ("artifacts.get", json!({"artifact_id": artifact_id})),
+            ("artifacts.history", json!({"artifact_id": artifact_id})),
             (
-                "skill_library.read",
+                "artifacts.read",
                 json!({
                     "artifact_id": artifact_id,
                     "revision_id": revision_id,
@@ -2393,7 +2527,7 @@ mod tests {
             &service,
             &runtime,
             &eli,
-            "skill_library.create",
+            "artifacts.create",
             json!({
                 "name": "shared-brief",
                 "visibility": "shared",
@@ -2431,7 +2565,7 @@ mod tests {
             &service,
             &runtime,
             &eli,
-            "skill_library.activate",
+            "artifacts.activate",
             json!({
                 "artifact_id": artifact_id,
                 "expected_revision_id": revision_id,
@@ -2489,7 +2623,7 @@ mod tests {
             &service,
             &runtime,
             &pujit,
-            "skill_library.list",
+            "artifacts.list",
             json!({}),
             "pujit-list-shared",
         )
@@ -2508,7 +2642,7 @@ mod tests {
             &service,
             &runtime,
             &pujit,
-            "skill_library.read",
+            "artifacts.read",
             json!({"artifact_id": artifact_id, "revision_id": revision_id, "path": "SKILL.md"}),
             "pujit-read-exact",
         )
@@ -2519,7 +2653,7 @@ mod tests {
 
         let personal = acceptance_dispatch(&service, &runtime,
             &pujit,
-            "skill_library.create",
+            "artifacts.create",
             json!({
                 "name": "pujit-private",
                 "files": [{"path": "SKILL.md", "content": "---\nname: pujit-private\ndescription: private\n---\nprivate\n"}],
@@ -2535,7 +2669,7 @@ mod tests {
             &service,
             &runtime,
             &eli,
-            "skill_library.create",
+            "artifacts.create",
             json!({
                 "name": "eli-private",
                 "files": [{"path": "SKILL.md", "content": "---\nname: eli-private\ndescription: private\n---\nprivate\n"}],
@@ -2558,22 +2692,22 @@ mod tests {
         let before_denials = store.library_snapshot().unwrap();
         let denial_cases = [
             (
-                "skill_library.get",
+                "artifacts.get",
                 json!({"artifact_id": owner_private_id}),
                 json!({"artifact_id": random_id}),
             ),
             (
-                "skill_library.read",
+                "artifacts.read",
                 json!({"artifact_id": owner_private_id, "revision_id": owner_private_revision, "path": "SKILL.md"}),
                 json!({"artifact_id": random_id, "revision_id": owner_private_revision, "path": "SKILL.md"}),
             ),
             (
-                "skill_library.history",
+                "artifacts.history",
                 json!({"artifact_id": owner_private_id}),
                 json!({"artifact_id": random_id}),
             ),
             (
-                "skill_library.save",
+                "artifacts.save",
                 json!({
                     "artifact_id": owner_private_id,
                     "expected_revision_id": owner_private_revision,
@@ -2590,22 +2724,22 @@ mod tests {
                 }),
             ),
             (
-                "skill_library.activate",
+                "artifacts.activate",
                 json!({"artifact_id": owner_private_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-activate"}),
                 json!({"artifact_id": random_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "random-activate"}),
             ),
             (
-                "skill_library.rollback",
+                "artifacts.rollback",
                 json!({"artifact_id": owner_private_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-rollback"}),
                 json!({"artifact_id": random_id, "expected_revision_id": owner_private_revision, "expected_library_version": before_denials.version, "idempotency_key": "random-rollback"}),
             ),
             (
-                "skill_library.deactivate",
+                "artifacts.deactivate",
                 json!({"artifact_id": owner_private_id, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-deactivate"}),
                 json!({"artifact_id": random_id, "expected_library_version": before_denials.version, "idempotency_key": "random-deactivate"}),
             ),
             (
-                "skill_library.archive",
+                "artifacts.archive",
                 json!({"artifact_id": owner_private_id, "expected_library_version": before_denials.version, "idempotency_key": "inaccessible-archive"}),
                 json!({"artifact_id": random_id, "expected_library_version": before_denials.version, "idempotency_key": "random-archive"}),
             ),
@@ -2657,7 +2791,7 @@ mod tests {
                 &service,
                 &runtime,
                 &pujit,
-                "skill_library.get",
+                "artifacts.get",
                 json!({"artifact_id": owner_private_id}),
                 "pujit-private-denied"
             )
@@ -2668,7 +2802,7 @@ mod tests {
             &service,
             &runtime,
             &jake,
-            "skill_library.get",
+            "artifacts.get",
             json!({"artifact_id": personal_id}),
             "jake-private-admin",
         )
@@ -2681,7 +2815,7 @@ mod tests {
             &service,
             &runtime,
             &eli,
-            "skill_library.create",
+            "artifacts.create",
             json!({
                 "name": "shared-brief",
                 "visibility": "shared",
@@ -2703,7 +2837,7 @@ mod tests {
                 &service,
                 &runtime,
                 &eli,
-                "skill_library.create",
+                "artifacts.create",
                 json!({
                     "name": "shared-brief",
                     "visibility": "shared",
@@ -2762,7 +2896,7 @@ mod tests {
                         SkillLibraryTransport::browser(true, true),
                     ),
                     "bootstrap-default",
-                    "skill_library.list",
+                    "artifacts.list",
                     json!({}),
                     &SkillLibraryCorrelationId::parse("pujit-revoked").unwrap(),
                 )

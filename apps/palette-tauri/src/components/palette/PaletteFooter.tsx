@@ -1,4 +1,4 @@
-import { Settings, X } from "lucide-react";
+import { LayoutDashboard, Settings, X } from "lucide-react";
 
 import { Button } from "@/components/ui/aurora/button";
 import { Kbd } from "@/components/ui/aurora/kbd";
@@ -10,12 +10,13 @@ interface PaletteFooterProps {
   config: PaletteConfig | null;
   configError: string | null;
   onSettings: () => void;
+  onControlPlane: () => void;
   onHide: () => void;
 }
 
 // Footer row: keyboard hint legend on the left, endpoint status + settings/hide
 // controls on the right.
-export function PaletteFooter({ config, configError, onSettings, onHide }: PaletteFooterProps) {
+export function PaletteFooter({ config, configError, onSettings, onControlPlane, onHide }: PaletteFooterProps) {
   const showHints = config?.showFooterHints ?? false;
   return (
     <footer className="palette-footer">
@@ -43,6 +44,17 @@ export function PaletteFooter({ config, configError, onSettings, onHide }: Palet
         ) : (
           <StatusIndicator tone="syncing" label="Loading" />
         )}
+        <Button
+          variant="plain"
+          size="unstyled"
+          className="titlebar-button"
+          type="button"
+          onClick={onControlPlane}
+          aria-label="Open Control Plane"
+          title="Open Control Plane"
+        >
+          <LayoutDashboard size={14} />
+        </Button>
         <Button
           variant="plain"
           size="unstyled"

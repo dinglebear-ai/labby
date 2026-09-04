@@ -401,7 +401,7 @@ pub struct LabConfig {
     pub mcp_apps: McpAppsConfig,
     /// Optional server-held exact-revision Skill acquisition connections.
     #[serde(default)]
-    pub skill_library: SkillLibraryPreferences,
+    pub artifacts: ArtifactPreferences,
     /// Maximum time to wait for one proxied upstream MCP tool/resource/prompt response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_request_timeout_ms: Option<u64>,
@@ -469,17 +469,25 @@ impl Default for LabConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SkillLibraryPreferences {
+pub struct ArtifactPreferences {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SkillLibrarySourceConfig>,
+    pub sources: Vec<ArtifactSourceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SkillLibrarySourceConfig {
+pub struct ArtifactSourceConfig {
     pub id: String,
-    pub kind: SkillLibrarySourceKind,
+    pub kind: ArtifactSourceKind,
+    /// Exact-revision acquisition endpoint used by `artifacts.import`.
     pub endpoint: String,
+    /// Depot HTTP origin used for curated operations and raw uploads.
+    ///
+    /// This is deliberately separate from `endpoint`: the latter accepts the
+    /// exact-acquisition POST contract, while this value is an origin to which
+    /// Labby appends fixed `/api/operations/...` and `/uploads/...` paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_plane_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_addresses: Vec<std::net::IpAddr>,
     /// Name of an environment variable containing the server-held bearer secret.
@@ -489,7 +497,7 @@ pub struct SkillLibrarySourceConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SkillLibrarySourceKind {
+pub enum ArtifactSourceKind {
     Depot,
     Repository,
 }
@@ -2685,6 +2693,31 @@ mod tests {
         let mut cfg: LabConfig = toml::from_str(toml).expect("parse");
         cfg.normalize_protected_mcp_routes().expect("normalize");
         cfg
+    }
+
+    #[test]
+    fn artifact_authority_urls_have_separate_config_contracts() {
+        let cfg = parse_normalized_config(
+            r#"
+[[artifacts.sources]]
+id = "primary"
+kind = "depot"
+endpoint = "https://depot.example/v1/artifacts/exact"
+control_plane_url = "https://depot.example"
+pinned_addresses = ["8.8.8.8"]
+bearer_token_env = "LABBY_DEPOT_TOKEN"
+"#,
+        );
+        let source = &cfg.artifacts.sources[0];
+        assert_eq!(source.endpoint, "https://depot.example/v1/artifacts/exact");
+        assert_eq!(
+            source.control_plane_url.as_deref(),
+            Some("https://depot.example")
+        );
+        assert_eq!(
+            source.bearer_token_env.as_deref(),
+            Some("LABBY_DEPOT_TOKEN")
+        );
     }
 
     #[cfg(feature = "gateway")]

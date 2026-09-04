@@ -33,7 +33,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `server_logs` | [services/SERVER_LOGS.md](./services/SERVER_LOGS.md) | Labby's own server-process log query and journal tail |
 | `fs` | [services/FILESYSTEM.md](./services/FILESYSTEM.md) | Optional jailed read-only workspace browsing and preview |
 | `snippets` | [services/SNIPPETS.md](./services/SNIPPETS.md) | Reusable Code Mode workflow storage, validation, execution, testing, promotion |
-| `skills` | [services/SKILLS.md](./services/SKILLS.md) | Native and compatibility reads plus the authenticated local Skill Library MCP App |
+| `artifacts` | [services/SKILLS.md](./services/SKILLS.md) | Durable Artifact library, remote authority control plane, and native Agent Skills projection |
 | `lab_admin` | [services/LAB_ADMIN.md](./services/LAB_ADMIN.md) | Runtime-conditional onboarding audit surface |
 | access owner bootstrap | [services/ACCESS.md](./services/ACCESS.md) | Browser-only explicit creation of the first access-control owner |
 | direct stdio proxy | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | One selected stdio MCP server exposed over Streamable HTTP |
@@ -88,6 +88,11 @@ Normative cross-surface contracts live under [contracts/](./contracts/):
 - [Gateway schema resources](./contracts/gateway-schema-resources.md)
 - [Skills extension](./contracts/skills-extension.md)
 - [Stdio MCP proxy](./contracts/stdio-mcp-proxy.md)
+- [Unraid Core integration](./contracts/unraid-core-integration-v1.md) —
+  implemented unbundled appliance boundary; not an authorization to package
+  Labby.
+- [Core provider protocol](./contracts/core-provider-protocol-v1.md) —
+  implemented private Core capability boundary for Labby Code Mode.
 
 ## Product Design
 
