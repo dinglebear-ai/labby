@@ -71,7 +71,7 @@ mod linux {
         while index < args.len() {
             match args[index].to_str() {
                 Some("--") => return Ok((read_only, read_write, &args[index + 1..])),
-                Some("--read-only") | Some("--read-write") => {
+                Some("--read-only" | "--read-write") => {
                     let writable = args[index] == "--read-write";
                     let path = args
                         .get(index + 1)
@@ -83,7 +83,7 @@ mod linux {
                     }
                     index += 2;
                 }
-                _ => bail!("invalid stdio sandbox argument: {:?}", args[index]),
+                _ => bail!("invalid stdio sandbox argument: {}", args[index].display()),
             }
         }
         bail!("missing -- before sandboxed command")
