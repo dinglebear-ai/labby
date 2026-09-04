@@ -263,7 +263,7 @@ async fn resolve_raw_upstream_tool_scoped_hides_priority_zero_upstreams() {
 }
 
 #[tokio::test]
-async fn advertised_subject_scoped_oauth_tool_resolves_and_executes() {
+async fn advertised_subject_scoped_oauth_tool_normalizes_metadata_and_executes() {
     let upstream = fixture_oauth_upstream("private", "http://unused.invalid/mcp");
     let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
     pool.install_test_subject_tools_for_upstream(
@@ -271,8 +271,21 @@ async fn advertised_subject_scoped_oauth_tool_resolves_and_executes() {
         "alice",
         vec![rmcp::model::Tool::new(
             "private_ping".to_string(),
-            "private ping",
-            Arc::new(serde_json::Map::new()),
+            "### Private ping \u{2066}documentation\u{2069}",
+            Arc::new(serde_json::Map::from_iter([
+                ("type".to_string(), json!("object")),
+                ("required".to_string(), json!(["query"])),
+                (
+                    "properties".to_string(),
+                    json!({
+                        "query": {
+                            "type": "string",
+                            "description": "### Query \u{2066}documentation\u{2069}",
+                            "enum": ["\u{2066}exact\u{2069}"]
+                        }
+                    }),
+                ),
+            ])),
         )],
     )
     .await;
@@ -308,6 +321,18 @@ async fn advertised_subject_scoped_oauth_tool_resolves_and_executes() {
         .await
         .expect("advertised Code Mode tool resolves");
     assert_eq!(resolved.tool.name.as_ref(), "private_ping");
+    let description = resolved.tool.description.as_deref().expect("description");
+    assert!(!description.contains("###"));
+    assert!(!description.contains('\u{2066}'));
+    assert!(!description.contains('\u{2069}'));
+    let query_schema = &resolved.tool.input_schema["properties"]["query"];
+    let query_description = query_schema["description"].as_str().unwrap();
+    assert!(!query_description.contains("###"));
+    assert!(!query_description.contains('\u{2066}'));
+    assert!(!query_description.contains('\u{2069}'));
+    // Documentation is normalized, but schema values remain exact. Both the
+    // discovery contract and the final peer check must use this representation.
+    assert_eq!(query_schema["enum"], json!(["\u{2066}exact\u{2069}"]));
     for selector in ["private_ping", "private::private_ping"] {
         let (owner, resolved) = manager
             .resolve_raw_upstream_tool(selector, None, Some("alice"))
@@ -320,7 +345,7 @@ async fn advertised_subject_scoped_oauth_tool_resolves_and_executes() {
     CodeModeHost::call_tool(
         &manager,
         "private::private_ping",
-        json!({}),
+        json!({"query": "\u{2066}exact\u{2069}"}),
         &caller,
         CodeModeSurface::Mcp,
         &ToolScope::default(),
