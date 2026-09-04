@@ -7,7 +7,7 @@ use axum::{
     http::HeaderMap,
     routing::post,
 };
-use labby_auth::VerifiedIdentity;
+use labby_auth::{Authenticator, VerifiedIdentity};
 use serde_json::Value;
 
 use crate::api::error::ApiError;
@@ -173,6 +173,17 @@ async fn handle(
     let request_id = headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok());
+    if identity
+        .as_ref()
+        .is_some_and(|identity| identity.authenticator() == Authenticator::ProductCredential)
+    {
+        return Err(ToolError::Forbidden {
+            message: "project product credentials must use their bound protected MCP route"
+                .to_string(),
+            required_scopes: Vec::new(),
+        }
+        .into());
+    }
     require_read_scope(&req.action, request_id, auth.as_ref())?;
 
     #[cfg(feature = "gateway")]
@@ -405,6 +416,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode, header},
     };
+    use labby_auth::{Authenticator, VerifiedIdentity};
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -463,13 +475,16 @@ mod tests {
         }
     }
 
-    fn app(auth: Option<AuthContext>) -> Router {
+    fn app(auth: Option<AuthContext>, identity: Option<VerifiedIdentity>) -> Router {
         let state = AppState::from_registry(crate::registry::build_default_registry());
-        let app = super::routes(state.clone()).router.with_state(state);
-        match auth {
-            Some(auth) => app.layer(Extension(auth)),
-            None => app,
+        let mut app = super::routes(state.clone()).router.with_state(state);
+        if let Some(auth) = auth {
+            app = app.layer(Extension(auth));
         }
+        if let Some(identity) = identity {
+            app = app.layer(Extension(identity));
+        }
+        app
     }
 
     async fn post(app: Router, body: serde_json::Value) -> axum::response::Response {
@@ -487,21 +502,25 @@ mod tests {
 
     #[tokio::test]
     async fn unauthenticated_request_is_forbidden() {
-        let response = post(app(None), json!({ "action": "skills.list", "params": {} })).await;
+        let response = post(
+            app(None, None),
+            json!({ "action": "skills.list", "params": {} }),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
     async fn authenticated_non_read_scope_can_inspect_help_but_not_list() {
         let help = post(
-            app(Some(auth(&["profile"]))),
+            app(Some(auth(&["profile"])), None),
             json!({ "action": "help", "params": {} }),
         )
         .await;
         assert_eq!(help.status(), StatusCode::OK);
 
         let list = post(
-            app(Some(auth(&["profile"]))),
+            app(Some(auth(&["profile"])), None),
             json!({ "action": "skills.list", "params": {} }),
         )
         .await;
@@ -511,10 +530,26 @@ mod tests {
     #[tokio::test]
     async fn read_scope_can_list_native_skills() {
         let response = post(
-            app(Some(auth(&["lab:read"]))),
+            app(Some(auth(&["lab:read"])), None),
             json!({ "action": "skills.list", "params": { "limit": 5 } }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn product_credential_is_rejected_by_generic_skills_api() {
+        let identity = VerifiedIdentity::local_credential(
+            Authenticator::ProductCredential,
+            "project-credential-1",
+        )
+        .expect("product credential identity");
+        let response = post(
+            app(Some(auth(&["lab:read"])), Some(identity)),
+            json!({ "action": "skills.list", "params": {} }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }
