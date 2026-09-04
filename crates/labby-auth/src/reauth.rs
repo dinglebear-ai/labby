@@ -65,6 +65,23 @@ pub struct TrustedAuthEvent {
     pub(crate) authenticated_at: i64,
 }
 
+impl TrustedAuthEvent {
+    pub(crate) fn from_google(
+        authority: &BrowserAuthority,
+        evidence: &crate::google::GoogleFreshAuth,
+    ) -> Result<Self, ProofError> {
+        if authority.identity_provider() != Some("google")
+            || authority.session_snapshot().subject != evidence.subject()
+        {
+            return Err(ProofError::Denied);
+        }
+        Ok(Self {
+            binding: authority.binding(),
+            authenticated_at: evidence.authenticated_at(),
+        })
+    }
+}
+
 pub struct Purpose {
     pub(crate) digest: [u8; 32],
     pub(crate) operation: String,
@@ -100,6 +117,25 @@ impl Purpose {
             digest: keyed_fingerprint("reauth.purpose.v1", &[&encoded])?,
             operation: operation.to_owned(),
             scope: scope.to_owned(),
+        })
+    }
+
+    pub(crate) fn stored_parts(&self) -> ([u8; 32], &str, &str) {
+        (self.digest, &self.operation, &self.scope)
+    }
+
+    pub(crate) fn from_stored(
+        digest: [u8; 32],
+        operation: String,
+        scope: String,
+    ) -> Result<Self, ProofError> {
+        if operation.is_empty() || operation.len() > 128 || scope.is_empty() || scope.len() > 128 {
+            return Err(ProofError::InvalidPurpose);
+        }
+        Ok(Self {
+            digest,
+            operation,
+            scope,
         })
     }
 }

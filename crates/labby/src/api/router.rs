@@ -299,9 +299,10 @@ async fn auth_browser_login(
 
 async fn auth_callback(
     State(state): State<AppState>,
+    headers: HeaderMap,
     query: Query<labby_auth::types::CallbackQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(labby_auth::authorize::callback(State(app_auth_state(&state)?), query).await?)
+    Ok(labby_auth::authorize::callback(State(app_auth_state(&state)?), headers, query).await?)
 }
 
 async fn auth_token(
@@ -2388,7 +2389,52 @@ pub(crate) fn build_router_with_external_auth(
                     RouteAuth::BrowserSession,
                 ),
                 post(crate::api::browser_session::auth_logout),
+            )
+            .route(
+                RouteDescriptor::new(
+                    "GET",
+                    "/auth/reauth/return",
+                    "reauth_return",
+                    "oauth",
+                    RouteAuth::Public,
+                ),
+                get(crate::api::browser_session::reauth_return),
             );
+        if credential_auth_configured {
+            let reauth_routes = crate::api::route_registry::RouteGroup::empty()
+                .route(
+                    RouteDescriptor::new(
+                        "POST",
+                        "/auth/reauth",
+                        "reauth_start",
+                        "oauth",
+                        RouteAuth::BrowserSession,
+                    ),
+                    post(crate::api::browser_session::reauth_start),
+                )
+                .route(
+                    RouteDescriptor::new(
+                        "GET",
+                        "/auth/reauth/{interaction}",
+                        "reauth_poll",
+                        "oauth",
+                        RouteAuth::BrowserSession,
+                    ),
+                    get(crate::api::browser_session::reauth_poll),
+                )
+                .route(
+                    RouteDescriptor::new(
+                        "DELETE",
+                        "/auth/reauth/{interaction}",
+                        "reauth_cancel",
+                        "oauth",
+                        RouteAuth::BrowserSession,
+                    ),
+                    axum::routing::delete(crate::api::browser_session::reauth_cancel),
+                )
+                .map_router(|router| router.route_layer(make_auth_layer(true)));
+            route_group = route_group.merge(reauth_routes);
+        }
         let local_session_routes = services::local_session::routes(state.clone())
             .map_router(|router| router.route_layer(make_auth_layer(true)));
         route_group = route_group.merge(local_session_routes);

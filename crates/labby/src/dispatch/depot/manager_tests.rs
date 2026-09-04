@@ -116,8 +116,10 @@ fn membership_changes_on_disable_and_secrets_rotate_only_their_provider() {
 
 #[test]
 fn composition_uses_effective_toml_and_one_shared_manager_without_environment_reads() {
-    let mut config = crate::config::LabConfig::default();
-    config.depot = preferences("Configured", "prefix");
+    let config = crate::config::LabConfig {
+        depot: preferences("Configured", "prefix"),
+        ..Default::default()
+    };
     let state = crate::api::state::AppState::new().with_config(config);
     let clone = state.clone();
     assert!(Arc::ptr_eq(&state.depot_manager, &clone.depot_manager));

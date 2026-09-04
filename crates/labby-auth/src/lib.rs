@@ -21,6 +21,8 @@ pub mod metadata;
 pub mod middleware;
 pub mod project_session;
 pub mod reauth;
+#[cfg(feature = "http-axum")]
+pub mod reauth_browser;
 #[cfg(test)]
 mod reauth_tests;
 #[cfg(feature = "http-axum")]
