@@ -136,6 +136,18 @@ fn write_private_temporary(
 
 #[cfg(not(windows))]
 pub(super) fn publish_new(path: &Path, bytes: &[u8]) -> io::Result<PrepareFileIdentity> {
+    publish_new_with_writer(path, bytes, |file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    })
+}
+
+#[cfg(not(windows))]
+fn publish_new_with_writer(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<PrepareFileIdentity> {
     validate_size(bytes)?;
     if !path.is_absolute() {
         return Err(io::Error::new(
@@ -147,16 +159,16 @@ pub(super) fn publish_new(path: &Path, bytes: &[u8]) -> io::Result<PrepareFileId
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "output has no parent"))?;
     reject_insecure_dir(parent)?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
-    }
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
+    // Publish complete bytes, never a visible empty/partial credential or ID.
+    // NamedTempFile defaults to owner-only mode; no-clobber publication keeps
+    // an existing destination (including a symlink) untouched.
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".bootstrap-publication-")
+        .tempfile_in(parent)?;
+    write(temporary.as_file_mut())?;
+    let file = temporary
+        .persist_noclobber(path)
+        .map_err(|error| error.error)?;
     let identity = identity(path, &file, bytes)?;
     sync_parent(parent)?;
     Ok(identity)
@@ -425,6 +437,62 @@ fn sync_parent(parent: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_reader_never_observes_partial_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        create_private_dir(directory.path()).unwrap();
+        let path = directory.path().join("identity");
+        let (partial, observed) = std::sync::mpsc::channel();
+        let (resume, proceed) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let path = &path;
+            let writer = scope.spawn(move || {
+                publish_new_with_writer(path, b"complete identity", |file| {
+                    file.write_all(b"complete ")?;
+                    partial.send(()).unwrap();
+                    proceed
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    file.write_all(b"identity")?;
+                    file.sync_all()
+                })
+            });
+            observed
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            assert_eq!(
+                read_private(path).unwrap_err().kind(),
+                io::ErrorKind::NotFound
+            );
+            resume.send(()).unwrap();
+            writer.join().unwrap().unwrap();
+        });
+        assert_eq!(read_private(&path).unwrap(), b"complete identity");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_write_failure_and_lost_race_clean_temporary_files() {
+        let directory = tempfile::tempdir().unwrap();
+        create_private_dir(directory.path()).unwrap();
+        let path = directory.path().join("identity");
+        let failure = publish_new_with_writer(&path, b"complete", |file| {
+            file.write_all(b"partial")?;
+            Err(io::Error::other("injected sync failure"))
+        });
+        assert!(failure.is_err());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+        publish_new(&path, b"winner").unwrap();
+        assert_eq!(
+            publish_new(&path, b"loser").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(read_private(&path).unwrap(), b"winner");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn oversized_artifacts_are_refused_before_publication_and_during_read() {
