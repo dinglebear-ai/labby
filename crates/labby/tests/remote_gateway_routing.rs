@@ -130,11 +130,35 @@ async fn local_code_mode_execution_fits_a_one_mebibyte_main_stack() {
 
 #[tokio::test]
 async fn local_stdio_discovery_fits_a_one_mebibyte_main_stack() {
+    let home = tempfile::tempdir().unwrap();
+    assert_stdio_discovery(small_stack_command(home.path())).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_stdio_discovery_retains_headroom_below_one_mebibyte() {
+    let home = tempfile::tempdir().unwrap();
+    // The native Windows test remains authoritative for its ABI. This
+    // stricter Unix budget catches growth before it consumes that headroom.
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", "ulimit -s 768 && exec \"$@\"", "labby-stack-headroom"])
+        .arg(env!("CARGO_BIN_EXE_labby"))
+        .kill_on_drop(true)
+        .env("LABBY_HOME", home.path())
+        .env("LABBY_LOG_DIR", home.path().join("logs"))
+        .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
+        .env("LABBY_SERVER_URL", "")
+        .env("LABBY_MCP_HTTP_TOKEN", "")
+        .env("LABBY_MCP_HTTP_HOST", "127.0.0.1")
+        .env("LABBY_MCP_HTTP_PORT", "9");
+    assert_stdio_discovery(command).await;
+}
+
+async fn assert_stdio_discovery(mut command: Command) {
     use rmcp::model::ProtocolVersion;
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 
-    let home = tempfile::tempdir().unwrap();
-    let mut command = small_stack_command(home.path());
     command.arg("mcp");
     let transport = rmcp::transport::TokioChildProcess::new(command).unwrap();
     let client = tokio::time::timeout(
@@ -154,6 +178,54 @@ async fn local_stdio_discovery_fits_a_one_mebibyte_main_stack() {
         .expect("tools/list must finish promptly")
         .unwrap();
     let exposes_gateway = page.tools.iter().any(|tool| tool.name == "gateway");
+    let resource = tokio::time::timeout(
+        Duration::from_secs(10),
+        client.read_resource(rmcp::model::ReadResourceRequestParams::new("lab://catalog")),
+    )
+    .await
+    .expect("resources/read must finish promptly")
+    .expect("catalog resource must remain readable");
+    assert!(
+        serde_json::to_value(resource).unwrap()["contents"]
+            .as_array()
+            .is_some_and(|contents| !contents.is_empty())
+    );
+    let prompt = tokio::time::timeout(
+        Duration::from_secs(10),
+        client.get_prompt(
+            rmcp::model::GetPromptRequestParams::new("service-discover").with_arguments(
+                serde_json::json!({"service": "gateway"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        ),
+    )
+    .await
+    .expect("prompts/get must finish promptly")
+    .expect("built-in prompt must remain readable");
+    assert!(
+        serde_json::to_value(prompt).unwrap()["messages"]
+            .as_array()
+            .is_some_and(|messages| !messages.is_empty())
+    );
+    let completion = tokio::time::timeout(
+        Duration::from_secs(10),
+        client.complete(rmcp::model::CompleteRequestParams::new(
+            rmcp::model::Reference::for_prompt("service-discover"),
+            rmcp::model::ArgumentInfo::new("service", "gate"),
+        )),
+    )
+    .await
+    .expect("completion must finish promptly")
+    .expect("prompt service completion must succeed");
+    assert!(
+        completion
+            .completion
+            .values
+            .iter()
+            .any(|value| value == "gateway")
+    );
     tokio::time::timeout(Duration::from_secs(10), client.cancel())
         .await
         .expect("stdio shutdown must finish promptly")

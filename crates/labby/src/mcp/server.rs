@@ -780,15 +780,17 @@ impl ServerHandler for LabMcpServer {
         Ok(())
     }
 
-    async fn complete(
+    fn complete(
         &self,
         mut request: CompleteRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CompleteResult, ErrorData> {
-        restore_request_meta(&mut request.meta, &context.meta);
-        Ok(provenance::stamp_complete_result(
-            self.complete_impl(request, context).await?,
-        ))
+    ) -> impl Future<Output = Result<CompleteResult, ErrorData>> + Send {
+        Box::pin(async move {
+            restore_request_meta(&mut request.meta, &context.meta);
+            Ok(provenance::stamp_complete_result(
+                self.complete_impl(request, context).await?,
+            ))
+        })
     }
 
     async fn list_prompts(
@@ -801,15 +803,19 @@ impl ServerHandler for LabMcpServer {
         ))
     }
 
-    async fn get_prompt(
+    fn get_prompt(
         &self,
         mut request: GetPromptRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResponse, ErrorData> {
-        restore_request_meta(&mut request.meta, &context.meta);
-        Ok(provenance::stamp_get_prompt_response(
-            self.get_prompt_impl(request, context).await?,
-        ))
+    ) -> impl Future<Output = Result<GetPromptResponse, ErrorData>> + Send {
+        // Bound the SDK's shared request-dispatch frame, including discovery
+        // requests which never execute this branch.
+        Box::pin(async move {
+            restore_request_meta(&mut request.meta, &context.meta);
+            Ok(provenance::stamp_get_prompt_response(
+                self.get_prompt_impl(request, context).await?,
+            ))
+        })
     }
 
     async fn list_resources(
@@ -832,20 +838,22 @@ impl ServerHandler for LabMcpServer {
         ))
     }
 
-    async fn read_resource(
+    fn read_resource(
         &self,
         mut request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResponse, ErrorData> {
-        restore_request_meta(&mut request.meta, &context.meta);
-        let response = match self.read_resource_impl(request, context).await? {
-            ReadResourceResponse::Complete(result) => result
-                .with_ttl_ms(0)
-                .with_cache_scope(CacheScope::Private)
-                .into(),
-            incomplete => incomplete,
-        };
-        Ok(provenance::stamp_read_resource_response(response))
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + Send {
+        Box::pin(async move {
+            restore_request_meta(&mut request.meta, &context.meta);
+            let response = match self.read_resource_impl(request, context).await? {
+                ReadResourceResponse::Complete(result) => result
+                    .with_ttl_ms(0)
+                    .with_cache_scope(CacheScope::Private)
+                    .into(),
+                incomplete => incomplete,
+            };
+            Ok(provenance::stamp_read_resource_response(response))
+        })
     }
 
     async fn list_tools(
