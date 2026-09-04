@@ -1177,7 +1177,22 @@ fn unit_path() -> PathBuf {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
-    atomic_write_with_parent_sync(path, bytes, |dir| std::fs::File::open(dir)?.sync_all())
+    atomic_write_with_parent_sync(path, bytes, sync_parent_directory)
+}
+
+fn sync_parent_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        // Match configuration and durable-state publication: the file is
+        // synced before atomic replacement, but we do not claim Unix directory
+        // fsync durability on platforms without that operation.
+        let _ = dir;
+        Ok(())
+    }
 }
 
 fn atomic_write_with_parent_sync(

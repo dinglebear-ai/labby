@@ -566,6 +566,9 @@ fn spawn_stderr_drain(
 #[cfg(test)]
 mod tests {
     #[cfg(windows)]
+    mod windows_fixture;
+
+    #[cfg(windows)]
     use std::process::Stdio;
 
     #[cfg(windows)]
@@ -632,26 +635,34 @@ mod tests {
     async fn shutdown_reaps_the_runner_and_its_descendant() {
         use futures::StreamExt as _;
 
-        let script = concat!(
-            "$child = Start-Process -FilePath 'C:\\Windows\\System32\\ping.exe' ",
-            "-ArgumentList '-t','127.0.0.1' -PassThru; ",
-            "[Console]::Out.WriteLine($child.Id); [Console]::Out.Flush(); ",
-            "Wait-Process -Id $child.Id"
-        );
+        // Re-enter a native Rust fixture: PowerShell needs ambient Windows/.NET
+        // configuration that the runner intentionally does not inherit.
+        let executable = std::env::current_exe().expect("test executable");
         let mut runner = PooledRunner::spawn_stub_command(
-            "powershell.exe",
-            &["-NoProfile", "-NonInteractive", "-Command", script],
+            executable.to_str().expect("test executable path"),
+            &[
+                "--exact",
+                "pool::runner_handle::tests::windows_fixture::runner_descendant",
+                "--ignored",
+                "--nocapture",
+            ],
         )
         .expect("spawn Windows runner stand-in");
         let runner_pid = runner.child_pid.expect("runner pid");
-        let descendant_pid: u32 =
-            tokio::time::timeout(std::time::Duration::from_secs(10), runner.lines.next())
-                .await
-                .expect("descendant pid timeout")
-                .expect("runner stdout closed")
-                .expect("descendant pid line")
-                .parse()
-                .expect("numeric descendant pid");
+        let descendant_pid: u32 = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(line) = runner.lines.next().await {
+                let line = line.expect("descendant pid line");
+                if let Some(pid) = line.strip_prefix("LABBY_DESCENDANT_PID=") {
+                    return pid.parse().expect("numeric descendant pid");
+                }
+            }
+            panic!(
+                "runner stdout closed: {:?}",
+                runner.stderr.take_since_and_clear(0).await
+            );
+        })
+        .await
+        .expect("descendant pid timeout");
 
         runner.shutdown().await.expect("clean runner shutdown");
 

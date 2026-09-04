@@ -953,7 +953,7 @@ mod tests {
         write_private(
             &root.join(".env"),
             format!(
-                "LABBY_BIND_ADDR=127.0.0.1:3030\nUNRELATED_ABSOLUTE={}\nLABBY_AUTH_SQLITE_PATH={}\n",
+                "LABBY_BIND_ADDR=127.0.0.1:3030\nUNRELATED_ABSOLUTE='{}'\nLABBY_AUTH_SQLITE_PATH='{}'\n",
                 temp.path().join("unrelated").display(),
                 external_db.display()
             )

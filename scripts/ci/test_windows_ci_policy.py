@@ -42,6 +42,20 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertIn("key: palette-tauri-windows-v1", block)
         self.assertIn("cache-on-failure: true", block)
 
+    def test_native_containment_is_not_replaced_by_unix_supervisor_checks(self) -> None:
+        block = job_block(self.workflow, "test-windows", "release-contract")
+        self.assertIn(
+            "run: cargo nextest run --workspace --all-features --locked --profile ci "
+            "--partition hash:${{ matrix.shard }}/4\n",
+            block,
+        )
+        self.assertIn(
+            "run: cargo nextest run -p labby --test windows_job_object_reaping "
+            "--all-features --locked --profile ci --run-ignored ignored-only\n",
+            block,
+        )
+        self.assertNotIn("continue-on-error: true", block)
+
     def test_workspace_windows_job_is_required_and_palette_is_advisory(self) -> None:
         windows = job_block(self.workflow, "test-windows", "release-contract")
         self.assertIn("if: ${{ needs.changes.outputs.rust_test == 'true' }}", windows)
