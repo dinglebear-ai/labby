@@ -1137,7 +1137,7 @@ jobs:
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: . -> target
-          key: workspace-nextest-v1
+          key: workspace-native-windows-v2
           cache-on-failure: true
       - name: Prepare hosted Windows build cache
         shell: pwsh
@@ -1250,21 +1250,12 @@ jobs:
       - name: Check Windows Job Object helper crate
         shell: pwsh
         run: cargo check -p labby-winjob --all-targets --locked
-      - name: Run cargo nextest
+      - name: Compile every Windows workspace target
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $process = Start-Process `
-            -FilePath cargo `
-            -ArgumentList @("nextest", "run", "--workspace", "--all-features", "--locked", "--profile", "ci") `
-            -NoNewWindow `
-            -PassThru
-
-          while (-not $process.WaitForExit(5000)) {
-            Write-Host "Windows nextest still running at $(Get-Date -Format o)"
-          }
-
-          exit $process.ExitCode
+        run: cargo test --workspace --all-features --locked --no-run
+      - name: Run Windows-specific filesystem and ACL tests
+        shell: pwsh
+        run: cargo nextest run --workspace --all-features --locked --profile ci -E 'test(/windows/) or test(/acl/) or test(/reparse/)' --no-tests pass
       - name: Run Windows Job Object reaping integration test
         shell: pwsh
         run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only --no-tests pass

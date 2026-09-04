@@ -24,8 +24,10 @@ class WindowsCiPolicyTests(unittest.TestCase):
         self.assertNotIn("self-hosted", block)
         self.assertIn("timeout-minutes: 60", block)
         self.assertIn("Swatinem/rust-cache@", block)
-        self.assertIn("key: workspace-nextest-v1", block)
+        self.assertIn("key: workspace-native-windows-v2", block)
         self.assertIn("cache-on-failure: true", block)
+        self.assertIn("cargo test --workspace --all-features --locked --no-run", block)
+        self.assertIn("test(/windows/) or test(/acl/) or test(/reparse/)", block)
 
     def test_palette_windows_job_is_hosted_cached_and_bounded(self) -> None:
         block = job_block(self.workflow, "palette-windows", "rust-coverage")
