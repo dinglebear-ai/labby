@@ -23,7 +23,8 @@ jobs:
       - name: Check out caller
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          path: target
+          # The pinned checker excludes manifests under target/ and vendor/.
+          path: caller
           persist-credentials: false
       - name: Check out immutable contract implementation
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
@@ -35,7 +36,7 @@ jobs:
       - name: Validate repository contract
         run: >-
           python3 workflow-library/scripts/fleet_contract.py check
-          --repo target --profile rust --allow-arm64
+          --repo caller --profile rust --allow-arm64
 
   repository-contract:
     name: Repository Contract

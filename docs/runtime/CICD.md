@@ -32,6 +32,8 @@ GitHub-hosted runners. The repository contract still checks out its immutable
 implementation from the pinned workflows revision, but the validation job
 itself does not depend on the self-hosted fleet. Keeping these checks in the
 caller makes the runner boundary visible and testable in this repository.
+The caller checkout lives in `caller/`, not `target/` or `vendor/`: the pinned
+checker excludes Cargo manifests beneath those build/dependency directory names.
 
 That window: `ci.yml` always comes from the merge ref, so a pull request that
 adds a routing key gates on a key the trusted classifier cannot emit, and every
@@ -117,8 +119,8 @@ rather than adding another required context. Separate required contexts are
 reserved for controls, like the protected-docs guard and repository contract,
 that intentionally execute from a trusted workflow boundary.
 
-The rmcp dependency is pinned by immutable Git revision in Cargo metadata, so
-the ordinary manifest, lockfile, security, and conformance checks cover SDK
+The rmcp dependency is constrained by exact version and immutable Git revision
+in Cargo metadata, so the ordinary manifest, lockfile, security, and conformance checks cover SDK
 changes without a copied vendor tree or a separate vendor-approval workflow.
 
 ## CI Checks
