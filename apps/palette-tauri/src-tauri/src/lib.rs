@@ -33,6 +33,7 @@ pub(crate) fn warn(message: impl Display) {
 struct LabbySettings {
     server_url: String,
     static_token: Option<String>,
+    project_id: Option<String>,
     shortcut: String,
     theme: PaletteTheme,
     hide_on_blur: bool,
@@ -193,6 +194,7 @@ fn merge_settings(persisted: PartialPaletteSettings, defaults: LabbySettings) ->
     normalize_settings(LabbySettings {
         server_url: persisted.server_url.unwrap_or(defaults.server_url),
         static_token: persisted.static_token.unwrap_or(defaults.static_token),
+        project_id: persisted.project_id.or(defaults.project_id),
         shortcut: persisted
             .shortcut
             .unwrap_or_else(|| DEFAULT_SHORTCUT.to_string()),
@@ -208,10 +210,14 @@ fn default_settings() -> LabbySettings {
     let static_token = value_for("LABBY_MCP_HTTP_TOKEN")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let project_id = value_for("LABBY_PROJECT_ID")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     LabbySettings {
         server_url,
         static_token,
+        project_id,
         shortcut: DEFAULT_SHORTCUT.to_string(),
         theme: PaletteTheme::System,
         hide_on_blur: true,
@@ -232,6 +238,7 @@ fn default_server_url(api_url: Option<&str>) -> String {
 pub(crate) struct PartialPaletteSettings {
     server_url: Option<String>,
     static_token: Option<Option<String>>,
+    project_id: Option<String>,
     shortcut: Option<String>,
     theme: Option<PaletteTheme>,
     hide_on_blur: Option<bool>,
@@ -248,6 +255,10 @@ fn normalize_settings(mut settings: LabbySettings) -> LabbySettings {
         .static_token
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty());
+    settings.project_id = settings
+        .project_id
+        .map(|project_id| project_id.trim().to_string())
+        .filter(|project_id| !project_id.is_empty());
     settings.shortcut = normalize_shortcut_label(&settings.shortcut);
     settings
 }
@@ -523,7 +534,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::default_server_url;
+    use super::{LabbySettings, PaletteTheme, default_server_url, normalize_settings};
 
     #[test]
     fn default_server_url_prefers_dedicated_api_url() {
@@ -536,5 +547,28 @@ mod tests {
     #[test]
     fn default_server_url_does_not_use_oauth_public_url() {
         assert_eq!(default_server_url(None), "http://localhost:8765");
+    }
+
+    #[test]
+    fn project_context_is_trimmed_and_empty_values_are_removed() {
+        let settings = |project_id| LabbySettings {
+            server_url: "http://localhost:8765".to_string(),
+            static_token: None,
+            project_id,
+            shortcut: "Ctrl+Shift+Space".to_string(),
+            theme: PaletteTheme::System,
+            hide_on_blur: true,
+            open_results_inline: true,
+            show_footer_hints: false,
+        };
+
+        assert_eq!(
+            normalize_settings(settings(Some(" team-project ".to_string()))).project_id,
+            Some("team-project".to_string())
+        );
+        assert_eq!(
+            normalize_settings(settings(Some("   ".to_string()))).project_id,
+            None
+        );
     }
 }

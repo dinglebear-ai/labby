@@ -88,6 +88,7 @@ The app reads Labby connection settings from environment defaults first:
 
 - `LABBY_API_URL` (preferred; API origin that serves `/v1/palette/*`)
 - `LABBY_MCP_HTTP_TOKEN`
+- `LABBY_PROJECT_ID` (required for project-scoped Skill Library operations such as import)
 
 `LABBY_PUBLIC_URL` is intentionally not used as a palette endpoint: it is the
 OAuth issuer/callback base for the Labby server, not an API origin. Configure
