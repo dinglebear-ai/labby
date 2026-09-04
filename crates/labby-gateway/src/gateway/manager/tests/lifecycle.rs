@@ -532,14 +532,27 @@ async fn transactional_selective_probe_does_not_hold_publication_barrier() {
     let mut charlie = fixture_http_upstream("charlie");
     charlie.url = Some(format!("http://{address}/mcp"));
 
-    let adding = {
+    let mut adding = {
         let manager = manager.clone();
         tokio::spawn(async move { manager.add(charlie, None, Some("test"), None).await })
     };
-    let (socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
-        .await
-        .expect("selective probe reached blocking server")
-        .expect("accepted probe connection");
+    // Admission includes durable config publication and Windows ACL helpers.
+    // Those are fixture preparation, not the publication-reader latency being
+    // tested below. Surface an early mutation failure instead of hiding it
+    // behind a listener timeout; keep the actual reader deadline at one second.
+    let socket = tokio::select! {
+        accepted = tokio::time::timeout(Duration::from_secs(30), listener.accept()) => {
+            match accepted {
+                Ok(Ok((socket, _))) => socket,
+                failure => {
+                    adding.abort();
+                    drop(adding.await);
+                    panic!("selective probe did not reach blocking server: {failure:?}");
+                }
+            }
+        }
+        result = &mut adding => panic!("selective add ended before its probe connected: {result:?}"),
+    };
 
     let (published, published_pool) =
         tokio::time::timeout(Duration::from_secs(1), manager.published_config_and_pool())
