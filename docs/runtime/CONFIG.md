@@ -70,9 +70,65 @@ The code-owned proxy key inventory lives in
 - `[[protected_mcp_routes]]`: route-scoped OAuth resource servers.
 - `[[virtual_servers]]`: virtual servers backed by registered Labby services.
 - `[public_urls]`: canonical external URLs.
+- `[[skill_library.sources]]`: server-owned exact Artifact acquisition
+  connections used by durable Skill Library imports.
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
+
+## Durable Depot Skill Imports
+
+`proxy_skills` is live MCP catalog federation; it does not install anything.
+To make a Depot Skill survive a Depot outage or Labby restart, configure an
+exact acquisition source and call `skill_library.import`, followed by the
+separate `skill_library.activate` mutation.
+
+```toml
+[[skill_library.sources]]
+id = "unraid-team-depot"
+kind = "depot"
+endpoint = "https://notification-worker-depot-canary.jmagar.workers.dev/depot/artifacts/acquire"
+pinned_addresses = ["203.0.113.10", "2001:db8::10"]
+bearer_token_env = "UNRAID_TEAM_DEPOT_TOKEN"
+```
+
+The `id` must exactly match Depot's configured Artifact source identity. The
+endpoint and IP addresses are operator configuration, not request parameters.
+Resolve the deployed hostname immediately before configuration and include its
+accepted public A/AAAA addresses; Labby pins the connection to those addresses
+and rejects redirects, private peers, DNS rebinding, cross-origin component
+URLs, digest mismatches, and oversized responses. Put the bearer value in
+`$LABBY_HOME/.env`:
+
+```sh
+UNRAID_TEAM_DEPOT_TOKEN=replace-with-the-worker-machine-token
+```
+
+First call `skill_library.list` to obtain its current `library_version`. Then
+submit the immutable Depot Artifact and `sha256:` revision through `POST
+/v1/skills`:
+
+```json
+{
+  "action": "skill_library.import",
+  "params": {
+    "source": {
+      "kind": "depot",
+      "connection_id": "unraid-team-depot",
+      "artifact_id": "art_skill_team_example",
+      "revision_id": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "expected_library_version": 0,
+    "idempotency_key": "depot-import-art_skill_team_example-v1"
+  }
+}
+```
+
+The import receipt identifies the locally persisted revision but leaves it
+inactive. Use the returned library version as `expected_library_version` in an
+explicit `skill_library.activate` request. Reuse the same idempotency key when
+reconciling an uncertain response; do not mint a new key until the prior result
+is known.
 
 ### Trusted forwarded authority
 
