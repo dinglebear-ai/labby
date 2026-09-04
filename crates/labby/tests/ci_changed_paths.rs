@@ -15,6 +15,38 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
+fn repository_contract_checks_cargo_manifests_outside_ignored_directories() {
+    let workflow: serde_yaml::Value = serde_yaml::from_str(include_str!(
+        "../../../.github/workflows/repository-contract.yml"
+    ))
+    .expect("parse repository contract workflow");
+    let steps = workflow["jobs"]["contract"]["steps"]
+        .as_sequence()
+        .expect("contract steps");
+    let checkout = steps
+        .iter()
+        .find(|step| step["name"] == "Check out caller")
+        .expect("caller checkout");
+    let path = checkout["with"]["path"]
+        .as_str()
+        .expect("explicit caller path");
+    assert!(!Path::new(path).is_absolute());
+    assert!(Path::new(path).components().all(|part| {
+        matches!(part, std::path::Component::Normal(name) if name != "target" && name != "vendor")
+    }), "caller checkout must not bypass Cargo validation: {path}");
+    let validation = steps
+        .iter()
+        .find(|step| step["name"] == "Validate repository contract")
+        .expect("contract validation");
+    let command = validation["run"].as_str().expect("contract command");
+    let words = command.split_whitespace().collect::<Vec<_>>();
+    assert!(
+        words.windows(2).any(|pair| pair == ["--repo", path]),
+        "contract must inspect the caller checkout"
+    );
+}
+
+#[test]
 fn distributable_labby_feature_profiles_always_include_skills() {
     let manifest_text = fs::read_to_string(repo_root().join("crates/labby/Cargo.toml"))
         .expect("read Labby manifest");

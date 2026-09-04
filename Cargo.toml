@@ -85,7 +85,7 @@ toml = "1.1"
 serde_yaml_ng = "0.10.0"
 
 # mcp
-rmcp = { git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "0665dcac527abd6828a6bdc805821e820841e491", features = [
+rmcp = { version = "=3.1.4", git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "0665dcac527abd6828a6bdc805821e820841e491", features = [
   "server",
   "transport-io",
   "transport-child-process",

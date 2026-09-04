@@ -989,7 +989,9 @@ jobs:
       - name: Verify requirement-specific MCP authorization contracts
         run: python3 scripts/ci/mcp_auth_normative_conformance.py
       - name: Run dated protocol and extension suites
-        run: scripts/ci/mcp-conformance.sh
+        run: |
+          python3 -m unittest scripts/ci/test_mcp_conformance_script.py
+          scripts/ci/mcp-conformance.sh
       - name: Upload conformance reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
