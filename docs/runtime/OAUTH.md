@@ -28,7 +28,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
 | `LABBY_TOKEN_ENCRYPTION_KEY` | OAuth mode | 32-byte key encoded as 64 hex digits or 43 base64url characters; encrypts reusable Google provider credentials in `auth.db`. |
-| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported; user information, queries, and fragments are rejected rather than stripped. Both environment loading and programmatic auth-state construction validate this boundary before serving metadata. |
 | `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |

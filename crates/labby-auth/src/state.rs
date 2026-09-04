@@ -300,6 +300,9 @@ impl AuthState {
                 prefix = config.env_prefix
             )));
         }
+        // Programmatic construction must enforce the same issuer URL boundary
+        // as environment configuration, before metadata, redirects, or I/O.
+        config.validate_oauth_public_url()?;
         if config.token_encryption_key.is_none() {
             return Err(AuthError::Config(format!(
                 "{prefix}_TOKEN_ENCRYPTION_KEY is required when {prefix}_AUTH_MODE=oauth; \
@@ -594,6 +597,35 @@ mod tests {
     use super::*;
     use crate::config::GoogleConfig;
     use crate::util::now_unix;
+
+    #[tokio::test]
+    async fn programmatic_state_rejects_unsafe_public_url_before_creating_files() {
+        for public_url in [
+            "https://user:secret-canary@auth.example.com",
+            "https://auth.example.com?secret-canary=value",
+            "https://auth.example.com#secret-canary",
+            "http://auth.example.com",
+        ] {
+            let directory = tempdir().unwrap();
+            let config = AuthConfig {
+                mode: AuthMode::OAuth,
+                public_url: Some(Url::parse(public_url).unwrap()),
+                sqlite_path: directory.path().join("auth.db"),
+                key_path: directory.path().join("auth.pem"),
+                token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                    "fixture",
+                )),
+                ..AuthConfig::default()
+            };
+            let error = AuthState::new(config)
+                .await
+                .err()
+                .expect("unsafe issuer accepted");
+            assert!(error.to_string().contains("PUBLIC_URL"));
+            assert!(!error.to_string().contains("secret-canary"));
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        }
+    }
 
     #[tokio::test]
     async fn cloned_auth_states_share_resource_registry() {
