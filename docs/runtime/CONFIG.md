@@ -102,6 +102,12 @@ quarantined virtual servers are serialized alongside those sections.
 
 ## Durable Depot Skill Imports
 
+Local Artifact persistence flushes file contents before atomic publication.
+On Unix it also synchronizes the containing directories. Windows validates
+those directories and rejects reparse points, but this path does not provide
+the equivalent Unix directory-entry crash-durability guarantee. Transaction
+journals and recovery checks remain active on both platforms.
+
 `proxy_skills` is live MCP catalog federation; it does not install anything.
 To make a Depot Skill survive a Depot outage or Labby restart, configure an
 exact acquisition source and call `skill_library.import`, followed by the
