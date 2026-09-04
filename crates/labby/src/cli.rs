@@ -139,6 +139,7 @@ impl Command {
 }
 
 /// Dispatch a parsed [`Cli`] to the correct handler.
+#[allow(clippy::large_stack_frames)]
 pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
     let format = cli.format();
     match cli.command {

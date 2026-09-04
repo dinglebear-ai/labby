@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
-  AURORA_BADGE_LABEL,
   AURORA_CONTROL_SURFACE,
   AURORA_MEDIUM_PANEL,
   AURORA_MUTED_LABEL,

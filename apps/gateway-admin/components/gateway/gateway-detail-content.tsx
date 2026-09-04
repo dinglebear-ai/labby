@@ -750,6 +750,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       </DetailTopbarButton>
       {headerMenuOpen ? (
         <div className="absolute right-0 top-10 z-50 min-w-44 rounded-lg border border-aurora-border-strong bg-aurora-panel-strong p-1.5 shadow-[var(--aurora-shadow-strong)]">
+          <button type="button" onClick={() => { setActiveTab('settings'); setHeaderMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"><Settings size={13}/>Server settings</button>
           <button type="button" onClick={() => { void handleCopyConfig(); setHeaderMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary"><Copy size={13}/>Copy client config</button>
           <button type="button" onClick={() => { setRemoveConfirmationOpen(true); setHeaderMenuOpen(false) }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-aurora-error hover:bg-aurora-error/10"><Trash2 size={13}/>Remove server</button>
         </div>

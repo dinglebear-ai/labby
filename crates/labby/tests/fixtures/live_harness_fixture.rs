@@ -1,3 +1,5 @@
+//! Test fixture process used by the live browser harness integration tests.
+
 #![allow(clippy::panic)]
 
 use std::io::Write as _;

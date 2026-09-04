@@ -1,3 +1,9 @@
+---
+title: Unified Labby and Depot frontend
+created: 2026-09-03
+updated: 2026-09-03
+---
+
 # Unified Labby and Depot frontend
 
 `gateway-admin` is the only frontend for Labby and Depot. Depot is optional:

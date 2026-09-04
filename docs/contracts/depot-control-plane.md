@@ -1,6 +1,8 @@
 ---
 title: Depot control-plane compatibility contract
 status: active
+created: 2026-09-03
+updated: 2026-09-03
 ---
 
 # Depot control-plane compatibility contract

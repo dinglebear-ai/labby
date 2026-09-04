@@ -288,6 +288,7 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(super) fn run_migrations_with_fault(conn: &Connection, fault: &str) -> Result<(), AuthError> {
     run_migrations_inner(conn, Some(fault))
 }
