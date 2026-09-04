@@ -268,6 +268,11 @@ impl StateStore for SqliteStateStore {
                         "persisted authorization state has a negative created_at".to_string(),
                     )
                 })?;
+                if r.require_issuer && r.expected_issuer.is_none() {
+                    return Err(AuthError::AuthorizationFailed(
+                        "persisted authorization state requires a missing issuer".to_string(),
+                    ));
+                }
                 let pkce_verifier = PkceCodeVerifier::new(r.pkce_verifier);
                 let csrf_token = CsrfToken::new(r.csrf_token);
                 let mut state = StoredAuthorizationState::new_with_expected_issuer(
