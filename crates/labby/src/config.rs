@@ -14,6 +14,9 @@
 //! like `unraid` reads `UNRAID_URL` as the default instance and
 //! `UNRAID_NODE2_URL` as an additional instance labeled `node2`.
 
+pub mod depot;
+#[cfg(test)]
+mod depot_tests;
 pub mod env_merge;
 mod env_writer;
 mod paths;
@@ -318,6 +321,9 @@ pub(crate) fn set_test_config_toml_path(path: Option<PathBuf>) {
 /// Fully-resolved `lab` configuration, assembled from env + TOML.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LabConfig {
+    /// Instance-shared Depot discovery providers, independent of acquisition.
+    #[serde(default)]
+    pub depot: depot::DepotPreferences,
     /// Default output format for CLI commands that print tables.
     #[serde(default)]
     pub output: OutputPreferences,

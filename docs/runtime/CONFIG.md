@@ -76,6 +76,35 @@ The code-owned proxy key inventory lives in
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
 
+## Depot Discovery Configuration
+
+`[depot]` defines discovery preferences independently of acquisition sources.
+`public_enabled` defaults to `true`; the built-in provider identity is `public`,
+its display name is Public Depot, and its fixed endpoint is
+`https://depot.dinglebear.ai`. Configuration resolution performs no network I/O.
+
+Named providers use `[[depot.providers]]` with `id`, `name`, `endpoint`,
+`enabled`, and `auth_mode` (`anonymous` or `bearer`). Bearer providers reference
+a server-held `LABBY_DEPOT_*_TOKEN` key through `bearer_token_env`; secret values
+do not belong in TOML. HTTPS endpoints cannot contain credentials, queries, or
+fragments. Enabling a provider represents instance-shared read access, not
+acquisition or upstream mutation authority.
+
+There are at most 16 provider slots including Public and legacy configuration.
+IDs are lowercase ASCII slugs of 1–64 bytes; `public`, `all`, and `legacy` are
+reserved. Names contain 1–128 Unicode characters. Invalid entries and every
+entry with a duplicate ID are quarantined without preventing healthy siblings
+from resolving. Diagnostics expose bounded indices and error kinds, not raw
+values. Raw entries and unknown nested fields remain in the disk model for
+targeted editing. Malformed TOML remains a whole-file configuration error.
+Tombstones permanently reserve removed IDs, with a maximum of 4096 records.
+
+Legacy normalization keeps Public separate. A legacy URL with no explicit
+enable flag is enabled, but requires its bearer credential; it never becomes
+anonymous because a token is absent. Explicit disable preserves a disabled
+entry. A token or enable flag without a URL is invalid. `legacy_migrated` or a
+`legacy` tombstone suppresses legacy normalization to prevent resurrection.
+
 ## Durable Depot Skill Imports
 
 `proxy_skills` is live MCP catalog federation; it does not install anything.

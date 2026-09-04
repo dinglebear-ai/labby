@@ -27,6 +27,20 @@ The access store has no independent environment override.
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
 
+## Depot Discovery Credentials
+
+Named Depot discovery providers reference host-managed `LABBY_DEPOT_*_TOKEN`
+keys from TOML. These keys follow the normal process-over-dotenv precedence;
+their values stay server-side. Public Depot has a fixed endpoint and no token
+override. Discovery configuration is independent of exact-acquisition source
+credentials.
+
+The legacy keys are `LABBY_DEPOT_URL`, `LABBY_DEPOT_ENABLED`, and
+`LABBY_DEPOT_TOKEN`. The discovery configuration normalizer distinguishes an
+absent enable flag from explicit disable and requires a token for an enabled
+legacy URL. A persisted migration marker or removal tombstone takes precedence
+over legacy environment normalization. See [CONFIG.md](CONFIG.md#depot-discovery-configuration).
+
 ## Direct Stdio Proxy
 
 The default bearer secret is separate from the hosted daemon administrator

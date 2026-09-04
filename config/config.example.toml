@@ -334,3 +334,15 @@
 #   *_TOKEN            — service auth tokens
 #   *_USERNAME         — service usernames
 #   *_PASSWORD         — service passwords
+# Depot discovery is separate from exact-revision acquisition sources.
+# Enabled providers grant instance-shared read access; they do not grant writes.
+[depot]
+public_enabled = true
+
+# [[depot.providers]]
+# id = "team"
+# name = "Team Depot"
+# endpoint = "https://depot.example.com"
+# enabled = true
+# auth_mode = "bearer"
+# bearer_token_env = "LABBY_DEPOT_TEAM_TOKEN"
