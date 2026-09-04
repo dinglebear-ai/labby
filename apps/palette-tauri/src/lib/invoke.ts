@@ -45,6 +45,7 @@ export async function invoke<T = unknown>(
       return {
         serverUrl: "http://localhost:8765",
         staticToken: null,
+        projectId: null,
         shortcut: "Ctrl+Shift+Space",
         theme: "dark",
         hideOnBlur: false,

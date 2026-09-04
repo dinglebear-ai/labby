@@ -162,7 +162,7 @@ fn require_read_scope(
     })
 }
 
-async fn handle(
+pub(crate) async fn handle(
     State(state): State<AppState>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
