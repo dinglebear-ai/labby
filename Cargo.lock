@@ -1946,6 +1946,7 @@ dependencies = [
  "rmcp",
  "rsa",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

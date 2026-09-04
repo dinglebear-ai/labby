@@ -12,6 +12,32 @@ use sha2::{Digest, Sha256};
 
 use crate::error::AuthError;
 
+fn validate_restricted_file_path(path: &Path) -> Result<(), AuthError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(AuthError::Storage(
+            "restricted files require an absolute, traversal-free path".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_final_component_symlink(path: &Path) -> Result<bool, AuthError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(AuthError::Storage(
+            "restricted file path must not be a symbolic link".into(),
+        )),
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(AuthError::Storage(format!(
+            "inspect restricted file path: {error}"
+        ))),
+    }
+}
+
 pub fn now_unix() -> i64 {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -158,12 +184,16 @@ pub fn harden_secret_file(path: &Path) -> Result<(), AuthError> {
 /// Create a new, empty secret file and apply the platform-private access policy
 /// before returning the handle to code that can write sensitive bytes.
 pub fn create_restricted_secret_file(path: &Path) -> Result<std::fs::File, AuthError> {
+    validate_restricted_file_path(path)?;
+    reject_final_component_symlink(path)?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
     let file = options.open(path).map_err(|error| {
         AuthError::Storage(format!(
@@ -196,12 +226,16 @@ where
     H: FnOnce(&Path) -> Result<(), AuthError>,
     R: FnOnce(&Path) -> std::io::Result<()>,
 {
-    let existed = path.exists();
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
+    validate_restricted_file_path(path)?;
+    let existed = reject_final_component_symlink(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let file = options
         .open(path)
         .map_err(|error| AuthError::Storage(format!("open lock `{}`: {error}", path.display())))?;
     if let Err(error) = harden(path) {
@@ -366,6 +400,28 @@ mod restricted_lock_tests {
         assert!(!removal_attempted, "preexisting lock must not be removed");
         assert!(error.to_string().contains("hardening denied"));
         assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn restricted_files_reject_relative_paths() {
+        let error = create_restricted_secret_file(Path::new("secret.env")).unwrap_err();
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restricted_files_reject_final_component_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("config.lock");
+        std::fs::write(&target, b"sentinel").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let error = open_restricted_lock_file(&link).unwrap_err();
+        assert!(error.to_string().contains("symbolic link"));
+        assert_eq!(std::fs::read(target).unwrap(), b"sentinel");
     }
 }
 

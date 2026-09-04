@@ -402,24 +402,24 @@ fn restore_bundle_locked_with_cleanup(
     }
     journal.committed = true;
     persist_journal(&journal_path, &journal)?;
-    let mut cleanup_errors = Vec::new();
+    let mut cleanup_failure_count = 0_usize;
     for (_, prior) in installed {
         if let Some(prior) = prior {
-            if let Err(error) = cleanup_file(&prior) {
-                cleanup_errors.push(format!("remove {}: {error}", prior.display()));
-            } else if let Err(error) = sync_parent(&prior) {
-                cleanup_errors.push(format!("sync {}: {error}", prior.display()));
+            if cleanup_file(&prior).is_err() || sync_parent(&prior).is_err() {
+                cleanup_failure_count += 1;
             }
         }
     }
-    if let Err(error) = cleanup_file(&journal_path) {
-        cleanup_errors.push(format!("remove {}: {error}", journal_path.display()));
-    } else if let Err(error) = sync_parent(&journal_path) {
-        cleanup_errors.push(format!("sync {}: {error}", journal_path.display()));
+    if cleanup_file(&journal_path).is_err() || sync_parent(&journal_path).is_err() {
+        cleanup_failure_count += 1;
     }
     Ok(DurableStateRestore {
         manifest,
-        maintenance_warning: (!cleanup_errors.is_empty()).then(|| cleanup_errors.join("; ")),
+        maintenance_warning: (cleanup_failure_count > 0).then(|| {
+            format!(
+                "restore committed, but {cleanup_failure_count} cleanup operation(s) failed; inspect the installation root for retained rollback or journal artifacts"
+            )
+        }),
     })
 }
 
@@ -1625,7 +1625,9 @@ mod tests {
         let warning = outcome
             .maintenance_warning
             .expect("committed cleanup warning");
-        assert!(warning.contains("injected cleanup failure"));
+        assert!(warning.contains("1 cleanup operation(s) failed"));
+        assert!(!warning.contains("injected cleanup failure"));
+        assert!(!warning.contains(root.to_string_lossy().as_ref()));
         assert!(!paths.root().join("restore.journal.json").exists());
     }
 
