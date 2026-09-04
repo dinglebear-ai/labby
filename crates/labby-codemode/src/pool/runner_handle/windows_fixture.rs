@@ -9,7 +9,7 @@ fn runner_descendant() {
     let mut child = Command::new(std::env::current_exe().expect("fixture executable"))
         .args([
             "--exact",
-            "pool::runner_handle::tests::windows_fixture::parked_descendant",
+            "pool::runner_handle::windows_fixture::parked_descendant",
             "--ignored",
         ])
         .stdin(Stdio::null())

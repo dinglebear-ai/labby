@@ -563,11 +563,11 @@ fn spawn_stderr_drain(
     })
 }
 
+#[cfg(all(test, windows))]
+mod windows_fixture;
+
 #[cfg(test)]
 mod tests {
-    #[cfg(windows)]
-    mod windows_fixture;
-
     #[cfg(windows)]
     use std::process::Stdio;
 
@@ -642,7 +642,7 @@ mod tests {
             executable.to_str().expect("test executable path"),
             &[
                 "--exact",
-                "pool::runner_handle::tests::windows_fixture::runner_descendant",
+                "pool::runner_handle::windows_fixture::runner_descendant",
                 "--ignored",
                 "--nocapture",
             ],
