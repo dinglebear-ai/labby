@@ -30,7 +30,7 @@ use rmcp::model::{
     ReadResourceResult, Reference, Resource, ResourceContents, ResourceTemplate, Role,
     ServerCapabilities, ServerInfo, ServerNotification, ServerResult, SubscriptionFilter, Task,
     TaskPayload, TaskStatus, TaskStatusNotification, TaskStatusNotificationParams, Tool,
-    UpdateTaskParams,
+    ToolAnnotations, UpdateTaskParams,
 };
 use rmcp::service::{
     ClientLifecycleMode, ClientServiceExt, NotificationContext, Peer, PeerRequestOptions,
@@ -101,6 +101,10 @@ fn leaf_meta() -> MetaObject {
     meta
 }
 
+fn leaf_tool_annotations() -> ToolAnnotations {
+    ToolAnnotations::new().read_only(true).destructive(false)
+}
+
 fn leaf_tool(index: usize) -> Tool {
     Tool::new(
         format!("echo_{index:03}"),
@@ -110,6 +114,7 @@ fn leaf_tool(index: usize) -> Tool {
             json!({"type": "string"}),
         )])),
     )
+    .with_annotations(leaf_tool_annotations())
 }
 
 fn input_required() -> InputRequiredResult {
@@ -161,29 +166,36 @@ impl ServerHandler for LeafServer {
                 "needs_input",
                 "Return a first-class MRTR input_required result",
                 Arc::new(Map::new()),
-            ),
+            )
+            .with_annotations(leaf_tool_annotations()),
             Tool::new(
                 "task_lifecycle",
                 "Create a task that can be polled, updated, cancelled, and observed",
                 Arc::new(Map::new()),
-            ),
+            )
+            .with_annotations(leaf_tool_annotations()),
             Tool::new(
                 "progress",
                 "Emit request-scoped progress notifications",
                 Arc::new(Map::new()),
-            ),
+            )
+            .with_annotations(leaf_tool_annotations()),
             Tool::new(
                 "cancellable",
                 "Wait until downstream cancellation reaches the leaf",
                 Arc::new(Map::new()),
-            ),
+            )
+            .with_annotations(leaf_tool_annotations()),
         ]);
         if Self::subscription_catalog_changed() {
-            tools.push(Tool::new(
-                "subscription_added",
-                "Tool added when the subscription conformance signal fires",
-                Arc::new(Map::new()),
-            ));
+            tools.push(
+                Tool::new(
+                    "subscription_added",
+                    "Tool added when the subscription conformance signal fires",
+                    Arc::new(Map::new()),
+                )
+                .with_annotations(leaf_tool_annotations()),
+            );
         }
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -1035,7 +1047,10 @@ async fn run_driver() -> Result<()> {
         .and_then(ContentBlock::as_text)
         .map(|content| content.text.as_str())
         .context("nested echo text result")?;
-    ensure!(text.contains("echo_074:through-two-hops"));
+    ensure!(
+        text.contains("echo_074:through-two-hops"),
+        "unexpected nested echo text: {text}"
+    );
     let meta = echo_result.meta.context("nested echo provenance")?;
     ensure!(meta.0[SERVER_INFO_KEY]["name"] == json!("labby"));
     ensure!(meta.0[UPSTREAM_SERVER_INFO_KEY]["name"] == json!("labby-conformance-leaf"));
