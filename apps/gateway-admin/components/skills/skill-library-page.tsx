@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, BookOpen, Check, Download, FilePlus2, Loader2, Pencil, Plus, RefreshCw, Rocket, Search, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -81,32 +81,50 @@ export function SkillLibraryPageContent() {
   const [importConnection, setImportConnection] = useState('')
   const [importArtifactId, setImportArtifactId] = useState('')
   const [importRevisionId, setImportRevisionId] = useState('')
+  const [editingArtifact, setEditingArtifact] = useState<{ artifactId: string; revisionId: string } | null>(null)
+  const listGeneration = useRef(0)
+  const editorGeneration = useRef(0)
+
+  function invalidateEditorLoad() {
+    editorGeneration.current += 1
+    setBusy(current => current === 'load-revision' ? null : current)
+  }
+
+  function editorOperationIsCurrent(generation: number) {
+    return generation === editorGeneration.current
+  }
 
   const load = useCallback(async (signal?: AbortSignal, search = '') => {
+    const generation = ++listGeneration.current
     setLoading(true)
     setError(null)
     try {
       const next = await skillLibrary.list(search, signal)
+      if (generation !== listGeneration.current) return
       setPage(next)
       setSelectedId(current => current && next.items.some(item => item.artifact_id === current) ? current : next.items[0]?.artifact_id ?? null)
     } catch (cause) {
-      if (!signal?.aborted) setError(getErrorMessage(cause, 'Unable to load the Artifact Library.'))
+      if (!signal?.aborted && generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load the Artifact Library.'))
     } finally {
-      if (!signal?.aborted) setLoading(false)
+      if (!signal?.aborted && generation === listGeneration.current) setLoading(false)
     }
   }, [])
 
   const loadMore = useCallback(async () => {
     if (!page?.next_cursor) return
+    const generation = listGeneration.current
+    const cursor = page.next_cursor
+    const search = appliedQuery
     setLoading(true)
     setError(null)
     try {
-      const next = await skillLibrary.list(appliedQuery, undefined, page.next_cursor)
-      setPage(current => current ? { ...next, items: [...current.items, ...next.items] } : next)
+      const next = await skillLibrary.list(search, undefined, cursor)
+      if (generation !== listGeneration.current) return
+      setPage(current => current?.next_cursor === cursor ? { ...next, items: [...current.items, ...next.items] } : current)
     } catch (cause) {
-      setError(getErrorMessage(cause, 'Unable to load more Artifacts.'))
+      if (generation === listGeneration.current) setError(getErrorMessage(cause, 'Unable to load more Artifacts.'))
     } finally {
-      setLoading(false)
+      if (generation === listGeneration.current) setLoading(false)
     }
   }, [appliedQuery, page?.next_cursor])
 
@@ -118,9 +136,12 @@ export function SkillLibraryPageContent() {
 
   const selected = useMemo(() => page?.items.find(item => item.artifact_id === selectedId), [page, selectedId])
   const file = files[activeFile]
+  const editorContextLocked = busy !== null && busy !== 'load-revision'
 
   function newSkill() {
+    invalidateEditorLoad()
     setSelectedId(null)
+    setEditingArtifact(null)
     setEditing(true)
     setName('my-skill')
     setVisibility(page?.create_visibilities[0] ?? 'private')
@@ -131,12 +152,16 @@ export function SkillLibraryPageContent() {
 
   async function editLatest() {
     if (!selected) return
+    const target = { artifactId: selected.artifact_id, revisionId: selected.latest_revision_id }
+    const generation = ++editorGeneration.current
     setBusy('load-revision')
     try {
       const contents = await Promise.all(selected.latest_revision_files.map(async revisionFile => {
-        const loaded = await skillLibrary.read(selected.artifact_id, selected.latest_revision_id, revisionFile.path)
+        const loaded = await skillLibrary.read(target.artifactId, target.revisionId, revisionFile.path)
         return { path: loaded.path, content: loaded.text }
       }))
+      if (generation !== editorGeneration.current) return
+      setEditingArtifact(target)
       setName(selected.name)
       setVisibility(selected.visibility)
       setFiles(contents)
@@ -144,36 +169,40 @@ export function SkillLibraryPageContent() {
       setValidation(null)
       setEditing(true)
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to load the latest revision.'))
+      if (generation === editorGeneration.current) toast.error(getErrorMessage(cause, 'Unable to load the latest revision.'))
     } finally {
-      setBusy(null)
+      if (generation === editorGeneration.current) setBusy(null)
     }
   }
 
   async function validate() {
+    const generation = editorGeneration.current
     setBusy('validate')
     try {
       const result = await skillLibrary.validate(name.trim(), files)
+      if (!editorOperationIsCurrent(generation)) return
       setValidation(result)
       if (result.valid) toast.success('Skill is valid')
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to validate this Skill.'))
+      if (editorOperationIsCurrent(generation)) toast.error(getErrorMessage(cause, 'Unable to validate this Skill.'))
     } finally {
-      setBusy(null)
+      if (editorOperationIsCurrent(generation)) setBusy(null)
     }
   }
 
   async function save() {
     if (!page) return
+    const generation = editorGeneration.current
     setBusy('save')
     try {
       const checked = await skillLibrary.validate(name.trim(), files)
+      if (!editorOperationIsCurrent(generation)) return
       setValidation(checked)
       if (!checked.valid) return
-      const receipt = selected
+      const receipt = editingArtifact
         ? await skillLibrary.save({
-            artifactId: selected.artifact_id,
-            revisionId: selected.latest_revision_id,
+            artifactId: editingArtifact.artifactId,
+            revisionId: editingArtifact.revisionId,
             files,
             expectedLibraryVersion: page.library_version,
             idempotencyKey: requestKey('save'),
@@ -183,15 +212,20 @@ export function SkillLibraryPageContent() {
             expectedLibraryVersion: page.library_version,
             idempotencyKey: requestKey('create'),
           })
+      if (!editorOperationIsCurrent(generation)) return
       toast.success('Immutable revision saved', { description: 'Activate it when you are ready to publish.' })
       setEditing(false)
+      setEditingArtifact(null)
       await load(undefined, appliedQuery)
+      if (!editorOperationIsCurrent(generation)) return
       setSelectedId(receipt.artifact_id)
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to save this Skill.'))
-      await load(undefined, appliedQuery)
+      if (editorOperationIsCurrent(generation)) {
+        toast.error(getErrorMessage(cause, 'Unable to save this Skill.'))
+        await load(undefined, appliedQuery)
+      }
     } finally {
-      setBusy(null)
+      if (editorOperationIsCurrent(generation)) setBusy(null)
     }
   }
 
@@ -236,23 +270,40 @@ export function SkillLibraryPageContent() {
 
   async function importArtifact() {
     if (!page) return
+    const connectionId = importConnection.trim()
+    const artifactId = importArtifactId.trim()
+    const revisionId = importRevisionId.trim()
+    if (!connectionId || !artifactId || !revisionId) {
+      toast.error('Connection, Artifact ID, and revision ID are required.')
+      return
+    }
+    const generation = editorGeneration.current
     setBusy('import')
     try {
-      const source = { kind: importKind, connection_id: importConnection.trim(), artifact_id: importArtifactId.trim(), revision_id: importRevisionId.trim() }
+      const source = {
+        kind: importKind,
+        connection_id: connectionId,
+        artifact_id: artifactId,
+        revision_id: revisionId,
+      }
       const receipt = await skillLibrary.import({
         source,
         expectedLibraryVersion: page.library_version,
         idempotencyKey: requestKey('import'),
       })
+      if (!editorOperationIsCurrent(generation)) return
       toast.success('Artifact imported', { description: 'The exact provider revision is now stored in this Labby library.' })
       setImporting(false)
       await load(undefined, appliedQuery)
+      if (!editorOperationIsCurrent(generation)) return
       setSelectedId(receipt.artifact_id)
     } catch (cause) {
-      toast.error(getErrorMessage(cause, 'Unable to import this Artifact.'))
-      await load(undefined, appliedQuery)
+      if (editorOperationIsCurrent(generation)) {
+        toast.error(getErrorMessage(cause, 'Unable to import this Artifact.'))
+        await load(undefined, appliedQuery)
+      }
     } finally {
-      setBusy(null)
+      if (editorOperationIsCurrent(generation)) setBusy(null)
     }
   }
 
@@ -260,7 +311,7 @@ export function SkillLibraryPageContent() {
     <div className="grid gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h2 className="font-display text-xl font-semibold">Artifact Library</h2><p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Durable, revisioned artifacts owned by Labby. Agent Skills are the first supported kind.</p></div>
-        <div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => void load(undefined, appliedQuery)} disabled={loading}><RefreshCw className={cn('size-4', loading && 'animate-spin')} />Refresh</Button><Button variant="outline" size="sm" onClick={() => { setImporting(true); setEditing(false) }} disabled={!page}><Download className="size-4" />Import</Button><Button size="sm" onClick={newSkill} disabled={!page?.can_create}><Plus className="size-4" />Create skill</Button></div>
+        <div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => void load(undefined, appliedQuery)} disabled={loading}><RefreshCw className={cn('size-4', loading && 'animate-spin')} />Refresh</Button><Button variant="outline" size="sm" onClick={() => { invalidateEditorLoad(); setImporting(true); setEditing(false) }} disabled={!page || editorContextLocked}><Download className="size-4" />Import</Button><Button size="sm" onClick={newSkill} disabled={!page?.can_create || editorContextLocked}><Plus className="size-4" />Create skill</Button></div>
       </div>
 
       {error ? <DashboardPanel title="Library unavailable"><p className="text-sm text-destructive">{error}</p></DashboardPanel> : null}
@@ -273,26 +324,26 @@ export function SkillLibraryPageContent() {
             <Input aria-label="Search artifacts" className="pl-8" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search artifacts" />
           </form>
           <div className="grid gap-1">
-            {page.items.length === 0 ? <div className="py-10 text-center"><BookOpen className="mx-auto mb-3 size-6 text-aurora-text-muted" /><p className="text-sm">No managed Skills yet.</p><Button className="mt-4" size="sm" onClick={newSkill}>Create the first Skill</Button></div> : page.items.map(item => <button key={item.artifact_id} onClick={() => { setSelectedId(item.artifact_id); setEditing(false); setValidation(null) }} className={cn('rounded-lg border px-3 py-2.5 text-left transition-colors', selectedId === item.artifact_id ? 'border-aurora-accent-primary bg-aurora-accent-primary/10' : 'border-transparent hover:border-aurora-border-subtle hover:bg-aurora-surface-muted/40')}><span className="block truncate text-sm font-medium">{item.name}</span><span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{lifecycle(item, page.library_version === page.published_library_version)} · {item.visibility === 'shared' ? 'Shared' : 'Personal'}</span></button>)}
+            {page.items.length === 0 ? <div className="py-10 text-center"><BookOpen className="mx-auto mb-3 size-6 text-aurora-text-muted" /><p className="text-sm">No managed Skills yet.</p><Button className="mt-4" size="sm" onClick={newSkill} disabled={editorContextLocked}>Create the first Skill</Button></div> : page.items.map(item => <button key={item.artifact_id} disabled={editorContextLocked} onClick={() => { invalidateEditorLoad(); setSelectedId(item.artifact_id); setEditing(false); setEditingArtifact(null); setValidation(null) }} className={cn('rounded-lg border px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60', selectedId === item.artifact_id ? 'border-aurora-accent-primary bg-aurora-accent-primary/10' : 'border-transparent hover:border-aurora-border-subtle hover:bg-aurora-surface-muted/40')}><span className="block truncate text-sm font-medium">{item.name}</span><span className={cn(AURORA_DENSE_META, 'text-aurora-text-muted')}>{lifecycle(item, page.library_version === page.published_library_version)} · {item.visibility === 'shared' ? 'Shared' : 'Personal'}</span></button>)}
           </div>
           {page.next_cursor ? <Button className="mt-3 w-full" variant="outline" size="sm" onClick={() => void loadMore()} disabled={loading}>{loading ? <Loader2 className="size-4 animate-spin" /> : null}Load more</Button> : null}
         </DashboardPanel>
 
-        <DashboardPanel title={importing ? 'Import exact Artifact' : editing ? selected ? `Revise ${selected.name}` : 'Create a Skill' : selected?.name ?? 'Select a Skill'}>
-          {importing ? <div className="grid gap-4">
+        <DashboardPanel title={importing ? 'Import exact Artifact' : editing ? editingArtifact ? `Revise ${name}` : 'Create a Skill' : selected?.name ?? 'Select a Skill'}>
+          {importing ? <form className="grid gap-4" onSubmit={event => { event.preventDefault(); void importArtifact() }}>
             <p className="text-sm text-aurora-text-muted">Import an immutable revision through a source configured by the Labby operator. Endpoints and credentials never enter the browser.</p>
-            <fieldset className="grid gap-1.5"><legend className={AURORA_MUTED_LABEL}>Source type</legend><RadioGroup value={importKind} onValueChange={value => setImportKind(value as 'repository' | 'depot')} className="flex min-h-9 items-center gap-5"><label className="flex items-center gap-2 text-sm"><RadioGroupItem value="repository" />Repository</label><label className="flex items-center gap-2 text-sm"><RadioGroupItem value="depot" />Depot</label></RadioGroup></fieldset>
-            <label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>{importKind === 'repository' ? 'Repository connection' : 'Depot connection'}</span><Input aria-label="Import connection" value={importConnection} onChange={event => setImportConnection(event.target.value)} placeholder="team-skills" /></label>
-            <label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Artifact ID</span><Input aria-label="Import artifact ID" value={importArtifactId} onChange={event => setImportArtifactId(event.target.value)} /></label>
-            <label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>{importKind === 'repository' ? 'Exact object ID' : 'Exact revision ID'}</span><Input aria-label="Import revision ID" className="font-mono text-xs" value={importRevisionId} onChange={event => setImportRevisionId(event.target.value)} placeholder="sha256:…" /></label>
-            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setImporting(false)}>Cancel</Button><Button onClick={() => void importArtifact()} disabled={busy !== null || !importConnection.trim() || !importArtifactId.trim() || !importRevisionId.trim()}>{busy === 'import' ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}Import exact revision</Button></div>
-          </div> : editing ? <div className="grid gap-4">
+            <fieldset className="grid gap-1.5" disabled={busy !== null}><legend className={AURORA_MUTED_LABEL}>Source type</legend><RadioGroup value={importKind} onValueChange={value => setImportKind(value as 'repository' | 'depot')} className="flex min-h-9 items-center gap-5"><label className="flex items-center gap-2 text-sm"><RadioGroupItem value="repository" />Repository</label><label className="flex items-center gap-2 text-sm"><RadioGroupItem value="depot" />Depot</label></RadioGroup></fieldset>
+            <label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>{importKind === 'repository' ? 'Repository connection' : 'Depot connection'}</span><Input aria-label="Import connection" value={importConnection} disabled={busy !== null} onChange={event => setImportConnection(event.target.value)} placeholder="team-skills" /></label>
+            <label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Artifact ID</span><Input aria-label="Import artifact ID" value={importArtifactId} disabled={busy !== null} onChange={event => setImportArtifactId(event.target.value)} /></label>
+            <label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>{importKind === 'repository' ? 'Exact object ID' : 'Exact revision ID'}</span><Input aria-label="Import revision ID" className="font-mono text-xs" value={importRevisionId} disabled={busy !== null} onChange={event => setImportRevisionId(event.target.value)} placeholder="sha256:…" /></label>
+            <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => { invalidateEditorLoad(); setImporting(false) }} disabled={busy !== null}>Cancel</Button><Button type="submit" disabled={busy !== null || !importConnection.trim() || !importArtifactId.trim() || !importRevisionId.trim()}>{busy === 'import' ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}Import exact revision</Button></div>
+          </form> : editing ? <div className="grid gap-4">
             <LifecycleRail validation={validation} />
             {validation && !validation.valid ? <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3"><p className="text-sm font-medium text-amber-500">Validation needs attention</p><ul className={cn(AURORA_DENSE_META, 'mt-2 list-disc pl-4 text-aurora-text-muted')}>{validation.rejections.map((item, index) => <li key={`${item.code}-${index}`}>{item.path ? `${item.path}: ` : ''}{item.field} · {item.code}</li>)}</ul></div> : null}
-            <div className="grid gap-4 sm:grid-cols-2"><label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Skill name</span><Input aria-label="Skill name" value={name} disabled={Boolean(selected)} onChange={event => setName(event.target.value)} /></label><fieldset className="grid gap-1.5" disabled={Boolean(selected)}><legend className={AURORA_MUTED_LABEL}>Save to</legend><RadioGroup value={visibility} onValueChange={value => setVisibility(value as SkillVisibility)} className="flex min-h-9 items-center gap-5">{page.create_visibilities.map(value => <label key={value} className="flex items-center gap-2 text-sm"><RadioGroupItem value={value} />{value === 'shared' ? 'Shared library' : 'Personal library'}</label>)}</RadioGroup></fieldset></div>
-            <div className="flex flex-wrap items-center gap-2">{files.map((item, index) => <Button key={`${item.path}-${index}`} variant={activeFile === index ? 'secondary' : 'ghost'} size="sm" onClick={() => setActiveFile(index)}>{item.path}</Button>)}<Button variant="outline" size="sm" onClick={() => { setFiles(current => [...current, { path: 'references/notes.md', content: '' }]); setActiveFile(files.length) }}><FilePlus2 className="size-4" />Supporting file</Button>{files.length > 1 ? <Button variant="ghost" size="icon-sm" aria-label="Remove current file" onClick={() => { setFiles(current => current.filter((_, index) => index !== activeFile)); setActiveFile(0) }}><Trash2 className="size-4" /></Button> : null}</div>
-            {file ? <><label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Logical file name</span><Input value={file.path} onChange={event => setFiles(current => current.map((item, index) => index === activeFile ? { ...item, path: event.target.value } : item))} /></label><label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Contents</span><Textarea className="min-h-72 font-mono text-xs leading-relaxed" value={file.content} onChange={event => setFiles(current => current.map((item, index) => index === activeFile ? { ...item, content: event.target.value } : item))} /></label></> : null}
-            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setEditing(false)}>Cancel</Button><Button variant="secondary" onClick={() => void validate()} disabled={busy !== null}>{busy === 'validate' ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}Validate</Button><Button onClick={() => void save()} disabled={busy !== null || !name.trim()}>{busy === 'save' ? <Loader2 className="size-4 animate-spin" /> : null}Save immutable revision</Button></div>
+            <div className="grid gap-4 sm:grid-cols-2"><label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Skill name</span><Input aria-label="Skill name" value={name} disabled={editingArtifact !== null || busy !== null} onChange={event => setName(event.target.value)} /></label><fieldset className="grid gap-1.5" disabled={editingArtifact !== null || busy !== null}><legend className={AURORA_MUTED_LABEL}>Save to</legend><RadioGroup value={visibility} onValueChange={value => setVisibility(value as SkillVisibility)} className="flex min-h-9 items-center gap-5">{page.create_visibilities.map(value => <label key={value} className="flex items-center gap-2 text-sm"><RadioGroupItem value={value} />{value === 'shared' ? 'Shared library' : 'Personal library'}</label>)}</RadioGroup></fieldset></div>
+            <div className="flex flex-wrap items-center gap-2">{files.map((item, index) => <Button key={`${item.path}-${index}`} variant={activeFile === index ? 'secondary' : 'ghost'} size="sm" disabled={busy !== null} onClick={() => setActiveFile(index)}>{item.path}</Button>)}<Button variant="outline" size="sm" disabled={busy !== null} onClick={() => { setFiles(current => [...current, { path: 'references/notes.md', content: '' }]); setActiveFile(files.length) }}><FilePlus2 className="size-4" />Supporting file</Button>{files.length > 1 ? <Button variant="ghost" size="icon-sm" aria-label="Remove current file" disabled={busy !== null} onClick={() => { setFiles(current => current.filter((_, index) => index !== activeFile)); setActiveFile(0) }}><Trash2 className="size-4" /></Button> : null}</div>
+            {file ? <><label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Logical file name</span><Input value={file.path} disabled={busy !== null} onChange={event => setFiles(current => current.map((item, index) => index === activeFile ? { ...item, path: event.target.value } : item))} /></label><label className="grid gap-1.5"><span className={AURORA_MUTED_LABEL}>Contents</span><Textarea className="min-h-72 font-mono text-xs leading-relaxed" value={file.content} disabled={busy !== null} onChange={event => setFiles(current => current.map((item, index) => index === activeFile ? { ...item, content: event.target.value } : item))} /></label></> : null}
+            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => { invalidateEditorLoad(); setEditing(false) }} disabled={busy !== null}>Cancel</Button><Button variant="secondary" onClick={() => void validate()} disabled={busy !== null}>{busy === 'validate' ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}Validate</Button><Button onClick={() => void save()} disabled={busy !== null || !name.trim()}>{busy === 'save' ? <Loader2 className="size-4 animate-spin" /> : null}Save immutable revision</Button></div>
           </div> : selected ? <div className="grid gap-5"><LifecycleRail selected={selected} libraryPublished={page.library_version === page.published_library_version} /><div className="flex flex-wrap gap-2"><Badge variant="outline">{selected.visibility === 'shared' ? 'Shared' : 'Personal'}</Badge><Badge variant="outline">{selected.provenance.source}</Badge><Badge variant="outline">{selected.latest_revision_files.length} files</Badge></div><div className="grid gap-3 sm:grid-cols-2"><div><p className={AURORA_MUTED_LABEL}>Published URI</p><code className="mt-1 block break-all text-xs">{selected.canonical_uri ?? 'Not published'}</code></div><div><p className={AURORA_MUTED_LABEL}>Latest revision</p><code className="mt-1 block break-all text-xs">{selected.latest_revision_id}</code></div></div><div className="flex flex-wrap justify-end gap-2"><Button variant="outline" onClick={() => void editLatest()} disabled={busy !== null || !selected.allowed_actions.includes('artifacts.save')}><Pencil className="size-4" />Edit latest</Button><Button variant="destructive" onClick={() => void archive()} disabled={busy !== null || !selected.allowed_actions.includes('artifacts.archive')}><Archive className="size-4" />Archive</Button><Button onClick={() => void activate()} disabled={busy !== null || selected.active_revision_id === selected.latest_revision_id || !selected.allowed_actions.includes('artifacts.activate')}><Rocket className="size-4" />{busy === 'activate' ? 'Publishing…' : 'Activate latest revision'}</Button></div></div> : <div className="flex min-h-72 items-center justify-center text-sm text-aurora-text-muted">Select a Skill or create a new one.</div>}
         </DashboardPanel>
       </div> : null}

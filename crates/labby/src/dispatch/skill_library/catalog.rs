@@ -1,7 +1,8 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use std::sync::LazyLock;
 
 #[cfg(test)]
-pub(crate) const ACTION_NAMES: &[&str] = &[
+pub(crate) const LOCAL_ACTION_NAMES: &[&str] = &[
     "artifacts.search",
     "artifacts.list",
     "artifacts.get",
@@ -17,10 +18,6 @@ pub(crate) const ACTION_NAMES: &[&str] = &[
     "artifacts.import",
     "artifacts.import_batch",
     "artifacts.refresh",
-    "artifacts.search_remote",
-    "artifacts.list_remote",
-    "artifacts.get_remote",
-    "artifacts.list_candidates",
 ];
 
 const ARTIFACT: ParamSpec = ParamSpec {
@@ -71,32 +68,6 @@ const SEARCH_PARAMS: &[ParamSpec] = &[
     PAGE[0],
     PAGE[1],
 ];
-const REMOTE_CONNECTION: ParamSpec = ParamSpec {
-    name: "connection_id",
-    ty: "string",
-    required: false,
-    description: "Configured authority; optional when exactly one is configured",
-};
-const REMOTE_SEARCH_PARAMS: &[ParamSpec] = &[
-    REMOTE_CONNECTION,
-    ParamSpec {
-        name: "query",
-        ty: "string",
-        required: true,
-        description: "Case-insensitive remote catalog query",
-    },
-    PAGE[1],
-];
-const REMOTE_PAGE_PARAMS: &[ParamSpec] = &[REMOTE_CONNECTION, PAGE[0], PAGE[1]];
-const REMOTE_GET_PARAMS: &[ParamSpec] = &[
-    REMOTE_CONNECTION,
-    ParamSpec {
-        name: "id",
-        ty: "string",
-        required: true,
-        description: "Stable remote Artifact id",
-    },
-];
 const FILES: ParamSpec = ParamSpec {
     name: "files",
     ty: "array",
@@ -119,7 +90,7 @@ const SOURCES: ParamSpec = ParamSpec {
     name: "sources",
     ty: "array",
     required: true,
-    description: "One to 100 exact immutable source selectors; acquisition is completed before the first local commit",
+    description: "One to 100 exact immutable source selectors; each acquisition is committed before the next begins",
 };
 const IMPORT_PARAMS: &[ParamSpec] = &[SOURCE, VERSION, IDEM];
 const IMPORT_BATCH_PARAMS: &[ParamSpec] = &[SOURCES, VERSION, IDEM];
@@ -139,10 +110,10 @@ const HISTORY_PARAMS: &[ParamSpec] = &[
     },
 ];
 
-pub(crate) const ACTIONS: [ActionSpec; 19] = [
+pub(crate) const LOCAL_ACTIONS: [ActionSpec; 15] = [
     spec(
         "artifacts.search",
-        "Search caller-visible stored Artifacts by identity and descriptive metadata",
+        "Search caller-visible stored Artifacts by indexed identity, description, tags, and provenance metadata",
         false,
         false,
         "VersionedArtifactPage",
@@ -293,39 +264,16 @@ pub(crate) const ACTIONS: [ActionSpec; 19] = [
         "SkillMutationReceipt",
         &[VERSION, IDEM],
     ),
-    spec(
-        "artifacts.search_remote",
-        "Search the configured remote Artifact catalog",
-        false,
-        false,
-        "RemoteArtifactSearch",
-        REMOTE_SEARCH_PARAMS,
-    ),
-    spec(
-        "artifacts.list_remote",
-        "List the combined hosted and projected remote Artifact catalog",
-        false,
-        false,
-        "RemoteArtifactPage",
-        REMOTE_PAGE_PARAMS,
-    ),
-    spec(
-        "artifacts.get_remote",
-        "Get one remote Artifact by stable identifier",
-        false,
-        false,
-        "RemoteArtifact",
-        REMOTE_GET_PARAMS,
-    ),
-    spec(
-        "artifacts.list_candidates",
-        "List remote discovery candidates awaiting intake",
-        false,
-        true,
-        "ArtifactCandidatePage",
-        REMOTE_PAGE_PARAMS,
-    ),
 ];
+
+/// Skill Library callback catalog. Remote discovery specs are borrowed from the canonical remote
+/// catalog rather than redeclared here; the broader `artifacts` service composes every remote spec.
+pub(crate) static ACTIONS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
+    LOCAL_ACTIONS
+        .into_iter()
+        .chain(crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS)
+        .collect()
+});
 
 const fn spec(
     name: &'static str,
@@ -352,7 +300,15 @@ mod tests {
     fn names_and_destructive_policy_are_stable() {
         assert_eq!(
             ACTIONS.iter().map(|a| a.name).collect::<Vec<_>>(),
-            ACTION_NAMES
+            LOCAL_ACTION_NAMES
+                .iter()
+                .copied()
+                .chain(
+                    crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS
+                        .iter()
+                        .map(|action| action.name),
+                )
+                .collect::<Vec<_>>()
         );
         assert!(ACTIONS.iter().all(|a| !a.destructive));
         assert!(

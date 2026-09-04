@@ -325,7 +325,7 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
 #[test]
 fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
     let cases = mcp_intents();
-    assert_eq!(cases.len(), 200);
+    assert_eq!(cases.len(), 201);
     let mut plans = BTreeMap::new();
     for intent in cases {
         let disposition = match intent.scenario_kind {
@@ -341,7 +341,7 @@ fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
         assert!(!intent.scenario_id.is_empty());
         assert!(!intent.fixture_params.fixture.is_empty());
     }
-    assert_eq!(plans.len(), 200);
+    assert_eq!(plans.len(), 201);
 }
 
 #[test]
@@ -372,7 +372,12 @@ async fn raw_mode_catalog_is_exact_and_builtin_help_executes_live() {
     let all_services = expected_service_tools();
     let expected = all_services
         .iter()
-        .filter(|service| service.as_str() != "lab_admin")
+        .filter(|service| {
+            !matches!(
+                service.as_str(),
+                "lab_admin" | "bundles" | "jobs" | "sources" | "uploads"
+            )
+        })
         .cloned()
         .collect::<BTreeSet<_>>();
     let advertised_services = advertised
@@ -462,7 +467,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         // exercised through the HTTP MCP route owned by this runner.
         .filter(|intent| intent.service != "lab_admin")
         .collect::<Vec<_>>();
-    assert_eq!(expected.len(), 197);
+    assert_eq!(expected.len(), 198);
 
     let mut consumed = BTreeSet::new();
     for intent in expected {
@@ -555,7 +560,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         .record();
         assert!(consumed.insert(intent.key()), "duplicate action execution");
     }
-    assert_eq!(consumed.len(), 197);
+    assert_eq!(consumed.len(), 198);
 
     let cleanup = runner.finish().await;
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);

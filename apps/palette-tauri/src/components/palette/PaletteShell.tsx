@@ -1,4 +1,4 @@
-import type { Dispatch, RefObject, SetStateAction } from "react";
+import { type Dispatch, type RefObject, type SetStateAction, useState } from "react";
 
 import { ActionList } from "@/components/palette/ActionList";
 import { AuthNotice } from "@/components/palette/AuthNotice";
@@ -7,10 +7,10 @@ import { PaletteFooter } from "@/components/palette/PaletteFooter";
 import { ResultView } from "@/components/palette/ResultView";
 import { SchemaForm } from "@/components/palette/SchemaForm";
 import { SettingsPanel } from "@/components/palette/SettingsPanel";
+import { launchControlPlane } from "@/lib/controlPlane";
+import { invoke } from "@/lib/invoke";
 import type { PaletteConfig } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
-import { openControlPlane } from "@/lib/controlPlane";
-import { invoke } from "@/lib/invoke";
 import type { RunState } from "@/lib/runState";
 
 interface PaletteShellProps {
@@ -57,6 +57,13 @@ interface PaletteShellProps {
 }
 
 export function PaletteShell(props: PaletteShellProps) {
+  const [controlPlaneError, setControlPlaneError] = useState<string | null>(null);
+
+  const openControlPlane = () => {
+    setControlPlaneError(null);
+    void launchControlPlane("/", setControlPlaneError);
+  };
+
   return (
     <div
       className={`aurora-page-shell palette-shell${props.compact ? " palette-shell-compact" : ""}${props.showResultsLayout ? " palette-shell-results" : " palette-shell-browse"}`}
@@ -140,13 +147,20 @@ export function PaletteShell(props: PaletteShellProps) {
       ) : null}
 
       {props.showContent && !props.settingsOpen ? (
-        <PaletteFooter
-          config={props.config}
-          configError={props.configError}
-          onControlPlane={() => void openControlPlane()}
-          onSettings={props.onToggleSettings}
-          onHide={() => void invoke("hide_palette")}
-        />
+        <>
+          {controlPlaneError ? (
+            <div className="control-plane-error" role="alert">
+              {controlPlaneError}
+            </div>
+          ) : null}
+          <PaletteFooter
+            config={props.config}
+            configError={props.configError}
+            onControlPlane={openControlPlane}
+            onSettings={props.onToggleSettings}
+            onHide={() => void invoke("hide_palette")}
+          />
+        </>
       ) : null}
     </div>
   );

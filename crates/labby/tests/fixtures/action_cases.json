@@ -5909,5 +5909,31 @@
     "exclusion_reason": null,
     "persistence_class": "none",
     "scenario_owner": "optional_external_runner"
+  },
+  {
+    "service": "artifacts",
+    "action": "artifacts.list_connections",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api",
+      "web_ui"
+    ],
+    "applicable_features": [
+      "all",
+      "skills"
+    ],
+    "scenario_kind": "external_optional",
+    "scenario_id": "external_optional::artifacts::list_connections",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home+synthetic-external",
+    "fixture_params": {
+      "fixture": "synthetic_external",
+      "parameters": {}
+    },
+    "required": false,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "optional_external_runner"
   }
 ]

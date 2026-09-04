@@ -40,7 +40,7 @@ the owner or an administrator.
 Every successful mutation returns the committed and published library versions,
 generation facts, the library digest, and explicit re-list guidance. Labby does
 not emit a Skills-specific `list_changed` notification; clients re-run
-`skills.list` or native `skills/list`.
+`artifacts.list` or native `skills/list`.
 
 ## Library Actions
 

@@ -135,6 +135,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let now = LibraryTimestamp::parse(jiff::Timestamp::now().to_string())?;
         let revision_id = materialized.interchange.revision.id.clone();
         let name = materialized.interchange.descriptor.name.clone();
+        let search_metadata = descriptor_search_metadata(&materialized.interchange.descriptor);
         let request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
             "action":"artifacts.import", "artifact_id":target_id,
             "revision_id": revision_id,
@@ -174,6 +175,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         active_revision_id: None,
                         latest_revision_id: revision_id.clone(),
                         latest_revision_files: library_files(&materialized.interchange.revision),
+                        search_metadata,
                         provenance_provider: materialized.interchange.provenance.provider.clone(),
                         materialized: true,
                         created_at: now.clone(),
@@ -565,6 +567,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                             latest_revision_id: revision_id.clone(),
                             latest_revision_files: library_files(
                                 &candidate_artifact.interchange.revision,
+                            ),
+                            search_metadata: descriptor_search_metadata(
+                                &candidate_artifact.interchange.descriptor,
                             ),
                             provenance_provider: candidate_artifact
                                 .interchange
@@ -1349,20 +1354,37 @@ fn artifact_matches(
             .provenance_provider
             .as_deref()
             .is_some_and(|provider| provider.to_lowercase().contains(query))
+        || record
+            .search_metadata
+            .iter()
+            .any(|value| value.to_lowercase().contains(query))
     {
         return true;
+    }
+    // Records written before the snapshot search index was introduced deserialize with an empty
+    // index. Consult durable descriptor data only for those records; newly indexed libraries keep
+    // the scan filesystem-free.
+    if !record.search_metadata.is_empty() {
+        return false;
     }
     let Ok(artifact) = store.get(&record.artifact_id) else {
         return false;
     };
-    artifact
-        .descriptor
-        .title
-        .as_deref()
-        .into_iter()
-        .chain(artifact.descriptor.description.as_deref())
-        .chain(artifact.descriptor.tags.iter().map(String::as_str))
+    descriptor_search_metadata(&artifact.descriptor)
+        .iter()
         .any(|value| value.to_lowercase().contains(query))
+}
+
+fn descriptor_search_metadata(
+    descriptor: &labby_runtime::artifacts::ArtifactDescriptor,
+) -> Vec<String> {
+    descriptor
+        .title
+        .iter()
+        .chain(descriptor.description.iter())
+        .chain(descriptor.tags.iter())
+        .cloned()
+        .collect()
 }
 
 fn validation_rejection(error: ArtifactError) -> Result<ValidationRejection, ArtifactError> {
@@ -1881,6 +1903,47 @@ mod tests {
         let actions = item_allowed_actions(true, true);
         assert!(actions.contains(&"artifacts.activate"));
         assert!(actions.contains(&"artifacts.deactivate"));
+    }
+
+    #[test]
+    fn artifact_search_matches_only_snapshot_indexed_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(root.path().join("artifacts")).unwrap();
+        let timestamp = LibraryTimestamp::parse("2026-01-01T00:00:00Z").unwrap();
+        let record = SkillLibraryRecord {
+            artifact_id: "artifact-fleet-health".to_owned(),
+            name: "fleet-health".to_owned(),
+            ownership: labby_runtime::artifacts::LibraryOwnership::canonical(
+                labby_runtime::artifacts::LibraryTenantId::from_canonical_projection("tenant-1")
+                    .unwrap(),
+                labby_runtime::artifacts::LibraryActorId::from_canonical_projection("owner-1")
+                    .unwrap(),
+            ),
+            visibility: SkillVisibility::Private,
+            archived: false,
+            active_revision_id: None,
+            latest_revision_id: "revision-1".to_owned(),
+            latest_revision_files: Vec::new(),
+            search_metadata: vec![
+                "Fleet Health".to_owned(),
+                "Monitor storage fleet health".to_owned(),
+                "monitoring".to_owned(),
+            ],
+            provenance_provider: Some("repository".to_owned()),
+            materialized: true,
+            created_at: timestamp.clone(),
+            updated_at: timestamp,
+        };
+
+        assert!(artifact_matches(&store, &record, Some("fleet")));
+        assert!(artifact_matches(&store, &record, Some("repository")));
+        assert!(artifact_matches(&store, &record, Some("storage")));
+        assert!(artifact_matches(&store, &record, Some("monitoring")));
+        assert!(!artifact_matches(
+            &store,
+            &record,
+            Some("descriptor-only-value")
+        ));
     }
 
     #[test]

@@ -1010,7 +1010,7 @@
     "csrf_required": true,
     "host_validation": true,
     "master_only": true,
-    "cache_posture": "not cacheable",
+    "cache_posture": "private, no-store",
     "failure_disclosure": "standard",
     "side_effects": "possible",
     "notes": "handle"
@@ -1346,7 +1346,7 @@
     "csrf_required": true,
     "host_validation": true,
     "master_only": true,
-    "cache_posture": "not cacheable",
+    "cache_posture": "private, no-store",
     "failure_disclosure": "standard",
     "side_effects": "possible",
     "notes": "handle"
@@ -1745,7 +1745,7 @@
     "csrf_required": true,
     "host_validation": true,
     "master_only": true,
-    "cache_posture": "not cacheable",
+    "cache_posture": "private, no-store",
     "failure_disclosure": "standard",
     "side_effects": "possible",
     "notes": "handle"
@@ -1766,7 +1766,7 @@
     "csrf_required": true,
     "host_validation": true,
     "master_only": true,
-    "cache_posture": "not cacheable",
+    "cache_posture": "private, no-store",
     "failure_disclosure": "standard",
     "side_effects": "possible",
     "notes": "handle"

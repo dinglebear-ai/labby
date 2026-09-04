@@ -405,6 +405,9 @@ pub struct SkillLibraryRecord {
     pub latest_revision_id: String,
     #[serde(default)]
     pub latest_revision_files: Vec<SkillLibraryFile>,
+    /// Descriptor metadata normalized into the durable snapshot search index.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_metadata: Vec<String>,
     #[serde(default)]
     pub provenance_provider: Option<String>,
     #[serde(default)]
@@ -495,6 +498,7 @@ impl LegacyLibrarySnapshot {
                             active_revision_id: record.active_revision_id,
                             latest_revision_id: String::new(),
                             latest_revision_files: Vec::new(),
+                            search_metadata: Vec::new(),
                             provenance_provider: None,
                             materialized: false,
                             created_at: record.created_at,
@@ -961,6 +965,10 @@ impl LibrarySnapshot {
 
 /// One durable compare-and-swap mutation.
 #[derive(Debug, Clone)]
+// Create owns the complete bounded record so the transaction journal can be
+// cloned and validated atomically; boxing it would complicate the durable
+// mutation vocabulary without reducing retained data.
+#[allow(clippy::large_enum_variant)]
 pub enum LibraryMutation {
     Create {
         record: SkillLibraryRecord,
@@ -2088,6 +2096,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: candidate.interchange.revision.id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -2156,6 +2165,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: revision_id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2209,6 +2219,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: revision_id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2280,6 +2291,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: overflow.interchange.revision.id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2324,6 +2336,7 @@ mod tests {
                     active_revision_id: None,
                     latest_revision_id: candidate.interchange.revision.id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: ts("2026-08-26T00:00:00Z"),
@@ -2434,6 +2447,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: revision_id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -2493,6 +2507,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: candidate.interchange.revision.id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -2571,6 +2586,7 @@ mod tests {
                 active_revision_id: None,
                 latest_revision_id: first.interchange.revision.id.clone(),
                 latest_revision_files: Vec::new(),
+                search_metadata: Vec::new(),
                 provenance_provider: None,
                 materialized: false,
                 created_at: ts("2026-08-26T00:00:00Z"),
@@ -2674,6 +2690,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: revision_id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),
@@ -3548,6 +3565,7 @@ mod tests {
                         active_revision_id: None,
                         latest_revision_id: candidate.interchange.revision.id.clone(),
                         latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
                         provenance_provider: None,
                         materialized: false,
                         created_at: ts("2026-08-26T00:00:00Z"),

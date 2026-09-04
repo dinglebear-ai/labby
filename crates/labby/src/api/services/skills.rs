@@ -189,8 +189,36 @@ async fn handle(
                     .iter()
                     .any(|candidate| candidate.name == action)
                 {
-                    return crate::dispatch::remote_control::dispatch("artifacts", &action, params)
-                        .await;
+                    let spec = crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
+                        .iter()
+                        .find(|candidate| candidate.name == action);
+                    let permission = if spec.is_some_and(|spec| spec.requires_admin) {
+                        crate::access::Permission::AssetUse
+                    } else {
+                        crate::access::Permission::AssetDiscover
+                    };
+                    if spec.is_some_and(|spec| spec.requires_admin) {
+                        crate::api::services::remote_control::require_session_csrf(
+                            &action,
+                            &library_headers,
+                            auth_for_library.as_ref(),
+                        )?;
+                    }
+                    let context =
+                        crate::api::services::remote_control::authorize_authority_context(
+                            &access_runtime,
+                            verified_identity,
+                            project_id.as_deref(),
+                            permission,
+                        )
+                        .await?;
+                    return crate::dispatch::remote_control::dispatch_with_context(
+                        "artifacts",
+                        &action,
+                        params,
+                        Some(&context),
+                    )
+                    .await;
                 }
                 let service = skill_library.ok_or_else(|| ToolError::Sdk {
                     sdk_kind: "skill_library_unavailable".to_owned(),

@@ -110,7 +110,7 @@ mod tests {
             .iter()
             .map(|action| action.name)
             .collect::<Vec<_>>();
-        assert_eq!(names.len(), 30);
+        assert_eq!(names.len(), 31);
         assert_eq!(
             names.iter().copied().collect::<BTreeSet<_>>().len(),
             names.len()

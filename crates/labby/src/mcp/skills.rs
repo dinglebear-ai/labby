@@ -176,15 +176,36 @@ impl LabMcpServer {
         let request_id = optional_header_str(&parts.headers, "x-request-id")?;
         let correlation = super::call_tool::skill_library_callback_correlation(request_id)?;
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
-            boundary.identity,
-            boundary.scopes,
+            boundary.identity.clone(),
+            boundary.scopes.clone(),
             crate::dispatch::skill_library::auth::SkillLibraryTransport::app_callback(true, true),
         );
         if crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
             .iter()
             .any(|candidate| candidate.name == action)
         {
-            return crate::dispatch::remote_control::dispatch("artifacts", action, params).await;
+            let spec = crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
+                .iter()
+                .find(|candidate| candidate.name == action);
+            let permission = if spec.is_some_and(|spec| spec.requires_admin) {
+                crate::access::Permission::AssetUse
+            } else {
+                crate::access::Permission::AssetDiscover
+            };
+            let authority = crate::dispatch::artifact_control::authorize_authority_context(
+                &self.access_runtime,
+                boundary.identity,
+                project_id,
+                permission,
+            )
+            .await?;
+            return crate::dispatch::remote_control::dispatch_with_context(
+                "artifacts",
+                action,
+                params,
+                Some(&authority),
+            )
+            .await;
         }
         if action == "artifacts.import" {
             let imports = crate::dispatch::skill_library::process_imports().ok_or_else(|| {

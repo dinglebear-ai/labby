@@ -13,7 +13,8 @@ import { ArtifactControlPlane } from '@/components/skills/artifact-control-plane
 function SkillsPageQuery() {
   const searchParams = useSearchParams()
   const upstream = searchParams.get('upstream')?.trim() || undefined
-  const initialTab = upstream ? 'upstreams' : 'library'
+  const requestedView = searchParams.get('view')
+  const initialTab = requestedView === 'control-plane' ? 'control-plane' : upstream ? 'upstreams' : 'library'
   return (
     <>
       <AppHeader breadcrumbs={[{ label: 'Skills' }]} />

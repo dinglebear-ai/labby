@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Archive, Boxes, DatabaseZap, Eye, Loader2, Play, RefreshCw, Search, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -13,21 +13,30 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
-import { controlPlaneAction, uploadArtifactBytes } from '@/lib/api/artifact-control-client'
+import { controlPlaneAction as sendControlPlaneAction, uploadArtifactBytes } from '@/lib/api/artifact-control-client'
 import { ArtifactUploadWorkflowError, runArtifactUpload } from '@/lib/api/artifact-upload-workflow'
 import { cn, getErrorMessage } from '@/lib/utils'
 
 type JsonObject = Record<string, unknown>
 type Source = JsonObject & { enabled?: boolean; intervalSeconds?: number }
 type UploadRecord = JsonObject & { filename?: string }
+type AuthorityConnection = { id: string }
 type DeleteTarget = { kind: 'source' | 'upload' | 'bundle'; id: string } | null
 
-function deleteRequest(target: NonNullable<DeleteTarget>) {
+export function deleteRequest(target: NonNullable<DeleteTarget>) {
   switch (target.kind) {
     case 'source': return { service: 'sources' as const, params: { id: target.id } }
     case 'upload': return { service: 'uploads' as const, params: { id: target.id } }
     case 'bundle': return { service: 'bundles' as const, params: { slug: target.id } }
   }
+}
+
+export function withAuthorityConnection(params: object, connectionId: string) {
+  return { ...params, ...(connectionId ? { connection_id: connectionId } : {}) }
+}
+
+export function authorityResultIsCurrent(startedConnection: string, currentConnection: string, startedGeneration: number, currentGeneration: number) {
+  return startedConnection === currentConnection && startedGeneration === currentGeneration
 }
 
 function rows(value: unknown, key: string): JsonObject[] {
@@ -82,8 +91,33 @@ export function ArtifactControlPlane() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget>(null)
+  const [connections, setConnections] = useState<AuthorityConnection[]>([])
+  const [selectedConnection, setSelectedConnection] = useState('')
+  const [connectionsLoaded, setConnectionsLoaded] = useState(false)
+  const operationGeneration = useRef(0)
+  const operationActive = useRef(false)
+  const refreshGeneration = useRef(0)
+  const inspectorGeneration = useRef(0)
+  const selectedConnectionRef = useRef('')
+
+  function selectConnection(connectionId: string) {
+    if (operationActive.current) return
+    selectedConnectionRef.current = connectionId
+    operationGeneration.current += 1
+    inspectorGeneration.current += 1
+    refreshGeneration.current += 1
+    setResults([])
+    setSelectedDetail(null)
+    setSelectedConnection(connectionId)
+  }
+
+  const controlPlaneAction = useCallback(<T = unknown,>(service: 'artifacts' | 'sources' | 'jobs' | 'uploads' | 'bundles', action: string, params: object = {}, signal?: AbortSignal) => {
+    return sendControlPlaneAction<T>(service, action, withAuthorityConnection(params, selectedConnection), signal)
+  }, [selectedConnection])
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++refreshGeneration.current
+    const connectionId = selectedConnection
     setError(null)
     const settled = await Promise.allSettled([
       controlPlaneAction<JsonObject>('sources', 'sources.list', {}, signal),
@@ -91,7 +125,7 @@ export function ArtifactControlPlane() {
       controlPlaneAction<JsonObject>('bundles', 'bundles.list', {}, signal),
       controlPlaneAction<JsonObject>('artifacts', 'artifacts.authority_status', {}, signal),
     ])
-    if (signal?.aborted) return
+    if (signal?.aborted || !authorityResultIsCurrent(connectionId, selectedConnectionRef.current, generation, refreshGeneration.current)) return
     if (settled[0].status === 'fulfilled') setSources(rows(settled[0].value, 'sources')); else setSources([])
     if (settled[1].status === 'fulfilled') setJobs(rows(settled[1].value, 'jobs')); else setJobs([])
     if (settled[2].status === 'fulfilled') setBundles(rows(settled[2].value, 'bundles')); else setBundles([])
@@ -102,18 +136,45 @@ export function ArtifactControlPlane() {
     if (failures.length) {
       setError(`${failures.map(item => item.name).join(', ')} unavailable: ${getErrorMessage(failures[0].reason, 'Remote Artifact authority is unavailable.')}`)
     }
-  }, [])
+  }, [controlPlaneAction, selectedConnection])
 
   useEffect(() => {
     const controller = new AbortController()
+    void sendControlPlaneAction<{ connections?: AuthorityConnection[]; default_connection_id?: string | null }>(
+      'artifacts', 'artifacts.list_connections', {}, controller.signal,
+    ).then(result => {
+      if (controller.signal.aborted) return
+      const available = Array.isArray(result.connections) ? result.connections : []
+      setConnections(available)
+      const connectionId = result.default_connection_id ?? available[0]?.id ?? ''
+      selectedConnectionRef.current = connectionId
+      setSelectedConnection(connectionId)
+      setConnectionsLoaded(true)
+    }).catch(cause => {
+      if (!controller.signal.aborted) {
+        setError(getErrorMessage(cause, 'Unable to discover Artifact authorities.'))
+        setConnectionsLoaded(true)
+      }
+    })
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    if (!connectionsLoaded || (connections.length > 0 && !selectedConnection)) return
+    const controller = new AbortController()
     void refresh(controller.signal)
     return () => controller.abort()
-  }, [refresh])
+  }, [connections.length, connectionsLoaded, refresh, selectedConnection])
 
   async function run(label: string, operation: () => Promise<unknown>, success: string) {
+    if (operationActive.current) return null
+    operationActive.current = true
+    const generation = ++operationGeneration.current
+    const connectionId = selectedConnection
     setBusy(label)
     try {
       const response = await operation()
+      if (!authorityResultIsCurrent(connectionId, selectedConnectionRef.current, generation, operationGeneration.current)) return null
       toast.success(success)
       await refresh()
       return response
@@ -121,17 +182,26 @@ export function ArtifactControlPlane() {
       toast.error(getErrorMessage(cause, `Unable to ${label}.`))
       return null
     } finally {
-      setBusy(null)
+      if (generation === operationGeneration.current) {
+        operationActive.current = false
+        setBusy(null)
+      }
     }
   }
 
   async function inspect(service: 'artifacts' | 'jobs' | 'uploads' | 'bundles', action: string, params: object) {
+    if (operationActive.current) return
+    const generation = ++inspectorGeneration.current
     const response = await run('load details', () => controlPlaneAction<JsonObject>(service, action, params), 'Details loaded')
-    if (response) setSelectedDetail(response as JsonObject)
+    if (response && generation === inspectorGeneration.current) setSelectedDetail(response as JsonObject)
   }
 
   async function searchRemote() {
     if (!['acp', 'mcp', 'marketplace', 'authority_all', 'candidates'].includes(discoveryProvider) && !query.trim()) return
+    if (operationActive.current) return
+    operationActive.current = true
+    const generation = ++operationGeneration.current
+    const connectionId = selectedConnection
     setBusy('search')
     try {
       const selection: Record<string, { action: string; params: JsonObject; key: string }> = {
@@ -148,11 +218,18 @@ export function ArtifactControlPlane() {
       if (!selected || (['ard', 'marketplace'].includes(discoveryProvider) && !discoverySource.trim())) return
       const response = await controlPlaneAction<JsonObject>('artifacts', selected.action, selected.params)
       const discovered = rows(response, selected.key)
-      setResults(discovered.length ? discovered : rows(response, 'results'))
-      setSelectedDetail(response)
+      if (authorityResultIsCurrent(connectionId, selectedConnectionRef.current, generation, operationGeneration.current)) {
+        setResults(discovered.length ? discovered : rows(response, 'results'))
+        setSelectedDetail(response)
+      }
     } catch (cause) {
       toast.error(getErrorMessage(cause, 'Unable to search the remote catalog.'))
-    } finally { setBusy(null) }
+    } finally {
+      if (generation === operationGeneration.current) {
+        operationActive.current = false
+        setBusy(null)
+      }
+    }
   }
 
   async function submitCandidate() {
@@ -163,7 +240,9 @@ export function ArtifactControlPlane() {
   }
 
   async function upload(file?: File) {
-    if (!file) return
+    if (!file || operationActive.current) return
+    operationActive.current = true
+    const generation = ++operationGeneration.current
     setBusy('upload Artifact')
     try {
       const job = await runArtifactUpload({
@@ -174,7 +253,7 @@ export function ArtifactControlPlane() {
           const upload = objectAt(created, 'upload')
           return upload ? itemId(upload, 'id', 'uploadId') : ''
         },
-        putBytes: uploadArtifactBytes,
+        putBytes: (uploadId, bytes) => uploadArtifactBytes(uploadId, bytes, selectedConnection || undefined),
         startJob: (params) => controlPlaneAction<JsonObject>('jobs', 'jobs.start', params),
         onCreated: (created, uploadId) => {
           const upload = objectAt(created, 'upload') ?? {}
@@ -191,7 +270,10 @@ export function ArtifactControlPlane() {
       toast.error(`${getErrorMessage(cause, `Failed while ${stage}.`)}${recovery}`)
       await refresh()
     } finally {
-      setBusy(null)
+      if (generation === operationGeneration.current) {
+        operationActive.current = false
+        setBusy(null)
+      }
     }
   }
 
@@ -220,7 +302,10 @@ export function ArtifactControlPlane() {
   return <div className="grid gap-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 className="font-display text-xl font-semibold">Artifact Control Plane</h2><p className={cn(AURORA_DENSE_META, 'mt-1 text-aurora-text-muted')}>Search, ingest, and operate durable sources, jobs, uploads, and bundles through Labby.</p></div>
-      <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={busy !== null}><RefreshCw className="size-4" />Refresh state</Button>
+      <div className="flex items-center gap-2">
+        {connections.length > 1 ? <Select value={selectedConnection} onValueChange={selectConnection} disabled={busy !== null}><SelectTrigger aria-label="Artifact authority" className="w-48"><SelectValue placeholder="Select authority" /></SelectTrigger><SelectContent>{connections.map(connection => <SelectItem key={connection.id} value={connection.id}>{connection.id}</SelectItem>)}</SelectContent></Select> : null}
+        <Button variant="outline" size="sm" onClick={() => void refresh()} disabled={busy !== null || !connectionsLoaded}><RefreshCw className="size-4" />Refresh state</Button>
+      </div>
     </div>
     {error ? <DashboardPanel title="Authority status"><p className="text-sm text-destructive">{error}</p></DashboardPanel> : authorityStatus ? <DashboardPanel title="Authority status"><pre className="overflow-auto whitespace-pre-wrap text-xs text-aurora-text-secondary">{JSON.stringify(authorityStatus, null, 2)}</pre></DashboardPanel> : null}
     <Tabs defaultValue="discover">

@@ -159,6 +159,21 @@ impl HttpClient {
         auth: Auth,
         pinned_addresses: impl IntoIterator<Item = IpAddr>,
     ) -> Result<Self, ApiError> {
+        Self::with_pinned_addresses_and_headers(
+            base_url,
+            auth,
+            pinned_addresses,
+            reqwest::header::HeaderMap::new(),
+        )
+    }
+
+    /// Construct a DNS-pinned client with additional server-owned headers.
+    pub fn with_pinned_addresses_and_headers(
+        base_url: impl Into<String>,
+        auth: Auth,
+        pinned_addresses: impl IntoIterator<Item = IpAddr>,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<Self, ApiError> {
         drop(rustls::crypto::ring::default_provider().install_default());
         let base_url = base_url.into();
         let parsed = Url::parse(&base_url)
@@ -184,6 +199,7 @@ impl HttpClient {
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .resolve_to_addrs(host, &addresses)
+            .default_headers(headers)
             .build()
             .map_err(|e| ApiError::Internal(format!("reqwest::Client::build: {e}")))?;
         Ok(Self::from_parts(base_url, auth, inner))
@@ -269,6 +285,21 @@ impl HttpClient {
             .send(self.apply_auth(self.inner.get(url.clone())), &ctx)
             .await?;
         Self::decode(resp, &ctx).await
+    }
+
+    /// GET a path and decode a response body that may not exceed `max_bytes`.
+    pub async fn get_json_bounded<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        max_bytes: usize,
+    ) -> Result<T, ApiError> {
+        let url = Url::parse(&self.url(path)?)
+            .map_err(|e| ApiError::Internal(format!("invalid url: {e}")))?;
+        let ctx = RequestLogContext::new("GET", &url);
+        let resp = self
+            .send(self.apply_auth(self.inner.get(url.clone())), &ctx)
+            .await?;
+        Self::decode_bounded(resp, &ctx, max_bytes).await
     }
 
     /// GET a path with query parameters and decode JSON.
@@ -409,6 +440,29 @@ impl HttpClient {
                 &ctx,
             )
             .await?;
+        Self::decode_bounded(resp, &ctx, max_response_bytes).await
+    }
+
+    /// PUT an already-owned request body without copying it and decode a bounded JSON response.
+    pub async fn put_body_bounded<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: reqwest::Body,
+        content_length: Option<u64>,
+        content_type: &str,
+        max_response_bytes: usize,
+    ) -> Result<T, ApiError> {
+        let url = Url::parse(&self.url(path)?)
+            .map_err(|e| ApiError::Internal(format!("invalid url: {e}")))?;
+        let ctx = RequestLogContext::new("PUT", &url);
+        let mut request = self
+            .inner
+            .put(url.clone())
+            .header(reqwest::header::CONTENT_TYPE, content_type);
+        if let Some(content_length) = content_length {
+            request = request.header(reqwest::header::CONTENT_LENGTH, content_length);
+        }
+        let resp = self.send(self.apply_auth(request.body(body)), &ctx).await?;
         Self::decode_bounded(resp, &ctx, max_response_bytes).await
     }
 

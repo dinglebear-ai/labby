@@ -360,7 +360,12 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         structured_errors.insert("server_logs".into());
         let api_services = action_scenarios::services_for(Surface::Api);
         let mut success_capable_services = api_services.clone();
-        success_capable_services.remove("artifacts");
+        // Provider-backed control-plane services prove their fail-closed path
+        // in this hermetic run; live success is covered by the synthetic
+        // provider integration suite.
+        for provider_backed in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
+            success_capable_services.remove(provider_backed);
+        }
         assert_eq!(
             successes, success_capable_services,
             "every locally self-contained API service needs a live success"

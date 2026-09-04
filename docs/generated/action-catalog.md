@@ -22,6 +22,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `artifacts` | `artifacts.list` | false | false | false |  | `cursor: string`<br>`limit: integer` | `VersionedSkillLibraryPage` | mcp, api, web |
 | `artifacts` | `artifacts.list_acp_registry` | false | false | false |  | `connection_id: string` | `AcpRegistryPage` | mcp, api, web |
 | `artifacts` | `artifacts.list_candidates` | false | false | true | lab:admin | `connection_id: string`<br>`cursor: string`<br>`limit: integer` | `ArtifactCandidatePage` | mcp, api, web |
+| `artifacts` | `artifacts.list_connections` | false | false | false |  |  | `ArtifactAuthorityConnectionPage` | mcp, api, web |
 | `artifacts` | `artifacts.list_mcp_registry` | false | false | false |  | `connection_id: string`<br>`query: string`<br>`category: string`<br>`tag: string`<br>`version: string`<br>`updated_since: string`<br>`include_deleted: boolean`<br>`cursor: string`<br>`limit: integer` | `McpRegistryPage` | mcp, api, web |
 | `artifacts` | `artifacts.list_remote` | false | false | false |  | `connection_id: string`<br>`cursor: string`<br>`limit: integer` | `RemoteArtifactPage` | mcp, api, web |
 | `artifacts` | `artifacts.read` | false | false | false |  | `artifact_id*: string`<br>`revision_id*: string`<br>`path*: string` | `VersionedRevisionFile` | mcp, api, web |

@@ -1,11 +1,12 @@
 import { Check, Copy, LayoutDashboard, RotateCw, X } from "lucide-react";
+import { useState } from "react";
 
 import { ErrorResultView } from "@/components/palette/ErrorResultView";
 import { Button } from "@/components/ui/aurora/button";
 import { Spinner } from "@/components/ui/aurora/spinner";
+import { controlPlanePath, launchControlPlane } from "@/lib/controlPlane";
 import type { PaletteResult } from "@/lib/labbyClient";
 import type { LauncherEntry } from "@/lib/launcherCatalog";
-import { controlPlanePath, openControlPlane } from "@/lib/controlPlane";
 
 interface ResultViewProps {
   action: LauncherEntry | undefined;
@@ -29,6 +30,7 @@ export function ResultView({
   onRetry,
   onCollapse,
 }: ResultViewProps) {
+  const [controlPlaneError, setControlPlaneError] = useState<string | null>(null);
   const title = action ? action.label : "Result";
   const bodyText = result ? JSON.stringify(result.payload, null, 2) : "";
 
@@ -55,7 +57,10 @@ export function ResultView({
                   variant="plain"
                   size="unstyled"
                   type="button"
-                  onClick={() => void openControlPlane(controlPlanePath(action))}
+                  onClick={() => {
+                    setControlPlaneError(null);
+                    void launchControlPlane(controlPlanePath(action), setControlPlaneError);
+                  }}
                   title="Open in Control Plane"
                   aria-label="Open result in Control Plane"
                 >
@@ -97,6 +102,12 @@ export function ResultView({
             {running ? <Spinner size="sm" /> : null}
           </span>
         </header>
+
+        {controlPlaneError ? (
+          <div className="control-plane-error" role="alert">
+            {controlPlaneError}
+          </div>
+        ) : null}
 
         {running ? (
           <div className="output-body output-code output-pending">

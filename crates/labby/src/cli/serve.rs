@@ -232,7 +232,10 @@ fn bootstrap_selected_skill_library_with<T>(
     registry: &ToolRegistry,
     bootstrap: impl FnOnce() -> Result<T>,
 ) -> Result<Option<T>> {
-    if registry.service("artifacts").is_some() {
+    if ["artifacts", "bundles", "jobs", "sources", "uploads"]
+        .iter()
+        .any(|service| registry.service(service).is_some())
+    {
         bootstrap().map(Some)
     } else {
         Ok(None)
@@ -2378,11 +2381,17 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn selected_artifacts_service_runs_skill_library_bootstrap() {
-        let registry =
-            filter_registry(build_default_registry(), &["artifacts".to_owned()]).unwrap();
-        let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
-        assert_eq!(result, Some(41));
+    fn every_artifact_control_service_runs_skill_library_bootstrap_independently() {
+        for service in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
+            let registry =
+                filter_registry(build_default_registry(), &[service.to_owned()]).unwrap();
+            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
+            assert_eq!(
+                result,
+                Some(41),
+                "{service} must initialize the shared runtime"
+            );
+        }
     }
 
     #[cfg(feature = "skills")]

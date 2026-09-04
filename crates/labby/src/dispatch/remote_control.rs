@@ -327,46 +327,17 @@ pub(crate) const BUNDLE_ACTIONS: &[ActionSpec] = &[
 
 pub(crate) const REMOTE_ARTIFACT_ACTIONS: &[ActionSpec] = &[
     spec(
-        "artifacts.search_remote",
-        "Search the configured remote Artifact catalog",
+        "artifacts.list_connections",
+        "List safe configured Artifact authority identifiers",
         false,
         false,
-        "RemoteArtifactSearch",
-        &[
-            CONNECTION,
-            ParamSpec {
-                name: "query",
-                ty: "string",
-                required: true,
-                description: "Case-insensitive remote catalog query",
-            },
-            LIMIT,
-        ],
+        "ArtifactAuthorityConnectionPage",
+        &[],
     ),
-    spec(
-        "artifacts.list_remote",
-        "List the combined hosted and projected remote Artifact catalog",
-        false,
-        false,
-        "RemoteArtifactPage",
-        &[CONNECTION, CURSOR, LIMIT],
-    ),
-    spec(
-        "artifacts.get_remote",
-        "Get one remote Artifact by stable identifier",
-        false,
-        false,
-        "RemoteArtifact",
-        &[CONNECTION, ID],
-    ),
-    spec(
-        "artifacts.list_candidates",
-        "List remote discovery candidates awaiting intake",
-        false,
-        true,
-        "ArtifactCandidatePage",
-        &[CONNECTION, CURSOR, LIMIT],
-    ),
+    crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS[0],
+    crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS[1],
+    crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS[2],
+    crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS[3],
     spec(
         "artifacts.intake_candidate",
         "Validate and persist bounded Artifact candidate evidence",
@@ -684,6 +655,21 @@ pub(crate) async fn dispatch(
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
+    dispatch_with_context(service, action, params, None).await
+}
+
+pub(crate) async fn dispatch_with_context(
+    service: &str,
+    action: &str,
+    params: Value,
+    context: Option<&crate::dispatch::artifact_control::AuthorityContext>,
+) -> Result<Value, ToolError> {
+    if !crate::registry::runtime_built_in_upstream_apis_enabled() {
+        return Err(ToolError::Sdk {
+            sdk_kind: "source_unavailable".to_owned(),
+            message: "Built-in upstream Artifact APIs are disabled".to_owned(),
+        });
+    }
     match action {
         "help" => return Ok(help_payload(service, actions(service))),
         "schema" => return action_schema(actions(service), require_str(&params, "action")?),
@@ -698,6 +684,21 @@ pub(crate) async fn dispatch(
         })?;
     let connection_id = take_connection_id(&mut object)?;
     reject_secret_values(&object)?;
+    if context.is_none() {
+        return Err(ToolError::Forbidden {
+            message: "Remote Artifact operations require verified actor and project context"
+                .to_owned(),
+            required_scopes: vec!["lab:read".to_owned()],
+        });
+    }
+    let controls =
+        crate::dispatch::skill_library::process_controls().ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "source_unavailable".to_owned(),
+            message: "Remote Artifact control plane is unavailable".to_owned(),
+        })?;
+    if (service, action) == ("artifacts", "artifacts.list_connections") {
+        return Ok(controls.connections());
+    }
     normalize_provider_params(service, action, &mut object)?;
     let operation = operation(service, action).ok_or_else(|| ToolError::UnknownAction {
         message: format!("unknown {service} action"),
@@ -707,13 +708,13 @@ pub(crate) async fn dispatch(
             .collect(),
         hint: None,
     })?;
-    let controls =
-        crate::dispatch::skill_library::process_controls().ok_or_else(|| ToolError::Sdk {
-            sdk_kind: "source_unavailable".to_owned(),
-            message: "Remote Artifact control plane is unavailable".to_owned(),
-        })?;
     controls
-        .execute(connection_id.as_deref(), operation, &Value::Object(object))
+        .execute(
+            connection_id.as_deref(),
+            operation,
+            &Value::Object(object),
+            context,
+        )
         .await
 }
 
@@ -819,17 +820,24 @@ fn reject_secret_values(object: &serde_json::Map<String, Value>) -> Result<(), T
     fn contains(value: &Value) -> bool {
         match value {
             Value::Object(map) => map.iter().any(|(key, value)| {
-                let key = key.to_ascii_lowercase();
-                matches!(
-                    key.as_str(),
-                    "authorization"
-                        | "password"
-                        | "secret"
-                        | "token"
-                        | "access_token"
-                        | "refresh_token"
-                        | "credential_value"
-                ) || contains(value)
+                let normalized = key.to_ascii_lowercase();
+                let compact = normalized
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .collect::<String>();
+                let safe_opaque_token = matches!(compact.as_str(), "pagetoken" | "nextpagetoken");
+                normalized.contains("authorization")
+                    || normalized.contains("password")
+                    || normalized.contains("secret")
+                    || normalized.contains("credentialvalue")
+                    || normalized.contains("credential_value")
+                    || normalized.contains("apikey")
+                    || normalized.contains("api_key")
+                    || normalized.contains("privatekey")
+                    || normalized.contains("private_key")
+                    || normalized.contains("cookie")
+                    || (normalized.contains("token") && !safe_opaque_token)
+                    || contains(value)
             }),
             Value::Array(values) => values.iter().any(contains),
             _ => false,
@@ -945,6 +953,20 @@ mod tests {
     fn rejects_renderer_supplied_secrets_recursively() {
         let params = json!({"arguments":{"authorization":"Bearer nope"}});
         assert!(reject_secret_values(params.as_object().unwrap()).is_err());
+        for key in [
+            "accessToken",
+            "refresh-token",
+            "apiKey",
+            "privateKey",
+            "session_cookie",
+            "dbPassword",
+        ] {
+            let params = json!({"arguments": {key: "nope"}});
+            assert!(
+                reject_secret_values(params.as_object().unwrap()).is_err(),
+                "{key} must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -979,12 +1001,33 @@ mod tests {
             ("bundles", BUNDLE_ACTIONS),
         ] {
             for spec in specs {
+                if spec.name == "artifacts.list_connections" {
+                    continue;
+                }
                 assert!(
                     operation(service, spec.name).is_some(),
                     "{} has no sealed provider operation",
                     spec.name
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn every_remote_operation_fails_closed_without_authorized_context() {
+        for (service, action) in [
+            ("artifacts", "artifacts.list_connections"),
+            ("artifacts", "artifacts.search_remote"),
+            ("bundles", "bundles.list"),
+            ("jobs", "jobs.start"),
+        ] {
+            let error = dispatch_with_context(service, action, json!({}), None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, ToolError::Forbidden { .. }),
+                "{service}.{action}"
+            );
         }
     }
 }

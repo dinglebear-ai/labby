@@ -2433,7 +2433,7 @@
       "actions": [
         {
           "name": "artifacts.search",
-          "description": "Search caller-visible stored Artifacts by identity and descriptive metadata",
+          "description": "Search caller-visible stored Artifacts by indexed identity, description, tags, and provenance metadata",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -2818,7 +2818,7 @@
               "name": "sources",
               "ty": "array",
               "required": true,
-              "description": "One to 100 exact immutable source selectors; acquisition is completed before the first local commit"
+              "description": "One to 100 exact immutable source selectors; each acquisition is committed before the next begins"
             },
             {
               "name": "expected_library_version",
@@ -2858,6 +2858,15 @@
           "returns": "SkillMutationReceipt"
         },
         {
+          "name": "artifacts.list_connections",
+          "description": "List safe configured Artifact authority identifiers",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "ArtifactAuthorityConnectionPage"
+        },
+        {
           "name": "artifacts.search_remote",
           "description": "Search the configured remote Artifact catalog",
           "destructive": false,
@@ -2868,7 +2877,7 @@
               "name": "connection_id",
               "ty": "string",
               "required": false,
-              "description": "Configured authority; optional when exactly one is configured"
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
             },
             {
               "name": "query",
@@ -2880,7 +2889,7 @@
               "name": "limit",
               "ty": "integer",
               "required": false,
-              "description": "Page size, default 50 and maximum 100"
+              "description": "Bounded remote page size"
             }
           ],
           "returns": "RemoteArtifactSearch"
@@ -2896,19 +2905,19 @@
               "name": "connection_id",
               "ty": "string",
               "required": false,
-              "description": "Configured authority; optional when exactly one is configured"
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
             },
             {
               "name": "cursor",
               "ty": "string",
               "required": false,
-              "description": "Opaque bounded pagination cursor"
+              "description": "Opaque remote continuation cursor"
             },
             {
               "name": "limit",
               "ty": "integer",
               "required": false,
-              "description": "Page size, default 50 and maximum 100"
+              "description": "Bounded remote page size"
             }
           ],
           "returns": "RemoteArtifactPage"
@@ -2924,13 +2933,13 @@
               "name": "connection_id",
               "ty": "string",
               "required": false,
-              "description": "Configured authority; optional when exactly one is configured"
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
             },
             {
               "name": "id",
               "ty": "string",
               "required": true,
-              "description": "Stable remote Artifact id"
+              "description": "Stable item identifier"
             }
           ],
           "returns": "RemoteArtifact"
@@ -2948,19 +2957,19 @@
               "name": "connection_id",
               "ty": "string",
               "required": false,
-              "description": "Configured authority; optional when exactly one is configured"
+              "description": "Configured remote Artifact authority; optional when exactly one is configured"
             },
             {
               "name": "cursor",
               "ty": "string",
               "required": false,
-              "description": "Opaque bounded pagination cursor"
+              "description": "Opaque remote continuation cursor"
             },
             {
               "name": "limit",
               "ty": "integer",
               "required": false,
-              "description": "Page size, default 50 and maximum 100"
+              "description": "Bounded remote page size"
             }
           ],
           "returns": "ArtifactCandidatePage"

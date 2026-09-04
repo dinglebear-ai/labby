@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, collections::BTreeSet, path::Path};
 
 use labby_runtime::artifacts::{ArtifactAcquisition, ArtifactError};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 
 use crate::access::AccessRuntime;
 
@@ -82,26 +83,30 @@ impl ImportCoordinator {
     ) -> Result<Self, ArtifactError> {
         let mut depot = BTreeMap::new();
         let mut repository: BTreeMap<String, Arc<dyn RepositoryConnection>> = BTreeMap::new();
+        let mut connection_ids = BTreeSet::new();
         for source in &config.sources {
             labby_runtime::artifacts::validation::validate_id(&source.id, "connection_id")?;
+            if !connection_ids.insert(source.id.clone()) {
+                return Err(ArtifactError::Conflict("duplicate_import_connection_id"));
+            }
             let endpoint =
                 url::Url::parse(&source.endpoint).map_err(|_| ArtifactError::InvalidField {
                     field: "source.endpoint",
                     reason: "invalid_url",
                 })?;
-            let credential = source
-                .bearer_token_env
-                .as_ref()
-                .map(|name| {
-                    std::env::var(name)
-                        .map_err(|_| ArtifactError::NotFound("source_credential"))
-                        .and_then(|secret| {
-                            labby_runtime::artifacts::provider::ArtifactSourceCredential::bearer(
-                                &secret,
-                            )
-                        })
-                })
-                .transpose()?;
+            let credential = match source.bearer_token_env.as_ref() {
+                Some(name) => match std::env::var(name) {
+                    Ok(secret) => Some(
+                        labby_runtime::artifacts::provider::ArtifactSourceCredential::bearer(
+                            &secret,
+                        )?,
+                    ),
+                    // A remote source may be configured before its secret is provisioned. Keep
+                    // the local library available and leave only this connection unavailable.
+                    Err(_) => continue,
+                },
+                None => None,
+            };
             let source_root = staging_root.join(&source.id);
             std::fs::create_dir_all(&source_root)?;
             #[cfg(unix)]
@@ -130,16 +135,13 @@ impl ImportCoordinator {
                 source_root,
                 Default::default(),
             )?;
-            let duplicate = match source.kind {
+            match source.kind {
                 crate::config::ArtifactSourceKind::Depot => {
-                    depot.insert(source.id.clone(), connection).is_some()
+                    depot.insert(source.id.clone(), connection);
                 }
-                crate::config::ArtifactSourceKind::Repository => repository
-                    .insert(source.id.clone(), Arc::new(connection))
-                    .is_some(),
-            };
-            if duplicate {
-                return Err(ArtifactError::Conflict("duplicate_import_connection_id"));
+                crate::config::ArtifactSourceKind::Repository => {
+                    repository.insert(source.id.clone(), Arc::new(connection));
+                }
             }
         }
         Ok(Self { depot, repository })
@@ -305,22 +307,31 @@ impl ImportCoordinator {
             }
             .into());
         }
-        let mut acquisitions = Vec::with_capacity(sources.len());
-        for source in sources {
-            acquisitions.push(self.acquire(self.resolve_selector(source)?).await?);
-        }
+        super::params::validate_idempotency_key(&idempotency_key).map_err(|reason| {
+            ArtifactError::InvalidField {
+                field: "idempotency_key",
+                reason,
+            }
+        })?;
+        // Validate and derive every child key before the first provider call. Long but valid
+        // parent keys use a deterministic digest so the derived key remains within the contract.
+        let child_keys = (0..sources.len())
+            .map(|index| derive_batch_idempotency_key(&idempotency_key, index))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut version = expected_library_version;
-        let mut items = Vec::with_capacity(acquisitions.len());
-        for (index, acquisition) in acquisitions.into_iter().enumerate() {
-            let child_key = format!("{idempotency_key}:{index}");
-            super::params::validate_idempotency_key(&child_key).map_err(|reason| {
-                ArtifactError::InvalidField {
-                    field: "idempotency_key",
-                    reason,
-                }
-            })?;
-            let value = service
+        let mut items = Vec::with_capacity(sources.len());
+        for (index, (source, child_key)) in sources.into_iter().zip(child_keys).enumerate() {
+            // Acquire and commit one item at a time. An acquisition can approach the provider's
+            // per-item byte limit, so retaining the whole batch would multiply peak memory by 100.
+            let acquisition = match self.resolve_selector(source) {
+                Ok(source) => match self.acquire(source).await {
+                    Ok(acquisition) => acquisition,
+                    Err(error) => return Ok(batch_partial_receipt(items, version, index, &error)),
+                },
+                Err(error) => return Ok(batch_partial_receipt(items, version, index, &error)),
+            };
+            let value = match service
                 .import_acquired(
                     runtime,
                     caller.clone(),
@@ -330,7 +341,14 @@ impl ImportCoordinator {
                     child_key,
                     correlation_id,
                 )
-                .await?;
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let error = ImportAdapterError::Dispatch(error);
+                    return Ok(batch_partial_receipt(items, version, index, &error));
+                }
+            };
             version = value
                 .get("committed_library_version")
                 .and_then(Value::as_u64)
@@ -344,6 +362,52 @@ impl ImportCoordinator {
             "atomic": false
         }))
     }
+}
+
+fn derive_batch_idempotency_key(parent: &str, index: usize) -> Result<String, ImportAdapterError> {
+    let direct = format!("{parent}:{index}");
+    let key = if direct.len() <= super::params::MAX_IDEMPOTENCY_KEY_BYTES {
+        direct
+    } else {
+        format!(
+            "batch:{}:{index}",
+            hex::encode(Sha256::digest(parent.as_bytes()))
+        )
+    };
+    super::params::validate_idempotency_key(&key).map_err(|reason| {
+        ImportAdapterError::Artifact(ArtifactError::InvalidField {
+            field: "idempotency_key",
+            reason,
+        })
+    })?;
+    Ok(key)
+}
+
+fn batch_partial_receipt(
+    items: Vec<Value>,
+    committed_library_version: u64,
+    failed_index: usize,
+    error: &ImportAdapterError,
+) -> Value {
+    let kind = match error {
+        ImportAdapterError::SourceUnavailable => "source_unavailable",
+        ImportAdapterError::Artifact(ArtifactError::InvalidField { .. }) => "invalid_source",
+        ImportAdapterError::Artifact(ArtifactError::NotFound(_)) => "source_not_found",
+        ImportAdapterError::Artifact(ArtifactError::Conflict(_)) => "source_conflict",
+        ImportAdapterError::Artifact(_) => "source_error",
+        ImportAdapterError::Dispatch(SkillLibraryDispatchError::Artifact(
+            ArtifactError::Conflict(_),
+        )) => "commit_conflict",
+        ImportAdapterError::Dispatch(_) => "commit_failed",
+    };
+    serde_json::json!({
+        "imported": items.len(),
+        "items": items,
+        "failed_index": failed_index,
+        "error": { "kind": kind },
+        "committed_library_version": committed_library_version,
+        "atomic": false
+    })
 }
 
 fn validate_exact_repository_selector(
@@ -763,6 +827,51 @@ mod tests {
             ))
         ));
 
+        let mut batch_acquisition = acquisition(
+            "batch-import",
+            "repository",
+            None,
+            Some("repo-1"),
+            &format!("sha256:{}", "1".repeat(64)),
+        );
+        let batch_artifact_id = batch_acquisition.interchange.descriptor.id.clone();
+        let batch_revision_id = batch_acquisition.interchange.revision.id.clone();
+        batch_acquisition.interchange.provenance.reference = Some(batch_revision_id.clone());
+        batch_acquisition.validate().unwrap();
+        let batch_calls = Arc::new(AtomicUsize::new(0));
+        let batch_coordinator = ImportCoordinator::new(
+            None,
+            Some(Arc::new(FakeRepository {
+                value: Ok(batch_acquisition),
+                calls: Arc::clone(&batch_calls),
+            })),
+        );
+        let batch_source = SourceSelector::Repository {
+            connection_id: "repo-1".to_owned(),
+            artifact_id: batch_artifact_id,
+            revision_id: batch_revision_id,
+        };
+        let batch = batch_coordinator
+            .import_batch_selected(
+                &service,
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                vec![batch_source.clone(), batch_source],
+                2,
+                "x".repeat(super::super::params::MAX_IDEMPOTENCY_KEY_BYTES),
+                &SkillLibraryCorrelationId::parse("batch-partial-4").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(batch["imported"], 1);
+        assert_eq!(batch["items"].as_array().unwrap().len(), 1);
+        assert_eq!(batch["failed_index"], 1);
+        assert_eq!(batch["error"]["kind"], "commit_conflict");
+        assert_eq!(batch["committed_library_version"], 3);
+        assert_eq!(batch["atomic"], false);
+        assert_eq!(batch_calls.load(Ordering::SeqCst), 2);
+
         let calls_before_unplug = (
             depot_calls.load(Ordering::SeqCst),
             repository_calls.load(Ordering::SeqCst),
@@ -777,7 +886,7 @@ mod tests {
                 json!({
                     "artifact_id": depot_id.clone(),
                     "expected_revision_id": depot_revision.clone(),
-                    "expected_library_version": 2,
+                    "expected_library_version": 3,
                     "idempotency_key": "activate-local"
                 }),
                 &SkillLibraryCorrelationId::parse("activate-local-4").unwrap(),
@@ -795,7 +904,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(list["items"].as_array().unwrap().len(), 2);
+        assert_eq!(list["items"].as_array().unwrap().len(), 3);
         let get = service
             .dispatch(
                 &runtime,
@@ -997,5 +1106,39 @@ mod tests {
         .unwrap();
         assert!(coordinator.depot.contains_key("depot-primary"));
         assert!(coordinator.repository.contains_key("repository-primary"));
+    }
+
+    #[tokio::test]
+    async fn missing_provider_credential_keeps_local_coordinator_available() {
+        let root = tempfile::tempdir().unwrap();
+        let missing_env = format!(
+            "LABBY_TEST_MISSING_ARTIFACT_SECRET_{}_{}",
+            std::process::id(),
+            root.path().display()
+        )
+        .replace(['/', '.', '-'], "_");
+        assert!(std::env::var_os(&missing_env).is_none());
+        let config = crate::config::ArtifactPreferences {
+            sources: vec![crate::config::ArtifactSourceConfig {
+                id: "credential-pending".to_owned(),
+                kind: crate::config::ArtifactSourceKind::Depot,
+                endpoint: "https://depot.example/v1/exact".to_owned(),
+                control_plane_url: None,
+                pinned_addresses: vec![IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))],
+                bearer_token_env: Some(missing_env),
+            }],
+        };
+
+        let coordinator = ImportCoordinator::from_config(&config, root.path()).unwrap();
+        assert!(matches!(
+            coordinator
+                .acquire(ImportSource::Depot {
+                    connection_id: "credential-pending".to_owned(),
+                    artifact_id: "artifact".to_owned(),
+                    revision_id: format!("sha256:{}", "0".repeat(64)),
+                })
+                .await,
+            Err(ImportAdapterError::SourceUnavailable)
+        ));
     }
 }

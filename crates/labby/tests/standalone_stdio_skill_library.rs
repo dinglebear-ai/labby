@@ -53,6 +53,7 @@ fn persist_active_skill(home: &std::path::Path) {
                     active_revision_id: None,
                     latest_revision_id: revision_id.clone(),
                     latest_revision_files: Vec::new(),
+                    search_metadata: Vec::new(),
                     provenance_provider: None,
                     materialized: false,
                     created_at: now.clone(),

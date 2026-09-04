@@ -2934,6 +2934,7 @@
               "artifacts.import",
               "artifacts.import_batch",
               "artifacts.refresh",
+              "artifacts.list_connections",
               "artifacts.search_remote",
               "artifacts.list_remote",
               "artifacts.get_remote",

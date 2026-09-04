@@ -353,10 +353,9 @@ pub(crate) fn dedicated_contract_reason_for(key: &str, surface: Surface) -> Opti
 
 fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
     match key {
-        "bundles:bundles.delete" => Some((
-            "requires_configured_artifact_authority",
-            "source_unavailable",
-        )),
+        "bundles:bundles.delete" => {
+            Some(("requires_authorized_artifact_project_context", "forbidden"))
+        }
         "gateway:gateway.clients.list" => Some(("catalog_dispatch_mismatch", "unknown_action")),
         "gateway:gateway.enrich.apply" => {
             Some(("requires_live_catalog_suggestion", "stale_suggestion"))
