@@ -445,7 +445,7 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     if key == "gateway:gateway.skills.list" && !cfg!(feature = "skills") {
         return Some(("requires_skills_runtime", "feature_not_compiled"));
     }
-    if surface == Surface::Api
+    if matches!(surface, Surface::Api | Surface::Mcp)
         && matches!(
             key,
             "artifacts:artifacts.search"
@@ -463,7 +463,12 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
                 | "artifacts:artifacts.refresh"
         )
     {
-        return Some(("requires_project_bound_artifact_authority", "forbidden"));
+        let error_kind = match surface {
+            Surface::Api => "forbidden",
+            Surface::Mcp => "internal_error",
+            _ => unreachable!("surface is constrained above"),
+        };
+        return Some(("requires_project_bound_artifact_authority", error_kind));
     }
     if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
         return Some((

@@ -220,6 +220,10 @@ impl BuiltinMcpRunner {
         let endpoint = format!("{}/mcp", guard.connection().base_url);
         let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
         config.auth_header = Some(TEST_TOKEN.to_string());
+        config.custom_headers.insert(
+            "x-labby-project-id".parse().expect("project header name"),
+            "disposable".parse().expect("project header value"),
+        );
         let worker = StreamableHttpClientWorker::new(capped_http_client(), config);
         let confirmation_client = ExactDestructiveConfirmationClient::default();
         let service = tokio::time::timeout(
