@@ -407,6 +407,8 @@ Host-chosen, not spec-mandated; SEP-2640 defines no limits and its threat model
 |--------|-------|
 | Skills per upstream | 256 |
 | Resources per skill | 512 |
+| Total raw bytes per skill | 16 MiB |
+| Raw bytes per resource | 16 MiB |
 | `skills/list` pages | 16 |
 | `skills/list` wall clock | 10s |
 | Frontmatter bytes | 16 KiB |

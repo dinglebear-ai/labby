@@ -942,6 +942,10 @@ fn add_column_if_missing(
 }
 
 #[cfg(test)]
+#[path = "sqlite/tests.rs"]
+mod external_tests;
+
+#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
