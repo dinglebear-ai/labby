@@ -2568,6 +2568,8 @@ impl TargetJobFixture {
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<String, ToolError> {
         use std::sync::atomic::Ordering;
+        #[cfg(not(unix))]
+        let _ = remaining;
         let index: usize = target.alias.parse().expect("numeric fixture alias");
         match self {
             Self::Concurrent { active, peak } => {
