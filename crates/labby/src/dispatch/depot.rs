@@ -1,5 +1,9 @@
 //! Bounded server-side transport for the optional Depot control plane.
 
+pub mod network;
+#[cfg(test)]
+mod network_tests;
+
 use std::{env, sync::Arc, time::Duration};
 
 use reqwest::{Client, StatusCode, Url};
