@@ -37,7 +37,7 @@ fn isolated_command(home: &std::path::Path, server: &MockServer) -> Command {
 
 fn opportunistic_command(home: &std::path::Path, server: &MockServer) -> Command {
     let url = url::Url::parse(&server.uri()).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
+    let mut command = small_stack_command(home);
     command
         .env("LABBY_HOME", home)
         .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
@@ -101,6 +101,30 @@ async fn local_gateway_list_fits_a_one_mebibyte_main_stack() {
     assert!(
         value.is_array(),
         "gateway list must retain its JSON contract"
+    );
+}
+
+#[tokio::test]
+async fn local_code_mode_execution_fits_a_one_mebibyte_main_stack() {
+    let home = tempfile::tempdir().unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        small_stack_command(home.path())
+            .args(["gateway", "code", "exec", "--code", "return 7;", "--json"])
+            .output(),
+    )
+    .await
+    .expect("local Code Mode execution must finish promptly")
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "small-stack Code Mode failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["result"], 7,
+        "Code Mode must return the executed result"
     );
 }
 
@@ -251,11 +275,15 @@ async fn opportunistic_code_mode_failure_preserves_trusted_local_fallback() {
         .mount(&server)
         .await;
 
-    let output = opportunistic_command(home.path(), &server)
-        .args(["gateway", "code", "exec", "--code", "return 7;"])
-        .output()
-        .await
-        .unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        opportunistic_command(home.path(), &server)
+            .args(["gateway", "code", "exec", "--code", "return 7;"])
+            .output(),
+    )
+    .await
+    .expect("opportunistic Code Mode fallback must finish promptly")
+    .unwrap();
 
     assert!(
         output.status.success(),
