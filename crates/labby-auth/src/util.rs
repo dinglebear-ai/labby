@@ -77,13 +77,37 @@ fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File,
         }
     }
 
-    let fd = openat(
+    let fd = match openat(
         parent.as_fd(),
         name,
         base | OFlags::CREATE | OFlags::EXCL,
         Mode::RUSR | Mode::WUSR,
-    )
-    .map_err(|error| AuthError::Storage(format!("create restricted file: {error}")))?;
+    ) {
+        Ok(fd) => fd,
+        Err(rustix::io::Errno::EXIST) if !create_new => {
+            let fd = openat(parent.as_fd(), name, base, Mode::empty()).map_err(|error| {
+                AuthError::Storage(format!(
+                    "open concurrently-created restricted file: {error}"
+                ))
+            })?;
+            let file = std::fs::File::from(fd);
+            if !file
+                .metadata()
+                .map_err(|error| AuthError::Storage(format!("inspect restricted file: {error}")))?
+                .is_file()
+            {
+                return Err(AuthError::Storage(
+                    "restricted file path must name a regular file".into(),
+                ));
+            }
+            return Ok((file, true));
+        }
+        Err(error) => {
+            return Err(AuthError::Storage(format!(
+                "create restricted file: {error}"
+            )));
+        }
+    };
     let file = std::fs::File::from(fd);
     if !file
         .metadata()

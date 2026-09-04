@@ -200,7 +200,9 @@ async fn concurrent_gateway_adds_persist_both_gateways() {
 #[tokio::test]
 async fn independent_managers_serialize_read_modify_write_across_process_boundary() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("config.toml");
+    let path = std::fs::canonicalize(dir.path())
+        .expect("canonical tempdir")
+        .join("config.toml");
     let first = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
     let second = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
     let mut alpha = fixture_stdio_upstream("alpha");
