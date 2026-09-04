@@ -1,8 +1,11 @@
 //! Bounded server-side transport for the optional Depot control plane.
 
 pub mod network;
+pub mod scheduler;
 #[cfg(test)]
 mod network_tests;
+#[cfg(test)]
+mod scheduler_tests;
 
 use std::{env, sync::Arc, time::Duration};
 
