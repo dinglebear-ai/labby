@@ -65,6 +65,30 @@ impl LabMcpServer {
     }
 
     #[cfg(feature = "gateway")]
+    pub(crate) fn request_host_provider_token<'a>(
+        &self,
+        context: &'a RequestContext<RoleServer>,
+    ) -> Option<&'a str> {
+        let parts = context.extensions.get::<Parts>()?;
+        parts
+            .extensions
+            .get::<labby_auth::trusted_host::DelegatedActorCredential>()
+            .map(|credential| credential.0.as_ref())
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn request_host_provider_request_id<'a>(
+        &self,
+        context: &'a RequestContext<RoleServer>,
+    ) -> Option<&'a str> {
+        let parts = context.extensions.get::<Parts>()?;
+        parts
+            .extensions
+            .get::<labby_auth::trusted_host::DelegatedActorContext>()
+            .map(|delegated| delegated.request_id.as_str())
+    }
+
+    #[cfg(feature = "gateway")]
     pub(crate) fn request_runtime_owner(
         &self,
         context: &RequestContext<RoleServer>,
