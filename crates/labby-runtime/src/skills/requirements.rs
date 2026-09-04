@@ -44,11 +44,6 @@ impl SkillRequirementsSummary {
                 .split_ascii_whitespace()
                 .map(ToOwned::to_owned)
                 .collect(),
-            Some(Value::Array(tools)) => tools
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect(),
             _ => Vec::new(),
         };
 
@@ -112,13 +107,13 @@ mod tests {
     }
 
     #[test]
-    fn projects_claude_compatible_list_tool_hints_in_source_order() {
+    fn nonstandard_list_tool_hints_are_not_projected() {
         let summary = SkillRequirementsSummary::from_frontmatter(&object(json!({
             "name": "review",
             "description": "Review a change",
             "allowed-tools": ["Read", "Grep", "Read"]
         })));
 
-        assert_eq!(summary.tool_hints, ["Read", "Grep", "Read"]);
+        assert!(summary.tool_hints.is_empty());
     }
 }

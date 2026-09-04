@@ -17,7 +17,7 @@ use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
-use super::helpers::max_response_bytes;
+use super::helpers::max_transport_response_bytes;
 use super::logging::UpstreamRequestLog;
 use super::stdio_stderr::StdioDiagnostics;
 
@@ -317,7 +317,7 @@ impl DiagnosticChildTransport {
             Self {
                 child: Some(child),
                 transport: AsyncRwTransport::new(
-                    CappedJsonLineReader::new(stdout, max_response_bytes()),
+                    CappedJsonLineReader::new(stdout, max_transport_response_bytes()),
                     stdin,
                 ),
                 upstream,
@@ -469,6 +469,22 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("16 byte limit"));
         assert!(output.len() <= 16, "oversized frame must not materialize");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "skills")]
+    async fn stdio_reader_accepts_skills_frames_above_the_ordinary_limit() {
+        use super::super::helpers::{DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_SKILL_RESPONSE_BYTES};
+
+        let payload = vec![b'x'; DEFAULT_MAX_RESPONSE_BYTES + 1];
+        let mut capped =
+            CappedJsonLineReader::new(payload.as_slice(), DEFAULT_MAX_SKILL_RESPONSE_BYTES);
+        let mut output = Vec::new();
+        capped
+            .read_to_end(&mut output)
+            .await
+            .expect("Skills wire allowance");
+        assert_eq!(output, payload);
     }
 
     #[tokio::test]

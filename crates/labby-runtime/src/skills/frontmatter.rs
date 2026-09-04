@@ -113,6 +113,9 @@ pub fn validate_frontmatter(
         let compatibility = compatibility
             .as_str()
             .ok_or_else(|| invalid("frontmatter `compatibility` must be a string"))?;
+        if compatibility.is_empty() {
+            return Err(invalid("frontmatter `compatibility` must not be empty"));
+        }
         if compatibility.chars().count() > MAX_COMPATIBILITY_CHARS {
             return Err(invalid(format!(
                 "frontmatter `compatibility` exceeds {MAX_COMPATIBILITY_CHARS} characters"
@@ -127,24 +130,12 @@ pub fn validate_frontmatter(
     }
 
     if let Some(allowed_tools) = frontmatter.get("allowed-tools") {
-        // Agent Skills defines a space-separated string. Claude-compatible
-        // team repositories also commonly encode the same bounded vocabulary
-        // as a YAML string list; retain those exact source bytes instead of
-        // rewriting the Skill during durable import.
-        let compatible_list = allowed_tools.as_array().is_some_and(|tools| {
-            !tools.is_empty()
-                && tools.len() <= 64
-                && tools.iter().all(|tool| {
-                    tool.as_str().is_some_and(|tool| {
-                        !tool.is_empty()
-                            && tool.len() <= 128
-                            && !tool.bytes().any(|byte| byte.is_ascii_whitespace())
-                    })
-                })
-        });
-        if !allowed_tools.is_string() && !compatible_list {
+        let allowed_tools = allowed_tools.as_str().ok_or_else(|| {
+            invalid("frontmatter `allowed-tools` must be a space-separated string")
+        })?;
+        if allowed_tools.trim().is_empty() {
             return Err(invalid(
-                "frontmatter `allowed-tools` must be a space-separated string or bounded string list",
+                "frontmatter `allowed-tools` must not be empty when present",
             ));
         }
     }
@@ -344,50 +335,31 @@ mod tests {
     }
 
     #[test]
-    fn accepts_bounded_claude_compatible_allowed_tools_lists() {
+    fn rejects_nonstandard_allowed_tools_lists() {
         let fm = object(json!({
             "name": "x",
             "description": "d",
             "allowed-tools": ["Bash", "Read", "Grep"]
         }));
-        validate_frontmatter(&fm, None).expect("bounded string list is compatible");
+        assert!(validate_frontmatter(&fm, None).is_err());
     }
 
     #[test]
-    fn enforces_claude_compatible_allowed_tools_list_bounds() {
-        let tools_64: Vec<_> = (0..64).map(|index| format!("tool-{index}")).collect();
+    fn allowed_tools_must_be_a_nonempty_space_separated_string() {
         validate_frontmatter(
-            &object(json!({"name": "x", "description": "d", "allowed-tools": tools_64})),
+            &object(json!({"name": "x", "description": "d", "allowed-tools": "Bash(git:*) Read"})),
             None,
         )
-        .expect("64 tools are accepted");
-
-        for tools in [
-            Vec::<String>::new(),
-            (0..65).map(|index| format!("tool-{index}")).collect(),
-            vec![String::new()],
-            vec!["   ".to_owned()],
-            vec!["Read Grep".to_owned()],
-            vec!["x".repeat(129)],
-        ] {
+        .expect("Agent Skills string form is accepted");
+        for value in [json!(""), json!("   "), json!(["Read"])] {
             assert!(
                 validate_frontmatter(
-                    &object(json!({"name": "x", "description": "d", "allowed-tools": tools})),
+                    &object(json!({"name": "x", "description": "d", "allowed-tools": value})),
                     None,
                 )
                 .is_err()
             );
         }
-
-        validate_frontmatter(
-            &object(json!({
-                "name": "x",
-                "description": "d",
-                "allowed-tools": ["x".repeat(128)]
-            })),
-            None,
-        )
-        .expect("a 128-byte tool hint is accepted");
     }
 
     #[test]

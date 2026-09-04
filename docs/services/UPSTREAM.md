@@ -523,21 +523,29 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 
 | Setting | Default |
 |---------|---------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MB (10,485,760 bytes) |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MiB (10,485,760 bytes); manifest-bound Skills resource responses receive a 24 MiB wire allowance when neither environment nor configuration overrides the cap |
 
-HTTP response bodies are rejected while streaming, before JSON/resource
-materialization. The upstream HTTP transport also applies a process-wide 80 MiB weighted admission
-budget: a response reserves its configured maximum while a JSON/error body is
-read or for the lifetime of an SSE stream. With the default 10 MiB per-response
-limit, at most eight near-limit bodies can be materializing concurrently;
-additional reads wait up to one second without allocating their bodies, then
-return `response_budget_exhausted` if capacity remains unavailable. This bounds
-waiting even when long-lived SSE streams hold the reservations. Stdio JSON lines use the
-same per-response cap and bounded line reader.
+HTTP bodies, WebSocket messages, and stdio JSON lines are capped before MCP
+deserialization. The capability-specific semantic check still runs after parsing;
+in-process transports rely on that semantic guard.
+Because one transport connection multiplexes ordinary and Skills calls,
+its transport ceiling uses the larger 24 MiB default allowance, even without
+Skills support compiled; ordinary capabilities are still rejected at 10 MiB after parsing.
+Isolating the pre-parse ceilings would require a dedicated Skills connection or
+request-aware transport framing.
 
-The transport cap applies before rmcp materializes `call_tool`,
-`read_resource`, discovery, OAuth-authenticated, and error responses. A second
-post-decode size check remains defense in depth for structured values.
+The upstream HTTP transport also applies a process-wide 80 MiB weighted
+admission budget: a response reserves its transport maximum while a JSON/error
+body is read or for the lifetime of an SSE stream. At the 24 MiB default
+transport ceiling, at most three responses can hold reservations concurrently
+(eight at the ordinary 10 MiB ceiling). Additional reads wait up to one second
+without allocating their bodies, then return `response_budget_exhausted` if
+capacity remains unavailable, even when long-lived SSE streams hold reservations.
+
+The ordinary cap applies to `call_tool` and ordinary `read_resource`; the Skills
+cap applies to manifest-bound resource reads. `skills/list` and `skills/get`
+also have their own validation and discovery budgets. An explicit environment
+or configuration cap overrides both response ceilings.
 
 ## Resource Proxying
 
@@ -570,9 +578,10 @@ partial results.
 
 ## Skills Aggregation
 
-Skills aggregation implements [SEP-2640](../contracts/skills-extension.md), an
-**unmerged** draft. The contract doc pins the exact revision this code was
-written against; read it before changing anything here.
+Skills aggregation implements the accepted
+[SEP-2640](../contracts/skills-extension.md) extension. The contract doc pins
+the exact canonical revision this code was written against; read it before
+changing anything here.
 
 It is opt-in per upstream via `proxy_skills = true`, and unlike every other
 `proxy_*` flag it defaults to **`false`**. That asymmetry is deliberate: a
@@ -745,14 +754,14 @@ Then an MCP client connected to `lab` should see the upstream tools in `list_too
 - Upstream tool schemas are cached from discovery and reused for MCP tool metadata.
 - Upstream calls preserve the original MCP argument payload rather than forcing it through `lab`'s `action` + `params` wrapper.
 - Upstream errors are normalized into `lab` envelopes and usually surface as `upstream_error`, `network_error`, `server_error`, `decode_error`, or `internal_error`.
-- Response-size limits are enforced while streaming, before JSON materialization;
-  structured values receive an additional post-decode check.
+- HTTP body, WebSocket message, and stdio line limits apply before MCP deserialization; a
+  second capability-specific semantic limit applies after parsing.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum response size from upstream servers. |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum ordinary response size from upstream servers. Without an environment or configuration override, manifest-bound Skills resources use a separate 24 MiB wire allowance for a 16 MiB SEP-2640 binary resource after base64 expansion; an explicit cap overrides both limits. |
 | (per `bearer_token_env`) | — | Bearer token for each upstream, named in config. |
 
 ## Observability

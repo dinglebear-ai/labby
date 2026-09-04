@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId, SkillVisibility};
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
@@ -211,9 +212,18 @@ impl SkillRegistryContext {
         let Some(metadata) = self.first_party.providers.artifact_access(uri) else {
             return true;
         };
-        self.artifact_access
-            .as_ref()
-            .is_some_and(|access| access.permits(&metadata.ownership, metadata.visibility))
+        self.artifact_access.as_ref().is_some_and(|access| {
+            metadata
+                .iter()
+                .all(|owner| access.permits(&owner.ownership, owner.visibility))
+        })
+    }
+
+    fn permits_first_party_entry(&self, entry: &SkillProviderEntry) -> bool {
+        self.permits_first_party_uri(entry.descriptor().id.source_id())
+            && entry
+                .resources()
+                .all(|resource| self.permits_first_party_uri(&resource.source_id))
     }
 }
 
@@ -224,7 +234,36 @@ pub(crate) struct VisibleSkillFile {
     pub(crate) origin: String,
     pub(crate) digest: String,
     pub(crate) mime_type: Option<String>,
-    pub(crate) text: String,
+    pub(crate) content: VisibleSkillContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VisibleSkillContent {
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+impl VisibleSkillFile {
+    #[cfg(test)]
+    pub(crate) fn text(&self) -> Option<&str> {
+        self.content.text()
+    }
+}
+
+impl VisibleSkillContent {
+    pub(crate) fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Blob(_) => None,
+        }
+    }
+
+    pub(crate) fn encoded_blob(&self) -> Option<String> {
+        match self {
+            Self::Text(_) => None,
+            Self::Blob(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        }
+    }
 }
 
 pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> SkillsListResult {
@@ -233,7 +272,7 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
         .providers
         .discover()
         .iter()
-        .filter(|entry| !context.permits_first_party_uri(entry.descriptor().id.source_id()))
+        .filter(|entry| !context.permits_first_party_entry(entry))
         .count();
     let mut listing = SkillsListResult {
         result_type: Default::default(),
@@ -242,7 +281,7 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
             .providers
             .discover()
             .iter()
-            .filter(|entry| context.permits_first_party_uri(entry.descriptor().id.source_id()))
+            .filter(|entry| context.permits_first_party_entry(entry))
             .cloned()
             .map(provider_entry_to_wire)
             .collect(),
@@ -299,26 +338,53 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
 pub(crate) async fn get_visible_skill(
     context: &SkillRegistryContext,
     uri: &str,
-) -> Option<SkillEntry> {
+) -> Result<Option<SkillEntry>, ToolError> {
+    let Some(entry) = resolve_visible_skill(context, uri).await? else {
+        return Ok(None);
+    };
+    Ok((entry.uri == uri).then_some(entry))
+}
+
+pub(crate) async fn resolve_visible_skill(
+    context: &SkillRegistryContext,
+    uri: &str,
+) -> Result<Option<SkillEntry>, ToolError> {
     if let Some(entry) = context.first_party.providers.find(uri) {
-        return context
-            .permits_first_party_uri(uri)
-            .then(|| provider_entry_to_wire(entry.clone()));
+        return Ok(context
+            .permits_first_party_entry(entry)
+            .then(|| provider_entry_to_wire(entry.clone())));
     }
+
+    // URI validity is part of the Skills contract even when gateway federation
+    // is not compiled in. Keep standalone Skills builds aligned with gateway
+    // builds instead of treating malformed identifiers as missing resources.
+    let parsed = parse_skill_uri(uri).map_err(|error| ToolError::InvalidParam {
+        message: error.to_string(),
+        param: "uri".to_string(),
+    })?;
 
     #[cfg(feature = "gateway")]
     {
-        let parsed = parse_skill_uri(uri).ok()?;
         let origin = parsed.origin().to_string();
         if !context.scope.allows_upstream(&origin) {
-            return None;
+            return Ok(None);
         }
-        let manager = context.manager.as_deref()?;
-        let config = manager.upstream_config(&origin).await?;
+        let Some(manager) = context.manager.as_deref() else {
+            return Err(ToolError::Sdk {
+                sdk_kind: "upstream_unavailable".into(),
+                message: "gateway runtime is unavailable while resolving a skill".into(),
+            });
+        };
+        let Some(config) = manager.upstream_config(&origin).await else {
+            return Ok(None);
+        };
         if !config.enabled || !config.proxy_skills {
-            return None;
+            return Ok(None);
         }
-        let pool = manager.current_pool().await?;
+        let pool = manager.current_pool().await.ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "upstream_unavailable".into(),
+            message: "gateway runtime is unavailable while resolving a skill".into(),
+        })?;
         let provider = SepSkillProvider::new(
             Arc::clone(&pool),
             config.clone(),
@@ -327,7 +393,7 @@ pub(crate) async fn get_visible_skill(
         let discovered = provider
             .discover(&SkillDiscoverRequest::default())
             .await
-            .ok()?;
+            .map_err(provider_error_to_tool)?;
         let validated = discovered
             .skills
             .into_iter()
@@ -335,56 +401,67 @@ pub(crate) async fn get_visible_skill(
             .collect::<Vec<_>>();
         let meta = origin_meta(&origin, &pool, context.scope.tool_access()).await;
         let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
-        if let Some(entry) = minted.entries.iter().find(|entry| {
-            entry.uri == uri
-                || entry
-                    .resources
-                    .as_ref()
-                    .is_some_and(|resources| resources.iter().any(|resource| resource.uri == uri))
-        }) {
-            return Some(entry.clone());
+        if let Some(entry) = minted.entries.iter().find(|entry| entry.uri == uri) {
+            return Ok(Some(entry.clone()));
         }
 
         // A URI already owned by a collision-excluded skill stays poisoned.
         // Do not let an inconsistent `skills/get` response resurrect it.
         if minted.excludes_uri(uri) {
-            return None;
+            return Ok(None);
         }
 
-        let upstream_uri = parsed.upstream_uri_for_origin(&config.name)?;
+        let Some(upstream_uri) = parsed.upstream_uri_for_origin(&config.name) else {
+            return Ok(None);
+        };
         if let Some(cached) = provider.cached_owner_for_resource(&upstream_uri).await {
-            let entry =
-                aggregate::mint_proxied_entry(&config.name, &cached.into_validated(), Some(&meta))?;
-            if minted.conflicts_with(&entry) {
-                return None;
+            let Some(entry) =
+                aggregate::mint_proxied_entry(&config.name, cached.validated(), Some(&meta))
+            else {
+                return Ok(None);
+            };
+            if !minted.conflicts_with(&entry) {
+                return Ok(Some(entry));
             }
-            return Some(entry);
+            return Ok(None);
         }
-        let fetched = provider
+        let upstream_skill_uri = labby_runtime::skills::parse_skill_resource_uri(&upstream_uri)
+            .map_err(|error| ToolError::InvalidParam {
+                message: error.to_string(),
+                param: "uri".to_string(),
+            })?;
+        if upstream_skill_uri.skill_md_parts().is_none() {
+            return Ok(None);
+        }
+        let fetched = match provider
             .get(&SkillGetRequest {
                 id: SkillId::new(provider.id().clone(), upstream_uri),
                 deadline: SkillProviderDeadline::default(),
             })
             .await
-            .ok()
-            .map(|result| result.skill.into_validated())?;
-        let entry = aggregate::mint_proxied_entry(&config.name, &fetched, Some(&meta))?;
+        {
+            Ok(result) => result.skill.into_validated(),
+            Err(SkillProviderError::SkillNotFound) => return Ok(None),
+            Err(error) => return Err(provider_error_to_tool(error)),
+        };
+        let Some(entry) = aggregate::mint_proxied_entry(&config.name, &fetched, Some(&meta)) else {
+            return Ok(None);
+        };
         if minted.conflicts_with(&entry) {
             tracing::warn!(
                 upstream = %config.name,
                 skill = %entry.uri,
                 "excluding unlisted skill whose manifest collides with published URI ownership"
             );
-            return None;
+            return Ok(None);
         }
-        return Some(entry);
+        return Ok(Some(entry));
     }
 
     #[cfg(not(feature = "gateway"))]
     {
-        let _ = context;
-        let _ = uri;
-        None
+        drop(parsed);
+        Ok(None)
     }
 }
 
@@ -392,7 +469,8 @@ pub(crate) async fn read_visible_skill_file(
     context: &SkillRegistryContext,
     uri: &str,
 ) -> Result<VisibleSkillFile, ToolError> {
-    if let Some(provider_entry) = context.first_party.providers.find(uri) {
+    let first_party_owners = context.first_party.providers.find_all(uri);
+    if let Some(provider_entry) = first_party_owners.first().copied() {
         if !context.permits_first_party_uri(uri) {
             return Err(unknown_file(uri));
         }
@@ -401,36 +479,78 @@ pub(crate) async fn read_visible_skill_file(
             .resources
             .as_ref()
             .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .cloned()
             .ok_or_else(|| stale_manifest(uri))?;
+        if first_party_owners.iter().skip(1).any(|owner| {
+            owner
+                .validated()
+                .entry
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.iter().find(|candidate| candidate.uri == uri))
+                != Some(&resource)
+        }) {
+            return Err(stale_manifest(uri));
+        }
         let verified = context
             .first_party
             .providers
             .read(&provider_entry, uri, limits::MAX_SKILL_RESOURCE_BYTES)
             .await
             .map_err(first_party_provider_error_to_tool)?;
-        let text = verified_text(
-            verified.bytes,
-            "verified first-party skill resource was not UTF-8 text",
-        )?;
+        let content = match String::from_utf8(verified.bytes) {
+            Ok(text) => VisibleSkillContent::Text(text),
+            Err(error) => VisibleSkillContent::Blob(error.into_bytes()),
+        };
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
             skill_uri: entry.uri.clone(),
             origin: labby_runtime::skills::FIRST_PARTY_ORIGIN.to_string(),
-            digest: resource.digest.clone(),
-            mime_type: None,
-            text,
+            digest: resource.digest,
+            mime_type: (entry.uri == uri)
+                .then(|| labby_runtime::skills::SKILL_MD_MIME_TYPE.to_string()),
+            content,
         });
     }
 
     #[cfg(feature = "gateway")]
     {
-        let entry = get_visible_skill(context, uri)
+        let mut owners = list_visible_skills(context)
             .await
-            .ok_or_else(|| unknown_file(uri))?;
+            .skills
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .resources
+                    .as_ref()
+                    .is_some_and(|resources| resources.iter().any(|resource| resource.uri == uri))
+            })
+            .collect::<Vec<_>>();
+        if owners.is_empty()
+            && let Some(owner) = resolve_visible_skill(context, uri).await?
+        {
+            owners.push(owner);
+        }
+        let entry = owners.first().cloned().ok_or_else(|| unknown_file(uri))?;
+        let expected_resource = entry
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .ok_or_else(|| stale_manifest(uri))?;
+        if owners.iter().skip(1).any(|owner| {
+            owner
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+                != Some(expected_resource)
+        }) {
+            return Err(stale_manifest(uri));
+        }
         let resource = entry
             .resources
             .as_ref()
             .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .cloned()
             .ok_or_else(|| stale_manifest(uri))?;
         let parsed = parse_skill_uri(uri).map_err(|error| ToolError::InvalidParam {
             message: error.to_string(),
@@ -471,14 +591,30 @@ pub(crate) async fn read_visible_skill_file(
             })
             .await
             .map_err(provider_error_to_tool)?;
-        let text = verified_text(verified.bytes, "verified skill resource was not UTF-8 text")?;
+        let content = match verified.representation {
+            labby_runtime::skills::SkillResourceRepresentation::Text => {
+                let text = String::from_utf8(verified.bytes).map_err(|_| ToolError::Sdk {
+                    sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                    message: "verified MCP text skill resource was not UTF-8".into(),
+                })?;
+                VisibleSkillContent::Text(text)
+            }
+            labby_runtime::skills::SkillResourceRepresentation::Blob => {
+                VisibleSkillContent::Blob(verified.bytes)
+            }
+        };
+        let is_skill_md = entry.uri == uri;
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
             skill_uri: entry.uri,
             origin,
-            digest: resource.digest.clone(),
-            mime_type: verified.media_type,
-            text,
+            digest: resource.digest,
+            mime_type: if is_skill_md {
+                Some(labby_runtime::skills::SKILL_MD_MIME_TYPE.to_string())
+            } else {
+                verified.media_type
+            },
+            content,
         });
     }
 
@@ -520,13 +656,6 @@ fn provider_error_with_failure_kind(
     }
 }
 
-fn verified_text(bytes: Vec<u8>, message: &'static str) -> Result<String, ToolError> {
-    String::from_utf8(bytes).map_err(|_| ToolError::Sdk {
-        sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
-        message: message.to_string(),
-    })
-}
-
 fn unknown_file(uri: &str) -> ToolError {
     ToolError::Sdk {
         sdk_kind: "not_found".to_string(),
@@ -554,11 +683,17 @@ struct ProxiedSkills {
 }
 
 #[cfg(feature = "gateway")]
+fn unavailable_proxied_skills(upstream_count: usize) -> ProxiedSkills {
+    ProxiedSkills {
+        unreachable_upstreams: upstream_count,
+        cache_scope: (upstream_count > 0).then(|| CACHE_SCOPE_PRIVATE.to_string()),
+        ..ProxiedSkills::default()
+    }
+}
+
+#[cfg(feature = "gateway")]
 async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills {
     let Some(manager) = context.manager.as_deref() else {
-        return ProxiedSkills::default();
-    };
-    let Some(pool) = manager.current_pool().await else {
         return ProxiedSkills::default();
     };
     let configs = manager
@@ -569,6 +704,17 @@ async fn proxied_skill_entries(context: &SkillRegistryContext) -> ProxiedSkills 
         .filter(|config| config.enabled && config.proxy_skills)
         .filter(|config| context.scope.allows_upstream(&config.name))
         .collect::<Vec<_>>();
+    let Some(pool) = manager.current_pool().await else {
+        if !configs.is_empty() {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "skills",
+                upstream_count = configs.len(),
+                "gateway runtime unavailable while listing configured Skill upstreams"
+            );
+        }
+        return unavailable_proxied_skills(configs.len());
+    };
 
     let subject = context.scope.subject().map(str::to_string);
     let mut results = stream::iter(configs)
@@ -657,16 +803,43 @@ fn min_ttl(current: Option<u64>, incoming: Option<u64>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::local::LocalSkill;
+    use crate::skills::providers::{ArtifactSkillAccess, FirstPartySkillProviders};
+    use labby_runtime::artifacts::LibraryOwnership;
+    use labby_runtime::skills::wire::SkillResource;
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn unavailable_pool_marks_every_configured_upstream_incomplete() {
+        let proxied = unavailable_proxied_skills(2);
+        assert_eq!(proxied.unreachable_upstreams, 2);
+        assert_eq!(proxied.cache_scope.as_deref(), Some(CACHE_SCOPE_PRIVATE));
+        assert!(proxied.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolution_preserves_invalid_uri_and_missing_runtime_errors() {
+        let context = SkillRegistryContext::first_party_only();
+        let invalid = resolve_visible_skill(&context, "not a skill uri")
+            .await
+            .expect_err("malformed identifiers are not reported as absence");
+        assert!(matches!(invalid, ToolError::InvalidParam { .. }));
+
+        let mut root_context = SkillRegistryContext::first_party_only();
+        root_context.scope = SkillCallerScope::root(None, ToolAccess::Direct);
+        let unavailable = resolve_visible_skill(&root_context, "skill://remote/demo/SKILL.md")
+            .await
+            .expect_err("a missing gateway runtime is not reported as absence");
+        assert_eq!(unavailable.kind(), "upstream_unavailable");
+    }
 
     fn artifact_context(visibility: SkillVisibility) -> SkillRegistryContext {
         use std::collections::BTreeMap;
 
-        use crate::skills::local::LocalSkill;
-        use crate::skills::providers::{ArtifactSkillAccess, FirstPartySkillProviders};
         use crate::skills::registry::FirstPartyGeneration;
         use labby_runtime::artifacts::LibraryOwnership;
         use labby_runtime::skills::ResourceDigest;
-        use labby_runtime::skills::wire::{SkillEntry, SkillResource};
+        use labby_runtime::skills::wire::SkillEntry;
 
         let manifest = "skill://labby/artifact/SKILL.md";
         let support = "skill://labby/artifact/notes.md";
@@ -725,8 +898,7 @@ mod tests {
         )
     }
 
-    #[cfg(all(feature = "gateway", feature = "skills", feature = "proxy-testkit"))]
-    use labby_runtime::skills::digest::ResourceDigest;
+    use labby_runtime::skills::ResourceDigest;
 
     #[test]
     fn default_scope_is_first_party_only() {
@@ -769,7 +941,7 @@ mod tests {
             .await
             .expect("read");
         assert_eq!(file.skill_uri, entry.uri);
-        assert!(file.text.contains("name: using-labby"));
+        assert!(file.text().unwrap().contains("name: using-labby"));
         let digest = entry
             .resources
             .as_ref()
@@ -785,16 +957,19 @@ mod tests {
         assert!(
             get_visible_skill(&private, "skill://labby/using-labby/SKILL.md")
                 .await
+                .unwrap()
                 .is_some()
         );
         assert!(
             get_visible_skill(&private, "skill://labby/artifact/SKILL.md")
                 .await
+                .unwrap()
                 .is_none()
         );
         assert!(
             get_visible_skill(&private, "skill://labby/artifact/notes.md")
                 .await
+                .unwrap()
                 .is_none()
         );
         assert!(
@@ -808,6 +983,7 @@ mod tests {
         assert!(
             get_visible_skill(&member, "skill://labby/artifact/SKILL.md")
                 .await
+                .unwrap()
                 .is_none()
         );
 
@@ -817,8 +993,8 @@ mod tests {
             read_visible_skill_file(&owner, "skill://labby/artifact/notes.md")
                 .await
                 .unwrap()
-                .text,
-            "owner notes"
+                .text(),
+            Some("owner notes")
         );
         assert_eq!(
             list_visible_skills(&owner).await.cache_scope.as_deref(),
@@ -828,16 +1004,18 @@ mod tests {
         let admin = artifact_context(SkillVisibility::Private)
             .with_artifact_access(artifact_access("tenant-a", "admin", true));
         assert!(
-            get_visible_skill(&admin, "skill://labby/artifact/notes.md")
+            resolve_visible_skill(&admin, "skill://labby/artifact/notes.md")
                 .await
+                .unwrap()
                 .is_some()
         );
 
         let tenant_member = artifact_context(SkillVisibility::Tenant)
             .with_artifact_access(artifact_access("tenant-a", "member", false));
         assert!(
-            get_visible_skill(&tenant_member, "skill://labby/artifact/notes.md")
+            resolve_visible_skill(&tenant_member, "skill://labby/artifact/notes.md")
                 .await
+                .unwrap()
                 .is_some()
         );
 
@@ -846,7 +1024,96 @@ mod tests {
         assert!(
             get_visible_skill(&cross_tenant, "skill://labby/artifact/notes.md")
                 .await
+                .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_artifact_resource_requires_access_to_every_owner() {
+        use std::collections::BTreeMap;
+
+        let shared_uri = "skill://labby/parent/child/shared.txt";
+        let shared = "shared bytes";
+        let make_skill = |name: &str, manifest: &str| {
+            let body = format!("---\nname: {name}\ndescription: nested\n---\n");
+            LocalSkill {
+                entry: SkillEntry {
+                    uri: manifest.to_owned(),
+                    frontmatter: labby_runtime::skills::parse_skill_md_frontmatter(&body).unwrap(),
+                    resources: Some(vec![
+                        SkillResource {
+                            uri: manifest.to_owned(),
+                            digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+                            size: body.len() as u64,
+                        },
+                        SkillResource {
+                            uri: shared_uri.to_owned(),
+                            digest: ResourceDigest::of_bytes(shared.as_bytes()).to_wire(),
+                            size: shared.len() as u64,
+                        },
+                    ]),
+                    meta: None,
+                },
+                files: BTreeMap::from([
+                    (manifest.to_owned(), body),
+                    (shared_uri.to_owned(), shared.to_owned()),
+                ]),
+            }
+        };
+        let ownership = |actor: &str| {
+            LibraryOwnership::canonical(
+                LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+                LibraryActorId::from_canonical_projection(actor).unwrap(),
+            )
+        };
+        let providers = FirstPartySkillProviders::from_artifact_skills([
+            (
+                make_skill("parent", "skill://labby/parent/SKILL.md"),
+                ArtifactSkillAccess {
+                    ownership: ownership("owner"),
+                    visibility: SkillVisibility::Private,
+                },
+            ),
+            (
+                make_skill("child", "skill://labby/parent/child/SKILL.md"),
+                ArtifactSkillAccess {
+                    ownership: ownership("child-owner"),
+                    visibility: SkillVisibility::Tenant,
+                },
+            ),
+        ]);
+        assert_eq!(providers.find_all(shared_uri).len(), 2);
+        assert_eq!(providers.artifact_access(shared_uri).unwrap().len(), 2);
+        let generation = Arc::new(FirstPartyGeneration {
+            id: 8,
+            digest: "nested".into(),
+            active_digest: "nested-active".into(),
+            providers,
+            rejected: Vec::new(),
+            bytes: shared.len(),
+            resources: 3,
+            degraded: None,
+        });
+        let member = SkillRegistryContext::from_generation(Arc::clone(&generation))
+            .with_artifact_access(artifact_access("tenant-a", "member", false));
+        let member_listing = list_visible_skills(&member).await;
+        assert!(
+            member_listing
+                .skills
+                .iter()
+                .all(|entry| entry.uri != "skill://labby/parent/child/SKILL.md"),
+            "a caller must not discover a skill whose complete resource set is unreadable"
+        );
+        assert!(read_visible_skill_file(&member, shared_uri).await.is_err());
+        let owner = SkillRegistryContext::from_generation(generation)
+            .with_artifact_access(artifact_access("tenant-a", "owner", false));
+        assert_eq!(
+            read_visible_skill_file(&owner, shared_uri)
+                .await
+                .unwrap()
+                .text(),
+            Some(shared)
         );
     }
 
@@ -877,10 +1144,13 @@ mod tests {
         manager.refresh(None).unwrap();
 
         let notes_uri = "skill://labby/pinned/notes.md";
-        let old_entry = get_visible_skill(&pinned, notes_uri).await.unwrap();
+        let old_entry = resolve_visible_skill(&pinned, notes_uri)
+            .await
+            .unwrap()
+            .unwrap();
         let old_file = read_visible_skill_file(&pinned, notes_uri).await.unwrap();
         assert_eq!(old_entry.frontmatter["description"], "old");
-        assert_eq!(old_file.text, "old notes");
+        assert_eq!(old_file.text(), Some("old notes"));
         let resource = old_entry
             .resources
             .as_ref()
@@ -892,7 +1162,7 @@ mod tests {
         assert!(
             labby_runtime::skills::parse_digest(&resource.digest)
                 .unwrap()
-                .matches(old_file.text.as_bytes())
+                .matches(old_file.text().unwrap().as_bytes())
         );
     }
 
@@ -911,6 +1181,38 @@ mod tests {
         let reminted_skill_uri = "skill://up/skill/native/unlisted/SKILL.md";
         let reminted_notes_uri = "skill://up/skill/native/unlisted/notes.md";
         let notes_digest = ResourceDigest::of_bytes(b"supporting notes").to_wire();
+        let parent_body = "---\nname: parent\ndescription: parent skill\n---\n";
+        let child_body = "---\nname: child\ndescription: child skill\n---\n";
+        let parent_uri = "skill://native/parent/SKILL.md";
+        let child_uri = "skill://native/parent/child/SKILL.md";
+        let shared_uri = "skill://native/parent/child/shared.txt";
+        let shared_body = "shared supporting bytes";
+        let shared_resource = json!({
+            "uri": shared_uri,
+            "digest": ResourceDigest::of_bytes(shared_body.as_bytes()).to_wire(),
+            "size": shared_body.len()
+        });
+        let nested_listing = json!({
+            "resultType": "complete",
+            "skills": [
+                {
+                    "uri": parent_uri,
+                    "frontmatter": { "name": "parent", "description": "parent skill" },
+                    "resources": [
+                        { "uri": parent_uri, "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire(), "size": parent_body.len() },
+                        shared_resource.clone()
+                    ]
+                },
+                {
+                    "uri": child_uri,
+                    "frontmatter": { "name": "child", "description": "child skill" },
+                    "resources": [
+                        { "uri": child_uri, "digest": ResourceDigest::of_bytes(child_body.as_bytes()).to_wire(), "size": child_body.len() },
+                        shared_resource
+                    ]
+                }
+            ]
+        });
         let unlisted_entry = json!({
             "uri": native_skill_uri,
             "frontmatter": { "name": "unlisted", "description": "a test skill" },
@@ -927,11 +1229,14 @@ mod tests {
         let pool = Arc::new(UpstreamPool::new());
         pool.insert_scripted_skills_server_for_tests(
             "up",
-            json!({ "resultType": "complete", "skills": [] }),
+            nested_listing,
             unlisted_entry,
             HashMap::from([
                 (native_skill_uri.to_string(), skill_body.to_string()),
                 (native_notes_uri.to_string(), "supporting notes".to_string()),
+                (parent_uri.to_string(), parent_body.to_string()),
+                (child_uri.to_string(), child_body.to_string()),
+                (shared_uri.to_string(), shared_body.to_string()),
             ]),
         )
         .await;
@@ -1001,13 +1306,34 @@ mod tests {
         assert_ne!(pinned_id, generation_manager.generation().id);
         assert_eq!(context.generation_id(), pinned_id);
 
+        let listing = list_visible_skills(&context).await;
+        assert!(
+            listing
+                .skills
+                .iter()
+                .any(|entry| entry.uri.ends_with("/parent/SKILL.md"))
+        );
+        assert!(
+            listing
+                .skills
+                .iter()
+                .any(|entry| entry.uri.ends_with("/parent/child/SKILL.md"))
+        );
+        let reminted_shared_uri = "skill://up/skill/native/parent/child/shared.txt";
+        let shared_file = read_visible_skill_file(&context, reminted_shared_uri)
+            .await
+            .expect("identically bound nested supporting resource remains readable");
+        assert_eq!(shared_file.text(), Some(shared_body));
+
         let fetched = get_visible_skill(&context, reminted_skill_uri)
             .await
+            .unwrap()
             .expect("unlisted skill resolves through skills/get");
         assert_eq!(fetched.uri, reminted_skill_uri);
 
-        let entry = get_visible_skill(&context, reminted_notes_uri)
+        let entry = resolve_visible_skill(&context, reminted_notes_uri)
             .await
+            .unwrap()
             .expect("unlisted supporting URI resolves through cached ownership");
         assert_eq!(entry.uri, reminted_skill_uri);
         assert!(entry.resources.as_ref().is_some_and(|resources| {
@@ -1023,6 +1349,6 @@ mod tests {
         assert_eq!(file.skill_uri, reminted_skill_uri);
         assert_eq!(file.origin, "up");
         assert_eq!(file.digest, notes_digest);
-        assert_eq!(file.text, "supporting notes");
+        assert_eq!(file.text(), Some("supporting notes"));
     }
 }

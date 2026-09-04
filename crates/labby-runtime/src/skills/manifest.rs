@@ -480,14 +480,17 @@ mod tests {
     }
 
     #[test]
-    fn accepts_claude_compatible_allowed_tools_list() {
+    fn rejects_nonstandard_allowed_tools_list() {
         let mut entry = valid_entry();
         entry.frontmatter.insert(
             "allowed-tools".to_string(),
             serde_json::json!(["Read", "Write"]),
         );
 
-        validate_skill_entry_detailed(&entry).expect("bounded string lists are compatible");
+        assert_eq!(
+            validate_skill_entry(&entry),
+            Err(SkillRejection::InvalidFrontmatter)
+        );
     }
 
     #[test]

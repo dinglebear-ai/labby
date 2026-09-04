@@ -162,6 +162,8 @@ jobs:
           ./dist/${{ matrix.binary }} --json gateway code exec \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
+          ./dist/${{ matrix.binary }} skills --help \
+            | grep -q 'Read Agent Skills visible to the local CLI'
 
       - name: Package Windows artifact
         if: runner.os == 'Windows'
@@ -189,6 +191,10 @@ jobs:
           }
           if ($output -notmatch '"sum":2') {
             throw "Code Mode packaged smoke did not return expected result: $output"
+          }
+          $skillsHelp = & ".\dist\${{ matrix.binary }}" skills --help
+          if ($LASTEXITCODE -ne 0 -or $skillsHelp -notmatch 'Read Agent Skills visible to the local CLI') {
+            throw "Packaged binary does not expose the required Skills surface"
           }
 
       - name: Attest exact platform candidate archive
@@ -275,6 +281,8 @@ jobs:
           docker run --rm lab:release-candidate --json gateway code exec \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
+          docker run --rm lab:release-candidate skills --help \
+            | grep -q 'Read Agent Skills visible to the local CLI'
       - name: Scan tested container candidate
         uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8
         with:
