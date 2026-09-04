@@ -62,6 +62,11 @@ pub struct AppState {
     pub project_session_state: Option<Arc<labby_auth::project_session::ProjectSessionState>>,
     /// Cached actor-key deriver used at authenticated bind boundaries.
     pub actor_key_deriver: Option<Arc<crate::observability::activity::ActorKeyDeriver>>,
+    /// Core assertion verifier for sealed integrated trusted-host mode.
+    ///
+    /// When present, the API router requires a fresh delegated actor assertion
+    /// on every request after the Unix listener has accepted the peer.
+    pub trusted_host_verifier: Option<Arc<labby_auth::trusted_host::TrustedHostVerifier>>,
     /// Shared gateway manager for runtime upstream pool access and config mutation.
     ///
     /// `None` when gateway management is not wired for this process.
@@ -162,6 +167,7 @@ impl AppState {
             oauth_state: None,
             project_session_state: None,
             actor_key_deriver: None,
+            trusted_host_verifier: None,
             #[cfg(feature = "gateway")]
             gateway_manager: None,
             web_assets_dir: None,
@@ -282,6 +288,15 @@ impl AppState {
         deriver: crate::observability::activity::ActorKeyDeriver,
     ) -> Self {
         self.actor_key_deriver = Some(Arc::new(deriver));
+        self
+    }
+
+    #[must_use]
+    pub fn with_trusted_host_verifier(
+        mut self,
+        verifier: Arc<labby_auth::trusted_host::TrustedHostVerifier>,
+    ) -> Self {
+        self.trusted_host_verifier = Some(verifier);
         self
     }
 

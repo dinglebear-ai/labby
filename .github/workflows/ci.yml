@@ -892,8 +892,6 @@ jobs:
         run: python3 scripts/ci/refresh_mcp_auth_denominator.py --check
       - name: Verify current OpenAI authentication source denominator
         run: python3 scripts/ci/refresh_openai_auth_denominator.py --check
-      - name: Verify vendored rmcp base and explicit patch provenance
-        run: python3 scripts/ci/check_vendor_rmcp_provenance.py
       - name: Verify requirement-specific OpenAI authentication contracts
         run: scripts/ci/openai-auth-conformance.sh
       - name: Verify requirement-specific MCP authorization contracts

@@ -853,10 +853,12 @@ mod tests {
     use labby_gateway::gateway::palette::LauncherCatalogView;
     #[cfg(feature = "proxy-testkit")]
     use labby_gateway::upstream::pool::UpstreamPool;
+    #[cfg(feature = "proxy-testkit")]
     use labby_gateway::upstream::types::{
         SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
     };
     use labby_primitives::action::{ActionSpec, ParamSpec};
+    #[cfg(feature = "proxy-testkit")]
     use labby_runtime::gateway_config::UpstreamConfig;
     #[cfg(feature = "proxy-testkit")]
     use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig};
@@ -978,6 +980,7 @@ mod tests {
         assert!(!unscoped_write.caller.can_execute());
     }
 
+    #[cfg(feature = "proxy-testkit")]
     fn test_upstream_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
             enabled: true,
@@ -1004,10 +1007,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "proxy-testkit")]
     fn healthy_upstream_entry(upstream: &str, tool_name: &str) -> UpstreamEntry {
         healthy_upstream_entry_with_schema(upstream, tool_name, None)
     }
 
+    #[cfg(feature = "proxy-testkit")]
     fn healthy_upstream_entry_with_schema(
         upstream: &str,
         tool_name: &str,

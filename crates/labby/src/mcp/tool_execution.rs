@@ -82,13 +82,13 @@ struct ExactToolTarget {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(test)]
+#[cfg(all(test, feature = "proxy-testkit"))]
 pub(crate) enum ProjectToolOwnership {
     OwnedLabby,
     Regular,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "proxy-testkit"))]
 pub(crate) fn transport_bound_tool_ownership(
     transport: &TransportBoundAccessContext,
     wire_name: &str,

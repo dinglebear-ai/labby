@@ -3966,6 +3966,13 @@
           "status"
         ],
         "properties": {
+          "capability_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sealed runtime capability profile. Integrated mode reports a distinct\nvalue so Core can reject a standalone/all-features artifact at\nreadiness time."
+          },
           "mode": {
             "type": [
               "string",
@@ -3991,6 +3998,13 @@
             "format": "int32",
             "description": "OS process ID.",
             "minimum": 0
+          },
+          "provider_protocol": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Private provider protocol accepted by the integrated profile."
           },
           "status": {
             "type": "string",

@@ -16,6 +16,9 @@
 //!    load (i.e. `current_pool()` is `Some`). When no manager is wired this
 //!    predicate is skipped (not every deployment uses the gateway).
 //!
+//! 3. **Core provider reachable** — trusted-host mode is not ready unless its
+//!    configured private Core provider answers the negotiated protocol health.
+//!
 //! **FLAG for AUTH agent:** `AppState` was not modified. Readiness is derived
 //! from *existing* fields (`registry`, `gateway_manager`). If AUTH needs an
 //! explicit `ready: AtomicBool` flag set at a precise moment during serve
@@ -45,17 +48,36 @@ pub struct HealthResponse {
     /// Present only on 503 responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending: Option<Vec<String>>,
+    /// Sealed runtime capability profile. Integrated mode reports a distinct
+    /// value so Core can reject a standalone/all-features artifact at
+    /// readiness time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability_profile: Option<&'static str>,
+    /// Private provider protocol accepted by the integrated profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_protocol: Option<&'static str>,
 }
 
 /// Liveness probe. Returns 200 as long as the process is running.
-pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let uptime_s = state.server_start.elapsed().as_secs();
+    let integrated = state.trusted_host_verifier.is_some();
     Json(HealthResponse {
         status: "ok".to_string(),
-        mode: Some("gateway-host".to_string()),
+        mode: Some(if integrated {
+            "integrated-gateway".to_string()
+        } else {
+            "gateway-host".to_string()
+        }),
         pid: Some(std::process::id()),
         uptime_s: Some(uptime_s),
         pending: None,
+        capability_profile: Some(if integrated {
+            "unraid-core-integrated-v1"
+        } else {
+            "standalone-gateway-v1"
+        }),
+        provider_protocol: integrated.then_some("1.0"),
     })
 }
 
@@ -86,6 +108,19 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
             if manager.current_pool().await.is_none() {
                 pending.push("gateway pool not yet initialised".to_string());
             }
+
+            if state.trusted_host_verifier.is_some() {
+                let core_provider_health = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    manager.core_provider_health(),
+                )
+                .await;
+                if !matches!(core_provider_health, Ok(Ok(()))) {
+                    pending.push("Core provider unavailable or incompatible".to_string());
+                }
+            }
+        } else if state.trusted_host_verifier.is_some() {
+            pending.push("integrated gateway manager is unavailable".to_string());
         }
     }
 
@@ -98,6 +133,8 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
                 pid: None,
                 uptime_s: None,
                 pending: None,
+                capability_profile: None,
+                provider_protocol: None,
             }),
         )
     } else {
@@ -109,6 +146,8 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
                 pid: None,
                 uptime_s: None,
                 pending: Some(pending),
+                capability_profile: None,
+                provider_protocol: None,
             }),
         )
     }
@@ -116,7 +155,22 @@ pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+
+    #[tokio::test]
+    async fn integrated_health_self_reports_the_sealed_profile() {
+        let verifier = Arc::new(labby_auth::trusted_host::TrustedHostVerifier::new(1, []));
+        let response = health(State(AppState::new().with_trusted_host_verifier(verifier))).await;
+
+        assert_eq!(response.0.mode.as_deref(), Some("integrated-gateway"));
+        assert_eq!(
+            response.0.capability_profile,
+            Some("unraid-core-integrated-v1")
+        );
+        assert_eq!(response.0.provider_protocol, Some("1.0"));
+    }
 
     /// Default `AppState` has no gateway manager wired and a populated registry
     /// (all features enabled at compile time), so `/ready` must return 200.
@@ -134,6 +188,16 @@ mod tests {
             StatusCode::OK,
             "/ready must return 200 when no gateway manager is wired"
         );
+    }
+
+    #[tokio::test]
+    async fn integrated_ready_fails_closed_without_the_gateway_manager() {
+        let verifier = Arc::new(labby_auth::trusted_host::TrustedHostVerifier::new(1, []));
+        let state = AppState::new().with_trusted_host_verifier(verifier);
+
+        let response = ready(State(state)).await.into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     /// When a gateway manager is wired but the pool has not yet loaded, `/ready`
