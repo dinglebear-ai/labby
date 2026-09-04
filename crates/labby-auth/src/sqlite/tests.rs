@@ -7,8 +7,9 @@ use rusqlite::Connection;
 use crate::at_rest::TokenEncryptionKey;
 use crate::jwt::{AccessClaims, SigningKeys};
 use crate::types::{
-    AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, GoogleProviderCredentialUpdate,
-    RefreshTokenRow, RegisteredClient, UpstreamOauthCredentialRow, UpstreamOauthStateRow,
+    AllowedUserRow, AuthorizationCodeRow, BrowserReauthChallengeRow, BrowserReauthResult,
+    BrowserSessionRow, GoogleProviderCredentialUpdate, RefreshTokenRow, RegisteredClient,
+    UpstreamOauthCredentialRow, UpstreamOauthStateRow,
 };
 
 use crate::util::now_unix;
@@ -1450,7 +1451,7 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        13
+        14
     );
 }
 
@@ -1506,7 +1507,7 @@ async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker
         })
         .await
         .unwrap();
-    assert_eq!(schema_version, 13);
+    assert_eq!(schema_version, 14);
     let row = migrated
         .find_google_provider_credential("google-subject-v7")
         .await
@@ -1664,13 +1665,33 @@ fn v13_proof_migration_rolls_back_and_preserves_existing_sessions() {
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
     let sessions: i64 = conn
         .query_row("SELECT COUNT(*) FROM browser_sessions", [], |row| {
             row.get(0)
         })
         .unwrap();
     assert_eq!(sessions, 1);
+}
+
+#[test]
+fn v14_browser_reauth_migration_rolls_back_before_publication() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE browser_sessions (session_id TEXT PRIMARY KEY, project_binding_json TEXT); PRAGMA user_version = 13;").unwrap();
+    let error = migrations::run_migrations_with_fault(&conn, "v14_before_commit").unwrap_err();
+    assert!(error.to_string().contains("injected v14 migration fault"));
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 13);
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'browser_reauth_challenges')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!exists);
 }
 
 #[tokio::test]
@@ -2396,6 +2417,120 @@ async fn concurrent_assertion_consumption_has_exactly_one_winner() {
         second.consume_assertion_jti("https://issuer.example", "concurrent", now, now + 60, now)
     );
     assert_ne!(first.unwrap(), second.unwrap());
+}
+
+#[tokio::test]
+async fn browser_reauth_challenge_is_bounded_single_use_and_session_bound() {
+    let store = temp_store().await;
+    let now = now_unix();
+    let row = BrowserReauthChallengeRow {
+        state: "state-secret".into(),
+        interaction_hash: [7; 32],
+        session_id: "session-one".into(),
+        subject: "subject-one".into(),
+        provider_code_verifier: "pkce-secret".into(),
+        nonce: "nonce-secret".into(),
+        purpose_json: r#"{"action":"save"}"#.into(),
+        created_at: now,
+        expires_at: now + 300,
+    };
+    store
+        .insert_browser_reauth_challenge(row.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .poll_browser_reauth(&[7; 32], "session-one")
+            .await
+            .unwrap(),
+        Some(BrowserReauthResult::Pending)
+    );
+    assert_eq!(
+        store
+            .take_browser_reauth_challenge("state-secret")
+            .await
+            .unwrap(),
+        Some(row)
+    );
+    assert!(
+        store
+            .take_browser_reauth_challenge("state-secret")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let proof = "p".repeat(43);
+    store
+        .complete_browser_reauth("state-secret", &proof)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .poll_browser_reauth(&[7; 32], "wrong-session")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .poll_browser_reauth(&[7; 32], "session-one")
+            .await
+            .unwrap(),
+        Some(BrowserReauthResult::Completed(proof))
+    );
+    assert!(
+        store
+            .poll_browser_reauth(&[7; 32], "session-one")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn browser_reauth_challenge_rejects_expiry_and_capacity_overflow() {
+    let store = temp_store().await;
+    let now = now_unix();
+    let make = |index: usize, expires_at: i64| BrowserReauthChallengeRow {
+        state: format!("state-{index}"),
+        interaction_hash: [u8::try_from(index).unwrap(); 32],
+        session_id: "same-session".into(),
+        subject: "subject-one".into(),
+        provider_code_verifier: "pkce-secret".into(),
+        nonce: "nonce-secret".into(),
+        purpose_json: "{}".into(),
+        created_at: now,
+        expires_at,
+    };
+    store
+        .insert_browser_reauth_challenge(make(1, now - 1))
+        .await
+        .unwrap_err();
+    store
+        .insert_browser_reauth_challenge(make(2, now + 300))
+        .await
+        .unwrap();
+    store
+        .insert_browser_reauth_challenge(make(3, now + 300))
+        .await
+        .unwrap();
+    store
+        .insert_browser_reauth_challenge(make(4, now + 300))
+        .await
+        .unwrap_err();
+    assert!(
+        store
+            .cancel_browser_reauth(&[2; 32], "same-session")
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .poll_browser_reauth(&[2; 32], "same-session")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 // Ensure AllowedUserRow is importable as the right type in tests.

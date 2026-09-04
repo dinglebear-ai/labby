@@ -17,6 +17,7 @@ mod google_credentials;
 mod migrations;
 mod oauth;
 mod reauth;
+mod reauth_browser;
 mod rows;
 mod tokens;
 use migrations::run_migrations;
@@ -2302,7 +2303,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            13
+            14
         );
     }
 
@@ -2358,7 +2359,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 13);
+        assert_eq!(schema_version, 14);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await

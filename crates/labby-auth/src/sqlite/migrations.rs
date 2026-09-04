@@ -315,6 +315,32 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
         }
         transaction.commit().map_err(sqlite_error)?;
     }
+    if current < 14 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS browser_reauth_challenges (
+               state TEXT PRIMARY KEY NOT NULL,
+               interaction_hash BLOB UNIQUE NOT NULL CHECK(length(interaction_hash) = 32),
+               session_id TEXT NOT NULL,
+               subject TEXT NOT NULL,
+               provider_code_verifier TEXT NOT NULL,
+               nonce TEXT NOT NULL,
+               purpose_json TEXT NOT NULL,
+               created_at INTEGER NOT NULL,
+               expires_at INTEGER NOT NULL,
+               status INTEGER NOT NULL DEFAULT 0 CHECK(status BETWEEN 0 AND 2),
+               proof TEXT
+             );
+             CREATE INDEX IF NOT EXISTS browser_reauth_session ON browser_reauth_challenges(session_id, expires_at);
+             PRAGMA user_version = 14;"
+        ).map_err(sqlite_error)?;
+        if fault == Some("v14_before_commit") {
+            return Err(AuthError::Storage(
+                "injected v14 migration fault".to_string(),
+            ));
+        }
+        transaction.commit().map_err(sqlite_error)?;
+    }
     Ok(())
 }
 
