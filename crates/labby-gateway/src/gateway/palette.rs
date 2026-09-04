@@ -330,7 +330,16 @@ pub struct PaletteExecutionReceipt {
     pub tool_id: String,
     pub contract_hash: String,
     pub catalog_revision: String,
+    pub execution_mode: PaletteExecutionMode,
     pub truncated: bool,
+}
+
+/// The launcher dispatch path, not a claim about work inside the selected tool.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteExecutionMode {
+    Exact,
+    LabbyAction,
 }
 
 impl GatewayManager {
@@ -553,6 +562,7 @@ impl GatewayManager {
                 tool_id: tool_id.clone(),
                 contract_hash: checked.contract_hash,
                 catalog_revision: checked.catalog_revision,
+                execution_mode: PaletteExecutionMode::Exact,
                 truncated: false,
             };
             Ok(execution_response(

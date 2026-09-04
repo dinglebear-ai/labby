@@ -171,8 +171,9 @@ secret-looking values before they reach the renderer.
 
 The backend exposes `/v1/palette/search?q=<query>&limit=<n>` for server-side
 filtering/ranking over compact launcher rows. The renderer also records the last
-50 launches in local storage with redacted params so failed runs can be debugged
-without leaking tokens or secrets.
+50 launches in local storage with receipt metadata, not parameter values or
+result bodies. Known `executionMode` values (`exact` or `labby_action`) are
+preserved; receipts from older servers remain valid without inventing a mode.
 
 ## Notes
 
