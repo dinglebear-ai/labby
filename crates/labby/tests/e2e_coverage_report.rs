@@ -97,11 +97,14 @@ fn evidence_rank(value: &str) -> Option<u8> {
     })
 }
 
-fn surface_shard(surface: action_matrix::Surface) -> &'static str {
+fn action_surface_shard(surface: action_matrix::Surface) -> Option<&'static str> {
     match surface {
-        action_matrix::Surface::Mcp => "live-mcp-parity",
-        action_matrix::Surface::WebUi => "browser-live",
-        action_matrix::Surface::Cli | action_matrix::Surface::Api => "live-http-cli-api",
+        action_matrix::Surface::Mcp => Some("live-mcp-parity"),
+        // `browser-live` proves a representative end-to-end UI journey and is
+        // retained as its own hashed shard. It does not emit one evidence file
+        // for every catalog action exposed by the generic Web UI dispatcher.
+        action_matrix::Surface::WebUi => None,
+        action_matrix::Surface::Cli | action_matrix::Surface::Api => Some("live-http-cli-api"),
     }
 }
 
@@ -198,9 +201,11 @@ fn exact_catalog_join_emits_versioned_coverage_report() {
                     .applicable_surfaces
                     .iter()
                     .filter(|surface| {
-                        declared_shards
-                            .as_ref()
-                            .is_none_or(|declared| declared.contains(surface_shard(**surface)))
+                        action_surface_shard(**surface).is_some_and(|shard| {
+                            declared_shards
+                                .as_ref()
+                                .is_none_or(|declared| declared.contains(shard))
+                        })
                     })
                     .map(|surface| {
                         let case_id = format!("action::{surface:?}::{key}");
@@ -235,7 +240,7 @@ fn exact_catalog_join_emits_versioned_coverage_report() {
                 evidence_shards: intent
                     .applicable_surfaces
                     .iter()
-                    .map(|surface| surface_shard(*surface))
+                    .filter_map(|surface| action_surface_shard(*surface))
                     .filter(|shard| {
                         declared_shards
                             .as_ref()
