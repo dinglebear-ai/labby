@@ -2380,9 +2380,9 @@ pub(crate) fn build_router_with_external_auth(
         services::access_bootstrap_proof::routes(state.clone()),
     );
     if let Some(auth_state) = auth_state.as_ref() {
-        let _ = auth_state;
+        let enable_dynamic_registration = auth_state.config.enable_dynamic_registration;
         let mut descriptors = crate::api::route_registry::oauth_protocol_descriptors().into_iter();
-        let auth_routes = crate::api::route_registry::RouteGroup::empty()
+        let mut auth_routes = crate::api::route_registry::RouteGroup::empty()
             .route(
                 descriptors.next().unwrap(),
                 get(auth_authorization_server_metadata),
@@ -2395,8 +2395,12 @@ pub(crate) fn build_router_with_external_auth(
                 descriptors.next().unwrap(),
                 get(auth_protected_resource_metadata),
             )
-            .route(descriptors.next().unwrap(), get(auth_jwks))
-            .route(descriptors.next().unwrap(), post(auth_register))
+            .route(descriptors.next().unwrap(), get(auth_jwks));
+        let registration_descriptor = descriptors.next().unwrap();
+        if enable_dynamic_registration {
+            auth_routes = auth_routes.route(registration_descriptor, post(auth_register));
+        }
+        let auth_routes = auth_routes
             .route(descriptors.next().unwrap(), get(auth_authorize))
             .route(descriptors.next().unwrap(), get(auth_browser_login))
             .route(descriptors.next().unwrap(), get(auth_callback))
@@ -2821,17 +2825,10 @@ mod tests {
                 }
                 _ => {}
             }
-            let unavailable_without_runtime =
-                route.runtime_condition.as_deref().is_some_and(|condition| {
-                    condition == crate::docs::routes::OAUTH_MODE_ONLY
-                        || condition == crate::docs::routes::BOOTSTRAP_OWNER_RUNTIME_CONDITION
-                        || condition == crate::docs::routes::DEV_RUNTIME_CONDITION
-                        || condition == crate::docs::routes::GATEWAY_RUNTIME_CONDITION
-                        || condition == crate::docs::routes::FS_RUNTIME_CONDITION
-                });
             assert!(
                 status == StatusCode::UNAUTHORIZED
-                    || (status == StatusCode::NOT_FOUND && unavailable_without_runtime),
+                    || (status == StatusCode::FORBIDDEN && route.bootstrap_proof)
+                    || (status == StatusCode::NOT_FOUND && route.runtime_condition.is_some()),
                 "OAI-CLAUSE-001: inventoried sensitive route {} {} did not authenticate before dispatch (status={}, group={}, runtime_condition={:?})",
                 route.method,
                 route.path,
@@ -4702,7 +4699,9 @@ mod tests {
     async fn disabled_dynamic_registration_is_neither_advertised_nor_mounted() {
         let auth_state = test_lab_auth_state().await;
         assert!(!auth_state.config.enable_dynamic_registration);
-        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]).layer(
+            axum::extract::connect_info::MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))),
+        );
         let metadata = app
             .clone()
             .oneshot(
