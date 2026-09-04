@@ -328,7 +328,7 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         ),
         RouteDescriptor::new(
             "GET",
-            "/v1/{service}/actions",
+            concat!("/v1/", "{service}", "/actions"),
             "service_actions",
             "services",
             RouteAuth::V1,
@@ -450,9 +450,16 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
 
     #[cfg(feature = "skills")]
     routes.extend(prefixed(
-        "/v1/skills",
+        "/v1/artifacts",
         crate::api::services::skills::descriptors(),
     ));
+    #[cfg(feature = "skills")]
+    for service in ["bundles", "jobs", "sources", "uploads"] {
+        routes.extend(prefixed(
+            &format!("/v1/{service}"),
+            crate::api::services::remote_control::descriptors(service),
+        ));
+    }
     #[cfg(feature = "fs")]
     routes.extend(prefixed("/v1/fs", crate::api::services::fs::descriptors()));
     #[cfg(feature = "gateway")]
@@ -670,7 +677,7 @@ mod tests {
             cfg!(feature = "api-docs")
         );
         assert_eq!(paths.contains("/v1/fs/list"), cfg!(feature = "fs"));
-        assert_eq!(paths.contains("/v1/skills"), cfg!(feature = "skills"));
+        assert_eq!(paths.contains("/v1/artifacts"), cfg!(feature = "skills"));
         assert_eq!(paths.contains("/v1/gateway"), cfg!(feature = "gateway"));
         assert_eq!(
             paths.contains("/{runtime_protected_mcp_route}"),

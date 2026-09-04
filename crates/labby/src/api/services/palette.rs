@@ -583,7 +583,7 @@ async fn execute_labby_action(
     }
     validate_labby_action_params(action, &request.params)?;
     #[cfg(feature = "skills")]
-    let result = if service_name == "skills" {
+    let result = if service_name == "artifacts" {
         let Json(result) = super::skills::handle(
             State(state.clone()),
             peer,
@@ -621,8 +621,8 @@ async fn execute_labby_action(
 
 fn palette_actions<'a>(service: &str, registered: &'a [ActionSpec]) -> &'a [ActionSpec] {
     #[cfg(feature = "skills")]
-    if service == "skills" {
-        return crate::dispatch::skills::API_ACTIONS;
+    if service == "artifacts" {
+        return crate::dispatch::skills::api_actions();
     }
     registered
 }
@@ -1193,22 +1193,22 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn palette_projects_authenticated_skill_library_management_actions() {
-        let actions = super::palette_actions("skills", crate::dispatch::skills::ACTIONS);
+    fn palette_projects_authenticated_artifact_management_actions() {
+        let actions = super::palette_actions("artifacts", &crate::dispatch::artifacts::ACTIONS);
 
         assert!(
             actions
                 .iter()
-                .any(|action| action.name == "skill_library.import")
+                .any(|action| action.name == "artifacts.import")
         );
         assert!(
             actions
                 .iter()
-                .any(|action| action.name == "skill_library.activate")
+                .any(|action| action.name == "artifacts.activate")
         );
         assert_eq!(
             actions.iter().map(|action| action.name).collect::<Vec<_>>(),
-            crate::dispatch::skills::API_ACTIONS
+            crate::dispatch::skills::api_actions()
                 .iter()
                 .map(|action| action.name)
                 .collect::<Vec<_>>(),
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[tokio::test]
-    async fn palette_execute_routes_skill_library_import_through_authenticated_api_dispatch() {
+    async fn palette_execute_routes_artifact_import_through_authenticated_api_dispatch() {
         let manager = Arc::new(test_gateway_manager(
             std::env::temp_dir().join("palette-skill-import.toml"),
             GatewayRuntimeHandle::default(),
@@ -1245,9 +1245,9 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["id"] == "labby:skills::skill_library.import")
+            .find(|entry| entry["id"] == "labby:artifacts::artifacts.import")
             .and_then(|entry| entry["contractHash"].as_str())
-            .expect("Skill Library import should be discoverable");
+            .expect("Artifact import should be discoverable");
 
         let response = app
             .oneshot(
@@ -1259,7 +1259,7 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
                         json!({
-                            "id": "labby:skills::skill_library.import",
+                            "id": "labby:artifacts::artifacts.import",
                             "params": {
                                 "source": {"kind": "depot", "skill_uri": "skill://depot/demo"},
                                 "expected_library_version": 0,

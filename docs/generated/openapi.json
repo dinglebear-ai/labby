@@ -515,6 +515,318 @@
         ]
       }
     },
+    "/v1/artifacts": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Dispatch action to artifacts",
+        "description": "Execute an action on the artifacts service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactsActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/bundles": {
+      "post": {
+        "tags": [
+          "bundles"
+        ],
+        "summary": "Dispatch action to bundles",
+        "description": "Execute an action on the bundles service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BundlesActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/doctor": {
       "post": {
         "tags": [
@@ -1175,6 +1487,162 @@
         ]
       }
     },
+    "/v1/jobs": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Dispatch action to jobs",
+        "description": "Execute an action on the jobs service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobsActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/lab_admin": {
       "post": {
         "tags": [
@@ -1772,18 +2240,18 @@
         ]
       }
     },
-    "/v1/skills": {
+    "/v1/snippets": {
       "post": {
         "tags": [
-          "skills"
+          "snippets"
         ],
-        "summary": "Dispatch action to skills",
-        "description": "Execute an action on the skills service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "summary": "Dispatch action to snippets",
+        "description": "Execute an action on the snippets service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SkillsActionRequest"
+                "$ref": "#/components/schemas/SnippetsActionRequest"
               }
             }
           },
@@ -1928,18 +2396,174 @@
         ]
       }
     },
-    "/v1/snippets": {
+    "/v1/sources": {
       "post": {
         "tags": [
-          "snippets"
+          "sources"
         ],
-        "summary": "Dispatch action to snippets",
-        "description": "Execute an action on the snippets service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "summary": "Dispatch action to sources",
+        "description": "Execute an action on the sources service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SnippetsActionRequest"
+                "$ref": "#/components/schemas/SourcesActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/v1/uploads": {
+      "post": {
+        "tags": [
+          "uploads"
+        ],
+        "summary": "Dispatch action to uploads",
+        "description": "Execute an action on the uploads service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadsActionRequest"
               }
             }
           },
@@ -2286,6 +2910,678 @@
           }
         }
       },
+      "ArtifactsActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "artifacts.search",
+              "artifacts.list",
+              "artifacts.get",
+              "artifacts.read",
+              "artifacts.history",
+              "artifacts.validate",
+              "artifacts.create",
+              "artifacts.save",
+              "artifacts.activate",
+              "artifacts.deactivate",
+              "artifacts.archive",
+              "artifacts.rollback",
+              "artifacts.import",
+              "artifacts.import_batch",
+              "artifacts.refresh",
+              "artifacts.list_connections",
+              "artifacts.search_remote",
+              "artifacts.list_remote",
+              "artifacts.get_remote",
+              "artifacts.list_candidates",
+              "artifacts.intake_candidate",
+              "artifacts.follow",
+              "artifacts.fork",
+              "artifacts.set_publication",
+              "artifacts.set_license",
+              "artifacts.search_skills_sh",
+              "artifacts.search_ard",
+              "artifacts.search_marketplace",
+              "artifacts.list_mcp_registry",
+              "artifacts.list_acp_registry",
+              "artifacts.authority_status"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "ArtifactsArtifactsActivateParams": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "expected_revision_id",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "expected_revision_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsArchiveParams": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsAuthority_statusParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsCreateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "files",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsDeactivateParams": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsFollowParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "following": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "upstream_artifact_id": {
+            "type": "string"
+          },
+          "upstream_revision_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsForkParams": {
+        "type": "object",
+        "required": [
+          "source_artifact_id",
+          "namespace",
+          "name"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "following": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "source_artifact_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsGetParams": {
+        "type": "object",
+        "required": [
+          "artifact_id"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsGet_remoteParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsHistoryParams": {
+        "type": "object",
+        "required": [
+          "artifact_id"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "ArtifactsArtifactsImportParams": {
+        "type": "object",
+        "required": [
+          "source",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object"
+          }
+        }
+      },
+      "ArtifactsArtifactsImport_batchParams": {
+        "type": "object",
+        "required": [
+          "sources",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ArtifactsArtifactsIntake_candidateParams": {
+        "type": "object",
+        "required": [
+          "candidate"
+        ],
+        "properties": {
+          "candidate": {
+            "type": "object"
+          },
+          "connection_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsListParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "ArtifactsArtifactsList_acp_registryParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsList_candidatesParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "ArtifactsArtifactsList_mcp_registryParams": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "include_deleted": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "updated_since": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsList_remoteParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "ArtifactsArtifactsReadParams": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "revision_id",
+          "path"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsRefreshParams": {
+        "type": "object",
+        "required": [
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsRollbackParams": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "expected_revision_id",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "expected_revision_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsSaveParams": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "expected_revision_id",
+          "files",
+          "expected_library_version",
+          "idempotency_key"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_library_version": {
+            "type": "integer"
+          },
+          "expected_revision_id": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "idempotency_key": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsSearchParams": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsSearch_ardParams": {
+        "type": "object",
+        "required": [
+          "registry",
+          "query"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "page_token": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "registry": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsSearch_marketplaceParams": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "only": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ref": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsSearch_remoteParams": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsSearch_skills_shParams": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          }
+        }
+      },
+      "ArtifactsArtifactsSet_licenseParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "declared": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "detected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "notices": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "redistribution": {
+            "type": "string"
+          },
+          "review_state": {
+            "type": "string",
+            "enum": [
+              "unreviewed",
+              "reviewed",
+              "disputed"
+            ]
+          },
+          "takedown_state": {
+            "type": "string",
+            "enum": [
+              "none",
+              "requested",
+              "restricted",
+              "removed"
+            ]
+          }
+        }
+      },
+      "ArtifactsArtifactsSet_publicationParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "distribution": {
+            "type": "string",
+            "enum": [
+              "metadata",
+              "bytes"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "listed",
+              "published",
+              "withdrawn"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "unlisted",
+              "public"
+            ]
+          }
+        }
+      },
+      "ArtifactsArtifactsValidateParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "BootstrapPrepareIdRequest": {
         "type": "object",
         "required": [
@@ -2381,6 +3677,172 @@
           },
           "status": {
             "type": "string"
+          }
+        }
+      },
+      "BundlesActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "bundles.list",
+              "bundles.get",
+              "bundles.create",
+              "bundles.add",
+              "bundles.remove",
+              "bundles.set_visibility",
+              "bundles.publish",
+              "bundles.delete"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "BundlesBundlesAddParams": {
+        "type": "object",
+        "required": [
+          "slug",
+          "namespace",
+          "name"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "BundlesBundlesCreateParams": {
+        "type": "object",
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "bearer",
+              "oauth"
+            ]
+          }
+        }
+      },
+      "BundlesBundlesDeleteParams": {
+        "type": "object",
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "BundlesBundlesGetParams": {
+        "type": "object",
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "BundlesBundlesListParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BundlesBundlesPublishParams": {
+        "type": "object",
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "BundlesBundlesRemoveParams": {
+        "type": "object",
+        "required": [
+          "slug",
+          "namespace",
+          "name"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
+      "BundlesBundlesSet_visibilityParams": {
+        "type": "object",
+        "required": [
+          "slug",
+          "visibility"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "bearer",
+              "oauth"
+            ]
           }
         }
       },
@@ -4021,6 +5483,101 @@
           }
         }
       },
+      "JobsActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "jobs.start",
+              "jobs.list",
+              "jobs.get",
+              "jobs.cancel",
+              "jobs.retry"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "JobsJobsCancelParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "JobsJobsGetParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "JobsJobsListParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        }
+      },
+      "JobsJobsRetryParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "JobsJobsStartParams": {
+        "type": "object",
+        "required": [
+          "kind",
+          "arguments"
+        ],
+        "properties": {
+          "arguments": {
+            "type": "object"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
       "Lab_adminActionRequest": {
         "type": "object",
         "required": [
@@ -4532,89 +6089,6 @@
           }
         }
       },
-      "SkillsActionRequest": {
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "help",
-              "schema",
-              "skills.list",
-              "skills.search",
-              "skills.get",
-              "skills.read"
-            ]
-          },
-          "params": {
-            "type": "object"
-          }
-        }
-      },
-      "SkillsSchemaParams": {
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "properties": {
-          "action": {
-            "type": "string"
-          }
-        }
-      },
-      "SkillsSkillsGetParams": {
-        "type": "object",
-        "required": [
-          "uri"
-        ],
-        "properties": {
-          "uri": {
-            "type": "string"
-          }
-        }
-      },
-      "SkillsSkillsListParams": {
-        "type": "object",
-        "properties": {
-          "limit": {
-            "type": "integer"
-          },
-          "origin": {
-            "type": "string"
-          }
-        }
-      },
-      "SkillsSkillsReadParams": {
-        "type": "object",
-        "required": [
-          "uri"
-        ],
-        "properties": {
-          "uri": {
-            "type": "string"
-          }
-        }
-      },
-      "SkillsSkillsSearchParams": {
-        "type": "object",
-        "required": [
-          "query"
-        ],
-        "properties": {
-          "limit": {
-            "type": "integer"
-          },
-          "origin": {
-            "type": "string"
-          },
-          "query": {
-            "type": "string"
-          }
-        }
-      },
       "SnippetsActionRequest": {
         "type": "object",
         "required": [
@@ -4754,6 +6228,143 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          }
+        }
+      },
+      "SourcesActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "sources.list",
+              "sources.configure",
+              "sources.delete",
+              "sources.refresh"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "SourcesSourcesConfigureParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "interval_seconds": {
+            "type": "integer"
+          }
+        }
+      },
+      "SourcesSourcesDeleteParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "SourcesSourcesListParams": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SourcesSourcesRefreshParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "UploadsActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "uploads.create",
+              "uploads.get",
+              "uploads.delete"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "UploadsUploadsCreateParams": {
+        "type": "object",
+        "required": [
+          "filename"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          }
+        }
+      },
+      "UploadsUploadsDeleteParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "UploadsUploadsGetParams": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "id": {
             "type": "string"
           }
         }

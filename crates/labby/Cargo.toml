@@ -30,6 +30,7 @@ path = "tests/fixtures/live_harness_fixture.rs"
 test = false
 
 [dependencies]
+labby-apis = { path = "../labby-apis" }
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
 labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }

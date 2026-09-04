@@ -44,6 +44,7 @@ export async function invoke<T = unknown>(
     case "load_palette_default_config":
       return {
         serverUrl: "http://localhost:8765",
+        controlPlaneUrl: "http://localhost:8765",
         staticToken: null,
         projectId: null,
         shortcut: "Ctrl+Shift+Space",
@@ -56,6 +57,7 @@ export async function invoke<T = unknown>(
       return (args?.settings ?? args) as T;
     case "hide_palette":
     case "show_palette":
+    case "open_control_plane":
     case "resize_palette":
     case "set_blur_dismiss":
     case "toggle_maximize":

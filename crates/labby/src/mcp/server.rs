@@ -609,6 +609,9 @@ impl ServerHandler for LabMcpServer {
         request: CustomRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
+        #[cfg(not(feature = "skills"))]
+        let _ = &context;
+
         // `context` is threaded rather than ignored: the skills methods below
         // are scope-gated, and once proxied skills land they route per OAuth
         // subject. A context-blind custom-request handler is how the in-process

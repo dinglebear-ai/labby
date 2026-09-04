@@ -40,8 +40,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "longDescription": "Labby Palette provides a native desktop command surface for Labby gateway actions.",
-    "shortDescription": "Native command palette for Labby",
+    "longDescription": "Labby provides a native desktop control plane and global command palette for Labby gateway operations.",
+    "shortDescription": "Native Labby control plane and command palette",
     "targets": [
       "deb",
       "rpm",
@@ -52,6 +52,6 @@
     ]
   },
   "identifier": "tv.tootie.lab.palette",
-  "productName": "Labby Palette",
+  "productName": "Labby",
   "version": "0.1.0"
 }

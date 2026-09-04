@@ -1,7 +1,9 @@
 //! `labby serve` — start the MCP server.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+#[cfg(any(feature = "skills", target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -160,6 +162,10 @@ fn bootstrap_skill_library(
         .library_snapshot()
         .context("load Skill Library metadata")?;
     let imports = configure_skill_library_imports(config, &artifacts_root)?;
+    let controls = Arc::new(
+        crate::dispatch::artifact_control::ArtifactControlPlane::from_config(&config.artifacts)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    );
     let blocking = BoundedBlockingExecutor::new(8, Duration::from_secs(2), Duration::from_secs(30))
         .map_err(|_| anyhow::anyhow!("invalid Skill Library blocking executor configuration"))?;
     initialize_first_party_generation_manager(GenerationSeed {
@@ -184,7 +190,7 @@ fn bootstrap_skill_library(
     coordinator.reconcile(candidate, snapshot.version);
     tracing::info!(
         subsystem = "startup",
-        phase = "skill_library.ready",
+        phase = "artifacts.ready",
         library_version = snapshot.version,
         active_skill_count = snapshot
             .records
@@ -199,8 +205,11 @@ fn bootstrap_skill_library(
         coordinator,
         projection,
     ));
-    let runtime =
-        Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime { service, imports });
+    let runtime = Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime {
+        service,
+        imports,
+        controls,
+    });
     crate::dispatch::skill_library::install_process_runtime(Arc::clone(&runtime))
         .map_err(|_| anyhow::anyhow!("Skill Library runtime was already initialized"))?;
 
@@ -213,7 +222,7 @@ fn configure_skill_library_imports(
     artifacts_root: &Path,
 ) -> Result<Arc<crate::dispatch::skill_library::import::ImportCoordinator>> {
     crate::dispatch::skill_library::import::ImportCoordinator::from_config(
-        &config.skill_library,
+        &config.artifacts,
         &artifacts_root.join("acquisition"),
     )
     .map(Arc::new)
@@ -225,7 +234,10 @@ fn bootstrap_selected_skill_library_with<T>(
     registry: &ToolRegistry,
     bootstrap: impl FnOnce() -> Result<T>,
 ) -> Result<Option<T>> {
-    if registry.service("skills").is_some() {
+    if ["artifacts", "bundles", "jobs", "sources", "uploads"]
+        .iter()
+        .any(|service| registry.service(service).is_some())
+    {
         bootstrap().map(Some)
     } else {
         Ok(None)
@@ -2465,10 +2477,10 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn excluded_skills_service_does_not_run_skill_library_bootstrap() {
+    fn excluded_artifacts_service_does_not_run_skill_library_bootstrap() {
         let registry = filter_registry(build_default_registry(), &["doctor".to_owned()]).unwrap();
         let result = bootstrap_selected_skill_library_with(&registry, || -> anyhow::Result<()> {
-            panic!("excluded skills service must not touch Skill Library storage")
+            panic!("excluded artifacts service must not touch Artifact Library storage")
         })
         .unwrap();
         assert!(result.is_none());
@@ -2476,26 +2488,32 @@ mod tests {
 
     #[cfg(feature = "skills")]
     #[test]
-    fn selected_skills_service_runs_skill_library_bootstrap() {
-        let registry = filter_registry(build_default_registry(), &["skills".to_owned()]).unwrap();
-        let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
-        assert_eq!(result, Some(41));
+    fn every_artifact_control_service_runs_skill_library_bootstrap_independently() {
+        for service in ["artifacts", "bundles", "jobs", "sources", "uploads"] {
+            let registry =
+                filter_registry(build_default_registry(), &[service.to_owned()]).unwrap();
+            let result = bootstrap_selected_skill_library_with(&registry, || Ok(41_u8)).unwrap();
+            assert_eq!(
+                result,
+                Some(41),
+                "{service} must initialize the shared runtime"
+            );
+        }
     }
 
     #[cfg(feature = "skills")]
     #[test]
     fn failed_import_construction_can_retry_before_runtime_publication() {
-        use crate::config::{
-            SkillLibraryPreferences, SkillLibrarySourceConfig, SkillLibrarySourceKind,
-        };
+        use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
         let root = tempfile::tempdir().unwrap();
         let mut config = LabConfig {
-            skill_library: SkillLibraryPreferences {
-                sources: vec![SkillLibrarySourceConfig {
+            artifacts: ArtifactPreferences {
+                sources: vec![ArtifactSourceConfig {
                     id: "depot".to_owned(),
-                    kind: SkillLibrarySourceKind::Depot,
+                    kind: ArtifactSourceKind::Depot,
                     endpoint: "not a url".to_owned(),
+                    control_plane_url: None,
                     pinned_addresses: Vec::new(),
                     bearer_token_env: None,
                 }],
@@ -2504,7 +2522,7 @@ mod tests {
         };
         assert!(configure_skill_library_imports(&config, root.path()).is_err());
 
-        config.skill_library = SkillLibraryPreferences::default();
+        config.artifacts = ArtifactPreferences::default();
         assert!(configure_skill_library_imports(&config, root.path()).is_ok());
     }
 

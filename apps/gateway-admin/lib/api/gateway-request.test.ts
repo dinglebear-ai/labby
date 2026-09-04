@@ -48,6 +48,22 @@ test('gatewayRequestInit keeps credentialed requests for session-auth setups', (
   assert.equal((init.headers as Record<string, string>)['x-csrf-token'], 'csrf-123')
 })
 
+test('gatewayRequestInit forwards the project bound to the browser session', () => {
+  __setBrowserSessionStateForTests({
+    status: 'authenticated',
+    user: { sub: 'browser-user', email: 'browser@example.com' },
+    expiresAt: 42,
+    csrfToken: 'csrf-123',
+    projectId: 'project-42',
+  })
+
+  const init = gatewayRequestInit('artifacts.list', {})
+  const headers = init.headers as Record<string, string>
+
+  assert.equal(headers['x-labby-project-id'], 'project-42')
+  assert.equal(headers['x-csrf-token'], 'csrf-123')
+})
+
 test('confirmGatewayParams marks destructive gateway mutations for explicit confirmation', () => {
   assert.deepEqual(confirmGatewayParams({ id: 'gateway_beta' }), {
     confirm: true,

@@ -25,6 +25,7 @@ use super::audit::{
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum SkillLibraryAction {
     List,
+    Search,
     Get,
     Read,
     History,
@@ -36,12 +37,14 @@ pub(crate) enum SkillLibraryAction {
     Archive,
     Rollback,
     Import,
+    ImportBatch,
     Refresh,
 }
 
 impl SkillLibraryAction {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 15] = [
         Self::List,
+        Self::Search,
         Self::Get,
         Self::Read,
         Self::History,
@@ -53,24 +56,27 @@ impl SkillLibraryAction {
         Self::Archive,
         Self::Rollback,
         Self::Import,
+        Self::ImportBatch,
         Self::Refresh,
     ];
 
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
-            Self::List => "skill_library.list",
-            Self::Get => "skill_library.get",
-            Self::Read => "skill_library.read",
-            Self::History => "skill_library.history",
-            Self::Validate => "skill_library.validate",
-            Self::Create => "skill_library.create",
-            Self::Save => "skill_library.save",
-            Self::Activate => "skill_library.activate",
-            Self::Deactivate => "skill_library.deactivate",
-            Self::Archive => "skill_library.archive",
-            Self::Rollback => "skill_library.rollback",
-            Self::Import => "skill_library.import",
-            Self::Refresh => "skill_library.refresh",
+            Self::List => "artifacts.list",
+            Self::Search => "artifacts.search",
+            Self::Get => "artifacts.get",
+            Self::Read => "artifacts.read",
+            Self::History => "artifacts.history",
+            Self::Validate => "artifacts.validate",
+            Self::Create => "artifacts.create",
+            Self::Save => "artifacts.save",
+            Self::Activate => "artifacts.activate",
+            Self::Deactivate => "artifacts.deactivate",
+            Self::Archive => "artifacts.archive",
+            Self::Rollback => "artifacts.rollback",
+            Self::Import => "artifacts.import",
+            Self::ImportBatch => "artifacts.import_batch",
+            Self::Refresh => "artifacts.refresh",
         }
     }
 
@@ -84,6 +90,7 @@ impl SkillLibraryAction {
                 | Self::Archive
                 | Self::Rollback
                 | Self::Import
+                | Self::ImportBatch
                 | Self::Refresh
         )
     }

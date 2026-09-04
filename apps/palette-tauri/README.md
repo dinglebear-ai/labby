@@ -1,13 +1,32 @@
-# Labby Palette Tauri
+# Labby Desktop
 
-Tauri v2 desktop command palette for a `labby serve` instance. The renderer is
-React with Aurora registry components; the Rust shell owns server URL
-resolution, OAuth/static bearer auth, and all HTTP traffic.
+Tauri v2 desktop control plane and command palette for a `labby serve`
+instance. The full-size Control Plane window loads the canonical Gateway Admin
+UI from the configured Control Plane origin, so every page uses the same project-bound
+session, CSRF protection, routes, and static assets as the browser product. The
+separate palette renderer is React with Aurora registry components; its Rust
+bridge owns server URL resolution, OAuth/static bearer auth, and palette HTTP
+traffic.
 
-The palette launches hidden, registers a global shortcut, and exposes a tray
-menu for showing the palette, opening settings, and quitting. The main window is
-an undecorated transient palette that hides on Escape, close, and blur by
-default.
+The Control Plane opens on app launch. The palette remains hidden until its
+global shortcut or tray command is used. The tray can open either surface,
+open palette settings, or quit. Closing either window hides it; only the
+transient palette hides on blur.
+
+## Control Plane Model
+
+Tauri-command and deep-link inputs for the `control-plane` webview are limited
+to absolute application paths on the saved Control Plane HTTP(S) origin.
+Scheme-relative, traversal, and backslash inputs are rejected before the initial
+navigation. Because Gateway Admin is served
+by `labby serve`, the desktop app automatically exposes its complete route set,
+including Gateways, Artifact Library, upstreams, access administration,
+surfaces, logs, doctor, setup, and settings without maintaining a forked copy
+of those pages in the palette bundle.
+
+Use **Open Control Plane** in the palette footer or tray. The Tauri command also
+accepts a validated internal path for future deep links, for example
+`/skills/` or `/settings/surfaces/`.
 
 ## Launcher Model
 
@@ -87,6 +106,7 @@ desktop.
 The app reads Labby connection settings from environment defaults first:
 
 - `LABBY_API_URL` (preferred; API origin that serves `/v1/palette/*`)
+- `LABBY_CONTROL_PLANE_URL` (WebUI origin; defaults to `LABBY_API_URL`)
 - `LABBY_MCP_HTTP_TOKEN`
 - `LABBY_PROJECT_ID` (required for project-scoped Skill Library operations such as import)
 
@@ -100,8 +120,9 @@ discover `apiBaseUrl` and retry palette catalog/execute calls against the
 advertised API origin.
 
 Runtime palette preferences are stored in the platform app config directory as
-`settings.json`. The settings panel can override the server URL, static bearer
-token, shortcut, theme, result layout, footer hints, and hide-on-blur behavior.
+`settings.json`. The settings panel can independently override the API and
+Control Plane origins, plus the static bearer token, shortcut, theme, result
+layout, footer hints, and hide-on-blur behavior.
 
 ## Authentication
 

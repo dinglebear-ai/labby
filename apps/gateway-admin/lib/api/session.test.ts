@@ -27,12 +27,14 @@ test('loadBrowserSession stores authenticated payloads', async () => {
         },
         expires_at: 123,
         csrf_token: 'csrf-123',
+        project_id: 'project-42',
       }),
       { status: 200 },
     )) as FetchMock
 
   const state = await loadBrowserSession()
   assert.equal(state.status, 'authenticated')
+  assert.equal(state.status === 'authenticated' ? state.projectId : undefined, 'project-42')
   assert.equal(getBrowserSessionState().status, 'authenticated')
 })
 

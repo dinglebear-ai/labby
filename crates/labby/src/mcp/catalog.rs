@@ -244,6 +244,13 @@ impl LabMcpServer {
     // construction (that clones a deep `McpRouteScope` per call).
 
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
+        if self
+            .registry
+            .service(service)
+            .is_some_and(|registered| !crate::registry::supports_context_free_dispatch(registered))
+        {
+            return false;
+        }
         #[cfg(feature = "gateway")]
         {
             crate::mcp::peer_contract::mcp_service_visible(

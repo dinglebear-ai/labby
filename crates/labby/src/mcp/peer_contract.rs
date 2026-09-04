@@ -71,8 +71,8 @@ use crate::mcp::catalog::{
 ///
 /// A loadout can allow the `skills` service name while independently turning
 /// off the Skills capability. Treat that capability flag as part of service
-/// visibility so the fixed compatibility tool cannot bypass native
-/// `skills/list|get` and `resources/read` gating.
+/// visibility so the Artifact Library tool cannot bypass native
+/// `skills/list`, `skills/get`, and `resources/read` gating.
 pub(crate) fn route_allows_mcp_service(route_scope: &McpRouteScope, service: &str) -> bool {
     route_scope.allows_service(service) && (service != "skills" || route_scope.exposes_skills())
 }
@@ -417,6 +417,13 @@ impl PeerContract {
     }
 
     pub(crate) async fn service_visible_on_mcp(&self, service: &str) -> bool {
+        if self
+            .registry
+            .service(service)
+            .is_some_and(|registered| !crate::registry::supports_context_free_dispatch(registered))
+        {
+            return false;
+        }
         #[cfg(feature = "gateway")]
         {
             mcp_service_visible(&self.route_scope, self.gateway_manager.as_deref(), service).await
@@ -536,7 +543,7 @@ impl PeerContract {
         };
         #[cfg(feature = "gateway")]
         let skill_library_allowed_actions = match &self.gateway_manager {
-            Some(manager) => manager.allowed_mcp_actions_for_service("skills").await,
+            Some(manager) => manager.allowed_mcp_actions_for_service("artifacts").await,
             None => None,
         };
         #[cfg(not(feature = "gateway"))]
@@ -548,10 +555,19 @@ impl PeerContract {
                 allowed_actions: skill_library_allowed_actions.as_deref(),
             }
         } else {
-            SkillLibraryDescriptorMode::Compatibility
+            SkillLibraryDescriptorMode::Hidden
         };
 
         for service in self.registry.services() {
+            #[cfg(feature = "skills")]
+            if service.name == "artifacts"
+                && !matches!(
+                    skill_library_mode,
+                    SkillLibraryDescriptorMode::Management { .. }
+                )
+            {
+                continue;
+            }
             if self.service_visible_on_mcp(service.name).await {
                 #[cfg(feature = "gateway")]
                 if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))

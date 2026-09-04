@@ -637,17 +637,6 @@ impl LabMcpServer {
             "gateway codemode start"
         );
 
-        #[cfg(feature = "skills")]
-        let private_access = match self.artifact_access_for_request(context).await {
-            Ok(access) => access,
-            Err(error) => {
-                return Ok(error_result_from_envelope(tool_error_envelope(
-                    service,
-                    "call_tool",
-                    &error,
-                )));
-            }
-        };
         let caller = match auth {
             None => CodeModeCaller::TrustedLocal,
             Some(auth) => {
@@ -664,39 +653,7 @@ impl LabMcpServer {
                         provider_request_id: provider_request_id.to_string(),
                     }
                 } else {
-                    #[cfg(feature = "skills")]
-                    {
-                        match private_access {
-                            Some(access) => {
-                                match crate::mcp::skills::mint_private_artifact_context(
-                                    sub.clone(),
-                                    access,
-                                ) {
-                                    Ok(context_token) => CodeModeCaller::ScopedPrivate {
-                                        capabilities,
-                                        sub: sub.clone(),
-                                        context_token,
-                                    },
-                                    Err(error) => {
-                                        return Ok(error_result_from_envelope(
-                                            tool_error_envelope(service, "call_tool", &error),
-                                        ));
-                                    }
-                                }
-                            }
-                            None => CodeModeCaller::Scoped {
-                                capabilities,
-                                sub: sub.clone(),
-                            },
-                        }
-                    }
-                    #[cfg(not(feature = "skills"))]
-                    {
-                        CodeModeCaller::Scoped {
-                            capabilities,
-                            sub: sub.clone(),
-                        }
-                    }
+                    CodeModeCaller::Scoped { capabilities, sub }
                 }
             }
         };

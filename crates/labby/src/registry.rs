@@ -105,6 +105,30 @@ impl RegisteredService {
             dispatch,
         }
     }
+
+    /// Construct a service that proxies a built-in upstream HTTP API.
+    #[must_use]
+    pub const fn built_in_upstream_api(
+        name: &'static str,
+        description: &'static str,
+        category: &'static str,
+        actions: &'static [ActionSpec],
+        dispatch: DispatchFn,
+    ) -> Self {
+        Self {
+            name,
+            description,
+            category,
+            kind: RegisteredServiceKind::BuiltInUpstreamApi,
+            status: if actions.is_empty() {
+                "stub"
+            } else {
+                "available"
+            },
+            actions,
+            dispatch,
+        }
+    }
 }
 
 /// Runtime policy classification for registered services.
@@ -114,6 +138,11 @@ pub enum RegisteredServiceKind {
     BootstrapOperator,
     /// Built-in integrations that call an external service API.
     BuiltInUpstreamApi,
+}
+
+#[must_use]
+pub fn supports_context_free_dispatch(service: &RegisteredService) -> bool {
+    !matches!(service.name, "bundles" | "jobs" | "sources" | "uploads")
 }
 
 /// Collection of registered services, built at startup.
@@ -377,7 +406,15 @@ pub fn filter_built_in_upstream_apis(registry: ToolRegistry, enabled: bool) -> T
     let mut filtered = ToolRegistry::new();
     for service in registry.services() {
         if service.kind == RegisteredServiceKind::BootstrapOperator {
-            filtered.register(service.clone());
+            #[cfg(feature = "skills")]
+            let mut service = service.clone();
+            #[cfg(not(feature = "skills"))]
+            let service = service.clone();
+            #[cfg(feature = "skills")]
+            if service.name == "artifacts" {
+                service.actions = &crate::dispatch::skill_library::catalog::LOCAL_ACTIONS;
+            }
+            filtered.register(service);
         }
     }
     filtered
@@ -451,11 +488,47 @@ fn build_registry(apply_runtime_conditions: bool) -> ToolRegistry {
 
     #[cfg(feature = "skills")]
     reg.register(RegisteredService::bootstrap_operator(
-        "skills",
-        crate::dispatch::skills::META.description,
+        crate::dispatch::artifacts::META.name,
+        crate::dispatch::artifacts::META.description,
         "bootstrap",
-        crate::dispatch::skills::ACTIONS,
-        dispatch_fn!(crate::dispatch::skills::dispatch),
+        &crate::dispatch::artifacts::ACTIONS,
+        dispatch_fn!(crate::dispatch::artifacts::dispatch),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::built_in_upstream_api(
+        "bundles",
+        "Curate and publish immutable Artifact bundles",
+        "bootstrap",
+        crate::dispatch::remote_control::BUNDLE_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_bundles),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::built_in_upstream_api(
+        "jobs",
+        "Run and inspect durable Artifact ingestion jobs",
+        "bootstrap",
+        crate::dispatch::remote_control::JOB_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_jobs),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::built_in_upstream_api(
+        "sources",
+        "Manage remote Artifact ingestion sources",
+        "bootstrap",
+        crate::dispatch::remote_control::SOURCE_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_sources),
+    ));
+
+    #[cfg(feature = "skills")]
+    reg.register(RegisteredService::built_in_upstream_api(
+        "uploads",
+        "Manage staged Artifact ingestion uploads",
+        "bootstrap",
+        crate::dispatch::remote_control::UPLOAD_ACTIONS,
+        dispatch_fn!(crate::dispatch::remote_control::dispatch_uploads),
     ));
 
     #[cfg(feature = "gateway")]
@@ -617,24 +690,34 @@ mod tests {
     }
 
     #[test]
-    fn upstream_api_filter_is_noop_after_gateway_pivot() {
-        // Post-pivot all surviving services are operator/bootstrap tools — there
-        // are no `BuiltInUpstreamApi` services left. The filter is still wired
-        // (kept for forward-compat with future plugin-based upstreams) but
-        // currently filters nothing.
+    fn upstream_api_filter_removes_remote_artifact_services() {
         let unfiltered = build_default_registry();
-        let unfiltered_count = unfiltered.services().len();
         let filtered = filter_built_in_upstream_apis(unfiltered, false);
-        assert_eq!(
-            filtered.services().len(),
-            unfiltered_count,
-            "no upstream-API services remain to filter post-pivot"
-        );
         let names: std::collections::BTreeSet<&str> = filtered
             .services()
             .iter()
             .map(|service| service.name)
             .collect();
+        #[cfg(feature = "skills")]
+        for removed in ["bundles", "jobs", "sources", "uploads"] {
+            assert!(!names.contains(removed), "{removed} must be disabled");
+        }
+        #[cfg(feature = "skills")]
+        {
+            let artifacts = filtered.service("artifacts").unwrap();
+            assert!(
+                artifacts
+                    .actions
+                    .iter()
+                    .any(|action| action.name == "artifacts.list")
+            );
+            assert!(
+                !artifacts
+                    .actions
+                    .iter()
+                    .any(|action| action.name == "artifacts.search_remote")
+            );
+        }
         let mut kept_services = vec!["setup", "doctor"];
         #[cfg(feature = "gateway")]
         kept_services.push("gateway");
@@ -725,7 +808,7 @@ mod tests {
             #[cfg(feature = "gateway")]
             s.insert("snippets");
             #[cfg(feature = "skills")]
-            s.insert("skills");
+            s.extend(["artifacts", "bundles", "jobs", "sources", "uploads"]);
             s.insert(crate::dispatch::doctor::META.name); // always-on
             s.insert(crate::dispatch::server_logs::META.name); // always-on
             s.insert(crate::dispatch::setup::META.name); // always-on

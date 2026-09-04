@@ -1883,7 +1883,7 @@ fn build_v1_router(
     let mut v1 = RouteGroup::empty().route(
         RouteDescriptor::new(
             "GET",
-            "/{service}/actions",
+            concat!("/", "{service}", "/actions"),
             "service_actions",
             "services",
             RouteAuth::V1,
@@ -1899,7 +1899,15 @@ fn build_v1_router(
         );
         #[cfg(feature = "skills")]
         {
-            v1 = v1.nest("/skills", services::skills::routes(state.clone()));
+            v1 = v1.nest("/artifacts", services::skills::routes(state.clone()));
+            for service in ["bundles", "jobs", "sources", "uploads"] {
+                if state.enabled_services.contains(service) {
+                    v1 = v1.nest(
+                        &format!("/{service}"),
+                        services::remote_control::routes(service, state.clone()),
+                    );
+                }
+            }
         }
     } else {
         #[cfg(feature = "skills")]
@@ -2406,7 +2414,10 @@ pub(crate) fn build_router_with_external_auth(
                 get(auth_protected_resource_metadata),
             )
             .route(descriptors.next().unwrap(), get(auth_jwks));
-        let register_descriptor = descriptors.next().unwrap();
+        let registration = descriptors.next().unwrap();
+        if auth_state.config.enable_dynamic_registration {
+            auth_routes = auth_routes.route(registration, post(auth_register));
+        }
         auth_routes = auth_routes
             .route(descriptors.next().unwrap(), get(auth_authorize))
             .route(descriptors.next().unwrap(), get(auth_browser_login))
@@ -2420,9 +2431,6 @@ pub(crate) fn build_router_with_external_auth(
                     labby_auth::routes::auth_dispatch_observability,
                 ))
             });
-        if auth_state.config.enable_dynamic_registration {
-            auth_routes = auth_routes.route(register_descriptor, post(auth_register));
-        }
         route_group = route_group.merge(auth_routes);
         #[cfg(feature = "gateway")]
         {
@@ -2740,7 +2748,8 @@ mod tests {
         let path = match service {
             "lab_admin" => return None,
             "fs" => "/v1/fs/list".to_string(),
-            name @ ("doctor" | "gateway" | "server_logs" | "setup" | "skills" | "snippets") => {
+            name @ ("artifacts" | "bundles" | "doctor" | "gateway" | "jobs" | "server_logs"
+            | "setup" | "snippets" | "sources" | "uploads") => {
                 format!("/v1/{name}")
             }
             unknown => panic!(
@@ -2792,6 +2801,9 @@ mod tests {
                 Some("registry-denominator-secret".into()),
                 None,
             )
+            .layer(axum::extract::connect_info::MockConnectInfo(
+                SocketAddr::from(([127, 0, 0, 1], 9001)),
+            ))
             .oneshot(
                 Request::builder()
                     .method(method)
@@ -2836,6 +2848,9 @@ mod tests {
                 Some("route-denominator-secret".into()),
                 None,
             )
+            .layer(axum::extract::connect_info::MockConnectInfo(
+                SocketAddr::from(([127, 0, 0, 1], 9001)),
+            ))
             .oneshot(
                 Request::builder()
                     .method(method)
@@ -3883,7 +3898,9 @@ mod tests {
         let auth_state = test_lab_auth_state().await;
         let read_only_token =
             issue_test_token(&auth_state, "https://lab.example.com/mcp", "lab:read");
-        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]);
+        let app = build_router(AppState::new(), None, Some(auth_state), None, &[]).layer(
+            axum::extract::connect_info::MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))),
+        );
 
         let response = app
             .oneshot(
@@ -4396,6 +4413,7 @@ mod tests {
         assert_eq!(json["authenticated"], true);
         assert_eq!(json["user"]["sub"], "browser-user");
         assert_eq!(json["csrf_token"], "csrf-123");
+        assert_eq!(json["project_id"], serde_json::Value::Null);
     }
 
     // lab-cfl3v: /auth/session and /auth/logout must work without OAuth
@@ -4777,12 +4795,22 @@ mod tests {
                     .method("POST")
                     .uri("/register")
                     .header(header::CONTENT_TYPE, "application/json")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 9001))))
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(register.status(), StatusCode::NOT_FOUND);
+        let status = register.status();
+        let body = axum::body::to_bytes(register.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "unexpected registration response: {}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[test]

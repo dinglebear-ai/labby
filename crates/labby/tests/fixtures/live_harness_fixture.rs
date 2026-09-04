@@ -1,5 +1,4 @@
-//! Small process fixture used by the live E2E harness.
-
+//! Process fixture used by the owned live-test harness.
 #![allow(clippy::panic)]
 
 use std::io::Write as _;
