@@ -6,7 +6,8 @@ updated: "2026-08-30"
 
 # MCP 2026-07-28 Conformance
 
-Labby targets the `2026-07-28` MCP protocol through `rmcp = "=3.1.0"`.
+Labby targets the `2026-07-28` MCP protocol through the immutable rmcp Git
+revision recorded in `Cargo.toml` and `Cargo.lock`.
 The gate verifies that production dependency exactly, exercises Labby's real
 authenticated `/mcp` boundary, runs the matching upstream rmcp fixture, and
 covers Labby-native gateway and multi-hop scenarios. Dated protocol, extension,
@@ -31,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | `3.1.0` |
+| Labby rmcp dependency | pinned Git revision `0665dcac` |
 | rmcp conformance fixture | `3.1.0` |
 | rmcp fixture tag commit | `1f9358eddca42d3a510c70ae6446dd6548c7c856` |
 | MCP conformance package | `0.2.0-alpha.10` |
@@ -258,19 +259,10 @@ source-clause digest, asserted obligation, executable assertions, and evidence;
 the publisher contains no numeric-range promotion logic.
 
 `scripts/ci/refresh_mcp_auth_denominator.py --check` re-downloads the four frozen
-official pages and verifies their digests and extracted clauses. Vendored rmcp
-provenance is separately pinned in `conformance/vendor-rmcp-provenance.json`:
-CI verifies the immutable upstream archive checksum, every patched-file hash,
-the explicit changed-file manifest, and the normalized unified-diff checksum.
-The checker derives archives only from the repository-pinned approved upstream
-origin. Because any in-repository checker can otherwise be changed by the same
-pull request as its inputs, `.github/workflows/vendor-rmcp-policy.yml` runs from
-the protected base branch and requires the maintainer-applied
-`vendor-rmcp-approved` label for changes to the vendor tree, provenance
-manifest, checker, or policy workflow itself. Every new pull-request head
-(`synchronize`) removes any prior approval and deliberately fails the guard;
-after reviewing that exact head, a maintainer must reapply the label to rerun
-the guard successfully.
+official pages and verifies their digests and extracted clauses. SDK-level auth
+and custom-response tests run against Cargo's exact immutable rmcp Git checkout,
+resolved from locked workspace metadata. Labby therefore keeps no copied rmcp
+source tree or parallel vendor-provenance policy in this repository.
 
 ### Rollout and Inspector verification
 

@@ -486,11 +486,19 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 
 | Setting | Default |
 |---------|---------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MB (10,485,760 bytes) |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MiB (10,485,760 bytes); Skills capability responses receive a 24 MiB wire allowance when this is unset |
 
-The check is **post-hoc** — rmcp materializes the full response in memory before lab can inspect it. The cap prevents forwarding oversized payloads to callers but cannot prevent the memory allocation itself. A streaming limit would require rmcp transport-level support.
+HTTP bodies and WebSocket messages are capped before MCP deserialization. The
+capability-specific semantic check still runs after parsing, so stdio and
+in-process transports rely on that guard and HTTP/WebSocket receive both layers.
+Because one HTTP/WebSocket connection multiplexes ordinary and Skills calls,
+its transport ceiling uses the larger 24 MiB allowance when Skills support is
+compiled; ordinary capabilities are still rejected at 10 MiB after parsing.
+Isolating the pre-parse ceilings would require a dedicated Skills connection or
+request-aware transport framing.
 
-The cap applies to both `call_tool` and `read_resource` responses.
+The ordinary cap applies to `call_tool` and `read_resource`; the Skills cap
+applies to `skills/list`, `skills/get`, and their manifest resource reads.
 
 ## Resource Proxying
 
@@ -523,9 +531,10 @@ partial results.
 
 ## Skills Aggregation
 
-Skills aggregation implements [SEP-2640](../contracts/skills-extension.md), an
-**unmerged** draft. The contract doc pins the exact revision this code was
-written against; read it before changing anything here.
+Skills aggregation implements the accepted
+[SEP-2640](../contracts/skills-extension.md) extension. The contract doc pins
+the exact canonical revision this code was written against; read it before
+changing anything here.
 
 It is opt-in per upstream via `proxy_skills = true`, and unlike every other
 `proxy_*` flag it defaults to **`false`**. That asymmetry is deliberate: a
@@ -695,13 +704,14 @@ Then an MCP client connected to `lab` should see the upstream tools in `list_too
 - Upstream tool schemas are cached from discovery and reused for MCP tool metadata.
 - Upstream calls preserve the original MCP argument payload rather than forcing it through `lab`'s `action` + `params` wrapper.
 - Upstream errors are normalized into `lab` envelopes and usually surface as `upstream_error`, `network_error`, `server_error`, `decode_error`, or `internal_error`.
-- Response-size limits are enforced after the upstream response is materialized in memory.
+- HTTP body and WebSocket message limits apply before MCP deserialization; a
+  second capability-specific semantic limit applies after parsing.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum response size from upstream servers. |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum ordinary response size from upstream servers. When unset, Skills capability responses use a separate 24 MiB wire allowance for a 16 MiB SEP-2640 binary resource after base64 expansion; an explicit value overrides both limits. |
 | (per `bearer_token_env`) | — | Bearer token for each upstream, named in config. |
 
 ## Observability

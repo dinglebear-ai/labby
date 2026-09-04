@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
-  AURORA_BADGE_LABEL,
   AURORA_CONTROL_SURFACE,
   AURORA_MEDIUM_PANEL,
   AURORA_MUTED_LABEL,
@@ -84,22 +83,6 @@ function FilterGroup({ label, children }: { label: string; children: ReactNode }
     <div className="space-y-2">
       <p className={AURORA_MUTED_LABEL}>{label}</p>
       <div className="flex flex-wrap gap-1.5">{children}</div>
-    </div>
-  )
-}
-
-function CompactFilterGroup({ count, label, children }: { count: number; label: string; children: ReactNode }) {
-  return (
-    <div className="flex shrink-0 items-center gap-1.5 rounded-aurora-1 border border-aurora-border-strong/80 bg-aurora-control-surface/55 px-1.5 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <span className={cn(AURORA_BADGE_LABEL, 'shrink-0 text-aurora-text-muted')}>
-        {label}
-      </span>
-      {count > 0 ? (
-        <span className="hidden h-4 min-w-4 place-items-center rounded-[0.3rem] border border-aurora-accent-primary/25 bg-aurora-accent-primary/12 px-1 text-[10px] font-bold leading-none text-aurora-accent-strong 2xl:grid">
-          {count}
-        </span>
-      ) : null}
-      <div className="flex shrink-0 flex-nowrap items-center gap-1">{children}</div>
     </div>
   )
 }
@@ -266,92 +249,6 @@ export function GatewayFilters({
     </div>
   )
 
-  const desktopFilterGroups = mode === 'gateways' ? (
-    <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
-      <CompactFilterGroup label="Status" count={gatewayFilters.status.length}>
-        {GATEWAY_STATUS_OPTIONS.map((option) => (
-          <FilterPill
-            key={option.value}
-            active={gatewayFilters.status.includes(option.value)}
-            label={option.label}
-            ariaLabel={`${option.label} status filter`}
-            onClick={() => onGatewayFilterToggle('status', option.value)}
-            compact
-          />
-        ))}
-      </CompactFilterGroup>
-      <CompactFilterGroup label="Source" count={gatewayFilters.source.length}>
-        {SOURCE_OPTIONS.map((option) => (
-          <FilterPill
-            key={option.value}
-            active={gatewayFilters.source.includes(option.value)}
-            label={option.label}
-            onClick={() => onGatewayFilterToggle('source', option.value)}
-            compact
-          />
-        ))}
-      </CompactFilterGroup>
-      <CompactFilterGroup label="Transport" count={gatewayFilters.transport.length}>
-        {TRANSPORT_OPTIONS.map((option) => (
-          <FilterPill
-            key={option.value}
-            active={gatewayFilters.transport.includes(option.value)}
-            label={option.label}
-            onClick={() => onGatewayFilterToggle('transport', option.value)}
-            compact
-          />
-        ))}
-      </CompactFilterGroup>
-    </div>
-  ) : (
-    <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 [scrollbar-width:thin]">
-      <CompactFilterGroup label="Server" count={toolFilters.gatewayIds.length}>
-        {gatewayOptions.map((option) => (
-          <FilterPill
-            key={option.value}
-            active={toolFilters.gatewayIds.includes(option.value)}
-            label={option.label}
-            onClick={() => onToolFilterToggle('gatewayIds', option.value)}
-            compact
-          />
-        ))}
-      </CompactFilterGroup>
-      <CompactFilterGroup label="Exposure" count={toolFilters.exposure === 'all' ? 0 : 1}>
-        {EXPOSURE_OPTIONS.map((option) => (
-          <FilterPill
-            key={option.value}
-            active={toolFilters.exposure === option.value}
-            label={option.label}
-            onClick={() => onExposureChange(option.value)}
-            compact
-          />
-        ))}
-      </CompactFilterGroup>
-      <CompactFilterGroup label="Source" count={toolFilters.source.length}>
-        {SOURCE_OPTIONS.map((option) => (
-          <FilterPill
-            key={option.value}
-            active={toolFilters.source.includes(option.value)}
-            label={option.label}
-            onClick={() => onToolFilterToggle('source', option.value)}
-            compact
-          />
-        ))}
-      </CompactFilterGroup>
-      <CompactFilterGroup label="Transport" count={toolFilters.transport.length}>
-        {TRANSPORT_OPTIONS.map((option) => (
-          <FilterPill
-            key={option.value}
-            active={toolFilters.transport.includes(option.value)}
-            label={option.label}
-            onClick={() => onToolFilterToggle('transport', option.value)}
-            compact
-          />
-        ))}
-      </CompactFilterGroup>
-    </div>
-  )
-
   return (
     <>
       <div className="space-y-3 lg:hidden">
@@ -446,16 +343,11 @@ export function GatewayFilters({
         ) : null}
       </div>
 
-      <div
-        className={cn(
-          AURORA_MEDIUM_PANEL,
-          'hidden items-center gap-3 rounded-aurora-1 bg-[linear-gradient(180deg,rgba(18,40,56,0.86),rgba(12,27,38,0.96))] p-2.5 lg:flex',
-        )}
-      >
+      <div className={cn(AURORA_MEDIUM_PANEL, 'hidden rounded-aurora-1 bg-[linear-gradient(180deg,rgba(18,40,56,0.86),rgba(12,27,38,0.96))] p-2.5 lg:block')}>
         <div
           className={cn(
             AURORA_CONTROL_SURFACE,
-            'relative flex h-11 w-[clamp(220px,18vw,260px)] shrink-0 items-center gap-2 border px-2 transition-shadow focus-within:border-aurora-accent-primary/45 focus-within:shadow-[var(--aurora-active-glow)]',
+            'relative flex h-11 w-full items-center gap-2 border px-2 transition-shadow focus-within:border-aurora-accent-primary/45 focus-within:shadow-[var(--aurora-active-glow)]',
           )}
         >
           <div className="grid size-7 shrink-0 place-items-center rounded-aurora-1 border border-aurora-border-strong/70 bg-aurora-panel-strong/60 text-aurora-accent-strong">
@@ -469,9 +361,6 @@ export function GatewayFilters({
             onChange={(e) => onSearchChange(e.target.value)}
             className="h-9 min-w-0 flex-1 border-0 bg-transparent px-0 text-[13px] text-aurora-text-primary shadow-none placeholder:text-aurora-text-muted focus-visible:ring-0"
           />
-          <span className={cn(AURORA_BADGE_LABEL, 'hidden shrink-0 rounded-aurora-1 border border-aurora-border-strong/80 bg-aurora-panel-strong/70 px-2 py-1 text-aurora-text-muted xl:inline-flex')}>
-            {mode === 'tools' ? 'Tools' : 'Servers'}
-          </span>
           {search ? (
             <Button
               type="button"
@@ -484,23 +373,44 @@ export function GatewayFilters({
               <X className="size-3.5" />
             </Button>
           ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onMobileSheetOpenChange(!mobileSheetOpen)}
+            className={cn(gatewayActionTone(), 'h-8 shrink-0 gap-2 rounded-aurora-1 text-aurora-text-muted hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
+            aria-expanded={mobileSheetOpen}
+            aria-label="Toggle filters"
+          >
+            <SlidersHorizontal className="size-3.5" />
+            Filters
+            {activeFilterCount > 0 ? (
+              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-aurora-accent-primary/15 px-1.5 text-[10px] font-bold text-aurora-accent-strong">
+                {activeFilterCount}
+              </span>
+            ) : null}
+          </Button>
         </div>
-
-        {desktopFilterGroups}
-
-        <div className="hidden shrink-0 2xl:block">
-          {hasFilters ? (
+        {mobileSheetOpen ? (
+          <div className="mt-3 border-t border-aurora-border-subtle px-2 pt-3">
+            <div className="mb-3 flex items-center justify-between">
+              <p className={AURORA_MUTED_LABEL}>{activeFilterCount > 0 ? `${activeFilterCount} active filters` : 'Filter results'}</p>
+              {hasFilters ? (
             <Button
               variant="outline"
-              size="icon"
+              size="sm"
               onClick={onClearFilters}
-              className={cn(gatewayActionTone(), 'size-8 rounded-aurora-1 text-aurora-accent-strong hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
+              className={cn(gatewayActionTone(), 'h-8 gap-1.5 rounded-aurora-1 text-aurora-accent-strong hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
               aria-label="Clear filters"
             >
               <X className="size-3.5" />
+              Clear
             </Button>
-          ) : null}
-        </div>
+              ) : null}
+            </div>
+            {filterGroups}
+          </div>
+        ) : null}
       </div>
     </>
   )

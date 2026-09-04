@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import {
   Activity,
   AlertTriangle,
+  ChevronRight,
   Clock3,
   Database,
   GitBranch,
@@ -87,14 +88,6 @@ export default function TracesPage() {
           stats={heroStats}
         />
 
-        <DashboardPanel title="What a trace contains" icon={<Activity className="size-4" />}>
-          <p className="text-sm text-aurora-text-muted">
-            Cached control-plane reads normally contain only <code>dispatch start</code> and <code>dispatch ok</code>.
-            Calls that cross an MCP boundary add correlated <code>upstream.request.start</code> and finish/error events;
-            Code Mode runs also add execution and per-call events. Parameters and identities stay redacted.
-          </p>
-        </DashboardPanel>
-
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
           <DashboardPanel
             title="Request flow"
@@ -111,6 +104,10 @@ export default function TracesPage() {
               />
             </div>
 
+            <div className="mb-2 hidden grid-cols-[88px_minmax(0,1fr)_70px_64px_20px] gap-3 border-b border-aurora-border-subtle px-3 pb-2 text-[9px] font-bold uppercase tracking-[.14em] text-aurora-text-muted sm:grid">
+              <span>Started</span><span>Request</span><span>Surface</span><span className="text-right">Duration</span><span />
+            </div>
+
             {error && !data ? (
               <div className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/8 p-4 text-sm text-aurora-error">
                 {traceErrorMessage}
@@ -120,13 +117,13 @@ export default function TracesPage() {
                 {isLoading ? 'Loading retained traces…' : 'No request traces match this search.'}
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="divide-y divide-aurora-border-subtle overflow-hidden rounded-aurora-2 border border-aurora-border-strong bg-aurora-panel-low/55">
                 {traces.map((trace) => (
                   <details
                     key={trace.id}
-                    className="group overflow-hidden rounded-aurora-1 border border-aurora-border-strong bg-aurora-control-surface/45"
+                    className="group overflow-hidden transition-colors open:bg-aurora-selected-bg/35 hover:bg-aurora-hover-bg"
                   >
-                    <summary className="grid cursor-pointer list-none grid-cols-[92px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+                    <summary className="grid min-h-14 cursor-pointer list-none grid-cols-[88px_minmax(0,1fr)_70px_64px_20px] items-center gap-3 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
                       <span className="text-[11px] tabular-nums text-aurora-text-muted">
                         {formatRelativeTime(trace.started_at)}
                       </span>
@@ -144,15 +141,13 @@ export default function TracesPage() {
                           {trace.id} {trace.upstreams.length > 0 ? `· ${trace.upstreams.join(', ')}` : ''}
                         </span>
                       </span>
-                      <span className="flex items-center gap-2">
-                        <Badge variant="outline">{trace.surface}</Badge>
-                        <span className="w-14 text-right text-[11px] tabular-nums text-aurora-text-muted">
-                          {formatDuration(trace.elapsed_ms)}
-                        </span>
-                      </span>
+                      <Badge variant="outline" className="justify-self-start">{trace.surface}</Badge>
+                      <span className="text-right text-[11px] tabular-nums text-aurora-text-muted">{formatDuration(trace.elapsed_ms)}</span>
+                      <ChevronRight className="size-4 text-aurora-text-muted transition-transform group-open:rotate-90" />
                     </summary>
-                    <div className="border-t border-aurora-border-subtle px-3 py-3">
+                    <div className="border-t border-aurora-border-subtle bg-aurora-page-bg/25 px-4 py-4">
                       <div className="mb-3 flex flex-wrap gap-2 text-[10px] text-aurora-text-muted">
+                        <Badge variant="outline">{trace.events.length} events</Badge>
                         {trace.actor_key ? <Badge variant="outline">actor {trace.actor_key.slice(0, 12)}</Badge> : null}
                         {trace.error_kind ? <Badge variant="outline" status="error">{trace.error_kind}</Badge> : null}
                         {trace.response_bytes > 0 ? <Badge variant="outline">{trace.response_bytes.toLocaleString()} bytes</Badge> : null}

@@ -392,6 +392,10 @@ function normalizeLoadoutStageResult(
 }
 
 export const gatewayApi = {
+  async refreshStatus(name?: string, signal?: AbortSignal): Promise<void> {
+    await gatewayAction('gateway.status', name ? { name } : {}, signal)
+  },
+
   async discoverExternalConfigs(signal?: AbortSignal): Promise<DiscoveredMcpServer[]> {
     return gatewayAction<DiscoveredMcpServer[]>('gateway.discover', {}, signal)
   },

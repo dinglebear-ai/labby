@@ -212,7 +212,15 @@ impl BuiltinMcpRunner {
 
     async fn start_with_config(config_text: Option<&str>) -> Result<Self, String> {
         drop(rustls::crypto::ring::default_provider().install_default());
-        let mut builder = LiveLabbyBuilder::new().env("LABBY_MCP_HTTP_TOKEN", TEST_TOKEN);
+        let mut builder = LiveLabbyBuilder::new()
+            .env("LABBY_MCP_HTTP_TOKEN", TEST_TOKEN)
+            // The host's optional Claude installation must not change the
+            // action-matrix result. Exercise the declared unavailable-inventory
+            // contract deterministically on every CI runner.
+            .env(
+                "LABBY_CLAUDE_BIN",
+                "/definitely/not/a/labby-e2e-claude-binary",
+            );
         if let Some(config_text) = config_text {
             builder = builder.config(config_text);
         }
@@ -220,6 +228,10 @@ impl BuiltinMcpRunner {
         let endpoint = format!("{}/mcp", guard.connection().base_url);
         let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint);
         config.auth_header = Some(TEST_TOKEN.to_string());
+        config.custom_headers.insert(
+            "x-labby-project-id".parse().expect("project header name"),
+            "disposable".parse().expect("project header value"),
+        );
         let worker = StreamableHttpClientWorker::new(capped_http_client(), config);
         let confirmation_client = ExactDestructiveConfirmationClient::default();
         let service = tokio::time::timeout(

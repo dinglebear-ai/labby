@@ -27,13 +27,15 @@ export function ConsoleHero({
   eyebrow,
   pulse,
   title,
+  description,
   actions,
   stats,
   children,
 }: {
   eyebrow: string
-  pulse?: { color: string; label: string }
+  pulse?: { color: string; label?: string }
   title: string
+  description?: React.ReactNode
   actions?: React.ReactNode
   stats?: ConsoleHeroStat[]
   /** Custom strip content, when `stats` is not expressive enough. */
@@ -85,9 +87,9 @@ export function ConsoleHero({
                     animation: 'ovPulse 2.4s ease-in-out infinite',
                   }}
                 />
-                <span style={{ fontSize: 10.5, fontWeight: 650, color: pulse.color }}>
+                {pulse.label ? <span style={{ fontSize: 10.5, fontWeight: 650, color: pulse.color }}>
                   {pulse.label}
-                </span>
+                </span> : null}
               </span>
             ) : null}
           </div>
@@ -104,6 +106,11 @@ export function ConsoleHero({
           >
             {title}
           </h1>
+          {description ? (
+            <div style={{ marginTop: 8, maxWidth: 660, fontSize: 12.5, lineHeight: 1.55, color: 'var(--aurora-text-muted)' }}>
+              {description}
+            </div>
+          ) : null}
         </div>
 
         {actions ? (

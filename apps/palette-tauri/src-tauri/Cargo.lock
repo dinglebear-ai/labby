@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "labby-palette-tauri"
-version = "0.1.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "atomicwrites",

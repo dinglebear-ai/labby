@@ -15,6 +15,32 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
+fn distributable_labby_feature_profiles_always_include_skills() {
+    let manifest_text = fs::read_to_string(repo_root().join("crates/labby/Cargo.toml"))
+        .expect("read Labby manifest");
+    let manifest = toml::from_str::<toml::Value>(&manifest_text).expect("parse Labby manifest");
+    let features = manifest
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .expect("Labby feature table");
+    let members = |feature: &str| {
+        features
+            .get(feature)
+            .and_then(toml::Value::as_array)
+            .map_or([].as_slice(), Vec::as_slice)
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .collect::<BTreeSet<_>>()
+    };
+
+    assert!(members("gateway").contains("skills"));
+    assert!(members("gateway-host").contains("gateway"));
+    assert!(members("integrated-gateway").contains("gateway"));
+    assert!(members("default").contains("gateway-host"));
+    assert!(members("all").contains("skills"));
+}
+
+#[test]
 fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
     let action =
         fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
@@ -39,45 +65,6 @@ fn rust_setup_uses_writable_per_job_homes_when_runner_globals_are_read_only() {
             "writable Rust home fallback must retain `{contract}`"
         );
     }
-}
-
-#[test]
-fn action_managed_kache_fails_open_when_its_daemon_has_no_remote() {
-    let action =
-        fs::read_to_string(repo_root().join(".github/actions/setup-rust-kache/action.yml"))
-            .expect("read setup-rust-kache action");
-
-    let health = action
-        .split("- name: Verify action-managed Kache remote")
-        .nth(1)
-        .and_then(|section| {
-            section
-                .split("\n    # Fork PRs (and any run without shared MinIO credentials)")
-                .next()
-        })
-        .expect("action-managed Kache must be verified before compilation");
-    for contract in [
-        "stats=\"$(kache stats 2>&1 || true)\"",
-        "kache daemon restart || true",
-        "for _attempt in {1..10}",
-        "if remote_matches <<<\"$stats\"",
-        "echo \"RUSTC_WRAPPER=\"",
-        "echo \"CARGO_BUILD_RUSTC_WRAPPER=\"",
-        "echo \"usable=false\" >> \"$GITHUB_OUTPUT\"",
-    ] {
-        assert!(
-            health.contains(contract),
-            "unhealthy action-managed Kache must fail open via `{contract}`"
-        );
-    }
-
-    assert!(
-        action
-            .matches("steps.kache-action-health.outputs.usable == 'false'")
-            .count()
-            >= 2,
-        "an unhealthy Kache daemon must select both the safe cache fallback and bare Cargo"
-    );
 }
 
 #[test]
@@ -384,8 +371,8 @@ fn live_e2e_ci_routes_scheduled_and_manual_events_to_extended_tiers() {
 
 #[test]
 fn explicit_policy_files_route_to_the_right_checks() {
-    let actionlint = classify("pull_request", &[".github/actionlint.yaml"]);
-    assert_eq!(actionlint["workflow"], "true");
+    let labeler = classify("pull_request", &[".github/labeler.yml"]);
+    assert_eq!(labeler["workflow"], "true");
 
     let deny = classify("pull_request", &["deny.toml"]);
     assert_eq!(deny["security"], "true");
@@ -428,7 +415,6 @@ fn secondary_workflow_changes_enable_only_their_own_categories() {
         "conformance/expected-failures-dated.yaml",
         "conformance/expected-failures-extensions.yaml",
         ".github/labeler.yml",
-        ".github/actionlint.yaml",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path} must enable workflow");
@@ -449,32 +435,15 @@ fn auth_matrix_changes_route_to_conformance() {
         "scripts/ci/test_auth_spec_matrix.py",
         "conformance/mcp-auth-normative.json",
         "conformance/openai-auth-normative.json",
-        "conformance/vendor-rmcp-provenance.json",
         "scripts/ci/refresh_mcp_auth_denominator.py",
         "scripts/ci/refresh_openai_auth_denominator.py",
         "scripts/ci/publish_mcp_auth_disposition.py",
         "scripts/ci/openai-auth-conformance.sh",
-        "scripts/ci/check_vendor_rmcp_provenance.py",
         "scripts/ci/auth_backup_restore_drill.py",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path}");
         assert_eq!(out["rust_test"], "true", "{path}");
-    }
-}
-
-#[test]
-fn vendored_rmcp_changes_run_compile_test_security_and_conformance() {
-    for path in [
-        "vendor/rmcp-3.1.0-labby/Cargo.toml",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
-        "vendor/rmcp-3.1.0-labby/tests/test_tool_security_schemes.rs",
-    ] {
-        let out = classify("pull_request", &[path]);
-        assert_eq!(out["workflow"], "true", "{path}");
-        assert_eq!(out["rust_compile"], "true", "{path}");
-        assert_eq!(out["rust_test"], "true", "{path}");
-        assert_eq!(out["security"], "true", "{path}");
     }
 }
 
@@ -568,6 +537,10 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "CI must expose a stable aggregate ci-gate job"
     );
     assert!(
+        workflow.contains("check_workflow_policy.py") && workflow.contains("runs-on: ubuntu-24.04"),
+        "CI must enforce the hosted-runner policy on a GitHub-hosted runner"
+    );
+    assert!(
         workflow.contains("success|skipped"),
         "ci-gate must accept intentionally skipped jobs"
     );
@@ -578,6 +551,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "mcp-regressions",
         "palette-web",
         "palette-rust",
+        "palette-windows",
         "rust-coverage",
     ] {
         assert!(
@@ -602,12 +576,19 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    for unconditional in ["changes", "fleet-policy"] {
-        assert!(
-            gate.contains(&format!("require_success {unconditional} ")),
-            "ci-gate must reject a skipped `{unconditional}` job: it has no `if:`, so a skip means it never ran, and for `changes` that also empties every gate expression"
-        );
-    }
+    assert!(
+        gate.contains("HEAD_REPOSITORY") && gate.contains("fork safety"),
+        "ci-gate must document the narrow fork-safety exception for skipped changes"
+    );
+    let unconditional = "fleet-policy";
+    assert!(
+        gate.contains(&format!("require_success {unconditional} ")),
+        "ci-gate must reject a skipped `{unconditional}` job"
+    );
+    assert!(
+        gate.contains("require_success changes "),
+        "ci-gate must still require changes on trusted branches"
+    );
     assert!(
         gate.contains("needs.changes.outputs.gate_key_drift"),
         "ci-gate must surface routing keys the trusted classifier could not emit"
@@ -621,42 +602,27 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     assert!(browser_job.contains("Install Playwright runtime libraries"));
     assert!(
         browser_job.contains("PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright"),
-        "Playwright must use the fleet-mounted browser cache regardless of runner UID"
+        "Playwright must use a stable browser path on the hosted runner"
     );
     for library in ["libasound2t64", "libgbm1", "libnss3", "libxkbcommon0"] {
         assert!(
             browser_job.contains(library),
-            "Ubuntu 26.04 runners must install the Chromium runtime library {library}"
+            "Hosted Ubuntu runners must install the Chromium runtime library {library}"
         );
     }
     assert!(
         !browser_job.contains("playwright install-deps"),
-        "Ubuntu 26.04 runners must install explicit runtime libraries instead of using Playwright's unsupported distro detector"
+        "Hosted Ubuntu runners must install explicit runtime libraries"
     );
-    assert!(browser_job.contains("Ensure a Playwright browser is available"));
+    assert!(browser_job.contains("Install Playwright browser"));
+    assert!(browser_job.contains("pnpm exec playwright install chromium"));
     assert!(browser_job.contains("Verify Playwright browser launch"));
     assert!(browser_job.contains("chromium.executablePath()"));
     assert!(browser_job.contains("fs.existsSync(executable)"));
     assert!(browser_job.contains("chromium.launch({ headless: true })"));
-    // Playwright's installer rejects Ubuntu 26.04 even when the browser is
-    // already cached, so the self-hosted image must never reach it. It stays
-    // available for the ephemeral pool, whose images pre-bake nothing — but
-    // only behind the cache check. This used to forbid the installer outright,
-    // which was the stronger claim than the constraint required and left every
-    // JIT-pool run failing before it could test anything.
-    let ensure_step = browser_job
-        .split("- name: Ensure a Playwright browser is available")
-        .nth(1)
-        .expect("browser job ensures a Playwright browser before verifying it");
-    let cache_guard = ensure_step
-        .find("fs.existsSync(chromium.executablePath())")
-        .expect("the ensure step checks the image cache first");
-    let installer = ensure_step
-        .find("pnpm exec playwright install chromium")
-        .expect("the ensure step can install a browser on images without one");
     assert!(
-        cache_guard < installer,
-        "the Playwright installer must run only when the image has no cached browser"
+        browser_job.contains("pnpm exec playwright install chromium"),
+        "Hosted Ubuntu runners must install the Playwright browser"
     );
     assert!(browser_job.contains("needs.changes.outputs.web == 'true'"));
 
@@ -678,6 +644,15 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     assert!(
         feature_slices.contains("if: matrix.slice == 'fs'"),
         "the fs slice must execute its no-gateway regression in CI"
+    );
+    assert!(
+        feature_slices.contains("slice: [gateway, gateway-host, integrated-gateway, fs, skills]"),
+        "CI must compile every distributable gateway profile and the standalone Skills slice"
+    );
+    assert!(
+        feature_slices.contains("if: matrix.slice == 'skills'")
+            && feature_slices.contains("--no-default-features --features skills"),
+        "the standalone Skills slice must retain its focused runtime regression"
     );
     assert!(
         feature_slices.contains(
@@ -758,6 +733,24 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "MCP regressions must warm normal Labby/Gateway targets before test harness compilation"
     );
 
+    let release = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
+        .expect("read release workflow");
+    assert!(
+        release.matches("skills --help").count() >= 3
+            && release
+                .matches("Read Agent Skills visible to the local CLI")
+                .count()
+                >= 3,
+        "Unix, Windows, and container release artifacts must prove the compiled Skills surface"
+    );
+    let incus_smoke = fs::read_to_string(repo_root().join("scripts/ci/smoke-incus-image.sh"))
+        .expect("read Incus smoke script");
+    assert!(
+        incus_smoke.contains("labby skills --help")
+            && incus_smoke.contains("Read Agent Skills visible to the local CLI"),
+        "the baked Incus binary must prove the compiled Skills surface"
+    );
+
     let test_job = workflow
         .split("  test:\n")
         .nth(1)
@@ -789,7 +782,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         let env = &parsed["jobs"][job]["env"];
         // These jobs must NOT pin CARGO_BUILD_JOBS. Cargo forwards it to every
         // build script as NUM_JOBS, and aws-lc-sys compiles 414 C and 902
-        // assembly sources through the cc crate — work kache cannot cache,
+        // assembly sources through the cc crate — Kache cannot cache them,
         // because it wraps rustc, not cc. Pinning it to 1 serialized ~1300
         // uncached sources, turning ~8-minute builds into 30+ and letting the
         // autoscaling runners reclaim them mid-link. Keep that job-wide knob
@@ -819,7 +812,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Jobs that stay visible on pull requests but must not block `ci-gate`.
-const ADVISORY_JOBS: &[&str] = &["test-windows", "palette-windows"];
+const ADVISORY_JOBS: &[&str] = &["test-windows"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
@@ -843,10 +836,10 @@ fn ci_workflow_yaml(text: &str) -> serde_yaml::Value {
 }
 
 #[test]
-fn fork_pull_requests_are_blocked_before_self_hosted_ci() {
+fn fork_pull_requests_use_hosted_ci() {
     let workflow = ci_workflow_yaml(include_str!("../../../.github/workflows/ci.yml"));
     let changes = &workflow["jobs"]["changes"];
-    assert_eq!(changes["runs-on"].as_str(), Some("ci-pool-ops"));
+    assert_eq!(changes["runs-on"].as_str(), Some("ubuntu-24.04"));
     assert_eq!(
         changes["if"].as_str(),
         Some(

@@ -21,12 +21,15 @@ pub mod access_credentials;
 
 /// `GET /v1/catalog` — filtered service+action catalog for the ⌘K palette.
 pub mod catalog;
+pub mod depot;
 pub mod doctor;
 #[cfg(feature = "gateway")]
 pub mod gateway;
 pub mod oauth_relay;
 #[cfg(feature = "gateway")]
 pub mod palette;
+#[cfg(feature = "skills")]
+pub mod remote_control;
 pub mod server_logs;
 pub mod setup;
 #[cfg(feature = "skills")]

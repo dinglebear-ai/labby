@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { GatewayFilters } from './gateway-filters'
 
-test('gateway filters render compact desktop chips and clear state affordance', () => {
+test('gateway filters keep facets behind the search bar filter toggle', () => {
   const markup = renderToStaticMarkup(
     <GatewayFilters
       mode="gateways"
@@ -13,7 +13,7 @@ test('gateway filters render compact desktop chips and clear state affordance', 
       gatewayFilters={{ status: ['configured'], source: ['lab'], transport: ['stdio'] }}
       toolFilters={{ search: '', gatewayIds: [], exposure: 'all', source: [], transport: [] }}
       gatewayOptions={[]}
-      mobileSheetOpen={false}
+      mobileSheetOpen={true}
       onMobileSheetOpenChange={() => {}}
       onSearchChange={() => {}}
       onGatewayFilterToggle={() => {}}
@@ -29,6 +29,7 @@ test('gateway filters render compact desktop chips and clear state affordance', 
   assert.match(markup, /Search servers/)
   assert.match(markup, /Clear/i)
   assert.match(markup, /aria-label="Open filters"/)
+  assert.match(markup, /aria-label="Toggle filters"/)
   assert.match(markup, /aria-pressed="true"/)
   assert.match(markup, /Configured/)
   assert.doesNotMatch(markup, /role="combobox"/)

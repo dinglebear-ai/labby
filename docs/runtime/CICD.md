@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-08-19"
+updated: "2026-09-03"
 ---
 
 # CI/CD
 
-Last updated: 2026-08-19
+Last updated: 2026-09-03
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -27,12 +27,11 @@ stops a branch from *accidentally* rerouting its own CI while editing path
 rules; it is not a control against a branch that sets out to. The controls for
 that are branch protection and review on `.github/**` and `scripts/ci/**`.
 
-Moving `changes` into a pinned reusable workflow (the `fleet-policy` pattern
-above) would put the classifier *and* its `outputs:` block on a trusted ref.
-It would not remove the reconciliation below: the `if:` gates still come from
-the caller's merge-ref `ci.yml`, so a caller gating on a key the pinned version
-does not export lands in exactly the same window, just versioned by the pin
-instead of by the base branch.
+The workflow-policy and repository-contract checks run locally on
+GitHub-hosted runners. The repository contract still checks out its immutable
+implementation from the pinned workflows revision, but the validation job
+itself does not depend on the self-hosted fleet. Keeping these checks in the
+caller makes the runner boundary visible and testable in this repository.
 
 That window: `ci.yml` always comes from the merge ref, so a pull request that
 adds a routing key gates on a key the trusted classifier cannot emit, and every
@@ -101,7 +100,8 @@ not a second copy of the list.
 Branch protection on `main` requires both `Repository Contract` and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
-fail the aggregate. Native Windows workspace and Palette jobs remain advisory.
+fail the aggregate. Native Windows workspace jobs remain advisory; Palette
+Windows tests and builds are required when Palette changes.
 
 Protected historical work products are enforced separately by
 `.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
@@ -118,11 +118,9 @@ rather than adding another required context. Separate required contexts are
 reserved for controls, like the protected-docs guard and repository contract,
 that intentionally execute from a trusted workflow boundary.
 
-Vendored rmcp trust-boundary changes have a second trusted-base workflow,
-`Vendored rmcp policy`. It requires `vendor-rmcp-approved`, removes that label
-whenever the pull-request head changes, and fails until a maintainer reviews and
-relabels the exact new head. It is a separate required `pull_request_target`
-context rather than part of the branch-controlled `ci-gate`.
+The rmcp dependency is pinned by immutable Git revision in Cargo metadata, so
+the ordinary manifest, lockfile, security, and conformance checks cover SDK
+changes without a copied vendor tree or a separate vendor-approval workflow.
 
 ## CI Checks
 
@@ -133,28 +131,34 @@ jobs when their changed-path category is enabled:
 |-------|----------|---------|
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
-| Vendored rmcp policy | separate required `pull_request_target` workflow | invalidates prior approval on every new head and blocks vendor/provenance/checker/policy changes until a maintainer reapplies `vendor-rmcp-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
 | Frontend build | `rust_compile`, `docs_check`, `web`, `docker`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/gateway-admin`) |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
-| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` at the same concurrency so the heavy normal library is reused; gateway and fs retain their focused runtime tests |
+| Feature slices | `rust_compile` | warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; gateway, fs, and skills retain focused runtime tests |
 | Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
 | Generated docs freshness | `docs_check` | `just docs-check` |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
 | Lint | `rust_compile` | warm `labby` lib/bins first (which warms normal gateway dependencies), lint extracted workspace all-targets, then run `cargo clippy -p labby --all-features --all-targets --locked -- -D warnings` at unchanged Cargo concurrency |
 | Deny | `security` | `cargo deny check` |
 | Palette renderer | `palette` | frozen install, lint, Vitest coverage, typecheck, and Vite build |
-| Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
+| Palette Tauri | `palette` | independent lockfile audit plus required Linux tests and native Windows build/tests |
 | Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
-| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on the Rust runner-farm pool |
-| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on the Rust runner-farm pool without repository secrets |
+| Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
+| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
 | Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | Labby's pinned rmcp `3.1.0` authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
+| MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
 | Container source contract | `docker` | validates the Dockerfile and required source inputs without building an image |
+
+Every distributable or deployable Labby binary must include the `skills`
+feature. The Cargo feature graph makes `gateway` depend on `skills`, so the
+default `gateway-host`, the sealed `integrated-gateway`, and `all` profiles all
+include it. Featureless and non-gateway slices exist only to verify dependency
+boundaries. Release binaries, the production container, and the Incus image
+each run a packaged-artifact smoke that proves the Skills CLI surface exists.
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 
@@ -185,8 +189,8 @@ land the required code/tests and the baseline update together.
 - **Job split:**
   - `changes` classifies paths first and exports category booleans, forcing any gated key the trusted base-branch classifier cannot emit to `true`
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
-  - Required fast jobs run only when their category is enabled; `ci-gate` is the stable required check for branch protection
-  - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; they report portability regressions without blocking `ci-gate`
+  - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
+  - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; Palette checks block `ci-gate`, while workspace checks remain advisory
   - Heavy release work starts only from a published stable GitHub release
   - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS and Windows artifacts use GitHub-hosted runners
 
@@ -196,21 +200,19 @@ the shared workflows' default x86_64-only for callers that do not opt in. The
 current release matrix remains the support matrix below until ARM64 jobs and
 artifacts are added and verified.
 
-## Linux runner farm
+## GitHub-hosted runners
 
-All fast Linux jobs run on the self-hosted farm. Rust jobs select
-`ci-pool-rust`, Node and browser jobs select `ci-pool-typescript`, and
-policy/metadata jobs select `ci-pool-ops`. Rust jobs use the repository
-`setup-rust-kache` composite, which connects trusted jobs to the shared MinIO
-cache and runs bare Cargo when credentials are unavailable. The composite also
-verifies that an action-managed Kache daemon reports the expected S3 remote;
-if a stale daemon has no matching remote, the job restarts it with the current
-validated configuration and verifies it again. If repair does not converge,
-the job clears both Rust compiler wrappers and uses the GitHub Actions Cargo
-cache instead. The rustfmt-only lane
-skips cache setup but still selects writable per-job Rust homes before rustup
-runs. Runner setup is
-documented in [Actions runner setup](./ACTIONS_RUNNER.md).
+All repository-defined Linux jobs use the GitHub-hosted `ubuntu-24.04` image.
+Native Windows jobs use `windows-latest`. No repository-defined job selects a
+self-hosted runner or a custom runner label.
+
+Rust jobs use the repository `setup-rust-kache` composite. Trusted jobs connect
+to the shared MinIO cache when credentials and the hosted runner tool cache are
+available. Other jobs use the GitHub Actions Cargo cache or bare Cargo.
+
+The reusable fleet policy and repository contract are organization-managed
+workflow calls. Their execution environment is owned by the central workflows
+repository and is outside this repository's local runner selection.
 
 ## Build Matrix
 

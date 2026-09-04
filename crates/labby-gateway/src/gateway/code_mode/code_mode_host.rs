@@ -48,6 +48,76 @@ struct CheckedDispatch {
     contract_hash: String,
 }
 
+struct CoreProviderCancelOnDrop {
+    provider: crate::core_provider::CoreProviderClient,
+    assertion: String,
+    request_id: String,
+    armed: bool,
+}
+
+impl CoreProviderCancelOnDrop {
+    fn new(
+        provider: crate::core_provider::CoreProviderClient,
+        assertion: String,
+        request_id: String,
+    ) -> Self {
+        Self {
+            provider,
+            assertion,
+            request_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CoreProviderCancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let provider = self.provider.clone();
+        let assertion = self.assertion.clone();
+        let request_id = self.request_id.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                surface = "dispatch",
+                service = "code_mode",
+                action = "core_provider.cancel",
+                "could not schedule Core provider cancellation without a Tokio runtime"
+            );
+            return;
+        };
+        runtime.spawn(async move {
+            match provider.cancel(&assertion, &request_id).await {
+                Ok(_) => tracing::info!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "core_provider.cancel",
+                    "cancelled an abandoned Core provider call"
+                ),
+                Err(error) => tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "core_provider.cancel",
+                    error = %error,
+                    "could not cancel an abandoned Core provider call"
+                ),
+            }
+        });
+    }
+}
+
+fn stable_request_tag(parent_request_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(parent_request_id.as_bytes());
+    hex::encode(&digest[..6])
+}
+
 impl CodeModeHost for GatewayManager {
     async fn list_tools(
         &self,
@@ -66,7 +136,7 @@ impl CodeModeHost for GatewayManager {
         let owner = runtime_owner(caller, surface);
         let oauth_subject = oauth_subject(caller);
         let allowed = scope.allowed_namespaces();
-        search::build_tools_render(
+        let render = search::build_tools_render(
             self,
             allow_cold_connect,
             &owner,
@@ -76,7 +146,38 @@ impl CodeModeHost for GatewayManager {
             include_snippets,
             use_cache,
         )
-        .await
+        .await?;
+
+        let Some(provider) = self.core_provider_client.as_ref() else {
+            return Ok(render);
+        };
+        let Some(assertion) = caller.host_provider_token() else {
+            return Ok(render);
+        };
+        if scope
+            .allowed_namespaces()
+            .is_some_and(|allowed| !allowed.contains("unraid"))
+        {
+            return Ok(render);
+        }
+
+        match provider.code_mode_catalog(assertion).await {
+            Ok(core_tools) => crate::core_provider::merge_tools_render(render, core_tools, scope)
+                .map_err(|_| ToolError::Sdk {
+                    sdk_kind: "provider_incompatible".to_string(),
+                    message: "Unraid Core provider returned an incompatible catalog".to_string(),
+                }),
+            Err(error) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "core_provider.catalog",
+                    error = %error,
+                    "Unraid Core provider catalog is unavailable"
+                );
+                Ok(render)
+            }
+        }
     }
 
     async fn call_tool(
@@ -86,13 +187,19 @@ impl CodeModeHost for GatewayManager {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-        _ctx: labby_codemode::ExecCtx,
+        ctx: labby_codemode::ExecCtx,
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
         let (upstream, tool) =
             labby_codemode::split_namespaced_id(id).ok_or_else(|| ToolError::Sdk {
                 sdk_kind: "invalid_code_mode_id".to_string(),
                 message: format!("Code Mode ids must use <namespace>::<tool>: `{id}`"),
             })?;
+
+        if upstream == "unraid" {
+            return self
+                .call_core_provider(tool, params, caller, surface, scope, ctx)
+                .await;
+        }
         let owner = runtime_owner(caller, surface);
         let oauth_subject = oauth_subject(caller);
 
@@ -505,6 +612,106 @@ fn unix_now() -> i64 {
 
 /// Gateway-side Code Mode dispatch helpers (not trait methods).
 impl GatewayManager {
+    async fn call_core_provider(
+        &self,
+        tool: &str,
+        params: Value,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+        ctx: labby_codemode::ExecCtx,
+    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        let provider = self
+            .core_provider_client
+            .as_ref()
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: "Unraid Core provider is not configured".to_string(),
+            })?;
+        let assertion = caller.host_provider_token().ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "forbidden".to_string(),
+            message: "Unraid Core provider requires delegated actor context".to_string(),
+        })?;
+        let parent_request_id =
+            caller
+                .host_provider_request_id()
+                .ok_or_else(|| ToolError::Sdk {
+                    sdk_kind: "forbidden".to_string(),
+                    message: "Unraid Core provider requires request correlation".to_string(),
+                })?;
+        let tools = provider
+            .code_mode_catalog(assertion)
+            .await
+            .map_err(|error| ToolError::Sdk {
+                sdk_kind: "provider_unavailable".to_string(),
+                message: error.to_string(),
+            })?;
+        let core_tool = tools
+            .into_iter()
+            .find(|candidate| candidate.descriptor.name == tool)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_string(),
+                message: format!("Unraid Core operation `unraid::{tool}` was not found"),
+            })?;
+
+        if !discovery_entry_visible(&core_tool.descriptor, scope) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: format!("Unraid Core operation `unraid::{tool}` is outside this scope"),
+            }
+            .into());
+        }
+        let safety = core_tool.descriptor.safety.unwrap_or_default();
+        if scope.is_read_only() && safety.read_only != Some(true) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: format!("Unraid Core operation `unraid::{tool}` is not read-only"),
+            }
+            .into());
+        }
+        if safety.destructive == Some(true) && !destructive_permitted(surface, caller) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".to_string(),
+                message: format!("Unraid Core operation `unraid::{tool}` requires execute scope"),
+            }
+            .into());
+        }
+        if !params.is_object() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "invalid_param".to_string(),
+                message: format!("Unraid Core operation `unraid::{tool}` params must be an object"),
+            }
+            .into());
+        }
+
+        let request_id = format!(
+            "core-tool-{}-{}-{}",
+            stable_request_tag(parent_request_id),
+            ctx.seq,
+            uuid::Uuid::new_v4()
+        );
+        let mut cancel_on_drop = CoreProviderCancelOnDrop::new(
+            provider.clone(),
+            assertion.to_string(),
+            request_id.clone(),
+        );
+        let result = provider
+            .execute(
+                assertion,
+                &request_id,
+                &core_tool.operation_id,
+                &params,
+                &core_tool.schema_version,
+            )
+            .await;
+        cancel_on_drop.disarm();
+        let value = result.map_err(|error| ToolError::Sdk {
+            sdk_kind: "provider_error".to_string(),
+            message: error.to_string(),
+        })?;
+        Ok(ToolCallOutcome { value, ui: None })
+    }
+
     /// Drain the `execution_id` step buffer and persist it in ONE bulk insert
     /// at the run boundary.
     ///
@@ -1203,6 +1410,21 @@ pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCalle
             PropagatedCallerAuth::scoped(scopes, sub.clone())
                 .with_private_context_token(context_token.clone())
         }
+        CodeModeCaller::ScopedHostProvider {
+            capabilities, sub, ..
+        } => {
+            let mut scopes = Vec::new();
+            if capabilities.is_admin {
+                scopes.push("lab:admin".to_string());
+            }
+            if capabilities.can_execute {
+                scopes.push("lab".to_string());
+            }
+            if capabilities.can_read {
+                scopes.push("lab:read".to_string());
+            }
+            PropagatedCallerAuth::scoped(scopes, sub.clone())
+        }
     }
 }
 
@@ -1229,6 +1451,7 @@ mod tests {
     use crate::gateway::runtime::GatewayRuntimeHandle;
     use labby_codemode::ExecCtx;
     use rmcp::model::{ContentBlock, ErrorCode, ErrorData, MetaObject};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// Build a `GatewayManager` wired to a fresh temp `StepJournalStore`. The
     /// tempdir is intentionally leaked so the DB file outlives the store's open
@@ -1243,6 +1466,67 @@ mod tests {
         )
         .with_step_journal(Arc::new(store));
         (manager, cfg_dir)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn abandoned_core_provider_call_sends_correlated_cancel() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let directory = tempfile::tempdir().unwrap();
+        let socket_path = directory.path().join("provider.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let expected_length = loop {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0);
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(header_end) =
+                    request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.strip_prefix("content-length: ")
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .unwrap();
+                    break header_end + 4 + content_length;
+                }
+            };
+            while request.len() < expected_length {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0);
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let body = br#"{"outcome":"cancelled_before_attempt","request_id":"provider-call-1"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let provider = crate::core_provider::CoreProviderClient::new(&socket_path).unwrap();
+        let guard = CoreProviderCancelOnDrop::new(
+            provider,
+            "delegated-assertion".to_string(),
+            "provider-call-1".to_string(),
+        );
+        drop(guard);
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .expect("cancel request was sent")
+            .unwrap();
+        assert!(request.contains("authorization: Bearer delegated-assertion"));
+        assert!(request.contains("\"op\":\"cancel\""));
+        assert!(request.contains("\"request_id\":\"provider-call-1\""));
     }
 
     async fn test_manager_with_journal() -> (GatewayManager, tempfile::TempDir, tempfile::TempDir) {

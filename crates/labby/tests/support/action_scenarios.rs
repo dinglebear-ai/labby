@@ -157,17 +157,24 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         include_str!("../fixtures/e2e_actions/server_logs.json"),
         include_str!("../fixtures/e2e_actions/setup.json"),
         include_str!("../fixtures/e2e_actions/snippets.json"),
-        include_str!("../fixtures/e2e_actions/skills.json"),
+        include_str!("../fixtures/e2e_actions/artifacts.json"),
+        include_str!("../fixtures/e2e_actions/sources.json"),
+        include_str!("../fixtures/e2e_actions/jobs.json"),
+        include_str!("../fixtures/e2e_actions/uploads.json"),
+        include_str!("../fixtures/e2e_actions/bundles.json"),
     ];
+    let compiled_services = crate::action_matrix::compiled_intents()
+        .map(|intent| intent.service.clone())
+        .collect::<BTreeSet<_>>();
     let fixtures = values
         .into_iter()
         .map(|raw| {
             let fixture: ServiceFixture = serde_json::from_str(raw).expect("valid action fixture");
             (fixture.service.clone(), fixture)
         })
+        .filter(|(service, _)| compiled_services.contains(service))
         .collect::<BTreeMap<_, _>>();
-    let expected_services = crate::action_matrix::intents()
-        .iter()
+    let expected_services = crate::action_matrix::compiled_intents()
         .map(|intent| intent.service.clone())
         .collect::<BTreeSet<_>>();
     assert_eq!(
@@ -181,8 +188,7 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
         .map(|entry| ((entry.service.as_str(), entry.action.as_str()), entry))
         .collect::<BTreeMap<_, _>>();
     for (service, fixture) in &fixtures {
-        let intents = crate::action_matrix::intents()
-            .iter()
+        let intents = crate::action_matrix::compiled_intents()
             .filter(|intent| &intent.service == service)
             .collect::<Vec<_>>();
         let required = intents
@@ -229,8 +235,7 @@ pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
 }
 
 pub(crate) fn exact_plans(surface: Surface) -> BTreeMap<String, Disposition> {
-    crate::action_matrix::intents()
-        .iter()
+    crate::action_matrix::compiled_intents()
         .filter(|intent| intent.applicable_surfaces.contains(&surface))
         .map(|intent| (intent.key(), disposition(intent)))
         .collect()
@@ -332,8 +337,7 @@ pub(crate) fn fixture_params(intent: &CaseIntent) -> Value {
 }
 
 pub(crate) fn services_for(surface: Surface) -> BTreeSet<String> {
-    crate::action_matrix::intents()
-        .iter()
+    crate::action_matrix::compiled_intents()
         .filter(|intent| intent.applicable_surfaces.contains(&surface))
         .map(|intent| intent.service.clone())
         .collect()
@@ -349,6 +353,9 @@ pub(crate) fn dedicated_contract_reason_for(key: &str, surface: Surface) -> Opti
 
 fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
     match key {
+        "bundles:bundles.delete" => {
+            Some(("requires_authorized_artifact_project_context", "forbidden"))
+        }
         "gateway:gateway.clients.list" => Some(("catalog_dispatch_mismatch", "unknown_action")),
         "gateway:gateway.enrich.apply" => {
             Some(("requires_live_catalog_suggestion", "stale_suggestion"))
@@ -402,6 +409,10 @@ fn dedicated_contract(key: &str) -> Option<(&'static str, &'static str)> {
             "requires_configured_external_plugin_service",
             "unknown_service",
         )),
+        "setup:services.status" => Some((
+            "requires_configured_external_plugin_service",
+            "claude_cli_unavailable",
+        )),
         "setup:settings.config.update" | "setup:settings.env.update" => {
             Some(("typed_compare_and_swap_contract_probed", "invalid_param"))
         }
@@ -431,6 +442,79 @@ pub(crate) fn dedicated_contract_accepts_for(
 }
 
 fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, &'static str)> {
+    if key == "gateway:gateway.skills.list" && !cfg!(feature = "skills") {
+        return Some(("requires_skills_runtime", "feature_not_compiled"));
+    }
+    if surface == Surface::Api
+        && matches!(
+            key,
+            "artifacts:artifacts.search"
+                | "artifacts:artifacts.list"
+                | "artifacts:artifacts.get"
+                | "artifacts:artifacts.read"
+                | "artifacts:artifacts.history"
+                | "artifacts:artifacts.validate"
+                | "artifacts:artifacts.create"
+                | "artifacts:artifacts.save"
+                | "artifacts:artifacts.activate"
+                | "artifacts:artifacts.deactivate"
+                | "artifacts:artifacts.archive"
+                | "artifacts:artifacts.rollback"
+                | "artifacts:artifacts.refresh"
+        )
+    {
+        return Some(("requires_project_bound_artifact_authority", "forbidden"));
+    }
+    if surface == Surface::Mcp && key == "bundles:bundles.delete" {
+        return Some(("requires_existing_project_bundle", "not_found"));
+    }
+    if surface == Surface::Mcp
+        && matches!(
+            key,
+            "artifacts:artifacts.get"
+                | "artifacts:artifacts.read"
+                | "artifacts:artifacts.history"
+                | "artifacts:artifacts.save"
+                | "artifacts:artifacts.activate"
+                | "artifacts:artifacts.deactivate"
+                | "artifacts:artifacts.archive"
+                | "artifacts:artifacts.rollback"
+        )
+    {
+        return Some(("requires_project_bound_artifact_authority", "forbidden"));
+    }
+    if surface == Surface::Mcp
+        && matches!(
+            key,
+            "artifacts:artifacts.search"
+                | "artifacts:artifacts.list"
+                | "artifacts:artifacts.validate"
+                | "artifacts:artifacts.create"
+                | "artifacts:artifacts.refresh"
+                | "artifacts:artifacts.import"
+                | "artifacts:artifacts.authority_status"
+                | "artifacts:artifacts.follow"
+                | "artifacts:artifacts.fork"
+                | "artifacts:artifacts.get_remote"
+                | "artifacts:artifacts.intake_candidate"
+                | "artifacts:artifacts.list_acp_registry"
+                | "artifacts:artifacts.list_candidates"
+                | "artifacts:artifacts.list_connections"
+                | "artifacts:artifacts.list_mcp_registry"
+                | "artifacts:artifacts.list_remote"
+                | "artifacts:artifacts.search_ard"
+                | "artifacts:artifacts.search_marketplace"
+                | "artifacts:artifacts.search_remote"
+                | "artifacts:artifacts.search_skills_sh"
+                | "artifacts:artifacts.set_license"
+                | "artifacts:artifacts.set_publication"
+        )
+    {
+        return Some((
+            "requires_project_bound_artifact_authority",
+            "internal_error",
+        ));
+    }
     if key == "gateway:gateway.loadout.stage_patch" && surface == Surface::Api {
         return Some((
             "requires_mounted_publication_restart_generation",
@@ -439,6 +523,10 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     }
     if surface == Surface::Mcp {
         return match key {
+            "setup:services.status" => Some((
+                "requires_configured_external_plugin_service",
+                "internal_error",
+            )),
             "setup:bootstrap" => Some(("requires_host_bootstrap_authority", "forbidden")),
             "setup:plugin_connectivity" => {
                 Some(("requires_host_plugin_connectivity_authority", "forbidden"))

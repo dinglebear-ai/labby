@@ -1,20 +1,23 @@
 use labby_primitives::action::{ActionSpec, ParamSpec};
+use std::sync::LazyLock;
 
 #[cfg(test)]
-pub(crate) const ACTION_NAMES: &[&str] = &[
-    "skill_library.list",
-    "skill_library.get",
-    "skill_library.read",
-    "skill_library.history",
-    "skill_library.validate",
-    "skill_library.create",
-    "skill_library.save",
-    "skill_library.activate",
-    "skill_library.deactivate",
-    "skill_library.archive",
-    "skill_library.rollback",
-    "skill_library.import",
-    "skill_library.refresh",
+pub(crate) const LOCAL_ACTION_NAMES: &[&str] = &[
+    "artifacts.search",
+    "artifacts.list",
+    "artifacts.get",
+    "artifacts.read",
+    "artifacts.history",
+    "artifacts.validate",
+    "artifacts.create",
+    "artifacts.save",
+    "artifacts.activate",
+    "artifacts.deactivate",
+    "artifacts.archive",
+    "artifacts.rollback",
+    "artifacts.import",
+    "artifacts.import_batch",
+    "artifacts.refresh",
 ];
 
 const ARTIFACT: ParamSpec = ParamSpec {
@@ -55,6 +58,16 @@ const PAGE: &[ParamSpec] = &[
         description: "Page size, default 50 and maximum 100",
     },
 ];
+const SEARCH_PARAMS: &[ParamSpec] = &[
+    ParamSpec {
+        name: "query",
+        ty: "string",
+        required: true,
+        description: "Non-empty metadata query, maximum 256 bytes",
+    },
+    PAGE[0],
+    PAGE[1],
+];
 const FILES: ParamSpec = ParamSpec {
     name: "files",
     ty: "array",
@@ -65,8 +78,22 @@ const VISIBILITY: ParamSpec = ParamSpec {
     name: "visibility",
     ty: "string",
     required: false,
-    description: "Creation scope: private (default for backward compatibility) or shared",
+    description: "Creation scope: private by default, or explicitly shared",
 };
+const SOURCE: ParamSpec = ParamSpec {
+    name: "source",
+    ty: "object",
+    required: true,
+    description: "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials",
+};
+const SOURCES: ParamSpec = ParamSpec {
+    name: "sources",
+    ty: "array",
+    required: true,
+    description: "One to 100 exact immutable source selectors; each acquisition is committed before the next begins",
+};
+const IMPORT_PARAMS: &[ParamSpec] = &[SOURCE, VERSION, IDEM];
+const IMPORT_BATCH_PARAMS: &[ParamSpec] = &[SOURCES, VERSION, IDEM];
 const HISTORY_PARAMS: &[ParamSpec] = &[
     ARTIFACT,
     ParamSpec {
@@ -83,9 +110,17 @@ const HISTORY_PARAMS: &[ParamSpec] = &[
     },
 ];
 
-pub(crate) const ACTIONS: [ActionSpec; 13] = [
+pub(crate) const LOCAL_ACTIONS: [ActionSpec; 15] = [
     spec(
-        "skill_library.list",
+        "artifacts.search",
+        "Search caller-visible stored Artifacts by indexed identity, description, tags, and provenance metadata",
+        false,
+        false,
+        "VersionedArtifactPage",
+        SEARCH_PARAMS,
+    ),
+    spec(
+        "artifacts.list",
         "List caller-visible stored Skill summaries",
         false,
         false,
@@ -93,7 +128,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         PAGE,
     ),
     spec(
-        "skill_library.get",
+        "artifacts.get",
         "Get one stored Skill summary without file bodies",
         false,
         false,
@@ -101,7 +136,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         &[ARTIFACT],
     ),
     spec(
-        "skill_library.read",
+        "artifacts.read",
         "Read one bounded file from an immutable stored revision",
         false,
         false,
@@ -123,7 +158,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         ],
     ),
     spec(
-        "skill_library.history",
+        "artifacts.history",
         "List immutable revision summaries in stable order",
         false,
         false,
@@ -131,7 +166,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         HISTORY_PARAMS,
     ),
     spec(
-        "skill_library.validate",
+        "artifacts.validate",
         "Validate logical Skill files without storing or activating",
         false,
         false,
@@ -147,7 +182,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         ],
     ),
     spec(
-        "skill_library.create",
+        "artifacts.create",
         "Create a stored Skill without activating it; visibility defaults to private",
         false,
         false,
@@ -166,7 +201,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         ],
     ),
     spec(
-        "skill_library.save",
+        "artifacts.save",
         "Save a new immutable revision without activating it",
         false,
         false,
@@ -174,7 +209,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         &[ARTIFACT, REVISION, FILES, VERSION, IDEM],
     ),
     spec(
-        "skill_library.activate",
+        "artifacts.activate",
         "Activate an exact stored revision as a new generation",
         false,
         false,
@@ -182,7 +217,7 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         &[ARTIFACT, REVISION, VERSION, IDEM],
     ),
     spec(
-        "skill_library.deactivate",
+        "artifacts.deactivate",
         "Deactivate a Skill while retaining immutable revisions",
         false,
         false,
@@ -190,15 +225,15 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         &[ARTIFACT, VERSION, IDEM],
     ),
     spec(
-        "skill_library.archive",
+        "artifacts.archive",
         "Archive a Skill while retaining immutable revision storage",
-        true,
+        false,
         false,
         "SkillMutationReceipt",
         &[ARTIFACT, VERSION, IDEM],
     ),
     spec(
-        "skill_library.rollback",
+        "artifacts.rollback",
         "Activate a prior immutable revision as a new generation",
         false,
         false,
@@ -206,24 +241,23 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         &[ARTIFACT, REVISION, VERSION, IDEM],
     ),
     spec(
-        "skill_library.import",
+        "artifacts.import",
         "Import an exact revision through a server-configured source without implicit activation",
         false,
         false,
         "SkillMutationReceipt",
-        &[
-            ParamSpec {
-                name: "source",
-                ty: "object",
-                required: true,
-                description: "Server connection id plus exact immutable source, Artifact, and revision selector; never bytes, paths, endpoints, or credentials",
-            },
-            VERSION,
-            IDEM,
-        ],
+        IMPORT_PARAMS,
     ),
     spec(
-        "skill_library.refresh",
+        "artifacts.import_batch",
+        "Import a bounded batch of exact revisions through server-configured sources without implicit activation",
+        false,
+        false,
+        "ArtifactImportBatchReceipt",
+        IMPORT_BATCH_PARAMS,
+    ),
+    spec(
+        "artifacts.refresh",
         "Explicitly rebuild and reconcile the committed active generation",
         false,
         false,
@@ -231,6 +265,15 @@ pub(crate) const ACTIONS: [ActionSpec; 13] = [
         &[VERSION, IDEM],
     ),
 ];
+
+/// Skill Library callback catalog. Remote discovery specs are borrowed from the canonical remote
+/// catalog rather than redeclared here; the broader `artifacts` service composes every remote spec.
+pub(crate) static ACTIONS: LazyLock<Vec<ActionSpec>> = LazyLock::new(|| {
+    LOCAL_ACTIONS
+        .into_iter()
+        .chain(crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS)
+        .collect()
+});
 
 const fn spec(
     name: &'static str,
@@ -257,16 +300,29 @@ mod tests {
     fn names_and_destructive_policy_are_stable() {
         assert_eq!(
             ACTIONS.iter().map(|a| a.name).collect::<Vec<_>>(),
-            ACTION_NAMES
+            LOCAL_ACTION_NAMES
+                .iter()
+                .copied()
+                .chain(
+                    crate::dispatch::artifact_control::CALLBACK_REMOTE_ACTIONS
+                        .iter()
+                        .map(|action| action.name),
+                )
+                .collect::<Vec<_>>()
         );
-        assert_eq!(
+        assert!(ACTIONS.iter().all(|a| !a.destructive));
+        assert!(
             ACTIONS
                 .iter()
-                .filter(|a| a.destructive)
-                .map(|a| a.name)
-                .collect::<Vec<_>>(),
-            ["skill_library.archive"]
+                .filter(|a| a.name != "artifacts.list_candidates")
+                .all(|a| !a.requires_admin)
         );
-        assert!(ACTIONS.iter().all(|a| !a.requires_admin));
+        assert!(
+            ACTIONS
+                .iter()
+                .find(|a| a.name == "artifacts.list_candidates")
+                .unwrap()
+                .requires_admin
+        );
     }
 }

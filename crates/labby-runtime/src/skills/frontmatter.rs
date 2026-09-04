@@ -113,6 +113,9 @@ pub fn validate_frontmatter(
         let compatibility = compatibility
             .as_str()
             .ok_or_else(|| invalid("frontmatter `compatibility` must be a string"))?;
+        if compatibility.is_empty() {
+            return Err(invalid("frontmatter `compatibility` must not be empty"));
+        }
         if compatibility.chars().count() > MAX_COMPATIBILITY_CHARS {
             return Err(invalid(format!(
                 "frontmatter `compatibility` exceeds {MAX_COMPATIBILITY_CHARS} characters"
@@ -126,13 +129,15 @@ pub fn validate_frontmatter(
         return Err(invalid("frontmatter `license` must be a string"));
     }
 
-    if let Some(allowed_tools) = frontmatter.get("allowed-tools")
-        && !allowed_tools.is_string()
-    {
-        // Agent Skills defines this as a space-separated string, not a list.
-        return Err(invalid(
-            "frontmatter `allowed-tools` must be a space-separated string",
-        ));
+    if let Some(allowed_tools) = frontmatter.get("allowed-tools") {
+        let allowed_tools = allowed_tools.as_str().ok_or_else(|| {
+            invalid("frontmatter `allowed-tools` must be a space-separated string")
+        })?;
+        if allowed_tools.trim().is_empty() {
+            return Err(invalid(
+                "frontmatter `allowed-tools` must not be empty when present",
+            ));
+        }
     }
 
     if let Some(metadata) = frontmatter.get("metadata") {
@@ -321,11 +326,39 @@ mod tests {
     fn rejects_wrongly_typed_optional_fields() {
         for fm in [
             json!({ "name": "x", "description": "d", "license": 5 }),
-            json!({ "name": "x", "description": "d", "allowed-tools": ["a", "b"] }),
+            json!({ "name": "x", "description": "d", "allowed-tools": ["a", 2] }),
             json!({ "name": "x", "description": "d", "metadata": "flat" }),
             json!({ "name": "x", "description": "d", "metadata": { "k": 1 } }),
         ] {
             assert!(validate_frontmatter(&object(fm), None).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_nonstandard_allowed_tools_lists() {
+        let fm = object(json!({
+            "name": "x",
+            "description": "d",
+            "allowed-tools": ["Bash", "Read", "Grep"]
+        }));
+        assert!(validate_frontmatter(&fm, None).is_err());
+    }
+
+    #[test]
+    fn allowed_tools_must_be_a_nonempty_space_separated_string() {
+        validate_frontmatter(
+            &object(json!({"name": "x", "description": "d", "allowed-tools": "Bash(git:*) Read"})),
+            None,
+        )
+        .expect("Agent Skills string form is accepted");
+        for value in [json!(""), json!("   "), json!(["Read"])] {
+            assert!(
+                validate_frontmatter(
+                    &object(json!({"name": "x", "description": "d", "allowed-tools": value})),
+                    None,
+                )
+                .is_err()
+            );
         }
     }
 

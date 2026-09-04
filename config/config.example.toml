@@ -314,6 +314,18 @@
 
 # ── Secrets (env-only) ───────────────────────────────────────────────────────
 #
+# Optional exact-revision Depot source for durable Skill Library imports.
+# The endpoint is the authenticated public edge; Labby writes verified bytes
+# beneath $LABBY_HOME/artifacts and does not depend on Depot after import.
+# Resolve and pin every currently accepted public edge address before rollout.
+#
+# [[skill_library.sources]]
+# id = "unraid-team-depot"
+# kind = "depot"
+# endpoint = "https://depot.example.invalid/artifacts/acquire"
+# pinned_addresses = ["203.0.113.10", "2001:db8::10"]
+# bearer_token_env = "UNRAID_TEAM_DEPOT_TOKEN"
+#
 # These MUST be set via environment variables (in ~/.labby/.env), not here:
 #
 #   LABBY_MCP_HTTP_TOKEN — bearer token for HTTP transport (required in bearer mode)

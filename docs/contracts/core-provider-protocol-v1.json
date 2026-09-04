@@ -1,0 +1,24 @@
+{
+  "provider_protocol": {"name": "unraid.core-provider", "version": "1.0", "transport": "http-over-uds"},
+  "actor_assertion_profile": {"name": "unraid.delegated-actor", "version": "1.0", "typ": "unraid+delegated-actor+jwt", "algorithms": ["EdDSA"], "issuer": "unraid-core", "audience": "labby-trusted-host", "ttl_seconds_max": 60, "clock_skew_seconds_max": 5, "scope_entries_max": 64, "scope_identifier_bytes_max": 256, "key_generations": ["current", "previous"], "jti_cache": {"entries_max": 100000, "bytes_max": 16777216, "saturation": "deny"}},
+  "framing": {"content_type": "application/json", "duplicate_json_keys": "reject", "unknown_critical_fields": "reject", "request_bytes_max": 1048576, "search_describe_response_bytes_max": 1048576, "execute_inline_or_chunk_bytes_max": 2097152, "header_bytes_max": 32768, "header_count_max": 100, "connection_limit": 64, "execute_concurrency_limit": 16, "admission_deadline_ms": 100},
+  "operations": {
+    "health": {"permission": "transport_only", "response": "health"},
+    "schema_version": {"permission": "catalog.read", "response": "schema_version"},
+    "search": {"permission": "catalog.read", "query_bytes_max": 4096, "page_default": 20, "page_max": 50, "response": "search_page"},
+    "describe": {"permission": "catalog.read", "description_bytes_max": 65536, "response": "operation_description"},
+    "execute": {"permission": "operation.metadata", "request": "request_id+stable_operation_id+typed_variables+expected_schema_version", "response": "closed_outcome_union"},
+    "cancel": {"permission": "same_actor_and_request", "response": "cancellation_receipt"}
+  },
+  "closed_execute_outcomes": ["complete", "partial", "denied", "approval_required", "schema_stale", "cancelled_before_attempt", "cancelled_after_attempt", "outcome_unknown", "failed"],
+  "fixtures": [
+    {"name": "health", "request": {"provider_protocol": "1.0", "op": "health"}, "response": {"status": "ready", "provider_protocol": "1.0"}},
+    {"name": "search_page", "request": {"provider_protocol": "1.0", "op": "search", "query": "array status", "page_size": 20}, "response": {"results": [], "next_cursor": null}, "cursor_type": "actor_bound_opaque"},
+    {"name": "describe", "request": {"provider_protocol": "1.0", "op": "describe", "operation_id": "core.array.status@v1"}, "response": {"operation_id": "core.array.status@v1", "schema_version": "sha256:fixture-current"}},
+    {"name": "execute_complete", "request": {"provider_protocol": "1.0", "op": "execute", "request_id": "provider-call-01", "operation_id": "core.array.status@v1", "variables": {}, "expected_schema_version": "sha256:fixture-current"}, "response": {"outcome": "complete"}},
+    {"name": "execute_schema_stale", "request": {"provider_protocol": "1.0", "op": "execute", "request_id": "provider-call-02", "operation_id": "core.array.status@v1", "variables": {}, "expected_schema_version": "old"}, "response": {"outcome": "schema_stale"}},
+    {"name": "execute_outcome_unknown", "request": {"provider_protocol": "1.0", "op": "execute", "request_id": "provider-call-03", "operation_id": "core.array.stop@v1", "variables": {}, "expected_schema_version": "sha256:fixture-current"}, "response": {"outcome": "outcome_unknown", "retry": "operator_reconciliation_required"}},
+    {"name": "reject_replayed_assertion", "assertion": {"jti": "reused", "typ": "unraid+delegated-actor+jwt", "iss": "unraid-core", "aud": "labby-trusted-host", "alg": "EdDSA"}, "response": {"error": "assertion_replayed"}},
+    {"name": "reject_oversize_before_allocation", "request_bytes": 1048577, "response": {"error": "request_too_large"}}
+  ]
+}

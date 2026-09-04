@@ -10,7 +10,8 @@
 //!
 //! `settings.json` writes use an atomic rename pattern: write to a per-write
 //! unique temp file, fsync, then atomically replace the target on every supported
-//! platform. Secret-bearing directories get an explicit user-only Windows ACL;
+//! platform. Secret-bearing directories get an explicit Windows ACL for the
+//! current user, Local System, and administrators;
 //! Unix files are created with mode `0o600`.
 
 use std::{
@@ -120,7 +121,8 @@ fn bounded_subprocess_diagnostic(stderr: &[u8]) -> String {
 /// so unique temps don't accumulate on error.
 ///
 /// On Unix, the temp file is created with mode `0o600`. On Windows the parent
-/// directory is first hardened to an explicit current-user-only inheritable ACL,
+/// directory is first hardened to an explicit inheritable ACL for the current
+/// user, Local System, and administrators,
 /// so the library's temporary file and committed destination are protected for
 /// their entire lifetime.
 pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
@@ -154,18 +156,26 @@ pub(crate) fn harden_secret_directory(_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
+fn powershell_module_path_from(system_root: Option<std::ffi::OsString>) -> io::Result<PathBuf> {
+    system_root
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .map(|root| {
+            root.join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("Modules")
+        })
+        .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))
+}
+
+#[cfg(windows)]
 pub(crate) fn harden_secret_directory(path: &Path) -> io::Result<()> {
     use std::process::Command;
 
     // GUI processes can start without PSModulePath. PowerShell then finds
     // Set-Acl by name but cannot autoload Microsoft.PowerShell.Security.
-    let powershell_module_path = std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?
-        .join("System32")
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("Modules");
+    let powershell_module_path = powershell_module_path_from(std::env::var_os("SystemRoot"))?;
 
     // Build a new protected DACL rather than editing the inherited/existing
     // one. `icacls /grant:r` only replaces ACEs for that principal and would
@@ -257,13 +267,42 @@ mod windows_acl_tests {
         assert!(status.success());
 
         harden_secret_directory(&dir).unwrap();
-        let script = r#"$acl=Get-Acl -LiteralPath $args[0]; $sids=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }); if ($sids -contains 'S-1-1-0') { exit 2 }; if (-not $acl.AreAccessRulesProtected) { exit 3 }"#;
+        let script = r#"$ErrorActionPreference='Stop'; $acl=Get-Acl -LiteralPath $env:LABBY_TEST_SECRET_DIR; $sids=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }); $current=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; if ($sids -contains 'S-1-1-0') { exit 2 }; if (-not $acl.AreAccessRulesProtected) { exit 3 }; if ($sids.Count -ne 3) { exit 4 }; foreach ($expected in @($current, 'S-1-5-18', 'S-1-5-32-544')) { if ($sids -notcontains $expected) { exit 5 } }"#;
         let checked = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .arg(&dir)
-            .status()
+            .env("LABBY_TEST_SECRET_DIR", &dir)
+            .env(
+                "PSModulePath",
+                powershell_module_path_from(std::env::var_os("SystemRoot")).unwrap(),
+            )
+            .output()
             .unwrap();
-        assert!(checked.success(), "broad ACE survived authoritative ACL");
-        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(dir).unwrap();
+        assert!(
+            checked.status.success(),
+            "unexpected ACL: {}",
+            bounded_subprocess_diagnostic(&checked.stderr)
+        );
+    }
+
+    #[test]
+    fn missing_system_root_has_an_actionable_error() {
+        for root in [None, Some(std::ffi::OsString::new())] {
+            assert_eq!(
+                powershell_module_path_from(root).unwrap_err().to_string(),
+                "SystemRoot is unavailable"
+            );
+        }
+    }
+
+    #[test]
+    fn powershell_failure_preserves_exit_and_diagnostics() {
+        let missing = std::env::temp_dir().join(format!("labby-missing-{}", uuid::Uuid::new_v4()));
+        let error = harden_secret_directory(&missing).unwrap_err().to_string();
+        assert!(
+            error.contains("PowerShell failed while installing the authoritative secret-directory ACL (exit code:"),
+            "{error}"
+        );
+        assert!(!error.ends_with("no diagnostic output"), "{error}");
     }
 }

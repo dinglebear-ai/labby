@@ -48,6 +48,12 @@ impl WebSocketTransportConfig {
         self.authorization = authorization;
         self
     }
+
+    #[must_use]
+    pub fn with_max_message_size(mut self, max_message_size: usize) -> Self {
+        self.max_message_size = max_message_size;
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -249,6 +255,15 @@ mod tests {
         assert!(parse_ws_url("localhost:9000").is_err());
         assert!(parse_ws_url("http://localhost:9000/mcp").is_err());
         assert!(parse_ws_url("ws://localhost:9000 bad").is_err());
+    }
+
+    #[test]
+    fn configured_message_limit_can_cover_skills_wire_payloads() {
+        let limit = 24 * 1024 * 1024;
+        let config =
+            WebSocketTransportConfig::new("wss://example.com/mcp").with_max_message_size(limit);
+        assert_eq!(config.max_message_size, limit);
+        assert_eq!(config.max_frame_size, DEFAULT_MAX_FRAME_SIZE);
     }
 
     #[test]

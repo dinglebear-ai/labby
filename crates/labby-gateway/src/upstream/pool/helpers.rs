@@ -99,8 +99,11 @@ pub(super) const SUBJECT_CONN_SWEEP_INTERVAL: Duration = SUBJECT_CONN_IDLE_TTL;
 /// are evicted (and shut down cleanly) down to the cap first.
 pub(super) const SUBJECT_CONN_MAX_ENTRIES: usize = 256;
 
-/// Default maximum response size from upstream servers (10 MB).
+/// Default maximum response size from ordinary upstream capability calls (10 MiB).
 pub(super) const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+/// Default wire allowance for SEP-2640 skill resource reads. A 16 MiB binary
+/// resource expands to roughly 22.4 MiB when base64-encoded in MCP JSON.
+pub(super) const DEFAULT_MAX_SKILL_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 
 pub(super) const IN_PROCESS_PEER_BUFFER_BYTES: usize = 256 * 1024;
 pub(super) const AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR: u32 = 5;
@@ -184,6 +187,8 @@ pub(super) fn estimate_task_response_size(result: &rmcp::model::GetTaskResult) -
 /// Tests that need a different cap should use `max_response_bytes_override`
 /// (cfg(test) only) to replace the cached value before the first call.
 static MAX_RESPONSE_BYTES_CACHE: OnceLock<usize> = OnceLock::new();
+static MAX_SKILL_RESPONSE_BYTES_CACHE: OnceLock<usize> = OnceLock::new();
+static EXPLICIT_RESPONSE_BYTES_CACHE: OnceLock<Option<usize>> = OnceLock::new();
 
 /// `[gateway].upstream_max_response_bytes` from `config.toml`, seeded once by
 /// `install_max_response_bytes_default` before the pool does any real work
@@ -207,12 +212,54 @@ pub(crate) fn install_max_response_bytes_default(value: Option<usize>) {
 /// process; subsequent calls return the cached value with no syscall overhead.
 pub(super) fn max_response_bytes() -> usize {
     *MAX_RESPONSE_BYTES_CACHE.get_or_init(|| {
-        std::env::var("LABBY_UPSTREAM_MAX_RESPONSE_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
+        explicit_response_bytes()
             .or_else(|| MAX_RESPONSE_BYTES_CONFIG_DEFAULT.get().copied().flatten())
             .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES)
     })
+}
+
+/// Return the Skills wire-response cap. An explicit operator cap applies to
+/// every capability; otherwise Skills receive the larger SEP-2640 allowance.
+pub(super) fn max_skill_response_bytes() -> usize {
+    *MAX_SKILL_RESPONSE_BYTES_CACHE.get_or_init(|| {
+        explicit_response_bytes()
+            .or_else(|| MAX_RESPONSE_BYTES_CONFIG_DEFAULT.get().copied().flatten())
+            .unwrap_or(DEFAULT_MAX_SKILL_RESPONSE_BYTES)
+    })
+}
+
+fn explicit_response_bytes() -> Option<usize> {
+    *EXPLICIT_RESPONSE_BYTES_CACHE.get_or_init(|| {
+        let Ok(raw) = std::env::var("LABBY_UPSTREAM_MAX_RESPONSE_BYTES") else {
+            return None;
+        };
+        match parse_response_bytes(&raw) {
+            Ok(value) => Some(value),
+            Err(reason) => {
+                tracing::error!(
+                    variable = "LABBY_UPSTREAM_MAX_RESPONSE_BYTES",
+                    reason,
+                    "invalid upstream response cap; failing closed at one byte"
+                );
+                Some(1)
+            }
+        }
+    })
+}
+
+fn parse_response_bytes(raw: &str) -> Result<usize, &'static str> {
+    match raw.parse::<usize>() {
+        Ok(0) => Err("value must be greater than zero"),
+        Ok(value) => Ok(value),
+        Err(_) => Err("value must be a positive integer"),
+    }
+}
+
+/// Transport parsing must admit the largest capability-specific response; the
+/// post-parse capability boundary still applies the ordinary 10 MiB default to
+/// tools, prompts, and non-Skills resources.
+pub(super) fn max_transport_response_bytes() -> usize {
+    max_response_bytes().max(max_skill_response_bytes())
 }
 
 /// Override the cached max-response-bytes value for tests.
@@ -497,6 +544,14 @@ pub(super) fn cached_upstream_tool(
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_cap_parser_rejects_invalid_and_zero_values() {
+        assert_eq!(parse_response_bytes("1"), Ok(1));
+        assert!(parse_response_bytes("0").is_err());
+        assert!(parse_response_bytes("not-a-number").is_err());
+        assert!(parse_response_bytes("-1").is_err());
+    }
 
     /// `config_value` fallback is used when the env var isn't set. Doesn't
     /// touch process env or the seeded static, so this is safe under both

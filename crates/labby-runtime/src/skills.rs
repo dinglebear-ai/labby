@@ -2,8 +2,8 @@
 //!
 //! # Status
 //!
-//! SEP-2640 is an **unmerged draft** on the Extensions Track. The vendored
-//! contract in `docs/contracts/skills-extension.md` pins the exact revision this
+//! SEP-2640 was accepted on 2026-09-03. The vendored contract in
+//! `docs/contracts/skills-extension.md` pins the exact accepted revision this
 //! module implements; treat any divergence between that document and this code
 //! as a bug in one of them.
 //!
@@ -54,6 +54,7 @@ pub use provider::{
     SkillDiscoverRequest, SkillDiscoverResult, SkillDiscoverySource, SkillGetRequest,
     SkillGetResult, SkillProvider, SkillProviderDeadline, SkillProviderEntry, SkillProviderError,
     SkillProviderFuture, SkillProviderResource, SkillResourceReadRequest, SkillResourceReadResult,
+    SkillResourceRepresentation,
 };
 pub use requirements::SkillRequirementsSummary;
 pub use uri::{

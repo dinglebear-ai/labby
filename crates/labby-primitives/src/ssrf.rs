@@ -65,8 +65,8 @@ fn is_ipv6_ula(ip: Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xfe00) == 0xfc00
 }
 
-/// Reject an IP that targets private, loopback, link-local, CGNAT, ULA, or
-/// IPv4-mapped-private space. `context` is a non-secret label (redacted URL or
+/// Reject an IP that targets private, loopback, link-local, documentation,
+/// benchmark, CGNAT, ULA, or IPv4-mapped-private space. `context` is a non-secret label (redacted URL or
 /// bare host) used only to build the error message.
 ///
 /// # Errors
@@ -85,20 +85,35 @@ pub fn check_ip_not_private(ip: IpAddr, context: &str) -> Result<(), SsrfError> 
 
     let blocked = match normalized {
         IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
             v4.is_private()
                 || v4.is_loopback()
                 || v4.is_link_local()
+                || v4.is_multicast()
                 || v4.is_unspecified()
                 || is_cgnat(v4)
+                || a == 0
+                || (a == 169 && b == 254)
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 192 && b == 0 && c == 2)
+                || (a == 198 && (18..=19).contains(&b))
+                || (a == 198 && b == 51 && c == 100)
+                || (a == 203 && b == 0 && c == 113)
+                || a >= 224
         }
         IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.is_unspecified() || is_ipv6_link_local(v6) || is_ipv6_ula(v6)
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || is_ipv6_link_local(v6)
+                || is_ipv6_ula(v6)
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8)
         }
     };
 
     if blocked {
         return Err(SsrfError::Blocked(format!(
-            "`{context}` resolves to a private, loopback, link-local, CGNAT, or ULA address {ip}; blocked to prevent SSRF"
+            "`{context}` resolves to a non-public address {ip}; blocked to prevent SSRF"
         )));
     }
 
@@ -216,7 +231,12 @@ mod tests {
             "169.254.1.1",
             "100.64.0.1",
             "100.127.255.255",
+            "192.0.2.1",
+            "198.18.0.1",
+            "198.51.100.1",
+            "203.0.113.1",
             "::1",
+            "2001:db8::1",
             "fe80::1",
             "fc00::1",
             "fd00::1",

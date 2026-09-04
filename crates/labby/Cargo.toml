@@ -30,6 +30,7 @@ path = "tests/fixtures/live_harness_fixture.rs"
 test = false
 
 [dependencies]
+labby-apis = { path = "../labby-apis" }
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
 labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }
@@ -134,12 +135,19 @@ labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-
 wiremock.workspace = true
 proptest = "1"
 tracing-core = "0.1"
+# Cross-slice test support inventories fixture trees even when the product `fs`
+# surface is absent. Keep that test-only dependency available without pulling
+# filesystem browser behavior into the integrated artifact.
+walkdir = "2"
 
 [lib]
 path = "src/lib.rs"
 
 # Feature-slice contract:
-# - `default` is the production gateway host package.
+# - `default` is the standalone production gateway host package.
+# - `integrated-gateway` is the sealed headless Core sidecar slice. It keeps
+#   Code Mode, remote HTTP/OAuth upstreams, and the management API while
+#   excluding standalone web assets and optional host-management surfaces.
 # - `all` means all remaining supported Labby host features, not retired product surfaces.
 # - Product slices must compile with `--no-default-features --features <slice> --all-targets`.
 # - Retired product surfaces (ACP, deploy, fleet/nodes, marketplace, stash) are intentionally
@@ -152,10 +160,16 @@ gateway = [
   "dep:labby-gateway",
   "dep:labby-openapi",
   "web-ui",
+  # The gateway and its embedded operator UI expose Skills as a core surface;
+  # every gateway-shaped build must therefore compile the implementation too.
+  "skills",
 ]
 gateway-host = ["gateway"]
+integrated-gateway = ["gateway"]
 web-ui = ["dep:labby-web"]
 api-docs = ["dep:utoipa"]
+# Agent Skills flow through `gateway`, so both plain production builds and
+# explicit gateway feature slices cannot ship a disabled Skills surface.
 default = ["gateway-host"]
 fs = ["dep:walkdir", "dep:globset", "dep:unicode-normalization", "dep:rustix"]
 lab-admin = []

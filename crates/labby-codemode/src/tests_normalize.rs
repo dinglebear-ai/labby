@@ -458,6 +458,30 @@ fn scoped(scopes: &[&str]) -> super::CodeModeCaller {
 }
 
 #[test]
+fn code_mode_caller_debug_redacts_private_credentials() {
+    let capabilities = super::CodeModeCallerCapabilities::default();
+    let private = super::CodeModeCaller::ScopedPrivate {
+        capabilities,
+        sub: Some("actor".to_string()),
+        context_token: "private-secret".to_string(),
+    };
+    let provider = super::CodeModeCaller::ScopedHostProvider {
+        capabilities,
+        sub: Some("actor".to_string()),
+        provider_token: "provider-secret".to_string(),
+        provider_request_id: "request-1".to_string(),
+    };
+
+    let private_debug = format!("{private:?}");
+    let provider_debug = format!("{provider:?}");
+
+    assert!(private_debug.contains("[REDACTED]"));
+    assert!(!private_debug.contains("private-secret"));
+    assert!(provider_debug.contains("[REDACTED]"));
+    assert!(!provider_debug.contains("provider-secret"));
+}
+
+#[test]
 fn destructive_permitted_for_execute_capable_callers() {
     let surface = super::CodeModeSurface::Mcp;
     assert!(

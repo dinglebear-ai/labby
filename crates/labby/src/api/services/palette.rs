@@ -1,10 +1,11 @@
 use axum::{
     Extension, Json,
-    extract::{Query, State},
+    extract::{ConnectInfo, Query, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header},
     response::IntoResponse,
     routing::{get, post},
 };
+use labby_auth::VerifiedIdentity;
 use labby_gateway::gateway::palette::{
     CapabilityDescriptor, LabbyActionLauncherEntry, LauncherCatalogView, LauncherEntryView,
     PaletteCaller, PaletteExecuteRequest, PaletteExecuteResponse, PaletteExecutionReceipt,
@@ -13,6 +14,7 @@ use labby_primitives::action::{ActionSpec, ParamSpec};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -213,18 +215,14 @@ async fn schema(
 
 async fn execute(
     State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(request): Json<PaletteExecuteRequest>,
 ) -> Result<Json<PaletteExecuteResponse>, ApiError> {
     if request.id.starts_with("labby:") {
-        return execute_labby_action(
-            state,
-            auth.as_ref().map(|auth| &auth.0),
-            request_id(&headers),
-            request,
-        )
-        .await;
+        return execute_labby_action(state, peer, headers, auth, identity, request).await;
     }
     let manager = state.gateway_manager.clone().ok_or_else(missing_manager)?;
     let caller = palette_caller(auth.as_ref().map(|auth| &auth.0), request_id(&headers))?;
@@ -285,7 +283,7 @@ fn append_labby_actions(
         .filter(|service| service.status == "available")
         .filter(|service| state.enabled_services.contains(service.name))
     {
-        for action in service.actions {
+        for action in palette_actions(service.name, service.actions) {
             if !labby_action_visible(state, service.name, action, auth) {
                 continue;
             }
@@ -495,8 +493,7 @@ fn labby_schema_response(
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{id}` was not found"),
         })?;
-    let action = service
-        .actions
+    let action = palette_actions(service_name, service.actions)
         .iter()
         .find(|action| action.name == action_name)
         .ok_or_else(|| ToolError::Sdk {
@@ -514,11 +511,14 @@ fn labby_schema_response(
 
 async fn execute_labby_action(
     state: AppState,
-    auth: Option<&AuthContext>,
-    request_id: Option<&str>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     request: PaletteExecuteRequest,
 ) -> Result<Json<PaletteExecuteResponse>, ApiError> {
-    let Some(auth) = auth else {
+    let request_id = request_id(&headers).map(str::to_owned);
+    let Some(auth_context) = auth.as_ref().map(|auth| &auth.0) else {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "auth_failed".to_string(),
             message: "palette routes require authenticated API context".to_string(),
@@ -532,15 +532,14 @@ async fn execute_labby_action(
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{}` was not found", request.id),
         })?;
-    let action = service
-        .actions
+    let action = palette_actions(service_name, service.actions)
         .iter()
         .find(|action| action.name == action_name)
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{}` was not found", request.id),
         })?;
-    if !labby_action_visible(&state, service_name, action, Some(auth)) {
+    if !labby_action_visible(&state, service_name, action, Some(auth_context)) {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: format!("launcher entry `{}` was not found", request.id),
@@ -557,7 +556,7 @@ async fn execute_labby_action(
             }));
         }
     }
-    if action_requires_admin(action) && !has_admin_scope(auth) {
+    if action_requires_admin(action) && !has_admin_scope(auth_context) {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
             message: format!("action `{service_name}.{action_name}` requires admin scope"),
@@ -583,10 +582,32 @@ async fn execute_labby_action(
         }));
     }
     validate_labby_action_params(action, &request.params)?;
-    let result = (service.dispatch)(action_name.to_string(), request.params).await?;
+    #[cfg(feature = "skills")]
+    let result = if service_name == "artifacts" {
+        let Json(result) = super::skills::handle(
+            State(state.clone()),
+            peer,
+            headers.clone(),
+            auth,
+            identity,
+            Json(crate::api::ActionRequest {
+                action: action_name.to_string(),
+                params: request.params,
+            }),
+        )
+        .await?;
+        result
+    } else {
+        (service.dispatch)(action_name.to_string(), request.params).await?
+    };
+    #[cfg(not(feature = "skills"))]
+    let result = {
+        let _ = (peer, headers, auth, identity);
+        (service.dispatch)(action_name.to_string(), request.params).await?
+    };
     Ok(Json(PaletteExecuteResponse {
         receipt: PaletteExecutionReceipt {
-            request_id: request_id.unwrap_or("unavailable").to_string(),
+            request_id: request_id.unwrap_or_else(|| "unavailable".to_string()),
             tool_id: request.id.clone(),
             contract_hash: contract_hash.clone(),
             catalog_revision: contract_hash,
@@ -596,6 +617,14 @@ async fn execute_labby_action(
         result,
         ui: None,
     }))
+}
+
+fn palette_actions<'a>(service: &str, registered: &'a [ActionSpec]) -> &'a [ActionSpec] {
+    #[cfg(feature = "skills")]
+    if service == "artifacts" {
+        return crate::dispatch::skills::api_actions();
+    }
+    registered
 }
 
 fn parse_labby_launcher_id(id: &str) -> Result<(&str, &str), ToolError> {
@@ -824,10 +853,12 @@ mod tests {
     use labby_gateway::gateway::palette::LauncherCatalogView;
     #[cfg(feature = "proxy-testkit")]
     use labby_gateway::upstream::pool::UpstreamPool;
+    #[cfg(feature = "proxy-testkit")]
     use labby_gateway::upstream::types::{
         SkillExposurePolicy, ToolExposurePolicy, UpstreamEntry, UpstreamHealth, UpstreamTool,
     };
     use labby_primitives::action::{ActionSpec, ParamSpec};
+    #[cfg(feature = "proxy-testkit")]
     use labby_runtime::gateway_config::UpstreamConfig;
     #[cfg(feature = "proxy-testkit")]
     use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig};
@@ -949,6 +980,7 @@ mod tests {
         assert!(!unscoped_write.caller.can_execute());
     }
 
+    #[cfg(feature = "proxy-testkit")]
     fn test_upstream_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
             enabled: true,
@@ -975,10 +1007,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "proxy-testkit")]
     fn healthy_upstream_entry(upstream: &str, tool_name: &str) -> UpstreamEntry {
         healthy_upstream_entry_with_schema(upstream, tool_name, None)
     }
 
+    #[cfg(feature = "proxy-testkit")]
     fn healthy_upstream_entry_with_schema(
         upstream: &str,
         tool_name: &str,
@@ -1155,6 +1189,96 @@ mod tests {
         assert_eq!(entry["kind"], "labbyAction");
         assert!(entry.get("inputSchema").is_none() || entry["inputSchema"].is_null());
         assert!(entry["schemaFingerprint"].as_str().is_some());
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn palette_projects_authenticated_artifact_management_actions() {
+        let actions = super::palette_actions("artifacts", &crate::dispatch::artifacts::ACTIONS);
+
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.name == "artifacts.import")
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| action.name == "artifacts.activate")
+        );
+        assert_eq!(
+            actions.iter().map(|action| action.name).collect::<Vec<_>>(),
+            crate::dispatch::skills::api_actions()
+                .iter()
+                .map(|action| action.name)
+                .collect::<Vec<_>>(),
+            "the palette must use the authenticated API contract, not the compatibility-only registry slice"
+        );
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn palette_execute_routes_artifact_import_through_authenticated_api_dispatch() {
+        let manager = Arc::new(test_gateway_manager(
+            std::env::temp_dir().join("palette-skill-import.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let state = AppState::from_registry(build_default_registry()).with_gateway_manager(manager);
+        let app = build_router_with_bearer(state, Some("test-token".into()), None);
+
+        let catalog_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/palette/catalog")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let catalog_body = axum::body::to_bytes(catalog_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let catalog: Value = serde_json::from_slice(&catalog_body).unwrap();
+        let contract_hash = catalog["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "labby:artifacts::artifacts.import")
+            .and_then(|entry| entry["contractHash"].as_str())
+            .expect("Artifact import should be discoverable");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/palette/execute")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .header("x-labby-project-id", "team-project")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        json!({
+                            "id": "labby:artifacts::artifacts.import",
+                            "params": {
+                                "source": {"kind": "depot", "skill_uri": "skill://depot/demo"},
+                                "expected_library_version": 0,
+                                "idempotency_key": "palette-import-1"
+                            },
+                            "expectedContractHash": contract_hash,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(error["kind"], "skill_library_unavailable");
     }
 
     // `insert_entry_for_test` lives behind labby-gateway's `testkit` feature,

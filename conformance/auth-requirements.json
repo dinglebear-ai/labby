@@ -94,7 +94,7 @@
       "applicability": "applicable",
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "test_id": "middleware::tests::insufficient_jwt_and_static_scopes_return_403_challenge",
@@ -222,7 +222,7 @@
       "implementation": "Refresh material is encrypted at rest and the client safely reauthorizes when no refresh token was issued.",
       "evidence_paths": [
         "crates/labby-auth/src/sqlite.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": null,
       "verification_commands": [
@@ -244,7 +244,7 @@
       "implementation": "401/403 challenges, authoritative required scopes, bounded step-up, and scope hierarchy are executable contracts.",
       "evidence_paths": [
         "crates/labby-auth/src/middleware.rs",
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"
+        "Cargo.lock"
       ],
       "test_id": "middleware::tests::missing_bearer_token_returns_401_with_www_authenticate",
       "verification_commands": [
@@ -278,7 +278,7 @@
       "applicability": "applicable",
       "implementation": "Challenge scopes are parsed authoritatively, unioned without substring assumptions, and bounded for step-up.",
       "evidence_paths": [
-        "vendor/rmcp-3.1.0-labby/src/transport/auth.rs",
+        "Cargo.lock",
         "crates/labby-gateway/src/upstream/http_client.rs"
       ],
       "test_id": "transport::auth::tests::select_scopes_unions_challenge_with_previously_requested",
@@ -404,7 +404,7 @@
         "crates/labby/src/mcp/handlers_tools.rs",
         "crates/labby/src/mcp/peer_contract.rs"
       ],
-      "test_id": "mcp::permanent_tools::tests::builtin_service_tool_advertises_top_level_security_schemes",
+      "test_id": "mcp::permanent_tools::tests::builtin_service_tool_advertises_security_schemes_extension",
       "verification_commands": [
         "scripts/ci/openai-auth-conformance.sh OAI-AUTH-002"
       ],
@@ -437,7 +437,7 @@
       "evidence_paths": [
         "crates/labby/src/mcp/permanent_tools.rs"
       ],
-      "test_id": "mcp::permanent_tools::tests::builtin_service_tool_mirrors_security_schemes_in_legacy_meta",
+      "test_id": "mcp::permanent_tools::tests::builtin_service_tool_keeps_security_schemes_in_meta",
       "verification_commands": [
         "scripts/ci/openai-auth-conformance.sh OAI-AUTH-004"
       ],

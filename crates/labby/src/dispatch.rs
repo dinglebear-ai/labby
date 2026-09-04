@@ -1,5 +1,10 @@
 pub(crate) mod access_bootstrap;
+#[cfg(feature = "skills")]
+pub(crate) mod artifact_control;
+#[cfg(feature = "skills")]
+pub mod artifacts;
 pub mod clients;
+pub mod depot;
 pub mod doctor;
 pub mod error;
 pub mod fs;
@@ -12,6 +17,8 @@ pub mod lab_admin;
 pub mod oauth_subject;
 pub mod path_safety;
 pub mod redact;
+#[cfg(feature = "skills")]
+pub mod remote_control;
 pub mod security;
 pub mod server_logs;
 pub mod setup;

@@ -39,13 +39,13 @@ impl SkillRequirementsSummary {
             .get("compatibility")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        let tool_hints = frontmatter
-            .get("allowed-tools")
-            .and_then(Value::as_str)
-            .into_iter()
-            .flat_map(str::split_ascii_whitespace)
-            .map(ToOwned::to_owned)
-            .collect();
+        let tool_hints = match frontmatter.get("allowed-tools") {
+            Some(Value::String(tools)) => tools
+                .split_ascii_whitespace()
+                .map(ToOwned::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        };
 
         Self {
             compatibility,
@@ -104,5 +104,16 @@ mod tests {
         assert_eq!(value, json!({}));
         assert!(value.get("authorized").is_none());
         assert!(value.get("allowed_tools").is_none());
+    }
+
+    #[test]
+    fn nonstandard_list_tool_hints_are_not_projected() {
+        let summary = SkillRequirementsSummary::from_frontmatter(&object(json!({
+            "name": "review",
+            "description": "Review a change",
+            "allowed-tools": ["Read", "Grep", "Read"]
+        })));
+
+        assert!(summary.tool_hints.is_empty());
     }
 }

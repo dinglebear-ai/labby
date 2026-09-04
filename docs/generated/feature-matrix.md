@@ -10,11 +10,12 @@ Feature invariant status: clean.
 | labby | `api-docs` | HelperInternal | false | true | - | `dep:utoipa` |
 | labby | `default` | AggregateDefault | false | false | - | `gateway-host` |
 | labby | `fs` | ProductSlice | false | true | - | `dep:walkdir`<br>`dep:globset`<br>`dep:unicode-normalization`<br>`dep:rustix` |
-| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`web-ui` |
+| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`web-ui`<br>`skills` |
 | labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
+| labby | `integrated-gateway` | IntentionalException | false | false | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
 | labby | `proxy-testkit` | IntentionalException | false | false | - | `labby-gateway/testkit` |
-| labby | `skills` | IntentionalException | false | true | - | `labby-gateway?/skills` |
+| labby | `skills` | IntentionalException | true | true | - | `labby-gateway?/skills` |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all |  |

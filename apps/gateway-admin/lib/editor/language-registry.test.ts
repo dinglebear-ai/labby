@@ -10,6 +10,10 @@ test('maps supported file paths to the correct editor language', () => {
   assert.equal(getEditorDocumentConfig('config/labby.toml').language, 'toml')
 })
 
+test('uses dotenv highlighting for .env files', () => {
+  assert.equal(getEditorDocumentConfig('Apprise/.env').language, 'dotenv')
+})
+
 test('treats .md agent skill and command files as markdown plus frontmatter validation', () => {
   const agent = getEditorDocumentConfig('agents/code-reviewer.md')
   const skill = getEditorDocumentConfig('skills/tdd.md')

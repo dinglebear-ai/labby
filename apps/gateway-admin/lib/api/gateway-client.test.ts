@@ -135,6 +135,16 @@ test('gatewayApi discovery and import actions use gateway dispatch payloads', as
   )
 })
 
+test('gatewayApi.refreshStatus requests an explicit catalog refresh', async () => {
+  await withGatewayFetch(
+    { 'gateway.status': () => [] },
+    async (requests) => {
+      await gatewayApi.refreshStatus()
+      assert.deepEqual(requests, [{ action: 'gateway.status', params: {} }])
+    },
+  )
+})
+
 test('gatewayApi.create adds a stdio gateway without any ack flag', async () => {
   await withGatewayFetch(
     {

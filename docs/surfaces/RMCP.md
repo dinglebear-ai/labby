@@ -18,8 +18,8 @@ It is the source of truth for:
 
 This document is normative for future work even where the codebase is still converging.
 
-The reproducible production rmcp `3.1.0`, pinned upstream rmcp `3.1.0`
-fixture, and MCP `2026-07-28` validation matrix is
+The reproducible production rmcp Git revision, pinned upstream rmcp `3.1.0`
+conformance fixture, and MCP `2026-07-28` validation matrix are
 documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
 
 ## Scope

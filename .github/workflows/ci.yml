@@ -28,20 +28,30 @@ env:
 
 jobs:
   fleet-policy:
-    name: Fleet workflow policy
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@b2813662ca27ca8868752fb353d9dd568f2f97f9
-    with:
-      release-file-regex: '(^|/)(release|build-incus-image)\.ya?ml$'
-      allow-arm64: true
+    name: Fleet workflow policy / policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check PyYAML==6.0.2
+      - name: Enforce hosted workflow policy
+        run: >-
+          python scripts/ci/check_workflow_policy.py
+          --release-file-regex '(^|/)(release|build-incus-image)\.ya?ml$'
+          --allow-arm64
 
-  # The fleet repository contract runs once, from repository-contract.yml (the
-  # required "Repository Contract" gate with `secrets: inherit`). Do not add a
-  # second fleet-contract caller here — duplicate callers drift to different
-  # fleet revisions.
+  # The repository contract runs once, from repository-contract.yml (the
+  # required "Repository Contract" gate). Keep it separate from the policy
+  # check above so each required status has one clear owner.
 
   changes:
     name: changes
-    runs-on: ci-pool-ops
+    runs-on: ubuntu-24.04
     # Every executable CI job depends on this classifier. Fork pull requests
     # are untrusted, so fail closed before any fork-controlled checkout or
     # script can reach the homelab runner fleet.
@@ -237,7 +247,7 @@ jobs:
 
   unraid-plugin-check:
     name: Unraid plugin checksums
-    runs-on: ci-pool-ops
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.unraid == 'true' }}
@@ -254,7 +264,7 @@ jobs:
 
   actionlint:
     name: Actionlint
-    runs-on: ci-pool-ops
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.workflow == 'true' }}
@@ -276,7 +286,7 @@ jobs:
 
   frontend-assets:
     name: Frontend assets
-    runs-on: ci-pool-typescript
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: changes
     if: >-
@@ -302,12 +312,10 @@ jobs:
 
   gateway-admin-browser:
     name: Gateway Admin browser tests
-    runs-on: ci-pool-typescript
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      # JIT jobs may run as root, while the fleet mounts the durable browser
-      # cache at the runner user's home. Keep browser discovery independent
-      # of the process UID.
+      # Keep the browser install and test on the standard hosted-runner path.
       PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
     needs: changes
     if: ${{ needs.changes.outputs.web == 'true' }}
@@ -330,9 +338,8 @@ jobs:
       - name: Install Playwright runtime libraries
         run: |
           set -euo pipefail
-          # Warm self-hosted runners already carry the Chromium runtime
-          # libraries; skip the 22-package apt transaction when the marker
-          # libraries are all installed.
+          # Hosted Ubuntu images can change their preinstalled package set.
+          # Install the required Chromium runtime libraries when needed.
           if dpkg -s libasound2t64 libatk-bridge2.0-0t64 libgbm1 libnss3 libxkbcommon0 >/dev/null 2>&1; then
             echo "Playwright runtime libraries already installed; skipping apt-get"
             exit 0
@@ -387,24 +394,8 @@ jobs:
               libxkbcommon0 \
               libxrandr2
           fi
-      # The self-hosted runner image carries the matching Playwright browser, and
-      # Playwright's installer rejects Ubuntu 26.04 even when that browser is
-      # already cached — so the cache is checked first and the installer is only
-      # reached on images that do not pre-bake one. `ci-pool-typescript` spans
-      # both the self-hosted image and the ephemeral JIT pool; assuming the
-      # pre-baked cache failed every job that landed on the latter.
-      - name: Ensure a Playwright browser is available
-        run: |
-          set -euo pipefail
-          if node -e "const fs=require('node:fs');const {chromium}=require('playwright');process.exit(fs.existsSync(chromium.executablePath())?0:1)"; then
-            echo "Using the Playwright browser cached in this runner image."
-          else
-            echo "No cached browser at ${PLAYWRIGHT_BROWSERS_PATH}; installing chromium for this image."
-            mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
-            pnpm exec playwright install chromium
-          fi
-      # Both paths converge here: a real headless launch is the contract, not the
-      # mere presence of a file.
+      - name: Install Playwright browser
+        run: pnpm exec playwright install chromium
       - name: Verify Playwright browser launch
         run: |
           node - <<'NODE'
@@ -428,7 +419,7 @@ jobs:
 
   live-e2e-core:
     name: Live E2E core
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' || needs.changes.outputs.web == 'true' }}
@@ -436,6 +427,17 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/gateway-admin/pnpm-lock.yaml
+      - run: pnpm --dir apps/gateway-admin install --frozen-lockfile
+      - name: Install Playwright browser and runtime libraries
+        run: pnpm --dir apps/gateway-admin exec playwright install --with-deps chromium
       - name: Download immutable Gateway Admin assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -465,7 +467,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -481,8 +483,6 @@ jobs:
         run: bash scripts/check-version-sync.sh
       - name: Check Rust toolchain sync
         run: bash scripts/check-rust-toolchain-sync.sh
-      - name: Check persistent-host Kache action contract
-        run: bash scripts/check-kache-persistent-host-action.sh
       # cargo fmt never invokes rustc, so skip the full setup-rust-kache
       # composite (apt preflight + cache wiring) and install only rustfmt.
       # The fleet may expose read-only runner-global Rust homes, so retain the
@@ -514,7 +514,7 @@ jobs:
 
   deny:
     name: Cargo Deny
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: changes
     if: ${{ needs.changes.outputs.security == 'true' }}
@@ -552,7 +552,7 @@ jobs:
   # and msrv additionally checks --all-targets.
   msrv:
     name: MSRV
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -581,7 +581,7 @@ jobs:
 
   codemode-runner-smoke:
     name: Code Mode runner smoke
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
@@ -604,7 +604,7 @@ jobs:
 
   npm-launcher:
     name: npm launcher
-    runs-on: ci-pool-typescript
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.npm == 'true' }}
@@ -624,7 +624,7 @@ jobs:
 
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -638,20 +638,18 @@ jobs:
     # all-features `check`/`clippy`/`test` jobs above remain the authoritative
     # warning-clean signal.
     # Retired ACP, Registry, Marketplace, Deploy, Fleet, and Stash product
-    # surfaces are deleted from the workspace. Gateway and fs are the only
-    # standalone product slices left on `labby` itself.
-    # Slices are compile checks, EXCEPT gateway: the flagship slice also runs
-    # its test suite so omission-side tests (#[cfg(not(feature = ...))] —
-    # registry omission tests, the no-feature rejection helpers) actually
-    # execute somewhere in CI instead of only ever being compiled. The fs
-    # slice also executes its focused no-gateway proxy preflight regression.
+    # surfaces are deleted from the workspace. The matrix below covers every
+    # supported standalone and composed Labby product slice.
+    # Every slice compiles. Gateway also runs its suite so omission-side tests
+    # execute; fs and skills run focused behavioral regressions for their
+    # feature boundaries.
     env:
       # lld only; see the `test` job for why CARGO_BUILD_JOBS must stay unset.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     strategy:
       fail-fast: false
       matrix:
-        slice: [gateway, fs]
+        slice: [gateway, gateway-host, integrated-gateway, fs, skills]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -668,7 +666,7 @@ jobs:
       # Warm the large product crate and its native dependencies first, then
       # complete the all-target pass at normal Cargo concurrency. Compiling the
       # normal library and lib-test harness cold in one invocation crossed the
-      # ci-pool-rust memory ceiling (SIGKILL) after recent code growth. Keeping
+      # Hosted-runner memory ceiling (SIGKILL) after recent code growth. Keeping
       # the same Cargo job count across both phases preserves aws-lc-sys build
       # parallelism and lets the second phase reuse the already-built library.
       - name: Warm slice compile
@@ -699,18 +697,22 @@ jobs:
       - name: Run fs-slice proxy preflight regression
         if: matrix.slice == 'fs'
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
+      - name: Run standalone skills-slice regressions
+        if: matrix.slice == 'skills'
+        run: >-
+          cargo test -p labby --no-default-features --features skills --locked
+          mcp::skills
 
   extracted-crate-slices:
     name: Extracted crate slices
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
     env:
       RUSTFLAGS: ""
-    # One warm runner slot checking the nine independent slices sequentially.
-    # The former 9-way matrix consumed 9 cold rust-pool slots for the same
-    # coverage.
+    # Check the nine independent slices sequentially to keep this job within
+    # the hosted runner resource budget.
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -738,7 +740,7 @@ jobs:
 
   docs-check:
     name: Generated docs
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [changes, frontend-assets]
     if: ${{ needs.changes.outputs.docs_check == 'true' }}
@@ -759,7 +761,7 @@ jobs:
 
   rustdoc:
     name: Rustdoc
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' || needs.changes.outputs.workflow == 'true' }}
@@ -785,7 +787,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.rust_compile == 'true' }}
@@ -827,7 +829,7 @@ jobs:
 
   mcp-regressions:
     name: MCP focused regressions
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
@@ -865,10 +867,16 @@ jobs:
         run: |
           cargo test -p labby --all-features --locked cli::serve::tests::http_mcp_
           cargo test -p labby --all-features --locked stateless_subscription_receives_catalog_notifications
+      - name: Accepted SEP-2640 server, client, and intermediary behavior
+        run: |
+          cargo test -p labby-runtime --all-features --locked --test skills_contract_conformance
+          cargo test -p labby-runtime --all-features --locked --test sep_2640_uri_conformance
+          cargo test -p labby-gateway --all-features --locked skills
+          cargo test -p labby --all-features --locked mcp::skills
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: changes
     env:
@@ -904,8 +912,6 @@ jobs:
         run: python3 scripts/ci/refresh_mcp_auth_denominator.py --check
       - name: Verify current OpenAI authentication source denominator
         run: python3 scripts/ci/refresh_openai_auth_denominator.py --check
-      - name: Verify vendored rmcp base and explicit patch provenance
-        run: python3 scripts/ci/check_vendor_rmcp_provenance.py
       - name: Verify requirement-specific OpenAI authentication contracts
         run: scripts/ci/openai-auth-conformance.sh
       - name: Verify requirement-specific MCP authorization contracts
@@ -922,9 +928,9 @@ jobs:
 
   test:
     name: Test
-    # The Rust pool connects Kache to the fleet MinIO cache; no GitHub cache
-    # save/restore layer is needed.
-    runs-on: ci-pool-rust
+    # Hosted runners connect Kache to the shared MinIO cache when credentials
+    # are available. The action keeps a GitHub Actions cache fallback.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       # lld keeps the link step cheap. Do NOT reintroduce CARGO_BUILD_JOBS
@@ -986,10 +992,10 @@ jobs:
 
   test-fork:
     name: Test
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      # Match the internal-PR test job resource profile on the shared pool.
+      # Match the internal-PR test job resource profile.
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
     needs: [changes, frontend-assets]
     if: >-
@@ -1227,7 +1233,7 @@ jobs:
 
   release-contract:
     name: Release metadata contract
-    runs-on: ci-pool-ops
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: changes
     if: ${{ needs.changes.outputs.release == 'true' }}
@@ -1242,7 +1248,7 @@ jobs:
 
   container-contract:
     name: Container source contract
-    runs-on: ci-pool-ops
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs: changes
     if: ${{ needs.changes.outputs.docker == 'true' }}
@@ -1271,7 +1277,7 @@ jobs:
 
   palette-web:
     name: Palette renderer
-    runs-on: ci-pool-typescript
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
@@ -1303,7 +1309,7 @@ jobs:
 
   palette-rust:
     name: Palette Tauri (Linux)
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.palette == 'true' }}
@@ -1336,12 +1342,11 @@ jobs:
             check advisories
 
   palette-windows:
-    name: Palette Tauri (Windows advisory)
+    name: Palette Tauri (Windows)
     runs-on: windows-latest
     needs: changes
-    # Advisory, excluded from ci-gate; main pushes and scheduled/manual runs
-    # only (see test-windows).
-    if: ${{ github.event_name != 'pull_request' && needs.changes.outputs.palette == 'true' }}
+    # Windows credential persistence must be verified before Palette changes land.
+    if: ${{ needs.changes.outputs.palette == 'true' }}
     timeout-minutes: 60
     # GitHub-hosted job: do not inherit an ambient compiler wrapper. Cache jobs
     # configure kache explicitly through setup-rust-kache.
@@ -1365,7 +1370,7 @@ jobs:
 
   rust-coverage:
     name: Rust coverage
-    runs-on: ci-pool-rust
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld"
@@ -1413,7 +1418,7 @@ jobs:
 
   ci-gate:
     name: ci-gate
-    runs-on: ci-pool-ops
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     if: always()
     needs:
@@ -1442,6 +1447,7 @@ jobs:
       - container-contract
       - palette-web
       - palette-rust
+      - palette-windows
       - rust-coverage
     steps:
       - name: report changed-path routing drift
@@ -1461,6 +1467,10 @@ jobs:
           echo "::warning title=Changed-path routing drift::the trusted base-branch classifier does not emit: ${GATE_KEY_DRIFT}. Jobs gated on those keys ran fail-open. The drift clears once the base branch carries a scripts/ci/changed_paths.py that emits them."
           printf 'Changed-path routing drift (ran fail-open): %s\n' "$GATE_KEY_DRIFT" >> "$GITHUB_STEP_SUMMARY"
       - name: verify required jobs passed or were intentionally skipped
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           require_success_or_skipped() {
@@ -1473,12 +1483,20 @@ jobs:
           }
           # `changes` owns every routing decision: if it does not run, every
           # gate expression is empty, every gated job skips, and the whole run
-          # is vacuously green. `fleet-policy` is an unconditional single-job
-          # reusable workflow. Neither has an `if:`, so a skip is never a
-          # legitimate conclusion for either.
+          # is vacuously green. It must succeed on trusted branches; the only
+          # exception is the fork-safety case handled explicitly below.
           require_success() {
             local name="$1"
             local result="$2"
+            if [[ "$name" == changes && "$result" == skipped \
+              && "$EVENT_NAME" == pull_request \
+              && "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]]; then
+              # Fork PRs intentionally skip changes before any fork-controlled
+              # script can run. Their trusted policy, contract, and protected
+              # documentation checks still run independently.
+              printf '%s=%s (fork safety)\n' "$name" "$result"
+              return
+            fi
             case "$result" in
               success) printf '%s=%s\n' "$name" "$result" ;;
               *) echo "::error::$name concluded $result; it must run for path routing to be meaningful" >&2; exit 1 ;;
@@ -1509,4 +1527,5 @@ jobs:
           require_success_or_skipped container-contract "${{ needs.container-contract.result }}"
           require_success_or_skipped palette-web "${{ needs.palette-web.result }}"
           require_success_or_skipped palette-rust "${{ needs.palette-rust.result }}"
+          require_success_or_skipped palette-windows "${{ needs.palette-windows.result }}"
           require_success_or_skipped rust-coverage "${{ needs.rust-coverage.result }}"

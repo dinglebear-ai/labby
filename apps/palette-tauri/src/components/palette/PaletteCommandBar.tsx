@@ -14,6 +14,7 @@ interface PaletteCommandBarProps {
   config: PaletteConfig | null;
   endpointLabel: string;
   endpointTone: EndpointTone;
+  endpointMessage: string;
   hasQuery: boolean;
   listboxOpen: boolean;
   modeAction: LauncherEntry | null;
@@ -32,16 +33,13 @@ interface PaletteCommandBarProps {
   onToggleSettings: () => void;
 }
 
-function endpointStatusLabel(endpointLabel: string, endpointTone: EndpointTone): string {
-  return `Server: ${endpointLabel}; status: ${endpointTone}`;
-}
-
 export function PaletteCommandBar({
   active,
   activeDescendantId,
   config,
   endpointLabel,
   endpointTone,
+  endpointMessage,
   hasQuery,
   listboxOpen,
   modeAction,
@@ -94,10 +92,11 @@ export function PaletteCommandBar({
         aria-label="Reset Labby palette"
       >
         <span className="axon-word">Labby</span>
-        <span className={`axon-status-dot axon-status-${endpointTone}`}>
-          <span className="sr-only">{endpointStatusLabel(endpointLabel, endpointTone)}</span>
-        </span>
+        <span className={`axon-status-dot axon-status-${endpointTone}`} aria-hidden="true" />
       </Button>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {endpointMessage}
+      </span>
       <span className="axon-divider" aria-hidden="true" />
       {/* biome-ignore lint/a11y/noStaticElementInteractions: click-to-focus convenience; the real control is the command input within */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users focus the input directly; this wrapper only expands the pointer target */}

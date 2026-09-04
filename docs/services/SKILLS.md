@@ -1,18 +1,21 @@
 ---
-title: "Skills And Skill Library"
+title: "Artifacts And Agent Skills"
 created: "2026-08-26"
-updated: "2026-08-26"
+updated: "2026-09-03"
 ---
 
-# Skills And Skill Library
+# Artifacts And Agent Skills
 
-The `skills` service combines three related surfaces:
+Labby models a Skill as one kind of durable Artifact. The product boundary has
+two related surfaces:
 
 - native SEP-2640 `skills/list` and `skills/get`, plus manifest-bound
   `resources/read`;
-- the read-only compatibility actions `skills.list`, `skills.get`, and
-  `skills.read`;
-- an authenticated MCP App and management actions under `skill_library.*`.
+- an authenticated MCP App and lifecycle actions under `artifacts.*`.
+
+There are no `skills.*` or `skill_library.*` management aliases. The native
+`skills/list` and `skills/get` names remain because they are the Agent Skills
+protocol, not a second Labby storage namespace.
 
 The native extension contract is pinned and documented in
 [Skills extension](../contracts/skills-extension.md). This document owns the
@@ -31,13 +34,13 @@ Labby keeps four facts separate:
 Create, save, and import store a revision but never activate it. Activate and
 rollback publish an exact revision as a new generation. Deactivate removes a
 Skill from the active generation without deleting its revisions. Archive is a
-destructive catalog operation, but retains immutable revision storage for the
-owner or an administrator.
+recoverable catalog state transition and retains immutable revision storage for
+the owner or an administrator.
 
 Every successful mutation returns the committed and published library versions,
 generation facts, the library digest, and explicit re-list guidance. Labby does
 not emit a Skills-specific `list_changed` notification; clients re-run
-`skills.list` or native `skills/list`.
+`artifacts.list` or native `skills/list`.
 
 ## Library Actions
 
@@ -45,26 +48,28 @@ The canonical action catalog is generated from code. The lifecycle groups are:
 
 | Group | Actions | Contract |
 | --- | --- | --- |
-| Browse | `skill_library.list`, `.get`, `.history`, `.read` | Versioned, bounded, caller-filtered metadata; only `.read` returns one manifest-bound file body |
-| Author | `skill_library.validate`, `.create`, `.save` | Logical UTF-8 files; validation is side-effect free; create/save do not activate |
-| Publish | `skill_library.activate`, `.deactivate`, `.rollback`, `.refresh` | Exact revision and optimistic library-version preconditions; publication is atomic |
-| Acquire | `skill_library.import` | Exact immutable Depot or repository selector through a server-configured connection; no caller-supplied endpoint, path, bytes, or credential |
-| Retire | `skill_library.archive` | Hides the record from other readers while retaining immutable owner/admin history |
+| Browse | `artifacts.search`, `.list`, `.get`, `.history`, `.read` | Versioned, bounded, caller-filtered metadata; only `.read` returns one manifest-bound file body |
+| Author | `artifacts.validate`, `.create`, `.save` | Logical UTF-8 files; validation is side-effect free; create/save do not activate |
+| Publish | `artifacts.activate`, `.deactivate`, `.rollback`, `.refresh` | Exact revision and optimistic library-version preconditions; publication is atomic |
+| Acquire | `artifacts.import`, `.import_batch` | Exact immutable selectors through server-configured connections; no caller-supplied endpoint, path, bytes, or credential |
+| Remote discovery | `artifacts.search_remote`, `.list_remote`, `.get_remote`, `.list_candidates`, `.search_skills_sh`, `.search_ard`, `.search_marketplace`, `.list_mcp_registry`, `.list_acp_registry`, `.authority_status` | Provider-neutral views over configured and public discovery authorities |
+| Remote lifecycle | `artifacts.intake_candidate`, `.follow`, `.fork`, `.set_publication`, `.set_license` | Candidate evidence, lineage, publication, redistribution, and takedown policy remain enforced by the remote authority |
+| Retire | `artifacts.archive` | Hides the record from other readers while retaining immutable owner/admin history |
 
 Mutation requests carry an `expected_library_version` and a bounded
 `idempotency_key`. Revision-sensitive operations also carry an
 `expected_revision_id`. Stale editors and conflicting replays fail closed rather
 than silently overwriting current state.
 
-The MCP App presents the same actions through the existing `skills` tool. It is
+The MCP App presents these actions through the `artifacts` tool. It is
 a compact conversation card with an expandable, multi-file authoring view. Host
 callbacks are the only data path: the app does not fetch arbitrary endpoints,
 read local files, store credentials, or decide authorization.
 
 ## Visibility And Authorization
 
-New entries are `private` by default for backward compatibility; an authorized
-creator may explicitly choose `shared`.
+New entries are `private` by default; an authorized creator may explicitly
+choose `shared`.
 
 - Private Skills are discoverable and readable only by their owner and current
   administrators.
@@ -102,18 +107,75 @@ library; neither is a runtime dependency for serving an already imported Skill.
 Imports select one exact remote Artifact and revision via a named, server-owned
 connection and do not implicitly activate the result.
 
+For the concrete Depot/notification-Worker connection, request shape, bearer
+placement, and address-pinning requirements, see
+[Runtime Configuration](../runtime/CONFIG.md#durable-depot-skill-imports).
+
 Operator directory Skills under `$LABBY_HOME/skills` coexist with managed
 Artifacts. Active first-party names are globally unique in Labby's
 `skill://labby/...` namespace; a conflicting activation has exactly one winner.
+
+The remote control plane extends `artifacts.*` and exposes four supporting
+service families:
+
+- `sources.*` controls persisted, refreshable ingestion sources;
+- `jobs.*` starts and observes durable repository, registry, MCP, marketplace,
+  and archive ingestion;
+- `uploads.*` creates and inspects short-lived upload slots, while raw bytes use
+  the bounded authenticated `PUT /v1/uploads/{id}` route;
+- `bundles.*` curates and publishes immutable Artifact collections.
+
+These are fixed Labby actions mapped to a server-held authority. Callers cannot
+select arbitrary provider operations, endpoints, headers, or credentials.
+Depot's token administration, maintenance/garbage collection, sidecar repair,
+and capacity benchmark operations stay authority-internal and are not projected
+through Labby. Direct provider `skills.*` read/ingest methods are likewise not
+forwarded: Labby uses native Agent Skills reads, local Artifact lifecycle
+actions, and durable `jobs.start` ingestion instead.
+
+One Depot connection can provide exact acquisition and the remote control plane,
+but those URLs are separate contracts:
+
+```toml
+[[artifacts.sources]]
+id = "primary"
+kind = "depot"
+endpoint = "https://depot.example/v1/artifacts/exact"
+control_plane_url = "https://depot.example"
+pinned_addresses = ["93.184.216.34"]
+bearer_token_env = "LABBY_DEPOT_TOKEN"
+```
+
+`endpoint` receives the exact-revision acquisition request used by local import.
+`control_plane_url` must be a path-free public HTTPS origin; Labby appends only
+its sealed operation and upload paths. Every resolved address is operator-pinned
+and public, redirects are disabled, and `bearer_token_env` names a server-side
+environment variable rather than containing a secret.
+
+## Remote Metadata Boundary
+
+Depot retains the complete authority record. Labby passes the operator-facing
+subset through after redaction: stable identity, kind, descriptive fields,
+revision and content digests, license and publication state, source refresh
+state, job progress, upload state, bundle membership, drift, pagination, and
+timestamps. On import, Labby's local Artifact Library persists the immutable
+revision contents and its smaller source-provenance projection.
+
+The provider adapter removes authorization values, bearer/access tokens,
+credential fields, raw internal errors, stack traces, internal implementation
+state, and operator-only notes recursively before a result reaches API, MCP, or
+the WebUI. Provider errors are normalized to Labby's stable error taxonomy; raw
+provider error bodies are not returned to callers. Successful provider results
+are passed through after recursive sensitive-field redaction.
 
 ## Limits And Reading
 
 Library pages default to 50 entries and accept at most 100. Cursors and
 idempotency keys are bounded. History is metadata-only and newest-first; use
-`skill_library.read` with an exact Artifact, revision, and manifest path for
+`artifacts.read` with an exact Artifact, revision, and manifest path for
 content.
 
-Native and compatibility consumers read the same immutable published snapshot.
+Native Skill consumers read the same immutable published snapshot.
 A reader that began against generation N remains pinned to N while a refresh
 publishes N+1, so a manifest and its bytes cannot be mixed across generations.
 
@@ -125,7 +187,6 @@ For a release touching the library, prove each boundary independently:
 - materialization and manifest digests;
 - activation and committed/published library versions;
 - native `skills/list`, `skills/get`, and `resources/read`;
-- compatibility `skills.list`, `skills.get`, and `skills.read`;
 - restart reconstruction, authorization/non-enumeration, failed-refresh
   rollback, collision handling, and source-offline local serving;
 - MCP App console, network, CSP, accessibility, desktop, and mobile behavior.

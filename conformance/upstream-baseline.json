@@ -17,13 +17,12 @@
     "version": "0.2.0-alpha.9"
   },
   "skills_extension": {
-    "repository": "modelcontextprotocol/experimental-ext-skills",
-    "ref": "main",
-    "commit": "9f55cd349932ba00fc18402873c9eb2d2c2e78cb",
+    "repository": "modelcontextprotocol/modelcontextprotocol",
+    "ref": "sep/skills-extension",
+    "commit": "d6b31a03504c15677d49b922b6b6ace0ef65728d",
     "contract": "docs/contracts/skills-extension.md",
     "watched_paths": [
-      "docs/sep-draft-skills-extension.md",
-      "docs/threat-model.md"
+      "docs/seps/2640-skills-extension.mdx"
     ]
   }
 }

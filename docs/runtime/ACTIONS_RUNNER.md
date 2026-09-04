@@ -1,151 +1,54 @@
 ---
-title: "GitHub Actions Self-Hosted Runner Setup"
+title: "GitHub Actions Hosted Runner Guide"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-03"
 ---
 
-# GitHub Actions Self-Hosted Runner Setup
+# GitHub Actions Hosted Runner Guide
 
-Last updated: 2026-06-27
+Last updated: 2026-09-03
 
-## Linux self-hosted runner (`linux-lab`) on controller
+## Runner selection
 
-CI now runs the full Linux `nextest` lane on a self-hosted runner with labels
-`self-hosted` and `linux-lab`.
+All repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04` runners.
+Native Windows checks use `windows-latest`. Release jobs use the native hosted
+runner for each supported target.
 
-Fork PRs remain on GitHub-hosted `ubuntu-latest` via `test-fork`.
+No repository-defined workflow uses a self-hosted runner or a custom runner
+label. The central fleet policy and repository contract are reusable workflow
+calls owned by the organization.
 
-### Runner target label
+## Rust cache behavior
 
-- `linux-lab` is recognized in `ci.yml` as the Linux CI label.
-- `linux-lab` is listed in `.github/actionlint.yaml` so actionlint accepts the
-  custom label.
+Rust jobs use `.github/actions/setup-rust-kache/action.yml`. The action installs
+the pinned Rust toolchain and Linux build dependencies, then selects the cache
+path for the current hosted runner:
 
-### Container setup (controller)
+- Jobs with the shared MinIO credentials and a writable hosted tool cache use
+  Kache.
+- Jobs without those credentials use the GitHub Actions Cargo cache.
+- Jobs without a usable cache run Cargo without a compiler wrapper.
 
-The runner runs as a Docker container on controller. Keep Compose files on the
-cache pool, not under `/opt`, because controller is Unraid and `/opt` does not
-survive reboot.
+The action does not depend on persistent host services or runner-local state.
+Each hosted runner receives a fresh job workspace.
 
-- Compose: `/mnt/cache/compose/actions-runner/lab/docker-compose.yml`
-- Startup script: `/mnt/cache/compose/actions-runner/lab/start.sh`
-- Runner state: `/mnt/cache/appdata/actions-runner/lab/`
+## Browser tests
 
-Runner state is on a dedicated ZFS dataset with a hard quota so CI artifacts
-cannot grow until they consume the whole Unraid cache pool:
+The Gateway Admin browser job installs Chromium during the job. It installs the
+required Ubuntu runtime libraries first, then verifies a real headless launch.
+The browser path is `/home/runner/.cache/ms-playwright` so installation and test
+execution use the same location.
 
-```bash
-zfs create -o mountpoint=/mnt/cache/appdata/actions-runner cache/appdata/actions-runner
-zfs create \
-  -o mountpoint=/mnt/cache/appdata/actions-runner/lab \
-  -o quota=60G \
-  cache/appdata/actions-runner/lab
-```
+## Validation
 
-If the runner exceeds the quota, jobs fail with disk-full errors inside the
-runner dataset instead of filling `/mnt/cache`.
-
-The container uses GitHub's official runner image and JIT registration. Store a
-repo-scoped PAT with runner admin permissions in
-`/mnt/cache/compose/actions-runner/lab/.env`:
+Run the same checks that CI runs before changing runner configuration:
 
 ```bash
-GITHUB_PAT=github_pat_or_gho_token_here
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+python3 -m unittest scripts/ci/test_windows_ci_policy.py
+cargo test -p labby --test ci_changed_paths --locked
+git diff --check
 ```
 
-Current Compose shape:
-
-```yaml
-services:
-  lab-linux-runner:
-    image: ghcr.io/actions/actions-runner:2.335.1
-    container_name: lab-linux-runner
-    restart: unless-stopped
-    working_dir: /home/runner
-    environment:
-      - RUNNER_REPO=dinglebear-ai/labby
-      - RUNNER_NAME=linux-ci-runner
-      - RUNNER_LABELS=linux-lab,self-hosted,linux,x64
-      - RUNNER_WORKDIR=/home/runner/_work
-      - RUNNER_URL=https://github.com/dinglebear-ai/labby
-      - RUNNER_USE_JIT=1
-      - TMPDIR=/tmp
-      - TMP=/tmp
-      - TEMP=/tmp
-      - RUNNER_TEMP=/home/runner/_work/_temp
-    env_file:
-      - .env
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /mnt/cache/appdata/actions-runner/lab/home:/home/runner
-      - /mnt/cache/appdata/actions-runner/lab/work:/home/runner/_work
-      - /mnt/cache/appdata/actions-runner/lab/tmp:/tmp
-      - /mnt/cache/compose/actions-runner/lab/start.sh:/start.sh:ro
-    command: ["/start.sh"]
-```
-
-Start or restart from the persistent Compose directory:
-
-```bash
-cd /mnt/cache/compose/actions-runner/lab
-docker compose up -d
-```
-
-The startup script removes stale same-name remote runners, generates a JIT
-config through GitHub's API, and runs `./run.sh --jitconfig ...`. It also keeps
-container temp usage cache-backed by bind-mounting container `/tmp` to
-`/mnt/cache/appdata/actions-runner/lab/tmp`, avoiding Unraid's RAM-backed host
-`/tmp`.
-
-The script prunes transient runner storage before each JIT registration:
-
-- `/tmp` direct children: removed every startup
-- `${RUNNER_WORKDIR}/_temp` direct children: removed every startup
-- old workspaces in `${RUNNER_WORKDIR}`: removed after
-  `RUNNER_WORK_RETENTION_DAYS` (default `7`)
-- `/home/runner/_diag` files: removed after `RUNNER_DIAG_RETENTION_DAYS`
-  (default `14`)
-- cargo registry cache files and cargo git checkouts: removed after
-  `RUNNER_CARGO_RETENTION_DAYS` (default `30`)
-
-The cache-backed temp directory must preserve normal `/tmp` semantics:
-
-```bash
-chmod 1777 /mnt/cache/appdata/actions-runner/lab/tmp
-```
-
-On startup, `start.sh` ensures the Linux build dependencies required by this
-Rust workspace are installed in the runner container:
-
-- `build-essential` for `cc`, `gcc`, `g++`, and libc headers
-- `pkg-config`
-- `cmake`
-- `clang` and `libclang-dev`
-- `nasm`
-
-### Validation
-
-```bash
-cd /mnt/cache/compose/actions-runner/lab
-docker compose logs -f
-docker exec lab-linux-runner df -h /tmp /home/runner /home/runner/_work
-docker exec lab-linux-runner sh -lc 'command -v cc pkg-config cmake clang nasm'
-zfs list -o name,mountpoint,quota,used,available cache/appdata/actions-runner/lab
-du -sh /mnt/cache/appdata/actions-runner/lab/*
-```
-
-From GitHub, confirm the runner is online with labels:
-
-- `self-hosted`
-- `linux-lab`
-
-### Notes
-
-- The runner uses JIT registration. If it goes offline, restart the Compose
-  service; `start.sh` removes the stale remote runner and registers a fresh one.
-- Do not bind-mount an empty directory over `/home/runner` without seeding the
-  runner image contents first; that hides `run.sh` and `config.sh`.
-- Keep this runner label in `.github/actionlint.yaml` and in `ci.yml` whenever
-  labels change.
-- If you want strict hardening, add container resource limits and restart policy
-  controls in a systemd unit wrapping Compose.
+Do not add a custom runner label. Use a GitHub-hosted runner label that matches
+the target operating system and architecture.

@@ -1,4 +1,4 @@
-import { getSessionCsrfToken } from '../auth/session.ts'
+import { getSessionCsrfToken, getSessionProjectId } from '../auth/session.ts'
 
 export function gatewayHeaders(
   _token?: string,
@@ -12,6 +12,10 @@ export function gatewayHeaders(
   const csrfToken = getSessionCsrfToken()
   if (csrfToken) {
     headers['x-csrf-token'] = csrfToken
+  }
+  const projectId = getSessionProjectId()
+  if (projectId) {
+    headers['x-labby-project-id'] = projectId
   }
   return headers
 }

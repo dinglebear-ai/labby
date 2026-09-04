@@ -41,13 +41,15 @@ struct CliActionCase {
 #[tokio::test]
 async fn every_cli_action_evidence_comes_from_its_compiled_binding() {
     tokio::time::timeout(MATRIX_DEADLINE, async {
-        let cases = cli_action_cases();
-        let authoritative = action_matrix::intents()
-            .iter()
+        let authoritative = action_matrix::compiled_intents()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Cli))
             .map(action_matrix::CaseIntent::key)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(cases.len(), action_matrix::EXPECTED_CLI_ACTIONS);
+        let cases = cli_action_cases()
+            .into_iter()
+            .filter(|case| authoritative.contains(case.key))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(cases.len(), authoritative.len());
         assert_eq!(
             cases
                 .iter()
@@ -146,8 +148,10 @@ fn record_asserted_cli_result((case, output): (CliActionCase, std::process::Outp
         let error_kind = body["error"]["kind"]
             .as_str()
             .unwrap_or_else(|| panic!("{} error omitted error.kind", case.key));
-        let outcome_kind = action_scenarios::dedicated_contract_reason(case.key)
-            .filter(|_| action_scenarios::dedicated_contract_accepts(case.key, error_kind))
+        let outcome_kind = action_scenarios::dedicated_contract_reason_for(case.key, Surface::Cli)
+            .filter(|_| {
+                action_scenarios::dedicated_contract_accepts_for(case.key, Surface::Cli, error_kind)
+            })
             .map_or_else(
                 || format!("compiled_cli_error:{error_kind}"),
                 |reason| format!("dedicated_contract:{reason}:{error_kind}"),
@@ -177,6 +181,7 @@ fn validated_nonzero_domain_result(key: &str, body: &serde_json::Value) -> bool 
         "doctor:system.checks" => validated_findings_for_services(body, &["lab", "system"]),
         "doctor:auth.check" => validated_doctor_findings(body, "auth", "auth:"),
         "doctor:oauth.relay.check" => validated_doctor_findings(body, "oauth_relay", "registry:"),
+        "doctor:proxy.preflight" => validated_doctor_findings(body, "proxy", "proxy:"),
         _ => false,
     }
 }
@@ -244,6 +249,18 @@ fn nonzero_cli_domain_results_require_an_exact_action_schema() {
         }]
     });
     assert!(validated_nonzero_domain_result("doctor:auth.check", &valid));
+    let proxy = serde_json::json!({
+        "findings": [{
+            "service": "proxy",
+            "check": "proxy:config",
+            "severity": "fail",
+            "message": "proxy configuration is unavailable"
+        }]
+    });
+    assert!(validated_nonzero_domain_result(
+        "doctor:proxy.preflight",
+        &proxy
+    ));
     assert!(!validated_nonzero_domain_result(
         "doctor:system.checks",
         &valid
@@ -660,22 +677,6 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         ),
         ("setup:state", &["setup", "--json"]),
         (
-            "skills:skills.get",
-            &["skills", "get", "lab://skills/missing", "--json"],
-        ),
-        (
-            "skills:skills.list",
-            &["skills", "list", "--limit", "1", "--json"],
-        ),
-        (
-            "skills:skills.read",
-            &["skills", "read", "lab://skills/missing/SKILL.md", "--json"],
-        ),
-        (
-            "skills:skills.search",
-            &["skills", "search", MISSING, "--limit", "1", "--json"],
-        ),
-        (
             "snippets:snippets.create",
             &["snippets", "create", MISSING, "--json"],
         ),
@@ -823,7 +824,13 @@ fn mutation_capable_cli_services_are_explicit_and_disposable() {
     let fixtures = action_scenarios::fixtures();
     let mutable = fixtures
         .values()
-        .filter(|fixture| fixture.can_mutate)
+        .filter(|fixture| {
+            fixture.can_mutate
+                && action_matrix::intents().iter().any(|intent| {
+                    intent.service == fixture.service
+                        && intent.applicable_surfaces.contains(&Surface::Cli)
+                })
+        })
         .map(|fixture| fixture.service.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
@@ -834,7 +841,11 @@ fn mutation_capable_cli_services_are_explicit_and_disposable() {
         .iter()
         .map(action_matrix::CaseIntent::key)
         .collect::<std::collections::BTreeSet<_>>();
-    for fixture in fixtures.values() {
+    for fixture in fixtures.values().filter(|fixture| {
+        action_matrix::intents().iter().any(|intent| {
+            intent.service == fixture.service && intent.applicable_surfaces.contains(&Surface::Cli)
+        })
+    }) {
         for action in [
             Some(&fixture.success_action),
             Some(&fixture.invalid_action),

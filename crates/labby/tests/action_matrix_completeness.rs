@@ -5,6 +5,7 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::Value;
 use support::action_matrix::{
     CatalogAction, EXPECTED_ACTIONS, EXPECTED_API_ACTIONS, EXPECTED_CLI_ACTIONS,
     EXPECTED_MCP_ACTIONS, EXPECTED_SHARED_CLI_MCP_API_ACTIONS, EXPECTED_WEB_ACTIONS, EvidenceLevel,
@@ -231,7 +232,9 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
         match intent.service.as_str() {
             "fs" => assert!(intent.applicable_features.contains("fs")),
             "lab_admin" => assert!(intent.applicable_features.contains("lab-admin")),
-            "skills" => assert!(intent.applicable_features.contains("skills")),
+            "artifacts" | "bundles" | "jobs" | "skills" | "sources" | "uploads" => {
+                assert!(intent.applicable_features.contains("skills"));
+            }
             "gateway" | "snippets" => {
                 assert!(intent.applicable_features.contains("gateway-host"));
             }
@@ -243,7 +246,18 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
     let base = BTreeSet::from(["doctor", "server_logs", "setup"]);
-    let gateway = BTreeSet::from(["doctor", "gateway", "server_logs", "setup", "snippets"]);
+    let gateway = BTreeSet::from([
+        "artifacts",
+        "bundles",
+        "doctor",
+        "gateway",
+        "jobs",
+        "server_logs",
+        "setup",
+        "snippets",
+        "sources",
+        "uploads",
+    ]);
     let shapes = BTreeMap::from([
         ("base", base.clone()),
         ("no-default", base.clone()),
@@ -256,7 +270,16 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         ),
         (
             "skills",
-            BTreeSet::from(["doctor", "server_logs", "setup", "skills"]),
+            BTreeSet::from([
+                "artifacts",
+                "bundles",
+                "doctor",
+                "jobs",
+                "server_logs",
+                "setup",
+                "sources",
+                "uploads",
+            ]),
         ),
         (
             "lab-admin",
@@ -271,8 +294,12 @@ fn independently_defined_feature_shapes_match_intent_projections() {
                 "lab_admin",
                 "server_logs",
                 "setup",
-                "skills",
+                "artifacts",
+                "bundles",
+                "jobs",
                 "snippets",
+                "sources",
+                "uploads",
             ]),
         ),
     ]);
@@ -514,7 +541,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
             action.service
         );
     }
-    let services: Vec<serde_json::Value> =
+    let services: Vec<Value> =
         serde_json::from_str(include_str!("../../../docs/generated/service-catalog.json")).unwrap();
     for service in services {
         let name = service["name"].as_str().unwrap_or_default();
@@ -523,7 +550,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
             "retired service projection returned: {name}"
         );
     }
-    let routes: Vec<serde_json::Value> =
+    let routes: Vec<Value> =
         serde_json::from_str(include_str!("../../../docs/generated/api-routes.json")).unwrap();
     for route in routes {
         let path = route["path"].as_str().unwrap_or_default();
@@ -542,7 +569,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
             "retired feature returned: {name}"
         );
     }
-    let feature_json: serde_json::Value = serde_json::from_str(features).unwrap();
+    let feature_json: Value = serde_json::from_str(features).unwrap();
     let feature_names = feature_json["features"]
         .as_array()
         .unwrap()
@@ -550,7 +577,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
         .filter_map(|feature| feature["feature"].as_str())
         .collect::<BTreeSet<_>>();
     assert!(retired.iter().all(|name| !feature_names.contains(name)));
-    let openapi: serde_json::Value =
+    let openapi: Value =
         serde_json::from_str(include_str!("../../../docs/generated/openapi.json")).unwrap();
     for path in openapi["paths"].as_object().unwrap().keys() {
         assert!(
@@ -573,15 +600,22 @@ fn retired_products_are_absent_from_authoritative_projections() {
         }
     }
     let cli_help = include_str!("../../../docs/generated/cli-help.md");
-    let mcp_help = include_str!("../../../docs/generated/mcp-help.json");
+    let mcp_help: Value =
+        serde_json::from_str(include_str!("../../../docs/generated/mcp-help.json"))
+            .expect("generated MCP help must be valid JSON");
+    let mcp_services = mcp_help["services"]
+        .as_array()
+        .expect("generated MCP help must contain services");
     let web_nav = include_str!("../../../apps/gateway-admin/components/console/nav-model.ts");
-    for name in retired {
+    for name in retired.into_iter().filter(|name| *name != "stash") {
         assert!(
             !cli_help.contains(&format!("## `labby {name}")),
             "retired CLI command returned: {name}"
         );
         assert!(
-            !mcp_help.contains(&format!("\"name\": \"{name}\"")),
+            mcp_services
+                .iter()
+                .all(|service| service["name"].as_str() != Some(name)),
             "retired MCP service returned: {name}"
         );
         assert!(

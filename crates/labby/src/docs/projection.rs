@@ -782,7 +782,10 @@ pub(super) fn service_surfaces(service: &str) -> SurfaceAvailability {
         cli: service != "fs",
         mcp: true,
         api: service != "lab_admin",
-        web_ui: matches!(service, "gateway" | "setup" | "fs"),
+        web_ui: matches!(
+            service,
+            "gateway" | "setup" | "fs" | "artifacts" | "sources" | "jobs" | "uploads" | "bundles"
+        ),
     }
 }
 

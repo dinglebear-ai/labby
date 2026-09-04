@@ -1,7 +1,9 @@
 //! Shared HTTP client — thin reqwest wrapper with auth injection and JSON helpers.
 
+use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt as _;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::{Client, RequestBuilder, Response, Url};
 use tracing::{Level, event};
@@ -142,6 +144,67 @@ impl HttpClient {
         Ok(Self::from_parts(base_url, auth, inner))
     }
 
+    /// Construct a client whose configured origin resolves only to the supplied
+    /// operator-approved addresses.
+    ///
+    /// This prevents a validated remote authority from being redirected by a
+    /// later DNS lookup. The caller remains responsible for rejecting private
+    /// or otherwise disallowed addresses before construction.
+    ///
+    /// # Errors
+    /// Returns [`ApiError::Internal`] for an invalid base URL, missing host,
+    /// empty pin set, or HTTP client construction failure.
+    pub fn with_pinned_addresses(
+        base_url: impl Into<String>,
+        auth: Auth,
+        pinned_addresses: impl IntoIterator<Item = IpAddr>,
+    ) -> Result<Self, ApiError> {
+        Self::with_pinned_addresses_and_headers(
+            base_url,
+            auth,
+            pinned_addresses,
+            reqwest::header::HeaderMap::new(),
+        )
+    }
+
+    /// Construct a DNS-pinned client with additional server-owned headers.
+    pub fn with_pinned_addresses_and_headers(
+        base_url: impl Into<String>,
+        auth: Auth,
+        pinned_addresses: impl IntoIterator<Item = IpAddr>,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<Self, ApiError> {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let base_url = base_url.into();
+        let parsed = Url::parse(&base_url)
+            .map_err(|_| ApiError::Internal("invalid pinned base URL".to_owned()))?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| ApiError::Internal("pinned base URL has no host".to_owned()))?;
+        let port = parsed.port_or_known_default().ok_or_else(|| {
+            ApiError::Internal("pinned base URL has no resolvable port".to_owned())
+        })?;
+        let addresses = pinned_addresses
+            .into_iter()
+            .map(|address| SocketAddr::new(address, port))
+            .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            return Err(ApiError::Internal(
+                "pinned base URL requires at least one address".to_owned(),
+            ));
+        }
+        let inner = Client::builder()
+            .user_agent(concat!("labby-apis/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(host, &addresses)
+            .default_headers(headers)
+            .build()
+            .map_err(|e| ApiError::Internal(format!("reqwest::Client::build: {e}")))?;
+        Ok(Self::from_parts(base_url, auth, inner))
+    }
+
     /// Base URL this client targets.
     #[must_use]
     pub fn base_url(&self) -> &str {
@@ -224,6 +287,21 @@ impl HttpClient {
         Self::decode(resp, &ctx).await
     }
 
+    /// GET a path and decode a response body that may not exceed `max_bytes`.
+    pub async fn get_json_bounded<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        max_bytes: usize,
+    ) -> Result<T, ApiError> {
+        let url = Url::parse(&self.url(path)?)
+            .map_err(|e| ApiError::Internal(format!("invalid url: {e}")))?;
+        let ctx = RequestLogContext::new("GET", &url);
+        let resp = self
+            .send(self.apply_auth(self.inner.get(url.clone())), &ctx)
+            .await?;
+        Self::decode_bounded(resp, &ctx, max_bytes).await
+    }
+
     /// GET a path with query parameters and decode JSON.
     ///
     /// # Errors
@@ -271,6 +349,25 @@ impl HttpClient {
         Self::decode(resp, &ctx).await
     }
 
+    /// POST JSON and decode a response body that may not exceed `max_bytes`.
+    pub async fn post_json_bounded<B: serde::Serialize + Sync, T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+        max_bytes: usize,
+    ) -> Result<T, ApiError> {
+        let url = Url::parse(&self.url(path)?)
+            .map_err(|e| ApiError::Internal(format!("invalid url: {e}")))?;
+        let ctx = RequestLogContext::new("POST", &url);
+        let resp = self
+            .send(
+                self.apply_auth(self.inner.post(url.clone()).json(body)),
+                &ctx,
+            )
+            .await?;
+        Self::decode_bounded(resp, &ctx, max_bytes).await
+    }
+
     /// PUT a JSON body and decode the JSON response.
     ///
     /// # Errors
@@ -290,6 +387,83 @@ impl HttpClient {
             )
             .await?;
         Self::decode(resp, &ctx).await
+    }
+
+    /// PUT bounded opaque bytes and decode the JSON response.
+    ///
+    /// The caller owns the byte budget. This helper preserves server-held auth
+    /// and never logs the body or content-type value.
+    pub async fn put_bytes<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<T, ApiError> {
+        let url = Url::parse(&self.url(path)?)
+            .map_err(|e| ApiError::Internal(format!("invalid url: {e}")))?;
+        let ctx = RequestLogContext::new("PUT", &url);
+        let resp = self
+            .send(
+                self.apply_auth(
+                    self.inner
+                        .put(url.clone())
+                        .header(reqwest::header::CONTENT_TYPE, content_type)
+                        .header(reqwest::header::CONTENT_LENGTH, bytes.len())
+                        .body(bytes),
+                ),
+                &ctx,
+            )
+            .await?;
+        Self::decode(resp, &ctx).await
+    }
+
+    /// PUT opaque bytes and decode a response body that may not exceed `max_response_bytes`.
+    pub async fn put_bytes_bounded<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        content_type: &str,
+        max_response_bytes: usize,
+    ) -> Result<T, ApiError> {
+        let url = Url::parse(&self.url(path)?)
+            .map_err(|e| ApiError::Internal(format!("invalid url: {e}")))?;
+        let ctx = RequestLogContext::new("PUT", &url);
+        let resp = self
+            .send(
+                self.apply_auth(
+                    self.inner
+                        .put(url.clone())
+                        .header(reqwest::header::CONTENT_TYPE, content_type)
+                        .header(reqwest::header::CONTENT_LENGTH, bytes.len())
+                        .body(bytes),
+                ),
+                &ctx,
+            )
+            .await?;
+        Self::decode_bounded(resp, &ctx, max_response_bytes).await
+    }
+
+    /// PUT an already-owned request body without copying it and decode a bounded JSON response.
+    pub async fn put_body_bounded<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: reqwest::Body,
+        content_length: Option<u64>,
+        content_type: &str,
+        max_response_bytes: usize,
+    ) -> Result<T, ApiError> {
+        let url = Url::parse(&self.url(path)?)
+            .map_err(|e| ApiError::Internal(format!("invalid url: {e}")))?;
+        let ctx = RequestLogContext::new("PUT", &url);
+        let mut request = self
+            .inner
+            .put(url.clone())
+            .header(reqwest::header::CONTENT_TYPE, content_type);
+        if let Some(content_length) = content_length {
+            request = request.header(reqwest::header::CONTENT_LENGTH, content_length);
+        }
+        let resp = self.send(self.apply_auth(request.body(body)), &ctx).await?;
+        Self::decode_bounded(resp, &ctx, max_response_bytes).await
     }
 
     /// PATCH a JSON body and decode the JSON response.
@@ -645,7 +819,11 @@ impl HttpClient {
     fn error_for_status(code: u16, body: String) -> ApiError {
         match code {
             401 | 403 => ApiError::Auth,
-            404 => ApiError::NotFound,
+            404 | 410 => ApiError::NotFound,
+            400 | 413 | 422 => ApiError::Validation {
+                field: "request".to_owned(),
+                message: body,
+            },
             429 => ApiError::RateLimited { retry_after: None },
             _ => ApiError::Server { status: code, body },
         }
@@ -692,6 +870,55 @@ impl HttpClient {
         let err = Self::error_for_status(code, body);
         Self::log_error(ctx, &err);
         Err(err)
+    }
+
+    async fn decode_bounded<T: serde::de::DeserializeOwned>(
+        resp: Response,
+        ctx: &RequestLogContext,
+        max_bytes: usize,
+    ) -> Result<T, ApiError> {
+        let status = resp.status();
+        if resp
+            .content_length()
+            .is_some_and(|length| length > max_bytes as u64)
+        {
+            let error =
+                ApiError::Decode(format!("response body exceeds the {max_bytes} byte limit"));
+            Self::log_error(ctx, &error);
+            return Err(error);
+        }
+        let mut stream = resp.bytes_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| {
+                let error = ApiError::Decode(error.to_string());
+                Self::log_error(ctx, &error);
+                error
+            })?;
+            if body.len().saturating_add(chunk.len()) > max_bytes {
+                let error =
+                    ApiError::Decode(format!("response body exceeds the {max_bytes} byte limit"));
+                Self::log_error(ctx, &error);
+                return Err(error);
+            }
+            body.extend_from_slice(&chunk);
+        }
+        if status.is_success() {
+            let decoded =
+                serde_json::from_slice(&body).map_err(|error| ApiError::Decode(error.to_string()));
+            match &decoded {
+                Ok(_) => Self::log_finish(ctx, status.as_u16()),
+                Err(error) => Self::log_error(ctx, error),
+            }
+            decoded
+        } else {
+            let error = Self::error_for_status(
+                status.as_u16(),
+                String::from_utf8_lossy(&body).into_owned(),
+            );
+            Self::log_error(ctx, &error);
+            Err(error)
+        }
     }
 
     async fn send(
@@ -764,7 +991,6 @@ impl HttpClient {
                 elapsed_ms = ctx.elapsed_ms(),
                 status,
                 kind = err.kind(),
-                message = %err,
                 "request.error"
             ),
             ApiError::Auth
@@ -781,7 +1007,6 @@ impl HttpClient {
                 elapsed_ms = ctx.elapsed_ms(),
                 status,
                 kind = err.kind(),
-                message = %err,
                 "request.error"
             ),
         }
@@ -790,11 +1015,71 @@ impl HttpClient {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io,
+        sync::{Arc, Mutex},
+    };
+
     use super::*;
     use crate::core::auth::Auth;
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::fmt::MakeWriter;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> MakeWriter<'a> for Capture {
+        type Writer = CaptureWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CaptureWriter(Arc::clone(&self.0))
+        }
+    }
+
+    impl io::Write for CaptureWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn make_client(base_url: &str) -> HttpClient {
         HttpClient::new(base_url, Auth::None).expect("client construction should succeed")
+    }
+
+    #[tokio::test]
+    async fn provider_error_body_is_not_written_to_request_logs() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("canary-provider-secret"))
+            .mount(&server)
+            .await;
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let client = make_client(&server.uri());
+
+        let result = client
+            .get_json::<serde_json::Value>("/failure")
+            .with_subscriber(dispatch)
+            .await;
+
+        assert!(result.is_err());
+        let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("request.error"));
+        assert!(logs.contains("kind="));
+        assert!(!logs.contains("canary-provider-secret"));
     }
 
     #[test]

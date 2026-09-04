@@ -11,10 +11,11 @@ import * as React from 'react'
  * shell exposes here — no per-page header markup, no state round-trips.
  */
 
-const SIDEBAR_STORAGE_KEY = 'labby-sidebar-collapsed'
+const SIDEBAR_STORAGE_KEY = 'labby-sidebar-collapsed-v2'
 
 type ConsoleShellContextValue = {
   collapsed: boolean
+  setSidebarCollapsed: (collapsed: boolean) => void
   toggleCollapsed: () => void
   crumbSlot: HTMLElement | null
   setCrumbSlot: (node: HTMLElement | null) => void
@@ -36,6 +37,8 @@ export function useOptionalConsoleShell() {
 }
 
 export function ConsoleShellProvider({ children }: { children: React.ReactNode }) {
+  // The product reference opens with the full workspace/navigation rail.
+  // A user's explicit compact-mode choice still wins.
   const [collapsed, setCollapsed] = React.useState(false)
   const [crumbSlot, setCrumbSlot] = React.useState<HTMLElement | null>(null)
   const [actionSlot, setActionSlot] = React.useState<HTMLElement | null>(null)
@@ -43,9 +46,10 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
   // Read persisted state after mount so SSR and first client paint agree.
   React.useEffect(() => {
     try {
-      setCollapsed(window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1')
+      const saved = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
+      setCollapsed(saved === null ? false : saved === '1')
     } catch {
-      /* storage unavailable — keep the expanded default */
+      /* storage unavailable — keep the compact default */
     }
   }, [])
 
@@ -64,6 +68,7 @@ export function ConsoleShellProvider({ children }: { children: React.ReactNode }
   const value = React.useMemo<ConsoleShellContextValue>(
     () => ({
       collapsed,
+      setSidebarCollapsed: setCollapsed,
       toggleCollapsed,
       crumbSlot,
       setCrumbSlot,

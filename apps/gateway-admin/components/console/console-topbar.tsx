@@ -4,6 +4,7 @@ import * as React from 'react'
 import { Bell, Search } from 'lucide-react'
 
 import { useConsoleShell } from '@/components/console/console-shell-context'
+import { AccountMenu } from '@/components/console/console-sidebar'
 import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 
 // Measured off the rendered mock, not inferred.
@@ -155,6 +156,7 @@ export function ConsoleTopbar() {
           gap: 5,
         }}
       />
+      <AccountMenu placement="topbar" />
     </header>
   )
 }
