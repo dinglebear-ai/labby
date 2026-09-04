@@ -486,7 +486,7 @@ Upstream responses are subject to a size cap to prevent oversized payloads from 
 
 | Setting | Default |
 |---------|---------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10 MB (10,485,760 bytes) |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 24 MiB (25,165,824 bytes) |
 
 The check is **post-hoc** — rmcp materializes the full response in memory before lab can inspect it. The cap prevents forwarding oversized payloads to callers but cannot prevent the memory allocation itself. A streaming limit would require rmcp transport-level support.
 
@@ -701,7 +701,7 @@ Then an MCP client connected to `lab` should see the upstream tools in `list_too
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 10485760 | Maximum response size from upstream servers. |
+| `LABBY_UPSTREAM_MAX_RESPONSE_BYTES` | 25165824 | Maximum response size from upstream servers. The default accommodates a 16 MiB SEP-2640 binary skill resource after base64 expansion. |
 | (per `bearer_token_env`) | — | Bearer token for each upstream, named in config. |
 
 ## Observability

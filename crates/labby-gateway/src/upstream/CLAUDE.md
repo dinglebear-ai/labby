@@ -93,7 +93,7 @@ follow-up splits. All new files added to `pool/` must stay under 500 LOC.
 | `MAX_REPROBE_INTERVAL` | 30 minutes | `types.rs` |
 | `DEFAULT_UPSTREAM_CALL_CONCURRENCY` | 8 per upstream | `pool/helpers.rs` |
 | `DISCOVERY_TIMEOUT` | 15 seconds | `pool/helpers.rs` |
-| `DEFAULT_MAX_RESPONSE_BYTES` | 10 MB | `pool/helpers.rs` |
+| `DEFAULT_MAX_RESPONSE_BYTES` | 24 MiB | `pool/helpers.rs` |
 
 ## Rules
 

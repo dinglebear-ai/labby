@@ -1570,7 +1570,15 @@ impl LabMcpServer {
                 elapsed_ms = start.elapsed().as_millis(),
                 "dispatch finish"
             );
-            let mut contents = ResourceContents::text(file.text, uri.clone());
+            let mut contents = if let Some(bytes) = file.blob {
+                use base64::Engine as _;
+                ResourceContents::blob(
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                    uri.clone(),
+                )
+            } else {
+                ResourceContents::text(file.text, uri.clone())
+            };
             if let Some(mime_type) = file.mime_type {
                 contents = contents.with_mime_type(mime_type);
             }

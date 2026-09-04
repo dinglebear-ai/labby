@@ -14,6 +14,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
 use labby_runtime::skills::{
@@ -40,7 +41,10 @@ fn skill_read_response_size(result: &rmcp::model::ReadResourceResult, content_ca
             text.len() > content_cap
         }
         rmcp::model::ResourceContents::BlobResourceContents { blob, .. } => {
-            blob.len() > content_cap
+            // Base64 expands the raw body. Bound the decoded size here so a
+            // conforming binary resource is not rejected merely because its
+            // wire representation is larger than its manifest `size`.
+            blob.len().div_ceil(4).saturating_mul(3) > content_cap
         }
         _ => false,
     });
@@ -614,7 +618,10 @@ impl UpstreamPool {
 /// published it.
 #[derive(Debug, Clone)]
 pub struct VerifiedSkillFile {
-    pub text: String,
+    /// Raw bytes covered by the manifest's `size` and `digest` fields.
+    pub bytes: Vec<u8>,
+    /// Whether the upstream represented these bytes as an MCP blob.
+    pub is_blob: bool,
     pub mime_type: Option<String>,
 }
 
@@ -810,21 +817,33 @@ impl UpstreamPool {
                 ),
             });
         };
-        let (text, mime_type) = match content {
+        let (bytes, is_blob, mime_type) = match content {
             rmcp::model::ResourceContents::TextResourceContents {
                 text, mime_type, ..
-            } => (text, mime_type),
-            // Anything else — a blob today, a new variant tomorrow — cannot be
-            // digest-verified as text, so it is refused rather than relayed.
+            } => (text.into_bytes(), false, mime_type),
+            rmcp::model::ResourceContents::BlobResourceContents {
+                blob, mime_type, ..
+            } => {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(blob)
+                    .map_err(|_| ToolError::Sdk {
+                        sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                        message: format!(
+                            "upstream `{}` returned malformed base64 for a skill resource",
+                            config.name
+                        ),
+                    })?;
+                (bytes, true, mime_type)
+            }
             _ => {
                 return Err(ToolError::Sdk {
                     sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
-                    message: "skill files are served as text; this content cannot be verified"
-                        .to_string(),
+                    message: "upstream returned an unsupported skill resource representation"
+                        .into(),
                 });
             }
         };
-        if max_bytes.is_some_and(|limit| text.len() > limit) {
+        if max_bytes.is_some_and(|limit| bytes.len() > limit) {
             return Err(ToolError::Sdk {
                 sdk_kind: "response_too_large".to_string(),
                 message: format!(
@@ -843,7 +862,24 @@ impl UpstreamPool {
                     config.name
                 ),
             })?;
-        if !parsed_digest.matches(text.as_bytes()) {
+        let declared_size = usize::try_from(resource.size).map_err(|_| ToolError::Sdk {
+            sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+            message: format!(
+                "manifest size for `{canonical_uri}` from upstream `{}` cannot be represented by this host",
+                config.name
+            ),
+        })?;
+        if bytes.len() != declared_size {
+            return Err(ToolError::Sdk {
+                sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                message: format!(
+                    "content of `{canonical_uri}` from upstream `{}` is {} bytes but its entry declared {declared_size}",
+                    config.name,
+                    bytes.len()
+                ),
+            });
+        }
+        if !parsed_digest.matches(&bytes) {
             // Zero bytes reach the caller. A digest match is a consistency
             // check, not proof of trustworthiness, but a mismatch is proof of
             // inconsistency and the content must not be used.
@@ -865,8 +901,24 @@ impl UpstreamPool {
         // That is threat-model T3, and only a field-by-field comparison of the
         // served bytes against the published entry catches it.
         if is_skill_md(&skill.entry.uri, &canonical_uri) {
+            if is_blob {
+                return Err(ToolError::Sdk {
+                    sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                    message: format!(
+                        "`SKILL.md` from upstream `{}` must be an MCP text resource",
+                        config.name
+                    ),
+                });
+            }
+            let text = std::str::from_utf8(&bytes).map_err(|_| ToolError::Sdk {
+                sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                message: format!(
+                    "`SKILL.md` from upstream `{}` is not UTF-8 text",
+                    config.name
+                ),
+            })?;
             let served =
-                labby_runtime::skills::parse_skill_md_frontmatter(&text).map_err(|error| {
+                labby_runtime::skills::parse_skill_md_frontmatter(text).map_err(|error| {
                     ToolError::Sdk {
                         sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
                         message: format!(
@@ -886,7 +938,11 @@ impl UpstreamPool {
             )?;
         }
 
-        Ok(VerifiedSkillFile { text, mime_type })
+        Ok(VerifiedSkillFile {
+            bytes,
+            is_blob,
+            mime_type,
+        })
     }
 }
 

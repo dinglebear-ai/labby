@@ -1,8 +1,8 @@
 //! Drift protection binding `docs/contracts/skills-extension.md` to the Rust
 //! definitions it documents.
 //!
-//! The contract doc is the vendored, pinned reading of an **unmerged** draft
-//! (SEP-2640). Its value depends entirely on the doc and the code saying the
+//! The contract doc is the pinned reading of accepted SEP-2640. Its value
+//! depends entirely on the doc and the code saying the
 //! same thing, so this test asserts the load-bearing facts appear in both: the
 //! pinned commit, the error-kind classifications, the budget values, and the
 //! wire constants.
@@ -22,9 +22,8 @@ use labby_runtime::skills::{
     SKILLS_LIST_METHOD, limits,
 };
 
-/// Mirror commit the contract is pinned to. Changing the pin means re-reading
-/// the draft, so it is asserted in both places deliberately.
-const PINNED_COMMIT: &str = "9f55cd349932ba00fc18402873c9eb2d2c2e78cb";
+/// Canonical accepted commit the contract is pinned to.
+const PINNED_COMMIT: &str = "d6b31a03504c15677d49b922b6b6ace0ef65728d";
 
 /// Branch the pinned revision lives on.
 const UPSTREAM_COMMIT: &str = "sep/skills-extension";
@@ -72,8 +71,8 @@ fn contract_pins_the_revision_the_code_was_written_against() {
         "contract must record upstream provenance {UPSTREAM_COMMIT}"
     );
     assert!(
-        text.contains("unmerged"),
-        "contract must state that the SEP is an unmerged draft"
+        text.contains("Status: accepted"),
+        "contract must state that the SEP is accepted"
     );
 }
 

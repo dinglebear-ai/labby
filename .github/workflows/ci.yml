@@ -651,7 +651,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slice: [gateway, fs]
+        slice: [gateway, gateway-host, integrated-gateway, fs, skills]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -699,6 +699,11 @@ jobs:
       - name: Run fs-slice proxy preflight regression
         if: matrix.slice == 'fs'
         run: cargo test -p labby --no-default-features --features fs --locked --test doctor_proxy_preflight
+      - name: Run standalone skills-slice regressions
+        if: matrix.slice == 'skills'
+        run: >-
+          cargo test -p labby --no-default-features --features skills --locked
+          mcp::skills
 
   extracted-crate-slices:
     name: Extracted crate slices
@@ -864,6 +869,12 @@ jobs:
         run: |
           cargo test -p labby --all-features --locked cli::serve::tests::http_mcp_
           cargo test -p labby --all-features --locked stateless_subscription_receives_catalog_notifications
+      - name: Accepted SEP-2640 server, client, and intermediary behavior
+        run: |
+          cargo test -p labby-runtime --all-features --locked --test skills_contract_conformance
+          cargo test -p labby-runtime --all-features --locked --test sep_2640_uri_conformance
+          cargo test -p labby-gateway --all-features --locked skills
+          cargo test -p labby --all-features --locked mcp::skills
 
   mcp-conformance:
     name: MCP 2026-07-28 conformance

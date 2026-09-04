@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "skills")]
 use std::time::Duration;
 
+use base64::Engine as _;
 use rmcp::model::{
     CustomRequest, CustomResult, ErrorCode, ErrorData, ServerCapabilities, ServerInfo,
 };
@@ -71,6 +72,20 @@ fn entry_with_supporting(origin: &str, name: &str) -> Value {
     })
 }
 
+fn entry_with_binary(origin: &str, name: &str, bytes: &[u8]) -> Value {
+    let uri = format!("skill://{origin}/{name}/SKILL.md");
+    let asset = format!("skill://{origin}/{name}/assets/example.png");
+    let body = skill_md_body(name);
+    json!({
+        "uri": uri,
+        "frontmatter": { "name": name, "description": "a test skill" },
+        "resources": [
+            { "uri": uri, "digest": ResourceDigest::of_bytes(body.as_bytes()).to_wire(), "size": body.len() },
+            { "uri": asset, "digest": ResourceDigest::of_bytes(bytes).to_wire(), "size": bytes.len() }
+        ]
+    })
+}
+
 /// A skills-capable upstream whose `skills/list` behavior is scripted per test.
 #[derive(Clone)]
 struct SkillsServer {
@@ -89,6 +104,7 @@ struct SkillsServer {
     /// whose frontmatter disagrees with the published entry while its digest
     /// still matches.
     forged_frontmatter: Option<String>,
+    binary_asset: Option<Vec<u8>>,
     stall_list: bool,
     stall_get: bool,
     stall_read: bool,
@@ -104,6 +120,7 @@ impl SkillsServer {
             declares_extension: true,
             tamper: false,
             forged_frontmatter: None,
+            binary_asset: None,
             stall_list: false,
             stall_get: false,
             stall_read: false,
@@ -123,6 +140,11 @@ impl SkillsServer {
     /// Serve a `SKILL.md` whose frontmatter differs from the published entry.
     fn serving_body(mut self, body: &str) -> Self {
         self.forged_frontmatter = Some(body.to_string());
+        self
+    }
+
+    fn serving_binary(mut self, bytes: &[u8]) -> Self {
+        self.binary_asset = Some(bytes.to_vec());
         self
     }
 
@@ -171,6 +193,17 @@ impl ServerHandler for SkillsServer {
     ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
         if self.stall_read {
             std::future::pending::<()>().await;
+        }
+        if request.uri.ends_with("/assets/example.png") {
+            let bytes = self.binary_asset.as_deref().unwrap_or_default();
+            return Ok(rmcp::model::ReadResourceResult::new(vec![
+                rmcp::model::ResourceContents::blob(
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                    request.uri.clone(),
+                )
+                .with_mime_type("image/png"),
+            ])
+            .into());
         }
         // The honest body's digest is what `entry()` publishes, so serving
         // anything else is a genuine mismatch a gateway must catch.
@@ -1419,7 +1452,48 @@ async fn a_proxied_skill_file_is_readable_and_digest_verified() {
         .read_proxied_skill_file(&config, None, "skill://up/alpha/SKILL.md")
         .await
         .expect("a listed skill file is readable through the gateway");
-    assert_eq!(verified.text, skill_md_body("alpha"));
+    assert_eq!(verified.bytes, skill_md_body("alpha").as_bytes());
+}
+
+#[tokio::test]
+async fn a_binary_skill_asset_is_decoded_size_checked_and_digest_verified() {
+    let bytes = b"\x89PNG\r\n\x1a\n\0binary";
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry_with_binary("up", "alpha", bytes)]
+    })])
+    .serving_binary(bytes);
+    let pool = catalog_pool_with_server("up", server).await;
+    let verified = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/assets/example.png",
+        )
+        .await
+        .expect("binary supporting assets are valid Agent Skill resources");
+    assert_eq!(verified.bytes, bytes);
+    assert!(verified.is_blob);
+    assert_eq!(verified.mime_type.as_deref(), Some("image/png"));
+}
+
+#[tokio::test]
+async fn a_resource_whose_raw_size_disagrees_with_its_manifest_is_refused() {
+    let mut listed = entry("up", "alpha");
+    listed["resources"][0]["size"] = json!(1);
+    let server = SkillsServer::new(vec![json!({ "skills": [listed] })]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let error = pool
+        .read_proxied_skill_file(
+            &skills_config("up", None),
+            None,
+            "skill://up/alpha/SKILL.md",
+        )
+        .await
+        .expect_err("manifest size is verified independently of its digest");
+    assert_eq!(
+        error.kind(),
+        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH
+    );
 }
 
 #[tokio::test]
@@ -1610,7 +1684,7 @@ async fn a_native_scheme_upstream_is_aggregated_not_silently_dropped() {
         )
         .await
         .expect("the native URI remains readable through its indexed binding");
-    assert_eq!(verified.text, body);
+    assert_eq!(verified.bytes, body.as_bytes());
 }
 
 #[tokio::test]

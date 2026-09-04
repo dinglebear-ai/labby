@@ -416,7 +416,7 @@ impl UpstreamPool {
     /// Call a tool on an upstream server.
     ///
     /// Returns `None` if the upstream is not connected or the tool is not found.
-    /// Enforces a response size cap (`LABBY_UPSTREAM_MAX_RESPONSE_BYTES`, default 10 MB).
+    /// Enforces a response size cap (`LABBY_UPSTREAM_MAX_RESPONSE_BYTES`, default 24 MiB).
     ///
     /// Cap layering by transport:
     /// - **HTTP non-OAuth**: cap is enforced at the rmcp transport layer by
@@ -969,8 +969,8 @@ mod tests {
                 _: CallToolRequestParams,
                 _: rmcp::service::RequestContext<RoleServer>,
             ) -> Result<CallToolResponse, ErrorData> {
-                // 12 MB of 'x' characters — well above the default 10 MB cap.
-                let payload = "x".repeat(12 * 1024 * 1024);
+                // 26 MiB of 'x' characters — above the default 24 MiB cap.
+                let payload = "x".repeat(26 * 1024 * 1024);
                 Ok(CallToolResult::success(vec![ContentBlock::text(payload)]).into())
             }
         }

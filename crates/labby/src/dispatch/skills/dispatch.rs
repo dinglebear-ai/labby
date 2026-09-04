@@ -133,13 +133,16 @@ async fn read(context: &SkillRegistryContext, params: Value) -> Result<Value, To
     let params = parse::<UriParams>(params)?;
     let uri = normalized_uri(params.uri)?;
     let file = read_visible_skill_file(context, &uri).await?;
+    let text = file.blob.is_none().then_some(file.text.as_str());
+    let blob = file.encoded_blob();
     Ok(json!({
         "uri": file.uri,
         "skill_uri": file.skill_uri,
         "origin": file.origin,
         "mime_type": file.mime_type,
         "digest": file.digest,
-        "text": file.text,
+        "text": text,
+        "blob": blob,
     }))
 }
 

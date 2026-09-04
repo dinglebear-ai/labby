@@ -99,8 +99,13 @@ pub(super) const SUBJECT_CONN_SWEEP_INTERVAL: Duration = SUBJECT_CONN_IDLE_TTL;
 /// are evicted (and shut down cleanly) down to the cap first.
 pub(super) const SUBJECT_CONN_MAX_ENTRIES: usize = 256;
 
-/// Default maximum response size from upstream servers (10 MB).
-pub(super) const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+/// Default maximum response size from upstream servers (24 MiB).
+///
+/// Accepted SEP-2640 requires clients to support a skill package up to 16 MiB.
+/// A single binary resource of that size expands to roughly 22.4 MiB when it is
+/// base64-encoded in an MCP JSON response, so the transport ceiling must leave
+/// room for that representation and its envelope.
+pub(super) const DEFAULT_MAX_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 
 pub(super) const IN_PROCESS_PEER_BUFFER_BYTES: usize = 256 * 1024;
 pub(super) const AUTH_FAILURE_REPROBE_ATTEMPT_FLOOR: u32 = 5;

@@ -124,11 +124,9 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
     spec_files = changed_files(spec_compare)
     rmcp_files = changed_files(rmcp_compare)
 
-    # SEP-2640 is an unmerged draft Labby implements against a pinned mirror
-    # commit. Only the normative documents count as drift: the mirror also
-    # carries working-group material (rationale, decision logs) that moves
-    # without changing what Labby implements, and treating those as drift would
-    # train people to ignore this report.
+    # SEP-2640 is accepted, but remains on its canonical SEP branch until it is
+    # folded into a dated specification release. Watch only the normative file;
+    # the ext-skills working-group repository is implementation guidance.
     skills = baseline.get("skills_extension")
     skills_head = None
     skills_files: list[str] = []
@@ -169,7 +167,7 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         f"| MCP spec `{spec['protocol_version']}` | `{spec['commit']}` | `{spec_head}` |",
         f"| rmcp `{rmcp['crate_version']}` | `{rmcp['commit']}` / `{rmcp['release_tag']}` | `{latest_commit}` / `{latest_tag}` |",
         *(
-            [f"| Skills extension (SEP-2640 draft) | `{skills['commit']}` | `{skills_head}` |"]
+            [f"| Skills extension (accepted SEP-2640) | `{skills['commit']}` | `{skills_head}` |"]
             if skills
             else []
         ),
@@ -184,10 +182,10 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         "",
         *(
             [
-                "### Skills extension (SEP-2640 draft)",
+                "### Skills extension (accepted SEP-2640)",
                 *([f"- `{path}`" for path in skills_files] or ["- None (normative documents unchanged)"]),
                 "",
-                "The skills draft is unmerged and Labby implements a pinned revision. When a",
+                "Labby implements the accepted SEP at a pinned canonical revision. When its",
                 f"normative document moves, re-read it, update `{skills['contract']}` and the",
                 "conformance fixtures it binds, then advance the baseline in the same PR.",
                 "",

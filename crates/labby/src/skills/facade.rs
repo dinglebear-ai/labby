@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use labby_runtime::artifacts::{LibraryActorId, LibraryTenantId, SkillVisibility};
 use labby_runtime::error::ToolError;
 use labby_runtime::skills::parse_skill_uri;
@@ -224,7 +225,18 @@ pub(crate) struct VisibleSkillFile {
     pub(crate) origin: String,
     pub(crate) digest: String,
     pub(crate) mime_type: Option<String>,
+    /// Populated for MCP text resources.
     pub(crate) text: String,
+    /// Populated for MCP blob resources. Text and blob are mutually exclusive.
+    pub(crate) blob: Option<Vec<u8>>,
+}
+
+impl VisibleSkillFile {
+    pub(crate) fn encoded_blob(&self) -> Option<String> {
+        self.blob
+            .as_ref()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
 }
 
 pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> SkillsListResult {
@@ -301,6 +313,9 @@ pub(crate) async fn get_visible_skill(
     uri: &str,
 ) -> Option<SkillEntry> {
     if let Some(entry) = context.first_party.providers.find(uri) {
+        if entry.descriptor().id.source_id() != uri {
+            return None;
+        }
         return context
             .permits_first_party_uri(uri)
             .then(|| provider_entry_to_wire(entry.clone()));
@@ -335,13 +350,7 @@ pub(crate) async fn get_visible_skill(
             .collect::<Vec<_>>();
         let meta = origin_meta(&origin, &pool, context.scope.tool_access()).await;
         let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
-        if let Some(entry) = minted.entries.iter().find(|entry| {
-            entry.uri == uri
-                || entry
-                    .resources
-                    .as_ref()
-                    .is_some_and(|resources| resources.iter().any(|resource| resource.uri == uri))
-        }) {
+        if let Some(entry) = minted.entries.iter().find(|entry| entry.uri == uri) {
             return Some(entry.clone());
         }
 
@@ -352,14 +361,9 @@ pub(crate) async fn get_visible_skill(
         }
 
         let upstream_uri = parsed.upstream_uri_for_origin(&config.name)?;
-        if let Some(cached) = provider.cached_owner_for_resource(&upstream_uri).await {
-            let entry =
-                aggregate::mint_proxied_entry(&config.name, &cached.into_validated(), Some(&meta))?;
-            if minted.conflicts_with(&entry) {
-                return None;
-            }
-            return Some(entry);
-        }
+        let upstream_skill_uri =
+            labby_runtime::skills::parse_skill_resource_uri(&upstream_uri).ok()?;
+        upstream_skill_uri.skill_md_parts()?;
         let fetched = provider
             .get(&SkillGetRequest {
                 id: SkillId::new(provider.id().clone(), upstream_uri),
@@ -401,6 +405,7 @@ pub(crate) async fn read_visible_skill_file(
             .resources
             .as_ref()
             .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .cloned()
             .ok_or_else(|| stale_manifest(uri))?;
         let verified = context
             .first_party
@@ -408,29 +413,55 @@ pub(crate) async fn read_visible_skill_file(
             .read(&provider_entry, uri, limits::MAX_SKILL_RESOURCE_BYTES)
             .await
             .map_err(first_party_provider_error_to_tool)?;
-        let text = verified_text(
-            verified.bytes,
-            "verified first-party skill resource was not UTF-8 text",
-        )?;
+        let (text, blob) = match String::from_utf8(verified.bytes) {
+            Ok(text) => (text, None),
+            Err(error) => (String::new(), Some(error.into_bytes())),
+        };
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
             skill_uri: entry.uri.clone(),
             origin: labby_runtime::skills::FIRST_PARTY_ORIGIN.to_string(),
-            digest: resource.digest.clone(),
-            mime_type: None,
+            digest: resource.digest,
+            mime_type: (entry.uri == uri)
+                .then(|| labby_runtime::skills::SKILL_MD_MIME_TYPE.to_string()),
             text,
+            blob,
         });
     }
 
     #[cfg(feature = "gateway")]
     {
-        let entry = get_visible_skill(context, uri)
+        let owners = list_visible_skills(context)
             .await
-            .ok_or_else(|| unknown_file(uri))?;
+            .skills
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .resources
+                    .as_ref()
+                    .is_some_and(|resources| resources.iter().any(|resource| resource.uri == uri))
+            })
+            .collect::<Vec<_>>();
+        let entry = owners.first().cloned().ok_or_else(|| unknown_file(uri))?;
+        let expected_resource = entry
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .ok_or_else(|| stale_manifest(uri))?;
+        if owners.iter().skip(1).any(|owner| {
+            owner
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+                != Some(expected_resource)
+        }) {
+            return Err(stale_manifest(uri));
+        }
         let resource = entry
             .resources
             .as_ref()
             .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
+            .cloned()
             .ok_or_else(|| stale_manifest(uri))?;
         let parsed = parse_skill_uri(uri).map_err(|error| ToolError::InvalidParam {
             message: error.to_string(),
@@ -471,14 +502,31 @@ pub(crate) async fn read_visible_skill_file(
             })
             .await
             .map_err(provider_error_to_tool)?;
-        let text = verified_text(verified.bytes, "verified skill resource was not UTF-8 text")?;
+        let (text, blob) = match verified.representation {
+            labby_runtime::skills::SkillResourceRepresentation::Text => {
+                let text = String::from_utf8(verified.bytes).map_err(|_| ToolError::Sdk {
+                    sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
+                    message: "verified MCP text skill resource was not UTF-8".into(),
+                })?;
+                (text, None)
+            }
+            labby_runtime::skills::SkillResourceRepresentation::Blob => {
+                (String::new(), Some(verified.bytes))
+            }
+        };
+        let is_skill_md = entry.uri == uri;
         return Ok(VisibleSkillFile {
             uri: uri.to_string(),
             skill_uri: entry.uri,
             origin,
-            digest: resource.digest.clone(),
-            mime_type: verified.media_type,
+            digest: resource.digest,
+            mime_type: if is_skill_md {
+                Some(labby_runtime::skills::SKILL_MD_MIME_TYPE.to_string())
+            } else {
+                verified.media_type
+            },
             text,
+            blob,
         });
     }
 
@@ -518,13 +566,6 @@ fn provider_error_with_failure_kind(
         sdk_kind: sdk_kind.to_string(),
         message: error.to_string(),
     }
-}
-
-fn verified_text(bytes: Vec<u8>, message: &'static str) -> Result<String, ToolError> {
-    String::from_utf8(bytes).map_err(|_| ToolError::Sdk {
-        sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
-        message: message.to_string(),
-    })
 }
 
 fn unknown_file(uri: &str) -> ToolError {

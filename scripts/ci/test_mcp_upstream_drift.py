@@ -40,6 +40,17 @@ class OwnershipMappingTest(unittest.TestCase):
         self.assertNotIn("run: python -m unittest", workflow)
         self.assertNotIn("\n          python scripts/ci/mcp_upstream_drift.py", workflow)
 
+    def test_main_ci_runs_accepted_skills_contract_and_feature_slice(self):
+        workflow = (
+            Path(__file__).parents[2] / ".github/workflows/ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "slice: [gateway, gateway-host, integrated-gateway, fs, skills]",
+            workflow,
+        )
+        self.assertIn("Accepted SEP-2640 server, client, and intermediary behavior", workflow)
+        self.assertIn("--no-default-features --features skills", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

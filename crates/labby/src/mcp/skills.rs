@@ -675,19 +675,10 @@ mod serve_tests {
     }
 
     #[tokio::test]
-    async fn first_party_get_accepts_a_supporting_file_uri() {
+    async fn first_party_get_rejects_a_supporting_file_uri() {
         let uri = "skill://labby/creating-snippets/README.md";
         let registry = SkillRegistryContext::first_party_only();
-        let entry = get_visible_skill(&registry, uri).await.expect("resolves");
-        assert_eq!(entry.uri, "skill://labby/creating-snippets/SKILL.md");
-        assert!(
-            entry
-                .resources
-                .as_ref()
-                .expect("manifest")
-                .iter()
-                .any(|resource| resource.uri == uri)
-        );
+        assert!(get_visible_skill(&registry, uri).await.is_none());
     }
 
     #[tokio::test]
