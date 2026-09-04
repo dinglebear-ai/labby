@@ -465,6 +465,9 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
     {
         return Some(("requires_project_bound_artifact_authority", "forbidden"));
     }
+    if surface == Surface::Mcp && key == "bundles:bundles.delete" {
+        return Some(("requires_existing_project_bundle", "not_found"));
+    }
     if surface == Surface::Mcp
         && matches!(
             key,

@@ -1064,6 +1064,7 @@ mod tests {
         let capture = Capture::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(capture.clone())
+            .with_ansi(false)
             .without_time()
             .finish();
         let dispatch = tracing::Dispatch::new(subscriber);
