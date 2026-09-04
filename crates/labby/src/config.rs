@@ -19,6 +19,9 @@ pub mod depot;
 mod depot_tests;
 pub mod env_merge;
 mod env_writer;
+pub mod host_write;
+#[cfg(test)]
+mod host_write_tests;
 mod paths;
 mod secret_files;
 
@@ -283,7 +286,6 @@ pub(crate) fn resolved_catalog_notification_timeout() -> Duration {
 use anyhow::{Context, Result};
 use labby_auth::config as auth_config;
 use serde::{Deserialize, Serialize, Serializer};
-use tempfile::NamedTempFile;
 
 pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LABBY_WEB_UI_AUTH_DISABLED";
 pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LABBY_WEB_UI_DISABLE_AUTH";
@@ -1564,26 +1566,20 @@ pub struct SetupPreferences {
 ///   3. `~/.config/labby/config.toml` (XDG-style fallback)
 pub fn load_toml(candidates: &[PathBuf]) -> Result<LabConfig> {
     for path in candidates {
-        match std::fs::read_to_string(path) {
-            Ok(raw) => {
-                let mut cfg = toml::from_str::<LabConfig>(&raw)
-                    .with_context(|| format!("failed to parse {}", path.display()))?;
-                cfg.normalize_protected_mcp_routes()
-                    .with_context(|| format!("invalid config {}", path.display()))?;
-                // Validate all upstream configs eagerly at startup so that
-                // invalid configuration (conflicting auth, bad URL scheme, etc.)
-                // is discovered immediately rather than at first OAuth attempt.
-                cfg.validate()
-                    .with_context(|| format!("invalid config {}", path.display()))?;
-                return Ok(cfg);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                return Err(
-                    anyhow::Error::new(e).context(format!("failed to read {}", path.display()))
-                );
-            }
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
         }
+        let host_lock = host_write::HostConfigLock::acquire(path)?;
+        let raw = host_lock.read_raw()?;
+        let mut cfg = toml::from_str::<LabConfig>(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        cfg.normalize_protected_mcp_routes()
+            .with_context(|| format!("invalid config {}", path.display()))?;
+        cfg.validate()
+            .with_context(|| format!("invalid config {}", path.display()))?;
+        return Ok(cfg);
     }
     Ok(LabConfig::default())
 }
@@ -1715,30 +1711,8 @@ pub fn patch_config_scalars_checked(
     entries: &[ConfigScalarPatch],
     expected: &[ExpectedConfigScalar],
 ) -> Result<ConfigPatchOutcome> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let lock_path = config_lock_path(path);
-    let lock_file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("open {}", lock_path.display()))?;
-    let mut lock = fd_lock::RwLock::new(lock_file);
-    let _guard = lock
-        .try_write()
-        .with_context(|| format!("config is locked: {}", lock_path.display()))?;
-
-    let raw = match std::fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(anyhow::Error::new(e).context(format!("failed to read {}", path.display())));
-        }
-    };
+    let host_lock = host_write::HostConfigLock::acquire(path)?;
+    let raw = host_lock.read_raw()?;
     let mut document = raw
         .parse::<toml_edit::DocumentMut>()
         .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -1784,28 +1758,7 @@ pub fn patch_config_scalars_checked(
     } else {
         None
     };
-    let old_mode = std::fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut tmp = NamedTempFile::new_in(parent)
-        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
-    tmp.write_all(patched.as_bytes())
-        .context("failed to write temp config")?;
-    tmp.as_file()
-        .sync_all()
-        .context("failed to sync temp config")?;
-    if let Some(mode) = old_mode {
-        tmp.as_file()
-            .set_permissions(mode)
-            .context("failed to preserve config mode")?;
-    }
-    tmp.persist(path)
-        .map_err(|e| anyhow::Error::new(e.error))
-        .with_context(|| format!("failed to persist {}", path.display()))?;
-    if let Ok(parent_dir) = OpenOptions::new().read(true).open(parent) {
-        drop(parent_dir.sync_all());
-    }
+    host_lock.write(&patched)?;
 
     Ok(ConfigPatchOutcome {
         config: cfg,
@@ -1965,16 +1918,6 @@ pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Resul
         )],
     )?
     .config)
-}
-
-fn config_lock_path(path: &Path) -> PathBuf {
-    let mut lock = path.to_path_buf();
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml");
-    lock.set_file_name(format!("{file_name}.lock"));
-    lock
 }
 
 /// Load `.env` files into the process environment.

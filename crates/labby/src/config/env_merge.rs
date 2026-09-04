@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::SystemTime;
 
-use tempfile::NamedTempFile;
+use super::host_write::{HostConfigLock, HostWriteError};
 
 /// Maximum number of `.env.bak.*` files retained after a successful merge.
 pub const BACKUP_RETENTION: usize = 10;
@@ -215,45 +215,26 @@ pub fn snapshot_mtime(path: &Path) -> Option<SystemTime> {
 /// Merge `req.entries` into `path`, writing atomically with backup + prune.
 /// Writers using this primitive are serialized through a sibling lock file.
 pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError> {
-    let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let lock = HostConfigLock::acquire(path).map_err(|error| host_error(path, error))?;
+    merge_locked(&lock, req)
+}
 
-    if !parent.exists() {
-        fs::create_dir_all(&parent).map_err(|e| MergeError::WriteFailed {
-            path: parent.clone(),
-            reason: WriteFailReason::from_io(&e),
-        })?;
+fn host_error(path: &Path, error: HostWriteError) -> MergeError {
+    MergeError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: WriteFailReason::Other(error.to_string()),
     }
+}
 
-    // Serialize every sanctioned writer across processes. A separate stable
-    // lock path remains valid while the target itself is atomically replaced.
-    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| MergeError::WriteFailed {
-            path: lock_path.clone(),
-            reason: WriteFailReason::from_io(&error),
-        })?;
-    set_secure_perms(&lock_path)?;
-    lock_file.lock().map_err(|error| MergeError::WriteFailed {
-        path: lock_path,
-        reason: WriteFailReason::from_io(&error),
-    })?;
-
-    // Read existing file (empty if absent).
-    let existing_raw = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(MergeError::WriteFailed {
-                path: path.to_path_buf(),
-                reason: WriteFailReason::from_io(&e),
-            });
-        }
-    };
+/// Caller owns the environment lock, acquired after any host config lock.
+/// Used by the narrow Depot transaction to avoid recursive lock acquisition.
+pub(crate) fn merge_locked(
+    lock: &HostConfigLock,
+    req: MergeRequest,
+) -> Result<MergeOutcome, MergeError> {
+    let path = lock.path();
+    let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let existing_raw = lock.read_raw().map_err(|error| host_error(path, error))?;
 
     if let Some(expected) = req.expected_mtime
         && let Some(current) = snapshot_mtime(path)
@@ -362,7 +343,8 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
     }
 
     // Atomic write.
-    write_atomically(path, &out_lines, &parent)?;
+    lock.write(&(out_lines.join("\n") + "\n"))
+        .map_err(|error| host_error(path, error))?;
 
     // Prune backups (post-write).
     let pruned = prune_backups(&parent, path).unwrap_or_default();
@@ -452,45 +434,6 @@ fn conflict_warning(key: &str) -> String {
     format!("CONFLICT: {key} already set; skipping (set force=true to overwrite)")
 }
 
-fn write_atomically(path: &Path, lines: &[String], parent: &Path) -> Result<(), MergeError> {
-    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| MergeError::TempCreate {
-        parent: parent.to_path_buf(),
-        source: e,
-    })?;
-    {
-        let file = tmp.as_file_mut();
-        for line in lines {
-            writeln!(file, "{line}").map_err(|e| MergeError::WriteFailed {
-                path: path.to_path_buf(),
-                reason: WriteFailReason::from_io(&e),
-            })?;
-        }
-        file.sync_all()
-            .map_err(|e| MergeError::SyncFailed { source: e })?;
-    }
-    tmp.persist(path).map_err(|persist_err| {
-        let io_err = persist_err.error;
-        // EXDEV (18 on Linux) signals a cross-filesystem rename; the temp must
-        // be in the same directory as the target to avoid this.
-        if io_err.raw_os_error() == Some(18) {
-            MergeError::PersistCrossFs { source: io_err }
-        } else {
-            MergeError::WriteFailed {
-                path: path.to_path_buf(),
-                reason: WriteFailReason::from_io(&io_err),
-            }
-        }
-    })?;
-    // fsync the parent directory so the rename is durable across power loss.
-    // tempfile::persist guarantees atomicity on the rename, but Linux durability
-    // requires an additional fsync on the parent to flush the directory entry.
-    if let Ok(dir) = fs::File::open(parent) {
-        dir.sync_all().ok();
-    }
-    set_secure_perms(path)?;
-    Ok(())
-}
-
 #[cfg(unix)]
 fn set_secure_perms(path: &Path) -> Result<(), MergeError> {
     use std::os::unix::fs::PermissionsExt;
@@ -529,6 +472,8 @@ fn create_backup(path: &Path) -> Result<PathBuf, MergeError> {
         reason: WriteFailReason::from_io(&e),
     })?;
     set_secure_perms(&backup)?;
+    super::host_write::sync_parent(path.parent().unwrap_or(Path::new(".")))
+        .map_err(|error| host_error(path, error))?;
     Ok(backup)
 }
 
@@ -581,18 +526,18 @@ fn prune_backups(parent: &Path, target: &Path) -> std::io::Result<PruneStats> {
 /// Restore a backup over `target`. Used by setup.draft.commit on rollback.
 #[allow(dead_code)]
 pub fn restore_backup(target: &Path, backup: &Path) -> Result<(), MergeError> {
-    copy_file_contents(backup, target).map_err(|e| MergeError::CommitRollbackFailed {
-        backup_path: backup.to_path_buf(),
-        source: e,
-    })?;
-    set_secure_perms(target)?;
-    Ok(())
+    let lock = HostConfigLock::acquire(target).map_err(|error| host_error(target, error))?;
+    if !fs::symlink_metadata(backup).is_ok_and(|metadata| metadata.file_type().is_file()) {
+        return Err(host_error(backup, HostWriteError::UnsafePath));
+    }
+    let raw = fs::read_to_string(backup).map_err(|_| host_error(backup, HostWriteError::Io))?;
+    lock.write(&raw).map_err(|error| host_error(target, error))
 }
 
 fn copy_file_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
     let mut src = fs::File::open(src)?;
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -603,6 +548,7 @@ fn copy_file_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
     loop {
         let read = src.read(&mut buf)?;
         if read == 0 {
+            dest.sync_all()?;
             return Ok(());
         }
         dest.write_all(&buf[..read])?;

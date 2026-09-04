@@ -1,31 +1,6 @@
 //! Cross-platform ownership policy for secret-bearing configuration files.
 
-use std::fs::OpenOptions;
 use std::path::Path;
-
-pub(super) fn open_secret_file(path: &Path) -> std::io::Result<std::fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-    }
-    #[cfg(windows)]
-    {
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?;
-        labby_auth::util::harden_secret_file(path)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-        Ok(file)
-    }
-}
 
 pub(super) fn restrict_secret_file_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
