@@ -69,7 +69,7 @@ OWNERSHIP = (
             "crates/labby/src/mcp/skills.rs",
         ),
         (
-            "cargo test -p labby-runtime --all-features --locked skills_contract_conformance",
+            "cargo test -p labby-runtime --all-features --locked --test skills_contract_conformance",
             "cargo test -p labby-gateway --all-features --locked upstream::pool::skills_tests",
             "cargo test -p labby --all-features --locked skills",
         ),

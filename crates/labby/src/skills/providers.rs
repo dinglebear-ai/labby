@@ -264,10 +264,14 @@ impl FirstPartySkillProviders {
     }
 
     pub(crate) fn find(&self, uri: &str) -> Option<&SkillProviderEntry> {
-        self.uri_index
-            .get(uri)
-            .and_then(|indices| indices.first())
+        let indices = self.uri_index.get(uri)?;
+        // A nested manifest can also be a supporting resource of its parent.
+        // Exact skill identity takes precedence over supporting-file ownership.
+        indices
+            .iter()
             .map(|index| &self.merged[*index])
+            .find(|entry| entry.descriptor().id.source_id() == uri)
+            .or_else(|| indices.first().map(|index| &self.merged[*index]))
     }
 
     pub(crate) fn find_all(&self, uri: &str) -> Vec<&SkillProviderEntry> {
@@ -804,6 +808,33 @@ mod tests {
                 .is_none()
         );
         assert!(providers.collision_rejections().is_empty());
+    }
+
+    #[test]
+    fn nested_manifest_lookup_prefers_its_own_skill_over_parent_resource() {
+        let child_uri = "skill://test/first/second/SKILL.md";
+        let parent = provider_with("first", Some(child_uri));
+        let mut child = provider_with("second", None);
+        let (_, mut skill) = child.skills.pop_first().unwrap();
+        let old_uri = skill.validated.entry.uri.clone();
+        skill.validated.entry.uri = child_uri.to_string();
+        skill.validated.entry.resources.as_mut().unwrap()[0].uri = child_uri.to_string();
+        let bytes = skill.files.remove(&old_uri).unwrap();
+        skill.files.insert(child_uri.to_string(), bytes);
+        child.skills.insert(child_uri.to_string(), skill);
+        let providers = FirstPartySkillProviders::from_providers(parent, child);
+
+        assert_eq!(providers.find_all(child_uri).len(), 2);
+        assert_eq!(
+            providers
+                .find(child_uri)
+                .unwrap()
+                .descriptor()
+                .id
+                .source_id(),
+            child_uri,
+            "skills/get must resolve the nested root even when its parent owns the same resource"
+        );
     }
 
     #[test]

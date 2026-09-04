@@ -773,7 +773,7 @@ jobs:
         if: matrix.slice == 'skills'
         run: >-
           cargo test -p labby --no-default-features --features skills --locked
-          mcp::skills
+          skills::
 
   extracted-crate-slices:
     name: Extracted crate slices
