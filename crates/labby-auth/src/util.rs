@@ -30,13 +30,21 @@ fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File,
     use rustix::fs::{Mode, OFlags, openat};
     use std::os::fd::AsFd;
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| AuthError::Storage("restricted file path has no parent".into()))?;
-    let parent = std::fs::canonicalize(parent)
-        .map_err(|error| AuthError::Storage(format!("resolve restricted file parent: {error}")))?;
-    let parent = std::fs::File::open(parent)
-        .map_err(|error| AuthError::Storage(format!("open restricted file parent: {error}")))?;
+    let components: Vec<_> = path.components().collect();
+    let mut parent = std::fs::File::open("/")
+        .map_err(|error| AuthError::Storage(format!("open filesystem root: {error}")))?;
+    for component in &components[1..components.len().saturating_sub(1)] {
+        let fd = openat(
+            parent.as_fd(),
+            component.as_os_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            AuthError::Storage(format!("open restricted file parent component: {error}"))
+        })?;
+        parent = std::fs::File::from(fd);
+    }
     let name = path
         .file_name()
         .ok_or_else(|| AuthError::Storage("restricted file path has no file name".into()))?;
@@ -44,7 +52,21 @@ fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File,
 
     if !create_new {
         match openat(parent.as_fd(), name, base, Mode::empty()) {
-            Ok(fd) => return Ok((std::fs::File::from(fd), true)),
+            Ok(fd) => {
+                let file = std::fs::File::from(fd);
+                if !file
+                    .metadata()
+                    .map_err(|error| {
+                        AuthError::Storage(format!("inspect restricted file: {error}"))
+                    })?
+                    .is_file()
+                {
+                    return Err(AuthError::Storage(
+                        "restricted file path must name a regular file".into(),
+                    ));
+                }
+                return Ok((file, true));
+            }
             Err(rustix::io::Errno::NOENT) => {}
             Err(error) => {
                 return Err(AuthError::Storage(format!(
@@ -61,7 +83,17 @@ fn open_restricted_unix(path: &Path, create_new: bool) -> Result<(std::fs::File,
         Mode::RUSR | Mode::WUSR,
     )
     .map_err(|error| AuthError::Storage(format!("create restricted file: {error}")))?;
-    Ok((std::fs::File::from(fd), false))
+    let file = std::fs::File::from(fd);
+    if !file
+        .metadata()
+        .map_err(|error| AuthError::Storage(format!("inspect restricted file: {error}")))?
+        .is_file()
+    {
+        return Err(AuthError::Storage(
+            "restricted file path must name a regular file".into(),
+        ));
+    }
+    Ok((file, false))
 }
 
 fn reject_final_component_symlink(path: &Path) -> Result<bool, AuthError> {
@@ -87,6 +119,16 @@ fn harden_open_file(file: &std::fs::File, _path: &Path) -> Result<(), AuthError>
 
 #[cfg(windows)]
 fn harden_open_file(file: &std::fs::File, path: &Path) -> Result<(), AuthError> {
+    if !file
+        .metadata()
+        .map_err(|error| AuthError::Storage(format!("inspect open restricted file: {error}")))?
+        .is_file()
+        || !same_open_file(file, path)?
+    {
+        return Err(AuthError::Storage(
+            "restricted path does not identify the opened regular file".into(),
+        ));
+    }
     harden_secret_file(path)?;
     if same_open_file(file, path)? {
         Ok(())
@@ -95,27 +137,6 @@ fn harden_open_file(file: &std::fs::File, path: &Path) -> Result<(), AuthError> 
             "restricted file changed while its ACL was hardened".into(),
         ))
     }
-}
-
-#[cfg(unix)]
-fn same_open_file(file: &std::fs::File, path: &Path) -> Result<bool, AuthError> {
-    use std::os::unix::fs::MetadataExt;
-
-    let opened = file
-        .metadata()
-        .map_err(|error| AuthError::Storage(format!("inspect open restricted file: {error}")))?;
-    let current = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(AuthError::Storage(format!(
-                "inspect restricted file path: {error}"
-            )));
-        }
-    };
-    Ok(!current.file_type().is_symlink()
-        && opened.dev() == current.dev()
-        && opened.ino() == current.ino())
 }
 
 #[cfg(windows)]
@@ -312,18 +333,10 @@ pub fn create_restricted_secret_file(path: &Path) -> Result<std::fs::File, AuthE
         })?
     };
     if let Err(error) = harden_open_file(&file, path) {
-        let still_same = same_open_file(&file, path).map_err(|identity_error| {
-            AuthError::Storage(format!(
-                "{error}; verify failed restricted file before cleanup: {identity_error}"
-            ))
-        })?;
         drop(file);
-        if still_same && let Err(cleanup) = std::fs::remove_file(path) {
-            return Err(AuthError::Storage(format!(
-                "{error}; cleanup newly-created restricted file failed: {cleanup}"
-            )));
-        }
-        return Err(error);
+        return Err(AuthError::Storage(format!(
+            "{error}; the empty restricted file was retained because pathname cleanup cannot be made race-free"
+        )));
     }
     Ok(file)
 }
@@ -372,18 +385,12 @@ where
         })?
     };
     if let Err(error) = harden(&file, path) {
-        let still_same = same_open_file(&file, path)?;
         drop(file);
-        if !existed
-            && still_same
-            && let Err(cleanup) = remove(path)
-        {
-            return Err(AuthError::Storage(format!(
-                "{error}; cleanup lock `{}` failed: {cleanup}",
-                path.display()
-            )));
-        }
-        return Err(error);
+        drop(remove);
+        let retained = if existed { "existing" } else { "newly-created" };
+        return Err(AuthError::Storage(format!(
+            "{error}; the {retained} empty lock was retained because pathname cleanup cannot be made race-free"
+        )));
     }
     Ok(file)
 }
@@ -495,38 +502,46 @@ pub(crate) fn expires_at(
 mod restricted_lock_tests {
     use super::*;
 
+    fn test_root(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        std::fs::canonicalize(dir.path()).unwrap()
+    }
+
     fn denied(_file: &std::fs::File, _path: &Path) -> Result<(), AuthError> {
         Err(AuthError::Storage("hardening denied".into()))
     }
 
     #[test]
-    fn new_lock_is_removed_when_hardening_fails() {
+    fn new_lock_is_safely_retained_when_hardening_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.lock");
+        let path = test_root(&dir).join("config.lock");
         let error =
             open_restricted_lock_file_with(&path, denied, |path| std::fs::remove_file(path))
                 .unwrap_err();
         assert!(error.to_string().contains("hardening denied"));
-        assert!(!path.exists());
+        assert!(path.exists());
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
     }
 
     #[test]
-    fn cleanup_failure_is_compounded_with_hardening_failure() {
+    fn cleanup_is_not_attempted_after_hardening_failure() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.lock");
+        let path = test_root(&dir).join("config.lock");
+        let mut cleanup_attempted = false;
         let error = open_restricted_lock_file_with(&path, denied, |_| {
-            Err(std::io::Error::other("cleanup denied"))
+            cleanup_attempted = true;
+            Ok(())
         })
         .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("hardening denied"), "{message}");
-        assert!(message.contains("cleanup denied"), "{message}");
+        assert!(message.contains("retained"), "{message}");
+        assert!(!cleanup_attempted);
     }
 
     #[test]
     fn preexisting_lock_is_preserved_when_hardening_fails() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.lock");
+        let path = test_root(&dir).join("config.lock");
         std::fs::write(&path, b"sentinel").unwrap();
         let mut removal_attempted = false;
         let error = open_restricted_lock_file_with(&path, denied, |_| {
@@ -543,8 +558,9 @@ mod restricted_lock_tests {
     #[test]
     fn replacement_is_not_removed_after_hardening_race() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.lock");
-        let displaced = dir.path().join("displaced.lock");
+        let root = test_root(&dir);
+        let path = root.join("config.lock");
+        let displaced = root.join("displaced.lock");
         let error = open_restricted_lock_file_with(
             &path,
             |_, path| {
@@ -569,18 +585,19 @@ mod restricted_lock_tests {
 
     #[cfg(unix)]
     #[test]
-    fn restricted_files_resolve_symbolic_link_ancestors_before_opening() {
+    fn restricted_files_reject_symbolic_link_ancestors() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target");
-        let link = dir.path().join("link");
+        let root = test_root(&dir);
+        let target = root.join("target");
+        let link = root.join("link");
         std::fs::create_dir(&target).unwrap();
         symlink(&target, &link).unwrap();
 
-        let file = create_restricted_secret_file(&link.join("secret.env")).unwrap();
-        assert_eq!(file.metadata().unwrap().len(), 0);
-        assert!(target.join("secret.env").exists());
+        let error = create_restricted_secret_file(&link.join("secret.env")).unwrap_err();
+        assert!(error.to_string().contains("parent component"));
+        assert!(!target.join("secret.env").exists());
     }
 
     #[cfg(unix)]
@@ -589,8 +606,9 @@ mod restricted_lock_tests {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target");
-        let link = dir.path().join("config.lock");
+        let root = test_root(&dir);
+        let target = root.join("target");
+        let link = root.join("config.lock");
         std::fs::write(&target, b"sentinel").unwrap();
         symlink(&target, &link).unwrap();
 
@@ -639,7 +657,9 @@ if ($ruleSid -ne $sid) { exit 4 }
     #[test]
     fn newly_created_secret_is_private_before_callers_can_write() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("new-secret.env");
+        let path = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .join("new-secret.env");
         let file = create_restricted_secret_file(&path).unwrap();
         assert_eq!(file.metadata().unwrap().len(), 0);
         drop(file);
@@ -682,7 +702,9 @@ mod unix_tests {
     #[test]
     fn newly_created_secret_is_private_before_callers_can_write() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("new-secret.env");
+        let path = std::fs::canonicalize(dir.path())
+            .unwrap()
+            .join("new-secret.env");
         let file = create_restricted_secret_file(&path).unwrap();
 
         assert_eq!(file.metadata().unwrap().len(), 0);
