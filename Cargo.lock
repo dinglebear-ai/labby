@@ -1984,6 +1984,7 @@ dependencies = [
  "dashmap",
  "ed25519-dalek",
  "getrandom 0.4.2",
+ "hmac",
  "jsonwebtoken",
  "labby-primitives",
  "labby-runtime",

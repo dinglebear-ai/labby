@@ -671,6 +671,14 @@ async fn authenticate(
                         .await;
                 }
 
+                let authority = crate::browser_authority::BrowserAuthority::from_google(
+                    auth_state.clone(),
+                    session.clone(),
+                    layer.static_token_scopes.clone(),
+                )
+                .await
+                .map_err(|_| auth_error_response("browser authority is unavailable", layer))?;
+
                 let identity = VerifiedIdentity::external(
                     Authenticator::BrowserSession,
                     crate::google::GOOGLE_ISSUER,
@@ -692,6 +700,7 @@ async fn authenticate(
                     return Err(response);
                 }
                 request.extensions_mut().insert(identity);
+                request.extensions_mut().insert(authority);
                 request.extensions_mut().insert(auth);
                 return Ok(request);
             }
@@ -769,6 +778,13 @@ async fn authorize_project_session(
             layer,
         ));
     }
+    let authority = crate::browser_authority::BrowserAuthority::from_project(
+        store.clone(),
+        session.clone(),
+        revalidator.clone(),
+        &grant,
+    )
+    .map_err(|_| project_session_unavailable_response(layer))?;
     let identity = VerifiedIdentity::local_credential_with_issuer(
         Authenticator::BrowserSession,
         binding.issuer.clone(),
@@ -799,6 +815,7 @@ async fn authorize_project_session(
         expires_at: binding.source_credential_expires_at,
     });
     request.extensions_mut().insert(grant);
+    request.extensions_mut().insert(authority);
     request.extensions_mut().insert(auth);
     Ok(request)
 }
@@ -1018,6 +1035,68 @@ mod tests {
 
     use crate::authorize::tests::{test_auth_config, test_auth_state, test_auth_state_with_config};
     use crate::{PrincipalLink, VerifiedIdentity};
+
+    #[tokio::test]
+    async fn browser_authority_extension_is_present_only_for_a_durable_cookie() {
+        let state = Arc::new(test_auth_state().await);
+        let session = session::create_browser_session(
+            &state,
+            "operator".into(),
+            Some("member@example.com".into()),
+        )
+        .await
+        .unwrap();
+        let app = Router::new()
+            .route(
+                "/probe",
+                get(
+                    |authority: Option<
+                        axum::Extension<crate::browser_authority::BrowserAuthority>,
+                    >| async move {
+                        if authority.is_some() {
+                            "browser"
+                        } else {
+                            "other"
+                        }
+                    },
+                ),
+            )
+            .layer(
+                AuthLayer::from_state(state.clone())
+                    .with_allow_session_cookie(true)
+                    .with_static_token(Some(Arc::from("fixture-bearer"))),
+            );
+        for (name, value, expected) in [
+            (
+                "cookie",
+                format!(
+                    "{}={}",
+                    state.config.session_cookie_name, session.session_id
+                ),
+                "browser",
+            ),
+            ("authorization", "Bearer fixture-bearer".into(), "other"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/probe")
+                        .header(name, value)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                axum::body::to_bytes(response.into_body(), 100)
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+    }
 
     fn project_binding() -> ProjectSessionBinding {
         ProjectSessionBinding {
@@ -2148,7 +2227,11 @@ mod tests {
             .route(
                 "/probe",
                 get(
-                    |axum::Extension(grant): axum::Extension<BoundAccessGrant>| async move {
+                    |axum::Extension(grant): axum::Extension<BoundAccessGrant>,
+                     axum::Extension(authority): axum::Extension<
+                        crate::browser_authority::BrowserAuthority,
+                    >| async move {
+                        assert_eq!(authority.public_epoch().len(), 43);
                         grant.project_id
                     },
                 ),
