@@ -34,7 +34,7 @@ class OwnershipMappingTest(unittest.TestCase):
         self.assertIn("docs/contracts/skills-extension.md", paths)
         self.assertIn("crates/labby-gateway/src/upstream/pool/skills.rs", paths)
         self.assertIn(
-            "cargo test -p labby-runtime --all-features --locked skills_contract_conformance",
+            "cargo test -p labby-runtime --all-features --locked --test skills_contract_conformance",
             checks,
         )
 
@@ -59,6 +59,10 @@ class OwnershipMappingTest(unittest.TestCase):
         )
         self.assertIn("Accepted SEP-2640 server, client, and intermediary behavior", workflow)
         self.assertIn("--no-default-features --features skills", workflow)
+        self.assertIn(
+            "cargo test -p labby --no-default-features --features skills --locked\n          skills::",
+            workflow,
+        )
 
 
 if __name__ == "__main__":

@@ -158,6 +158,8 @@ default `gateway-host`, the sealed `integrated-gateway`, and `all` profiles all
 include it. Featureless and non-gateway slices exist only to verify dependency
 boundaries. Release binaries, the production container, and the Incus image
 each run a packaged-artifact smoke that proves the Skills CLI surface exists.
+The standalone Skills job runs the `skills::` test filter, covering shared
+registry/provider behavior as well as MCP adapters without gateway support.
 
 Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
 
