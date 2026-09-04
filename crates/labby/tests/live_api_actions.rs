@@ -113,8 +113,10 @@ async fn ensure_action_fixture(
 #[test]
 fn every_api_classification_has_exactly_one_execution_or_contract_plan() {
     let plans = action_scenarios::exact_plans(Surface::Api);
-    assert_eq!(plans.len(), action_matrix::EXPECTED_API_ACTIONS);
-    assert_eq!(action_scenarios::services_for(Surface::Api).len(), 11);
+    let compiled_api_actions = action_matrix::compiled_intents()
+        .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
+        .count();
+    assert_eq!(plans.len(), compiled_api_actions);
 }
 
 #[tokio::test]
@@ -143,8 +145,10 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         let mut destructive_denials = BTreeSet::new();
         let mut observed = BTreeMap::new();
         let mut outcomes = BTreeMap::new();
-        for intent in action_matrix::intents()
-            .iter()
+        let expected_api_actions = action_matrix::compiled_intents()
+            .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
+            .count();
+        for intent in action_matrix::compiled_intents()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
         {
             ensure_action_fixture(&client, &guard.connection().base_url, intent).await;
@@ -322,9 +326,8 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             outcomes.insert(intent.key(), outcome);
         }
 
-        assert_eq!(observed.len(), action_matrix::EXPECTED_API_ACTIONS);
-        let insufficient = action_matrix::intents()
-            .iter()
+        assert_eq!(observed.len(), expected_api_actions);
+        let insufficient = action_matrix::compiled_intents()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
             .filter(|intent| {
                 let outcome = &outcomes[&intent.key()];

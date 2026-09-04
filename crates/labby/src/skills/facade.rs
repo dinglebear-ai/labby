@@ -920,7 +920,7 @@ mod tests {
                     "digest": ResourceDigest::of_bytes(skill_body.as_bytes()).to_wire(),
                     "size": skill_body.len()
                 },
-                { "uri": native_notes_uri, "digest": notes_digest, "size": 16 }
+                { "uri": native_notes_uri, "digest": notes_digest, "size": "supporting notes".len() }
             ]
         });
 

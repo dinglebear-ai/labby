@@ -8,6 +8,7 @@ pub(crate) struct RouteDescriptor {
     pub(crate) path: String,
     pub(crate) handler_group: String,
     pub(crate) handler_identity: String,
+    pub(crate) feature: Option<String>,
     pub(crate) runtime_condition: Option<String>,
     pub(crate) auth_required: bool,
     pub(crate) bearer_only: bool,
@@ -51,6 +52,18 @@ impl RouteCase {
 
     pub(crate) fn permits_runtime_absence(&self) -> bool {
         self.descriptor.runtime_condition.is_some()
+            || self
+                .descriptor
+                .feature
+                .as_deref()
+                .is_some_and(|feature| !feature_is_compiled(feature))
+    }
+
+    pub(crate) fn is_compiled(&self) -> bool {
+        self.descriptor
+            .feature
+            .as_deref()
+            .is_none_or(feature_is_compiled)
     }
 }
 
@@ -247,6 +260,15 @@ fn classify(route: &RouteDescriptor) -> RequestClass {
     } else {
         RequestClass::Public
     }
+}
+
+fn feature_is_compiled(feature: &str) -> bool {
+    (feature == "gateway" && cfg!(feature = "gateway"))
+        || (feature == "fs" && cfg!(feature = "fs"))
+        || (feature == "skills" && cfg!(feature = "skills"))
+        || (feature == "lab-admin" && cfg!(feature = "lab-admin"))
+        || (feature == "api-docs" && cfg!(feature = "api-docs"))
+        || (feature == "systemd" && cfg!(feature = "systemd"))
 }
 
 fn request_body(route: &RouteDescriptor) -> Option<&'static str> {

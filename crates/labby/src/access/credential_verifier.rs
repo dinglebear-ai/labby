@@ -28,7 +28,10 @@ use super::store::AccessStore;
 
 const READ_CONNECTIONS: usize = 4;
 const MAX_OUTSTANDING_READS: usize = 32;
-const QUEUE_DEADLINE: Duration = Duration::from_millis(100);
+// Credential verification performs several serialized access-store operations
+// (admission, read, and audit). Allow normal concurrent requests to wait for
+// that short critical section without turning transient contention into a 502.
+const QUEUE_DEADLINE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct LiveAuthoritySnapshot {

@@ -10,6 +10,11 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
 }
 
+#[cfg(test)]
+pub(super) fn run_migrations_with_fault(conn: &Connection, fault: &str) -> Result<(), AuthError> {
+    run_migrations_inner(conn, Some(fault))
+}
+
 fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> {
     let current: i64 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
@@ -285,11 +290,6 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
     // migration even if the binding column was not durably installed.
     add_column_if_missing(conn, "browser_sessions", "project_binding_json", "TEXT")?;
     Ok(())
-}
-
-#[cfg(test)]
-pub(super) fn run_migrations_with_fault(conn: &Connection, fault: &str) -> Result<(), AuthError> {
-    run_migrations_inner(conn, Some(fault))
 }
 
 fn repair_falsely_stamped_v8(conn: &Connection) -> Result<(), AuthError> {

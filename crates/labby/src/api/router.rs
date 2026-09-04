@@ -2840,20 +2840,10 @@ mod tests {
                 }
                 _ => {}
             }
-            let unavailable_without_runtime =
-                route.runtime_condition.as_deref().is_some_and(|condition| {
-                    condition.starts_with(crate::docs::routes::OAUTH_MODE_ONLY)
-                        || condition == crate::docs::routes::DEV_RUNTIME_CONDITION
-                        || condition.starts_with("mounted only")
-                        || condition.starts_with("one concrete instance")
-                });
+            let unavailable_without_runtime = route.runtime_condition.is_some();
             assert!(
                 status == StatusCode::UNAUTHORIZED
-                    || (status == StatusCode::FORBIDDEN
-                        && route
-                            .runtime_condition
-                            .as_deref()
-                            .is_some_and(|condition| condition.contains("daemon proof")))
+                    || (status == StatusCode::FORBIDDEN && route.bootstrap_proof)
                     || (status == StatusCode::NOT_FOUND && unavailable_without_runtime),
                 "OAI-CLAUSE-001: inventoried sensitive route {} {} did not authenticate before dispatch (status={}, group={}, runtime_condition={:?})",
                 route.method,

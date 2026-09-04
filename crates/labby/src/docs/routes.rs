@@ -1,11 +1,6 @@
 use super::types::RouteDoc;
 use crate::api::route_registry::{RouteAuth, build_route_descriptors};
 
-#[cfg(test)]
-pub(crate) const OAUTH_MODE_ONLY: &str = "OAuth mode only";
-#[cfg(test)]
-pub(crate) const DEV_RUNTIME_CONDITION: &str = "development/mockup routes";
-
 pub fn build_route_docs(_service_names: &[String]) -> Vec<RouteDoc> {
     build_route_descriptors()
         .into_iter()

@@ -34,7 +34,12 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
     let mut failures = Vec::new();
     let mut expected_evidence = Vec::new();
 
-    for case in route_cases().expect("route recipes") {
+    let cases = route_cases()
+        .expect("route recipes")
+        .into_iter()
+        .filter(RouteCase::is_compiled)
+        .collect::<Vec<_>>();
+    for case in &cases {
         if tokio::time::Instant::now() >= deadline {
             failures.push(format!(
                 "absolute shard deadline exhausted before {}",
@@ -73,11 +78,7 @@ async fn every_registered_route_is_live_or_declared_runtime_conditional() {
             ),
         }
         if failures.is_empty() {
-            for (case, route) in route_cases()
-                .expect("route recipes for evidence")
-                .iter()
-                .zip(&expected_evidence)
-            {
+            for (case, route) in cases.iter().zip(&expected_evidence) {
                 record_route_outcome(case, route);
             }
         }
@@ -518,9 +519,23 @@ async fn method_and_transport_abuse_is_bounded_and_fail_closed() {
         .header(header::CONTENT_TYPE, "application/json")
         .body(vec![b'x'; 2 * 1024 * 1024])
         .send()
-        .await
-        .expect("oversized request");
-    assert!(!oversized.status().is_success());
+        .await;
+    match oversized {
+        Ok(response) => assert!(!response.status().is_success()),
+        Err(error) => {
+            // The auth layer rejects this request before consuming its body.
+            // Depending on when the client finishes writing, Linux reports
+            // that fail-closed response as a broken pipe instead of exposing
+            // an HTTP status.
+            let message = error.to_string().to_ascii_lowercase();
+            assert!(
+                error.is_request()
+                    && (message.contains("broken pipe")
+                        || message.contains("pipe is being closed")),
+                "unexpected oversized-request transport error: {error:?}"
+            );
+        }
+    }
 
     for headers in [
         vec![
