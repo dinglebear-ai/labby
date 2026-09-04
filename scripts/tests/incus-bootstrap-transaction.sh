@@ -42,6 +42,11 @@ mkdir -p "$case_root/tx"
 ) >/dev/null 2>&1 && { echo 'compound rollback unexpectedly succeeded' >&2; exit 1; }
 grep -qx restored "$case_root/restored"
 test -s "$case_root/residual"
-test "$(stat -f '%Lp' "$case_root/residual" 2>/dev/null || stat -c '%a' "$case_root/residual")" = 600
+if stat -c '%a' "$case_root/residual" >/dev/null 2>&1; then
+  residual_mode=$(stat -c '%a' "$case_root/residual")
+else
+  residual_mode=$(stat -f '%Lp' "$case_root/residual")
+fi
+test "$residual_mode" = 600
 
 echo 'incus bootstrap transaction tests passed'
