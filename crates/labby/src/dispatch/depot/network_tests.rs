@@ -4,6 +4,28 @@ use super::network::{
 use std::net::IpAddr;
 use std::time::Duration;
 
+#[test]
+fn private_host_policy_cannot_grant_cloud_metadata_addresses() {
+    let config = toml::from_str(
+        r#"[private_hosts]
+"internal.test" = ["10.1.2.3", "fd00:ec2::254", "fd20:ce::254"]
+"#,
+    )
+    .unwrap();
+    let policy = super::manager::host_policy(&config).unwrap();
+    assert!(validate_addresses("internal.test", &["10.1.2.3".parse().unwrap()], &policy).is_ok());
+    for ip in ["fd00:ec2::254", "fd20:ce::254"] {
+        assert_eq!(
+            validate_addresses("internal.test", &[ip.parse().unwrap()], &policy),
+            Err(NetworkError::Blocked)
+        );
+    }
+    assert_eq!(
+        validate_addresses("other.test", &["10.1.2.3".parse().unwrap()], &policy),
+        Err(NetworkError::Blocked)
+    );
+}
+
 #[tokio::test]
 async fn pinned_tls_preserves_hostname_sni_and_bound_authorization() {
     let (client, received) =
@@ -134,7 +156,7 @@ async fn hostile_headers_encoding_bodies_and_depth_are_bounded() {
     }
 }
 
-async fn tls_fixture(
+pub(super) async fn tls_fixture(
     response: String,
 ) -> (
     NetworkClient,
@@ -143,7 +165,7 @@ async fn tls_fixture(
     tls_fixture_delayed(response, Duration::ZERO).await
 }
 
-async fn tls_fixture_delayed(
+pub(super) async fn tls_fixture_delayed(
     response: String,
     delay: Duration,
 ) -> (

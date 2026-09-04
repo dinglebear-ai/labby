@@ -27,6 +27,8 @@ pub struct AppState {
     pub clients: Arc<ServiceClients>,
     /// Optional Depot control-plane client. Authority remains server-held.
     pub depot: Arc<crate::dispatch::depot::DepotClient>,
+    /// Resolved discovery runtime shared by all browser adapters.
+    pub depot_manager: Arc<crate::dispatch::depot::manager::Manager>,
     /// Shared HTTP client for protected MCP reverse proxy requests.
     pub protected_mcp_http_client: reqwest::Client,
     /// Shared public OAuth callback relay forwarder.
@@ -149,7 +151,8 @@ impl AppState {
             catalog,
             registry: Arc::new(registry),
             clients,
-            depot: Arc::new(crate::dispatch::depot::DepotClient::from_env()),
+            depot: Arc::new(crate::dispatch::depot::DepotClient::disabled()),
+            depot_manager: Arc::new(crate::dispatch::depot::manager::Manager::default()),
             protected_mcp_http_client,
             // `PublicRelayForwarder::new()` only fails on reqwest client
             // build errors (e.g. TLS backend init failure), the same class
@@ -248,7 +251,26 @@ impl AppState {
 
     #[must_use]
     pub fn with_config(mut self, config: LabConfig) -> Self {
+        self.depot_manager = Arc::new(crate::dispatch::depot::manager::Manager::new(
+            &config.depot,
+            Default::default(),
+            Default::default(),
+        ));
         self.config = Arc::new(config);
+        self
+    }
+
+    #[must_use]
+    pub fn with_depot_snapshot(
+        mut self,
+        secrets: crate::dispatch::depot::manager::SecretSnapshot,
+        policy: crate::dispatch::depot::network::NetworkPolicy,
+    ) -> Self {
+        self.depot_manager = Arc::new(crate::dispatch::depot::manager::Manager::new(
+            &self.config.depot,
+            secrets,
+            policy,
+        ));
         self
     }
 

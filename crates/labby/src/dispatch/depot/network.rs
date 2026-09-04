@@ -78,7 +78,7 @@ impl Secret {
 
 /// Only the server composition root can supply exact private-host grants.
 /// Link-local, mapped IPv6, multicast, loopback and metadata are never grants.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkPolicy {
     pub private_hosts: BTreeMap<String, BTreeSet<IpAddr>>,
     #[cfg(test)]
@@ -94,7 +94,12 @@ pub fn validate_addresses(
         return Err(NetworkError::Blocked);
     }
     for address in addresses {
-        if matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()) {
+        // AWS and GCP metadata IPv6 endpoints are ULA, but must never be
+        // admitted by the host's private-address grants.
+        if matches!(address, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some()
+            || matches!(ip.segments(), [0xfd00, 0xec2, 0, 0, 0, 0, 0, 0x254]
+                | [0xfd20, 0xce, 0, 0, 0, 0, 0, 0x254]))
+        {
             return Err(NetworkError::Blocked);
         }
         #[cfg(test)]

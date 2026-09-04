@@ -105,6 +105,18 @@ anonymous because a token is absent. Explicit disable preserves a disabled
 entry. A token or enable flag without a URL is invalid. `legacy_migrated` or a
 `legacy` tombstone suppresses legacy normalization to prevent resurrection.
 
+The server captures discovery credentials after effective configuration and
+environment precedence are resolved. Provider status is local; qualification
+is lazy and never gates readiness. Authentication and incompatible-contract
+failures require an explicit probe or a configuration change before retry.
+Transient failures use a cooldown of at most 30 seconds.
+
+Host administrators may configure `[depot.private_hosts]` with exact hostname
+keys and arrays of private IP address strings. Grants are bounded to 16 hosts
+and 32 addresses per host and cannot permit loopback, link-local, metadata, or
+mapped IPv6 addresses. TLS hostname verification still applies. This policy is
+host-file configuration; browser provider edits cannot change it.
+
 ## Durable Depot Skill Imports
 
 `proxy_skills` is live MCP catalog federation; it does not install anything.

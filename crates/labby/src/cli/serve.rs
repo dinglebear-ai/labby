@@ -592,9 +592,13 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         web_assets_dir.is_none() && crate::api::web::embedded_web_assets_available();
 
     let oauth_enabled = matches!(auth_config.mode, AuthMode::OAuth);
+    let depot_secrets = crate::dispatch::depot::manager::SecretSnapshot::capture(&config.depot);
+    let depot_policy =
+        crate::dispatch::depot::manager::host_policy(&config.depot).map_err(anyhow::Error::msg)?;
 
     let mut state = AppState::from_registry(registry)
         .with_config(config.clone())
+        .with_depot_snapshot(depot_secrets, depot_policy)
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_http_bind_host(host.clone());
     #[cfg(feature = "gateway")]
