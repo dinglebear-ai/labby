@@ -37,6 +37,14 @@ fn isolated_runtime_env() -> Vec<(&'static str, OsString)> {
     values
 }
 
+#[cfg(unix)]
+#[path = "live_labby/guardian.rs"]
+mod guardian;
+
+#[cfg(unix)]
+#[path = "live_labby/process_inventory.rs"]
+mod process_inventory;
+
 fn labby_binary() -> PathBuf {
     std::env::var_os("LABBY_E2E_BINARY")
         .map(PathBuf::from)
@@ -110,8 +118,13 @@ pub(crate) struct OwnershipLedger {
     pub(crate) created_at_ms: u128,
     pub(crate) nonce: String,
     pub(crate) root: PathBuf,
+    /// Owned Rust Child / process-group leader; a guardian when supervised.
     pub(crate) pid: Option<u32>,
     pub(crate) process_start_identity: Option<String>,
+    /// Distinct roles: never present a guardian PID as the actual Labby daemon.
+    pub(crate) guardian_pid: Option<u32>,
+    pub(crate) daemon_pid: Option<u32>,
+    pub(crate) daemon_process_start_identity: Option<String>,
     pub(crate) process_group: Option<i32>,
     pub(crate) listener: Option<SocketAddr>,
     pub(crate) listener_identity: Option<String>,
@@ -333,7 +346,10 @@ impl LiveLabbyBuilder {
                 .env("LABBY_AUTH_MODE", "bearer")
                 .env("LABBY_MCP_HTTP_TOKEN", &credential_canary)
                 .envs(isolated_runtime_env())
-                .envs(self.extra_env)
+                .envs(self.extra_env);
+            #[cfg(unix)]
+            let (mut command, guardian_registry) = guardian::supervise(command)?;
+            command
                 .stdin(Stdio::null())
                 .stdout(stdout)
                 .stderr(stderr)
@@ -348,6 +364,14 @@ impl LiveLabbyBuilder {
                 .map_err(|error| error.to_string())?;
             ledger.pid = child.id();
             ledger.process_start_identity = ledger.pid.map(process_start_identity);
+            ledger.daemon_pid = ledger.pid;
+            ledger.daemon_process_start_identity = ledger.process_start_identity.clone();
+            #[cfg(unix)]
+            if guardian_registry.is_some() {
+                ledger.guardian_pid = ledger.pid;
+                ledger.daemon_pid = None;
+                ledger.daemon_process_start_identity = None;
+            }
             ledger.process_group = ledger.pid.and_then(|pid| i32::try_from(pid).ok());
             write_ledger(&manifest_path, &ledger)?;
             evidence.push(
@@ -381,6 +405,8 @@ impl LiveLabbyBuilder {
                 fail_evidence_writes: self.fail_evidence_writes,
                 #[cfg(windows)]
                 windows_job,
+                #[cfg(unix)]
+                guardian_registry,
                 finalized: false,
             };
             if let Err(error) = guard.wait_ready(self.readiness_deadline).await {
@@ -422,6 +448,8 @@ pub(crate) struct LiveLabbyGuard {
     fail_evidence_writes: bool,
     #[cfg(windows)]
     windows_job: Option<labby_winjob::JobObject>,
+    #[cfg(unix)]
+    guardian_registry: Option<PathBuf>,
     finalized: bool,
 }
 
@@ -482,7 +510,10 @@ impl LiveLabbyGuard {
             .env("LABBY_AUTH_MODE", "bearer")
             .env("LABBY_MCP_HTTP_TOKEN", &self.credential_canary)
             .envs(isolated_runtime_env())
-            .envs(recipe.extra_env.clone())
+            .envs(recipe.extra_env.clone());
+        #[cfg(unix)]
+        let (mut command, guardian_registry) = guardian::supervise(command)?;
+        command
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
@@ -500,6 +531,18 @@ impl LiveLabbyGuard {
         self.ledger.generation += 1;
         self.ledger.pid = child.id();
         self.ledger.process_start_identity = self.ledger.pid.map(process_start_identity);
+        self.ledger.guardian_pid = None;
+        self.ledger.daemon_pid = self.ledger.pid;
+        self.ledger.daemon_process_start_identity = self.ledger.process_start_identity.clone();
+        #[cfg(unix)]
+        {
+            self.guardian_registry = guardian_registry;
+            if self.guardian_registry.is_some() {
+                self.ledger.guardian_pid = self.ledger.pid;
+                self.ledger.daemon_pid = None;
+                self.ledger.daemon_process_start_identity = None;
+            }
+        }
         self.ledger.process_group = self.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&self.manifest_path, &self.ledger)?;
         self.child = Some(child);
@@ -749,6 +792,14 @@ impl LiveLabbyGuard {
                     .as_ref()
                     .is_ok_and(|response| response.status().is_success())
             {
+                if Instant::now() >= expires {
+                    return Err("readiness identity deadline exceeded".into());
+                }
+                #[cfg(unix)]
+                guardian::record_daemon_identity(self)?;
+                if Instant::now() >= expires {
+                    return Err("readiness identity deadline exceeded".into());
+                }
                 self.evidence
                     .push(EvidenceKind::Readiness, "health and ready succeeded");
                 return Ok(());
@@ -869,6 +920,10 @@ impl LiveLabbyGuard {
             || persisted.root != self.ledger.root
             || persisted.pid != self.ledger.pid
             || persisted.process_start_identity != self.ledger.process_start_identity
+            || persisted.process_group != self.ledger.process_group
+            || persisted.guardian_pid != self.ledger.guardian_pid
+            || persisted.daemon_pid != self.ledger.daemon_pid
+            || persisted.daemon_process_start_identity != self.ledger.daemon_process_start_identity
             || persisted.listener_identity != self.ledger.listener_identity
             || persisted.owned_roots != self.ledger.owned_roots
         {
@@ -1624,6 +1679,56 @@ fn supervised_cleanup_command(
     Ok(wrapper)
 }
 
+// Poll callbacks cannot reap a Unix leader: its waitable identity reserves the
+// process-group number until every descendant has settled.
+struct CleanupChildObserver<'a>(&'a mut std::process::Child);
+
+impl CleanupChildObserver<'_> {
+    #[cfg(unix)]
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        #[cfg(unix)]
+        {
+            observe_cleanup_child(self.id())
+        }
+        #[cfg(not(unix))]
+        self.0.try_wait()
+    }
+}
+
+#[cfg(unix)]
+fn observe_cleanup_child(pid: u32) -> std::io::Result<Option<std::process::ExitStatus>> {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    use std::os::unix::process::ExitStatusExt as _;
+    let pid = Pid::from_raw(pid as i32).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid cleanup child PID",
+        )
+    })?;
+    let status = waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+    )?;
+    status
+        .map(|status| {
+            let raw = if let Some(code) = status.exit_status() {
+                code << 8
+            } else if let Some(signal) = status.terminating_signal() {
+                signal | if status.dumped() { 0x80 } else { 0 }
+            } else {
+                return Err(std::io::Error::other(
+                    "unexpected cleanup child wait status",
+                ));
+            };
+            Ok(std::process::ExitStatus::from_raw(raw))
+        })
+        .transpose()
+}
+
 fn run_spawned_owned_child<A, P>(
     mut child: std::process::Child,
     deadline: Instant,
@@ -1632,7 +1737,7 @@ fn run_spawned_owned_child<A, P>(
 ) -> Result<(), String>
 where
     A: FnOnce(u32) -> Result<OwnedCleanupJob, String>,
-    P: FnMut(&mut std::process::Child) -> std::io::Result<Option<std::process::ExitStatus>>,
+    P: FnMut(&mut CleanupChildObserver<'_>) -> std::io::Result<Option<std::process::ExitStatus>>,
 {
     let mut post_spawn_errors = Vec::new();
     let owned_job = match assign_job(child.id()) {
@@ -1650,7 +1755,7 @@ where
         ));
     }
     loop {
-        match poll(&mut child) {
+        match poll(&mut CleanupChildObserver(&mut child)) {
             Ok(Some(status)) => {
                 let mut failures = Vec::new();
                 if !status.success() {
@@ -1722,16 +1827,96 @@ fn terminate_and_reap_owned_child(
     owned_job: OwnedCleanupJob,
     errors: &mut Vec<String>,
 ) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    terminate_and_reap_owned_child_with_signal(child, owned_job, errors, deadline, |pid| {
+        signal_cleanup_group_with_deadline(pid, deadline)
+    });
+}
+
+#[cfg(unix)]
+fn signal_cleanup_group(pid: u32) -> Result<(), String> {
+    signal_cleanup_group_with_deadline(pid, Instant::now() + Duration::from_secs(1))
+}
+
+fn signal_cleanup_group_with_deadline(pid: u32, deadline: Instant) -> Result<(), String> {
     #[cfg(unix)]
-    if let Err(error) = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(child.id() as i32),
+    match nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid as i32),
         nix::sys::signal::Signal::SIGKILL,
     ) {
-        // A setup failure can occur before containment exists, or the group
-        // may already have exited. Direct child kill/reap remains mandatory.
-        if error != nix::errno::Errno::ESRCH {
-            errors.push(format!("cleanup helper process-group kill failed: {error}"));
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(nix::errno::Errno::EPERM)
+            if observe_cleanup_child(pid)
+                .map_err(|error| format!("cleanup helper exit verification failed: {error}"))?
+                .is_some()
+                && process_group_members_checked_before(pid as i32, deadline)?.is_empty() =>
+        {
+            // macOS reports EPERM for a group containing only its retained
+            // zombie leader. Prove that exact waitable child has exited and
+            // no live member remains; never ignore a live-group denial.
+            Ok(())
         }
+        Err(error) => Err(format!("cleanup helper process-group kill failed: {error}")),
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, deadline);
+        Ok(())
+    }
+}
+
+fn terminate_and_reap_owned_child_with_signal(
+    child: &mut std::process::Child,
+    owned_job: OwnedCleanupJob,
+    errors: &mut Vec<String>,
+    reap_deadline: Instant,
+    mut signal_group: impl FnMut(u32) -> Result<(), String>,
+) {
+    terminate_and_reap_owned_child_with_operations(
+        child,
+        owned_job,
+        errors,
+        reap_deadline,
+        &mut signal_group,
+        process_group_members_for_cleanup,
+    );
+}
+
+fn process_group_members_for_cleanup(group: i32, deadline: Instant) -> Result<Vec<u32>, String> {
+    #[cfg(unix)]
+    {
+        process_group_members_checked_before(group, deadline)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (group, deadline);
+        Ok(Vec::new())
+    }
+}
+
+fn terminate_and_reap_owned_child_with_operations(
+    child: &mut std::process::Child,
+    owned_job: OwnedCleanupJob,
+    errors: &mut Vec<String>,
+    reap_deadline: Instant,
+    mut signal_group: impl FnMut(u32) -> Result<(), String>,
+    mut inventory: impl FnMut(i32, Instant) -> Result<Vec<u32>, String>,
+) {
+    #[cfg(not(unix))]
+    let _ = &mut inventory;
+    #[cfg(unix)]
+    match observe_cleanup_child(child.id()) {
+        Ok(_) => {}
+        Err(error) => {
+            errors.push(format!(
+                "cleanup helper ownership observation failed: {error}"
+            ));
+            abort_unsettled_cleanup_helper(child.id(), errors);
+        }
+    }
+    // Setup can fail before a group exists; direct kill/reap is still required.
+    if let Err(error) = signal_group(child.id()) {
+        errors.push(error);
     }
     #[cfg(windows)]
     if let Some(job) = owned_job {
@@ -1742,22 +1927,42 @@ fn terminate_and_reap_owned_child(
     #[cfg(not(windows))]
     let _ = owned_job;
     if let Err(error) = child.kill() {
-        match child.try_wait() {
+        match CleanupChildObserver(child).try_wait() {
             Ok(Some(_)) => {}
             Ok(None) | Err(_) => errors.push(format!("cleanup helper direct kill failed: {error}")),
         }
     }
-    let reap_deadline = Instant::now() + Duration::from_secs(1);
+    #[cfg(unix)]
+    let mut last_members = Vec::new();
     loop {
-        match child.try_wait() {
+        match CleanupChildObserver(child).try_wait() {
             Ok(Some(_)) => {
                 #[cfg(unix)]
-                match process_group_members_checked(child.id() as i32) {
-                    Ok(members) if members.is_empty() => break,
-                    Ok(_) => {}
+                match inventory(child.id() as i32, reap_deadline) {
+                    Ok(members) if members.is_empty() => {
+                        match child.try_wait() {
+                            Ok(Some(_)) => break,
+                            Ok(None) => errors
+                                .push("observed exited cleanup leader was not reapable".into()),
+                            Err(error) => {
+                                errors.push(format!("cleanup helper final reap failed: {error}"))
+                            }
+                        }
+                        abort_unsettled_cleanup_helper(child.id(), errors);
+                    }
+                    Ok(members) => {
+                        last_members = members;
+                        // The first signal need not settle every descendant.
+                        // NOWAIT retains the leader's PID, preventing numeric
+                        // group reuse until the final drain and reap.
+                        if let Err(error) = signal_group(child.id()) {
+                            errors.push(error);
+                            abort_unsettled_cleanup_helper(child.id(), errors);
+                        }
+                    }
                     Err(error) => {
                         errors.push(error);
-                        std::process::abort();
+                        abort_unsettled_cleanup_helper(child.id(), errors);
                     }
                 }
                 #[cfg(not(unix))]
@@ -1766,15 +1971,51 @@ fn terminate_and_reap_owned_child(
             Ok(None) => {}
             Err(error) => {
                 errors.push(format!("cleanup helper reap failed: {error}"));
-                std::process::abort();
+                abort_unsettled_cleanup_helper(child.id(), errors);
             }
         }
         if Instant::now() >= reap_deadline {
             // Returning would permit a mutation-capable helper to outlive its
             // owner, so fail-stop this disposable integration-test process.
-            std::process::abort();
+            errors.push("cleanup helper kill/reap verification deadline exhausted".into());
+            #[cfg(unix)]
+            errors.push(format!(
+                "last observed owned group survivors (first 32): {:?}",
+                &last_members[..last_members.len().min(32)]
+            ));
+            abort_unsettled_cleanup_helper(child.id(), errors);
         }
         std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn abort_unsettled_cleanup_helper(pid: u32, errors: &[String]) -> ! {
+    use std::io::Write as _;
+    // Bypass libtest capture: abort does not flush captured test output. Only
+    // bounded process-control diagnostics belong here, never command arguments.
+    let mut stderr = std::io::stderr().lock();
+    let thread = std::thread::current();
+    write_cleanup_fail_stop_evidence(&mut stderr, pid, thread.name(), errors);
+    drop(stderr.flush());
+    std::process::abort();
+}
+
+fn write_cleanup_fail_stop_evidence(
+    output: &mut impl std::io::Write,
+    pid: u32,
+    thread_name: Option<&str>,
+    errors: &[String],
+) {
+    drop(writeln!(
+        output,
+        "cleanup helper fail-stop: owned pid/group {pid}"
+    ));
+    let test_name: String = thread_name.unwrap_or("unnamed").chars().take(160).collect();
+    drop(writeln!(output, "cleanup owner thread: {test_name}"));
+    // Keep the terminal reason even when earlier cleanup failures fill the cap.
+    for error in &errors[errors.len().saturating_sub(8)..] {
+        let detail: String = error.chars().take(512).collect();
+        drop(writeln!(output, "{detail}"));
     }
 }
 
@@ -1852,18 +2093,34 @@ fn owned_process_identity_matches(ledger: &OwnershipLedger) -> bool {
 
 #[cfg(unix)]
 fn process_group_members_checked(group: i32) -> Result<Vec<u32>, String> {
-    let output = Command::new("ps")
-        .args(["-axo", "pid=,pgid=,stat="])
-        .output()
-        .map_err(|error| format!("process inventory could not run: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("process inventory failed with {}", output.status));
-    }
-    parse_process_group_inventory(
-        group,
-        &String::from_utf8(output.stdout)
-            .map_err(|_| "process inventory was not UTF-8".to_string())?,
-    )
+    process_group_members_checked_before(group, Instant::now() + Duration::from_secs(1))
+}
+
+#[cfg(unix)]
+fn process_group_members_checked_before(group: i32, deadline: Instant) -> Result<Vec<u32>, String> {
+    let text = match process_inventory::read(deadline) {
+        Ok(text) => text,
+        Err(mut failure) => {
+            if let Some(mut probe) = failure.unsettled.take() {
+                // Only a still-waitable direct child anchors authority to kill
+                // this numeric group. Never invent ownership after ECHILD.
+                if observe_cleanup_child(group as u32).is_ok() {
+                    if let Err(error) = nix::sys::signal::killpg(
+                        nix::unistd::Pid::from_raw(group),
+                        nix::sys::signal::Signal::SIGKILL,
+                    ) {
+                        failure
+                            .message
+                            .push_str(&format!("; owned group termination failed: {error}"));
+                    }
+                }
+                drop(probe.kill());
+                abort_unsettled_cleanup_helper(probe.id(), &[failure.message]);
+            }
+            return Err(failure.message);
+        }
+    };
+    parse_process_group_inventory(group, &text)
 }
 
 #[cfg(unix)]
@@ -1954,6 +2211,31 @@ mod tests {
         assert_eq!(discovered, CLEANUP_MAX_FILES);
     }
 
+    #[test]
+    fn cleanup_fail_stop_evidence_preserves_reason_with_bounded_output() {
+        let mut output = Vec::new();
+        let mut errors = vec!["oldest-error-must-be-omitted".to_string()];
+        errors.extend((0..7).map(|_| "é".repeat(600)));
+        errors.push("terminal process inventory failed".into());
+        write_cleanup_fail_stop_evidence(&mut output, 123, Some(&"t".repeat(200)), &errors);
+        let report = String::from_utf8(output).unwrap();
+        assert!(report.contains("owned pid/group 123"));
+        assert!(report.contains("terminal process inventory failed"));
+        assert!(!report.contains("oldest-error-must-be-omitted"));
+        assert_eq!(report.lines().count(), 10);
+        assert_eq!(
+            report.lines().nth(1).unwrap().len(),
+            "cleanup owner thread: ".len() + 160
+        );
+        assert!(
+            report
+                .lines()
+                .skip(2)
+                .take(7)
+                .all(|line| line.chars().count() == 512)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn process_inventory_rejects_invalid_rows_and_ignores_only_known_zombies() {
@@ -1989,6 +2271,10 @@ mod tests {
         configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_registry = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -2534,6 +2820,17 @@ mod tests {
         );
         std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
 
+        let mut swapped_daemon = original_ledger.clone();
+        swapped_daemon.daemon_pid = Some(u32::MAX);
+        write_ledger(&guard.manifest_path, &swapped_daemon).unwrap();
+        assert!(
+            guard
+                .validate_ownership()
+                .unwrap_err()
+                .contains("stale ownership")
+        );
+        std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
+
         guard.ledger.process_start_identity = Some("pid-reuse-simulation".into());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
         assert!(
@@ -2810,6 +3107,10 @@ mod tests {
         configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_registry = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -2856,6 +3157,10 @@ mod tests {
         configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_registry = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -2900,6 +3205,10 @@ mod tests {
         configure_process_group(&mut command);
         let child = command.spawn().unwrap();
         guard.ledger.pid = child.id();
+        guard.ledger.guardian_pid = None;
+        guard.ledger.daemon_pid = None;
+        guard.ledger.daemon_process_start_identity = None;
+        guard.guardian_registry = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();

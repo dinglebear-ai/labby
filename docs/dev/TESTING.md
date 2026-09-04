@@ -302,6 +302,28 @@ browser journey separately exercises Chromium. Credential revocation requires
 verified revocation plus explicit, fallible absence evidence rather than
 forgetting ledger rows.
 
+Initial and restarted Labby daemons use the same admission gate under the outer
+runner. Their guardian keeps a verifiable group leader alive and reaps the group
+when the real daemon exits. The ownership ledger distinguishes its owned child
+leader (`pid`), optional `guardian_pid`, and actual `daemon_pid` with a separate
+daemon start identity; successful readiness verifies the daemon's membership in
+the owned group. Real-server regressions abort the owner after readiness and kill
+it after restart, then require both actual daemon absence and listener release.
+These checks do not depend on Rust `Drop` running after abrupt owner termination.
+The guardian also reaps its verified group if publishing child identity or helper
+completion metadata fails after spawning; a metadata failure cannot orphan work.
+Unix cleanup observes child exit without reaping the leader until its group is
+empty. This reserves the leader's identity while surviving group members are
+re-signaled within the unchanged one-second kill/reap grace; only then is the
+leader finally reaped. Native Windows continues to use Job Object containment.
+Process-table probes use a nonblocking, 1 MiB-capped pipe and reserve direct probe
+reaping time within that same absolute cleanup deadline. Probe failures cannot
+be interpreted as empty process groups, and cleanup attempts the owned group
+kill before failing closed on an inventory error.
+If helper kill/reap verification cannot complete, the disposable test owner still
+aborts; bounded direct-stderr diagnostics retain the terminal reason and owned
+PID/group evidence even when libtest's captured output cannot be flushed.
+
 The Bash supervisor and its process-group orchestration tests are Unix-only.
 Native Windows process-tree containment is verified separately through required
 Windows Job Object tests; the Unix gates do not replace or make those tests

@@ -311,7 +311,7 @@ if [ "$tier" = collision ]; then
 else
   LABBY_E2E_DECLARED_SHARDS="$(IFS=,; echo "${shards[*]}")"; export LABBY_E2E_DECLARED_SHARDS
   export LABBY_E2E_SHARD_DIR="$run_root/shards" LABBY_E2E_REPORT="$run_root/artifacts/coverage.json" LABBY_E2E_CLEANUP_STATUS=passed LABBY_E2E_EVIDENCE_STATUS=passed
-  cargo test -p labby --all-features --test e2e_coverage_report --locked -- --exact
+  cargo test -p labby --all-features --test e2e_coverage_report --locked -- exact_catalog_join_emits_versioned_coverage_report --exact
   shasum -a 256 "$run_root/artifacts/coverage.json" >"$run_root/artifacts/coverage.json.sha256"
 fi
 printf '{"primary":%s,"cleanup":%s,"evidence":%s}\n' "$primary" "$cleanup" "$evidence" >"$run_root/artifacts/status.json"

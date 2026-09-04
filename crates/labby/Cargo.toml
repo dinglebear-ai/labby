@@ -149,6 +149,10 @@ tracing-core = "0.1"
 # filesystem browser behavior into the integrated artifact.
 walkdir = "2"
 
+[target.'cfg(unix)'.dev-dependencies]
+# Observe exited cleanup leaders without releasing their PID/group identity.
+rustix = { version = "1", features = ["fs", "process"] }
+
 [lib]
 path = "src/lib.rs"
 

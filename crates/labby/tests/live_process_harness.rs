@@ -10,6 +10,10 @@ use std::{process::Command, thread};
 use support::LiveLabbyBuilder;
 
 #[cfg(unix)]
+#[path = "live_process_harness/daemon_supervisor.rs"]
+mod daemon_supervisor;
+
+#[cfg(unix)]
 #[test]
 fn orchestration_cleanup_kills_term_resistant_process_group_within_deadline() {
     let run_root = tempfile::tempdir().expect("temporary parent");
@@ -435,7 +439,10 @@ command = "/definitely/not/allowed"
         }
         Err(failure) => failure,
     };
-    assert!(failure.contains("loaded gateway config failed validation"));
+    assert!(
+        failure.contains("loaded gateway config failed validation"),
+        "{failure}"
+    );
     assert!(!failure.contains("panicked at"));
 }
 
@@ -525,4 +532,14 @@ fn sigterm_drives_supervised_cleanup_to_completion() {
     let owned_root =
         std::path::PathBuf::from(String::from_utf8(std::fs::read(marker).unwrap()).unwrap());
     assert!(!owned_root.exists(), "signal cleanup retained owned root");
+}
+#[test]
+fn aggregate_phase_runs_only_the_exact_coverage_join() {
+    let script = include_str!("../../../scripts/ci/labby-live-e2e.sh");
+    assert!(script.contains("--test e2e_coverage_report --locked -- exact_catalog_join_emits_versioned_coverage_report --exact"));
+    assert!(script.contains("LABBY_E2E_DECLARED_SHARDS"));
+    assert!(script.contains("LABBY_E2E_CLEANUP_STATUS=passed LABBY_E2E_EVIDENCE_STATUS=passed"));
+    assert!(script.contains(
+        "contracts) cargo test -p labby --all-features --test action_matrix_completeness --locked"
+    ));
 }
