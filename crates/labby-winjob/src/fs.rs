@@ -448,6 +448,9 @@ fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::R
                 if GetAce(dacl, index, &mut ace) == 0 {
                     return Err(io::Error::last_os_error());
                 }
+                if ace.is_null() {
+                    return Err(denied());
+                }
                 let header = &*ace.cast::<windows_sys::Win32::Security::ACE_HEADER>();
                 if directory && header.AceType == 1 {
                     continue;
