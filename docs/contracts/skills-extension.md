@@ -399,8 +399,8 @@ tools, prompts, and resources — none of which is the method a caller needs.
 
 ## Budgets
 
-These combine SEP-2640's required per-skill interoperability limits with
-host-chosen catalog and parsing bounds. They are defined in
+Host-chosen, not spec-mandated; SEP-2640 defines no limits and its threat model
+(T6) puts the responsibility on the host. Defined in
 `crates/labby-runtime/src/skills/limits.rs`.
 
 | Budget | Value |

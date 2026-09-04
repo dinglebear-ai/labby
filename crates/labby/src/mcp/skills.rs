@@ -80,6 +80,32 @@ where
 }
 
 impl LabMcpServer {
+    fn product_credential_bound_for_skills(
+        &self,
+        parts: &axum::http::request::Parts,
+        project_id: &str,
+    ) -> bool {
+        let Some(identity) = parts.extensions.get::<labby_auth::VerifiedIdentity>() else {
+            return false;
+        };
+        if identity.authenticator() != labby_auth::Authenticator::ProductCredential {
+            return false;
+        }
+        let source = parts
+            .extensions
+            .get::<labby_primitives::product_credential::ProductCredentialGrant>();
+        let bound = parts
+            .extensions
+            .get::<labby_primitives::product_credential::BoundAccessGrant>();
+        source.zip(bound).is_some_and(|(source, bound)| {
+            crate::dispatch::skill_library::auth::product_grants_are_route_bound(source, bound)
+                && bound.project_id == project_id
+                && self.route_scope.matches_product_route(&bound.route_id)
+                && self.route_scope.allows_service("skills")
+                && self.route_scope.exposes_skills()
+        })
+    }
+
     pub(crate) async fn artifact_access_for_request(
         &self,
         context: &RequestContext<RoleServer>,
@@ -102,13 +128,20 @@ impl LabMcpServer {
                 message: "Skill Library project context is invalid".to_owned(),
                 param: "x-labby-project-id".to_owned(),
             })?;
-        let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
-            identity.clone(),
-            auth.scopes.clone(),
+        let transport = if self.product_credential_bound_for_skills(parts, project_id) {
+            crate::dispatch::skill_library::auth::SkillLibraryTransport::product_bearer(
+                crate::dispatch::skill_library::auth::SkillLibrarySurface::Mcp,
+            )
+        } else {
             crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
                 crate::dispatch::skill_library::auth::SkillLibrarySurface::Mcp,
                 true,
-            ),
+            )
+        };
+        let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
+            identity.clone(),
+            auth.scopes.clone(),
+            transport,
         );
         let request_id =
             optional_header_str(&parts.headers, "x-request-id")?.unwrap_or("mcp-skills-read");
@@ -173,12 +206,18 @@ impl LabMcpServer {
                     required_scopes: Vec::new(),
                 }
             })?;
+        let product_credential_bound = self.product_credential_bound_for_skills(parts, project_id);
         let request_id = optional_header_str(&parts.headers, "x-request-id")?;
         let correlation = super::call_tool::skill_library_callback_correlation(request_id)?;
+        let transport = if boundary.product_credential_bound && product_credential_bound {
+            crate::dispatch::skill_library::auth::SkillLibraryTransport::product_app_callback()
+        } else {
+            crate::dispatch::skill_library::auth::SkillLibraryTransport::app_callback(true, true)
+        };
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
             boundary.identity.clone(),
             boundary.scopes.clone(),
-            crate::dispatch::skill_library::auth::SkillLibraryTransport::app_callback(true, true),
+            transport,
         );
         if crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS
             .iter()

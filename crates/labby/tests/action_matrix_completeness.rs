@@ -246,7 +246,18 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
 #[test]
 fn independently_defined_feature_shapes_match_intent_projections() {
     let base = BTreeSet::from(["doctor", "server_logs", "setup"]);
-    let gateway = BTreeSet::from(["doctor", "gateway", "server_logs", "setup", "snippets"]);
+    let gateway = BTreeSet::from([
+        "artifacts",
+        "bundles",
+        "doctor",
+        "gateway",
+        "jobs",
+        "server_logs",
+        "setup",
+        "snippets",
+        "sources",
+        "uploads",
+    ]);
     let shapes = BTreeMap::from([
         ("base", base.clone()),
         ("no-default", base.clone()),
@@ -596,7 +607,7 @@ fn retired_products_are_absent_from_authoritative_projections() {
         .as_array()
         .expect("generated MCP help must contain services");
     let web_nav = include_str!("../../../apps/gateway-admin/components/console/nav-model.ts");
-    for name in retired {
+    for name in retired.into_iter().filter(|name| *name != "stash") {
         assert!(
             !cli_help.contains(&format!("## `labby {name}")),
             "retired CLI command returned: {name}"

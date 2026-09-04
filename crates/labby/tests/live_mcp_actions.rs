@@ -36,6 +36,7 @@ fn mcp_intents() -> Vec<&'static action_matrix::CaseIntent> {
 fn expected_service_tools() -> BTreeSet<String> {
     mcp_intents()
         .into_iter()
+        .filter(|intent| cfg!(feature = "fs") || intent.service != "fs")
         .map(|intent| intent.service.clone())
         .collect()
 }
@@ -568,6 +569,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
 
 #[cfg(feature = "lab-admin")]
 #[tokio::test]
+#[cfg(feature = "lab-admin")]
 async fn local_stdio_executes_all_lab_admin_intents_before_recording_evidence() {
     let root = tempfile::tempdir().expect("local stdio MCP root");
     std::fs::create_dir_all(root.path().join("tmp")).unwrap();

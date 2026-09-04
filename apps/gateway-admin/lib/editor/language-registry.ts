@@ -5,6 +5,7 @@ import { yaml } from '@codemirror/lang-yaml'
 import { StreamLanguage } from '@codemirror/language'
 import { shell } from '@codemirror/legacy-modes/mode/shell'
 import { toml } from '@codemirror/legacy-modes/mode/toml'
+import { properties } from '@codemirror/legacy-modes/mode/properties'
 import type { Extension } from '@codemirror/state'
 
 import { autocompleteJsonDocument, validateJsonDocument } from './json-schema'
@@ -14,6 +15,7 @@ import type { EditorDocumentConfig, EditorLanguage } from './types'
 
 export function detectEditorLanguage(path: string): EditorLanguage {
   const normalized = path.replaceAll('\\', '/')
+  if (normalized.endsWith('/.env') || normalized === '.env' || /\.env\.[^/]+$/.test(normalized)) return 'dotenv'
   if (normalized.endsWith('.json')) return 'json'
   if (normalized.endsWith('.yaml') || normalized.endsWith('.yml')) return 'yaml'
   if (normalized.endsWith('.md')) return 'markdown'
@@ -61,6 +63,8 @@ export async function loadLanguageExtension(language: EditorLanguage): Promise<E
       return [StreamLanguage.define(shell)]
     case 'toml':
       return [StreamLanguage.define(toml)]
+    case 'dotenv':
+      return [StreamLanguage.define(properties)]
     case 'javascript':
       return [javascript()]
     case 'typescript':

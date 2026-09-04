@@ -107,6 +107,10 @@ library; neither is a runtime dependency for serving an already imported Skill.
 Imports select one exact remote Artifact and revision via a named, server-owned
 connection and do not implicitly activate the result.
 
+For the concrete Depot/notification-Worker connection, request shape, bearer
+placement, and address-pinning requirements, see
+[Runtime Configuration](../runtime/CONFIG.md#durable-depot-skill-imports).
+
 Operator directory Skills under `$LABBY_HOME/skills` coexist with managed
 Artifacts. Active first-party names are globally unique in Labby's
 `skill://labby/...` namespace; a conflicting activation has exactly one winner.

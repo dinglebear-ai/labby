@@ -126,7 +126,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `gateway` | `gateway.service_config.get` | false | false | true | lab:admin | `service*: string` | `ServiceConfigView` | mcp, api, web |
 | `gateway` | `gateway.service_config.set` | false | false | true | lab:admin | `service*: string`<br>`values*: json` | `ServiceConfigView` | mcp, api, web |
 | `gateway` | `gateway.skills.list` | false | false | true | lab:admin | `upstream: string` | `UpstreamSkillsView[]` | cli, mcp, api |
-| `gateway` | `gateway.status` | false | false | true | lab:admin | `name: string` | `GatewayRuntimeView[]` | mcp, api |
+| `gateway` | `gateway.status` | false | false | true | lab:admin | `name: string` | `GatewayRuntimeView[]` | mcp, api, web |
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin |  | `SupportedServiceView[]` | mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
 | `gateway` | `gateway.update` | false | false | true | lab:admin | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |

@@ -118,6 +118,8 @@ test('gateway table sorts servers by name and shows full stdio command line', ()
   assert.ok(markup.indexOf('Neo4j Memory') < markup.indexOf('Zed Search'))
   assert.match(markup, /uvx neo4j-memory-mcp/)
   assert.match(markup, /Sort by server/)
+  assert.match(markup, /Sort by uptime/)
+  assert.match(markup, /aria-sort="none"[^>]*><span>Uptime<\/span>/)
 })
 
 

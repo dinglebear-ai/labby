@@ -1108,6 +1108,29 @@ mod tests {
         assert!(coordinator.repository.contains_key("repository-primary"));
     }
 
+    #[test]
+    fn duplicate_connection_ids_are_rejected() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let root = tempfile::tempdir().unwrap();
+        let source = crate::config::ArtifactSourceConfig {
+            id: "duplicate-source".to_owned(),
+            kind: crate::config::ArtifactSourceKind::Depot,
+            endpoint: "https://depot.example/v1/exact".to_owned(),
+            control_plane_url: None,
+            pinned_addresses: vec![IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))],
+            bearer_token_env: None,
+        };
+        let config = crate::config::ArtifactPreferences {
+            sources: vec![source.clone(), source],
+        };
+
+        assert!(matches!(
+            ImportCoordinator::from_config(&config, root.path()),
+            Err(ArtifactError::Conflict("duplicate_import_connection_id"))
+        ));
+    }
+
     #[tokio::test]
     async fn missing_provider_credential_keeps_local_coordinator_available() {
         let root = tempfile::tempdir().unwrap();

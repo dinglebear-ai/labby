@@ -480,20 +480,14 @@ mod tests {
     }
 
     #[test]
-    fn detailed_rejection_preserves_the_frontmatter_schema_violation() {
+    fn accepts_claude_compatible_allowed_tools_list() {
         let mut entry = valid_entry();
         entry.frontmatter.insert(
             "allowed-tools".to_string(),
             serde_json::json!(["Read", "Write"]),
         );
 
-        let rejection = validate_skill_entry_detailed(&entry).unwrap_err();
-
-        assert_eq!(rejection.reason, SkillRejection::InvalidFrontmatter);
-        assert_eq!(
-            rejection.detail,
-            "frontmatter `allowed-tools` must be a space-separated string"
-        );
+        validate_skill_entry_detailed(&entry).expect("bounded string lists are compatible");
     }
 
     #[test]

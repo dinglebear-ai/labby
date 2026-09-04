@@ -25,6 +25,8 @@ pub struct AppState {
     pub registry: Arc<ToolRegistry>,
     /// Pre-built service clients for connection pool reuse.
     pub clients: Arc<ServiceClients>,
+    /// Optional Depot control-plane client. Authority remains server-held.
+    pub depot: Arc<crate::dispatch::depot::DepotClient>,
     /// Shared HTTP client for protected MCP reverse proxy requests.
     pub protected_mcp_http_client: reqwest::Client,
     /// Shared public OAuth callback relay forwarder.
@@ -142,6 +144,7 @@ impl AppState {
             catalog,
             registry: Arc::new(registry),
             clients,
+            depot: Arc::new(crate::dispatch::depot::DepotClient::from_env()),
             protected_mcp_http_client,
             // `PublicRelayForwarder::new()` only fails on reqwest client
             // build errors (e.g. TLS backend init failure), the same class

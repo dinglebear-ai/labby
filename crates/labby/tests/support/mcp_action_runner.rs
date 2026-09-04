@@ -212,7 +212,15 @@ impl BuiltinMcpRunner {
 
     async fn start_with_config(config_text: Option<&str>) -> Result<Self, String> {
         drop(rustls::crypto::ring::default_provider().install_default());
-        let mut builder = LiveLabbyBuilder::new().env("LABBY_MCP_HTTP_TOKEN", TEST_TOKEN);
+        let mut builder = LiveLabbyBuilder::new()
+            .env("LABBY_MCP_HTTP_TOKEN", TEST_TOKEN)
+            // The host's optional Claude installation must not change the
+            // action-matrix result. Exercise the declared unavailable-inventory
+            // contract deterministically on every CI runner.
+            .env(
+                "LABBY_CLAUDE_BIN",
+                "/definitely/not/a/labby-e2e-claude-binary",
+            );
         if let Some(config_text) = config_text {
             builder = builder.config(config_text);
         }

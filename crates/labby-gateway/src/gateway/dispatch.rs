@@ -832,7 +832,7 @@ async fn handle_gateway_actions(
             let params: GatewayStatusParams = parse_params(params_value)?;
             manager
                 .refresh_gateway_status_catalog(&enrichment_scope, params.name.as_deref())
-                .await;
+                .await?;
             to_json(
                 manager
                     .status_scoped(params.name.as_deref(), &enrichment_scope)

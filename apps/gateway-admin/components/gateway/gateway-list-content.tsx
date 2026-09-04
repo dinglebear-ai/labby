@@ -1,17 +1,20 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useDeferredValue, useMemo, useState, type ReactNode } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity,
   ArrowLeft,
   Cable,
   Download,
+  LayoutGrid,
+  List,
   Plus,
   RefreshCw,
   Search,
   SlidersHorizontal,
   TriangleAlert,
+  Table2,
   Wrench,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -56,6 +59,7 @@ import { CodeModeHeaderToggle } from './code-mode-toggle'
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
 const BULK_RELOAD_CONCURRENCY = 4
+type GatewayLayout = 'table' | 'cards' | 'list'
 const GatewayFormDialog = dynamic(
   () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
   { ssr: false },
@@ -150,7 +154,7 @@ export interface GatewayListViewProps {
 }
 
 export function GatewayListContent() {
-  const { data: gateways, isLoading, error } = useGateways()
+  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm } = useGateways()
   const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, enableGateway, disableGateway } =
     useGatewayMutations()
 
@@ -174,6 +178,17 @@ export function GatewayListContent() {
     gateway: Gateway
     result: Awaited<ReturnType<typeof testGateway>>
   } | null>(null)
+
+  useEffect(() => {
+    if (!catalogWarmError) return
+    toast.error('Tool catalog refresh failed', {
+      description: getErrorMessage(catalogWarmError, 'The current capability counts may be incomplete.'),
+      action: {
+        label: 'Retry',
+        onClick: () => void retryCatalogWarm(),
+      },
+    })
+  }, [catalogWarmError, retryCatalogWarm])
   const [cleanupResult, setCleanupResult] = useState<{
     gateway: Gateway
     result: Awaited<ReturnType<typeof cleanupGateway>>
@@ -673,13 +688,31 @@ export function GatewayListView({
   onToggleEnabled,
   onDelete,
 }: GatewayListViewProps) {
+  const [layout, setLayout] = useState<GatewayLayout>('table')
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('labby.gateway.layout')
+      if (saved === 'table' || saved === 'cards' || saved === 'list') setLayout(saved)
+    } catch {
+      toast.warning('Gateway layout could not be loaded; using the default for this session.')
+    }
+  }, [])
+
+  const selectLayout = (next: GatewayLayout) => {
+    setLayout(next)
+    try {
+      window.localStorage.setItem('labby.gateway.layout', next)
+    } catch {
+      toast.warning('Gateway layout changed for this session but could not be saved.')
+    }
+  }
   return (
     <>
       <AppHeader
         breadcrumbs={[{ label: 'Gateway' }]}
         actions={
           <div className="flex items-center gap-2">
-            {!showToolsView ? <CodeModeHeaderToggle /> : null}
             {showToolsView ? (
               <Button
                 variant="outline"
@@ -708,27 +741,6 @@ export function GatewayListView({
                 <SlidersHorizontal className="size-3.5" />
               </Button>
             ) : null}
-            <Button
-              onClick={onCreate}
-              className={cn(
-                gatewayActionTone('accent'),
-                'hidden border px-4 text-aurora-text-primary hover:bg-aurora-hover-bg hover:text-aurora-text-primary sm:inline-flex',
-              )}
-            >
-              <Plus className="mr-2 size-4" />
-              Add Server
-            </Button>
-            <Button
-              onClick={onCreate}
-              size="icon"
-              className={cn(
-                gatewayActionTone('accent'),
-                'size-9 border sm:hidden',
-              )}
-              aria-label="Add server"
-            >
-              <Plus className="size-3.5" />
-            </Button>
           </div>
         }
       />
@@ -797,6 +809,7 @@ export function GatewayListView({
               onLensChange={onPrimaryLensChange}
               actions={
                 <>
+                  <CodeModeHeaderToggle />
                   <Button
                     variant="outline"
                     size="icon"
@@ -834,13 +847,24 @@ export function GatewayListView({
                   >
                     <Download className="size-3.5" />
                   </Button>
+                  <Button
+                    onClick={onCreate}
+                    variant="outline"
+                    size="icon"
+                    className={cn(gatewayActionTone('accent'), 'size-9 border')}
+                    title="Add server"
+                    aria-label="Add server"
+                  >
+                    <Plus className="size-3.5" />
+                  </Button>
                 </>
               }
             />
           </div>
 
           <div className="grid gap-4">
-            <div data-gateway-filters="all-viewports">
+            <div className="flex min-w-0 items-center gap-2" data-gateway-filters="all-viewports">
+              <div className="min-w-0 flex-1">
               <GatewayFilters
               mode={showToolsView ? 'tools' : 'gateways'}
               search={activeSearch}
@@ -859,6 +883,30 @@ export function GatewayListView({
               onExposureChange={onExposureChange}
               onClearFilters={onClearFilters}
               />
+              </div>
+              {!showToolsView ? (
+                <div className="inline-flex shrink-0 rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-0.5" role="group" aria-label="Server view">
+                  {([
+                    ['table', Table2, 'Table view'],
+                    ['cards', LayoutGrid, 'Card view'],
+                    ['list', List, 'List view'],
+                  ] as const).map(([value, Icon, label]) => (
+                    <Button
+                      key={value}
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={cn('size-8', layout === value && 'bg-aurora-selected-bg text-aurora-accent-strong')}
+                      aria-label={label}
+                      aria-pressed={layout === value}
+                      title={label}
+                      onClick={() => selectLayout(value)}
+                    >
+                      <Icon className="size-3.5" />
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             {/* min-w-0: without it this grid item's min-content contribution is
@@ -912,9 +960,10 @@ export function GatewayListView({
                   />
                 )
               ) : (
-                <GatewayTable
-                  gateways={filteredGateways}
-                  density={density}
+                  <GatewayTable
+                    gateways={filteredGateways}
+                    density={layout === 'list' ? 'condensed' : density}
+                    presentation={layout}
                   cleanupSummaryByGatewayId={cleanupSummaryByGatewayId}
                   onEdit={onEdit}
                   onTest={onTest}

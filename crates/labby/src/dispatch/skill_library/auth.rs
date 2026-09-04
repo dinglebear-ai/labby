@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 use labby_auth::{Authenticator, VerifiedIdentity};
+use labby_primitives::product_credential::{BoundAccessGrant, ProductCredentialGrant};
 use labby_runtime::artifacts::{
     LibraryActorId, LibraryAuthorization, LibraryGrant, LibraryOwnership, LibraryTenantId,
     SkillVisibility,
@@ -142,6 +143,7 @@ pub(crate) struct SkillLibraryTransport {
     pub(crate) csrf_verified: bool,
     pub(crate) audience_bound: bool,
     pub(crate) host_established_callback: bool,
+    pub(crate) product_credential_bound: bool,
 }
 
 impl SkillLibraryTransport {
@@ -152,6 +154,7 @@ impl SkillLibraryTransport {
             csrf_verified,
             audience_bound: false,
             host_established_callback: false,
+            product_credential_bound: false,
         }
     }
 
@@ -162,6 +165,18 @@ impl SkillLibraryTransport {
             csrf_verified: false,
             audience_bound,
             host_established_callback: false,
+            product_credential_bound: false,
+        }
+    }
+
+    pub(crate) const fn product_bearer(surface: SkillLibrarySurface) -> Self {
+        Self {
+            surface,
+            same_origin: false,
+            csrf_verified: false,
+            audience_bound: true,
+            host_established_callback: false,
+            product_credential_bound: true,
         }
     }
 
@@ -172,6 +187,18 @@ impl SkillLibraryTransport {
             csrf_verified: false,
             audience_bound,
             host_established_callback: host_established,
+            product_credential_bound: false,
+        }
+    }
+
+    pub(crate) const fn product_app_callback() -> Self {
+        Self {
+            surface: SkillLibrarySurface::AppCallback,
+            same_origin: false,
+            csrf_verified: false,
+            audience_bound: true,
+            host_established_callback: true,
+            product_credential_bound: true,
         }
     }
 }
@@ -198,6 +225,27 @@ impl SkillLibraryCaller {
             transport,
         }
     }
+}
+
+pub(crate) fn product_grants_match(
+    source: &ProductCredentialGrant,
+    bound: &BoundAccessGrant,
+) -> bool {
+    source.issuer == bound.issuer
+        && source.subject == bound.subject
+        && source.credential_id == bound.credential_id
+        && source.credential_generation == bound.credential_generation
+        && source.scopes == bound.scopes
+        && source.resource == bound.resource
+        && source.audience == bound.audience
+        && source.expires_at == bound.expires_at
+}
+
+pub(crate) fn product_grants_are_route_bound(
+    source: &ProductCredentialGrant,
+    bound: &BoundAccessGrant,
+) -> bool {
+    product_grants_match(source, bound) && bound.audience == bound.resource
 }
 
 /// Target visibility relevant to non-enumerating read policy.
@@ -705,17 +753,22 @@ fn validate_transport(
         | SkillLibrarySurface::Mcp
         | SkillLibrarySurface::CodeMode
         | SkillLibrarySurface::Resource => {
-            matches!(
+            (matches!(
                 identity_transport,
                 Authenticator::OauthBearer | Authenticator::StaticBearer
-            ) && caller.transport.audience_bound
+            ) || (identity_transport == Authenticator::ProductCredential
+                && caller.transport.surface != SkillLibrarySurface::ApiBearer
+                && caller.transport.product_credential_bound))
+                && caller.transport.audience_bound
                 && scope_allowed
         }
         SkillLibrarySurface::AppCallback => {
-            matches!(
+            (matches!(
                 identity_transport,
                 Authenticator::OauthBearer | Authenticator::StaticBearer
-            ) && caller.transport.audience_bound
+            ) || (identity_transport == Authenticator::ProductCredential
+                && caller.transport.product_credential_bound))
+                && caller.transport.audience_bound
                 && caller.transport.host_established_callback
                 && scope_allowed
         }
@@ -929,6 +982,88 @@ mod tests {
         .await;
         assert!(matches!(
             denied,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+    }
+
+    #[tokio::test]
+    async fn project_bootstrap_credential_can_use_the_bound_mcp_skill_library_surface() {
+        let directory = secure_tempdir();
+        let path = directory.path().join("access.db");
+        let store = AccessStore::open(path.clone()).await.unwrap();
+        let owner = VerifiedIdentity::local_credential(
+            Authenticator::ProductCredential,
+            "bootstrap-project-credential",
+        )
+        .unwrap();
+        store
+            .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        drop(store);
+        let runtime = AccessRuntime::initialize(path).await;
+
+        let decision = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                owner,
+                ["lab:read".to_string(), "lab:admin".to_string()],
+                SkillLibraryTransport::product_bearer(SkillLibrarySurface::Mcp),
+            ),
+            "bootstrap-default",
+            SkillLibraryAction::List,
+            "library",
+            SkillLibraryTarget::SharedActive,
+            "project-credential-list",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(decision.ownership.owner_id.as_str(), "bootstrap-owner");
+
+        let generic_api = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                VerifiedIdentity::local_credential(
+                    Authenticator::ProductCredential,
+                    "bootstrap-project-credential",
+                )
+                .unwrap(),
+                ["lab:admin".to_string()],
+                SkillLibraryTransport::product_bearer(SkillLibrarySurface::ApiBearer),
+            ),
+            "bootstrap-default",
+            SkillLibraryAction::Import,
+            "artifact",
+            SkillLibraryTarget::CreateForCaller,
+            "generic-api-product-credential",
+        )
+        .await;
+        assert!(matches!(
+            generic_api,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+
+        let unbound = decide(
+            &runtime,
+            SkillLibraryCaller::new(
+                VerifiedIdentity::local_credential(
+                    Authenticator::ProductCredential,
+                    "bootstrap-project-credential",
+                )
+                .unwrap(),
+                ["lab:admin".to_string()],
+                SkillLibraryTransport::bearer(SkillLibrarySurface::ApiBearer, true),
+            ),
+            "bootstrap-default",
+            SkillLibraryAction::Import,
+            "artifact",
+            SkillLibraryTarget::CreateForCaller,
+            "unbound-product-credential",
+        )
+        .await;
+        assert!(matches!(
+            unbound,
             Err(SkillLibraryAuthorizationError::Denied)
         ));
     }
@@ -1277,6 +1412,7 @@ mod tests {
                     csrf_verified: false,
                     audience_bound: false,
                     host_established_callback: false,
+                    product_credential_bound: false,
                 },
             );
             assert!(validate_transport(&cli, action).is_ok());

@@ -988,9 +988,14 @@ async fn run_http(
     // process. This guard is NOT applied in stdio/MCP-only mode — `labby serve
     // mcp --stdio` may run freely alongside a running master.
     let _master_lock: std::fs::File = {
-        let lock_dir = std::env::var("HOME")
+        // Keep explicitly isolated installations isolated all the way through
+        // daemon ownership. This previously ignored LABBY_HOME and contended
+        // with the operator's primary Labby instance even when every other
+        // path had been redirected to a preview root.
+        let lock_dir = std::env::var_os("LABBY_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."))
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."))
             .join(".local/state/labby");
         std::fs::create_dir_all(&lock_dir)
             .with_context(|| format!("create master lock dir {}", lock_dir.display()))?;

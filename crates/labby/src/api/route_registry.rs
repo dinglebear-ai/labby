@@ -423,6 +423,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         crate::api::services::doctor::descriptors(),
     ));
     routes.extend(prefixed(
+        "/v1/depot",
+        crate::api::services::depot::descriptors(),
+    ));
+    routes.extend(prefixed(
         "/v1/setup",
         crate::api::services::setup::descriptors(),
     ));

@@ -170,6 +170,7 @@ impl LiveIdentity {
             .existing_root(&root)
             .config(policy_text)
             .env("LABBY_MCP_HTTP_TOKEN", static_token)
+            .env("LABBY_WEB_UI_AUTH_DISABLED", "false")
             .env("LABBY_PUBLIC_URL", format!("https://{issuer_host}"))
             .env("LABBY_IDENTITY_CANARY", &seeded_canary)
             .start()

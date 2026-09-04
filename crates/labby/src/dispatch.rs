@@ -4,6 +4,7 @@ pub(crate) mod artifact_control;
 #[cfg(feature = "skills")]
 pub mod artifacts;
 pub mod clients;
+pub mod depot;
 pub mod doctor;
 pub mod error;
 pub mod fs;
