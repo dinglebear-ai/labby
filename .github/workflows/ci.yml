@@ -1110,6 +1110,10 @@ jobs:
     # Rust changes must prove it natively before the shared gate can pass.
     if: ${{ needs.changes.outputs.rust_test == 'true' }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
@@ -1253,12 +1257,13 @@ jobs:
       - name: Compile every Windows workspace target
         shell: pwsh
         run: cargo test --workspace --all-features --locked --no-run
-      - name: Run Windows-specific filesystem and ACL tests
+      - name: Run native Windows workspace tests (shard ${{ matrix.shard }}/4)
         shell: pwsh
-        run: cargo nextest run --workspace --all-features --locked --profile ci -E 'test(/windows/) or test(/acl/) or test(/reparse/)' --no-tests pass
+        run: cargo nextest run --workspace --all-features --locked --profile ci --partition hash:${{ matrix.shard }}/4
       - name: Run Windows Job Object reaping integration test
+        if: matrix.shard == 1
         shell: pwsh
-        run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only --no-tests pass
+        run: cargo nextest run -p labby --test windows_job_object_reaping --all-features --locked --profile ci --run-ignored ignored-only
       - name: Enforce Windows build cache caps
         if: always()
         shell: pwsh
