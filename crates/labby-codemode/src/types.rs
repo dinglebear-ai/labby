@@ -5,6 +5,7 @@
 //! `<namespace>::<tool>`; the kernel never learns what backs the namespace.
 
 use std::collections::{BTreeSet, VecDeque};
+use std::fmt;
 
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
@@ -523,8 +524,8 @@ impl CodeModeExecutionError {
     }
 }
 
-impl std::fmt::Display for CodeModeExecutionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for CodeModeExecutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.fmt(f)
     }
 }
@@ -884,7 +885,7 @@ fn entry_serialized_size(entry: &CodeModeHistoryEntry) -> usize {
 }
 
 /// Caller identity and authorization facts presented to the host-neutral Code Mode kernel.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum CodeModeCaller {
     /// Trusted local caller that is granted all Code Mode capabilities.
     TrustedLocal,
@@ -904,6 +905,47 @@ pub enum CodeModeCaller {
         sub: Option<String>,
         context_token: String,
     },
+    /// Scoped caller carrying a credential for one host-owned external
+    /// provider. The kernel never interprets or propagates this credential.
+    ScopedHostProvider {
+        capabilities: CodeModeCallerCapabilities,
+        sub: Option<String>,
+        provider_token: String,
+        provider_request_id: String,
+    },
+}
+
+impl fmt::Debug for CodeModeCaller {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TrustedLocal => formatter.write_str("TrustedLocal"),
+            Self::Scoped { capabilities, sub } => formatter
+                .debug_struct("Scoped")
+                .field("capabilities", capabilities)
+                .field("sub", sub)
+                .finish(),
+            Self::ScopedPrivate {
+                capabilities, sub, ..
+            } => formatter
+                .debug_struct("ScopedPrivate")
+                .field("capabilities", capabilities)
+                .field("sub", sub)
+                .field("context_token", &"[REDACTED]")
+                .finish(),
+            Self::ScopedHostProvider {
+                capabilities,
+                sub,
+                provider_request_id,
+                ..
+            } => formatter
+                .debug_struct("ScopedHostProvider")
+                .field("capabilities", capabilities)
+                .field("sub", sub)
+                .field("provider_token", &"[REDACTED]")
+                .field("provider_request_id", provider_request_id)
+                .finish(),
+        }
+    }
 }
 
 /// Host-computed authorization facts for a scoped Code Mode caller.
@@ -964,9 +1006,9 @@ impl CodeModeCaller {
     pub fn can_use_snippets(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
-                capabilities.can_use_snippets
-            }
+            Self::Scoped { capabilities, .. }
+            | Self::ScopedPrivate { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_use_snippets,
         }
     }
 
@@ -975,9 +1017,9 @@ impl CodeModeCaller {
     pub fn can_execute(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
-                capabilities.can_execute
-            }
+            Self::Scoped { capabilities, .. }
+            | Self::ScopedPrivate { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_execute,
         }
     }
 
@@ -986,9 +1028,9 @@ impl CodeModeCaller {
     pub fn can_read(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
-                capabilities.can_read
-            }
+            Self::Scoped { capabilities, .. }
+            | Self::ScopedPrivate { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. } => capabilities.can_read,
         }
     }
 
@@ -999,9 +1041,9 @@ impl CodeModeCaller {
     pub fn is_admin(&self) -> bool {
         match self {
             Self::TrustedLocal => true,
-            Self::Scoped { capabilities, .. } | Self::ScopedPrivate { capabilities, .. } => {
-                capabilities.is_admin
-            }
+            Self::Scoped { capabilities, .. }
+            | Self::ScopedPrivate { capabilities, .. }
+            | Self::ScopedHostProvider { capabilities, .. } => capabilities.is_admin,
         }
     }
 
@@ -1010,7 +1052,31 @@ impl CodeModeCaller {
     pub fn subject(&self) -> Option<&str> {
         match self {
             Self::TrustedLocal => None,
-            Self::Scoped { sub, .. } | Self::ScopedPrivate { sub, .. } => sub.as_deref(),
+            Self::Scoped { sub, .. }
+            | Self::ScopedPrivate { sub, .. }
+            | Self::ScopedHostProvider { sub, .. } => sub.as_deref(),
+        }
+    }
+
+    /// Return the opaque host-provider credential, when the surface supplied
+    /// one. It is intentionally unavailable to generic upstream propagation.
+    #[must_use]
+    pub fn host_provider_token(&self) -> Option<&str> {
+        match self {
+            Self::ScopedHostProvider { provider_token, .. } => Some(provider_token),
+            _ => None,
+        }
+    }
+
+    /// Return the parent provider correlation identifier verified by the host.
+    #[must_use]
+    pub fn host_provider_request_id(&self) -> Option<&str> {
+        match self {
+            Self::ScopedHostProvider {
+                provider_request_id,
+                ..
+            } => Some(provider_request_id),
+            _ => None,
         }
     }
 }
