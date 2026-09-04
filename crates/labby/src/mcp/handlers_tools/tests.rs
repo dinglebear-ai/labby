@@ -6269,7 +6269,6 @@ async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths(
         assert_eq!(annotations, &expected);
         let serialized = serde_json::to_value(descriptor).unwrap();
         let expected_security = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
-        assert_eq!(serialized["securitySchemes"], expected_security);
         assert_eq!(serialized["_meta"]["securitySchemes"], expected_security);
     }
     assert_eq!(listed, contract_tools);

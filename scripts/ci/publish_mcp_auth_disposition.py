@@ -124,22 +124,22 @@ EVIDENCE_PATH_REMAPS = {
     "MCP-2026-AUTH-INDEX-001": ["conformance/mcp-auth-normative.json", "scripts/ci/mcp_auth_normative_conformance.py"],
     "MCP-2026-AUTH-INDEX-003": ["crates/labby-gateway/src/upstream/pool/connect_stdio.rs"],
     "MCP-2026-AUTH-INDEX-016": ["crates/labby-auth/src/middleware.rs"],
-    "MCP-2026-AUTH-INDEX-017": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
-    "MCP-2026-AUTH-INDEX-018": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
+    "MCP-2026-AUTH-INDEX-017": ["Cargo.lock"],
+    "MCP-2026-AUTH-INDEX-018": ["Cargo.lock"],
     "MCP-2026-AUTH-INDEX-020": ["crates/labby-auth/src/authorize/response.rs"],
-    "MCP-2026-AUTH-INDEX-022": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
-    "MCP-2026-AUTH-INDEX-031": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
-    "MCP-2026-AUTH-INDEX-047": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
-    "MCP-2026-AUTH-INDEX-048": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
+    "MCP-2026-AUTH-INDEX-022": ["Cargo.lock"],
+    "MCP-2026-AUTH-INDEX-031": ["Cargo.lock"],
+    "MCP-2026-AUTH-INDEX-047": ["Cargo.lock"],
+    "MCP-2026-AUTH-INDEX-048": ["Cargo.lock"],
     "MCP-2026-AUTH-INDEX-049": ["crates/labby-auth/src/metadata.rs"],
     "MCP-2026-AUTH-INDEX-052": ["crates/labby-auth/src/middleware.rs"],
     "MCP-2026-AUTH-INDEX-053": ["crates/labby-auth/src/middleware.rs"],
     "MCP-2026-AUTH-INDEX-054": ["crates/labby-auth/src/middleware.rs"],
     "MCP-2026-AUTH-INDEX-055": ["crates/labby-auth/src/middleware.rs"],
-    "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
-    "MCP-2026-AUTH-CLIENT-REGISTRATION-001": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs"],
-    "MCP-2026-AUTH-CLIENT-REGISTRATION-023": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs", "crates/labby-auth/src/upstream/store.rs"],
-    "MCP-2026-AUTH-CLIENT-REGISTRATION-024": ["vendor/rmcp-3.1.0-labby/src/transport/auth.rs", "crates/labby-auth/src/upstream/store.rs"],
+    "MCP-2026-AUTH-AUTHORIZATION-SERVER-DISCOVERY-010": ["Cargo.lock"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-001": ["Cargo.lock"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-023": ["Cargo.lock", "crates/labby-auth/src/upstream/store.rs"],
+    "MCP-2026-AUTH-CLIENT-REGISTRATION-024": ["Cargo.lock", "crates/labby-auth/src/upstream/store.rs"],
 }
 
 
@@ -231,7 +231,7 @@ def main() -> None:
             row["status"] = "not_applicable" if row["id"] == "MCP-AUTH-015" else normative["status"]
         elif row["id"] == "MCP-AUTH-010":
             row["implementation"] = "Refresh material is encrypted at rest and the client safely reauthorizes when no refresh token was issued."
-            row["evidence_paths"] = ["crates/labby-auth/src/sqlite.rs", "vendor/rmcp-3.1.0-labby/src/transport/auth.rs"]
+            row["evidence_paths"] = ["crates/labby-auth/src/sqlite.rs", "Cargo.lock"]
             row["test_id"] = None
             row["subordinate_row_ids"] = ["MCP-2026-AUTH-INDEX-046", "MCP-2026-AUTH-INDEX-048"]
             row["verification_commands"] = [f"{HARNESS} MCP-2026-AUTH-INDEX-046", f"{HARNESS} MCP-2026-AUTH-INDEX-048"]

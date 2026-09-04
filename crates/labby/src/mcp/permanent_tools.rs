@@ -598,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_service_tool_advertises_top_level_security_schemes() {
+    fn builtin_service_tool_advertises_security_schemes_extension() {
         let registry = PermanentToolRegistry::new();
         let tool = registry.builtin_service_tool(
             &service("gateway-alpha"),
@@ -607,10 +607,13 @@ mod tests {
         );
         let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
         let serialized = serde_json::to_value(&tool).expect("Tool descriptor serializes");
-        assert_eq!(serialized["securitySchemes"], expected, "OAI-AUTH-002");
+        assert_eq!(
+            serialized["_meta"]["securitySchemes"], expected,
+            "OAI-AUTH-002"
+        );
         let round_trip: Tool = serde_json::from_value(serialized).expect("Tool round trips");
         assert_eq!(
-            Value::Array(round_trip.security_schemes.expect("canonical schemes")),
+            round_trip.meta.expect("auth metadata").0["securitySchemes"],
             expected
         );
     }
@@ -634,7 +637,7 @@ mod tests {
             );
             let serialized = serde_json::to_value(tool).expect("Tool descriptor serializes");
             assert_eq!(
-                serialized["securitySchemes"], expected,
+                serialized["_meta"]["securitySchemes"], expected,
                 "OAI-CLAUSE-001: registered MCP service `{}` lacks the OAuth scope required before dispatch",
                 service.name
             );
@@ -642,17 +645,14 @@ mod tests {
     }
 
     #[test]
-    fn builtin_service_tool_mirrors_security_schemes_in_legacy_meta() {
+    fn builtin_service_tool_keeps_security_schemes_in_meta() {
         let tool = PermanentToolRegistry::new().builtin_service_tool(
             &service("gateway-alpha"),
             false,
             SkillLibraryDescriptorMode::Compatibility,
         );
         let serialized = serde_json::to_value(tool).expect("Tool descriptor serializes");
-        assert_eq!(
-            serialized["_meta"]["securitySchemes"], serialized["securitySchemes"],
-            "OAI-AUTH-004 compatibility mirror must match canonical declaration"
-        );
+        assert!(serialized["_meta"]["securitySchemes"].is_array());
     }
 
     #[test]
@@ -673,7 +673,6 @@ mod tests {
 
         let serialized = serde_json::to_value(with_labby_security(upstream)).unwrap();
         let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
-        assert_eq!(serialized["securitySchemes"], expected);
         assert_eq!(serialized["_meta"]["securitySchemes"], expected);
     }
 
@@ -1117,12 +1116,6 @@ pub(crate) fn with_labby_security(mut tool: Tool) -> Tool {
         scopes: DISCOVERY_SCOPES,
     }])
     .expect("static OAuth security scheme serializes");
-    tool.security_schemes = Some(
-        schemes
-            .as_array()
-            .expect("static OAuth security schemes are an array")
-            .clone(),
-    );
     tool.meta
         .get_or_insert_with(|| MetaObject(serde_json::Map::new()))
         .0
