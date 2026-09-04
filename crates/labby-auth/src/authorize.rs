@@ -77,7 +77,7 @@ pub async fn authorize(
         .await?
         .ok_or_else(|| {
             warn!(
-                client_id = %query.client_id,
+                client_id = %fingerprint(&query.client_id),
                 client_state_id = %client_state_id,
                 "oauth authorize rejected: unknown client_id"
             );
@@ -89,7 +89,7 @@ pub async fn authorize(
         .any(|uri| uri == &query.redirect_uri)
     {
         warn!(
-            client_id = %query.client_id,
+            client_id = %fingerprint(&query.client_id),
             redirect_uri_id = %fingerprint(&query.redirect_uri),
             client_state_id = %client_state_id,
             "oauth authorize rejected: redirect URI does not match registered client"
@@ -128,19 +128,19 @@ pub async fn authorize(
         }
     };
     info!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
-        resource = %resource,
-        requested_scope = %query.scope,
-        normalized_scope = %scope,
+        resource_id = %fingerprint(&resource),
+        requested_scope_id = %fingerprint(&query.scope),
+        normalized_scope_id = %fingerprint(&scope),
         "oauth authorize request received"
     );
     if query.code_challenge_method != "S256" {
         warn!(
-            client_id = %query.client_id,
+            client_id = %fingerprint(&query.client_id),
             client_state_id = %client_state_id,
-            code_challenge_method = %query.code_challenge_method,
+            code_challenge_method_id = %fingerprint(&query.code_challenge_method),
             "oauth authorize rejected: unsupported PKCE method"
         );
         return response::authorization_error_redirect(
@@ -226,12 +226,12 @@ pub async fn authorize(
         force_consent,
     })?;
     info!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
         oauth_state_id = %oauth_state_id,
-        resource = %resource,
-        scope = %scope,
+        resource_id = %fingerprint(&resource),
+        scope_id = %fingerprint(&scope),
         provider = "google",
         allowed_email_count = allowed_emails.len(),
         provider_credential_present = sole_account_has_credential,
@@ -239,9 +239,9 @@ pub async fn authorize(
         "oauth authorize request redirected to upstream provider"
     );
     debug!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         oauth_state_id = %oauth_state_id,
-        provider_authorization_endpoint = %sanitized_authorization_endpoint(&location),
+        provider_authorization_endpoint_id = %authorization_endpoint_fingerprint(&location),
         "oauth authorize redirect URL generated"
     );
 
@@ -294,13 +294,13 @@ fn escape_html_attribute(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn sanitized_authorization_endpoint(location: &url::Url) -> String {
+fn authorization_endpoint_fingerprint(location: &url::Url) -> String {
     let mut endpoint = location.clone();
     endpoint.set_query(None);
     endpoint.set_fragment(None);
     let _ = endpoint.set_username("");
     let _ = endpoint.set_password(None);
-    endpoint.to_string()
+    fingerprint(endpoint.as_str())
 }
 
 pub async fn callback(
@@ -364,12 +364,12 @@ pub async fn callback(
             AuthError::InvalidGrant("authorization state is invalid or expired".to_string())
         })?;
     info!(
-        client_id = %request.client_id,
+        client_id = %fingerprint(&request.client_id),
         redirect_uri_id = %fingerprint(&request.redirect_uri),
         oauth_state_id = %oauth_state_id,
         client_state_id = %fingerprint(&request.client_state),
-        resource = %request.resource,
-        scope = %request.scope,
+        resource_id = %fingerprint(&request.resource),
+        scope_id = %fingerprint(&request.scope),
         "oauth callback state redeemed"
     );
     macro_rules! callback_try {
@@ -518,7 +518,7 @@ pub async fn callback(
         (existing.refresh_token.clone(), true)
     } else {
         warn!(
-            client_id = %request.client_id,
+            client_id = %fingerprint(&request.client_id),
             oauth_state_id = %oauth_state_id,
             subject_id = %subject_id,
             kind = "oauth_needs_reauth",
@@ -588,7 +588,7 @@ pub async fn callback(
             "server_error"
         );
         warn!(
-            client_id = %request.client_id,
+            client_id = %fingerprint(&request.client_id),
             oauth_state_id = %oauth_state_id,
             subject_id = %subject_id,
             observed_provider_generation = ?existing_credential.as_ref().map(|row| row.generation),
@@ -608,7 +608,7 @@ pub async fn callback(
         );
     }
     info!(
-        client_id = %request.client_id,
+        client_id = %fingerprint(&request.client_id),
         oauth_state_id = %oauth_state_id,
         subject_id = %subject_id,
         provider_credential_present = true,
@@ -658,9 +658,9 @@ pub async fn callback(
     info!(
         auth_code_id = %auth_code_id,
         oauth_state_id = %oauth_state_id,
-        client_id = %request_client_id,
-        resource = %request_resource,
-        scope = %request_scope,
+        client_id = %fingerprint(&request_client_id),
+        resource_id = %fingerprint(&request_resource),
+        scope_id = %fingerprint(&request_scope),
         redirect_uri_id = %fingerprint(&request.redirect_uri),
         "oauth callback issued local authorization code"
     );
@@ -724,13 +724,11 @@ pub async fn callback(
     info!(
         auth_code_id = %auth_code_id,
         oauth_state_id = %oauth_state_id,
-        client_id = %request_client_id,
+        client_id = %fingerprint(&request_client_id),
         authorization_response_has_code = has_code,
         authorization_response_has_state = has_state,
         authorization_response_has_issuer = has_issuer,
-        redirect_scheme = redirect_uri.scheme(),
-        redirect_host = redirect_uri.host_str(),
-        redirect_path = redirect_uri.path(),
+        redirect_uri_id = %fingerprint(redirect_uri.as_str()),
         "oauth callback authorization response prepared"
     );
 
@@ -1724,13 +1722,82 @@ pub mod tests {
             );
         }
         assert!(
-            logs.contains(
-                "\"provider_authorization_endpoint\":\"https://accounts.google.com/o/oauth2/v2/auth\""
-            ),
+            logs.contains("\"provider_authorization_endpoint_id\":"),
             "{logs}"
         );
+        assert!(!logs.contains("accounts.google.com"), "{logs}");
         assert!(logs.contains("\"oauth_state_id\":"), "{logs}");
         assert!(!logs.contains("\"location\":"), "{logs}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_authorize_logs_redact_attacker_controlled_values() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let app = router(test_auth_state_with_registered_client().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=state&scope=sentinel-scope-secret&resource=https%3A%2F%2Fsentinel-resource.example%2Fmcp%3Fcredential%3Dresource-secret&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let logs = crate::test_support::captured_logs(buf);
+        for sentinel in [
+            "sentinel-scope-secret",
+            "sentinel-resource.example",
+            "resource-secret",
+        ] {
+            assert!(
+                !logs.contains(sentinel),
+                "OAuth value leaked into logs: {sentinel}\n{logs}"
+            );
+        }
+    }
+
+    #[test]
+    fn authorization_endpoint_fingerprint_excludes_secrets_and_query_variation() {
+        let endpoint = Url::parse(
+            "https://user:secret@sentinel-endpoint.example/private-path?code=secret#state",
+        )
+        .unwrap();
+        let clean = Url::parse("https://sentinel-endpoint.example/private-path").unwrap();
+        let fingerprint = super::authorization_endpoint_fingerprint(&endpoint);
+        assert_eq!(
+            fingerprint,
+            super::authorization_endpoint_fingerprint(&clean)
+        );
+        assert_eq!(fingerprint.len(), 12);
+        assert!(!fingerprint.contains("secret"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_pkce_method_is_redacted_in_logs() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let app = router(test_auth_state_with_registered_client().await);
+        let response = app.oneshot(Request::builder()
+            .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=state&scope=lab&code_challenge=pkce&code_challenge_method=sentinel-pkce-secret")
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let location = Url::parse(location).unwrap();
+        assert!(
+            location
+                .query_pairs()
+                .any(|(key, value)| key == "error" && value == "invalid_request")
+        );
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(!logs.contains("sentinel-pkce-secret"), "{logs}");
+        assert!(logs.contains("code_challenge_method_id"), "{logs}");
     }
 
     #[tokio::test]
@@ -3150,6 +3217,8 @@ pub mod tests {
         }
 
         async fn oauth_client_callback_location(codex_issuer_compatibility: bool) -> Url {
+            const CLIENT_REDIRECT_URI: &str =
+                "https://sentinel-client-redirect.example/sentinel-callback-path";
             let mut config = test_auth_config();
             config.admin_email = "admin@example.com".to_string();
             config.codex_issuer_compatibility = codex_issuer_compatibility;
@@ -3160,7 +3229,7 @@ pub mod tests {
                 .store
                 .register_client(RegisteredClient {
                     client_id: "client".to_string(),
-                    redirect_uris: vec!["http://127.0.0.1:7777/callback".to_string()],
+                    redirect_uris: vec![CLIENT_REDIRECT_URI.to_string()],
                     created_at: now_unix(),
                     token_endpoint_auth_method: "none".to_string(),
                     token_endpoint_auth_methods: Vec::new(),
@@ -3185,7 +3254,7 @@ pub mod tests {
                 .insert_authorization_request(AuthorizationRequestRow {
                     state: "oauth-state".to_string(),
                     client_id: "client".to_string(),
-                    redirect_uri: "http://127.0.0.1:7777/callback".to_string(),
+                    redirect_uri: CLIENT_REDIRECT_URI.to_string(),
                     client_state: "client-xyz".to_string(),
                     native_poll_token_hash: None,
                     resource: "https://lab.example.com/mcp".to_string(),
@@ -3271,13 +3340,17 @@ pub mod tests {
                 "client-xyz",
                 "iss=https%3A%2F%2Flab.example.com",
                 redirect.as_str(),
+                "sentinel-client-redirect.example",
+                "sentinel-callback-path",
             ] {
                 assert!(
                     !logs.contains(secret),
                     "OAuth redirect secret leaked into debug logs: {secret}\n{logs}"
                 );
             }
-            assert!(logs.contains("\"redirect_path\":\"/callback\""), "{logs}");
+            assert!(logs.contains("\"redirect_uri_id\":"), "{logs}");
+            assert!(!logs.contains("\"redirect_host\":"), "{logs}");
+            assert!(!logs.contains("\"redirect_path\":"), "{logs}");
         }
 
         /// Email not in admin or allowed_users must be rejected in the browser-login

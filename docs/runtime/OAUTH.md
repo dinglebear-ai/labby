@@ -474,6 +474,9 @@ Current constraints:
 - successful refresh grants atomically rotate the local refresh token; the old
   token is invalid immediately
 - `POST /revoke` implements idempotent refresh-token revocation
+- concurrent Google refresh callers share one immutable result generation;
+  waiters cannot receive a later refresh result, and owner cancellation wakes
+  its waiters with a server error so a later caller can retry
 - machine clients are preregistered out of band with
   `LABBY_AUTH_MACHINE_CLIENTS_JSON` and authenticate with `client_secret_basic`
   or RFC 7523 `private_key_jwt`
@@ -507,6 +510,13 @@ oversized CIMD responses; successful documents are cached according to
 `Cache-Control: max-age`.
 
 ### Auth Failure Semantics
+
+OAuth request identifiers, resource/scope values, callback endpoints, and Google
+configuration metadata are correlated with bounded fingerprints rather than
+raw values in logs. Google response decode/transport failures retain stable
+error kinds without embedding endpoint URLs or response contents. The 1 MiB
+Google JSON response limit still applies before deserialization, including
+decoded error payloads and JWKS; oversized payloads retain `response_too_large`.
 
 Labby distinguishes unauthenticated callers from internal auth outages.
 
