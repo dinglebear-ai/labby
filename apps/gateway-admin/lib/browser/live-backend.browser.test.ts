@@ -326,7 +326,12 @@ test('nightly mobile viewport has no overflow and essential landmarks', {
     await page.goto('/gateways/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
     await page.getByRole('main').waitFor({ state: 'visible', timeout: 10_000 })
-    await page.getByRole('navigation').waitFor({ state: 'visible', timeout: 10_000 })
+    const navigationToggle = page.getByRole('button', { name: 'Open navigation' })
+    await navigationToggle.waitFor({ state: 'visible', timeout: 10_000 })
+    await navigationToggle.click()
+    const navigationDialog = page.getByRole('dialog', { name: 'Navigation' })
+    await navigationDialog.waitFor({ state: 'visible', timeout: 10_000 })
+    await navigationDialog.getByRole('navigation').waitFor({ state: 'visible', timeout: 10_000 })
     await context.close()
   } finally {
     await browser.close()
