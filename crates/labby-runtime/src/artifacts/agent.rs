@@ -10,6 +10,7 @@ use super::model::{
     ArtifactLineage, ArtifactProvenance, ArtifactPublication, ArtifactRevision, Distribution,
     JsonMap, PublicationState, Visibility,
 };
+use super::validation;
 use super::{ArtifactError, invalid};
 
 pub const MAX_AGENT_BYTES: usize = 256 * 1024;
@@ -133,7 +134,7 @@ pub fn materialize_logical_agent(
     for capability in &frontmatter.capabilities {
         validate_reference(&capability.server_id, "capabilities")?;
         validate_reference(&capability.member_id, "capabilities")?;
-        validate_revision(&capability.expected_revision)?;
+        validation::validate_reference_id(&capability.expected_revision, "expected_revision")?;
         let encoded =
             serde_json::to_string(capability).map_err(|_| invalid("capabilities", "invalid"))?;
         if !unique.insert(encoded) {
@@ -195,10 +196,14 @@ pub fn materialize_logical_agent(
 }
 
 fn split_frontmatter(content: &str) -> Result<(&str, &str), ArtifactError> {
-    let rest = content
-        .strip_prefix("---\n")
-        .ok_or_else(|| invalid("frontmatter", "missing"))?;
-    rest.split_once("\n---\n")
+    let (rest, delimiter) = if let Some(rest) = content.strip_prefix("---\n") {
+        (rest, "\n---\n")
+    } else if let Some(rest) = content.strip_prefix("---\r\n") {
+        (rest, "\r\n---\r\n")
+    } else {
+        return Err(invalid("frontmatter", "missing"));
+    };
+    rest.split_once(delimiter)
         .ok_or_else(|| invalid("frontmatter", "unterminated"))
 }
 
@@ -225,17 +230,6 @@ fn validate_reference(value: &str, field: &'static str) -> Result<(), ArtifactEr
     Ok(())
 }
 
-fn validate_revision(value: &str) -> Result<(), ArtifactError> {
-    if value.is_empty()
-        || value.len() > 256
-        || value.contains('\0')
-        || value.chars().any(char::is_whitespace)
-    {
-        return Err(invalid("capabilities", "invalid_revision"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,7 +238,8 @@ mod tests {
         vec![LogicalAgentFile::new(
             "AGENT.md",
             format!(
-                "---\nname: release-agent\ndescription: Draft releases\nruntime: labby\nactivation: explicit\ncapabilities:\n  - server_id: gateway\n    family: tool\n    member_id: github::search\n    expected_revision: sha256:abc\n---\n{body}"
+                "---\nname: release-agent\ndescription: Draft releases\nruntime: labby\nactivation: explicit\ncapabilities:\n  - server_id: gateway\n    family: tool\n    member_id: github::search\n    expected_revision: sha256:{}\n---\n{body}",
+                "a".repeat(64)
             ),
         )]
     }
@@ -285,6 +280,45 @@ mod tests {
                 Default::default()
             )
             .is_err()
+        );
+        for invalid_revision in ["sha256:abc", "not.a.revision", "UPPERCASE"] {
+            let invalid = valid("body")[0]
+                .content
+                .replace(&format!("sha256:{}", "a".repeat(64)), invalid_revision);
+            assert!(
+                materialize_logical_agent(
+                    "release-agent",
+                    vec![LogicalAgentFile::new("AGENT.md", invalid)],
+                    Default::default()
+                )
+                .is_err(),
+                "accepted invalid expected_revision {invalid_revision}"
+            );
+        }
+    }
+
+    #[test]
+    fn crlf_frontmatter_is_accepted_without_normalizing_source_bytes() {
+        let lf = valid("body")[0].content.clone();
+        let crlf = lf.replace('\n', "\r\n");
+        let agent = materialize_logical_agent(
+            "release-agent",
+            vec![LogicalAgentFile::new("AGENT.md", crlf.clone())],
+            Default::default(),
+        )
+        .unwrap();
+        let lf_agent = materialize_logical_agent(
+            "release-agent",
+            vec![LogicalAgentFile::new("AGENT.md", lf)],
+            Default::default(),
+        )
+        .unwrap();
+
+        assert_eq!(agent.files["AGENT.md"], crlf.as_bytes());
+        assert_eq!(agent.preview_text(), "body");
+        assert_ne!(
+            agent.interchange.revision.id,
+            lf_agent.interchange.revision.id
         );
     }
 }

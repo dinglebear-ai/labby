@@ -55,9 +55,10 @@ references pinned to expected revisions. The remaining Markdown body must be non
 retained as inert text; materialization does not execute or interpret its instructions.
 
 The resulting Artifact uses `kind = "agent"`, content-addresses the exact source bytes, and records
-the `labby.agent/v1` adapter when no adapter was supplied. Agent transport and authoring operations
-use the shared `artifacts` control plane; materialization does not introduce a parallel Agent
-service namespace or automatic activation behavior.
+the `labby.agent/v1` adapter when no adapter was supplied. This is a domain-only foundation: the
+current `artifacts` service does not yet expose Agent authoring, validation, or persistence.
+Any future transport must project the shared `artifacts` control plane rather than introduce a
+parallel Agent service namespace, and materialization does not grant automatic activation.
 
 ## Non-goals for the first slice
 
