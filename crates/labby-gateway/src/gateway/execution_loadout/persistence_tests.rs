@@ -48,3 +48,19 @@ fn load_rejects_inconsistent_revision_metadata() {
     fs::write(&path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
     assert!(ExecutionLoadoutStore::load(&configured).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn mutation_rejects_a_symlinked_lock_without_touching_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().unwrap();
+    let configured = directory.path().join("labby.toml");
+    let target = directory.path().join("attacker-target");
+    fs::write(&target, b"unchanged").unwrap();
+    let lock = store_path(&configured).unwrap().with_extension("lock");
+    symlink(&target, &lock).unwrap();
+    let result = ExecutionLoadoutStore::mutate(&configured, 0, |_| Ok(()));
+    assert!(result.is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"unchanged");
+}

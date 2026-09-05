@@ -248,6 +248,9 @@ pub enum ExecutionLoadoutError {
     Storage {
         message: String,
     },
+    Durability {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,19 +325,34 @@ impl GatewayManager {
     #[cfg(test)]
     fn fail_next_execution_loadout_persist(&self) {
         self.execution_loadout_fail_persist
-            .store(true, Ordering::Release);
+            .store(1, Ordering::Release);
     }
 
-    fn take_execution_loadout_persist_failure(&self) -> bool {
+    #[cfg(test)]
+    fn fail_next_execution_loadout_parent_sync(&self) {
+        self.execution_loadout_fail_persist
+            .store(2, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn set_execution_loadout_activation_hook(
+        &self,
+        entered: Arc<std::sync::Barrier>,
+        resume: Arc<std::sync::Barrier>,
+    ) {
+        *self.execution_loadout_activation_hook.lock().unwrap() = Some((entered, resume));
+    }
+
+    fn take_execution_loadout_persist_failure(&self) -> u8 {
         #[cfg(test)]
         {
             return self
                 .execution_loadout_fail_persist
-                .swap(false, Ordering::AcqRel);
+                .swap(0, Ordering::AcqRel);
         }
         #[cfg(not(test))]
         {
-            false
+            0
         }
     }
     /// Atomically publish complete principal-filtered snapshots prepared by the
@@ -343,6 +361,11 @@ impl GatewayManager {
         &self,
         snapshots: Vec<CapabilityCatalogSnapshot>,
     ) -> Result<(), ExecutionLoadoutError> {
+        let _publication = self.execution_capability_publication.write().map_err(|_| {
+            ExecutionLoadoutError::Storage {
+                message: "capability publication lock poisoned".into(),
+            }
+        })?;
         if snapshots.len() > MAX_PUBLISHED_PRINCIPALS {
             return Err(ExecutionLoadoutError::LimitExceeded {
                 limit: MAX_PUBLISHED_PRINCIPALS,
@@ -435,7 +458,7 @@ impl GatewayManager {
         let key = RecordKey::new(&owner_principal, &input.id)?;
         let fail = self.take_execution_loadout_persist_failure();
         let mut current = self.execution_loadouts.write().await;
-        let (candidate, draft) = ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
+        let outcome = ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
             if store.records.contains_key(&key) {
                 return Err(ExecutionLoadoutError::AlreadyExists { id: input.id });
             }
@@ -475,8 +498,11 @@ impl GatewayManager {
             );
             Ok(draft)
         })?;
-        *current = candidate;
-        Ok(draft)
+        *current = outcome.store;
+        if let Some(error) = outcome.durability_error {
+            return Err(error);
+        }
+        Ok(outcome.result)
     }
 
     pub async fn execution_loadout_patch(
@@ -495,7 +521,7 @@ impl GatewayManager {
         let key = RecordKey::new(&context.principal, id)?;
         let fail = self.take_execution_loadout_persist_failure();
         let mut current = self.execution_loadouts.write().await;
-        let (candidate, draft) = ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
+        let outcome = ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
             let record = store
                 .records
                 .get_mut(&key)
@@ -519,8 +545,11 @@ impl GatewayManager {
             record.draft.draft_revision += 1;
             Ok(record.draft.clone())
         })?;
-        *current = candidate;
-        Ok(draft)
+        *current = outcome.store;
+        if let Some(error) = outcome.durability_error {
+            return Err(error);
+        }
+        Ok(outcome.result)
     }
 
     pub async fn execution_loadout_preview(
@@ -542,7 +571,6 @@ impl GatewayManager {
             return Err(ExecutionLoadoutError::NotFound { id: id.into() }.into());
         }
         self.resolve_execution_loadout(context, &draft, runtime_identity)
-            .await
     }
 
     pub async fn execution_loadout_activate(
@@ -565,9 +593,23 @@ impl GatewayManager {
             }
             .into());
         }
-        let preview = self
-            .resolve_execution_loadout(context, &draft, runtime_identity)
-            .await?;
+        let mut current = self.execution_loadouts.write().await;
+        let _publication = self.execution_capability_publication.read().map_err(|_| {
+            ToolError::from(ExecutionLoadoutError::Storage {
+                message: "capability publication lock poisoned".into(),
+            })
+        })?;
+        #[cfg(test)]
+        if let Some((entered, resume)) = self
+            .execution_loadout_activation_hook
+            .lock()
+            .unwrap()
+            .take()
+        {
+            entered.wait();
+            resume.wait();
+        }
+        let preview = self.resolve_execution_loadout(context, &draft, runtime_identity)?;
         if preview
             .resolved
             .iter()
@@ -580,65 +622,66 @@ impl GatewayManager {
         }
         let key = RecordKey::new(&context.principal, id).map_err(ToolError::from)?;
         let fail = self.take_execution_loadout_persist_failure();
-        let mut current = self.execution_loadouts.write().await;
-        let (candidate, activation) =
-            ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
-                let record = store
-                    .records
-                    .get_mut(&key)
-                    .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
-                if record.draft.draft_revision != expected_draft_revision {
-                    return Err(ExecutionLoadoutError::StaleRevision {
-                        expected: expected_draft_revision,
-                        current: record.draft.draft_revision,
-                        changed_fields: vec!["members".into()],
-                    });
-                }
-                if record
-                    .draft
-                    .runtime_identity
-                    .as_deref()
-                    .is_some_and(|bound| bound != runtime_identity)
-                {
-                    return Err(ExecutionLoadoutError::NotFound { id: id.into() });
-                }
-                if let Some(existing) = record
-                    .revisions
-                    .values()
-                    .find(|revision| revision.draft_revision == expected_draft_revision)
-                    .cloned()
-                {
-                    let mut preview = preview;
-                    preview.active_revision = existing.revision;
-                    return Ok(ExecutionLoadoutActivation {
-                        loadout: record.draft.clone(),
-                        revision: existing,
-                        preview,
-                    });
-                }
-                record.draft.runtime_identity = Some(runtime_identity.into());
-                let revision_number = record.revisions.keys().next_back().copied().unwrap_or(0) + 1;
-                let revision = ExecutionLoadoutRevision {
-                    loadout_id: id.into(),
-                    revision: revision_number,
-                    draft_revision: expected_draft_revision,
-                    members: record.draft.members.clone(),
-                    catalog_generation: preview.catalog_generation.clone(),
-                };
-                record.revisions.insert(revision_number, revision.clone());
-                record.draft.desired_active_revision = Some(revision_number);
-                record.draft.effective_runtime_revision = Some(revision_number);
-                record.draft.restart_required = false;
-                let loadout = record.draft.clone();
-                Ok(ExecutionLoadoutActivation {
-                    loadout,
-                    revision,
+        let outcome = ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
+            let record = store
+                .records
+                .get_mut(&key)
+                .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
+            if record.draft.draft_revision != expected_draft_revision {
+                return Err(ExecutionLoadoutError::StaleRevision {
+                    expected: expected_draft_revision,
+                    current: record.draft.draft_revision,
+                    changed_fields: vec!["members".into()],
+                });
+            }
+            if record
+                .draft
+                .runtime_identity
+                .as_deref()
+                .is_some_and(|bound| bound != runtime_identity)
+            {
+                return Err(ExecutionLoadoutError::NotFound { id: id.into() });
+            }
+            if let Some(existing) = record
+                .revisions
+                .values()
+                .find(|revision| revision.draft_revision == expected_draft_revision)
+                .cloned()
+            {
+                let mut preview = preview;
+                preview.active_revision = existing.revision;
+                return Ok(ExecutionLoadoutActivation {
+                    loadout: record.draft.clone(),
+                    revision: existing,
                     preview,
-                })
+                });
+            }
+            record.draft.runtime_identity = Some(runtime_identity.into());
+            let revision_number = record.revisions.keys().next_back().copied().unwrap_or(0) + 1;
+            let revision = ExecutionLoadoutRevision {
+                loadout_id: id.into(),
+                revision: revision_number,
+                draft_revision: expected_draft_revision,
+                members: record.draft.members.clone(),
+                catalog_generation: preview.catalog_generation.clone(),
+            };
+            record.revisions.insert(revision_number, revision.clone());
+            record.draft.desired_active_revision = Some(revision_number);
+            record.draft.effective_runtime_revision = Some(revision_number);
+            record.draft.restart_required = false;
+            let loadout = record.draft.clone();
+            Ok(ExecutionLoadoutActivation {
+                loadout,
+                revision,
+                preview,
             })
-            .map_err(ToolError::from)?;
-        *current = candidate;
-        Ok(activation)
+        })
+        .map_err(ToolError::from)?;
+        *current = outcome.store;
+        if let Some(error) = outcome.durability_error {
+            return Err(error.into());
+        }
+        Ok(outcome.result)
     }
 
     pub async fn execution_loadout_rollback(
@@ -651,7 +694,7 @@ impl GatewayManager {
         let key = RecordKey::new(&context.principal, id)?;
         let fail = self.take_execution_loadout_persist_failure();
         let mut current = self.execution_loadouts.write().await;
-        let (candidate, draft) =
+        let outcome =
             ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
                 let record = store
                     .records
@@ -674,11 +717,14 @@ impl GatewayManager {
                 record.draft.draft_revision += 1;
                 Ok(record.draft.clone())
             })?;
-        *current = candidate;
-        Ok(draft)
+        *current = outcome.store;
+        if let Some(error) = outcome.durability_error {
+            return Err(error);
+        }
+        Ok(outcome.result)
     }
 
-    async fn resolve_execution_loadout(
+    fn resolve_execution_loadout(
         &self,
         context: &ExecutionLoadoutContext,
         draft: &ExecutionLoadoutDraft,

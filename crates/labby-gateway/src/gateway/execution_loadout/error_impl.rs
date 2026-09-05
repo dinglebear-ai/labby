@@ -21,6 +21,7 @@ impl From<ExecutionLoadoutError> for ToolError {
             ExecutionLoadoutError::StaleRevision { .. } => "revision_conflict",
             ExecutionLoadoutError::Unresolved { .. } => "loadout_unresolved",
             ExecutionLoadoutError::Storage { .. } => "storage_error",
+            ExecutionLoadoutError::Durability { .. } => "durability_unconfirmed",
             _ => "invalid_params",
         };
         ToolError::Sdk {

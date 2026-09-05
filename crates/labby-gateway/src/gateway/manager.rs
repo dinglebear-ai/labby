@@ -22,7 +22,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
@@ -138,8 +138,12 @@ pub struct GatewayManager {
     /// `GatewayConfig::loadouts`, which configures mounted gateway routes.
     pub(super) execution_loadouts: Arc<RwLock<ExecutionLoadoutStore>>,
     #[cfg(test)]
-    pub(super) execution_loadout_fail_persist: Arc<AtomicBool>,
+    pub(super) execution_loadout_fail_persist: Arc<AtomicU8>,
+    #[cfg(test)]
+    pub(super) execution_loadout_activation_hook:
+        Arc<std::sync::Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>>,
     pub(super) execution_capabilities: Arc<ArcSwap<PublishedCapabilityCatalog>>,
+    pub(super) execution_capability_publication: Arc<std::sync::RwLock<()>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,

@@ -485,6 +485,44 @@ async fn persistence_failures_never_publish_candidate_state() {
 }
 
 #[tokio::test]
+async fn post_commit_parent_sync_failure_keeps_memory_and_disk_coherent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("labby.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.fail_next_execution_loadout_parent_sync();
+    let error = manager
+        .execution_loadout_create(
+            &caller(),
+            ExecutionLoadoutCreate {
+                id: "published".into(),
+                name: "Published".into(),
+                description: None,
+                members: Vec::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ExecutionLoadoutError::Durability { .. }));
+    assert_eq!(
+        manager
+            .execution_loadout_get(&caller(), "published")
+            .await
+            .unwrap()
+            .name,
+        "Published"
+    );
+    let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    assert_eq!(
+        restarted
+            .execution_loadout_get(&caller(), "published")
+            .await
+            .unwrap()
+            .name,
+        "Published"
+    );
+}
+
+#[tokio::test]
 async fn activation_retry_and_concurrent_callers_share_one_revision() {
     let manager = manager();
     manager
@@ -512,6 +550,61 @@ async fn activation_retry_and_concurrent_callers_share_one_revision() {
         .await
         .unwrap();
     assert_eq!(retry.revision.revision, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revocation_publication_waits_for_the_durable_activation_commit() {
+    let manager = manager();
+    let selected = member(CapabilityFamily::Agent);
+    publish(&manager, "principal-1", vec![selected.clone()]);
+    manager
+        .execution_loadout_create(
+            &caller(),
+            ExecutionLoadoutCreate {
+                id: "publication-race".into(),
+                name: "Race".into(),
+                description: None,
+                members: vec![selected],
+            },
+        )
+        .await
+        .unwrap();
+    let entered = Arc::new(std::sync::Barrier::new(2));
+    let resume = Arc::new(std::sync::Barrier::new(2));
+    manager.set_execution_loadout_activation_hook(Arc::clone(&entered), Arc::clone(&resume));
+    let activating = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .execution_loadout_activate(&caller(), "publication-race", 1, "runtime")
+                .await
+        })
+    };
+    entered.wait();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let revoking = {
+        let manager = manager.clone();
+        tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            manager.publish_execution_capability_snapshots(vec![CapabilityCatalogSnapshot {
+                generation: "catalog-generation-2".into(),
+                principal: "principal-1".into(),
+                members: Vec::new(),
+            }])
+        })
+    };
+    started_rx.recv().unwrap();
+    resume.wait();
+    assert_eq!(activating.await.unwrap().unwrap().revision.revision, 1);
+    revoking.await.unwrap().unwrap();
+    assert!(
+        manager
+            .execution_loadout_preview(&caller(), "publication-race", "runtime")
+            .await
+            .unwrap()
+            .effective
+            .is_empty()
+    );
 }
 
 #[tokio::test]

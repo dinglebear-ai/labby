@@ -5,6 +5,12 @@ use fd_lock::RwLock as FileRwLock;
 
 use super::{ExecutionLoadoutError, ExecutionLoadoutStore};
 
+pub(super) struct MutationOutcome<R> {
+    pub store: ExecutionLoadoutStore,
+    pub result: R,
+    pub durability_error: Option<ExecutionLoadoutError>,
+}
+
 impl ExecutionLoadoutStore {
     pub(crate) fn load(config_path: &Path) -> Result<Self, ExecutionLoadoutError> {
         load_path(&store_path(config_path)?)
@@ -12,24 +18,12 @@ impl ExecutionLoadoutStore {
 
     pub(super) fn mutate<R>(
         config_path: &Path,
-        fail_before_publish: bool,
+        injected_failure: u8,
         mutate: impl FnOnce(&mut Self) -> Result<R, ExecutionLoadoutError>,
-    ) -> Result<(Self, R), ExecutionLoadoutError> {
+    ) -> Result<MutationOutcome<R>, ExecutionLoadoutError> {
         let path = store_path(config_path)?;
         let lock_path = path.with_extension("lock");
-        let lock_file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|error| storage_error(&lock_path, error))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))
-                .map_err(|error| storage_error(&lock_path, error))?;
-        }
+        let lock_file = open_private_lock(&lock_path)?;
         let mut lock = FileRwLock::new(lock_file);
         let _guard = lock
             .write()
@@ -39,15 +33,84 @@ impl ExecutionLoadoutStore {
         candidate.validate_integrity()?;
         let bytes =
             serde_json::to_vec_pretty(&candidate).map_err(|error| storage_error(&path, error))?;
-        if fail_before_publish {
+        if injected_failure == 1 {
             return Err(ExecutionLoadoutError::Storage {
                 message: "injected execution loadout persistence failure".into(),
             });
         }
-        labby_runtime::secure_atomic_file::write_secure_atomic(&path, &bytes)
-            .map_err(|error| storage_error(&path, error))?;
-        Ok((candidate, result))
+        let write_result = if injected_failure == 2 {
+            labby_runtime::secure_atomic_file::write_secure_atomic_with(&path, &bytes, |stage| {
+                if stage == labby_runtime::secure_atomic_file::AtomicWriteStage::BeforeParentSync {
+                    Err(std::io::Error::other("injected parent sync failure"))
+                } else {
+                    Ok(())
+                }
+            })
+            .map_err(
+                |source| labby_runtime::secure_atomic_file::AtomicWriteError {
+                    source,
+                    published: true,
+                },
+            )
+        } else {
+            labby_runtime::secure_atomic_file::write_secure_atomic(&path, &bytes)
+        };
+        let durability_error = match write_result {
+            Ok(()) => None,
+            Err(error) if error.published => Some(ExecutionLoadoutError::Durability {
+                message: format!(
+                    "{}: parent directory sync failed after publication: {error}",
+                    path.display()
+                ),
+            }),
+            Err(error) => return Err(storage_error(&path, error)),
+        };
+        Ok(MutationOutcome {
+            store: candidate,
+            result,
+            durability_error,
+        })
     }
+}
+
+fn open_private_lock(path: &Path) -> Result<fs::File, ExecutionLoadoutError> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(storage_error(path, "lock path is a symlink"));
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| storage_error(path, error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| storage_error(path, error))?;
+    if !metadata.is_file() {
+        return Err(storage_error(path, "lock path is not a regular file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| storage_error(path, error))?;
+        if file
+            .metadata()
+            .map_err(|error| storage_error(path, error))?
+            .permissions()
+            .mode()
+            & 0o077
+            != 0
+        {
+            return Err(storage_error(path, "lock file permissions are not private"));
+        }
+    }
+    Ok(file)
 }
 
 fn load_path(path: &Path) -> Result<ExecutionLoadoutStore, ExecutionLoadoutError> {

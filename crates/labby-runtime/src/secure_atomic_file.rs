@@ -10,9 +10,32 @@ use atomic_write_file::AtomicWriteFile;
 /// The temporary file is created by `atomic-write-file` in the destination
 /// directory, flushed before publication, and the parent directory is flushed
 /// after publication on platforms that support directory handles.
-pub fn write_secure_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_secure_atomic_with(path, bytes, |_| Ok(()))
+pub fn write_secure_atomic(path: &Path, bytes: &[u8]) -> Result<(), AtomicWriteError> {
+    let mut published = false;
+    write_secure_atomic_with(path, bytes, |stage| {
+        if stage == AtomicWriteStage::BeforeParentSync {
+            published = true;
+        }
+        Ok(())
+    })
+    .map_err(|source| AtomicWriteError { source, published })
 }
+
+#[derive(Debug)]
+pub struct AtomicWriteError {
+    pub source: std::io::Error,
+    /// True when atomic replacement completed but parent-directory durability
+    /// could not be confirmed.
+    pub published: bool,
+}
+
+impl std::fmt::Display for AtomicWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for AtomicWriteError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtomicWriteStage {
