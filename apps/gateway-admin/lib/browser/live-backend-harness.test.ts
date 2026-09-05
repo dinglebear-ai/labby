@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { createConnection } from 'node:net'
@@ -52,11 +52,58 @@ test('absolute deadline aborts and drains the timed-out operation', async () => 
   assert.equal(settled, true, 'deadline must drain cooperative teardown before returning')
 })
 
-function killFixtureGroup(pid: number): void {
-  try { process.kill(-pid, 'SIGKILL') } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+async function settleOwnedSupervisor(child: ChildProcess): Promise<void> {
+  // A reaped supervisor's recorded numeric PGID is not retained authority.
+  // Only the live ChildProcess handle may be signaled; its TERM trap owns the
+  // admission registry and descendant cleanup.
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = once(child, 'exit')
+  child.kill('SIGTERM')
+  try {
+    await withAbsoluteDeadline(async () => exited, 'owned supervisor cleanup', 8_000, 0)
+  } catch (error) {
+    child.kill('SIGKILL')
+    try {
+      await withAbsoluteDeadline(async () => exited, 'owned supervisor final reap', 1_000, 0)
+    } catch (settlementError) {
+      throw new AggregateError([error, settlementError], 'supervisor cleanup and settlement failed', { cause: settlementError })
+    }
+    // Direct-child settlement does not prove descendant cleanup after KILL.
+    throw error
   }
 }
+
+async function settleSupervisorAfterFailure(child: ChildProcess, failure: unknown): Promise<never> {
+  try {
+    await settleOwnedSupervisor(child)
+  } catch (cleanupError) {
+    throw new AggregateError([failure, cleanupError], 'supervisor fixture and cleanup failed', { cause: cleanupError })
+  }
+  throw failure
+}
+
+test('a reaped supervisor never authorizes a fallback signal', async () => {
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' })
+  await withAbsoluteDeadline(async () => once(child, 'exit'), 'supervisor fixture exit', 3_000, 0)
+    .catch(async (error: unknown) => settleSupervisorAfterFailure(child, error))
+  let signaled = false
+  child.kill = () => { signaled = true; return false }
+  await settleOwnedSupervisor(child)
+  assert.equal(signaled, false, 'a stale child must not trigger any signal callback')
+})
+
+test('live supervisor cleanup uses its owned TERM handler before settlement', async () => {
+  const child = spawn(process.execPath, ['-e', `
+    process.on('SIGTERM', () => process.exit(0))
+    process.stdout.write('ready')
+    setInterval(() => {}, 1_000)
+  `], { stdio: ['ignore', 'pipe', 'ignore'] })
+  await withAbsoluteDeadline(async () => once(child.stdout!, 'data'), 'supervisor fixture readiness', 3_000, 0)
+    .catch(async (error: unknown) => settleSupervisorAfterFailure(child, error))
+  await settleOwnedSupervisor(child)
+  assert.equal(child.exitCode, 0)
+  assert.equal(child.signalCode, null)
+})
 
 for (const leaderExit of [false, true]) {
 test(`outer cancellation reaps Playwright detached browser despite a wedged Node owner (leader exits: ${leaderExit})`, { skip: process.platform === 'win32' }, async () => {
@@ -78,6 +125,7 @@ test(`outer cancellation reaps Playwright detached browser despite a wedged Node
     },
     stdio: 'ignore',
   })
+  let primaryFailure: { error: unknown } | undefined
   try {
     const [code] = await withAbsoluteDeadline(async () => once(child, 'exit'), 'detached browser supervisor', 15_000, 0)
     assert.notEqual(code, 0, 'cancelled qualification must fail')
@@ -96,15 +144,17 @@ test(`outer cancellation reaps Playwright detached browser despite a wedged Node
     const status = JSON.parse(await readFile(path.join(root, 'artifacts/status.json'), 'utf8'))
     assert.equal(status.primary, 1)
     assert.equal(status.cleanup, 0)
-  } finally {
-    child.kill('SIGKILL')
-    const marker = await readFile(path.join(root, 'detached-browser.json'), 'utf8').catch(() => null)
-    if (marker) {
-      const { group } = JSON.parse(marker) as { group: number }
-      killFixtureGroup(group)
-    }
-    await rm(parent, { recursive: true, force: true })
+  } catch (error) {
+    primaryFailure = { error }
   }
+  try {
+    await settleOwnedSupervisor(child)
+    await rm(parent, { recursive: true, force: true })
+  } catch (cleanupError) {
+    if (primaryFailure) throw new AggregateError([primaryFailure.error, cleanupError], 'browser assertion and owned cleanup failed', { cause: cleanupError })
+    throw cleanupError
+  }
+  if (primaryFailure) throw primaryFailure.error
 })
 }
 
