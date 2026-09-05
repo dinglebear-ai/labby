@@ -4,6 +4,7 @@
 //! authorized subset of one immutable catalog snapshot for a caller/runtime.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use labby_runtime::error::ToolError;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,24 @@ pub struct CapabilityRef {
     pub expected_revision: String,
 }
 
+/// One host-authoritative, principal-filtered catalog publication.
+///
+/// The product host builds this from canonical stores while applying the
+/// caller's authorization policy. Callers can select entries from this
+/// snapshot, but can never manufacture an entry or its revision.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityCatalogSnapshot {
+    pub generation: String,
+    pub principal: String,
+    pub members: Vec<CapabilityRef>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct PublishedCapabilityCatalog {
+    snapshots: HashMap<String, CapabilityCatalogSnapshot>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionLoadoutCreate {
@@ -72,6 +91,10 @@ pub struct ExecutionLoadoutPatch {
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionLoadoutDraft {
     pub id: String,
+    #[serde(default = "shared_principal")]
+    pub owner_principal: String,
+    #[serde(default)]
+    pub runtime_identity: Option<String>,
     pub name: String,
     pub description: Option<String>,
     pub members: Vec<CapabilityRef>,
@@ -114,6 +137,9 @@ pub struct ResolvedCapability {
 pub struct ExecutionLoadoutPreview {
     pub loadout_id: String,
     pub draft_revision: u64,
+    /// Immutable revision currently effective for this runtime. Zero means the
+    /// draft has not been activated yet.
+    pub active_revision: u64,
     pub catalog_generation: String,
     pub principal: String,
     pub runtime_identity: String,
@@ -182,11 +208,42 @@ pub(super) struct ExecutionLoadoutStore {
 }
 
 impl GatewayManager {
-    pub async fn execution_loadout_list(&self) -> Vec<ExecutionLoadoutSummary> {
+    /// Atomically publish complete principal-filtered snapshots prepared by the
+    /// authoritative product host. A single swap prevents mixed generations.
+    pub fn publish_execution_capability_snapshots(
+        &self,
+        snapshots: Vec<CapabilityCatalogSnapshot>,
+    ) -> Result<(), ExecutionLoadoutError> {
+        let mut published = PublishedCapabilityCatalog::default();
+        for snapshot in snapshots {
+            validate_text("generation", &snapshot.generation)?;
+            validate_text("principal", &snapshot.principal)?;
+            let principal = snapshot.principal.clone();
+            let snapshot = CapabilityCatalogSnapshot {
+                members: normalize_members(snapshot.members)?,
+                ..snapshot
+            };
+            if published.snapshots.insert(principal, snapshot).is_some() {
+                return Err(ExecutionLoadoutError::Invalid {
+                    field: "principal".into(),
+                    message: "duplicate principal capability snapshot".into(),
+                });
+            }
+        }
+        self.execution_capabilities.store(Arc::new(published));
+        Ok(())
+    }
+
+    pub async fn execution_loadout_list(
+        &self,
+        caller: &PaletteCaller,
+    ) -> Vec<ExecutionLoadoutSummary> {
+        let principal = caller_principal(caller);
         let store = self.execution_loadouts.read().await;
         let mut rows = store
             .records
             .values()
+            .filter(|record| record.draft.owner_principal == principal)
             .map(|record| ExecutionLoadoutSummary {
                 id: record.draft.id.clone(),
                 name: record.draft.name.clone(),
@@ -201,19 +258,21 @@ impl GatewayManager {
 
     pub async fn execution_loadout_get(
         &self,
+        caller: &PaletteCaller,
         id: &str,
     ) -> Result<ExecutionLoadoutDraft, ExecutionLoadoutError> {
         self.execution_loadouts
             .read()
             .await
             .records
-            .get(id)
+            .get(&record_key(&caller_principal(caller), id))
             .map(|r| r.draft.clone())
             .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })
     }
 
     pub async fn execution_loadout_create(
         &self,
+        caller: &PaletteCaller,
         input: ExecutionLoadoutCreate,
     ) -> Result<ExecutionLoadoutDraft, ExecutionLoadoutError> {
         let members = normalize_members(input.members)?;
@@ -223,7 +282,9 @@ impl GatewayManager {
             validate_text("description", value)?;
         }
         let mut store = self.execution_loadouts.write().await;
-        if store.records.contains_key(&input.id) {
+        let owner_principal = caller_principal(caller);
+        let key = record_key(&owner_principal, &input.id);
+        if store.records.contains_key(&key) {
             return Err(ExecutionLoadoutError::AlreadyExists { id: input.id });
         }
         if store.records.len() >= MAX_LOADOUTS {
@@ -233,6 +294,8 @@ impl GatewayManager {
         }
         let draft = ExecutionLoadoutDraft {
             id: input.id.clone(),
+            owner_principal,
+            runtime_identity: None,
             name: input.name,
             description: input.description,
             members,
@@ -242,7 +305,7 @@ impl GatewayManager {
             restart_required: false,
         };
         store.records.insert(
-            input.id,
+            key,
             Record {
                 draft: draft.clone(),
                 revisions: BTreeMap::new(),
@@ -254,6 +317,7 @@ impl GatewayManager {
 
     pub async fn execution_loadout_patch(
         &self,
+        caller: &PaletteCaller,
         id: &str,
         patch: ExecutionLoadoutPatch,
     ) -> Result<ExecutionLoadoutDraft, ExecutionLoadoutError> {
@@ -267,7 +331,7 @@ impl GatewayManager {
         let mut store = self.execution_loadouts.write().await;
         let record = store
             .records
-            .get_mut(id)
+            .get_mut(&record_key(&caller_principal(caller), id))
             .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
         if patch.expected_draft_revision != record.draft.draft_revision {
             return Err(ExecutionLoadoutError::StaleRevision {
@@ -299,7 +363,7 @@ impl GatewayManager {
     ) -> Result<ExecutionLoadoutPreview, ToolError> {
         validate_text("runtimeIdentity", runtime_identity).map_err(ToolError::from)?;
         let draft = self
-            .execution_loadout_get(id)
+            .execution_loadout_get(caller, id)
             .await
             .map_err(ToolError::from)?;
         self.resolve_execution_loadout(caller, &draft, runtime_identity)
@@ -315,7 +379,7 @@ impl GatewayManager {
     ) -> Result<ExecutionLoadoutActivation, ToolError> {
         // Never trust a cached preview: capture and resolve a fresh atomic catalog snapshot.
         let draft = self
-            .execution_loadout_get(id)
+            .execution_loadout_get(caller, id)
             .await
             .map_err(ToolError::from)?;
         if draft.draft_revision != expected_draft_revision {
@@ -342,7 +406,7 @@ impl GatewayManager {
         let mut store = self.execution_loadouts.write().await;
         let record = store
             .records
-            .get_mut(id)
+            .get_mut(&record_key(&caller_principal(caller), id))
             .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
         if record.draft.draft_revision != expected_draft_revision {
             return Err(ExecutionLoadoutError::StaleRevision {
@@ -352,6 +416,15 @@ impl GatewayManager {
             }
             .into());
         }
+        if record
+            .draft
+            .runtime_identity
+            .as_deref()
+            .is_some_and(|bound| bound != runtime_identity)
+        {
+            return Err(ExecutionLoadoutError::NotFound { id: id.into() }.into());
+        }
+        record.draft.runtime_identity = Some(runtime_identity.into());
         let revision_number = record.revisions.keys().next_back().copied().unwrap_or(0) + 1;
         let revision = ExecutionLoadoutRevision {
             loadout_id: id.into(),
@@ -374,6 +447,7 @@ impl GatewayManager {
 
     pub async fn execution_loadout_rollback(
         &self,
+        caller: &PaletteCaller,
         id: &str,
         expected_draft_revision: u64,
         revision: u64,
@@ -381,7 +455,7 @@ impl GatewayManager {
         let mut store = self.execution_loadouts.write().await;
         let record = store
             .records
-            .get_mut(id)
+            .get_mut(&record_key(&caller_principal(caller), id))
             .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
         if record.draft.draft_revision != expected_draft_revision {
             return Err(ExecutionLoadoutError::StaleRevision {
@@ -412,6 +486,9 @@ impl GatewayManager {
         runtime_identity: &str,
     ) -> Result<ExecutionLoadoutPreview, ToolError> {
         let catalog = self.palette_catalog_snapshot(caller).await?;
+        let published = self.execution_capabilities.load_full();
+        let principal = caller_principal(caller);
+        let non_tool_catalog = published.snapshots.get(&principal);
         let mut available = BTreeMap::new();
         for entry in catalog.entries {
             if let LauncherEntryView::McpTool(tool) = entry {
@@ -425,11 +502,20 @@ impl GatewayManager {
                 );
             }
         }
-        let principal = caller
-            .caller_auth
-            .sub
-            .clone()
-            .unwrap_or_else(|| "shared".into());
+        if let Some(snapshot) = non_tool_catalog {
+            for member in &snapshot.members {
+                if member.family != CapabilityFamily::Tool {
+                    available.insert(
+                        (
+                            member.provider.clone(),
+                            member.family,
+                            member.member_id.clone(),
+                        ),
+                        member.expected_revision.clone(),
+                    );
+                }
+            }
+        }
         let mut resolved = Vec::with_capacity(draft.members.len());
         let mut effective = Vec::new();
         let mut missing = Vec::new();
@@ -440,14 +526,15 @@ impl GatewayManager {
                 capability.family,
                 capability.member_id.clone(),
             );
-            let (status, current, diagnostic) = if capability.family != CapabilityFamily::Tool {
+            let provider_authorized = caller
+                .allowed_upstreams()
+                .is_none_or(|allowed| allowed.contains(&capability.provider))
+                || capability.provider == "labby";
+            let (status, current, diagnostic) = if !provider_authorized {
                 (
-                    ResolutionStatus::Unsupported,
+                    ResolutionStatus::Unauthorized,
                     None,
-                    Some(format!(
-                        "family {:?} is not published by the live catalog",
-                        capability.family
-                    )),
+                    Some("provider is outside the principal authorization snapshot".into()),
                 )
             } else if let Some(current) = available.get(&key) {
                 if current == &capability.expected_revision {
@@ -484,7 +571,10 @@ impl GatewayManager {
         Ok(ExecutionLoadoutPreview {
             loadout_id: draft.id.clone(),
             draft_revision: draft.draft_revision,
-            catalog_generation: catalog.fingerprint,
+            active_revision: draft.effective_runtime_revision.unwrap_or(0),
+            catalog_generation: non_tool_catalog
+                .map(|snapshot| format!("{}:{}", catalog.fingerprint, snapshot.generation))
+                .unwrap_or(catalog.fingerprint),
             principal,
             runtime_identity: runtime_identity.into(),
             resolved,
@@ -493,4 +583,20 @@ impl GatewayManager {
             conflicts,
         })
     }
+}
+
+fn caller_principal(caller: &PaletteCaller) -> String {
+    caller
+        .caller_auth
+        .sub
+        .clone()
+        .unwrap_or_else(|| "shared".into())
+}
+
+fn record_key(principal: &str, id: &str) -> String {
+    format!("{principal}\0{id}")
+}
+
+fn shared_principal() -> String {
+    "shared".into()
 }

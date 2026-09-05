@@ -208,6 +208,9 @@ impl GatewayManager {
             mcp_catalog_refresh_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             mcp_catalog_refresh_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
             execution_loadouts: Arc::new(RwLock::new(execution_loadouts)),
+            execution_capabilities: Arc::new(ArcSwap::from_pointee(
+                super::super::execution_loadout::PublishedCapabilityCatalog::default(),
+            )),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
             notifier: None,
