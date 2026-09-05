@@ -6,6 +6,14 @@ import { CheckIcon, ChevronRightIcon, CircleIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 
+function readableLabel(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return readableLabel(node.props.children)
+  }
+  return React.Children.toArray(node).map(readableLabel).join(' ').trim()
+}
+
 function DropdownMenu({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
@@ -21,13 +29,19 @@ function DropdownMenuPortal({
 }
 
 function DropdownMenuTrigger({
+  children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
+  const label = readableLabel(children).replace(/\s+/g, ' ').trim()
   return (
     <DropdownMenuPrimitive.Trigger
-      data-slot="dropdown-menu-trigger"
       {...props}
-    />
+      data-slot="dropdown-menu-trigger"
+      aria-label={props['aria-label'] ?? (label || undefined)}
+      title={props.title ?? (label || undefined)}
+    >
+      {children}
+    </DropdownMenuPrimitive.Trigger>
   )
 }
 

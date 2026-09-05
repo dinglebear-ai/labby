@@ -6,7 +6,7 @@ import {
   FileType2, Lock, MoreHorizontal, RotateCcw, Settings2,
 } from 'lucide-react'
 
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { AppHeader } from '@/components/app-header'
 import { ConsoleHero } from '@/components/console/console-hero'
@@ -105,7 +105,7 @@ export function ArtifactComposer() {
       />
       <div className="mx-auto mt-4 max-w-5xl">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline"><FileType2/>{kind}<ChevronDown/></Button></DropdownMenuTrigger><DropdownMenuContent>{ARTIFACT_KINDS.map((option)=><DropdownMenuItem key={option} onSelect={()=>setKind(option)}>{option===kind?<Check/>:<span className="size-4"/>}{option}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
+          <DropdownMenu><DropdownMenuTrigger className={buttonVariants({ variant: 'outline' })}><FileType2/>{kind}<ChevronDown/></DropdownMenuTrigger><DropdownMenuContent>{ARTIFACT_KINDS.map((option)=><DropdownMenuItem key={option} onSelect={()=>setKind(option)}>{option===kind?<Check/>:<span className="size-4"/>}{option}</DropdownMenuItem>)}</DropdownMenuContent></DropdownMenu>
           <div className="flex items-center gap-2"><Badge variant="outline" className={issues.length?'border-aurora-warn/50 text-aurora-warn':'border-aurora-success/50 text-aurora-success'}>{issues.length} issue{issues.length===1?'':'s'}</Badge><div className="flex rounded-full border border-aurora-border-subtle bg-aurora-control-surface p-0.5"><button onClick={()=>setWorkspaceMode('artifact')} className={cn('rounded-full px-4 py-1.5 text-xs font-semibold',workspaceMode==='artifact'?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted')}>Artifact</button><button onClick={()=>setWorkspaceMode('bundle')} className={cn('rounded-full px-4 py-1.5 text-xs font-semibold',workspaceMode==='bundle'?'bg-aurora-selected-bg text-aurora-accent-primary':'text-aurora-text-muted')}>Bundle</button></div></div>
         </div>
         <div role="status" className="mb-4 flex items-start gap-2 rounded-aurora-2 border border-aurora-warn/35 bg-aurora-warn/5 px-4 py-3 text-xs leading-5 text-aurora-text-muted"><Lock className="mt-0.5 size-4 shrink-0 text-aurora-warn"/><span><strong className="text-aurora-text-primary">Read-only authoring preview.</strong> Depot publishing and compilation are unavailable until delegated mutation authority is negotiated. You can edit and copy the complete source without changing Depot.</span></div>

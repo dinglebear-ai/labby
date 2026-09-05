@@ -319,21 +319,119 @@ test('mobile gateway cards are touch-sized, overflow-free, and open server detai
   assert.equal(detailOverflow, false)
 })
 
-test('overview, gateways, detail, and usage stay overflow-free on phone and tablet', { concurrency: false }, async (t) => {
+test('icon-led actions are square, touch-sized, and retain accessible labels', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await page.route('**/v1/depot/**', async () => new Promise(() => undefined))
+  await page.goto(`${baseUrl}/library/`, { waitUntil: 'domcontentloaded' })
+  const loadingRefresh = page.getByRole('button', { name: 'Refresh', exact: true })
+  await assert.doesNotReject(() => loadingRefresh.waitFor())
+  assert.equal(await loadingRefresh.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  await page.unroute('**/v1/depot/**')
+  await page.goto(`${baseUrl}/library/`, { waitUntil: 'networkidle' })
+
+  const discover = page.getByRole('link', { name: 'Discover', exact: true })
+  const discoverStyle = await discover.evaluate((element) => ({
+    fontSize: getComputedStyle(element).fontSize,
+    title: element.getAttribute('title'),
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+  }))
+  assert.equal(discoverStyle.fontSize, '0px')
+  assert.equal(discoverStyle.title, 'Discover')
+  assert.ok(discoverStyle.width >= 44 && discoverStyle.height >= 44)
+
+  const filter = page.getByRole('button', { name: 'Filter library by artifact type' })
+  assert.equal(await filter.getAttribute('title'), 'Filters')
+  assert.equal(await filter.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+
+  const textOnly = page.getByRole('link', { name: 'Artifacts', exact: true })
+  assert.notEqual(await textOnly.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+
+  await page.goto(`${baseUrl}/create/`, { waitUntil: 'networkidle' })
+  const artifactTypeMenu = page.getByRole('button', { name: 'Skill', exact: true })
+  await assert.doesNotReject(() => artifactTypeMenu.waitFor())
+  assert.equal(await artifactTypeMenu.getAttribute('data-slot'), 'dropdown-menu-trigger')
+  const exportStyle = await artifactTypeMenu.evaluate((element) => ({
+    fontSize: getComputedStyle(element).fontSize,
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+    label: element.getAttribute('aria-label'),
+  }))
+  assert.equal(exportStyle.fontSize, '0px')
+  assert.ok(exportStyle.width >= 44 && exportStyle.height >= 44)
+  assert.equal(exportStyle.label, 'Skill')
+  await artifactTypeMenu.click()
+  await assert.doesNotReject(() => page.getByRole('menu').waitFor())
+})
+
+test('Library follows responsive view defaults until the operator chooses a view', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 1000, height: 800 } })
+  await page.goto(`${baseUrl}/library/`, { waitUntil: 'networkidle' })
+  await assert.doesNotReject(() => page.locator('table').waitFor())
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await assert.doesNotReject(() => page.locator('table').waitFor({ state: 'detached' }))
+  await page.setViewportSize({ width: 1000, height: 800 })
+  await assert.doesNotReject(() => page.locator('table').waitFor())
+
+  await page.getByRole('button', { name: 'Cards view' }).click()
+  await assert.doesNotReject(() => page.locator('table').waitFor({ state: 'detached' }))
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.setViewportSize({ width: 1000, height: 800 })
+  assert.equal(await page.locator('table').count(), 0)
+})
+
+test('every admin route stays overflow-free on narrow phone, phone, and tablet', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
   const browser = await chromium.launch({ headless: true })
   t.after(async () => { await browser.close() })
 
   for (const viewport of [
+    { width: 320, height: 700, label: 'narrow phone' },
     { width: 390, height: 844, label: 'phone' },
     { width: 768, height: 1024, label: 'tablet' },
   ]) {
     const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } })
     for (const route of [
       '/',
+      '/agents/',
+      '/create/',
+      '/depot/',
+      '/design-system/',
+      '/dev-containers/',
+      '/docs/',
       '/gateways/',
       '/gateway/?id=gw-2',
+      '/library/',
+      '/loadouts/',
+      '/logs/',
+      '/mcp/code-mode/',
+      '/settings/',
+      '/settings/advanced/',
+      '/settings/core/',
+      '/settings/doctor/',
+      '/settings/extract/',
+      '/settings/features/',
+      '/settings/services/',
+      '/settings/services/adguard/',
+      '/settings/surfaces/',
+      '/skills/',
+      '/snippets/',
+      '/stash/',
+      '/tasks/',
+      '/tools/',
+      '/traces/',
       '/usage/?focus=latency&percentile=p95&outcome=failed',
     ]) {
       await page.goto(`${baseUrl}${route}`, { waitUntil: 'networkidle' })
@@ -343,6 +441,38 @@ test('overview, gateways, detail, and usage stay overflow-free on phone and tabl
       }))
       assert.ok(overflow.document <= 1 && overflow.body <= 1, `${viewport.label} ${route} overflowed horizontally: ${JSON.stringify(overflow)}`)
     }
+    await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+    const menu = page.getByRole('button', { name: 'Open navigation' })
+    assert.equal(await page.locator('aside[data-console-sidebar]').getAttribute('aria-hidden'), 'true')
+    assert.equal(await page.locator('[data-mobile-nav-backdrop]').count(), 0)
+    const menuBox = await menu.boundingBox()
+    assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44)
+    await page.evaluate(() => { document.body.style.overflow = 'clip' })
+    await menu.click()
+    await assert.doesNotReject(() => page.locator('aside[data-mobile-open="1"]').waitFor())
+    await assert.doesNotReject(() => page.getByRole('dialog', { name: 'Navigation' }).waitFor())
+    await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.contains(document.activeElement))
+    assert.equal(await page.evaluate(() => document.body.style.overflow), 'hidden')
+    const drawerControls = page.locator('aside[data-console-sidebar] a[href]:visible, aside[data-console-sidebar] button:not([disabled]):visible, aside[data-console-sidebar] [tabindex]:not([tabindex="-1"]):visible')
+    const firstControl = drawerControls.first()
+    const lastControl = drawerControls.last()
+    await lastControl.focus()
+    await page.keyboard.press('Tab')
+    assert.equal(await firstControl.evaluate((element) => element === document.activeElement), true)
+    await page.keyboard.press('Shift+Tab')
+    assert.equal(await lastControl.evaluate((element) => element === document.activeElement), true)
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
+    await page.waitForFunction(() => document.activeElement === document.querySelector('[data-mobile-menu]'))
+    assert.equal(await page.evaluate(() => document.body.style.overflow), 'clip')
+    await menu.click()
+    await page.setViewportSize({ width: 1000, height: 800 })
+    await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    assert.equal(await page.locator('aside[data-console-sidebar]').getAttribute('aria-hidden'), 'true')
+    await menu.click()
+    await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
+    await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
     await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
     await assert.doesNotReject(() => page.getByRole('link', { name: 'Open', exact: true }).first().waitFor())
     await page.goto(`${baseUrl}/usage/?focus=latency&percentile=p95&outcome=failed`, { waitUntil: 'networkidle' })

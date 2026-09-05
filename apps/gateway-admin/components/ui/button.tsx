@@ -4,6 +4,14 @@ import { cva, type VariantProps } from 'class-variance-authority'
 
 import { cn } from '@/lib/utils'
 
+function readableLabel(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return readableLabel(node.props.children)
+  }
+  return React.Children.toArray(node).map(readableLabel).join(' ').trim()
+}
+
 /**
  * Button variants — Aurora-tuned:
  * - `default`: Aurora accent primary (action CTA)
@@ -65,12 +73,15 @@ function Button({
   const Comp = asChild ? Slot : 'button'
   const buttonProps =
     asChild ? props : { type: 'button' as const, ...props }
+  const label = readableLabel(props.children).replace(/\s+/g, ' ').trim()
 
   return (
     <Comp
-      data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
       {...buttonProps}
+      data-slot="button"
+      aria-label={props['aria-label'] ?? (label || undefined)}
+      title={props.title ?? (label || undefined)}
+      className={cn(buttonVariants({ variant, size, className }))}
     />
   )
 }
