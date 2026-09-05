@@ -313,22 +313,40 @@ pub(super) async fn refresh_token_grant(
         grant_type = "refresh_token",
         client_id = %fingerprint(&client_id),
         refresh_token_id = %refresh_token_id,
-        requested_resource_id = %requested_resource.as_deref().map(fingerprint).unwrap_or_else(|| "<refresh-token-resource>".to_string()),
+        requested_resource = requested_resource.as_deref().unwrap_or("<refresh-token-resource>"),
         "oauth refresh_token grant received"
     );
     let refresh_subject = state
         .store
-        .find_refresh_token(&refresh_token)
+        .find_bound_refresh_token(&refresh_token)
         .await?
-        .map(|stored| stored.subject)
-        .ok_or_else(|| {
+        .filter(|stored| stored.binding == state.inbound_provider_binding())
+        .map(|stored| stored.value.subject);
+    let refresh_subject = match refresh_subject {
+        Some(subject) => subject,
+        None => {
+            // Rotation deletes the predecessor and publishes its replay record
+            // atomically. A request can observe the deletion while the winner's
+            // commit is not yet visible, so join the same bounded replay window
+            // used by durable-claim contenders.
+            if let Some(response) = await_cached_refresh_response(
+                &state,
+                &client_id,
+                &refresh_token,
+                requested_resource.as_deref(),
+            )
+            .await?
+            {
+                return Ok(response);
+            }
             debug!(
                 refresh_token_id = %refresh_token_id,
                 client_id = %fingerprint(&client_id),
                 "oauth token rejected: unknown or expired refresh token"
             );
-            AuthError::InvalidGrant("unknown refresh_token".to_string())
-        })?;
+            return Err(AuthError::InvalidGrant("unknown refresh_token".to_string()));
+        }
+    };
     let subject_id = fingerprint(&refresh_subject);
     let claim_id = random_token(18)?;
     let claim_expires_at = now_unix().saturating_add(REFRESH_CLAIM_LEASE_SECONDS);
@@ -350,29 +368,22 @@ pub(super) async fn refresh_token_grant(
         // instead of immediately turning ordinary concurrency into
         // `invalid_grant`. This wait holds no mutex and therefore cannot form a
         // provider-I/O convoy.
-        let replay_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            if let Some(response) = cached_refresh_response(
-                &state,
-                &client_id,
-                &refresh_token,
-                requested_resource.as_deref(),
-            )
-            .await?
-            {
-                info!(
-                    grant_type = "refresh_token",
-                    client_id = %fingerprint(&client_id),
-                    refresh_token_id = %refresh_token_id,
-                    lock_wait_ms,
-                    "oauth concurrent refresh reused the prior rotated response"
-                );
-                return Ok(response);
-            }
-            if tokio::time::Instant::now() >= replay_deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        if let Some(response) = await_cached_refresh_response(
+            &state,
+            &client_id,
+            &refresh_token,
+            requested_resource.as_deref(),
+        )
+        .await?
+        {
+            info!(
+                grant_type = "refresh_token",
+                client_id = %fingerprint(&client_id),
+                refresh_token_id = %refresh_token_id,
+                lock_wait_ms,
+                "oauth concurrent refresh reused the prior rotated response"
+            );
+            return Ok(response);
         }
         debug!(
             refresh_token_id = %refresh_token_id,
@@ -421,13 +432,13 @@ pub(super) async fn claim_refresh_after_subject_lock(
     refresh_token: &str,
     claim_id: &str,
     claim_expires_at: i64,
-) -> Result<(Option<RefreshTokenRow>, u128), AuthError> {
+) -> Result<(Option<crate::types::ProviderBound<RefreshTokenRow>>, u128), AuthError> {
     let lock_wait_started = Instant::now();
     #[cfg(test)]
     refresh_lock_waiter_counter(refresh_token).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let lock_wait_ms = lock_wait_started.elapsed().as_millis();
     let stored = store
-        .claim_refresh_token(refresh_token, claim_id, claim_expires_at)
+        .claim_bound_refresh_token(refresh_token, claim_id, claim_expires_at)
         .await?;
     Ok((stored, lock_wait_ms))
 }
@@ -454,16 +465,11 @@ async fn refresh_google_provider_credential(
             )
         })?;
 
-    let allowed = state.resolve_allowed_emails().await?;
-    if crate::authorize::check_email_allowlist(
-        credential.email.as_deref(),
-        credential.email.as_ref().map(|_| true),
-        None,
-        &allowed,
-        &state.config.allowed_email_domains,
-    )
-    .is_err()
-    {
+    let authorized = match credential.email.as_deref() {
+        Some(email) => state.is_email_explicitly_allowed(email).await?,
+        None => false,
+    };
+    if !authorized {
         let invalidation = state
             .store
             .invalidate_google_provider_credential(subject, credential.generation)
@@ -509,7 +515,11 @@ async fn refresh_google_provider_credential(
 
     for attempt in 0..2 {
         match state
-            .google
+            .inbound_provider
+            .google_provider()
+            .ok_or_else(|| {
+                AuthError::Config("Google refresh invoked for a non-Google provider".into())
+            })?
             .refresh(
                 &credential.refresh_token,
                 &credential.subject,
@@ -549,7 +559,7 @@ async fn refresh_google_provider_credential(
                         crate::types::GoogleProviderCredentialUpdate {
                             subject: google.subject.clone(),
                             email: google.email.clone(),
-                            client_id: state.google.client_id.clone(),
+                            client_id: state.inbound_provider.client_id().to_string(),
                             granted_scopes: granted_scopes.clone(),
                             access_token: google.access_token.clone(),
                             refresh_token: next_provider_refresh_token.to_string(),
@@ -638,8 +648,15 @@ async fn complete_claimed_refresh(
     claim_id: &str,
     refresh_token_id: &str,
     requested_resource: Option<String>,
-    stored: RefreshTokenRow,
+    stored: crate::types::ProviderBound<RefreshTokenRow>,
 ) -> Result<TokenResponse, AuthError> {
+    if stored.binding != state.inbound_provider_binding() {
+        return Err(AuthError::InvalidGrant(
+            "refresh token provider binding is stale".into(),
+        ));
+    }
+    let provider_binding = stored.binding;
+    let stored = stored.value;
     if stored.client_id != client_id {
         warn!(
             refresh_token_id = %refresh_token_id,
@@ -668,6 +685,22 @@ async fn complete_claimed_refresh(
         return Err(AuthError::InvalidGrant(
             "resource does not match the refresh token".to_string(),
         ));
+    }
+
+    if matches!(
+        state.inbound_provider.kind(),
+        crate::config::InboundProviderKind::Authelia
+    ) {
+        return complete_local_policy_refresh(
+            state,
+            refresh_token,
+            claim_id,
+            refresh_token_id,
+            stored,
+            stored_resource,
+            provider_binding,
+        )
+        .await;
     }
 
     // Refresh the subject-scoped Google credential before consuming the local
@@ -709,7 +742,7 @@ async fn complete_claimed_refresh(
         stored_resource.clone(),
         refreshed_scope.clone(),
         Some(replacement_refresh_token),
-        TokenIdentity::ExternalIssuer(crate::google::GOOGLE_ISSUER.to_string()),
+        TokenIdentity::ExternalIssuer(state.inbound_provider.issuer().to_string()),
     )?;
     let response_ttl = i64::try_from(response.expires_in).unwrap_or(i64::MAX);
     let replay_expires_at = now.saturating_add(REFRESH_REPLAY_GRACE_SECONDS.min(response_ttl));
@@ -721,6 +754,7 @@ async fn complete_claimed_refresh(
             replacement,
             &response,
             replay_expires_at,
+            provider_binding,
         )
         .await?
         .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".to_string()))?;
@@ -735,5 +769,80 @@ async fn complete_claimed_refresh(
         "oauth refresh_token grant rotated local token and issued new access token"
     );
 
+    Ok(response)
+}
+
+async fn complete_local_policy_refresh(
+    state: &AuthState,
+    refresh_token: &str,
+    claim_id: &str,
+    refresh_token_id: &str,
+    stored: RefreshTokenRow,
+    stored_resource: String,
+    provider_binding: crate::types::ProviderBinding,
+) -> Result<TokenResponse, AuthError> {
+    let email = state
+        .store
+        .current_verified_inbound_email(&provider_binding.identity_issuer, &stored.subject)
+        .await?;
+    let Some(email) = email else {
+        state
+            .store
+            .revoke_inbound_identity(&provider_binding.identity_issuer, &stored.subject)
+            .await?;
+        return Err(AuthError::OauthNeedsReauth(
+            "verified provider identity is unavailable; reauthorization required".into(),
+        ));
+    };
+    if !state.is_email_authorized(&email).await? {
+        state
+            .store
+            .revoke_inbound_identity(&provider_binding.identity_issuer, &stored.subject)
+            .await?;
+        return Err(AuthError::OauthNeedsReauth(
+            "provider subject is no longer authorized".into(),
+        ));
+    }
+    let now = now_unix();
+    let replacement_refresh_token = random_token(24)?;
+    let replacement = RefreshTokenRow {
+        refresh_token: replacement_refresh_token.clone(),
+        client_id: stored.client_id.clone(),
+        subject: stored.subject.clone(),
+        resource: stored_resource.clone(),
+        scope: stored.scope.clone(),
+        provider_refresh_token: None,
+        created_at: now,
+        expires_at: expires_at(
+            now,
+            state.config.refresh_token_ttl,
+            &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
+        )?,
+    };
+    let response = build_token_response(
+        state,
+        stored.client_id,
+        stored.subject,
+        stored_resource,
+        stored.scope,
+        Some(replacement_refresh_token),
+        TokenIdentity::ExternalIssuer(provider_binding.identity_issuer.clone()),
+    )?;
+    let replay_expires_at = now.saturating_add(
+        REFRESH_REPLAY_GRACE_SECONDS.min(i64::try_from(response.expires_in).unwrap_or(i64::MAX)),
+    );
+    state
+        .store
+        .rotate_claimed_refresh_token(
+            refresh_token,
+            claim_id,
+            replacement,
+            &response,
+            replay_expires_at,
+            provider_binding,
+        )
+        .await?
+        .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".into()))?;
+    info!(refresh_token_id = %refresh_token_id, provider = "authelia", "local-policy refresh completed");
     Ok(response)
 }

@@ -14,6 +14,7 @@ mod assertions;
 #[path = "sqlite/tests.rs"]
 mod extracted_tests;
 mod google_credentials;
+mod identity_provider;
 mod migrations;
 mod oauth;
 mod reauth;
@@ -37,6 +38,7 @@ use crate::util::{ensure_restrictive_permissions, now_unix, set_restrictive_perm
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const SQLITE_POOL_SIZE: usize = 4;
+static SQLITE_OPEN_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -94,7 +96,7 @@ impl SqliteStore {
         Ok(store)
     }
 
-    #[cfg(all(test, feature = "http-axum"))]
+    #[cfg(test)]
     pub(crate) async fn reopen_for_test(&self) -> Result<Self, AuthError> {
         Self::open_with_key(self.path.as_ref().clone(), self.enc_key.as_deref().cloned()).await
     }
@@ -186,8 +188,10 @@ impl SqliteStore {
             conn.execute(
                 "INSERT INTO authorization_requests (
                     state, client_id, redirect_uri, client_state, resource, scope, provider_code_verifier,
-                    code_challenge, code_challenge_method, created_at, expires_at, native_poll_token_hash
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    code_challenge, code_challenge_method, created_at, expires_at, native_poll_token_hash,
+                    identity_issuer, provider_generation
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, issuer, generation
+                     FROM inbound_identity_provider WHERE singleton = 1",
                 params![
                     request.state,
                     request.client_id,
@@ -209,6 +213,31 @@ impl SqliteStore {
         .await
     }
 
+    pub async fn insert_bound_authorization_request(
+        &self,
+        request: AuthorizationRequestRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        self.with_conn(move |conn| {
+            let count = conn.execute(
+                "INSERT INTO authorization_requests (
+                    state, client_id, redirect_uri, client_state, resource, scope,
+                    provider_code_verifier, code_challenge, code_challenge_method,
+                    created_at, expires_at, native_poll_token_hash, identity_issuer, provider_generation)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
+                    WHERE singleton = 1 AND issuer = ?13 AND generation = ?14)",
+                params![request.state, request.client_id, request.redirect_uri, request.client_state,
+                    request.resource, request.scope, request.provider_code_verifier,
+                    request.code_challenge, request.code_challenge_method, request.created_at,
+                    request.expires_at, request.native_poll_token_hash, binding.identity_issuer,
+                    binding.provider_generation],
+            ).map_err(sqlite_error)?;
+            if count == 1 { Ok(()) } else { Err(AuthError::InvalidGrant(
+                "inbound provider runtime is no longer active".into())) }
+        }).await
+    }
+
     pub async fn take_authorization_request(
         &self,
         state: &str,
@@ -220,6 +249,7 @@ impl SqliteStore {
                 "DELETE FROM authorization_requests
                  WHERE state = ?1
                    AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
                  RETURNING state, client_id, redirect_uri, client_state, scope, provider_code_verifier,
                            code_challenge, code_challenge_method, created_at, expires_at, resource,
                            native_poll_token_hash",
@@ -236,14 +266,88 @@ impl SqliteStore {
         .await
     }
 
+    pub async fn take_bound_authorization_request(
+        &self,
+        state: &str,
+    ) -> Result<crate::types::ProviderBound<AuthorizationRequestRow>, AuthError> {
+        let state = state.to_string();
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "DELETE FROM authorization_requests
+                 WHERE state = ?1 AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                 RETURNING state, client_id, redirect_uri, client_state, scope, provider_code_verifier,
+                           code_challenge, code_challenge_method, created_at, expires_at, resource,
+                           native_poll_token_hash, identity_issuer, provider_generation",
+                params![state, now],
+                |row| Ok(crate::types::ProviderBound {
+                    value: row_to_authorization_request(row)?,
+                    binding: crate::types::ProviderBinding {
+                        identity_issuer: row.get(12)?,
+                        provider_generation: row.get(13)?,
+                    },
+                }),
+            ).map_err(|error| match error {
+                rusqlite::Error::QueryReturnedNoRows => AuthError::InvalidGrant(
+                    "authorization state is missing, expired, or already used".into()),
+                other => sqlite_error(other),
+            })
+        }).await
+    }
+
+    pub async fn insert_bound_auth_code(
+        &self,
+        code: AuthorizationCodeRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        self.with_conn(move |conn| {
+            let count = conn
+                .execute(
+                    "INSERT INTO authorization_codes (
+                    code, client_id, subject, redirect_uri, resource, scope,
+                    code_challenge, code_challenge_method, provider_refresh_token,
+                    created_at, expires_at, identity_issuer, provider_generation)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
+                    WHERE singleton = 1 AND issuer = ?12 AND generation = ?13)",
+                    params![
+                        code.code,
+                        code.client_id,
+                        code.subject,
+                        code.redirect_uri,
+                        code.resource,
+                        code.scope,
+                        code.code_challenge,
+                        code.code_challenge_method,
+                        code.provider_refresh_token,
+                        code.created_at,
+                        code.expires_at,
+                        binding.identity_issuer,
+                        binding.provider_generation
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            if count == 1 {
+                Ok(())
+            } else {
+                Err(AuthError::InvalidGrant(
+                    "inbound provider changed while authorization was in progress".into(),
+                ))
+            }
+        })
+        .await
+    }
+
     pub async fn insert_auth_code(&self, code: AuthorizationCodeRow) -> Result<(), AuthError> {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO authorization_codes (
                     code, client_id, subject, redirect_uri, resource, scope,
                     code_challenge, code_challenge_method, provider_refresh_token,
-                    created_at, expires_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    created_at, expires_at, identity_issuer, provider_generation
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, issuer, generation
+                     FROM inbound_identity_provider WHERE singleton = 1",
                 params![
                     code.code,
                     code.client_id,
@@ -278,6 +382,7 @@ impl SqliteStore {
                 "DELETE FROM authorization_codes
                  WHERE code = ?1
                    AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
                  RETURNING code, client_id, subject, redirect_uri, scope,
                            code_challenge, code_challenge_method, provider_refresh_token,
                            created_at, expires_at, resource",
@@ -317,6 +422,7 @@ impl SqliteStore {
                 "DELETE FROM authorization_codes
                  WHERE code = ?1
                    AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
                    AND client_id = ?3
                    AND redirect_uri = ?4
                    AND (?5 IS NULL OR resource = ?5)
@@ -345,6 +451,47 @@ impl SqliteStore {
             })
         })
         .await
+    }
+
+    pub async fn redeem_bound_verified_auth_code(
+        &self,
+        code: &str,
+        client_id: &str,
+        redirect_uri: &str,
+        resource: Option<&str>,
+        code_challenge: &str,
+        code_challenge_method: &str,
+    ) -> Result<crate::types::ProviderBound<AuthorizationCodeRow>, AuthError> {
+        let (code, client_id, redirect_uri, resource, code_challenge, code_challenge_method) = (
+            code.to_string(),
+            client_id.to_string(),
+            redirect_uri.to_string(),
+            resource.map(str::to_string),
+            code_challenge.to_string(),
+            code_challenge_method.to_string(),
+        );
+        let now = now_unix();
+        self.with_conn(move |conn| conn.query_row(
+            "DELETE FROM authorization_codes
+             WHERE code = ?1 AND expires_at > ?2
+               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+               AND client_id = ?3 AND redirect_uri = ?4 AND (?5 IS NULL OR resource = ?5)
+               AND code_challenge = ?6 AND code_challenge_method = ?7
+             RETURNING code, client_id, subject, redirect_uri, scope, code_challenge,
+               code_challenge_method, provider_refresh_token, created_at, expires_at, resource,
+               identity_issuer, provider_generation",
+            params![code, now, client_id, redirect_uri, resource, code_challenge, code_challenge_method],
+            |row| Ok(crate::types::ProviderBound {
+                value: row_to_authorization_code(row)?,
+                binding: crate::types::ProviderBinding {
+                    identity_issuer: row.get(11)?, provider_generation: row.get(12)?,
+                },
+            }),
+        ).map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => AuthError::InvalidGrant(
+                "authorization code is missing, expired, already redeemed, or does not match the grant".into()),
+            other => sqlite_error(other),
+        })).await
     }
 
     pub async fn upsert_browser_session(
@@ -411,12 +558,104 @@ impl SqliteStore {
                 "SELECT session_id, subject, email, csrf_token, created_at, expires_at, project_binding_json
                  FROM browser_sessions
                  WHERE session_id = ?1
-                   AND expires_at > ?2",
+                   AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
                 params![session_id, now],
                 row_to_browser_session,
             )
             .optional()
             .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    pub async fn find_authorized_bound_browser_session(
+        &self,
+        session_id: &str,
+        admin_email: &str,
+        allowed_domains: &[String],
+    ) -> Result<Option<(crate::types::ProviderBound<BrowserSessionRow>, bool)>, AuthError> {
+        let session_id = session_id.to_string();
+        let admin_email = admin_email.to_string();
+        let domains = serde_json::to_string(allowed_domains)
+            .map_err(|error| AuthError::Storage(format!("encode allowed domains: {error}")))?;
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT session_id, subject, email, csrf_token, created_at, expires_at,
+                        project_binding_json, identity_issuer, provider_generation,
+                        CASE WHEN email IS NOT NULL AND (
+                          email = ?3 COLLATE NOCASE OR
+                          EXISTS (SELECT 1 FROM allowed_users WHERE allowed_users.email = browser_sessions.email COLLATE NOCASE) OR
+                          EXISTS (SELECT 1 FROM json_each(?4) WHERE
+                            lower(value) = lower(substr(browser_sessions.email, instr(browser_sessions.email, '@') + 1)))
+                        ) THEN 1 ELSE 0 END
+                   FROM browser_sessions
+                  WHERE session_id = ?1 AND expires_at > ?2
+                    AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                params![session_id, now, admin_email, domains],
+                |row| Ok((crate::types::ProviderBound {
+                    value: row_to_browser_session(row)?,
+                    binding: crate::types::ProviderBinding {
+                        identity_issuer: row.get(7)?, provider_generation: row.get(8)?,
+                    },
+                }, row.get::<_, i64>(9)? != 0)),
+            ).optional().map_err(sqlite_error)
+        }).await
+    }
+
+    pub async fn find_bound_browser_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::types::ProviderBound<BrowserSessionRow>>, AuthError> {
+        let session_id = session_id.to_string();
+        let now = now_unix();
+        self.with_conn(move |conn| conn.query_row(
+            "SELECT session_id, subject, email, csrf_token, created_at, expires_at,
+                    project_binding_json, identity_issuer, provider_generation
+             FROM browser_sessions WHERE session_id = ?1 AND expires_at > ?2
+               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+            params![session_id, now],
+            |row| Ok(crate::types::ProviderBound {
+                value: row_to_browser_session(row)?,
+                binding: crate::types::ProviderBinding {
+                    identity_issuer: row.get(7)?, provider_generation: row.get(8)?,
+                },
+            }),
+        ).optional().map_err(sqlite_error)).await
+    }
+
+    pub async fn upsert_bound_browser_session(
+        &self,
+        session: BrowserSessionRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        let project_binding_json = session
+            .project_binding
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                AuthError::Storage(format!("project session encoding failed: {error}"))
+            })?;
+        self.with_conn(move |conn| {
+            let count = conn.execute(
+                "INSERT INTO browser_sessions (session_id, subject, email, csrf_token, created_at,
+                    expires_at, project_binding_json, identity_issuer, provider_generation)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
+                    WHERE singleton = 1 AND issuer = ?8 AND generation = ?9)",
+                params![session.session_id, session.subject, session.email, session.csrf_token,
+                    session.created_at, session.expires_at, project_binding_json,
+                    binding.identity_issuer, binding.provider_generation],
+            ).map_err(sqlite_error)?;
+            if count == 1 {
+                Ok(())
+            } else {
+                Err(AuthError::InvalidGrant(
+                    "inbound provider changed while browser login was in progress".into(),
+                ))
+            }
         })
         .await
     }
@@ -447,8 +686,10 @@ impl SqliteStore {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO browser_login_states (
-                    state, return_to, provider_code_verifier, created_at, expires_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    state, return_to, provider_code_verifier, created_at, expires_at,
+                    identity_issuer, provider_generation
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, issuer, generation
+                     FROM inbound_identity_provider WHERE singleton = 1",
                 params![
                     login.state,
                     login.return_to,
@@ -459,6 +700,42 @@ impl SqliteStore {
             )
             .map_err(sqlite_error)?;
             Ok(())
+        })
+        .await
+    }
+
+    pub async fn insert_bound_browser_login_state(
+        &self,
+        login: BrowserLoginStateRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        self.with_conn(move |conn| {
+            let count = conn
+                .execute(
+                    "INSERT INTO browser_login_states (
+                    state, return_to, provider_code_verifier, created_at, expires_at,
+                    identity_issuer, provider_generation)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
+                    WHERE singleton = 1 AND issuer = ?6 AND generation = ?7)",
+                    params![
+                        login.state,
+                        login.return_to,
+                        login.provider_code_verifier,
+                        login.created_at,
+                        login.expires_at,
+                        binding.identity_issuer,
+                        binding.provider_generation
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            if count == 1 {
+                Ok(())
+            } else {
+                Err(AuthError::InvalidGrant(
+                    "inbound provider runtime is no longer active".into(),
+                ))
+            }
         })
         .await
     }
@@ -506,6 +783,7 @@ impl SqliteStore {
                 "DELETE FROM browser_login_states
                  WHERE state = ?1
                    AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
                  RETURNING state, return_to, provider_code_verifier, created_at, expires_at",
                 params![state, now],
                 row_to_browser_login_state,
@@ -514,6 +792,27 @@ impl SqliteStore {
             .map_err(sqlite_error)
         })
         .await
+    }
+
+    pub async fn take_bound_browser_login_state(
+        &self,
+        state: &str,
+    ) -> Result<Option<crate::types::ProviderBound<BrowserLoginStateRow>>, AuthError> {
+        let state = state.to_string();
+        let now = now_unix();
+        self.with_conn(move |conn| conn.query_row(
+            "DELETE FROM browser_login_states WHERE state = ?1 AND expires_at > ?2
+               AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+             RETURNING state, return_to, provider_code_verifier, created_at, expires_at,
+                       identity_issuer, provider_generation",
+            params![state, now],
+            |row| Ok(crate::types::ProviderBound {
+                value: row_to_browser_login_state(row)?,
+                binding: crate::types::ProviderBinding {
+                    identity_issuer: row.get(5)?, provider_generation: row.get(6)?,
+                },
+            }),
+        ).optional().map_err(sqlite_error)).await
     }
 
     /// Store a native-flow authorization code keyed by a polling-token hash, for the
@@ -530,12 +829,15 @@ impl SqliteStore {
     ) -> Result<(), AuthError> {
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO native_authorization_results (poll_token_hash, code, created_at, expires_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO native_authorization_results
+                    (poll_token_hash, code, created_at, expires_at, provider_generation)
+                 SELECT ?1, ?2, ?3, ?4, generation
+                   FROM inbound_identity_provider WHERE singleton = 1
                  ON CONFLICT(poll_token_hash) DO UPDATE SET
                     code = excluded.code,
                     created_at = excluded.created_at,
-                    expires_at = excluded.expires_at",
+                    expires_at = excluded.expires_at,
+                    provider_generation = excluded.provider_generation",
                 params![
                     result.poll_token_hash,
                     result.code,
@@ -545,6 +847,43 @@ impl SqliteStore {
             )
             .map_err(sqlite_error)?;
             Ok(())
+        })
+        .await
+    }
+
+    pub async fn insert_bound_native_authorization_result(
+        &self,
+        result: NativeAuthorizationResultRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        self.with_conn(move |conn| {
+            let count = conn
+                .execute(
+                    "INSERT INTO native_authorization_results
+                   (poll_token_hash, code, created_at, expires_at, provider_generation)
+                 SELECT ?1, ?2, ?3, ?4, ?5
+                  WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
+                    WHERE singleton = 1 AND issuer = ?6 AND generation = ?5)
+                 ON CONFLICT(poll_token_hash) DO UPDATE SET code = excluded.code,
+                   created_at = excluded.created_at, expires_at = excluded.expires_at,
+                   provider_generation = excluded.provider_generation",
+                    params![
+                        result.poll_token_hash,
+                        result.code,
+                        result.created_at,
+                        result.expires_at,
+                        binding.provider_generation,
+                        binding.identity_issuer
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            if count == 1 {
+                Ok(())
+            } else {
+                Err(AuthError::InvalidGrant(
+                    "inbound provider changed while native authorization was in progress".into(),
+                ))
+            }
         })
         .await
     }
@@ -561,6 +900,7 @@ impl SqliteStore {
                 "DELETE FROM native_authorization_results
                  WHERE poll_token_hash = ?1
                    AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
                  RETURNING poll_token_hash, code, created_at, expires_at",
                 params![poll_token_hash, now],
                 row_to_native_authorization_result,
@@ -674,6 +1014,9 @@ impl SqliteStore {
 }
 
 fn open_connections(path: &Path, count: usize) -> Result<Vec<Connection>, AuthError> {
+    let _open_guard = SQLITE_OPEN_LOCK
+        .lock()
+        .map_err(|_| AuthError::Storage("sqlite open lock poisoned".to_string()))?;
     (0..count).map(|_| open_connection(path)).collect()
 }
 
@@ -694,6 +1037,15 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
     }
 
     let conn = Connection::open(path).map_err(sqlite_error)?;
+    let current_schema: i64 = conn
+        .query_row("PRAGMA user_version;", [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    if current_schema > migrations::SCHEMA_VERSION {
+        return Err(AuthError::Storage(format!(
+            "auth database schema version {current_schema} is newer than supported version {}",
+            migrations::SCHEMA_VERSION
+        )));
+    }
     conn.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
         .map_err(sqlite_error)?;
     conn.pragma_update(None, "journal_mode", "WAL")
@@ -2112,7 +2464,7 @@ mod tests {
     async fn fresh_and_v4_upgraded_schema_are_identical() {
         let fresh_path = temp_db_path();
         let fresh = SqliteStore::open(fresh_path).await.unwrap();
-        let fresh_schema = auth_schema_snapshot(&fresh).await;
+        let mut fresh_schema = auth_schema_snapshot(&fresh).await;
 
         let upgraded_path = temp_db_path();
         let upgraded = SqliteStore::open(upgraded_path.clone()).await.unwrap();
@@ -2130,7 +2482,10 @@ mod tests {
         }
         crate::util::set_restrictive_permissions(&upgraded_path).unwrap();
         let upgraded = SqliteStore::open(upgraded_path).await.unwrap();
-        let upgraded_schema = auth_schema_snapshot(&upgraded).await;
+        let mut upgraded_schema = auth_schema_snapshot(&upgraded).await;
+
+        fresh_schema.sort();
+        upgraded_schema.sort();
 
         assert_eq!(fresh_schema, upgraded_schema);
     }
@@ -2168,6 +2523,8 @@ mod tests {
                 "code".to_string(),
                 "created_at".to_string(),
                 "expires_at".to_string(),
+                "identity_issuer".to_string(),
+                "provider_generation".to_string(),
             ]
         );
         assert!(
@@ -2185,6 +2542,7 @@ mod tests {
                 "replacement_token_hash".to_string(),
                 "created_at".to_string(),
                 "expires_at".to_string(),
+                "provider_generation".to_string(),
             ]
         );
         drop(fresh);
@@ -2224,6 +2582,8 @@ mod tests {
                 "code".to_string(),
                 "created_at".to_string(),
                 "expires_at".to_string(),
+                "identity_issuer".to_string(),
+                "provider_generation".to_string(),
             ]
         );
         let legacy_rows = upgraded
@@ -2303,7 +2663,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
     }
 
@@ -2359,7 +2719,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 14);
+        assert_eq!(schema_version, 15);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await

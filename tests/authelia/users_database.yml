@@ -1,0 +1,7 @@
+users:
+  tester:
+    disabled: false
+    displayname: "Labby Acceptance User"
+    password: "$argon2id$v=19$m=65536,t=3,p=4$25fsAAf94zAlVzK3eM+fyA$6Tut+ox9VkEVHByx5PvDfssB5vrpJImvYN1GFORDH3Q"
+    email: "tester@example.com"
+    groups: ["testers"]

@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-08-17"
+updated: "2026-09-05"
 ---
 
 # HTTP Auth Modes
@@ -11,7 +11,9 @@ Labby supports two HTTP auth modes:
 - `LABBY_AUTH_MODE=bearer`
   Preserve the existing static bearer-token flow with `LABBY_MCP_HTTP_TOKEN`.
 - `LABBY_AUTH_MODE=oauth`
-  Run an internal Google-backed OAuth authorization server that issues Labby JWT access tokens and exposes JWKS plus RFC 9728 metadata.
+  Run Labby's authorization server with exactly one inbound human identity
+  provider: Google (stable) or Authelia OpenID Connect (open beta). Labby
+  issues its own JWT access tokens and exposes JWKS plus RFC 9728 metadata.
 
 This document covers mode selection, startup behavior, registration and token flow, JWT validation, and operator-facing constraints.
 For the complete generated route/auth matrix, see
@@ -27,14 +29,20 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 |----------|----------|-------------|
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
-| `LABBY_TOKEN_ENCRYPTION_KEY` | OAuth mode | 32-byte key encoded as 64 hex digits or 43 base64url characters; encrypts reusable Google provider credentials in `auth.db`. |
-| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported; user information, queries, and fragments are rejected rather than stripped. Both environment loading and programmatic auth-state construction validate this boundary before serving metadata. |
-| `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
-| `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
+| `LABBY_TOKEN_ENCRYPTION_KEY` | oauth mode | 32-byte key encoded as 64 hex digits or 43 base64url characters; encrypts reusable Google provider credentials and local refresh replay responses in `auth.db`. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
+| `LABBY_GOOGLE_CLIENT_ID` | Google provider | Google OAuth client ID. |
+| `LABBY_GOOGLE_CLIENT_SECRET` | Google provider | Google OAuth client secret. |
+| `LABBY_AUTH_PROVIDER` | no | Select exactly one inbound provider: `google` or `authelia`. Legacy Google-only configuration remains valid. |
+| `LABBY_AUTHELIA_ISSUER_URL` | Authelia | Exact OIDC issuer URL. Discovery, token, and JWKS endpoints must remain on this origin. |
+| `LABBY_AUTHELIA_CLIENT_ID` | Authelia | Confidential OIDC client ID. |
+| `LABBY_AUTHELIA_CLIENT_SECRET` | Authelia | Confidential OIDC client secret; Labby uses `client_secret_basic`. |
+| `LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN` | no | Explicitly trusts one exact HTTPS private issuer origin. It does not disable SSRF protection for any other origin. |
+| `LABBY_AUTHELIA_CA_CERT_PATH` | no | Optional PEM CA certificate for the exact Authelia origin. Mount it read-only; this does not extend trust to other outbound requests. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
-| `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Google email address of the bootstrap admin permitted to log in. Normalized to lowercase at startup. **Required** when `LABBY_AUTH_MODE=oauth`: startup fails if unset so no Google account can authenticate unless explicitly permitted. The `email_verified` claim in Google's id_token is enforced — accounts with unverified email addresses are rejected even if the address matches. Additional users are granted through the SQLite-backed allowlist managed from Labby settings. |
+| `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Verified email address of the bootstrap admin for the selected provider. Normalized to lowercase at startup; startup fails closed if unset. Additional users come from the SQLite-backed allowlist. |
 | `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated Google Workspace domains whose members may log in, in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. Matching is against the ID token's `hd` (hosted domain) claim rather than the email address suffix: Google asserts `hd` only for accounts genuinely hosted in that Workspace domain, so suffix lookalikes such as `user@evil-example.com` are not accepted. `email_verified` is enforced first, and a token refresh that returns no fresh `id_token` carries no `hd`, so domain access is never re-established from a reused identity. Empty (the default) disables domain-based access. |
 | `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL. Use this when the browser webapp host differs from the OAuth issuer; when unset, Labby derives the callback from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
@@ -47,38 +55,77 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired pending authorization + browser-login states stored at once. Defaults to `1024`. |
 | `LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY` | no | Explicit temporary workaround for [openai/codex#34684](https://github.com/openai/codex/issues/34684). When `true`, Labby neither advertises nor emits the RFC 9207 authorization-response `iss` parameter. Defaults to `false`; remove the override after the affected Codex callback handling is fixed. |
 
+### Authelia open beta
+
+Labby's pinned interoperability gate tests `authelia/authelia:4.39.10`. Register
+one confidential authorization-code client in Authelia with:
+
+- redirect URI `https://<exact LABBY_PUBLIC_URL authority>/auth/oidc/callback`;
+- token endpoint authentication method `client_secret_basic`;
+- `require_pkce: true` with only `S256`;
+- scopes `openid`, `email`, and `profile`, with claims `sub`, `email`, and
+  `email_verified`; and
+- no `offline_access` grant. Labby intentionally stores no Authelia refresh token.
+
+The callback is fixed for this provider. Google keeps its separate
+`/auth/google/callback` contract; provider selection does not alias or leave
+both callbacks active. Discovery runs at startup and requires exact issuer
+equality. Authorization, token, and JWKS endpoints must stay on the issuer
+origin, and redirects are rejected. Private-address issuers require
+`LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN` to equal the exact HTTPS origin; a
+private CA additionally requires `LABBY_AUTHELIA_CA_CERT_PATH`. Neither option
+is a general SSRF or TLS bypass.
+
+Changing provider kind, issuer, client ID, or fixed callback creates a new
+provider generation. Restart every Labby process against the same configuration
+and database; stale processes fail closed at callback/token publication. Trust
+origin, CA path, and policy changes also require an all-process restart even
+when the identity generation is unchanged. To roll back, restore the previous
+complete provider configuration and restart all processes. Users authenticate
+again after a provider-generation switch; identity state is never silently
+reused across generations.
+
+Authelia renewal is local-policy-only: Labby rotates its own refresh token
+without contacting the IdP. Removing a local allowed user/domain or changing
+the provider generation invalidates sessions and renewable grants immediately.
+Authelia-side disablement is observed only at the next interactive login or
+when existing Labby session/refresh lifetimes end. An already-issued stateless
+Labby access JWT remains usable for at most `LABBY_AUTH_ACCESS_TOKEN_TTL_SECS`;
+choose that TTL to match required offboarding latency.
+
+RP-initiated logout is not supported. If the Labby signing key is compromised,
+stop all issuers, replace `LABBY_AUTH_KEY_PATH`, restart every process, and
+invalidate active sessions/refresh grants; signing-key rotation is the
+emergency way to invalidate residual access JWTs. If the Authelia client secret
+or private CA material is compromised, rotate it at Authelia, replace the
+server-held secret/file, and restart all Labby processes. Never put secrets in
+TOML, command lines, logs, or support bundles.
 ## Startup Behavior
 
 When OAuth mode is configured, `labby serve` performs these steps at startup:
 
-1. Validate that `LABBY_PUBLIC_URL`, Google credentials, `LABBY_AUTH_ADMIN_EMAIL`,
-   and a valid `LABBY_TOKEN_ENCRYPTION_KEY` are present. OAuth startup fails
-   closed before the database can persist a reusable Google credential if the
-   encryption key is absent or invalid.
+1. Validate `LABBY_PUBLIC_URL`, `LABBY_AUTH_ADMIN_EMAIL`, and exactly one
+   complete selected provider configuration. Both providers require a valid
+   `LABBY_TOKEN_ENCRYPTION_KEY`; Authelia additionally requires its issuer and
+   any explicitly configured private-origin/CA trust material.
 2. Open the SQLite auth store in WAL mode with a non-zero busy timeout. Legacy
    plaintext Google provider rows are atomically encrypted before they can be
    served.
 3. Load or generate the persisted Ed25519 signing key. Legacy RSA key files are
    quarantined and rotated on first startup after upgrade.
-4. Use `LABBY_GOOGLE_CALLBACK_URL` when configured; otherwise build the
-   concrete Google provider callback URL from `LABBY_PUBLIC_URL` and
-   `LABBY_GOOGLE_CALLBACK_PATH`.
+4. Construct only the selected provider. Explicit Google uses its fixed Google
+   callback; Authelia performs bounded discovery and uses the fixed
+   `/auth/oidc/callback`.
 
 Startup fails closed if any of those steps fail.
 
 Startup also fails if:
 
 - `LABBY_AUTH_MODE=oauth` is set without `LABBY_PUBLIC_URL`
-- Google client credentials are missing
-- `LABBY_AUTH_ADMIN_EMAIL` is missing — fail-closed default so no Google account can authenticate without explicit permission
+- the selected provider configuration is incomplete or both providers are ambiguous
+- OAuth is selected without `LABBY_TOKEN_ENCRYPTION_KEY`
+- `LABBY_AUTH_ADMIN_EMAIL` is missing, so no provider identity is explicitly permitted
 - the auth database or signing key has insecure file permissions
-
-Windows secret-file hardening uses native handle-based ACL operations, without
-PowerShell, `icacls`, or a loaded shell profile. It installs a protected,
-non-inheriting current-user-only FullControl DACL without changing existing
-ownership. Ancestors are pinned, reparse points and file hard links are refused,
-and an already-open secret is checked by its full filesystem identity before
-the ACL changes. Unix permission handling remains unchanged.
 
 ## Owner bootstrap and project-bound credentials
 
@@ -474,9 +521,6 @@ Current constraints:
 - successful refresh grants atomically rotate the local refresh token; the old
   token is invalid immediately
 - `POST /revoke` implements idempotent refresh-token revocation
-- concurrent Google refresh callers share one immutable result generation;
-  waiters cannot receive a later refresh result, and owner cancellation wakes
-  its waiters with a server error so a later caller can retry
 - machine clients are preregistered out of band with
   `LABBY_AUTH_MACHINE_CLIENTS_JSON` and authenticate with `client_secret_basic`
   or RFC 7523 `private_key_jwt`
@@ -510,13 +554,6 @@ oversized CIMD responses; successful documents are cached according to
 `Cache-Control: max-age`.
 
 ### Auth Failure Semantics
-
-OAuth request identifiers, resource/scope values, callback endpoints, and Google
-configuration metadata are correlated with bounded fingerprints rather than
-raw values in logs. Google response decode/transport failures retain stable
-error kinds without embedding endpoint URLs or response contents. The 1 MiB
-Google JSON response limit still applies before deserialization, including
-decoded error payloads and JWKS; oversized payloads retain `response_too_large`.
 
 Labby distinguishes unauthenticated callers from internal auth outages.
 
@@ -1069,6 +1106,23 @@ key is missing, setup creates a timestamped `.env.bak.*` first, atomically
 merges a generated key with mode `0600`, restores `labby:labby` ownership, and
 only then restarts the service. Existing valid keys are preserved byte for byte.
 An invalid configured key aborts the restart rather than replacing it.
+
+Provider cutover is a stop-the-world maintenance operation. Stop every Labby
+process that can write the shared auth database, run `labby doctor auth --live`
+with the proposed Authelia configuration, and take a SQLite backup before the
+first new binary starts. Provider discovery completes before v13 migration, but
+once v13 commits, older writers must remain stopped. Verify the durable state
+after startup with:
+
+```sql
+PRAGMA user_version;
+PRAGMA integrity_check;
+SELECT provider, issuer, generation FROM inbound_identity_provider WHERE singleton = 1;
+```
+
+Rollback after v13 requires stopping all writers and restoring the matching
+pre-cutover database backup; changing only the binary or provider environment
+is not a supported downgrade.
 
 Back up the following as one recovery set before upgrades and before changing
 OAuth configuration:

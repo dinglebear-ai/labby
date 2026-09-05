@@ -54,3 +54,40 @@ pub async fn stream_audit_full_with_relay(
         }
     }
 }
+
+/// Run the full audit using the caller's already-resolved auth configuration.
+pub async fn stream_audit_full_with_relay_and_auth(
+    _clients: Arc<ServiceClients>,
+    public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
+    auth: Option<labby_auth::config::AuthConfig>,
+    tx: tokio::sync::mpsc::Sender<Finding>,
+) {
+    for finding in super::system::run_system_checks().await {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+    for finding in super::system::run_auth_checks_with_config(auth.as_ref()) {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+    for finding in super::access::check_access_store().await.findings {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+    for finding in super::gateway::check_gateway_upstreams().await.findings {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+    for finding in super::relay::check_public_relay(public_relay, false)
+        .await
+        .findings
+    {
+        if tx.send(finding).await.is_err() {
+            return;
+        }
+    }
+}

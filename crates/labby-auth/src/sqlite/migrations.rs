@@ -6,6 +6,8 @@ use tracing::{info, warn};
 use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
+pub(crate) const SCHEMA_VERSION: i64 = 15;
+
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
 }
@@ -19,6 +21,11 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
     let current: i64 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .map_err(sqlite_error)?;
+    if current > SCHEMA_VERSION {
+        return Err(AuthError::Storage(format!(
+            "auth database schema version {current} is newer than supported version {SCHEMA_VERSION}"
+        )));
+    }
     if current < 1 {
         let columns: Vec<String> = {
             let mut statement = conn
@@ -341,7 +348,166 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
         }
         transaction.commit().map_err(sqlite_error)?;
     }
+    if current < 15 {
+        migrate_v15(conn, fault)?;
+    }
     Ok(())
+}
+
+fn migrate_v15(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> {
+    // IMMEDIATE takes the database write lock before inspecting or mutating the
+    // schema, serializing two processes that race to open the same database.
+    conn.execute_batch("BEGIN IMMEDIATE;")
+        .map_err(sqlite_error)?;
+    let result = (|| {
+        add_column_if_missing(
+            conn,
+            "authorization_requests",
+            "provider",
+            "TEXT NOT NULL DEFAULT 'google'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "authorization_requests",
+            "identity_issuer",
+            "TEXT NOT NULL DEFAULT 'https://accounts.google.com'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "authorization_requests",
+            "provider_generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            "authorization_codes",
+            "identity_issuer",
+            "TEXT NOT NULL DEFAULT 'https://accounts.google.com'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "authorization_codes",
+            "provider_generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            "refresh_tokens",
+            "identity_issuer",
+            "TEXT NOT NULL DEFAULT 'https://accounts.google.com'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "refresh_tokens",
+            "provider_generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            "refresh_token_replays",
+            "provider_generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            "browser_sessions",
+            "identity_issuer",
+            "TEXT NOT NULL DEFAULT 'https://accounts.google.com'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "browser_sessions",
+            "provider_generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            "browser_login_states",
+            "provider",
+            "TEXT NOT NULL DEFAULT 'google'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "browser_login_states",
+            "identity_issuer",
+            "TEXT NOT NULL DEFAULT 'https://accounts.google.com'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "browser_login_states",
+            "provider_generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            conn,
+            "native_authorization_results",
+            "identity_issuer",
+            "TEXT NOT NULL DEFAULT 'https://accounts.google.com'",
+        )?;
+        add_column_if_missing(
+            conn,
+            "native_authorization_results",
+            "provider_generation",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS inbound_identity_provider (
+               singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+               provider TEXT NOT NULL,
+               issuer TEXT NOT NULL,
+               config_fingerprint TEXT NOT NULL,
+               generation INTEGER NOT NULL CHECK (generation > 0),
+               updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS inbound_verified_identities (
+               identity_issuer TEXT NOT NULL,
+               subject TEXT NOT NULL,
+               email TEXT NOT NULL,
+               provider_generation INTEGER NOT NULL,
+               verified_at INTEGER NOT NULL,
+               PRIMARY KEY (identity_issuer, subject, provider_generation)
+             );
+             INSERT OR IGNORE INTO inbound_identity_provider
+               (singleton, provider, issuer, config_fingerprint, generation, updated_at)
+             VALUES (1, 'google', 'https://accounts.google.com', 'legacy-google', 1, 0);
+             CREATE INDEX IF NOT EXISTS idx_authorization_requests_provider_generation_expiry
+               ON authorization_requests(provider_generation, expires_at);
+             CREATE INDEX IF NOT EXISTS idx_authorization_codes_identity_generation_expiry
+               ON authorization_codes(identity_issuer, subject, provider_generation, expires_at);
+             CREATE INDEX IF NOT EXISTS idx_refresh_tokens_identity_generation_expiry
+               ON refresh_tokens(identity_issuer, subject, provider_generation, expires_at);
+             CREATE INDEX IF NOT EXISTS idx_refresh_tokens_generation_expiry
+               ON refresh_tokens(provider_generation, expires_at);
+             CREATE INDEX IF NOT EXISTS idx_browser_sessions_identity_generation_expiry
+               ON browser_sessions(identity_issuer, subject, provider_generation, expires_at);
+             CREATE INDEX IF NOT EXISTS idx_browser_login_states_provider_generation_expiry
+               ON browser_login_states(provider_generation, expires_at);
+             CREATE INDEX IF NOT EXISTS idx_native_authorization_results_generation_expiry
+               ON native_authorization_results(provider_generation, expires_at);
+             CREATE INDEX IF NOT EXISTS idx_allowed_users_email_nocase
+               ON allowed_users(email COLLATE NOCASE);
+             CREATE INDEX IF NOT EXISTS idx_inbound_verified_identities_generation
+               ON inbound_verified_identities(provider_generation, identity_issuer, subject);",
+        )
+        .map_err(sqlite_error)?;
+        if fault == Some("v15_after_backfill") {
+            return Err(AuthError::Storage(
+                "injected v15 migration fault".to_string(),
+            ));
+        }
+        conn.execute_batch("PRAGMA user_version = 15;")
+            .map_err(sqlite_error)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT;").map_err(sqlite_error),
+        Err(error) => {
+            drop(conn.execute_batch("ROLLBACK;"));
+            Err(error)
+        }
+    }
 }
 
 fn repair_falsely_stamped_v8(conn: &Connection) -> Result<(), AuthError> {

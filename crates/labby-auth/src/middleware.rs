@@ -661,27 +661,74 @@ async fn authenticate(
         && let Some(session_id) =
             session::read_cookie(request.headers(), &layer.session_cookie_name)
     {
-        match auth_state.store.find_browser_session(&session_id).await {
-            Ok(Some(session)) => {
-                if !session_csrf_valid(&request, &session) {
-                    return Err(csrf_error_response("missing or invalid csrf token"));
-                }
+        match auth_state
+            .store
+            .find_authorized_bound_browser_session(
+                &session_id,
+                &auth_state.config.admin_email,
+                if matches!(
+                    auth_state.inbound_provider.kind(),
+                    crate::config::InboundProviderKind::Authelia
+                ) {
+                    &auth_state.config.allowed_email_domains
+                } else {
+                    &[]
+                },
+            )
+            .await
+        {
+            Ok(Some((bound_session, authorized))) => {
+                let session = bound_session.value;
                 if session.project_binding.is_some() {
                     return authorize_project_session(layer, request, &auth_state.store, session)
                         .await;
                 }
-
-                let authority = crate::browser_authority::BrowserAuthority::from_google(
-                    auth_state.clone(),
-                    session.clone(),
-                    layer.static_token_scopes.clone(),
-                )
-                .await
-                .map_err(|_| auth_error_response("browser authority is unavailable", layer))?;
-
+                if bound_session.binding != auth_state.inbound_provider_binding() {
+                    return Err(auth_error_response(
+                        "authenticated identity provider binding is stale",
+                        layer,
+                    ));
+                }
+                if !authorized {
+                    auth_state
+                        .store
+                        .revoke_inbound_identity(
+                            &bound_session.binding.identity_issuer,
+                            &session.subject,
+                        )
+                        .await
+                        .map_err(|_| {
+                            auth_error_response("authenticated identity revocation failed", layer)
+                        })?;
+                    return Err(auth_error_response(
+                        "authenticated identity is no longer authorized",
+                        layer,
+                    ));
+                }
+                let browser_authority = if matches!(
+                    auth_state.inbound_provider.kind(),
+                    crate::config::InboundProviderKind::Google
+                ) {
+                    Some(
+                        crate::browser_authority::BrowserAuthority::from_google(
+                            auth_state.clone(),
+                            session.clone(),
+                            layer.static_token_scopes.clone(),
+                        )
+                        .await
+                        .map_err(|_| {
+                            auth_error_response("browser authority is unavailable", layer)
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                if !session_csrf_valid(&request, &session) {
+                    return Err(csrf_error_response("missing or invalid csrf token"));
+                }
                 let identity = VerifiedIdentity::external(
                     Authenticator::BrowserSession,
-                    crate::google::GOOGLE_ISSUER,
+                    &bound_session.binding.identity_issuer,
                     session.subject.clone(),
                 )
                 .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
@@ -700,7 +747,9 @@ async fn authenticate(
                     return Err(response);
                 }
                 request.extensions_mut().insert(identity);
-                request.extensions_mut().insert(authority);
+                if let Some(authority) = browser_authority {
+                    request.extensions_mut().insert(authority);
+                }
                 request.extensions_mut().insert(auth);
                 return Ok(request);
             }
@@ -1035,68 +1084,6 @@ mod tests {
 
     use crate::authorize::tests::{test_auth_config, test_auth_state, test_auth_state_with_config};
     use crate::{PrincipalLink, VerifiedIdentity};
-
-    #[tokio::test]
-    async fn browser_authority_extension_is_present_only_for_a_durable_cookie() {
-        let state = Arc::new(test_auth_state().await);
-        let session = session::create_browser_session(
-            &state,
-            "operator".into(),
-            Some("member@example.com".into()),
-        )
-        .await
-        .unwrap();
-        let app = Router::new()
-            .route(
-                "/probe",
-                get(
-                    |authority: Option<
-                        axum::Extension<crate::browser_authority::BrowserAuthority>,
-                    >| async move {
-                        if authority.is_some() {
-                            "browser"
-                        } else {
-                            "other"
-                        }
-                    },
-                ),
-            )
-            .layer(
-                AuthLayer::from_state(state.clone())
-                    .with_allow_session_cookie(true)
-                    .with_static_token(Some(Arc::from("fixture-bearer"))),
-            );
-        for (name, value, expected) in [
-            (
-                "cookie",
-                format!(
-                    "{}={}",
-                    state.config.session_cookie_name, session.session_id
-                ),
-                "browser",
-            ),
-            ("authorization", "Bearer fixture-bearer".into(), "other"),
-        ] {
-            let response = app
-                .clone()
-                .oneshot(
-                    HttpRequest::builder()
-                        .uri("/probe")
-                        .header(name, value)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(
-                axum::body::to_bytes(response.into_body(), 100)
-                    .await
-                    .unwrap(),
-                expected
-            );
-        }
-    }
 
     fn project_binding() -> ProjectSessionBinding {
         ProjectSessionBinding {
@@ -1675,7 +1662,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         ));
         let transport_issuer = state
             .config
@@ -2227,11 +2214,7 @@ mod tests {
             .route(
                 "/probe",
                 get(
-                    |axum::Extension(grant): axum::Extension<BoundAccessGrant>,
-                     axum::Extension(authority): axum::Extension<
-                        crate::browser_authority::BrowserAuthority,
-                    >| async move {
-                        assert_eq!(authority.public_epoch().len(), 43);
+                    |axum::Extension(grant): axum::Extension<BoundAccessGrant>| async move {
                         grant.project_id
                     },
                 ),

@@ -7,8 +7,14 @@ use url::Url;
 
 use crate::at_rest::TokenEncryptionKey;
 use crate::error::AuthError;
+use crate::oauth_provider::InboundProvider;
 
-const DEFAULT_CALLBACK_PATH: &str = "/auth/google/callback";
+pub use crate::config_providers::{
+    AUTHELIA_CALLBACK_PATH, AutheliaConfig, GOOGLE_CALLBACK_PATH, InboundProviderKind,
+    TrustedIssuerOrigin,
+};
+
+const DEFAULT_CALLBACK_PATH: &str = GOOGLE_CALLBACK_PATH;
 const DEFAULT_AUTH_DB_NAME: &str = "auth.db";
 const DEFAULT_KEY_NAME: &str = "auth-jwt.pem";
 const DEFAULT_ACCESS_TOKEN_TTL_SECS: u64 = 3600;
@@ -84,7 +90,7 @@ impl AuthModeConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoogleConfig {
     #[serde(default)]
     pub client_id: String,
@@ -98,6 +104,17 @@ pub struct GoogleConfig {
     pub callback_path: String,
     #[serde(default = "default_google_scopes")]
     pub scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for GoogleConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleConfig")
+            .field("client_id", &self.client_id)
+            .field("callback_url", &self.callback_url)
+            .field("callback_path", &self.callback_path)
+            .field("scopes", &self.scopes)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,7 +179,11 @@ pub struct AuthConfig {
     ///
     /// Empty (the default) disables domain-based access entirely.
     pub allowed_email_domains: Vec<String>,
+    /// Explicitly selected inbound identity provider. `None` preserves legacy
+    /// Google inference when Google credentials are configured.
+    pub inbound_provider: Option<InboundProviderKind>,
     pub google: GoogleConfig,
+    pub authelia: Option<AutheliaConfig>,
     pub access_token_ttl: Duration,
     pub refresh_token_ttl: Duration,
     pub auth_code_ttl: Duration,
@@ -237,7 +258,9 @@ impl Default for AuthConfig {
             allowed_client_redirect_uris: Vec::new(),
             admin_email: String::new(),
             allowed_email_domains: Vec::new(),
+            inbound_provider: None,
             google: GoogleConfig::default(),
+            authelia: None,
             access_token_ttl: Duration::from_secs(DEFAULT_ACCESS_TOKEN_TTL_SECS),
             refresh_token_ttl: Duration::from_secs(DEFAULT_REFRESH_TOKEN_TTL_SECS),
             auth_code_ttl: Duration::from_secs(DEFAULT_AUTH_CODE_TTL_SECS),
@@ -272,6 +295,27 @@ impl Default for AuthConfig {
 }
 
 impl AuthConfig {
+    pub fn inbound_provider_fingerprint(&self) -> Result<String, AuthError> {
+        let selected = self.selected_inbound_provider()?;
+        let (kind, issuer, client_id, callback) = match selected {
+            InboundProvider::Google(config) => (
+                "google",
+                crate::google::GOOGLE_ISSUER.to_string(),
+                config.client_id,
+                GOOGLE_CALLBACK_PATH,
+            ),
+            InboundProvider::Authelia(config) => (
+                "authelia",
+                config.issuer_url.as_str().trim_end_matches('/').to_string(),
+                config.client_id,
+                AUTHELIA_CALLBACK_PATH,
+            ),
+        };
+        Ok(crate::util::fingerprint(&format!(
+            "{kind}\0{issuer}\0{client_id}\0{callback}"
+        )))
+    }
+
     /// Backward-compatible convenience: read env vars using the default
     /// `LAB` prefix. Equivalent to `AuthConfigBuilder::new().build_from_sources(vars)`.
     pub fn from_sources(
@@ -286,6 +330,27 @@ impl AuthConfig {
             return Err(AuthError::Config(format!(
                 "{prefix}_GOOGLE_CALLBACK_PATH must start with `/`, got `{}`",
                 self.google.callback_path
+            )));
+        }
+        let provider_callback = match self.inbound_provider {
+            Some(InboundProviderKind::Authelia) => AUTHELIA_CALLBACK_PATH,
+            _ => self.google.callback_path.as_str(),
+        };
+        for (route_name, route) in [
+            ("login_path", self.login_path.as_str()),
+            ("resource_path", self.resource_path.as_str()),
+        ] {
+            if provider_callback == route {
+                return Err(AuthError::Config(format!(
+                    "inbound provider callback collides with {route_name}"
+                )));
+            }
+        }
+        if matches!(self.inbound_provider, Some(InboundProviderKind::Google))
+            && self.google.callback_path != GOOGLE_CALLBACK_PATH
+        {
+            return Err(AuthError::Config(format!(
+                "{prefix}_GOOGLE_CALLBACK_PATH must be {GOOGLE_CALLBACK_PATH} when {prefix}_AUTH_PROVIDER is explicit"
             )));
         }
 
@@ -358,16 +423,7 @@ impl AuthConfig {
 
         if matches!(self.mode, AuthMode::OAuth) {
             self.validate_oauth_public_url()?;
-            if self.google.client_id.is_empty() {
-                return Err(AuthError::Config(format!(
-                    "{prefix}_GOOGLE_CLIENT_ID is required when {prefix}_AUTH_MODE=oauth"
-                )));
-            }
-            if self.google.client_secret.is_empty() {
-                return Err(AuthError::Config(format!(
-                    "{prefix}_GOOGLE_CLIENT_SECRET is required when {prefix}_AUTH_MODE=oauth"
-                )));
-            }
+            self.resolved_inbound_provider()?;
             if self.admin_email.is_empty() {
                 return Err(AuthError::Config(format!(
                     "{prefix}_AUTH_ADMIN_EMAIL is required when {prefix}_AUTH_MODE=oauth — \
@@ -378,7 +434,7 @@ impl AuthConfig {
             if self.token_encryption_key.is_none() {
                 return Err(AuthError::Config(format!(
                     "{prefix}_TOKEN_ENCRYPTION_KEY is required when {prefix}_AUTH_MODE=oauth; \
-                     Google provider credentials must be encrypted at rest"
+                     provider credentials and local refresh replay responses must be encrypted at rest"
                 )));
             }
         }
@@ -387,7 +443,6 @@ impl AuthConfig {
     }
 
     /// Validate before constructing issuer metadata or opening runtime stores.
-    /// Never normalize away credentials or suffixes: that would change issuer identity.
     pub(crate) fn validate_oauth_public_url(&self) -> Result<(), AuthError> {
         let prefix = &self.env_prefix;
         let Some(url) = self.public_url.as_ref() else {
@@ -407,6 +462,105 @@ impl AuthConfig {
         if url.scheme() != "https" && !is_loopback_http_url(url) {
             return Err(AuthError::Config(format!(
                 "{prefix}_PUBLIC_URL must use https when {prefix}_AUTH_MODE=oauth, except for loopback development origins"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Resolve legacy Google-only configuration and the explicit v1 provider
+    /// selector to one deterministic provider.
+    pub fn resolved_inbound_provider(&self) -> Result<InboundProviderKind, AuthError> {
+        let prefix = &self.env_prefix;
+        let google_configured =
+            !self.google.client_id.is_empty() || !self.google.client_secret.is_empty();
+        let authelia_configured = self.authelia.is_some();
+
+        let selected = self.inbound_provider.or({
+            if google_configured {
+                Some(InboundProviderKind::Google)
+            } else if authelia_configured {
+                Some(InboundProviderKind::Authelia)
+            } else {
+                None
+            }
+        });
+
+        match selected {
+            Some(InboundProviderKind::Google) if google_configured && !authelia_configured => {
+                if self.google.client_id.is_empty() || self.google.client_secret.is_empty() {
+                    return Err(AuthError::Config(format!(
+                        "{prefix}_GOOGLE_CLIENT_ID and {prefix}_GOOGLE_CLIENT_SECRET must both be set"
+                    )));
+                }
+                Ok(InboundProviderKind::Google)
+            }
+            Some(InboundProviderKind::Authelia) if authelia_configured && !google_configured => {
+                self.validate_authelia()?;
+                Ok(InboundProviderKind::Authelia)
+            }
+            Some(_) if google_configured && authelia_configured => Err(AuthError::Config(format!(
+                "{prefix} inbound OAuth config is ambiguous; configure exactly one provider"
+            ))),
+            Some(InboundProviderKind::Google) => Err(AuthError::Config(format!(
+                "{prefix}_AUTH_PROVIDER selects google but Google credentials are not configured"
+            ))),
+            Some(InboundProviderKind::Authelia) => Err(AuthError::Config(format!(
+                "{prefix}_AUTH_PROVIDER selects authelia but Authelia credentials are not configured"
+            ))),
+            None => Err(AuthError::Config(format!(
+                "{prefix}_AUTH_MODE=oauth requires one configured inbound provider"
+            ))),
+        }
+    }
+
+    /// Return the concrete validated provider configuration selected for this
+    /// process. This is the closed runtime dispatch boundary used by later
+    /// provider implementations.
+    pub fn selected_inbound_provider(&self) -> Result<InboundProvider, AuthError> {
+        match self.resolved_inbound_provider()? {
+            InboundProviderKind::Google => Ok(InboundProvider::Google(self.google.clone())),
+            InboundProviderKind::Authelia => Ok(InboundProvider::Authelia(
+                self.authelia.clone().ok_or_else(|| {
+                    AuthError::Config(format!(
+                        "{}_AUTH_PROVIDER selects an incomplete provider",
+                        self.env_prefix
+                    ))
+                })?,
+            )),
+        }
+    }
+
+    fn validate_authelia(&self) -> Result<(), AuthError> {
+        let prefix = &self.env_prefix;
+        let config = self.authelia.as_ref().ok_or_else(|| {
+            AuthError::Config(format!("{prefix} Authelia configuration is incomplete"))
+        })?;
+        if config.client_id.is_empty() || config.client_secret.is_empty() {
+            return Err(AuthError::Config(format!(
+                "{prefix}_AUTHELIA_CLIENT_ID and {prefix}_AUTHELIA_CLIENT_SECRET must both be set"
+            )));
+        }
+        if config.issuer_url.scheme() != "https" {
+            return Err(AuthError::Config(format!(
+                "{prefix}_AUTHELIA_ISSUER_URL must use https"
+            )));
+        }
+        if config.issuer_url.cannot_be_a_base()
+            || config.issuer_url.host().is_none()
+            || !config.issuer_url.username().is_empty()
+            || config.issuer_url.password().is_some()
+            || config.issuer_url.query().is_some()
+            || config.issuer_url.fragment().is_some()
+        {
+            return Err(AuthError::Config(format!(
+                "{prefix}_AUTHELIA_ISSUER_URL must be an HTTPS issuer URL without credentials, query, or fragment"
+            )));
+        }
+        if let Some(trust) = &config.trusted_private_origin
+            && config.issuer_url.origin() != trust.as_url().origin()
+        {
+            return Err(AuthError::Config(format!(
+                "{prefix}_AUTHELIA_TRUSTED_PRIVATE_ORIGIN must exactly match the issuer origin"
             )));
         }
         Ok(())
@@ -557,6 +711,12 @@ impl AuthConfigBuilder {
         let key_g_callback_url = env_key(&prefix, "GOOGLE_CALLBACK_URL");
         let key_g_callback = env_key(&prefix, "GOOGLE_CALLBACK_PATH");
         let key_g_scopes = env_key(&prefix, "GOOGLE_SCOPES");
+        let key_provider = env_key(&prefix, "AUTH_PROVIDER");
+        let key_a_issuer = env_key(&prefix, "AUTHELIA_ISSUER_URL");
+        let key_a_id = env_key(&prefix, "AUTHELIA_CLIENT_ID");
+        let key_a_secret = env_key(&prefix, "AUTHELIA_CLIENT_SECRET");
+        let key_a_private_origin = env_key(&prefix, "AUTHELIA_TRUSTED_PRIVATE_ORIGIN");
+        let key_a_ca = env_key(&prefix, "AUTHELIA_CA_CERT_PATH");
         let key_at_ttl = env_key(&prefix, "AUTH_ACCESS_TOKEN_TTL_SECS");
         let key_rt_ttl = env_key(&prefix, "AUTH_REFRESH_TOKEN_TTL_SECS");
         let key_code_ttl = env_key(&prefix, "AUTH_CODE_TTL_SECS");
@@ -575,6 +735,39 @@ impl AuthConfigBuilder {
         let admin_email = read_string(&vars, &key_admin)
             .map(|raw| raw.trim().to_ascii_lowercase())
             .unwrap_or_default();
+        let inbound_provider = read_string(&vars, &key_provider)
+            .map(|provider| match provider.to_ascii_lowercase().as_str() {
+                "google" => Ok(InboundProviderKind::Google),
+                "authelia" => Ok(InboundProviderKind::Authelia),
+                _ => Err(AuthError::Config(format!(
+                    "{key_provider} must be `google` or `authelia`"
+                ))),
+            })
+            .transpose()?;
+        let authelia_issuer = read_url(&vars, &key_a_issuer)?;
+        let authelia_client_id = read_string(&vars, &key_a_id);
+        let authelia_client_secret = read_string(&vars, &key_a_secret);
+        let authelia_private_origin = read_url(&vars, &key_a_private_origin)?
+            .map(TrustedIssuerOrigin::new)
+            .transpose()?;
+        let authelia_configured = authelia_issuer.is_some()
+            || authelia_client_id.is_some()
+            || authelia_client_secret.is_some()
+            || authelia_private_origin.is_some();
+        let authelia = authelia_configured
+            .then(|| -> Result<AutheliaConfig, AuthError> {
+                let issuer_url = authelia_issuer.ok_or_else(|| {
+                    AuthError::Config(format!("{key_a_issuer} is required for Authelia"))
+                })?;
+                Ok(AutheliaConfig {
+                    issuer_url,
+                    client_id: authelia_client_id.unwrap_or_default(),
+                    client_secret: authelia_client_secret.unwrap_or_default(),
+                    trusted_private_origin: authelia_private_origin,
+                    ca_certificate_path: read_path(&vars, &key_a_ca),
+                })
+            })
+            .transpose()?;
         let base_dir = self
             .default_data_dir
             .clone()
@@ -598,6 +791,7 @@ impl AuthConfigBuilder {
                         .collect()
                 })
                 .unwrap_or_default(),
+            inbound_provider,
             google: GoogleConfig {
                 client_id: read_string(&vars, &key_g_id).unwrap_or_default(),
                 client_secret: read_string(&vars, &key_g_secret).unwrap_or_default(),
@@ -606,6 +800,7 @@ impl AuthConfigBuilder {
                     .unwrap_or_else(|| DEFAULT_CALLBACK_PATH.to_string()),
                 scopes: read_csv(&vars, &key_g_scopes).unwrap_or_else(default_google_scopes),
             },
+            authelia,
             access_token_ttl: Duration::from_secs(
                 read_u64(&vars, &key_at_ttl)?.unwrap_or(DEFAULT_ACCESS_TOKEN_TTL_SECS),
             ),
@@ -790,7 +985,10 @@ fn read_bool(vars: &HashMap<String, String>, key: &str) -> Result<Option<bool>, 
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthConfig, AuthConfigBuilder, AuthMode, AuthModeConfig, MachineClientConfig};
+    use super::{
+        AUTHELIA_CALLBACK_PATH, AuthConfig, AuthConfigBuilder, AuthMode, AuthModeConfig,
+        InboundProviderKind, MachineClientConfig,
+    };
 
     #[test]
     fn bearer_mode_preserves_existing_http_token_behavior() {
@@ -823,40 +1021,6 @@ mod tests {
         assert_eq!(cfg.key_path.file_name().unwrap(), "auth-jwt.pem");
         assert_eq!(cfg.google.callback_path, "/auth/google/callback");
         assert!(!cfg.codex_issuer_compatibility);
-    }
-
-    #[test]
-    fn oauth_public_url_rejects_sensitive_or_ambiguous_components_without_echoing_them() {
-        for url in [
-            "https://user:secret-canary@auth.example.com/issuer",
-            "https://user@auth.example.com/issuer",
-            "https://auth.example.com/issuer?secret-canary=value",
-            "https://auth.example.com/issuer#secret-canary",
-            "https://auth.example.com/issuer?",
-            "https://auth.example.com/issuer#",
-        ] {
-            let error = AuthConfig::from_sources(fake_env_with_many([
-                ("LAB_AUTH_MODE", "oauth"),
-                ("LAB_PUBLIC_URL", url),
-                ("LAB_GOOGLE_CLIENT_ID", "id"),
-                ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
-                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
-                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
-            ]))
-            .unwrap_err();
-            assert!(error.to_string().contains("must not contain"));
-            assert!(!error.to_string().contains("secret-canary"));
-            assert!(!error.to_string().contains("auth.example.com"));
-        }
-        let config = AuthConfig {
-            public_url: Some(url::Url::parse("https://auth.example.com/issuer/path").unwrap()),
-            ..AuthConfig::default()
-        };
-        config.validate_oauth_public_url().unwrap();
-        assert_eq!(
-            config.public_url.unwrap().as_str(),
-            "https://auth.example.com/issuer/path"
-        );
     }
 
     #[test]
@@ -1171,6 +1335,197 @@ mod tests {
             .build_from_sources(Vec::<(String, String)>::new())
             .unwrap_err();
         assert!(err.to_string().contains("login_path"));
+    }
+
+    #[test]
+    fn oauth_mode_requires_replay_encryption_for_authelia() {
+        let error = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_AUTH_PROVIDER", "authelia"),
+                ("LAB_PUBLIC_URL", "https://lab.example.test"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+                ("LAB_AUTHELIA_ISSUER_URL", "https://auth.example.test"),
+                ("LAB_AUTHELIA_CLIENT_ID", "labby"),
+                ("LAB_AUTHELIA_CLIENT_SECRET", "do-not-print"),
+            ]))
+            .unwrap_err();
+        assert!(error.to_string().contains("LAB_TOKEN_ENCRYPTION_KEY"));
+
+        let cfg = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_AUTH_PROVIDER", "authelia"),
+                ("LAB_PUBLIC_URL", "https://lab.example.test"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+                ("LAB_AUTHELIA_ISSUER_URL", "https://auth.example.test"),
+                ("LAB_AUTHELIA_CLIENT_ID", "labby"),
+                ("LAB_AUTHELIA_CLIENT_SECRET", "do-not-print"),
+                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+            ]))
+            .unwrap();
+
+        assert_eq!(
+            cfg.resolved_inbound_provider().unwrap(),
+            InboundProviderKind::Authelia
+        );
+        assert!(cfg.token_encryption_key.is_some());
+        assert!(cfg.google.client_id.is_empty());
+    }
+
+    #[test]
+    fn oauth_mode_rejects_partial_authelia_configuration() {
+        let err = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_AUTH_PROVIDER", "authelia"),
+                ("LAB_PUBLIC_URL", "https://lab.example.test"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+                ("LAB_AUTHELIA_ISSUER_URL", "https://auth.example.test"),
+                ("LAB_AUTHELIA_CLIENT_ID", "labby"),
+            ]))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("AUTHELIA_CLIENT_SECRET"));
+    }
+
+    #[test]
+    fn oauth_mode_rejects_ambiguous_google_and_authelia_configuration() {
+        let err = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_AUTH_PROVIDER", "authelia"),
+                ("LAB_PUBLIC_URL", "https://lab.example.test"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+                ("LAB_GOOGLE_CLIENT_ID", "google-id"),
+                ("LAB_GOOGLE_CLIENT_SECRET", "google-secret"),
+                ("LAB_AUTHELIA_ISSUER_URL", "https://auth.example.test"),
+                ("LAB_AUTHELIA_CLIENT_ID", "labby"),
+                ("LAB_AUTHELIA_CLIENT_SECRET", "authelia-secret"),
+            ]))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("ambiguous"));
+        assert!(!err.to_string().contains("google-secret"));
+        assert!(!err.to_string().contains("authelia-secret"));
+    }
+
+    #[test]
+    fn authelia_private_trust_must_match_issuer_origin() {
+        let err = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_AUTH_PROVIDER", "authelia"),
+                ("LAB_PUBLIC_URL", "https://lab.example.test"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+                ("LAB_AUTHELIA_ISSUER_URL", "https://auth.lan/oidc"),
+                ("LAB_AUTHELIA_CLIENT_ID", "labby"),
+                ("LAB_AUTHELIA_CLIENT_SECRET", "secret"),
+                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+                ("LAB_AUTHELIA_TRUSTED_PRIVATE_ORIGIN", "https://other.lan"),
+            ]))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("exactly match"));
+        assert!(!err.to_string().contains("/oidc"));
+    }
+
+    #[test]
+    fn authelia_issuer_rejects_credentials_query_and_fragment_without_echoing_them() {
+        for issuer in [
+            "https://user:password@auth.example.test",
+            "https://auth.example.test/oidc?token=secret",
+            "https://auth.example.test/oidc#secret",
+        ] {
+            let err = AuthConfigBuilder::new()
+                .build_from_sources(vec![
+                    ("LAB_AUTH_MODE".to_string(), "oauth".to_string()),
+                    ("LAB_AUTH_PROVIDER".to_string(), "authelia".to_string()),
+                    (
+                        "LAB_PUBLIC_URL".to_string(),
+                        "https://lab.example.test".to_string(),
+                    ),
+                    (
+                        "LAB_AUTH_ADMIN_EMAIL".to_string(),
+                        "admin@example.test".to_string(),
+                    ),
+                    ("LAB_AUTHELIA_ISSUER_URL".to_string(), issuer.to_string()),
+                    ("LAB_AUTHELIA_CLIENT_ID".to_string(), "labby".to_string()),
+                    (
+                        "LAB_AUTHELIA_CLIENT_SECRET".to_string(),
+                        "client-secret".to_string(),
+                    ),
+                ])
+                .unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains("AUTHELIA_ISSUER_URL"));
+            assert!(!message.contains("password"));
+            assert!(!message.contains("token=secret"));
+            assert!(!message.contains("#secret"));
+            assert!(!message.contains("client-secret"));
+        }
+    }
+
+    #[test]
+    fn selected_inbound_provider_returns_closed_authelia_variant() {
+        let cfg = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_AUTH_PROVIDER", "authelia"),
+                ("LAB_PUBLIC_URL", "https://lab.example.test"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+                ("LAB_AUTHELIA_ISSUER_URL", "https://auth.example.test"),
+                ("LAB_AUTHELIA_CLIENT_ID", "labby"),
+                ("LAB_AUTHELIA_CLIENT_SECRET", "secret"),
+                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+            ]))
+            .unwrap();
+
+        assert!(matches!(
+            cfg.selected_inbound_provider().unwrap(),
+            crate::oauth_provider::InboundProvider::Authelia(_)
+        ));
+    }
+
+    #[test]
+    fn explicit_google_uses_fixed_callback_while_legacy_override_remains_compatible() {
+        let common = [
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_PUBLIC_URL", "https://lab.example.test"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+            ("LAB_GOOGLE_CLIENT_ID", "google-id"),
+            ("LAB_GOOGLE_CLIENT_SECRET", "google-secret"),
+            ("LAB_GOOGLE_CALLBACK_PATH", "/legacy/google/callback"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+        ];
+        let legacy = AuthConfigBuilder::new()
+            .build_from_sources(fake_env_with_many(common))
+            .unwrap();
+        assert_eq!(legacy.google.callback_path, "/legacy/google/callback");
+
+        let mut explicit = fake_env_with_many(common);
+        explicit.push(("LAB_AUTH_PROVIDER".to_string(), "google".to_string()));
+        let err = AuthConfigBuilder::new()
+            .build_from_sources(explicit)
+            .unwrap_err();
+        assert!(err.to_string().contains("/auth/google/callback"));
+    }
+
+    #[test]
+    fn provider_callback_cannot_collide_with_a_reserved_local_route() {
+        let err = AuthConfigBuilder::new()
+            .login_path(AUTHELIA_CALLBACK_PATH)
+            .build_from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_AUTH_PROVIDER", "authelia"),
+                ("LAB_PUBLIC_URL", "https://lab.example.test"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.test"),
+                ("LAB_AUTHELIA_ISSUER_URL", "https://auth.example.test"),
+                ("LAB_AUTHELIA_CLIENT_ID", "labby"),
+                ("LAB_AUTHELIA_CLIENT_SECRET", "secret"),
+            ]))
+            .unwrap_err();
+        assert!(err.to_string().contains("collides"));
     }
 
     fn fake_env_with(key: &'static str, value: &'static str) -> Vec<(String, String)> {

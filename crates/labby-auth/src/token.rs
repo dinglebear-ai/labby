@@ -34,7 +34,7 @@ use refresh::{
     RefreshClaimLease, RefreshClaimLeaseObserver, claim_refresh_after_subject_lock,
     refresh_lock_waiter_counter,
 };
-use refresh_replay::cached_refresh_response;
+use refresh_replay::{await_cached_refresh_response, cached_refresh_response};
 use response::{TokenEndpointError, TokenResponseWithCache, apply_token_cache_headers};
 
 pub async fn token(
@@ -206,7 +206,10 @@ async fn enterprise_managed_grant(
         request.client_assertion.as_deref(),
     )
     .await?;
-    if !state
+    if matches!(
+        state.inbound_provider.kind(),
+        crate::config::InboundProviderKind::Google
+    ) && !state
         .consume_assertion_jti(&claims.iss, &claims.jti, claims.iat, claims.exp)
         .await?
     {
@@ -1010,9 +1013,9 @@ async fn authorization_code_grant(
     );
 
     let expected_challenge = pkce_challenge(&code_verifier);
-    let row = state
+    let bound_row = state
         .store
-        .redeem_verified_auth_code(
+        .redeem_bound_verified_auth_code(
             &code,
             &client_id,
             &redirect_uri,
@@ -1030,7 +1033,12 @@ async fn authorization_code_grant(
             );
             error
         })?;
-    if !state
+    let binding = bound_row.binding;
+    let row = bound_row.value;
+    if matches!(
+        state.inbound_provider.kind(),
+        crate::config::InboundProviderKind::Google
+    ) && !state
         .store
         .has_google_provider_credential_for_subject(&row.subject)
         .await?
@@ -1052,20 +1060,23 @@ async fn authorization_code_grant(
     let created_at = now_unix();
     state
         .store
-        .upsert_refresh_token(RefreshTokenRow {
-            refresh_token: refresh_token.clone(),
-            client_id: row.client_id.clone(),
-            subject: row.subject.clone(),
-            resource: row.resource.clone(),
-            scope: row.scope.clone(),
-            provider_refresh_token: None,
-            created_at,
-            expires_at: expires_at(
+        .upsert_bound_refresh_token(
+            RefreshTokenRow {
+                refresh_token: refresh_token.clone(),
+                client_id: row.client_id.clone(),
+                subject: row.subject.clone(),
+                resource: row.resource.clone(),
+                scope: row.scope.clone(),
+                provider_refresh_token: None,
                 created_at,
-                state.config.refresh_token_ttl,
-                &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
-            )?,
-        })
+                expires_at: expires_at(
+                    created_at,
+                    state.config.refresh_token_ttl,
+                    &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
+                )?,
+            },
+            binding.clone(),
+        )
         .await?;
     info!(
         grant_type = "authorization_code",
@@ -1090,7 +1101,7 @@ async fn authorization_code_grant(
         resource,
         row.scope,
         refresh_token,
-        TokenIdentity::ExternalIssuer(crate::google::GOOGLE_ISSUER.to_string()),
+        TokenIdentity::ExternalIssuer(binding.identity_issuer),
     )
 }
 
@@ -1511,7 +1522,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         let app = router(state.clone());
         let metadata = app
@@ -1661,7 +1672,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         let app = router(state);
         for (resource, scope, expected_error) in [
@@ -1700,7 +1711,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         let app = router(state);
         let request_body = form(&[
@@ -1737,7 +1748,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         let app = router(state);
         let mut bodies = Vec::new();
@@ -1843,7 +1854,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         let now = crate::util::now_unix();
         let assertion = sign_assertion(
@@ -1896,7 +1907,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         state
             .store
@@ -2039,7 +2050,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         let now = crate::util::now_unix();
         let assertion = sign_assertion(
@@ -2221,6 +2232,216 @@ mod tests {
         let b = b.unwrap();
         assert!(a.status() == StatusCode::OK || b.status() == StatusCode::OK);
         assert!(a.status() == StatusCode::BAD_REQUEST || b.status() == StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn authelia_authorization_code_redeems_without_google_credential_and_keeps_issuer() {
+        let base = test_auth_state_with_registered_client().await;
+        let issuer = "https://auth.example.test/application/o/labby";
+        base.store
+            .activate_inbound_provider("authelia", issuer, "authelia-test", crate::util::now_unix())
+            .await
+            .unwrap();
+        let provider = crate::authelia::AutheliaProvider::new(
+            Url::parse(issuer).unwrap(),
+            "authelia-client".into(),
+            "authelia-secret".into(),
+            Url::parse("https://lab.example.com/auth/oidc/callback").unwrap(),
+        )
+        .unwrap();
+        let mut config = (*base.config).clone();
+        config.admin_email = "admin@example.com".into();
+        let state = AuthState::for_tests_with_provider(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            crate::oauth_provider::InboundProviderRuntime::Authelia(Box::new(provider)),
+            base.store
+                .inbound_provider_state()
+                .await
+                .unwrap()
+                .generation,
+        );
+        state
+            .store
+            .insert_auth_code(crate::types::AuthorizationCodeRow {
+                code: "authelia-code".into(),
+                client_id: "client".into(),
+                subject: "authelia-subject".into(),
+                redirect_uri: "http://127.0.0.1:7777/callback".into(),
+                resource: "https://lab.example.com/mcp".into(),
+                scope: "lab".into(),
+                code_challenge: super::pkce_challenge("verifier"),
+                code_challenge_method: "S256".into(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let response = router(state).oneshot(Request::builder().method("POST").uri("/token")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from("grant_type=authorization_code&code=authelia-code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&code_verifier=verifier"))
+            .unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let token: TokenResponse = serde_json::from_slice(&body).unwrap();
+        let claims = insecure_decode::<crate::jwt::AccessClaims>(&token.access_token)
+            .unwrap()
+            .claims;
+        assert_eq!(claims.identity_issuer.as_deref(), Some(issuer));
+    }
+
+    #[tokio::test]
+    async fn authelia_refresh_is_local_rotating_and_current_policy_revokes_access() {
+        let base = test_auth_state_with_registered_client().await;
+        let issuer = "https://auth.example.test/application/o/labby";
+        base.store
+            .activate_inbound_provider(
+                "authelia",
+                issuer,
+                "authelia-refresh-test",
+                crate::util::now_unix(),
+            )
+            .await
+            .unwrap();
+        let provider = crate::authelia::AutheliaProvider::new(
+            Url::parse(issuer).unwrap(),
+            "authelia-client".into(),
+            "authelia-secret".into(),
+            Url::parse("https://lab.example.com/auth/oidc/callback").unwrap(),
+        )
+        .unwrap();
+        let mut config = (*base.config).clone();
+        config.admin_email = "admin@example.com".into();
+        let state = AuthState::for_tests_with_provider(
+            config,
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            crate::oauth_provider::InboundProviderRuntime::Authelia(Box::new(provider)),
+            base.store
+                .inbound_provider_state()
+                .await
+                .unwrap()
+                .generation,
+        );
+        state
+            .store
+            .add_allowed_user("user@example.com", "admin", crate::util::now_unix())
+            .await
+            .unwrap();
+        state
+            .store
+            .upsert_verified_inbound_identity(
+                issuer,
+                "authelia-subject",
+                "user@example.com",
+                crate::util::now_unix(),
+            )
+            .await
+            .unwrap();
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "authelia-refresh".into(),
+                client_id: "client".into(),
+                subject: "authelia-subject".into(),
+                resource: "https://lab.example.com/mcp".into(),
+                scope: "lab".into(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state.clone());
+        let refresh = app
+            .clone()
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", "authelia-refresh"),
+                    ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refresh.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(refresh.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let token: TokenResponse = serde_json::from_slice(&body).unwrap();
+        let replacement = token.refresh_token.unwrap();
+        let replay_predecessor = replacement.clone();
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..10 {
+            let app = app.clone();
+            let replacement = replacement.clone();
+            tasks.spawn(async move {
+                app.oneshot(form_request(
+                    "/token",
+                    form(&[
+                        ("grant_type", "refresh_token"),
+                        ("refresh_token", &replacement),
+                        ("client_id", "client"),
+                    ]),
+                ))
+                .await
+                .unwrap()
+            });
+        }
+        let mut concurrent_replacement = None;
+        while let Some(result) = tasks.join_next().await {
+            let response = result.unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+            let response: TokenResponse = serde_json::from_slice(&body).unwrap();
+            if let Some(expected) = concurrent_replacement.as_ref() {
+                assert_eq!(response.refresh_token.as_ref(), Some(expected));
+            } else {
+                concurrent_replacement = response.refresh_token;
+            }
+        }
+        let replacement = concurrent_replacement.unwrap();
+        state
+            .store
+            .remove_allowed_user("user@example.com")
+            .await
+            .unwrap();
+        let denied = app
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", &replay_predecessor),
+                    ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            state
+                .store
+                .find_refresh_token(&replacement)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .store
+                .current_verified_inbound_email(issuer, "authelia-subject")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2460,7 +2681,7 @@ mod tests {
             config,
             state.store.clone(),
             (*state.signing_keys).clone(),
-            (*state.google).clone(),
+            state.google().clone(),
         );
         let replay = router(offboarded).oneshot(request()).await.unwrap();
         assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
@@ -3714,7 +3935,7 @@ mod tests {
             config,
             authorized.store.clone(),
             (*authorized.signing_keys).clone(),
-            (*authorized.google).clone(),
+            authorized.google().clone(),
         );
 
         let response = router(state.clone())
@@ -3810,7 +4031,7 @@ mod tests {
             config,
             base.store.clone(),
             (*base.signing_keys).clone(),
-            (*base.google).clone(),
+            base.google().clone(),
         );
         state
             .store
@@ -4045,7 +4266,7 @@ mod tests {
             (*state.config).clone(),
             reopened_store,
             (*state.signing_keys).clone(),
-            (*state.google).clone(),
+            state.google().clone(),
         );
         let replay = router(restarted).oneshot(request()).await.unwrap();
         assert_eq!(replay.status(), StatusCode::OK);

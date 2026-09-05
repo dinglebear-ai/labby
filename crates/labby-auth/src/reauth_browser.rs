@@ -113,7 +113,9 @@ pub async fn start(
         .await
         .map_err(map_store)?;
     let authorization_url = state
-        .google
+        .inbound_provider
+        .google_provider()
+        .ok_or(ProofError::Unsupported)?
         .reauth_url(&GoogleReauthRequest {
             state: state_token,
             nonce,
@@ -175,7 +177,9 @@ async fn complete_callback(
         ));
     }
     let evidence = state
-        .google
+        .inbound_provider
+        .google_provider()
+        .ok_or_else(|| AuthError::AuthFailed("reauthentication provider changed".into()))?
         .exchange_reauth_code(
             code,
             &challenge.provider_code_verifier,

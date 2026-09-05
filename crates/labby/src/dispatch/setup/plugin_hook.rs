@@ -67,6 +67,7 @@ const PLUGIN_OPTION_MAP: &[(&str, &str)] = &[
     ("CLAUDE_PLUGIN_OPTION_SERVER_URL", "LABBY_SERVER_URL"),
     ("CLAUDE_PLUGIN_OPTION_API_TOKEN", "LABBY_MCP_HTTP_TOKEN"),
     ("CLAUDE_PLUGIN_OPTION_AUTH_MODE", "LABBY_AUTH_MODE"),
+    ("CLAUDE_PLUGIN_OPTION_AUTH_PROVIDER", "LABBY_AUTH_PROVIDER"),
     ("CLAUDE_PLUGIN_OPTION_PUBLIC_URL", "LABBY_PUBLIC_URL"),
     (
         "CLAUDE_PLUGIN_OPTION_MCP_GATEWAY_URL",
@@ -85,6 +86,22 @@ const PLUGIN_OPTION_MAP: &[(&str, &str)] = &[
         "LABBY_GOOGLE_CLIENT_SECRET",
     ),
     (
+        "CLAUDE_PLUGIN_OPTION_AUTHELIA_ISSUER_URL",
+        "LABBY_AUTHELIA_ISSUER_URL",
+    ),
+    (
+        "CLAUDE_PLUGIN_OPTION_AUTHELIA_CLIENT_ID",
+        "LABBY_AUTHELIA_CLIENT_ID",
+    ),
+    (
+        "CLAUDE_PLUGIN_OPTION_AUTHELIA_CLIENT_SECRET",
+        "LABBY_AUTHELIA_CLIENT_SECRET",
+    ),
+    (
+        "CLAUDE_PLUGIN_OPTION_AUTHELIA_TRUSTED_PRIVATE_ORIGIN",
+        "LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN",
+    ),
+    (
         "CLAUDE_PLUGIN_OPTION_AUTH_ADMIN_EMAIL",
         "LABBY_AUTH_ADMIN_EMAIL",
     ),
@@ -96,6 +113,7 @@ const ENV_TO_FIELD_MAP: &[(&str, &str, bool)] = &[
     ("LABBY_SERVER_URL", "server_url", false),
     ("LABBY_MCP_HTTP_TOKEN", "api_token", true),
     ("LABBY_AUTH_MODE", "auth_mode", false),
+    ("LABBY_AUTH_PROVIDER", "auth_provider", false),
     ("LABBY_PUBLIC_URL", "public_url", false),
     ("LABBY_MCP_GATEWAY_URL", "mcp_gateway_url", false),
     ("LABBY_ADMIN_ENABLED", "admin_enabled", false),
@@ -104,6 +122,18 @@ const ENV_TO_FIELD_MAP: &[(&str, &str, bool)] = &[
     ("LABBY_CORS_ORIGINS", "cors_origins", false),
     ("LABBY_GOOGLE_CLIENT_ID", "google_client_id", false),
     ("LABBY_GOOGLE_CLIENT_SECRET", "google_client_secret", true),
+    ("LABBY_AUTHELIA_ISSUER_URL", "authelia_issuer_url", false),
+    ("LABBY_AUTHELIA_CLIENT_ID", "authelia_client_id", false),
+    (
+        "LABBY_AUTHELIA_CLIENT_SECRET",
+        "authelia_client_secret",
+        true,
+    ),
+    (
+        "LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN",
+        "authelia_trusted_private_origin",
+        false,
+    ),
     ("LABBY_AUTH_ADMIN_EMAIL", "auth_admin_email", false),
 ];
 
@@ -755,6 +785,30 @@ mod tests {
             PLUGIN_OPTION_MAP.contains(&("CLAUDE_PLUGIN_OPTION_SERVER_URL", "LABBY_SERVER_URL",))
         );
         assert!(ENV_TO_FIELD_MAP.contains(&("LABBY_SERVER_URL", "server_url", false,)));
+    }
+
+    #[test]
+    fn authelia_export_redacts_secret_and_preserves_private_origin_setting() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let env = temp.path().join(".env");
+        fs::write(&env, "LABBY_AUTHELIA_CLIENT_SECRET=never-print-me\nLABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN=https://auth.internal.example\n").unwrap();
+        let export = export_plugin_env_from(env).unwrap();
+        let secret = export
+            .fields
+            .iter()
+            .find(|entry| entry.field == "authelia_client_secret")
+            .unwrap();
+        assert_eq!(secret.value.as_deref(), Some("***"));
+        assert!(secret.sensitive);
+        let origin = export
+            .fields
+            .iter()
+            .find(|entry| entry.field == "authelia_trusted_private_origin")
+            .unwrap();
+        assert_eq!(
+            origin.value.as_deref(),
+            Some("https://auth.internal.example")
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 title: "Reverse Proxy Deployment"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-05"
 ---
 
 # Reverse Proxy Deployment
@@ -28,6 +28,10 @@ front of that listener and configure public MCP routes in Labby.
 - Disable compression on MCP paths.
 - Use read/write/idle timeouts suitable for long-lived Streamable HTTP and SSE.
 - Forward `/.well-known/oauth-protected-resource/<route>` to Labby.
+- Forward `/auth/oidc/callback` unchanged when Authelia is selected. Disable
+  request-target/query logging on OAuth callbacks: authorization `code`,
+  `state`, and provider error parameters must not enter proxy access logs,
+  traces, analytics, or error pages.
 
 Labby intentionally uses `Host` for protected-route lookup by default. If a
 proxy cannot preserve that authority, `[api].trust_forwarded_headers = true`
@@ -37,6 +41,13 @@ directly reachable by clients and every trusted proxy overwrites the inbound
 header. It does not enable trust for `X-Forwarded-Proto` or forwarded client-IP
 headers. Prefer preserving `Host` and leaving the option at its default `false`.
 
+The built-in authorization, registration, and token rate limits are
+process-local, and Labby attributes clients by the direct peer rather than
+trusting forwarded client-IP headers. A multi-process deployment therefore
+multiplies those limits and must enforce an aggregate limit at the trusted
+edge. Never expose Labby's listener directly when trusting forwarded host
+authority; the sole trusted proxy must overwrite that header.
+
 ## nginx or SWAG
 
 Host-level forwarding is the portable baseline. Both `lab.example.com` and
@@ -44,7 +55,23 @@ Host-level forwarding is the portable baseline. Both `lab.example.com` and
 
 ```nginx
 server {
-    server_name mcp.example.com;
+    server_name mcp.example.com lab.example.com;
+
+    # OAuth codes and state remain in the upstream request but never enter the
+    # edge access log. Both provider callbacks are fixed Labby routes.
+    location = /auth/oidc/callback {
+        access_log off;
+        proxy_pass http://labby:8765;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /auth/google/callback {
+        access_log off;
+        proxy_pass http://labby:8765;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     location / {
         proxy_pass http://labby:8765;

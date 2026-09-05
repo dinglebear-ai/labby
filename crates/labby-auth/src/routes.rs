@@ -1,6 +1,6 @@
 use axum::Router;
 use axum::extract::Request;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{get, post};
@@ -14,33 +14,117 @@ use crate::metadata::{authorization_server_metadata, jwks, protected_resource_me
 use crate::state::AuthState;
 use crate::token::{revoke, token};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthRouteId {
+    AuthorizationServerMetadata,
+    AuthorizationServerMetadataPath,
+    ProtectedResourceMetadata,
+    Jwks,
+    Register,
+    Authorize,
+    BrowserLogin,
+    ProviderCallback,
+    NativeCallback,
+    NativePoll,
+    Token,
+    Revoke,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthRouteSpec {
+    pub id: AuthRouteId,
+    pub method: &'static str,
+    pub path: &'static str,
+    pub browser_only: bool,
+}
+
+/// Canonical provider-aware OAuth route inventory consumed by auth routers,
+/// product mounting, generated route metadata, and proxy projection.
+#[must_use]
+pub fn auth_route_specs(provider: crate::config::InboundProviderKind) -> Vec<AuthRouteSpec> {
+    let callback = match provider {
+        crate::config::InboundProviderKind::Google => "/auth/google/callback",
+        crate::config::InboundProviderKind::Authelia => "/auth/oidc/callback",
+    };
+    vec![
+        AuthRouteSpec {
+            id: AuthRouteId::AuthorizationServerMetadata,
+            method: "GET",
+            path: "/.well-known/oauth-authorization-server",
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::AuthorizationServerMetadataPath,
+            method: "GET",
+            path: "/.well-known/oauth-authorization-server/{*route}",
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::ProtectedResourceMetadata,
+            method: "GET",
+            path: "/.well-known/oauth-protected-resource",
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::Jwks,
+            method: "GET",
+            path: "/jwks",
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::Register,
+            method: "POST",
+            path: "/register",
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::Authorize,
+            method: "GET",
+            path: "/authorize",
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::BrowserLogin,
+            method: "GET",
+            path: "/auth/login",
+            browser_only: true,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::ProviderCallback,
+            method: "GET",
+            path: callback,
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::NativeCallback,
+            method: "GET",
+            path: "/native/callback",
+            browser_only: true,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::NativePoll,
+            method: "POST",
+            path: "/native/poll",
+            browser_only: true,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::Token,
+            method: "POST",
+            path: "/token",
+            browser_only: false,
+        },
+        AuthRouteSpec {
+            id: AuthRouteId::Revoke,
+            method: "POST",
+            path: "/revoke",
+            browser_only: false,
+        },
+    ]
+}
+
 pub fn router(state: AuthState) -> Router {
-    let enable_registration = state.config.enable_dynamic_registration;
-    let mut app = Router::new()
-        .route(
-            "/.well-known/oauth-authorization-server",
-            get(authorization_server_metadata),
-        )
-        .route(
-            "/.well-known/oauth-authorization-server/{*route}",
-            get(authorization_server_metadata),
-        )
-        .route(
-            "/.well-known/oauth-protected-resource",
-            get(protected_resource_metadata),
-        )
-        .route("/jwks", get(jwks))
-        .route("/authorize", get(authorize))
-        .route("/auth/login", get(browser_login))
-        .route("/auth/google/callback", get(callback))
-        .route("/native/callback", get(native_callback))
-        .route("/native/poll", post(native_poll))
-        .route("/token", post(token))
-        .route("/revoke", post(revoke));
-    if enable_registration {
-        app = app.route("/register", post(register_client));
-    }
-    app.with_state(state)
+    build_protocol_router(&state, true)
+        .with_state(state)
         .layer(middleware::from_fn(auth_dispatch_observability))
 }
 
@@ -56,48 +140,64 @@ pub fn router(state: AuthState) -> Router {
 ///
 /// Use [`router`] for the full surface (lab itself).
 pub fn bearer_only_router(state: AuthState) -> Router {
-    let enable_registration = state.config.enable_dynamic_registration;
-    let mut app = Router::new()
-        .route(
-            "/.well-known/oauth-authorization-server",
-            get(authorization_server_metadata),
-        )
-        .route(
-            "/.well-known/oauth-authorization-server/{*route}",
-            get(authorization_server_metadata),
-        )
-        .route(
-            "/.well-known/oauth-protected-resource",
-            get(protected_resource_metadata),
-        )
-        .route("/jwks", get(jwks))
-        .route("/authorize", get(authorize))
-        .route("/auth/google/callback", get(callback))
-        .route("/token", post(token))
-        .route("/revoke", post(revoke));
-    if enable_registration {
-        app = app.route("/register", post(register_client));
-    }
-    app.with_state(state)
+    build_protocol_router(&state, false)
+        .with_state(state)
         .layer(middleware::from_fn(auth_dispatch_observability))
 }
 
-/// Pinned snapshot of the routes mounted by [`bearer_only_router`]. Sorted.
+fn build_protocol_router(state: &AuthState, include_browser: bool) -> Router<AuthState> {
+    let mut app = Router::new();
+    for spec in auth_route_specs(state.inbound_provider.kind()) {
+        if (!include_browser && spec.browser_only)
+            || (spec.id == AuthRouteId::Register && !state.config.enable_dynamic_registration)
+        {
+            continue;
+        }
+        app = match spec.id {
+            AuthRouteId::AuthorizationServerMetadata
+            | AuthRouteId::AuthorizationServerMetadataPath => {
+                app.route(spec.path, get(authorization_server_metadata))
+            }
+            AuthRouteId::ProtectedResourceMetadata => {
+                app.route(spec.path, get(protected_resource_metadata))
+            }
+            AuthRouteId::Jwks => app.route(spec.path, get(jwks)),
+            AuthRouteId::Register => app.route(spec.path, post(register_client)),
+            AuthRouteId::Authorize => app.route(spec.path, get(authorize)),
+            AuthRouteId::BrowserLogin => app.route(spec.path, get(browser_login)),
+            AuthRouteId::ProviderCallback => app.route(spec.path, get(callback)),
+            AuthRouteId::NativeCallback => app.route(spec.path, get(native_callback)),
+            AuthRouteId::NativePoll => app.route(spec.path, post(native_poll)),
+            AuthRouteId::Token => app.route(spec.path, post(token)),
+            AuthRouteId::Revoke => app.route(spec.path, post(revoke)),
+        };
+    }
+    app
+}
+
+/// Provider-aware snapshot of the routes mounted by [`bearer_only_router`].
 ///
 /// If you add or remove an endpoint in `bearer_only_router`, update this
 /// list AND consider whether the change is intentional — silently
 /// drifting the headless subset is the bug this snapshot exists to catch
 /// (REVIEW-APPLIED #9).
-pub const BEARER_ONLY_ROUTER_PATHS: &[(&str, &str)] = &[
-    ("GET", "/.well-known/oauth-authorization-server"),
-    ("GET", "/.well-known/oauth-authorization-server/mcp"),
-    ("GET", "/.well-known/oauth-protected-resource"),
-    ("GET", "/authorize"),
-    ("GET", "/auth/google/callback"),
-    ("GET", "/jwks"),
-    ("POST", "/token"),
-    ("POST", "/revoke"),
-];
+#[must_use]
+pub fn bearer_only_router_paths(
+    provider: crate::config::InboundProviderKind,
+) -> Vec<(&'static str, &'static str)> {
+    auth_route_specs(provider)
+        .into_iter()
+        .filter(|spec| !spec.browser_only && spec.id != AuthRouteId::Register)
+        .map(|spec| {
+            let path = if spec.id == AuthRouteId::AuthorizationServerMetadataPath {
+                "/.well-known/oauth-authorization-server/mcp"
+            } else {
+                spec.path
+            };
+            (spec.method, path)
+        })
+        .collect()
+}
 
 /// Paths that must NOT be mounted by [`bearer_only_router`] — verified
 /// by the snapshot test. Headless MCP clients have no browser to complete a
@@ -118,7 +218,7 @@ pub async fn auth_dispatch_observability(request: Request, next: Next) -> Respon
     let action = auth_dispatch_action(request.uri().path());
     let request_id = request_id(request.headers()).map(ToOwned::to_owned);
     let start = Instant::now();
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
     let elapsed_ms = start.elapsed().as_millis();
     let status = response.status();
     let kind = response
@@ -151,6 +251,19 @@ pub async fn auth_dispatch_observability(request: Request, next: Next) -> Respon
     }
 
     response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if matches!(action, "oauth.callback" | "oauth.native_callback") {
+        response.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+        );
+    }
+    response
 }
 
 fn request_id(headers: &HeaderMap) -> Option<&str> {
@@ -170,23 +283,35 @@ fn status_error_kind(status: StatusCode) -> Option<&'static str> {
 }
 
 fn auth_dispatch_action(path: &str) -> &'static str {
-    match path {
-        "/.well-known/oauth-authorization-server" => "oauth.metadata.authorization_server",
-        "/.well-known/oauth-protected-resource" => "oauth.metadata.protected_resource",
-        "/jwks" => "oauth.jwks",
-        "/register" => "oauth.register",
-        "/authorize" => "oauth.authorize",
-        "/auth/login" => "oauth.browser_login",
-        "/auth/google/callback" => "oauth.callback",
-        "/native/callback" => "oauth.native_callback",
-        "/native/poll" => "oauth.native_poll",
-        "/token" => "oauth.token",
-        "/revoke" => "oauth.revoke",
-        _ if path.starts_with("/.well-known/oauth-authorization-server/") => {
-            "oauth.metadata.authorization_server"
+    for provider in [
+        crate::config::InboundProviderKind::Google,
+        crate::config::InboundProviderKind::Authelia,
+    ] {
+        for spec in auth_route_specs(provider) {
+            let matched = path == spec.path
+                || (spec.id == AuthRouteId::AuthorizationServerMetadataPath
+                    && path.starts_with("/.well-known/oauth-authorization-server/"));
+            if matched {
+                return match spec.id {
+                    AuthRouteId::AuthorizationServerMetadata
+                    | AuthRouteId::AuthorizationServerMetadataPath => {
+                        "oauth.metadata.authorization_server"
+                    }
+                    AuthRouteId::ProtectedResourceMetadata => "oauth.metadata.protected_resource",
+                    AuthRouteId::Jwks => "oauth.jwks",
+                    AuthRouteId::Register => "oauth.register",
+                    AuthRouteId::Authorize => "oauth.authorize",
+                    AuthRouteId::BrowserLogin => "oauth.browser_login",
+                    AuthRouteId::ProviderCallback => "oauth.callback",
+                    AuthRouteId::NativeCallback => "oauth.native_callback",
+                    AuthRouteId::NativePoll => "oauth.native_poll",
+                    AuthRouteId::Token => "oauth.token",
+                    AuthRouteId::Revoke => "oauth.revoke",
+                };
+            }
         }
-        _ => "oauth.unknown",
     }
+    "oauth.unknown"
 }
 
 #[cfg(test)]
@@ -258,8 +383,8 @@ mod tests {
         );
     }
 
-    /// Pinned-snapshot test for [`bearer_only_router`] — sends a probe
-    /// request to each path in [`BEARER_ONLY_ROUTER_PATHS`] and asserts
+    /// Snapshot test for [`bearer_only_router`] — sends a probe
+    /// request to each path from [`bearer_only_router_paths`] and asserts
     /// the response is NOT 404 (i.e. the route is mounted), then probes
     /// each path in [`BEARER_ONLY_ROUTER_FORBIDDEN_PATHS`] and asserts
     /// IT IS 404 (i.e. the route is NOT mounted).
@@ -273,13 +398,13 @@ mod tests {
         let state = test_auth_state_with_config(config).await;
         let app = bearer_only_router(state);
 
-        for (method, path) in BEARER_ONLY_ROUTER_PATHS {
+        for (method, path) in bearer_only_router_paths(crate::config::InboundProviderKind::Google) {
             let response = app
                 .clone()
                 .oneshot(
                     HttpRequest::builder()
-                        .method(*method)
-                        .uri(*path)
+                        .method(method)
+                        .uri(path)
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -290,7 +415,7 @@ mod tests {
                 StatusCode::NOT_FOUND,
                 "expected `{method} {path}` to be mounted on bearer_only_router \
                  but got 404 — did the route get removed without updating \
-                 BEARER_ONLY_ROUTER_PATHS?"
+                 bearer_only_router_paths()?"
             );
         }
 
@@ -315,5 +440,94 @@ mod tests {
                 response.status()
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bearer_only_router_mounts_only_the_selected_provider_callback() {
+        let base = test_auth_state_with_config(test_auth_config()).await;
+        let (provider, _server) =
+            crate::authelia::tests::mock_provider_for_nonce("route-test").await;
+        let generation = base
+            .store
+            .activate_inbound_provider(
+                "authelia",
+                provider.issuer(),
+                "route-test",
+                crate::util::now_unix(),
+            )
+            .await
+            .unwrap()
+            .generation;
+        let state = AuthState::for_tests_with_provider(
+            (*base.config).clone(),
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            crate::oauth_provider::InboundProviderRuntime::Authelia(Box::new(provider)),
+            generation,
+        );
+        let full = router(state.clone());
+        for path in ["/auth/login", "/native/callback", "/auth/oidc/callback"] {
+            let response = full
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "full router omitted {path}"
+            );
+        }
+        let app = bearer_only_router(state);
+        for (path, expected) in [
+            ("/auth/oidc/callback", true),
+            ("/auth/google/callback", false),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status() != StatusCode::NOT_FOUND,
+                expected,
+                "unexpected mount state for {path}"
+            );
+        }
+        let wrong_method = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/auth/oidc/callback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            wrong_method.status(),
+            StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND
+        ));
+        let encoded = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/auth/oidc%2Fcallback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(encoded.status(), StatusCode::NOT_FOUND);
     }
 }

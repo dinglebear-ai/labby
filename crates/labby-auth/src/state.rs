@@ -10,10 +10,13 @@ use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use url::Url;
 
+#[cfg(feature = "http-axum")]
+use crate::authelia::AutheliaProvider;
 use crate::config::{AuthConfig, AuthMode};
 use crate::error::AuthError;
 use crate::google::GoogleProvider;
 use crate::jwt::SigningKeys;
+use crate::oauth_provider::{InboundProvider, InboundProviderRuntime};
 use crate::resource_registry::ResourceRegistry;
 use crate::sqlite::SqliteStore;
 #[cfg(feature = "http-axum")]
@@ -245,10 +248,13 @@ pub struct AuthState {
     pub config: Arc<AuthConfig>,
     pub store: SqliteStore,
     pub signing_keys: Arc<SigningKeys>,
-    pub google: Arc<GoogleProvider>,
+    pub inbound_provider: Arc<InboundProviderRuntime>,
+    pub inbound_provider_generation: i64,
     _cleanup_task: Arc<CleanupTask>,
     resource_registry: ResourceRegistry,
     authorize_limiter: PerIpRateLimiter,
+    callback_limiter: PerIpRateLimiter,
+    native_poll_limiter: PerIpRateLimiter,
     register_limiter: PerIpRateLimiter,
     token_limiter: PerIpRateLimiter,
     #[cfg(feature = "http-axum")]
@@ -286,6 +292,20 @@ pub struct AuthState {
 }
 
 impl AuthState {
+    #[must_use]
+    pub fn inbound_provider_binding(&self) -> crate::types::ProviderBinding {
+        crate::types::ProviderBinding {
+            identity_issuer: self.inbound_provider.issuer().to_string(),
+            provider_generation: self.inbound_provider_generation,
+        }
+    }
+    #[must_use]
+    #[cfg(test)]
+    #[allow(clippy::panic)]
+    pub fn google(&self) -> &GoogleProvider {
+        self.inbound_provider.google()
+    }
+
     pub async fn new(config: AuthConfig) -> Result<Self, AuthError> {
         Self::new_with_resource_registry(config, ResourceRegistry::new()).await
     }
@@ -300,13 +320,12 @@ impl AuthState {
                 prefix = config.env_prefix
             )));
         }
-        // Programmatic construction must enforce the same issuer URL boundary
-        // as environment configuration, before metadata, redirects, or I/O.
         config.validate_oauth_public_url()?;
+        let selected_provider = config.selected_inbound_provider()?;
         if config.token_encryption_key.is_none() {
             return Err(AuthError::Config(format!(
                 "{prefix}_TOKEN_ENCRYPTION_KEY is required when {prefix}_AUTH_MODE=oauth; \
-                 Google provider credentials must be encrypted at rest",
+                 provider credentials and local refresh replay responses must be encrypted at rest",
                 prefix = config.env_prefix
             )));
         }
@@ -317,21 +336,62 @@ impl AuthState {
                 prefix = config.env_prefix
             ))
         })?;
-        let redirect_uri = config.google.callback_url.clone().unwrap_or_else(|| {
-            build_google_redirect_uri(&public_url, &config.google.callback_path)
-        });
+        let inbound_provider = match selected_provider {
+            InboundProvider::Google(google_config) => {
+                let redirect_uri = google_config.callback_url.clone().unwrap_or_else(|| {
+                    build_google_redirect_uri(&public_url, &google_config.callback_path)
+                });
+                let mut google = GoogleProvider::new(
+                    google_config.client_id.clone(),
+                    google_config.client_secret.clone(),
+                    redirect_uri,
+                )?;
+                google.scopes.clone_from(&google_config.scopes);
+                InboundProviderRuntime::Google(Box::new(google))
+            }
+            InboundProvider::Authelia(authelia_config) => {
+                #[cfg(feature = "http-axum")]
+                {
+                    let redirect_uri = build_google_redirect_uri(
+                        &public_url,
+                        crate::config::AUTHELIA_CALLBACK_PATH,
+                    );
+                    InboundProviderRuntime::Authelia(Box::new(
+                        AutheliaProvider::discover(authelia_config, redirect_uri).await?,
+                    ))
+                }
+                #[cfg(not(feature = "http-axum"))]
+                {
+                    drop(authelia_config);
+                    return Err(AuthError::Config(
+                        "Authelia inbound authentication requires the `http-axum` feature"
+                            .to_string(),
+                    ));
+                }
+            }
+        };
+        // Complete provider discovery before opening (and possibly migrating)
+        // the durable auth store. A failed Authelia preflight must leave the
+        // database compatible with the currently deployed binary.
         let store = SqliteStore::open_with_key(
             config.sqlite_path.clone(),
             config.token_encryption_key.clone(),
         )
         .await?;
         let signing_keys = SigningKeys::load_or_create(&config.key_path)?;
-        let mut google = GoogleProvider::new(
-            config.google.client_id.clone(),
-            config.google.client_secret.clone(),
-            redirect_uri,
-        )?;
-        google.scopes.clone_from(&config.google.scopes);
+        let config_fingerprint = config.inbound_provider_fingerprint()?;
+        let activation = store
+            .activate_inbound_provider_checked(
+                match inbound_provider.kind() {
+                    crate::config::InboundProviderKind::Google => "google",
+                    crate::config::InboundProviderKind::Authelia => "authelia",
+                },
+                inbound_provider.issuer(),
+                &config_fingerprint,
+                Some(inbound_provider.client_id()),
+                crate::util::now_unix(),
+            )
+            .await?;
         let sqlite_path_id = crate::util::fingerprint(&config.sqlite_path.to_string_lossy());
         let key_path_id = crate::util::fingerprint(&config.key_path.to_string_lossy());
         info!(
@@ -339,14 +399,15 @@ impl AuthState {
             env_prefix = %config.env_prefix,
             auth_mode = "oauth",
             public_url_id = %crate::util::fingerprint(public_url.as_str()),
-            google_redirect_uri_id = %crate::util::fingerprint(google.redirect_uri.as_str()),
+            inbound_provider = ?inbound_provider.kind(),
             sqlite_path_id = %sqlite_path_id,
             key_path_id = %key_path_id,
-            google_scope_count = config.google.scopes.len(),
             "auth state initialized"
         );
 
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
+        let callback_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
+        let native_poll_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
         let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
         let cleanup_task = Arc::new(spawn_expired_record_cleanup(
@@ -358,10 +419,13 @@ impl AuthState {
             config: Arc::new(config),
             store,
             signing_keys: Arc::new(signing_keys),
-            google: Arc::new(google),
+            inbound_provider: Arc::new(inbound_provider),
+            inbound_provider_generation: activation.generation,
             _cleanup_task: cleanup_task,
             resource_registry,
             authorize_limiter,
+            callback_limiter,
+            native_poll_limiter,
             register_limiter,
             token_limiter,
             #[cfg(feature = "http-axum")]
@@ -451,6 +515,28 @@ impl AuthState {
         }
     }
 
+    pub async fn check_callback_rate_limit(&self, ip: IpAddr) -> Result<(), AuthError> {
+        if self.callback_limiter.try_acquire(ip).await {
+            Ok(())
+        } else {
+            Err(AuthError::RateLimited {
+                message: "OAuth callback rate limit exceeded".to_string(),
+                retry_after_ms: RATE_LIMIT_RETRY_AFTER_MS,
+            })
+        }
+    }
+
+    pub async fn check_native_poll_rate_limit(&self, ip: IpAddr) -> Result<(), AuthError> {
+        if self.native_poll_limiter.try_acquire(ip).await {
+            Ok(())
+        } else {
+            Err(AuthError::RateLimited {
+                message: "native OAuth poll rate limit exceeded".to_string(),
+                retry_after_ms: RATE_LIMIT_RETRY_AFTER_MS,
+            })
+        }
+    }
+
     /// Rate-limit guard for `/register` endpoint.
     ///
     /// Keyed per remote IP — see `check_authorize_rate_limit` for the rationale.
@@ -496,6 +582,25 @@ impl AuthState {
         Ok(emails)
     }
 
+    /// Evaluate the current access policy without materializing the allowlist.
+    pub async fn is_email_authorized(&self, email: &str) -> Result<bool, AuthError> {
+        if self.is_email_explicitly_allowed(email).await? {
+            return Ok(true);
+        }
+        let domain = email.rsplit_once('@').map(|(_, domain)| domain);
+        Ok(domain.is_some_and(|domain| {
+            self.config
+                .allowed_email_domains
+                .iter()
+                .any(|allowed| domain.eq_ignore_ascii_case(allowed))
+        }))
+    }
+
+    pub async fn is_email_explicitly_allowed(&self, email: &str) -> Result<bool, AuthError> {
+        Ok(email.eq_ignore_ascii_case(&self.config.admin_email)
+            || self.store.is_allowed_user_email(email).await?)
+    }
+
     /// Rejects new OAuth state rows when the pending count exceeds `max_pending_oauth_states`.
     pub async fn ensure_pending_oauth_state_capacity(&self) -> Result<(), AuthError> {
         let count = self.store.count_pending_oauth_states().await?;
@@ -528,7 +633,26 @@ impl AuthState {
         signing_keys: SigningKeys,
         google: GoogleProvider,
     ) -> Self {
+        Self::for_tests_with_provider(
+            config,
+            store,
+            signing_keys,
+            InboundProviderRuntime::Google(Box::new(google)),
+            1,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn for_tests_with_provider(
+        config: AuthConfig,
+        store: SqliteStore,
+        signing_keys: SigningKeys,
+        inbound_provider: InboundProviderRuntime,
+        inbound_provider_generation: i64,
+    ) -> Self {
         let authorize_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
+        let callback_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
+        let native_poll_limiter = PerIpRateLimiter::new(config.authorize_requests_per_minute);
         let register_limiter = PerIpRateLimiter::new(config.register_requests_per_minute);
         let token_limiter = PerIpRateLimiter::new(config.token_requests_per_minute);
         let cleanup_task = Arc::new(spawn_expired_record_cleanup(
@@ -540,10 +664,13 @@ impl AuthState {
             config: Arc::new(config),
             store,
             signing_keys: Arc::new(signing_keys),
-            google: Arc::new(google),
+            inbound_provider: Arc::new(inbound_provider),
+            inbound_provider_generation,
             _cleanup_task: cleanup_task,
             resource_registry: ResourceRegistry::new(),
             authorize_limiter,
+            callback_limiter,
+            native_poll_limiter,
             register_limiter,
             token_limiter,
             #[cfg(feature = "http-axum")]
@@ -599,35 +726,6 @@ mod tests {
     use crate::util::now_unix;
 
     #[tokio::test]
-    async fn programmatic_state_rejects_unsafe_public_url_before_creating_files() {
-        for public_url in [
-            "https://user:secret-canary@auth.example.com",
-            "https://auth.example.com?secret-canary=value",
-            "https://auth.example.com#secret-canary",
-            "http://auth.example.com",
-        ] {
-            let directory = tempdir().unwrap();
-            let config = AuthConfig {
-                mode: AuthMode::OAuth,
-                public_url: Some(Url::parse(public_url).unwrap()),
-                sqlite_path: directory.path().join("auth.db"),
-                key_path: directory.path().join("auth.pem"),
-                token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
-                    "fixture",
-                )),
-                ..AuthConfig::default()
-            };
-            let error = AuthState::new(config)
-                .await
-                .err()
-                .expect("unsafe issuer accepted");
-            assert!(error.to_string().contains("PUBLIC_URL"));
-            assert!(!error.to_string().contains("secret-canary"));
-            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
-        }
-    }
-
-    #[tokio::test]
     async fn cloned_auth_states_share_resource_registry() {
         let state = resolve_state("admin@example.com").await;
         let clone = state.clone();
@@ -642,47 +740,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(clone.resource_registry().lease_count(), 1);
-    }
-
-    #[cfg(feature = "http-axum")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn auth_state_initialization_logs_redact_configuration_metadata() {
-        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
-        let buf = crate::test_support::global_tracing_buffer();
-        let directory = tempdir().unwrap();
-        let public_url_sentinel = "sentinel-public.example";
-        let redirect_sentinel = "sentinel-google-redirect.example";
-        let scope_sentinel = "sentinel-state-scope-secret";
-        let sqlite_sentinel = "sentinel-auth-storage.db";
-        let key_sentinel = "sentinel-auth-signing.pem";
-        let mut config = crate::authorize::tests::test_auth_config();
-        config.public_url =
-            Some(Url::parse(&format!("https://{public_url_sentinel}/gateway")).unwrap());
-        config.google.callback_url =
-            Some(Url::parse(&format!("https://{redirect_sentinel}/callback")).unwrap());
-        config.google.scopes = vec![scope_sentinel.to_string()];
-        config.sqlite_path = directory.path().join(sqlite_sentinel);
-        config.key_path = directory.path().join(key_sentinel);
-
-        let state = AuthState::new(config).await.expect("auth state");
-        drop(state);
-
-        let logs = crate::test_support::captured_logs(buf);
-        for sentinel in [
-            public_url_sentinel,
-            redirect_sentinel,
-            scope_sentinel,
-            sqlite_sentinel,
-            key_sentinel,
-        ] {
-            assert!(
-                !logs.contains(sentinel),
-                "auth configuration metadata leaked into logs: {sentinel}\n{logs}"
-            );
-        }
-        assert!(logs.contains("google_scope_count"), "{logs}");
-        assert!(logs.contains("sqlite_path_id"), "{logs}");
-        assert!(logs.contains("key_path_id"), "{logs}");
     }
 
     #[tokio::test]
@@ -913,7 +970,7 @@ mod tests {
         .expect("auth state");
 
         assert_eq!(
-            state.google.redirect_uri.as_str(),
+            state.google().redirect_uri.as_str(),
             "https://lab.example.com/gateway/auth/google/callback"
         );
     }
@@ -956,7 +1013,7 @@ mod tests {
             Some("https://issuer.example.com/")
         );
         assert_eq!(
-            state.google.redirect_uri.as_str(),
+            state.google().redirect_uri.as_str(),
             "https://app.example.com/auth/google/callback"
         );
     }

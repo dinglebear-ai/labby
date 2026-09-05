@@ -299,10 +299,17 @@ async fn auth_browser_login(
 
 async fn auth_callback(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     query: Query<labby_auth::types::CallbackQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(labby_auth::authorize::callback(State(app_auth_state(&state)?), headers, query).await?)
+    Ok(labby_auth::authorize::callback(
+        State(app_auth_state(&state)?),
+        headers,
+        labby_auth::authorize::RemoteAddr(addr),
+        query,
+    )
+    .await?)
 }
 
 async fn auth_token(
@@ -343,9 +350,15 @@ async fn auth_native_callback(
 
 async fn auth_native_poll(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     body: Json<labby_auth::types::NativePollQuery>,
 ) -> Result<impl IntoResponse, LabAuthError> {
-    Ok(labby_auth::authorize::native_poll(State(app_auth_state(&state)?), body).await?)
+    Ok(labby_auth::authorize::native_poll(
+        State(app_auth_state(&state)?),
+        labby_auth::authorize::RemoteAddr(addr),
+        body,
+    )
+    .await?)
 }
 
 fn auth_error_response_with_challenge(
@@ -2470,44 +2483,48 @@ pub(crate) fn build_router_with_external_auth(
         );
     }
     if !integrated_trusted_host && let Some(auth_state) = auth_state.as_ref() {
-        let _ = auth_state;
-        let mut descriptors = crate::api::route_registry::oauth_protocol_descriptors().into_iter();
-        let mut auth_routes = crate::api::route_registry::RouteGroup::empty()
-            .route(
-                descriptors.next().unwrap(),
-                get(auth_authorization_server_metadata),
-            )
-            .route(
-                descriptors.next().unwrap(),
-                get(auth_authorization_server_metadata),
-            )
-            .route(
-                descriptors.next().unwrap(),
-                get(auth_protected_resource_metadata),
-            )
-            .route(descriptors.next().unwrap(), get(auth_jwks));
-        let registration = descriptors.next().unwrap();
-        if auth_state.config.enable_dynamic_registration {
-            auth_routes = auth_routes.route(registration, post(auth_register));
+        let descriptors = crate::api::route_registry::oauth_protocol_descriptors_for_provider(
+            auth_state.inbound_provider.kind(),
+        );
+        let mut auth_routes = crate::api::route_registry::RouteGroup::empty();
+        for descriptor in descriptors {
+            let methods = match descriptor.handler {
+                "auth_authorization_server_metadata" => get(auth_authorization_server_metadata),
+                "auth_protected_resource_metadata" => get(auth_protected_resource_metadata),
+                "auth_jwks" => get(auth_jwks),
+                "auth_register" if auth_state.config.enable_dynamic_registration => {
+                    post(auth_register)
+                }
+                "auth_register" => continue,
+                "auth_authorize" => get(auth_authorize),
+                "auth_browser_login" => get(auth_browser_login),
+                "auth_callback" => get(auth_callback),
+                "auth_native_callback" => get(auth_native_callback),
+                "auth_native_poll" => post(auth_native_poll),
+                "auth_token" => post(auth_token),
+                "auth_revoke" => post(auth_revoke),
+                _ => continue,
+            };
+            auth_routes = auth_routes.route(descriptor, methods);
         }
-        auth_routes = auth_routes
-            .route(descriptors.next().unwrap(), get(auth_authorize))
-            .route(descriptors.next().unwrap(), get(auth_browser_login))
-            .route(descriptors.next().unwrap(), get(auth_callback))
-            .route(descriptors.next().unwrap(), get(auth_native_callback))
-            .route(descriptors.next().unwrap(), post(auth_native_poll))
-            .route(descriptors.next().unwrap(), post(auth_token))
-            .route(descriptors.next().unwrap(), post(auth_revoke))
-            .map_router(|router| {
-                router.layer(axum::middleware::from_fn(
-                    labby_auth::routes::auth_dispatch_observability,
-                ))
-            });
+        auth_routes = auth_routes.map_router(|router| {
+            router.layer(axum::middleware::from_fn(
+                labby_auth::routes::auth_dispatch_observability,
+            ))
+        });
         route_group = route_group.merge(auth_routes);
         #[cfg(feature = "gateway")]
         {
             route_group = route_group.route(
-                descriptors.next().unwrap(),
+                RouteDescriptor::new(
+                    "GET",
+                    "/.well-known/oauth-protected-resource/{*route}",
+                    "protected_route_resource_metadata",
+                    "oauth",
+                    RouteAuth::OAuthProtocol,
+                )
+                .feature("gateway")
+                .when("mounted only when OAuth is configured"),
                 get(protected_route_resource_metadata),
             );
         }
@@ -6478,6 +6495,7 @@ mod tests {
             sqlite_path: dir.path().join("auth.db"),
             key_path: dir.path().join("auth-jwt.pem"),
             bootstrap_secret: Some("bootstrap-secret".to_string()),
+            admin_email: "browser@example.com".to_string(),
             google: labby_auth::config::GoogleConfig {
                 client_id: "client-id".to_string(),
                 client_secret: "client-secret".to_string(),

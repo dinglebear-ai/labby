@@ -101,6 +101,21 @@ LABBY_GOOGLE_CLIENT_SECRET=google-client-secret
 LABBY_AUTH_ADMIN_EMAIL=admin@example.com
 ```
 
+Authelia alternative (open beta; do not configure Google credentials at the same time):
+
+```env
+LABBY_AUTH_MODE=oauth
+LABBY_AUTH_PROVIDER=authelia
+LABBY_PUBLIC_URL=https://lab.example.com
+LABBY_AUTHELIA_ISSUER_URL=https://auth.example.com
+LABBY_AUTHELIA_CLIENT_ID=labby
+LABBY_AUTHELIA_CLIENT_SECRET=replace-me
+# Optional only when the exact issuer uses a private CA:
+# LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN=https://auth.example.com
+# LABBY_AUTHELIA_CA_CERT_PATH=/etc/labby/authelia-ca.pem
+LABBY_AUTH_ADMIN_EMAIL=admin@example.com
+```
+
 Optional auth overrides:
 
 ```env
@@ -125,7 +140,8 @@ Rules:
 
 - `LABBY_AUTH_MODE` defaults to `bearer`
 - bearer mode keeps using `LABBY_MCP_HTTP_TOKEN`
-- oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and `LABBY_AUTH_ADMIN_EMAIL`
+- oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_AUTH_ADMIN_EMAIL`, and exactly one complete Google or Authelia provider configuration
+- Authelia support is open beta and pinned in CI to 4.39.10. Register only the exact `/auth/oidc/callback`, `client_secret_basic`, authorization code flow, and PKCE S256 with `openid email profile`; do not grant `offline_access`.
 - `LABBY_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Future SQLite-backed allowlist (web-UI managed) will grant access to additional users.
 - `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` grants access to every member of one or more Google
   Workspace domains, in addition to the admin email and the SQLite-backed allowlist. It is

@@ -54,6 +54,33 @@ pub async fn create_browser_session(
     Ok(session)
 }
 
+pub async fn create_bound_browser_session(
+    state: &AuthState,
+    subject: String,
+    email: Option<String>,
+    binding: crate::types::ProviderBinding,
+) -> Result<BrowserSessionRow, AuthError> {
+    let created_at = now_unix();
+    let session = BrowserSessionRow {
+        session_id: random_token(24)?,
+        subject,
+        email,
+        csrf_token: random_token(18)?,
+        created_at,
+        expires_at: expires_at(
+            created_at,
+            state.config.refresh_token_ttl,
+            &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
+        )?,
+        project_binding: None,
+    };
+    state
+        .store
+        .upsert_bound_browser_session(session.clone(), binding)
+        .await?;
+    Ok(session)
+}
+
 fn secure_cookie_attr(state: &AuthState) -> &'static str {
     if state
         .config

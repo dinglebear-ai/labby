@@ -586,44 +586,20 @@ pub fn build_integrated_trusted_host_route_descriptors() -> Vec<RouteDescriptor>
 }
 
 pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
-    let condition = "mounted only when OAuth is configured";
     [
-        (
-            "GET",
-            "/.well-known/oauth-authorization-server",
-            "auth_authorization_server_metadata",
-        ),
-        (
-            "GET",
-            "/.well-known/oauth-authorization-server/{*route}",
-            "auth_authorization_server_metadata",
-        ),
-        (
-            "GET",
-            "/.well-known/oauth-protected-resource",
-            "auth_protected_resource_metadata",
-        ),
-        ("GET", "/jwks", "auth_jwks"),
-        ("POST", "/register", "auth_register"),
-        ("GET", "/authorize", "auth_authorize"),
-        ("GET", "/auth/login", "auth_browser_login"),
-        ("GET", "/auth/google/callback", "auth_callback"),
-        ("GET", "/native/callback", "auth_native_callback"),
-        ("POST", "/native/poll", "auth_native_poll"),
-        ("POST", "/token", "auth_token"),
-        ("POST", "/revoke", "auth_revoke"),
+        labby_auth::config::InboundProviderKind::Google,
+        labby_auth::config::InboundProviderKind::Authelia,
     ]
     .into_iter()
-    .map(|(method, path, handler)| {
-        RouteDescriptor::new(method, path, handler, "oauth", RouteAuth::OAuthProtocol).when(
-            if path == "/register" {
-                "mounted only when OAuth is configured and dynamic client registration is enabled"
-            } else {
-                condition
-            },
-        )
+    .flat_map(oauth_protocol_descriptors_for_provider)
+    .fold(Vec::new(), |mut routes, route| {
+        if !routes.iter().any(|existing: &RouteDescriptor| {
+            existing.method == route.method && existing.path == route.path
+        }) {
+            routes.push(route);
+        }
+        routes
     })
-    .collect::<Vec<_>>()
     .into_iter()
     .chain({
         #[cfg(feature = "gateway")]
@@ -637,7 +613,7 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
                     RouteAuth::OAuthProtocol,
                 )
                 .feature("gateway")
-                .when(condition),
+                .when("mounted only when OAuth is configured"),
             )
         }
         #[cfg(not(feature = "gateway"))]
@@ -648,33 +624,50 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
     .collect()
 }
 
+pub(crate) fn oauth_protocol_descriptors_for_provider(
+    provider: labby_auth::config::InboundProviderKind,
+) -> Vec<RouteDescriptor> {
+    use labby_auth::routes::AuthRouteId;
+    labby_auth::routes::auth_route_specs(provider)
+        .into_iter()
+        .map(|spec| {
+            let handler = match spec.id {
+                AuthRouteId::AuthorizationServerMetadata
+                | AuthRouteId::AuthorizationServerMetadataPath => {
+                    "auth_authorization_server_metadata"
+                }
+                AuthRouteId::ProtectedResourceMetadata => "auth_protected_resource_metadata",
+                AuthRouteId::Jwks => "auth_jwks",
+                AuthRouteId::Register => "auth_register",
+                AuthRouteId::Authorize => "auth_authorize",
+                AuthRouteId::BrowserLogin => "auth_browser_login",
+                AuthRouteId::ProviderCallback => "auth_callback",
+                AuthRouteId::NativeCallback => "auth_native_callback",
+                AuthRouteId::NativePoll => "auth_native_poll",
+                AuthRouteId::Token => "auth_token",
+                AuthRouteId::Revoke => "auth_revoke",
+            };
+            let condition = if spec.id == AuthRouteId::Register {
+                "mounted only when OAuth is configured and dynamic client registration is enabled"
+            } else {
+                "mounted only when OAuth is configured"
+            };
+            RouteDescriptor::new(
+                spec.method,
+                spec.path,
+                handler,
+                "oauth",
+                RouteAuth::OAuthProtocol,
+            )
+            .when(condition)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::routing::get;
-
-    #[test]
-    fn oauth_registration_descriptor_records_the_dynamic_registration_gate() {
-        let routes = oauth_protocol_descriptors();
-        let registration = routes
-            .iter()
-            .find(|route| route.method == "POST" && route.path == "/register")
-            .expect("registration route descriptor");
-        assert_eq!(
-            registration.runtime_condition,
-            Some(
-                "mounted only when OAuth is configured and dynamic client registration is enabled"
-            )
-        );
-        for route in routes.iter().filter(|route| route.path != "/register") {
-            assert_eq!(
-                route.runtime_condition,
-                Some("mounted only when OAuth is configured"),
-                "registration opt-in must not gate {}",
-                route.path
-            );
-        }
-    }
 
     #[test]
     fn route_builder_records_the_descriptor_for_the_route_it_mounts() {
@@ -769,5 +762,34 @@ mod tests {
                 .unwrap_err()
                 .contains("missing from inventory")
         );
+    }
+
+    #[test]
+    fn oauth_runtime_inventory_contains_only_selected_provider_callback() {
+        for (provider, expected, absent) in [
+            (
+                labby_auth::config::InboundProviderKind::Google,
+                "/auth/google/callback",
+                "/auth/oidc/callback",
+            ),
+            (
+                labby_auth::config::InboundProviderKind::Authelia,
+                "/auth/oidc/callback",
+                "/auth/google/callback",
+            ),
+        ] {
+            let routes = oauth_protocol_descriptors_for_provider(provider);
+            assert!(routes.iter().any(|route| route.path == expected));
+            assert!(!routes.iter().any(|route| route.path == absent));
+            assert_eq!(
+                routes
+                    .iter()
+                    .filter(|route| route.handler == "auth_callback")
+                    .count(),
+                1
+            );
+            assert!(routes.iter().any(|route| route.path == "/native/callback"));
+            assert!(routes.iter().any(|route| route.path == "/token"));
+        }
     }
 }

@@ -69,6 +69,28 @@ pub struct NativeAuthorizationResultRow {
     pub expires_at: i64,
 }
 
+/// Durable identity-provider selection used to invalidate grants when provider
+/// authority changes. The fingerprint is non-secret configuration identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InboundProviderState {
+    pub provider: String,
+    pub issuer: String,
+    pub config_fingerprint: String,
+    pub generation: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProviderSwitchRevocation {
+    pub generation: i64,
+    pub revoked_authorization_requests: u64,
+    pub revoked_authorization_codes: u64,
+    pub revoked_refresh_tokens: u64,
+    pub revoked_browser_sessions: u64,
+    pub revoked_browser_login_states: u64,
+    pub revoked_native_authorization_results: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtectedResourceMetadata {
     pub resource: String,
@@ -107,7 +129,12 @@ pub struct AuthorizeQuery {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackQuery {
     pub state: String,
-    pub code: String,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub iss: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +240,18 @@ pub struct AuthorizationRequestRow {
     pub code_challenge_method: String,
     pub created_at: i64,
     pub expires_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderBinding {
+    pub identity_issuer: String,
+    pub provider_generation: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderBound<T> {
+    pub value: T,
+    pub binding: ProviderBinding,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
