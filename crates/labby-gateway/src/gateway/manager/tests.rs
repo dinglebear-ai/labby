@@ -288,13 +288,14 @@ fn deploy_known_registry() -> Arc<dyn crate::gateway::service_registry::GatewayS
 
 #[tokio::test(flavor = "current_thread")]
 async fn persist_config_offloads_blocking_store_write() {
+    let directory = tempfile::tempdir().expect("tempdir");
     let calls = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(SlowPersistStore {
         calls: Arc::clone(&calls),
         delay: Duration::from_millis(150),
     });
     let manager = GatewayManager::with_store(
-        PathBuf::from("config.toml"),
+        directory.path().join("config.toml"),
         GatewayRuntimeHandle::default(),
         store,
     );

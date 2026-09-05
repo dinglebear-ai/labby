@@ -21,6 +21,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
@@ -38,6 +40,8 @@ use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
+use super::execution_loadout::ExecutionLoadoutStore;
+use super::execution_loadout::PublishedCapabilityCatalog;
 use super::protected_routes::ProtectedRouteIndex;
 pub use super::runtime::GatewayRuntimeHandle;
 use super::service_registry::PublishedServiceRegistryState;
@@ -130,6 +134,16 @@ pub struct GatewayManager {
     /// Scope-keyed single-flight and terminal-failure state for full-fleet MCP discovery.
     pub(super) mcp_catalog_refresh_inflight: Arc<Mutex<std::collections::HashSet<String>>>,
     pub(super) mcp_catalog_refresh_failures: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Per-turn capability selections. This is deliberately separate from
+    /// `GatewayConfig::loadouts`, which configures mounted gateway routes.
+    pub(super) execution_loadouts: Arc<RwLock<ExecutionLoadoutStore>>,
+    #[cfg(test)]
+    pub(super) execution_loadout_fail_persist: Arc<AtomicU8>,
+    #[cfg(test)]
+    pub(super) execution_loadout_activation_hook:
+        Arc<std::sync::Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>>,
+    pub(super) execution_capabilities: Arc<ArcSwap<PublishedCapabilityCatalog>>,
+    pub(super) execution_capability_publication: Arc<std::sync::RwLock<()>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,

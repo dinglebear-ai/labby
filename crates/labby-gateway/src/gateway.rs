@@ -18,6 +18,7 @@ pub mod config_store;
 pub mod discovery;
 mod dispatch;
 mod enrichment;
+pub mod execution_loadout;
 pub mod manager;
 pub mod oauth;
 mod oauth_lifecycle;
@@ -37,6 +38,12 @@ pub use catalog::{ACTIONS, AUTHORITATIVE_RESULT_ACTIONS, requires_authoritative_
 pub use client::{current_gateway_manager, install_gateway_manager, require_gateway_manager};
 pub use config_store::GatewayConfigStore;
 pub use dispatch::{dispatch, dispatch_with_manager, dispatch_with_manager_scoped};
+pub use execution_loadout::{
+    CapabilityCatalogSnapshot, CapabilityFamily, CapabilityRef, ExecutionLoadoutActivation,
+    ExecutionLoadoutContext, ExecutionLoadoutCreate, ExecutionLoadoutDraft, ExecutionLoadoutError,
+    ExecutionLoadoutPatch, ExecutionLoadoutPreview, ExecutionLoadoutRevision,
+    ExecutionLoadoutSummary, ExecutionPrincipal, ResolutionStatus,
+};
 pub use manager::{
     LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,
     ProjectRoutePublicationError, PublishedLoadoutMcpCatalogSnapshot, PublishedLoadoutService,

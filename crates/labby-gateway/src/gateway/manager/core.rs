@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
@@ -192,6 +194,9 @@ impl GatewayManager {
         store: Arc<dyn GatewayConfigStore>,
     ) -> Result<Self, ToolError> {
         let registry: Arc<dyn GatewayServiceRegistry> = Arc::new(EmptyServiceRegistry);
+        let execution_loadouts =
+            super::super::execution_loadout::ExecutionLoadoutStore::load(&path)
+                .map_err(ToolError::from)?;
         Ok(Self {
             path,
             store,
@@ -204,6 +209,15 @@ impl GatewayManager {
             config_mutation: Arc::new(Mutex::new(())),
             mcp_catalog_refresh_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             mcp_catalog_refresh_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            execution_loadouts: Arc::new(RwLock::new(execution_loadouts)),
+            #[cfg(test)]
+            execution_loadout_fail_persist: Arc::new(AtomicU8::new(0)),
+            #[cfg(test)]
+            execution_loadout_activation_hook: Arc::new(std::sync::Mutex::new(None)),
+            execution_capabilities: Arc::new(ArcSwap::from_pointee(
+                super::super::execution_loadout::PublishedCapabilityCatalog::default(),
+            )),
+            execution_capability_publication: Arc::new(std::sync::RwLock::new(())),
             code_mode_app_state: CodeModeAppState::default(),
             lazy_pool_init: Arc::new(Mutex::new(())),
             notifier: None,
