@@ -10,6 +10,40 @@ class MemoryKeyStore {
   async clear() { this.value = undefined; }
 }
 
+class DelayedKeyStore extends MemoryKeyStore {
+  constructor() {
+    super();
+    this.blockNextSet = false;
+    this.blockNextGet = false;
+  }
+  async get() {
+    if (this.blockNextGet) {
+      this.blockNextGet = false;
+      this.markGetEntered();
+      await this.getGate;
+    }
+    return super.get();
+  }
+  async set(value) {
+    if (this.blockNextSet) {
+      this.blockNextSet = false;
+      this.markSetEntered();
+      await this.setGate;
+    }
+    return super.set(value);
+  }
+  delayNextSet() {
+    this.blockNextSet = true;
+    this.setGate = new Promise((resolve) => { this.releaseSet = resolve; });
+    this.setEntered = new Promise((resolve) => { this.markSetEntered = resolve; });
+  }
+  delayNextGet() {
+    this.blockNextGet = true;
+    this.getGate = new Promise((resolve) => { this.releaseGet = resolve; });
+    this.getEntered = new Promise((resolve) => { this.markGetEntered = resolve; });
+  }
+}
+
 class MemoryStorage {
   constructor(initial = {}) { this.values = {...initial}; }
   async get(keys) {
@@ -70,6 +104,39 @@ test("revocation erases credential and association before re-pair", async () => 
   await state.identity.revoke();
   assert.equal(state.keyStore.value, undefined);
   assert.deepEqual(state.storage.values, {});
+  const replacement = await state.identity.ensure();
+  assert.notEqual(replacement.publicKey, prior.publicKey);
+});
+
+test("revocation waits for racing identity creation and erases its committed key", async () => {
+  const keyStore = new DelayedKeyStore();
+  const state = manager(keyStore, new MemoryStorage({browserId: "revoked"}));
+  keyStore.delayNextSet();
+  const ensuring = state.identity.ensure();
+  await keyStore.setEntered;
+  const revoking = state.identity.revoke();
+  keyStore.releaseSet();
+  const created = await ensuring;
+  await revoking;
+
+  assert.equal(keyStore.value, undefined);
+  assert.deepEqual(state.storage.values, {});
+  assert.notEqual((await state.identity.ensure()).publicKey, created.publicKey);
+});
+
+test("revocation waits for a racing sign and prevents credential reuse afterward", async () => {
+  const keyStore = new DelayedKeyStore();
+  const state = manager(keyStore, new MemoryStorage({browserId: "revoked"}));
+  const prior = await state.identity.ensure();
+  keyStore.delayNextGet();
+  const signing = state.identity.sign(Buffer.from("nonce").toString("base64url"));
+  await keyStore.getEntered;
+  const revoking = state.identity.revoke();
+  keyStore.releaseGet();
+  assert.ok((await signing).byteLength > 0);
+  await revoking;
+
+  assert.equal(keyStore.value, undefined);
   const replacement = await state.identity.ensure();
   assert.notEqual(replacement.publicKey, prior.publicKey);
 });

@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -45,12 +47,16 @@ struct CallGuard {
     bridge: BrowserBridge,
     call_id: String,
     generation: Uuid,
-    audit_id: String,
+    audit_id: Option<String>,
     started: Instant,
     armed: bool,
 }
 
 impl CallGuard {
+    fn set_audit_id(&mut self, audit_id: String) {
+        self.audit_id = Some(audit_id);
+    }
+
     fn disarm(&mut self) {
         self.armed = false;
     }
@@ -68,10 +74,19 @@ impl Drop for CallGuard {
                 "cancelled browser call cleanup failed"
             );
         }
+        let Some(audit_id) = self.audit_id.clone() else {
+            return;
+        };
         let store = self.bridge.store.clone();
-        let audit_id = self.audit_id.clone();
         let duration = i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX);
-        tokio::spawn(async move {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(
+                audit_id,
+                "cancelled browser call audit cleanup deferred until process restart"
+            );
+            return;
+        };
+        runtime.spawn(async move {
             if let Err(error) = store.abandon_invocation(&audit_id, duration).await {
                 tracing::warn!(
                     audit_id,
@@ -81,6 +96,14 @@ impl Drop for CallGuard {
             }
         });
     }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct CallTestHooks {
+    pause_after_pending: AtomicBool,
+    pending_inserted: tokio::sync::Notify,
+    resume_after_pending: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -95,6 +118,8 @@ pub struct BrowserBridge {
     store: Store,
     state: Arc<Mutex<HubState>>,
     authority: Arc<AsyncMutex<()>>,
+    #[cfg(test)]
+    call_test_hooks: Arc<CallTestHooks>,
 }
 
 impl BrowserBridge {
@@ -104,6 +129,8 @@ impl BrowserBridge {
             store: Store::open(path).await?,
             state: Arc::new(Mutex::new(HubState::default())),
             authority: Arc::new(AsyncMutex::new(())),
+            #[cfg(test)]
+            call_test_hooks: Arc::new(CallTestHooks::default()),
         })
     }
 
@@ -113,6 +140,8 @@ impl BrowserBridge {
             store: Store::memory().await?,
             state: Arc::new(Mutex::new(HubState::default())),
             authority: Arc::new(AsyncMutex::new(())),
+            #[cfg(test)]
+            call_test_hooks: Arc::new(CallTestHooks::default()),
         })
     }
 
@@ -331,6 +360,25 @@ impl BrowserBridge {
             );
             (sender, generation, catalog_fingerprint)
         };
+        // Install cancellation cleanup before any await that follows pending
+        // publication. The audit id is attached only after persistence starts.
+        let mut guard = CallGuard {
+            bridge: self.clone(),
+            call_id: call_id.clone(),
+            generation,
+            audit_id: None,
+            started,
+            armed: true,
+        };
+        #[cfg(test)]
+        if self
+            .call_test_hooks
+            .pause_after_pending
+            .swap(false, Ordering::SeqCst)
+        {
+            self.call_test_hooks.pending_inserted.notify_one();
+            self.call_test_hooks.resume_after_pending.notified().await;
+        }
         let event = BrowserEvent(BrowserEnvelope::new(
             None,
             BrowserMessage::ToolCall {
@@ -352,25 +400,8 @@ impl BrowserBridge {
                 &tool_name,
                 catalog_revision,
             )
-            .await
-            .inspect_err(|error| {
-                if let Err(cleanup) = self.remove_pending(&call_id, generation) {
-                    tracing::warn!(
-                        call_id,
-                        audit_error_kind = error.kind(),
-                        cleanup_error_kind = cleanup.kind(),
-                        "browser pending-call cleanup failed after audit start failure"
-                    );
-                }
-            })?;
-        let mut guard = CallGuard {
-            bridge: self.clone(),
-            call_id: call_id.clone(),
-            generation,
-            audit_id: audit_id.clone(),
-            started,
-            armed: true,
-        };
+            .await?;
+        guard.set_audit_id(audit_id.clone());
         if sender.send(event).await.is_err() {
             self.remove_pending(&call_id, generation)?;
             let result = Err(BrowserError::BrowserOffline);
@@ -679,6 +710,80 @@ mod tests {
         let cancellation = connection.receiver.recv().await.unwrap().0;
         assert_eq!(cancellation.message, BrowserMessage::ToolCancel { call_id });
         assert_eq!(task.await.unwrap().unwrap_err().kind(), "tool_timeout");
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_audit_store_is_blocked_reclaims_pending_capacity() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let connection = pair_and_authenticate(&bridge).await;
+        enable_tool(
+            &bridge,
+            &connection.browser_id,
+            &connection.connection_id,
+            1,
+            1,
+            "slow",
+        )
+        .await;
+        bridge
+            .call_test_hooks
+            .pause_after_pending
+            .store(true, Ordering::SeqCst);
+        let task_bridge = bridge.clone();
+        let browser_id = connection.browser_id.clone();
+        let task = tokio::spawn(async move {
+            task_bridge
+                .call(
+                    &browser_id,
+                    1,
+                    "doc".into(),
+                    1,
+                    "slow".into(),
+                    Value::Null,
+                    Some(Duration::from_secs(1)),
+                )
+                .await
+        });
+
+        bridge.call_test_hooks.pending_inserted.notified().await;
+        let store_permit = bridge.store().hold_executor_for_test().await;
+        bridge.call_test_hooks.resume_after_pending.notify_one();
+        tokio::task::yield_now().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(bridge.lock_state().unwrap().pending.is_empty());
+        drop(store_permit);
+    }
+
+    #[test]
+    fn dropping_armed_call_guard_without_runtime_does_not_panic() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let bridge = runtime.block_on(BrowserBridge::memory()).unwrap();
+        let generation = Uuid::new_v4();
+        let (reply, _wait) = oneshot::channel();
+        bridge.lock_state().unwrap().pending.insert(
+            "call".into(),
+            PendingCall {
+                browser_id: "browser".into(),
+                generation,
+                reply,
+            },
+        );
+        let guard = CallGuard {
+            bridge: bridge.clone(),
+            call_id: "call".into(),
+            generation,
+            audit_id: Some("audit".into()),
+            started: Instant::now(),
+            armed: true,
+        };
+        drop(runtime);
+
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard))).is_ok());
+        assert!(bridge.lock_state().unwrap().pending.is_empty());
     }
 
     #[tokio::test]

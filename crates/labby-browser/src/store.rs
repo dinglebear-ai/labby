@@ -135,11 +135,19 @@ pub struct Store {
 }
 
 struct BlockingStore {
-    path: Arc<PathBuf>,
+    path: PathBuf,
     connection: Mutex<Connection>,
 }
 
 impl Store {
+    #[cfg(test)]
+    pub(crate) async fn hold_executor_for_test(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .expect("browser store test executor remains open")
+    }
+
     /// Open a database and apply the transactional browser schema.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
@@ -347,7 +355,7 @@ impl BlockingStore {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         migrate(&connection)?;
         Ok(Self {
-            path: Arc::new(path),
+            path,
             connection: Mutex::new(connection),
         })
     }
@@ -358,7 +366,7 @@ impl BlockingStore {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&connection)?;
         Ok(Self {
-            path: Arc::new(PathBuf::from(":memory:")),
+            path: PathBuf::from(":memory:"),
             connection: Mutex::new(connection),
         })
     }

@@ -39,12 +39,12 @@ export class IndexedDbIdentityStore {
     }
   }
 
-  /** @param {unknown} value */
-  async set(value) {
+  /** @param {(store: IDBObjectStore) => void} update */
+  async write(update) {
     const database = await this.database();
     try {
       const transaction = database.transaction(STORE_NAME, "readwrite");
-      transaction.objectStore(STORE_NAME).put(value, RECORD_KEY);
+      update(transaction.objectStore(STORE_NAME));
       await new Promise((resolve, reject) => {
         transaction.oncomplete = resolve;
         transaction.onerror = () => reject(transaction.error || new Error("identity_store_failed"));
@@ -55,19 +55,13 @@ export class IndexedDbIdentityStore {
     }
   }
 
-  async clear() {
-    const database = await this.database();
-    try {
-      const transaction = database.transaction(STORE_NAME, "readwrite");
-      transaction.objectStore(STORE_NAME).delete(RECORD_KEY);
-      await new Promise((resolve, reject) => {
-        transaction.oncomplete = resolve;
-        transaction.onerror = () => reject(transaction.error || new Error("identity_store_failed"));
-        transaction.onabort = () => reject(transaction.error || new Error("identity_store_aborted"));
-      });
-    } finally {
-      database.close();
-    }
+  /** @param {unknown} value */
+  set(value) {
+    return this.write((store) => store.put(value, RECORD_KEY));
+  }
+
+  clear() {
+    return this.write((store) => store.delete(RECORD_KEY));
   }
 }
 
@@ -92,8 +86,21 @@ function validRecord(value) {
  * @param {{keyStore: {get(): Promise<unknown>, set(value: unknown): Promise<void>, clear(): Promise<void>}, storage: chrome.storage.StorageArea, subtle: SubtleCrypto}} dependencies
  */
 export function createIdentityManager({keyStore, storage, subtle}) {
-  /** @type {Promise<any> | undefined} */
-  let pendingEnsure;
+  /**
+   * Every credential operation joins this queue before touching persistent
+   * state. In particular, revocation cannot clear the store while an earlier
+   * key creation is still able to commit afterward.
+   * @type {Promise<void>}
+   */
+  let lifecycle = Promise.resolve();
+
+  /** @template T @param {() => Promise<T>} operation @returns {Promise<T>} */
+  function serialized(operation) {
+    const result = lifecycle.then(operation, operation);
+    lifecycle = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
   async function clearAssociation() {
     await storage.remove([...LEGACY_KEYS, ...ASSOCIATION_KEYS]);
   }
@@ -126,22 +133,22 @@ export function createIdentityManager({keyStore, storage, subtle}) {
   }
 
   function ensure() {
-    if (!pendingEnsure) {
-      pendingEnsure = ensureOnce().finally(() => { pendingEnsure = undefined; });
-    }
-    return pendingEnsure;
+    return serialized(ensureOnce);
   }
 
   /** @param {string} nonce */
-  async function sign(nonce) {
-    const current = await ensure();
-    return subtle.sign("Ed25519", current.privateKey, decode(nonce));
+  function sign(nonce) {
+    return serialized(async () => {
+      const current = await ensureOnce();
+      return subtle.sign("Ed25519", current.privateKey, decode(nonce));
+    });
   }
 
-  async function revoke() {
-    await pendingEnsure?.catch(() => undefined);
-    await keyStore.clear();
-    await clearAssociation();
+  function revoke() {
+    return serialized(async () => {
+      await keyStore.clear();
+      await clearAssociation();
+    });
   }
 
   return {ensure, sign, revoke};
