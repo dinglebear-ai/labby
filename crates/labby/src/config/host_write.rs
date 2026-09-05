@@ -224,16 +224,16 @@ fn no_follow(options: &mut OpenOptions) {
     }
 }
 
+#[cfg(unix)]
 pub(super) fn sync_parent(parent: &Path) -> Result<(), HostWriteError> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0200_0000); // FILE_FLAG_BACKUP_SEMANTICS
-    }
-    options
-        .open(parent)
-        .and_then(|dir| dir.sync_all())
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
         .map_err(|_| HostWriteError::Durability)
+}
+
+#[cfg(not(unix))]
+pub(super) fn sync_parent(_parent: &Path) -> Result<(), HostWriteError> {
+    // Windows does not expose a reliable directory fsync equivalent. The
+    // temporary file itself is flushed before the atomic replacement above.
+    Ok(())
 }
