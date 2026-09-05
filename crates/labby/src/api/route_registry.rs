@@ -434,6 +434,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
 
     routes.extend(crate::api::services::oauth_relay::public_descriptors());
     routes.extend(prefixed(
+        "/v1/integration",
+        crate::api::services::integration_identity::descriptors(),
+    ));
+    routes.extend(prefixed(
         "/v1/oauth/relay",
         crate::api::services::oauth_relay::admin_descriptors(),
     ));
@@ -562,7 +566,13 @@ pub fn build_integrated_trusted_host_route_descriptors() -> Vec<RouteDescriptor>
         .filter(|route| {
             !matches!(
                 route.mount,
-                "oauth" | "dev" | "mcp" | "oauth_relay" | "protected_mcp" | "upstream_oauth"
+                "oauth"
+                    | "dev"
+                    | "mcp"
+                    | "oauth_relay"
+                    | "protected_mcp"
+                    | "upstream_oauth"
+                    | "integration"
             ) && !matches!(
                 route.handler,
                 "labby_app_host_js"

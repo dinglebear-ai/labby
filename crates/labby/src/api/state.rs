@@ -15,6 +15,8 @@ const DEFAULT_PROTECTED_MCP_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// Application state passed to every axum handler via `State<AppState>`.
 #[derive(Clone)]
 pub struct AppState {
+    /// Loaded once under the daemon installation lifecycle lock; never request-time I/O.
+    pub(crate) installation_id: Option<Arc<str>>,
     /// Pre-built service+action catalog for discovery endpoints.
     pub catalog: Arc<Catalog>,
     /// Tool registry with dispatch functions for each service.
@@ -152,6 +154,7 @@ impl AppState {
         let clients = Arc::new(ServiceClients::from_env());
         let protected_mcp_http_client = build_protected_mcp_http_client();
         Self {
+            installation_id: None,
             catalog,
             registry: Arc::new(registry),
             clients,

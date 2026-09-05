@@ -1646,6 +1646,27 @@
     "notes": "upstreams"
   },
   {
+    "method": "GET",
+    "path": "/v1/integration/identity",
+    "aliases": [],
+    "surface": "api",
+    "handler_group": "integration",
+    "handler_identity": "integration_identity",
+    "feature": null,
+    "runtime_condition": "mounted only with conventional API credentials, initialized installation identity, and no trusted-host integration",
+    "auth_required": true,
+    "bearer_only": false,
+    "bootstrap_proof": false,
+    "session_cookie_allowed": true,
+    "csrf_required": false,
+    "host_validation": false,
+    "master_only": true,
+    "cache_posture": "private, no-store",
+    "failure_disclosure": "standard",
+    "side_effects": "none_expected",
+    "notes": "integration identity"
+  },
+  {
     "method": "POST",
     "path": "/v1/jobs",
     "aliases": [],
