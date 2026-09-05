@@ -928,9 +928,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
 
 /* Icon-led actions stay visually compact. Their text remains in the accessibility
    tree and is also exposed as a native tooltip by the shared control primitives. */
-[data-slot='button']:has(svg):not(:has(svg.animate-spin)),
-[data-slot='dropdown-menu-trigger']:has(svg):not(:has(svg.animate-spin)),
-[data-icon-text-control]:has(svg):not(:has(svg.animate-spin)) {
+[data-slot='button']:has(svg),
+[data-slot='dropdown-menu-trigger']:has(svg),
+[data-icon-text-control]:has(svg) {
   width: var(--aurora-icon-control-size, 2.25rem) !important;
   min-width: var(--aurora-icon-control-size, 2.25rem) !important;
   max-width: var(--aurora-icon-control-size, 2.25rem) !important;
@@ -940,9 +940,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   font-size: 0 !important;
 }
 
-[data-slot='button']:has(svg):not(:has(svg.animate-spin)) > svg,
-[data-slot='dropdown-menu-trigger']:has(svg):not(:has(svg.animate-spin)) > svg,
-[data-icon-text-control]:has(svg):not(:has(svg.animate-spin)) > svg {
+[data-slot='button']:has(svg) > svg,
+[data-slot='dropdown-menu-trigger']:has(svg) > svg,
+[data-icon-text-control]:has(svg) > svg {
   width: 1rem;
   height: 1rem;
 }
@@ -977,9 +977,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-actioncluster] button {
     min-width: 40px;
   }
-  [data-slot='button']:has(svg):not(:has(svg.animate-spin)),
-  [data-slot='dropdown-menu-trigger']:has(svg):not(:has(svg.animate-spin)),
-  [data-icon-text-control]:has(svg):not(:has(svg.animate-spin)) {
+  [data-slot='button']:has(svg),
+  [data-slot='dropdown-menu-trigger']:has(svg),
+  [data-icon-text-control]:has(svg) {
     --aurora-icon-control-size: 2.75rem;
   }
   [data-main-scroll] {
@@ -1014,14 +1014,10 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
     display: block;
     border: 0;
     background: rgba(2, 10, 17, 0.7);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 180ms ease-out;
-    backdrop-filter: blur(3px);
-  }
-  [data-mobile-nav-backdrop][data-open='1'] {
     opacity: 1;
     pointer-events: auto;
+    transition: opacity 180ms ease-out;
+    backdrop-filter: blur(3px);
   }
   aside[data-console-sidebar] nav {
     padding-inline: 8px !important;
@@ -1083,10 +1079,6 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
     height: 44px !important;
     justify-content: center;
     padding: 0 !important;
-  }
-  [data-search-label],
-  [data-search-notification] {
-    display: none !important;
   }
   [data-crumbleaf] {
     max-width: 30vw;

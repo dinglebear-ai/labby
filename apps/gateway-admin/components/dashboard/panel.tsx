@@ -29,7 +29,6 @@ export function DashboardPanel({
   return (
     <div
       data-hovercard="1"
-      data-dashboard-panel="1"
       className={cn('min-w-0 overflow-hidden', className)}
       style={{
         borderRadius: 'var(--radius-2)',

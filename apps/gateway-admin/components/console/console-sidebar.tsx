@@ -769,7 +769,6 @@ export function ConsoleSidebar() {
     {mobileNavOpen ? <button
       type="button"
       data-mobile-nav-backdrop="1"
-      data-open="1"
       aria-label="Close navigation"
       onClick={() => setMobileNavOpen(false)}
       tabIndex={-1}
@@ -781,6 +780,7 @@ export function ConsoleSidebar() {
       data-mobile-open={mobileNavOpen ? '1' : '0'}
       aria-hidden={isMobile && !mobileNavOpen ? true : undefined}
       aria-modal={isMobile && mobileNavOpen ? true : undefined}
+      aria-label={isMobile && mobileNavOpen ? 'Navigation' : undefined}
       role={isMobile && mobileNavOpen ? 'dialog' : undefined}
       inert={isMobile && !mobileNavOpen ? true : undefined}
       style={{

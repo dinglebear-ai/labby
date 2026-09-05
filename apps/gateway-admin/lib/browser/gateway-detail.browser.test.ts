@@ -326,6 +326,12 @@ test('icon-led actions are square, touch-sized, and retain accessible labels', {
   t.after(async () => { await browser.close() })
 
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await page.route('**/v1/depot/**', async () => new Promise(() => undefined))
+  await page.goto(`${baseUrl}/library/`, { waitUntil: 'domcontentloaded' })
+  const loadingRefresh = page.getByRole('button', { name: 'Refresh', exact: true })
+  await assert.doesNotReject(() => loadingRefresh.waitFor())
+  assert.equal(await loadingRefresh.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+  await page.unroute('**/v1/depot/**')
   await page.goto(`${baseUrl}/library/`, { waitUntil: 'networkidle' })
 
   const discover = page.getByRole('link', { name: 'Discover', exact: true })
@@ -427,6 +433,7 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44)
     await menu.click()
     await assert.doesNotReject(() => page.locator('aside[data-mobile-open="1"]').waitFor())
+    await assert.doesNotReject(() => page.getByRole('dialog', { name: 'Navigation' }).waitFor())
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.contains(document.activeElement))
     await page.keyboard.press('Escape')
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')

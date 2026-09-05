@@ -43,7 +43,6 @@ export function ConsoleHero({
 }) {
   return (
     <div
-      data-console-hero="1"
       style={{
         borderRadius: 'var(--radius-3)',
         border:

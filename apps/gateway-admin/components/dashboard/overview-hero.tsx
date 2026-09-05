@@ -267,7 +267,6 @@ export function OverviewHero({
 
   return (
     <div
-      data-console-hero="1"
       style={{
         borderRadius: 'var(--radius-3)',
         border:
