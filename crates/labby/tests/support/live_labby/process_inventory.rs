@@ -23,10 +23,23 @@ impl From<String> for Failure {
 pub(super) fn read(deadline: Instant) -> Result<String, Failure> {
     let mut command = Command::new("/bin/ps");
     command.args(["-axo", "pid=,pgid=,stat="]);
-    read_command(&mut command, deadline)
+    read_command(&mut command, deadline, OUTPUT_CAP)
 }
 
-fn read_command(command: &mut Command, deadline: Instant) -> Result<String, Failure> {
+pub(super) fn start_identity(pid: u32, deadline: Instant) -> Result<String, Failure> {
+    let mut command = Command::new("/bin/ps");
+    command
+        .env_clear()
+        .env("LC_ALL", "C")
+        .args(["-o", "lstart=", "-p", &pid.to_string()]);
+    read_command(&mut command, deadline, 128)
+}
+
+fn read_command(
+    command: &mut Command,
+    deadline: Instant,
+    output_cap: usize,
+) -> Result<String, Failure> {
     use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
     let read_deadline = deadline
         .checked_sub(REAP_RESERVE)
@@ -64,7 +77,7 @@ fn read_command(command: &mut Command, deadline: Instant) -> Result<String, Fail
                     }
                 }
                 Ok(length) => {
-                    if output.len() + length > OUTPUT_CAP {
+                    if output.len() + length > output_cap {
                         return Err("process inventory output cap exceeded".into());
                     }
                     output.extend_from_slice(&buffer[..length]);
@@ -79,16 +92,18 @@ fn read_command(command: &mut Command, deadline: Instant) -> Result<String, Fail
     })();
     // This is the directly spawned native ps process, not a shell or arbitrary
     // process tree. Never recurse through group inventory to settle inventory.
-    if outcome.is_err() {
-        drop(child.kill());
-    }
+    let kill_error = outcome.is_err().then(|| child.kill().err()).flatten();
     loop {
         match child.try_wait() {
             Ok(Some(_)) => return outcome.map_err(Failure::from),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
             result => {
                 return Err(Failure {
-                    message: format!("inventory child could not settle: {result:?}"),
+                    message: settlement_failure_message(
+                        outcome.as_ref().err().map(String::as_str),
+                        kill_error.as_ref().map(ToString::to_string).as_deref(),
+                        &format!("{result:?}"),
+                    ),
                     unsettled: Some(child),
                 });
             }
@@ -96,9 +111,38 @@ fn read_command(command: &mut Command, deadline: Instant) -> Result<String, Fail
     }
 }
 
+fn settlement_failure_message(
+    primary: Option<&str>,
+    kill: Option<&str>,
+    settlement: &str,
+) -> String {
+    let bounded = |detail: &str| detail.chars().take(128).collect::<String>();
+    format!(
+        "inventory child could not settle: {}; operation: {}; kill: {}",
+        bounded(settlement),
+        bounded(primary.unwrap_or("completed")),
+        bounded(kill.unwrap_or("no error")),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settlement_diagnostics_preserve_each_bounded_failure() {
+        let primary = format!("deadline exhausted {}", "界".repeat(1024));
+        let kill = format!("permission denied {}", "y".repeat(1024));
+        let settlement = format!("still running {}", "z".repeat(1024));
+        let message = settlement_failure_message(Some(&primary), Some(&kill), &settlement);
+        assert!(message.contains("deadline exhausted"));
+        assert!(message.contains("permission denied"));
+        assert!(message.contains("still running"));
+        assert!(message.chars().count() < 512);
+        let message = settlement_failure_message(None, None, "poll failed");
+        assert!(message.contains("operation: completed"));
+        assert!(message.contains("kill: no error"));
+    }
 
     #[test]
     fn inventory_native_probe_is_bounded_and_parseable() {
@@ -111,14 +155,26 @@ mod tests {
         let started = Instant::now();
         let mut sleeper = Command::new("/bin/sleep");
         sleeper.arg("5");
-        let failure = read_command(&mut sleeper, started + Duration::from_millis(250)).unwrap_err();
-        assert!(failure.message.contains("deadline"));
-        assert!(failure.unsettled.is_none());
-        assert!(started.elapsed() < Duration::from_secs(1));
+        let failure = read_command(
+            &mut sleeper,
+            started + Duration::from_millis(250),
+            OUTPUT_CAP,
+        )
+        .unwrap_err();
+        assert!(failure.message.contains("deadline"), "{failure:?}");
+        assert!(failure.unsettled.is_none(), "{failure:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "elapsed={:?}",
+            started.elapsed()
+        );
         let mut producer = Command::new("/usr/bin/yes");
+        // Exercise the shared cap boundary without requiring a minimum process
+        // throughput under load. Native inventory retains its 1 MiB cap.
+        assert_eq!(OUTPUT_CAP, 1024 * 1024);
         let failure =
-            read_command(&mut producer, Instant::now() + Duration::from_secs(1)).unwrap_err();
-        assert!(failure.message.contains("output cap"));
-        assert!(failure.unsettled.is_none());
+            read_command(&mut producer, Instant::now() + Duration::from_secs(1), 128).unwrap_err();
+        assert!(failure.message.contains("output cap"), "{failure:?}");
+        assert!(failure.unsettled.is_none(), "{failure:?}");
     }
 }

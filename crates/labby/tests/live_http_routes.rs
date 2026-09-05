@@ -22,7 +22,7 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 
 #[tokio::test]
 async fn every_registered_route_is_live_or_declared_runtime_conditional() {
-    let guard = LiveLabbyBuilder::new()
+    let mut guard = LiveLabbyBuilder::new()
         .start()
         .await
         .expect("start live Labby");

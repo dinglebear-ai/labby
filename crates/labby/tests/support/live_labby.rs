@@ -23,6 +23,18 @@ const CLEANUP_MAX_FILES: usize = 4_096;
 const CLEANUP_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const CLEANUP_MAX_DEPTH: usize = 32;
 
+#[cfg(unix)]
+#[path = "live_labby/guardian.rs"]
+mod guardian;
+
+#[cfg(unix)]
+#[path = "live_labby/process_inventory.rs"]
+mod process_inventory;
+
+#[cfg(unix)]
+#[path = "live_labby/process_identity.rs"]
+mod process_identity;
+
 /// OS runtime inputs only; never inherit credentials, proxies, or user configuration.
 fn isolated_runtime_env() -> Vec<(&'static str, OsString)> {
     let mut values = vec![("PATH", std::env::var_os("PATH").unwrap_or_default())];
@@ -36,14 +48,6 @@ fn isolated_runtime_env() -> Vec<(&'static str, OsString)> {
     }
     values
 }
-
-#[cfg(unix)]
-#[path = "live_labby/guardian.rs"]
-mod guardian;
-
-#[cfg(unix)]
-#[path = "live_labby/process_inventory.rs"]
-mod process_inventory;
 
 fn labby_binary() -> PathBuf {
     std::env::var_os("LABBY_E2E_BINARY")
@@ -159,7 +163,12 @@ pub(crate) struct LiveLabbyBuilder {
     config: Option<String>,
     fail_evidence_writes: bool,
     existing_root: Option<PathBuf>,
+    identity_probe: Option<IdentityProbe>,
 }
+
+type IdentityProbe = std::sync::Arc<
+    dyn Fn(u32, SocketAddr, Option<&Path>, Instant) -> Result<String, String> + Send + Sync,
+>;
 
 impl Default for LiveLabbyBuilder {
     fn default() -> Self {
@@ -173,6 +182,7 @@ impl Default for LiveLabbyBuilder {
             config: None,
             fail_evidence_writes: false,
             existing_root: None,
+            identity_probe: None,
         }
     }
 }
@@ -316,6 +326,7 @@ impl LiveLabbyBuilder {
                 temp: temp.clone(),
                 args: self.args.clone(),
                 extra_env: self.extra_env.clone(),
+                identity_probe: self.identity_probe.clone(),
             };
             // The ownership nonce is persisted by design, so it must never double as
             // a credential canary. The credential is independent and never serialized.
@@ -348,32 +359,47 @@ impl LiveLabbyBuilder {
                 .envs(isolated_runtime_env())
                 .envs(self.extra_env);
             #[cfg(unix)]
-            let (mut command, guardian_registry) = guardian::supervise(command)?;
+            let (mut command, guardian_admission) = guardian::supervise(command)?;
             command
                 .stdin(Stdio::null())
                 .stdout(stdout)
                 .stderr(stderr)
                 .kill_on_drop(true);
             configure_process_group(&mut command);
-            let child = command.spawn().map_err(|error| error.to_string())?;
+            let readiness_expires = Instant::now() + self.readiness_deadline;
+            let mut child = command.spawn().map_err(|error| error.to_string())?;
+            let (start_identity, owned_job) = capture_spawned_child_identity(
+                &mut child,
+                address,
+                self.identity_probe.as_ref(),
+                #[cfg(unix)]
+                guardian_admission.as_deref(),
+                readiness_expires,
+            )?;
             #[cfg(windows)]
-            let windows_job = child
-                .id()
-                .map(labby_winjob::JobObject::assign)
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            let windows_job = owned_job;
+            #[cfg(not(windows))]
+            let _ = owned_job;
             ledger.pid = child.id();
-            ledger.process_start_identity = ledger.pid.map(process_start_identity);
+            ledger.process_start_identity = Some(start_identity);
             ledger.daemon_pid = ledger.pid;
             ledger.daemon_process_start_identity = ledger.process_start_identity.clone();
             #[cfg(unix)]
-            if guardian_registry.is_some() {
+            if guardian_admission.is_some() {
                 ledger.guardian_pid = ledger.pid;
                 ledger.daemon_pid = None;
                 ledger.daemon_process_start_identity = None;
             }
             ledger.process_group = ledger.pid.and_then(|pid| i32::try_from(pid).ok());
-            write_ledger(&manifest_path, &ledger)?;
+            if let Err(error) = write_ledger(&manifest_path, &ledger) {
+                #[cfg(windows)]
+                let cleanup_job = windows_job;
+                #[cfg(not(windows))]
+                let cleanup_job = unassigned_cleanup_job();
+                let mut failures = vec![format!("daemon ownership publication failed: {error}")];
+                terminate_and_reap_owned_child(&mut child, cleanup_job, &mut failures);
+                return Err(failures.join("; "));
+            }
             evidence.push(
                 EvidenceKind::Process,
                 format!("spawned pid {:?}", child.id()),
@@ -406,10 +432,10 @@ impl LiveLabbyBuilder {
                 #[cfg(windows)]
                 windows_job,
                 #[cfg(unix)]
-                guardian_registry,
+                guardian_admission,
                 finalized: false,
             };
-            if let Err(error) = guard.wait_ready(self.readiness_deadline).await {
+            if let Err(error) = guard.wait_ready(readiness_expires).await {
                 guard.primary_failure = Some(error.clone());
                 let diagnostics = guard.diagnostics(Some(&error));
                 drop(guard.finish_with_deadline(Duration::from_secs(5)).await);
@@ -449,12 +475,13 @@ pub(crate) struct LiveLabbyGuard {
     #[cfg(windows)]
     windows_job: Option<labby_winjob::JobObject>,
     #[cfg(unix)]
-    guardian_registry: Option<PathBuf>,
+    guardian_admission: Option<PathBuf>,
     finalized: bool,
 }
 
 #[derive(Clone)]
 struct RestartRecipe {
+    identity_probe: Option<IdentityProbe>,
     address: SocketAddr,
     home: PathBuf,
     labby_home: PathBuf,
@@ -512,42 +539,57 @@ impl LiveLabbyGuard {
             .envs(isolated_runtime_env())
             .envs(recipe.extra_env.clone());
         #[cfg(unix)]
-        let (mut command, guardian_registry) = guardian::supervise(command)?;
+        let (mut command, guardian_admission) = guardian::supervise(command)?;
         command
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)
             .kill_on_drop(true);
         configure_process_group(&mut command);
-        let child = command.spawn().map_err(|error| error.to_string())?;
+        let readiness_expires = Instant::now() + DEFAULT_DEADLINE;
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
+        let (start_identity, owned_job) = capture_spawned_child_identity(
+            &mut child,
+            recipe.address,
+            recipe.identity_probe.as_ref(),
+            #[cfg(unix)]
+            guardian_admission.as_deref(),
+            readiness_expires,
+        )?;
         #[cfg(windows)]
         {
-            self.windows_job = child
-                .id()
-                .map(labby_winjob::JobObject::assign)
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            self.windows_job = owned_job;
         }
+        #[cfg(not(windows))]
+        let _ = owned_job;
         self.ledger.generation += 1;
         self.ledger.pid = child.id();
-        self.ledger.process_start_identity = self.ledger.pid.map(process_start_identity);
+        self.ledger.process_start_identity = Some(start_identity);
         self.ledger.guardian_pid = None;
         self.ledger.daemon_pid = self.ledger.pid;
         self.ledger.daemon_process_start_identity = self.ledger.process_start_identity.clone();
         #[cfg(unix)]
         {
-            self.guardian_registry = guardian_registry;
-            if self.guardian_registry.is_some() {
+            self.guardian_admission = guardian_admission;
+            if self.guardian_admission.is_some() {
                 self.ledger.guardian_pid = self.ledger.pid;
                 self.ledger.daemon_pid = None;
                 self.ledger.daemon_process_start_identity = None;
             }
         }
         self.ledger.process_group = self.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
-        write_ledger(&self.manifest_path, &self.ledger)?;
+        if let Err(error) = write_ledger(&self.manifest_path, &self.ledger) {
+            #[cfg(windows)]
+            let cleanup_job = self.windows_job.take();
+            #[cfg(not(windows))]
+            let cleanup_job = unassigned_cleanup_job();
+            let mut failures = vec![format!("daemon ownership publication failed: {error}")];
+            terminate_and_reap_owned_child(&mut child, cleanup_job, &mut failures);
+            return Err(failures.join("; "));
+        }
         self.child = Some(child);
         self.evidence.push(EvidenceKind::Process, "restarted labby");
-        self.wait_ready(DEFAULT_DEADLINE).await
+        self.wait_ready(readiness_expires).await
     }
 
     pub(crate) async fn finish(mut self) -> CleanupResult {
@@ -757,7 +799,7 @@ impl LiveLabbyGuard {
         result
     }
 
-    async fn wait_ready(&mut self, deadline: Duration) -> Result<(), String> {
+    async fn wait_ready(&mut self, expires: Instant) -> Result<(), String> {
         // The workspace deliberately builds reqwest with rustls-no-provider so
         // each executable/test binary chooses its provider explicitly.
         drop(rustls::crypto::ring::default_provider().install_default());
@@ -765,18 +807,31 @@ impl LiveLabbyGuard {
             .timeout(Duration::from_secs(1))
             .build()
             .map_err(|e| e.to_string())?;
-        let expires = Instant::now() + deadline;
         loop {
-            if let Some(status) = self
-                .child
-                .as_mut()
-                .and_then(|child| child.try_wait().ok())
-                .flatten()
-            {
-                return Err(format!("labby exited before readiness: {status}"));
+            if Instant::now() >= expires {
+                return Err("readiness deadline exceeded".into());
             }
-            let health = client.get(&self.descriptor.health_url).send().await;
-            let ready = client.get(&self.descriptor.ready_url).send().await;
+            if let Some(child) = self.child.as_mut() {
+                let pid = child.id().ok_or("daemon was reaped before readiness")?;
+                if let Some(status) = observe_owned_child(child, pid).map_err(|error| {
+                    format!("daemon readiness process observation failed: {error}")
+                })? {
+                    return Err(format!("labby exited before readiness: {status}"));
+                }
+            }
+            let request_deadline = tokio::time::Instant::from_std(expires);
+            let health = tokio::time::timeout_at(
+                request_deadline,
+                client.get(&self.descriptor.health_url).send(),
+            )
+            .await
+            .map_err(|_| "readiness deadline exceeded".to_string())?;
+            let ready = tokio::time::timeout_at(
+                request_deadline,
+                client.get(&self.descriptor.ready_url).send(),
+            )
+            .await
+            .map_err(|_| "readiness deadline exceeded".to_string())?;
             self.evidence.push(
                 EvidenceKind::Readiness,
                 format!(
@@ -796,7 +851,7 @@ impl LiveLabbyGuard {
                     return Err("readiness identity deadline exceeded".into());
                 }
                 #[cfg(unix)]
-                guardian::record_daemon_identity(self)?;
+                guardian::record_daemon_identity(self, expires)?;
                 if Instant::now() >= expires {
                     return Err("readiness identity deadline exceeded".into());
                 }
@@ -807,19 +862,44 @@ impl LiveLabbyGuard {
             if Instant::now() >= expires {
                 return Err("readiness deadline exceeded".into());
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep_until(tokio::time::Instant::from_std(
+                expires.min(Instant::now() + Duration::from_millis(50)),
+            ))
+            .await;
         }
     }
 
     async fn stop_process(&mut self, deadline: Instant) -> Result<bool, String> {
-        self.validate_ownership()?;
+        if let Err(error) = self.validate_ownership_before(deadline) {
+            let mut failures = vec![error];
+            if let Some(child) = self.child.as_mut() {
+                #[cfg(windows)]
+                let job = self.windows_job.take();
+                #[cfg(not(windows))]
+                let job = unassigned_cleanup_job();
+                let kill_deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+                terminate_and_reap_owned_child_with_signal(
+                    child,
+                    job,
+                    &mut failures,
+                    kill_deadline,
+                    |pid| signal_cleanup_group_with_deadline(pid, kill_deadline),
+                );
+            }
+            return Err(failures.join("; "));
+        }
         let Some(mut child) = self.child.take() else {
             return Ok(false);
         };
+        let pid = child
+            .id()
+            .ok_or("owned daemon has no PID before settlement")?;
+        let mut failures = Vec::new();
         #[cfg(unix)]
-        if let Some(group) = self.ledger.process_group {
+        {
+            require_waitable_cleanup_owner(&child, pid, &mut failures);
             let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(group),
+                nix::unistd::Pid::from_raw(pid as i32),
                 nix::sys::signal::Signal::SIGTERM,
             );
         }
@@ -834,69 +914,64 @@ impl LiveLabbyGuard {
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let graceful_window = (remaining / 2).min(Duration::from_secs(2));
-        let mut forced = false;
-        match tokio::time::timeout(graceful_window, child.wait()).await {
-            Ok(Ok(status)) => self
-                .evidence
-                .push(EvidenceKind::Process, format!("exit status={status}")),
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(_) => {
-                forced = true;
-                #[cfg(unix)]
-                if let Some(group) = self.ledger.process_group {
-                    let _ = nix::sys::signal::killpg(
-                        nix::unistd::Pid::from_raw(group),
-                        nix::sys::signal::Signal::SIGKILL,
-                    );
+        let graceful_deadline = Instant::now() + graceful_window;
+        let status = loop {
+            match observe_owned_child(&mut child, pid) {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < graceful_deadline => {
+                    tokio::time::sleep(Duration::from_millis(10)).await
                 }
-                drop(child.start_kill());
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let status = tokio::time::timeout(remaining, child.wait())
-                    .await
-                    .map_err(|_| "cleanup deadline exhausted".to_string())?
-                    .map_err(|e| e.to_string())?;
-                self.evidence.push(
-                    EvidenceKind::Process,
-                    format!("forced exit status={status}"),
-                );
+                Ok(None) => break None,
+                Err(error) => {
+                    failures.push(format!("owned daemon exit observation failed: {error}"));
+                    break None;
+                }
             }
+        };
+        let forced = status.is_none();
+        if let Some(status) = status {
+            self.evidence
+                .push(EvidenceKind::Process, format!("exit status={status}"));
         }
         #[cfg(unix)]
-        if let Some(group) = self.ledger.process_group {
-            // Signal escalation and the owned child wait remain constrained by
-            // `deadline`. After SIGKILL, allow a separate bounded interval for
-            // the kernel/init reaper to remove already-dead grandchildren from
-            // process-group enumeration on loaded hosts.
-            let mut members = process_group_members_checked(group)?;
-            if !members.is_empty() {
-                // A cooperative leader may exit while a descendant ignores
-                // SIGTERM. The leader's exit does not complete tree shutdown.
-                forced = true;
-                match nix::sys::signal::killpg(
-                    nix::unistd::Pid::from_raw(group),
-                    nix::sys::signal::Signal::SIGKILL,
-                ) {
-                    Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-                    Err(error) => {
-                        return Err(format!("owned descendant termination failed: {error}"));
+        let forced = if !forced {
+            match process_group_members_typed(pid as i32, deadline) {
+                Ok(members) => !members.is_empty(),
+                Err(failure) => {
+                    if failure.unsettled.is_some() {
+                        terminate_and_reap_owned_child(
+                            &mut child,
+                            unassigned_cleanup_job(),
+                            &mut failures,
+                        );
                     }
+                    failures.push(settle_inventory_failure(failure));
+                    true
                 }
             }
-            let reap_deadline = Instant::now() + Duration::from_secs(2);
-            while !members.is_empty() && Instant::now() < reap_deadline {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                members = process_group_members_checked(group)?;
-            }
-            if !members.is_empty() {
-                return Err(format!(
-                    "owned process group leaked descendants: {members:?}"
-                ));
-            }
+        } else {
+            forced
+        };
+        let kill_deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+        terminate_and_reap_owned_child_with_signal(
+            &mut child,
+            unassigned_cleanup_job(),
+            &mut failures,
+            kill_deadline,
+            |pid| signal_cleanup_group_with_deadline(pid, kill_deadline),
+        );
+        if failures.is_empty() {
+            Ok(forced)
+        } else {
+            Err(failures.join("; "))
         }
-        Ok(forced)
     }
 
-    fn validate_ownership(&self) -> Result<(), String> {
+    fn validate_ownership(&mut self) -> Result<(), String> {
+        self.validate_ownership_before(Instant::now() + Duration::from_secs(1))
+    }
+
+    fn validate_ownership_before(&mut self, deadline: Instant) -> Result<(), String> {
         let root_metadata =
             std::fs::symlink_metadata(&self.root).map_err(|error| error.to_string())?;
         if root_metadata.file_type().is_symlink() {
@@ -951,15 +1026,51 @@ impl LiveLabbyGuard {
         {
             return Err("unsafe ownership manifest identity".into());
         }
-        if let (Some(pid), Some(expected)) = (self.ledger.pid, &self.ledger.process_start_identity)
-            && process_start_identity(pid) != *expected
-        {
-            return Err("owned PID start identity changed".into());
+        #[cfg(unix)]
+        if self.child.is_some() && !self.observed_identity_matches_before(deadline) {
+            return Err("owned PID start identity changed or could not be verified".into());
         }
+        #[cfg(not(unix))]
+        let _ = deadline;
         Ok(())
     }
 
-    pub(crate) fn diagnostics(&self, primary: Option<&str>) -> String {
+    #[cfg(unix)]
+    fn settle_observation_failure(&mut self, mut failure: process_inventory::Failure) -> String {
+        if failure.unsettled.is_some() {
+            let mut errors = vec![failure.message.clone()];
+            if let Some(child) = self.child.as_mut() {
+                terminate_and_reap_owned_child(child, unassigned_cleanup_job(), &mut errors);
+            }
+            failure.message = errors.join("; ");
+        }
+        settle_inventory_failure(failure)
+    }
+
+    #[cfg(unix)]
+    fn observed_identity_matches_before(&mut self, deadline: Instant) -> bool {
+        let (Some(pid), Some(expected)) =
+            (self.ledger.pid, self.ledger.process_start_identity.clone())
+        else {
+            return false;
+        };
+        if process_identity::validate(pid, &expected).is_err() {
+            return false;
+        }
+        let observed = process_identity::capture_typed(pid, deadline)
+            .map_err(|failure| self.settle_observation_failure(failure));
+        process_identity::matches(Some(pid), Some(&expected), observed)
+    }
+
+    pub(crate) fn diagnostics(&mut self, primary: Option<&str>) -> String {
+        #[cfg(unix)]
+        let process_inventory = match self.ledger.process_group.map(process_group_inventory) {
+            Some(Ok(inventory)) => inventory,
+            Some(Err(failure)) => vec![self.settle_observation_failure(failure)],
+            None => Vec::new(),
+        };
+        #[cfg(not(unix))]
+        let process_inventory: Vec<String> = Vec::new();
         let readiness_history = self
             .evidence
             .events
@@ -967,11 +1078,6 @@ impl LiveLabbyGuard {
             .filter(|event| event.kind == EvidenceKind::Readiness)
             .map(|event| event.message.as_str())
             .collect::<Vec<_>>();
-        let process_inventory = self
-            .ledger
-            .process_group
-            .map(process_group_inventory)
-            .unwrap_or_default();
         format!(
             "run={} command={} version={} binary_sha256={} address={} primary={} stdout_tail={} stderr_tail={} health_ready_history={:?} process_inventory={:?} process_pid={:?} process_group={:?} generation={}",
             self.identity.run_id,
@@ -999,31 +1105,34 @@ impl Drop for LiveLabbyGuard {
         self.evidence
             .push(EvidenceKind::Failure, "guard dropped without finish");
         let deadline = Instant::now() + DROP_DEADLINE;
-        let safe_to_signal = owned_process_identity_matches(&self.ledger);
+        #[cfg(unix)]
+        let safe_to_signal = self.observed_identity_matches_before(
+            deadline.min(Instant::now() + Duration::from_secs(1)),
+        );
+        #[cfg(not(unix))]
+        let safe_to_signal = self.child.as_ref().and_then(Child::id) == self.ledger.pid;
         if !safe_to_signal && self.ledger.pid.is_some() {
             self.evidence.push(
                 EvidenceKind::Failure,
-                "drop skipped process signaling: owned PID start identity changed",
+                "drop identity verification failed; only retained child/job authority may settle",
             );
         }
-        #[cfg(unix)]
-        if safe_to_signal && let Some(group) = self.ledger.process_group {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(group),
-                nix::sys::signal::Signal::SIGKILL,
+        if let Some(child) = self.child.as_mut() {
+            #[cfg(windows)]
+            let job = self.windows_job.take();
+            #[cfg(not(windows))]
+            let job = unassigned_cleanup_job();
+            let mut failures = Vec::new();
+            let kill_deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+            terminate_and_reap_owned_child_with_signal(
+                child,
+                job,
+                &mut failures,
+                kill_deadline,
+                |pid| signal_cleanup_group_with_deadline(pid, kill_deadline),
             );
-        }
-        #[cfg(windows)]
-        if let Some(job) = self.windows_job.take() {
-            let _ = job.close();
-        }
-        if safe_to_signal && let Some(child) = self.child.as_mut() {
-            drop(child.start_kill());
-            while Instant::now() < deadline {
-                if child.try_wait().ok().flatten().is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            for failure in failures {
+                self.evidence.push(EvidenceKind::Failure, failure);
             }
         }
         for revoke in &mut self.revocations {
@@ -1048,31 +1157,16 @@ impl Drop for LiveLabbyGuard {
                 }
             }
         }
-        #[cfg(unix)]
-        if let Some(group) = self.ledger.process_group {
-            loop {
-                match process_group_members_checked(group) {
-                    Ok(members) if members.is_empty() => break,
-                    Ok(members) if Instant::now() >= deadline => {
-                        self.evidence.push(
-                            EvidenceKind::Failure,
-                            format!("drop finalization missed descendants: {members:?}"),
-                        );
-                        break;
-                    }
-                    Ok(_) => std::thread::sleep(Duration::from_millis(10)),
-                    Err(error) => {
-                        self.evidence.push(EvidenceKind::Failure, error);
-                        break;
-                    }
-                }
-            }
-        }
         let mut artifact_scan_failures = Vec::new();
-        scan_artifact_tree(
+        let mut scan_budget = ScanBudget {
+            deadline,
+            bytes_remaining: CLEANUP_MAX_BYTES,
+        };
+        scan_artifact_tree_with_budget(
             &self.root,
             &self.secret_canaries,
             &mut artifact_scan_failures,
+            &mut scan_budget,
         );
         for failure in artifact_scan_failures {
             self.evidence.push(EvidenceKind::Failure, failure);
@@ -1087,7 +1181,12 @@ impl Drop for LiveLabbyGuard {
             );
         } else {
             let mut scan_failures = Vec::new();
-            scan_file_for_canaries(&retained, &self.secret_canaries, &mut scan_failures);
+            scan_file_for_canaries_bounded(
+                &retained,
+                &self.secret_canaries,
+                &mut scan_failures,
+                &mut scan_budget,
+            );
             for failure in scan_failures {
                 eprintln!(
                     "labby-e2e drop evidence secret scan run={} failure={failure}",
@@ -1589,6 +1688,11 @@ fn run_owned_command(command: &mut Command, deadline: Instant) -> Result<(), Str
             .map_err(|_| "supervised cleanup helper has no owned shard token".to_string())?;
         *command = supervised_cleanup_command(command, registry, &token)?;
     }
+    #[cfg(unix)]
+    let admission = helper_registry
+        .as_ref()
+        .map(|registry| supervised_admission_path(command, registry))
+        .transpose()?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1596,18 +1700,120 @@ fn run_owned_command(command: &mut Command, deadline: Instant) -> Result<(), Str
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
-        command.process_group(0);
+        command.process_group(0).stderr(Stdio::piped());
     }
     let child = command.spawn().map_err(|error| error.to_string())?;
-    run_spawned_owned_child(child, deadline, assign_cleanup_job, |child| {
-        #[cfg(unix)]
-        if let Some(registry) = &helper_registry
-            && let Some(status) = supervised_helper_status(registry, child.id())?
-        {
-            return Ok(Some(status));
+    #[cfg(unix)]
+    let mut child = child;
+    #[cfg(unix)]
+    let mut diagnostics = CleanupStderr::new(child.stderr.take().expect("requested helper stderr"));
+    #[cfg(unix)]
+    let setup = diagnostics.configure();
+    #[cfg(unix)]
+    let configured = setup.is_ok();
+    let result = run_spawned_owned_child(
+        child,
+        deadline,
+        |pid| {
+            #[cfg(unix)]
+            setup?;
+            assign_cleanup_job(pid)
+        },
+        |child| {
+            #[cfg(unix)]
+            diagnostics.drain()?;
+            #[cfg(unix)]
+            if let Some(admission) = &admission
+                && let Some(status) = supervised_helper_status(admission, child.id())?
+            {
+                return Ok(Some(status));
+            }
+            child.try_wait()
+        },
+    );
+    #[cfg(unix)]
+    if let Err(error) = result {
+        // Nonblocking and bounded after settlement as well as during polling.
+        let drain_error = if configured {
+            diagnostics.drain().err()
+        } else {
+            None
         }
-        child.try_wait()
-    })
+        .map(|_| " stderr_read_failed")
+        .unwrap_or("");
+        return Err(format!("{error}; {}{drain_error}", diagnostics.summary()));
+    }
+    result
+}
+
+#[cfg(unix)]
+struct CleanupStderr {
+    pipe: std::process::ChildStderr,
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+#[cfg(unix)]
+impl CleanupStderr {
+    fn new(pipe: std::process::ChildStderr) -> Self {
+        Self {
+            pipe,
+            bytes: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    fn configure(&self) -> Result<(), String> {
+        use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+        let flags = fcntl_getfl(&self.pipe).map_err(|error| error.to_string())?;
+        fcntl_setfl(&self.pipe, flags | OFlags::NONBLOCK).map_err(|error| error.to_string())
+    }
+
+    fn drain(&mut self) -> std::io::Result<()> {
+        let mut buffer = [0_u8; 1024];
+        // A chatty helper cannot monopolize the deadline/status polling loop.
+        for _ in 0..8 {
+            match self.pipe.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let retained = count.min(2048_usize.saturating_sub(self.bytes.len()));
+                    self.bytes.extend_from_slice(&buffer[..retained]);
+                    self.truncated |= retained < count;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    fn summary(&self) -> String {
+        cleanup_stderr_summary(&self.bytes, self.truncated)
+    }
+}
+
+#[cfg(unix)]
+fn cleanup_stderr_summary(bytes: &[u8], truncated: bool) -> String {
+    // Raw subprocess stderr may contain credentials or private paths. Emit only
+    // fixed diagnostic categories and a fingerprint of the bounded capture.
+    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    let categories = [
+        ("file exists", "already_exists"),
+        ("permission denied", "permission_denied"),
+        ("no such file", "missing_file"),
+        ("not found", "not_found"),
+        ("panicked", "test_panic"),
+        ("invalid", "invalid_input"),
+    ]
+    .into_iter()
+    .filter_map(|(needle, category)| text.contains(needle).then_some(category))
+    .collect::<Vec<_>>();
+    format!(
+        "stderr categories={categories:?} bytes={} truncated={truncated} fingerprint={}",
+        bytes.len(),
+        hex::encode(Sha256::digest(bytes))
+    )
 }
 
 #[cfg(unix)]
@@ -1616,27 +1822,58 @@ const CLEANUP_HELPER_ADMISSION_GATE: &str =
 
 #[cfg(unix)]
 fn supervised_helper_status(
-    registry: &Path,
+    admission: &Path,
     pid: u32,
 ) -> std::io::Result<Option<std::process::ExitStatus>> {
     use std::io::Read as _;
     use std::os::unix::process::ExitStatusExt as _;
-    let file = match std::fs::File::open(registry.join(pid.to_string()).join("status")) {
+    let file = match std::fs::File::open(admission.join("status")) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     let mut status = String::new();
-    file.take(5).read_to_string(&mut status)?;
-    let code = status.trim().parse::<u8>().map_err(|_| {
+    file.take(257).read_to_string(&mut status)?;
+    let mut fields = status.lines();
+    let invalid = || {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid cleanup helper status",
         )
-    })?;
+    };
+    if status.len() > 256
+        || fields.next().and_then(|value| value.parse::<u32>().ok()) != Some(pid)
+        || fields.next() != admission.file_name().and_then(|name| name.to_str())
+    {
+        return Err(invalid());
+    }
+    let code = fields
+        .next()
+        .ok_or_else(invalid)?
+        .parse::<u8>()
+        .map_err(|_| invalid())?;
+    if fields.next().is_some() {
+        return Err(invalid());
+    }
     Ok(Some(std::process::ExitStatus::from_raw(
         i32::from(code) << 8,
     )))
+}
+
+#[cfg(unix)]
+fn supervised_admission_path(command: &Command, registry: &Path) -> Result<PathBuf, String> {
+    let id = command
+        .get_envs()
+        .find_map(|(key, value)| (key == "LABBY_E2E_ADMISSION_ID").then_some(value).flatten())
+        .and_then(|value| value.to_str())
+        .ok_or("missing cleanup helper admission identity")?;
+    if !id.starts_with("admission-")
+        || id.len() != 58
+        || !id[10..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("invalid cleanup helper admission identity".into());
+    }
+    Ok(registry.join(id))
 }
 
 #[cfg(unix)]
@@ -1657,6 +1894,8 @@ fn supervised_cleanup_command(
         return Err("cleanup helper supervisor registry is not a private owned directory".into());
     }
     let mut wrapper = Command::new("/bin/sh");
+    let mut admission_nonce = [0_u8; 24];
+    getrandom::fill(&mut admission_nonce).map_err(|error| error.to_string())?;
     // Both supported helper kinds use explicit configuration. Do not restore
     // ambient credentials that the offline-recovery command deliberately drops.
     wrapper.env_clear().env("PATH", "/usr/bin:/bin");
@@ -1668,6 +1907,10 @@ fn supervised_cleanup_command(
         }
     }
     wrapper
+        .env(
+            "LABBY_E2E_ADMISSION_ID",
+            format!("admission-{}", hex::encode(admission_nonce)),
+        )
         .env("LABBY_E2E_GROUP_TOKEN", token)
         .args(["-c", CLEANUP_HELPER_ADMISSION_GATE, "labby-cleanup-helper"])
         .arg(registry)
@@ -1822,8 +2065,54 @@ fn unassigned_cleanup_job() -> OwnedCleanupJob {
     }
 }
 
+trait ChildControl {
+    fn owned_pid(&self) -> Option<u32>;
+    fn start_owned_kill(&mut self) -> std::io::Result<()>;
+    fn final_try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+}
+
+impl ChildControl for std::process::Child {
+    fn owned_pid(&self) -> Option<u32> {
+        Some(self.id())
+    }
+    fn start_owned_kill(&mut self) -> std::io::Result<()> {
+        self.kill()
+    }
+    fn final_try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_wait()
+    }
+}
+
+impl ChildControl for Child {
+    fn owned_pid(&self) -> Option<u32> {
+        self.id()
+    }
+    fn start_owned_kill(&mut self) -> std::io::Result<()> {
+        self.start_kill()
+    }
+    fn final_try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_wait()
+    }
+}
+
+fn observe_owned_child(
+    child: &mut impl ChildControl,
+    pid: u32,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[cfg(unix)]
+    {
+        let _ = child;
+        observe_cleanup_child(pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        child.final_try_wait()
+    }
+}
+
 fn terminate_and_reap_owned_child(
-    child: &mut std::process::Child,
+    child: &mut impl ChildControl,
     owned_job: OwnedCleanupJob,
     errors: &mut Vec<String>,
 ) {
@@ -1866,7 +2155,7 @@ fn signal_cleanup_group_with_deadline(pid: u32, deadline: Instant) -> Result<(),
 }
 
 fn terminate_and_reap_owned_child_with_signal(
-    child: &mut std::process::Child,
+    child: &mut impl ChildControl,
     owned_job: OwnedCleanupJob,
     errors: &mut Vec<String>,
     reap_deadline: Instant,
@@ -1894,28 +2183,51 @@ fn process_group_members_for_cleanup(group: i32, deadline: Instant) -> Result<Ve
     }
 }
 
+#[cfg(unix)]
+fn require_waitable_cleanup_owner(child: &impl ChildControl, pid: u32, errors: &mut Vec<String>) {
+    if child.owned_pid() != Some(pid) {
+        errors.push("cleanup child handle does not match its ownership PID".into());
+        abort_unsettled_cleanup_helper(pid, errors);
+    }
+    if let Err(error) = observe_cleanup_child(pid) {
+        errors.push(format!(
+            "cleanup helper ownership observation failed: {error}"
+        ));
+        // Returning an error would drop a Tokio kill_on_drop guard, which can
+        // itself signal the rejected numeric PID. Never unwind lost authority.
+        abort_unsettled_cleanup_helper(pid, errors);
+    }
+}
+
 fn terminate_and_reap_owned_child_with_operations(
-    child: &mut std::process::Child,
+    child: &mut impl ChildControl,
     owned_job: OwnedCleanupJob,
     errors: &mut Vec<String>,
     reap_deadline: Instant,
     mut signal_group: impl FnMut(u32) -> Result<(), String>,
     mut inventory: impl FnMut(i32, Instant) -> Result<Vec<u32>, String>,
 ) {
+    let Some(pid) = child.owned_pid() else {
+        #[cfg(unix)]
+        {
+            errors.push("owned Unix child was reaped before group settlement".into());
+            abort_unsettled_cleanup_helper(0, errors);
+        }
+        #[cfg(windows)]
+        if let Some(job) = owned_job {
+            if let Err(error) = job.close() {
+                errors.push(format!("cleanup helper job termination failed: {error}"));
+            }
+        }
+        #[cfg(not(unix))]
+        return;
+    };
     #[cfg(not(unix))]
     let _ = &mut inventory;
     #[cfg(unix)]
-    match observe_cleanup_child(child.id()) {
-        Ok(_) => {}
-        Err(error) => {
-            errors.push(format!(
-                "cleanup helper ownership observation failed: {error}"
-            ));
-            abort_unsettled_cleanup_helper(child.id(), errors);
-        }
-    }
+    require_waitable_cleanup_owner(child, pid, errors);
     // Setup can fail before a group exists; direct kill/reap is still required.
-    if let Err(error) = signal_group(child.id()) {
+    if let Err(error) = signal_group(pid) {
         errors.push(error);
     }
     #[cfg(windows)]
@@ -1926,8 +2238,8 @@ fn terminate_and_reap_owned_child_with_operations(
     }
     #[cfg(not(windows))]
     let _ = owned_job;
-    if let Err(error) = child.kill() {
-        match CleanupChildObserver(child).try_wait() {
+    if let Err(error) = child.start_owned_kill() {
+        match observe_owned_child(child, pid) {
             Ok(Some(_)) => {}
             Ok(None) | Err(_) => errors.push(format!("cleanup helper direct kill failed: {error}")),
         }
@@ -1935,12 +2247,12 @@ fn terminate_and_reap_owned_child_with_operations(
     #[cfg(unix)]
     let mut last_members = Vec::new();
     loop {
-        match CleanupChildObserver(child).try_wait() {
+        match observe_owned_child(child, pid) {
             Ok(Some(_)) => {
                 #[cfg(unix)]
-                match inventory(child.id() as i32, reap_deadline) {
+                match inventory(pid as i32, reap_deadline) {
                     Ok(members) if members.is_empty() => {
-                        match child.try_wait() {
+                        match child.final_try_wait() {
                             Ok(Some(_)) => break,
                             Ok(None) => errors
                                 .push("observed exited cleanup leader was not reapable".into()),
@@ -1948,21 +2260,21 @@ fn terminate_and_reap_owned_child_with_operations(
                                 errors.push(format!("cleanup helper final reap failed: {error}"))
                             }
                         }
-                        abort_unsettled_cleanup_helper(child.id(), errors);
+                        abort_unsettled_cleanup_helper(pid, errors);
                     }
                     Ok(members) => {
                         last_members = members;
                         // The first signal need not settle every descendant.
                         // NOWAIT retains the leader's PID, preventing numeric
                         // group reuse until the final drain and reap.
-                        if let Err(error) = signal_group(child.id()) {
+                        if let Err(error) = signal_group(pid) {
                             errors.push(error);
-                            abort_unsettled_cleanup_helper(child.id(), errors);
+                            abort_unsettled_cleanup_helper(pid, errors);
                         }
                     }
                     Err(error) => {
                         errors.push(error);
-                        abort_unsettled_cleanup_helper(child.id(), errors);
+                        abort_unsettled_cleanup_helper(pid, errors);
                     }
                 }
                 #[cfg(not(unix))]
@@ -1971,7 +2283,7 @@ fn terminate_and_reap_owned_child_with_operations(
             Ok(None) => {}
             Err(error) => {
                 errors.push(format!("cleanup helper reap failed: {error}"));
-                abort_unsettled_cleanup_helper(child.id(), errors);
+                abort_unsettled_cleanup_helper(pid, errors);
             }
         }
         if Instant::now() >= reap_deadline {
@@ -1983,7 +2295,7 @@ fn terminate_and_reap_owned_child_with_operations(
                 "last observed owned group survivors (first 32): {:?}",
                 &last_members[..last_members.len().min(32)]
             ));
-            abort_unsettled_cleanup_helper(child.id(), errors);
+            abort_unsettled_cleanup_helper(pid, errors);
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -2068,27 +2380,115 @@ fn run_artifact_cleanup_helper(
     serde_json::from_slice(&response).map_err(|error| error.to_string())
 }
 
+// Diagnostic-only formatting. Ownership paths use the fallible native probe.
 fn process_start_identity(pid: u32) -> String {
-    Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| {
-            format!(
-                "pid:{pid}:{}",
-                String::from_utf8_lossy(&output.stdout).trim()
-            )
-        })
-        .unwrap_or_else(|| format!("pid:{pid}:unknown"))
+    process_start_identity_before(pid, Instant::now() + Duration::from_secs(1))
+        .unwrap_or_else(|_| format!("pid:{pid}:unknown"))
 }
 
-fn owned_process_identity_matches(ledger: &OwnershipLedger) -> bool {
-    match (ledger.pid, ledger.process_start_identity.as_deref()) {
-        (Some(pid), Some(expected)) => process_start_identity(pid) == expected,
-        (None, None) => true,
-        _ => false,
+fn capture_spawned_child_identity(
+    child: &mut Child,
+    address: SocketAddr,
+    probe: Option<&IdentityProbe>,
+    #[cfg(unix)] admission: Option<&Path>,
+    deadline: Instant,
+) -> Result<(String, OwnedCleanupJob), String> {
+    let pid = child.id().ok_or("spawned child has no owned PID")?;
+    let job = match assign_cleanup_job(pid) {
+        Ok(job) => job,
+        Err(error) => {
+            let mut failures = vec![format!("daemon containment assignment failed: {error}")];
+            terminate_and_reap_owned_child(child, unassigned_cleanup_job(), &mut failures);
+            return Err(failures.join("; "));
+        }
+    };
+    #[cfg(unix)]
+    let mut failed_probe = None;
+    let observation = match probe {
+        Some(probe) => probe(
+            pid,
+            address,
+            {
+                #[cfg(unix)]
+                {
+                    admission
+                }
+                #[cfg(not(unix))]
+                {
+                    None
+                }
+            },
+            deadline,
+        ),
+        None => {
+            let deadline = deadline.min(Instant::now() + Duration::from_secs(1));
+            #[cfg(unix)]
+            {
+                process_identity::capture_typed(pid, deadline).map_err(|failure| {
+                    let message = failure.message.clone();
+                    failed_probe = Some(failure);
+                    message
+                })
+            }
+            #[cfg(not(unix))]
+            process_start_identity_before(pid, deadline)
+        }
     }
+    .and_then(|identity| {
+        #[cfg(unix)]
+        process_identity::validate(pid, &identity)?;
+        Ok(identity)
+    });
+    match observation {
+        Ok(identity) => Ok((identity, job)),
+        Err(error) => {
+            let mut failures = vec![format!("daemon process identity capture failed: {error}")];
+            // The retained Child is independent cleanup authority. Never store
+            // an unknown fallback and later compare two failed observations.
+            terminate_and_reap_owned_child(child, job, &mut failures);
+            #[cfg(unix)]
+            if let Some(failure) = failed_probe {
+                // Only after the retained daemon child has settled may a
+                // failed native probe trigger its own fail-stop boundary.
+                drop(settle_inventory_failure(failure));
+            }
+            Err(failures.join("; "))
+        }
+    }
+}
+
+fn process_start_identity_before(pid: u32, deadline: Instant) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        process_identity::capture(pid, deadline)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = deadline;
+        // Display only: Windows cleanup authority is the retained Child/Job
+        // handle, never a repeated numeric PID observation.
+        Ok(format!("pid:{pid}:owned-child-handle"))
+    }
+}
+
+#[cfg(unix)]
+fn owned_process_identity_matches(ledger: &OwnershipLedger) -> bool {
+    owned_process_identity_matches_before(ledger, Instant::now() + Duration::from_secs(1))
+}
+
+#[cfg(unix)]
+fn owned_process_identity_matches_before(ledger: &OwnershipLedger, deadline: Instant) -> bool {
+    let (Some(pid), Some(expected)) = (ledger.pid, ledger.process_start_identity.as_deref()) else {
+        return false;
+    };
+    if process_identity::validate(pid, expected).is_err() {
+        return false;
+    }
+    process_identity::matches(
+        Some(pid),
+        Some(expected),
+        process_start_identity_before(pid, deadline),
+    )
 }
 
 #[cfg(unix)]
@@ -2098,29 +2498,27 @@ fn process_group_members_checked(group: i32) -> Result<Vec<u32>, String> {
 
 #[cfg(unix)]
 fn process_group_members_checked_before(group: i32, deadline: Instant) -> Result<Vec<u32>, String> {
-    let text = match process_inventory::read(deadline) {
-        Ok(text) => text,
-        Err(mut failure) => {
-            if let Some(mut probe) = failure.unsettled.take() {
-                // Only a still-waitable direct child anchors authority to kill
-                // this numeric group. Never invent ownership after ECHILD.
-                if observe_cleanup_child(group as u32).is_ok() {
-                    if let Err(error) = nix::sys::signal::killpg(
-                        nix::unistd::Pid::from_raw(group),
-                        nix::sys::signal::Signal::SIGKILL,
-                    ) {
-                        failure
-                            .message
-                            .push_str(&format!("; owned group termination failed: {error}"));
-                    }
-                }
-                drop(probe.kill());
-                abort_unsettled_cleanup_helper(probe.id(), &[failure.message]);
-            }
-            return Err(failure.message);
-        }
-    };
-    parse_process_group_inventory(group, &text)
+    process_group_members_typed(group, deadline).map_err(settle_inventory_failure)
+}
+
+#[cfg(unix)]
+fn process_group_members_typed(
+    group: i32,
+    deadline: Instant,
+) -> Result<Vec<u32>, process_inventory::Failure> {
+    let text = process_inventory::read(deadline)?;
+    parse_process_group_inventory(group, &text).map_err(Into::into)
+}
+
+#[cfg(unix)]
+fn settle_inventory_failure(mut failure: process_inventory::Failure) -> String {
+    if let Some(mut probe) = failure.unsettled.take() {
+        // Observational probes grant no authority over the observed PID/group.
+        // This handle owns only the native probe itself.
+        drop(probe.kill());
+        abort_unsettled_cleanup_helper(probe.id(), &[failure.message]);
+    }
+    failure.message
 }
 
 #[cfg(unix)]
@@ -2142,20 +2540,14 @@ fn parse_process_group_inventory(group: i32, inventory: &str) -> Result<Vec<u32>
 }
 
 #[cfg(unix)]
-fn process_group_inventory(group: i32) -> Vec<String> {
-    let members = match process_group_members_checked(group) {
-        Ok(members) => members,
-        Err(error) => return vec![error],
-    };
-    members
-        .into_iter()
-        .map(|pid| process_start_identity(pid))
-        .collect()
-}
-
-#[cfg(not(unix))]
-fn process_group_inventory(_group: i32) -> Vec<String> {
-    Vec::new()
+fn process_group_inventory(group: i32) -> Result<Vec<String>, process_inventory::Failure> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let members = process_group_members_typed(group, deadline)?;
+    let mut result = Vec::new();
+    for pid in members.into_iter().take(32) {
+        result.push(process_identity::capture_typed(pid, deadline)?);
+    }
+    Ok(result)
 }
 
 #[cfg(unix)]
@@ -2274,7 +2666,7 @@ mod tests {
         guard.ledger.guardian_pid = None;
         guard.ledger.daemon_pid = None;
         guard.ledger.daemon_process_start_identity = None;
-        guard.guardian_registry = None;
+        guard.guardian_admission = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -2356,6 +2748,130 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn stale_pid_and_cross_admission_status_cannot_complete_a_new_helper() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let registry = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(registry.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 7"]);
+        let previous =
+            supervised_cleanup_command(&command, registry.path(), "owned-token").unwrap();
+        let current = supervised_cleanup_command(&command, registry.path(), "owned-token").unwrap();
+        let previous = supervised_admission_path(&previous, registry.path()).unwrap();
+        let current = supervised_admission_path(&current, registry.path()).unwrap();
+        assert_ne!(previous, current);
+        let reused_pid = 12345;
+        let legacy = registry.path().join(reused_pid.to_string());
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::write(legacy.join("status"), b"0\n").unwrap();
+        std::fs::create_dir(&previous).unwrap();
+        let old_status = format!(
+            "{reused_pid}\n{}\n0\n",
+            previous.file_name().unwrap().to_str().unwrap()
+        );
+        std::fs::write(previous.join("status"), &old_status).unwrap();
+        assert!(
+            supervised_helper_status(&current, reused_pid)
+                .unwrap()
+                .is_none()
+        );
+        std::fs::create_dir(&current).unwrap();
+        std::fs::write(current.join("status"), old_status).unwrap();
+        assert!(supervised_helper_status(&current, reused_pid).is_err());
+        let id = current.file_name().unwrap().to_str().unwrap();
+        std::fs::write(
+            current.join("status"),
+            format!("{}\n{id}\n0\n", reused_pid + 1),
+        )
+        .unwrap();
+        assert!(supervised_helper_status(&current, reused_pid).is_err());
+        std::fs::write(current.join("status"), format!("{reused_pid}\n{id}\n7\n")).unwrap();
+        assert_eq!(
+            supervised_helper_status(&current, reused_pid)
+                .unwrap()
+                .unwrap()
+                .code(),
+            Some(7)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guardian_admission_does_not_collide_with_a_reused_numeric_pid_record() {
+        use std::os::unix::{fs::PermissionsExt as _, process::CommandExt as _};
+        let registry = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(registry.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = registry.path().join("executed");
+        let mut fixture = Command::new("/bin/sh");
+        fixture
+            .args(["-c", "touch -- \"$1\"; exit 7", "fixture"])
+            .arg(&marker);
+        let wrapper = supervised_cleanup_command(&fixture, registry.path(), "reuse-token").unwrap();
+        let admission = supervised_admission_path(&wrapper, registry.path()).unwrap();
+        // Deterministically recreate the retained record for this exact new
+        // leader's PID before admission, without waiting for kernel PID wrap.
+        let script = CLEANUP_HELPER_ADMISSION_GATE.replace(
+            "admission_id=${admission##*/}",
+            "mkdir \"$registry/$$\"\nprintf '0\\n' >\"$registry/$$/status\"\nadmission_id=${admission##*/}",
+        );
+        let mut command = Command::new("/bin/sh");
+        command
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LABBY_E2E_GROUP_TOKEN", "reuse-token")
+            .env("LABBY_E2E_ADMISSION_ID", admission.file_name().unwrap())
+            .args(["-c", &script, "reused-pid-fixture"])
+            .arg(registry.path())
+            .arg(fixture.get_program())
+            .args(fixture.get_args())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let child = command.spawn().unwrap();
+        let pid = child.id();
+        let result = run_spawned_owned_child(
+            child,
+            Instant::now() + Duration::from_secs(3),
+            assign_cleanup_job,
+            |child| match supervised_helper_status(&admission, child.id())? {
+                Some(status) => Ok(Some(status)),
+                None => child.try_wait(),
+            },
+        );
+        assert!(result.unwrap_err().contains("exit status: 7"));
+        assert!(marker.exists());
+        assert_eq!(
+            std::fs::read_to_string(registry.path().join(pid.to_string()).join("status")).unwrap(),
+            "0\n"
+        );
+        assert!(
+            process_group_members_checked(pid as i32)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_stderr_is_bounded_and_only_reports_safe_categories() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf 'mkdir: secret=private-sentinel: File exists\\n' >&2; exit 1",
+        ]);
+        let error =
+            run_owned_command(&mut command, Instant::now() + Duration::from_secs(3)).unwrap_err();
+        assert!(error.contains("already_exists"), "{error}");
+        assert!(!error.contains("private-sentinel"), "{error}");
+        assert!(error.len() < 512, "{error}");
+        let summary = cleanup_stderr_summary(&vec![b'x'; 2048], true);
+        assert!(summary.contains("bytes=2048 truncated=true"));
+        assert!(summary.len() < 256);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn supervised_guardian_reports_command_status_and_is_reaped() {
         use std::os::unix::{fs::PermissionsExt as _, process::CommandExt as _};
         for mode in ["remove-marker", "invalid-command-fixture"] {
@@ -2368,6 +2884,7 @@ mod tests {
             command.args([mode, "0"]).arg(&marker);
             let mut wrapper =
                 supervised_cleanup_command(&command, registry.path(), "test-owned-token").unwrap();
+            let admission = supervised_admission_path(&wrapper, registry.path()).unwrap();
             wrapper
                 .process_group(0)
                 .stdin(Stdio::null())
@@ -2379,7 +2896,7 @@ mod tests {
                 child,
                 Instant::now() + Duration::from_secs(3),
                 assign_cleanup_job,
-                |child| match supervised_helper_status(registry.path(), child.id())? {
+                |child| match supervised_helper_status(&admission, child.id())? {
                     Some(status) => Ok(Some(status)),
                     None => child.try_wait(),
                 },
@@ -2918,7 +3435,7 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_nonce_and_bearer_never_escape_operator_safe_outputs() {
-        let guard = LiveLabbyBuilder::new().start().await.expect("live labby");
+        let mut guard = LiveLabbyBuilder::new().start().await.expect("live labby");
         let nonce = guard.identity.nonce.clone();
         let bearer = guard.credential_canary.clone();
         assert!(guard.validate_ownership().is_ok());
@@ -2982,7 +3499,7 @@ mod tests {
     async fn ownership_validation_rejects_nonce_symlink_swap() {
         use std::os::unix::fs::symlink;
 
-        let guard = LiveLabbyBuilder::new().start().await.expect("live labby");
+        let mut guard = LiveLabbyBuilder::new().start().await.expect("live labby");
         let backup = guard.root.join("nonce.backup");
         std::fs::rename(&guard.nonce_path, &backup).unwrap();
         symlink(&backup, &guard.nonce_path).unwrap();
@@ -3110,7 +3627,7 @@ mod tests {
         guard.ledger.guardian_pid = None;
         guard.ledger.daemon_pid = None;
         guard.ledger.daemon_process_start_identity = None;
-        guard.guardian_registry = None;
+        guard.guardian_admission = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -3160,7 +3677,7 @@ mod tests {
         guard.ledger.guardian_pid = None;
         guard.ledger.daemon_pid = None;
         guard.ledger.daemon_process_start_identity = None;
-        guard.guardian_registry = None;
+        guard.guardian_admission = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
@@ -3208,7 +3725,7 @@ mod tests {
         guard.ledger.guardian_pid = None;
         guard.ledger.daemon_pid = None;
         guard.ledger.daemon_process_start_identity = None;
-        guard.guardian_registry = None;
+        guard.guardian_admission = None;
         guard.ledger.process_start_identity = guard.ledger.pid.map(process_start_identity);
         guard.ledger.process_group = guard.ledger.pid.and_then(|pid| i32::try_from(pid).ok());
         write_ledger(&guard.manifest_path, &guard.ledger).unwrap();

@@ -9,20 +9,24 @@ pub(super) fn supervise(command: TokioCommand) -> Result<(TokioCommand, Option<P
     let token = std::env::var("LABBY_E2E_GROUP_TOKEN")
         .map_err(|_| "supervised daemon has no owned shard token".to_string())?;
     let mut wrapper = supervised_cleanup_command(command.as_std(), Path::new(&registry), &token)?;
+    let admission = supervised_admission_path(&wrapper, Path::new(&registry))?;
     wrapper.env("LABBY_E2E_GATE_MODE", "runtime");
-    Ok((TokioCommand::from(wrapper), Some(PathBuf::from(registry))))
+    Ok((TokioCommand::from(wrapper), Some(admission)))
 }
 
-pub(super) fn record_daemon_identity(guard: &mut LiveLabbyGuard) -> Result<(), String> {
+pub(super) fn record_daemon_identity(
+    guard: &mut LiveLabbyGuard,
+    deadline: Instant,
+) -> Result<(), String> {
     use std::io::Read as _;
-    let Some(registry) = &guard.guardian_registry else {
+    let Some(registry) = &guard.guardian_admission else {
         return Ok(());
     };
     let guardian_pid = guard
         .ledger
         .guardian_pid
         .ok_or("missing daemon guardian identity")?;
-    let file = std::fs::File::open(registry.join(guardian_pid.to_string()).join("child.pid"))
+    let file = std::fs::File::open(registry.join("child.pid"))
         .map_err(|error| format!("cannot read guarded daemon PID: {error}"))?;
     let mut value = String::new();
     file.take(12)
@@ -37,14 +41,14 @@ pub(super) fn record_daemon_identity(guard: &mut LiveLabbyGuard) -> Result<(), S
         .map_err(|_| "invalid guarded daemon PID".to_string())?;
     if pid == 0
         || pid == guardian_pid
-        || !process_group_members_checked(guardian_pid as i32)?.contains(&pid)
+        || !process_group_members_typed(guardian_pid as i32, deadline)
+            .map_err(|failure| guard.settle_observation_failure(failure))?
+            .contains(&pid)
     {
         return Err("daemon PID is not a live member of its owned guardian group".into());
     }
-    let identity = process_start_identity(pid);
-    if identity.ends_with(":unknown") {
-        return Err("cannot verify guarded daemon start identity".into());
-    }
+    let identity = process_identity::capture_typed(pid, deadline)
+        .map_err(|failure| guard.settle_observation_failure(failure))?;
     guard.ledger.daemon_pid = Some(pid);
     guard.ledger.daemon_process_start_identity = Some(identity);
     write_ledger(&guard.manifest_path, &guard.ledger)?;
@@ -60,6 +64,60 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+
+    #[test]
+    fn outer_adoption_rejects_excess_entries_and_ignores_reused_group_identity() {
+        let supervisor = include_str!("../../../../../scripts/ci/labby-live-e2e.sh");
+        let adoption = supervisor
+            .split_once("adopt_cleanup_helpers() {")
+            .unwrap()
+            .1
+            .split_once("\nterminate_children() {")
+            .unwrap()
+            .0;
+        assert!(adoption.contains("[ \"$admissions\" -le 8192 ]"));
+        let adoption = format!("adopt_cleanup_helpers() {{{adoption}")
+            .replace("[ \"$admissions\" -le 8192 ]", "[ \"$admissions\" -le 2 ]");
+        let registry = tempfile::tempdir().unwrap();
+        for index in 0..3 {
+            let entry = registry.path().join(format!("admission-{index}"));
+            std::fs::create_dir(&entry).unwrap();
+            std::fs::write(
+                entry.join("identity"),
+                format!("2147483647\nold\ntoken\nadmission-{index}\n"),
+            )
+            .unwrap();
+        }
+        let status = Command::new("/bin/bash")
+            .args([
+                "-c",
+                &format!("helper_registry=$1; cleanup=0; {adoption}\nadopt_cleanup_helpers"),
+                "entry-cap",
+            ])
+            .arg(registry.path())
+            .status()
+            .unwrap();
+        assert_eq!(
+            status.code(),
+            Some(70),
+            "entry limit must fail, not truncate"
+        );
+
+        let registry = tempfile::tempdir().unwrap();
+        let script = format!(
+            "helper_registry=$1; cleanup=0; mkdir \"$1/admission-old\"; printf '%s\\nold\\ntoken\\nadmission-old\\n' $$ >\"$1/admission-old/identity\"; {adoption}\nadopt_cleanup_helpers; exit $cleanup"
+        );
+        let status = Command::new("/bin/bash")
+            .args(["-c", &script, "stale-admission"])
+            .arg(registry.path())
+            .process_group(0)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "stale observation grants no authority over reused group"
+        );
+    }
 
     #[test]
     #[ignore = "inventory failure fail-stop subprocess fixture"]
@@ -312,7 +370,7 @@ mod tests {
                 // the selected metadata write fail, without racing a watcher.
                 let script = CLEANUP_HELPER_ADMISSION_GATE.replace(
                     "trap '' TERM",
-                    &format!("mkdir \"$registry/$$/{publication}\"\ntrap '' TERM"),
+                    &format!("mkdir \"$admission/{publication}\"\ntrap '' TERM"),
                 );
                 let mut command = Command::new("/bin/sh");
                 command

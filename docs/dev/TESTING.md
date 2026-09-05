@@ -292,7 +292,13 @@ The outer runner supervises every shard, including the ordinary sequential tier.
 process groups; when supervised, they must register through the run-owned
 admission gate before executing recovery or artifact scanning. Cancellation
 closes admission before collecting helper groups, then terminates and verifies
-owned groups within bounded grace periods. A helper leader exiting successfully
+owned groups within bounded grace periods. Each launch has a unique admission
+directory with atomically published PID/start identity and admission-bound status;
+retained records from reused PIDs cannot complete a newer helper. Outer adoption
+rejects more than 8,192 admission entries rather than silently truncating the scan.
+Helper stderr is captured through a bounded nonblocking pipe; errors expose only
+fixed diagnostic categories and a fingerprint, not raw subprocess output.
+A helper leader exiting successfully
 does not release ownership of its surviving descendants: a registered guardian
 retains the command's exit status until the group is reaped. Playwright's detached
 Chromium launcher uses the same admission gate, so a wedged Node parent does not
@@ -320,6 +326,17 @@ Process-table probes use a nonblocking, 1 MiB-capped pipe and reserve direct pro
 reaping time within that same absolute cleanup deadline. Probe failures cannot
 be interpreted as empty process groups, and cleanup attempts the owned group
 kill before failing closed on an inventory error.
+Start-identity probes use the fixed native process utility with a 128-byte bound
+and fixed locale. Missing, empty, malformed, and failed observations never count
+as ownership evidence, even when both observations fail identically. Startup and
+restart settle the retained child/job if identity capture or ownership-ledger
+publication fails. Readiness and graceful stopping also retain Unix leaders until
+the shared group drain completes; diagnostics share one bounded inventory budget.
+Identity capture and readiness consume the same absolute startup/restart deadline.
+Diagnostic observations never grant group-signaling authority, and no group is
+signaled or re-checked for settlement after its retained leader is finally reaped.
+Drop artifact and retained-evidence scans share its existing absolute deadline
+and one byte budget instead of starting fresh scan windows after process cleanup.
 If helper kill/reap verification cannot complete, the disposable test owner still
 aborts; bounded direct-stderr diagnostics retain the terminal reason and owned
 PID/group evidence even when libtest's captured output cannot be flushed.

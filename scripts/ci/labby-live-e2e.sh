@@ -59,22 +59,33 @@ group_has_listener() {
   return 1
 }
 adopt_cleanup_helpers() {
-  local helper pid member token inventory recorded_start current_start
+  local helper pid member token inventory recorded_start current_start admissions=0 admission_id
   inventory="$(if [ "${LABBY_E2E_INVENTORY_FAILURE_SELFTEST:-0}" = 1 ]; then exit 1; else ps -axo pid=,pgid=; fi)" || { cleanup=1; return 70; }
-  for helper in "$helper_registry"/[0-9]*; do
+  for helper in "$helper_registry"/admission-*; do
     [ -d "$helper" ] && [ ! -L "$helper" ] || continue
-    pid="${helper##*/}"
+    admissions=$((admissions + 1))
+    [ "$admissions" -le 8192 ] || { cleanup=1; return 70; }
+    admission_id="${helper##*/}"
+    [ -f "$helper/identity" ] && [ ! -L "$helper/identity" ] || { cleanup=1; continue; }
+    [ "$(wc -c <"$helper/identity")" -le 512 ] || { cleanup=1; continue; }
+    pid="$(sed -n '1p' "$helper/identity")"
     case "$pid" in *[!0-9]*|'') cleanup=1; continue;; esac
+    [ "$pid" -gt 0 ] && [ "$pid" -le 2147483647 ] || { cleanup=1; continue; }
     member="$(printf '%s\n' "$inventory" | awk -v group="$pid" '$2 == group { print $1; exit }')"
     [ -n "$member" ] || continue
     # The gate keeps its group leader alive until group reap; no platform-
     # dependent environment introspection is needed to verify ownership.
     [ -f "$helper/identity" ] && [ ! -L "$helper/identity" ] || { cleanup=1; continue; }
-    recorded_start="$(sed -n '1p' "$helper/identity" | sed 's/^ *//;s/ *$//')"
-    token="$(sed -n '2p' "$helper/identity")"
+    recorded_start="$(sed -n '2p' "$helper/identity" | sed 's/^ *//;s/ *$//')"
+    token="$(sed -n '3p' "$helper/identity")"
+    [ "$(sed -n '4p' "$helper/identity")" = "$admission_id" ] || { cleanup=1; continue; }
     current_start="$(ps -o lstart= -p "$pid" 2>/dev/null)" || { cleanup=1; continue; }
     current_start="$(printf '%s' "$current_start" | sed 's/^ *//;s/ *$//')"
-    [ -n "$recorded_start" ] && [ "$recorded_start" = "$current_start" ] || { cleanup=1; continue; }
+    [ -n "$recorded_start" ] || { cleanup=1; continue; }
+    # A retained admission can name a PID that the kernel subsequently reused.
+    # It conveys no authority over the newer group; its own admission, if any,
+    # is inspected independently. Never signal from the stale identity.
+    [ "$recorded_start" = "$current_start" ] || continue
     if [ -z "$token" ] || ! awk -F '\t' -v token="$token" '$3 == token { found=1 } END { exit !found }' "$run_root/process-groups.tsv"; then
       cleanup=1
       continue
