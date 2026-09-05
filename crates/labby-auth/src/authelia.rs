@@ -675,7 +675,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn one_hundred_cold_jwks_probes_collapse_to_one_fetch() {
-        let (provider, server) = mock_provider_for_nonce("concurrency").await;
+        let nonce = crate::util::random_token(18).unwrap();
+        let (provider, server) = mock_provider_for_nonce(&nonce).await;
         // One provider instance is one completed discovery generation. These
         // cold verifications share both that generation and its empty JWKS cache.
         let started = std::time::Instant::now();

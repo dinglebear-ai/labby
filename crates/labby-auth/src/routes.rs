@@ -445,14 +445,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bearer_only_router_mounts_only_the_selected_provider_callback() {
         let base = test_auth_state_with_config(test_auth_config()).await;
-        let (provider, _server) =
-            crate::authelia::tests::mock_provider_for_nonce("route-test").await;
+        let nonce = crate::util::random_token(18).unwrap();
+        let (provider, _server) = crate::authelia::tests::mock_provider_for_nonce(&nonce).await;
         let generation = base
             .store
             .activate_inbound_provider(
                 "authelia",
                 provider.issuer(),
-                "route-test",
+                &nonce,
                 crate::util::now_unix(),
             )
             .await
