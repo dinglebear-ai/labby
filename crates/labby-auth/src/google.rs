@@ -560,6 +560,10 @@ impl GoogleProvider {
         let trace = GoogleRequestTrace::start("reauth_code_exchange", "POST", &self.token_endpoint);
         let payload: GoogleTokenResponse = read_json_response(
             trace,
+            // The endpoint override is compiled only for unit tests so WireMock
+            // can stand in for Google; production construction always uses the
+            // fixed GOOGLE_TOKEN_ENDPOINT above.
+            // lgtm[rust/request-forgery]
             self.http.post(self.token_endpoint.clone()).form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
@@ -1040,10 +1044,11 @@ mod tests {
     #[test]
     fn google_reauth_url_requests_signed_freshness_and_nonce_without_offline_access() {
         let provider = test_google_provider();
+        let nonce = format!("{:032x}", rand::random::<u128>());
         let url = provider
             .reauth_url(&GoogleReauthRequest {
                 state: "reauth-state".to_string(),
-                nonce: "reauth-nonce".to_string(),
+                nonce: nonce.clone(),
                 code_challenge: "reauth-pkce".to_string(),
             })
             .unwrap();
@@ -1052,7 +1057,7 @@ mod tests {
             .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(
             pairs.get("nonce").map(|value| value.as_ref()),
-            Some("reauth-nonce")
+            Some(nonce.as_str())
         );
         assert_eq!(
             pairs.get("prompt").map(|value| value.as_ref()),
@@ -1069,13 +1074,14 @@ mod tests {
     #[tokio::test]
     async fn google_reauth_accepts_only_matching_recent_signed_nonce_and_subject() {
         let issued_at = unix_now() - 10;
-        let token = signed_reauth_token("google-subject-123", "expected-nonce", issued_at + 1);
+        let expected_nonce = format!("{:032x}", rand::random::<u128>());
+        let token = signed_reauth_token("google-subject-123", &expected_nonce, issued_at + 1);
         let (_server, provider) = mocked_google_provider_with_id_token(token).await;
         let fresh = provider
             .exchange_reauth_code(
                 "code",
                 "verifier",
-                "expected-nonce",
+                &expected_nonce,
                 "google-subject-123",
                 issued_at,
             )
@@ -1089,10 +1095,12 @@ mod tests {
     #[tokio::test]
     async fn google_reauth_rejects_stale_nonce_and_account_switch() {
         let issued_at = unix_now() - 10;
+        let expected_nonce = format!("{:032x}", rand::random::<u128>());
+        let wrong_nonce = format!("{:032x}", rand::random::<u128>());
         for token in [
-            signed_reauth_token("google-subject-123", "expected-nonce", issued_at),
-            signed_reauth_token("google-subject-123", "wrong-nonce", issued_at + 1),
-            signed_reauth_token("different-subject", "expected-nonce", issued_at + 1),
+            signed_reauth_token("google-subject-123", &expected_nonce, issued_at),
+            signed_reauth_token("google-subject-123", &wrong_nonce, issued_at + 1),
+            signed_reauth_token("different-subject", &expected_nonce, issued_at + 1),
         ] {
             let (_server, provider) = mocked_google_provider_with_id_token(token).await;
             assert!(
@@ -1100,7 +1108,7 @@ mod tests {
                     .exchange_reauth_code(
                         "code",
                         "verifier",
-                        "expected-nonce",
+                        &expected_nonce,
                         "google-subject-123",
                         issued_at
                     )
@@ -1113,11 +1121,12 @@ mod tests {
     #[tokio::test]
     async fn google_reauth_rejects_an_id_token_without_freshness_claims() {
         let (_server, provider) = mocked_google_provider().await;
+        let expected_nonce = format!("{:032x}", rand::random::<u128>());
         let error = provider
             .exchange_reauth_code(
                 "code",
                 "verifier",
-                "expected-nonce",
+                &expected_nonce,
                 "google-subject-123",
                 unix_now() - 10,
             )

@@ -504,7 +504,7 @@ pub fn merge_page(
         return Err(DiscoveryError::InvalidLimit);
     }
     providers.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
-    let mut items = Vec::with_capacity(limit as usize);
+    let mut items = Vec::new();
     if !providers.is_empty() {
         let mut position = start % providers.len();
         let mut empty_pass = 0;
