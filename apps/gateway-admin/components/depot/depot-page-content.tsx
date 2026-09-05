@@ -15,8 +15,9 @@ import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { getArtifact, listArtifacts, listProviderOptions, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
 import { artifactKey } from '@/lib/depot/provider-model'
+import { appendDiscoveryPage, createDiscoveryWindow, visibleArtifacts, type DiscoveryWindow } from './discovery-window'
 
-type LoadState = { loading: boolean; error?: string; artifacts: FederatedArtifact[]; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
+type LoadState = { loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
 type View = 'cards' | 'list'
 
 export function DepotPageContent() {
@@ -24,7 +25,7 @@ export function DepotPageContent() {
   const selectedId = searchParams.get('artifact') ?? undefined, selectedArtifactProvider = searchParams.get('artifactProvider') ?? undefined
   const selectedProvider = searchParams.get('provider') ?? 'all', initialQuery = searchParams.get('q')?.trim() ?? ''
   const [query,setQuery] = useState(initialQuery), [activeQuery,setActiveQuery] = useState(initialQuery)
-  const [state,setState] = useState<LoadState>({ loading:true, artifacts:[], exact:false })
+  const [state,setState] = useState<LoadState>({ loading:true, window:createDiscoveryWindow(), exact:false })
   const [providers,setProviders] = useState<DepotProviderOption[]>([])
   const [detail,setDetail] = useState<FederatedArtifact|null>(null), [detailLoading,setDetailLoading] = useState(false)
   const [copied,setCopied] = useState<string>(), [view,setView] = useState<View>('cards')
@@ -34,24 +35,25 @@ export function DepotPageContent() {
     const generation = ++intent.current, key = JSON.stringify([generation,selectedProvider,cursor??null])
     if(inFlight.current===key)return
     inFlight.current=key
-    setState(c=>({...c,loading:true,error:undefined,artifacts:cursor?c.artifacts:[],cursor:cursor?c.cursor:undefined,total:cursor?c.total:undefined}))
+    setState(c=>({...c,loading:true,error:undefined,window:cursor?c.window:createDiscoveryWindow(),cursor:cursor?c.cursor:undefined,total:cursor?c.total:undefined}))
     try {
       const listing = await listArtifacts({provider:selectedProvider,query:searchQuery,limit:50,cursor},signal)
       if(generation!==intent.current||signal?.aborted)return
-      setState(c=>({loading:false,artifacts:cursor?[...c.artifacts,...listing.items]:listing.items,cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch}))
+      setState(c=>({loading:false,window:appendDiscoveryPage(cursor?c.window:createDiscoveryWindow(),listing.items),cursor:listing.nextCursor??undefined,total:listing.knownTotal??undefined,exact:listing.totalIsExact,coverage:listing.state,scopeEpoch:listing.scopeEpoch}))
     } catch(error) { if(generation===intent.current&&!signal?.aborted)setState(c=>({...c,loading:false,error:error instanceof Error?error.message:String(error)})) }
     finally { if(inFlight.current===key)inFlight.current=undefined }
   },[selectedProvider])
 
   useEffect(()=>{const controller=new AbortController();void listProviderOptions(controller.signal).then(setProviders).catch(()=>{});return()=>controller.abort()},[])
 
-  useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,artifacts:[],cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
+  useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,window:createDiscoveryWindow(),cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
   useEffect(()=>{const generation=++intent.current;if(!selectedId||!selectedArtifactProvider){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(generation===intent.current)setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(generation===intent.current&&!controller.signal.aborted)toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(generation===intent.current&&!controller.signal.aborted)setDetailLoading(false)});return()=>controller.abort()},[selectedArtifactProvider,selectedId])
 
   const artifactHref=useCallback((providerId?:string,id?:string)=>{const params=new URLSearchParams();if(activeQuery)params.set('q',activeQuery);if(selectedProvider!=='all')params.set('provider',selectedProvider);if(providerId&&id){params.set('artifactProvider',providerId);params.set('artifact',id)}return `${pathname}${params.size?`?${params}`:''}`},[activeQuery,pathname,selectedProvider])
   const copyValue=useCallback(async(label:string,value?:string)=>{if(!value)return;await navigator.clipboard.writeText(value);setCopied(label);toast.success(`${label} copied`);window.setTimeout(()=>setCopied(c=>c===label?undefined:c),1500)},[])
   const exportArtifact=useCallback((artifact:FederatedArtifact)=>{const label=artifact.name??artifact.descriptor?.name??artifact.kind??'artifact';const blob=new Blob([`${JSON.stringify(artifact,null,2)}\n`],{type:'application/json'}),url=URL.createObjectURL(blob),anchor=document.createElement('a');anchor.href=url;anchor.download=`${label.toLowerCase().replace(/[^a-z0-9._-]+/g,'-')}.depot.json`;anchor.click();URL.revokeObjectURL(url);toast.success('Artifact metadata exported')},[])
-  const resultCount=state.total??state.artifacts.length
+  const visible = visibleArtifacts(state.window)
+  const resultCount=state.total??state.window.rowCount
 
   return <>
     <AppHeader breadcrumbs={[{label:'Depot'},{label:'Discovery'}]}/>
@@ -63,8 +65,10 @@ export function DepotPageContent() {
           </div></div>
       </ConsoleHero>
       {state.error?<DashboardPanel title="Depot unavailable"><p role="alert" className="text-sm text-aurora-error">{state.error}. Labby-only routes remain available.</p></DashboardPanel>:null}
-      <section aria-labelledby="artifact-results-title" className="space-y-3"><div className="flex items-end justify-between gap-3 px-0.5"><h2 id="artifact-results-title" className="text-base font-semibold text-aurora-text-primary">{activeQuery?`Results for “${activeQuery}”`:'Catalog results'}</h2><span className="text-[11px] font-semibold text-aurora-text-muted">{state.loading?'Searching…':`${state.artifacts.length} of ${resultCount} shown`}</span></div>
-        {query.length>0&&query.length<3?<p className="text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={state.artifacts} loading={state.loading} view={view} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref}/>}
+      <section aria-labelledby="artifact-results-title" className="space-y-3"><div className="flex items-end justify-between gap-3 px-0.5"><h2 id="artifact-results-title" className="text-base font-semibold text-aurora-text-primary">{activeQuery?`Results for “${activeQuery}”`:'Catalog results'}</h2><span className="text-[11px] font-semibold text-aurora-text-muted">{state.loading?'Searching…':`${state.window.rowCount} retained of ${resultCount}`}</span></div>
+        {state.window.historyExpired?<p role="status" className="text-xs text-aurora-text-muted">Earlier results left the bounded local window. Refresh this search to revisit older history.</p>:null}
+        {visible.leadingRows>0?<div aria-hidden="true" style={{height:Math.min(visible.leadingRows*8,320)}} />:null}
+        {query.length>0&&query.length<3?<p className="text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={visible.items} loading={state.loading} view={view} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref}/>} 
         {state.cursor?<Button variant="outline" onClick={()=>void load(activeQuery,state.cursor)} disabled={state.loading}>{state.loading?<Loader2 className="size-4 animate-spin"/>:null}Load more</Button>:null}
       </section>
     </div></div>
