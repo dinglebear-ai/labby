@@ -64,3 +64,19 @@ fn mutation_rejects_a_symlinked_lock_without_touching_its_target() {
     assert!(result.is_err());
     assert_eq!(fs::read(&target).unwrap(), b"unchanged");
 }
+
+#[cfg(windows)]
+#[test]
+fn mutation_rejects_a_reparse_lock_without_touching_its_target() {
+    use std::os::windows::fs::symlink_file;
+
+    let directory = tempfile::tempdir().unwrap();
+    let configured = directory.path().join("labby.toml");
+    let target = directory.path().join("attacker-target");
+    fs::write(&target, b"unchanged").unwrap();
+    let lock = store_path(&configured).unwrap().with_extension("lock");
+    symlink_file(&target, &lock).expect("create adversarial file symlink");
+    let result = ExecutionLoadoutStore::mutate(&configured, 0, |_| Ok(()));
+    assert!(result.is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"unchanged");
+}

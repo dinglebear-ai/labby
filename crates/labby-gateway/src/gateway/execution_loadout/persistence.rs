@@ -1,4 +1,4 @@
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use fd_lock::RwLock as FileRwLock;
@@ -74,43 +74,7 @@ impl ExecutionLoadoutStore {
 }
 
 fn open_private_lock(path: &Path) -> Result<fs::File, ExecutionLoadoutError> {
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(false).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600).custom_flags(nix::libc::O_NOFOLLOW);
-    }
-    #[cfg(windows)]
-    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Err(storage_error(path, "lock path is a symlink"));
-    }
-    let file = options
-        .open(path)
-        .map_err(|error| storage_error(path, error))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| storage_error(path, error))?;
-    if !metadata.is_file() {
-        return Err(storage_error(path, "lock path is not a regular file"));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(|error| storage_error(path, error))?;
-        if file
-            .metadata()
-            .map_err(|error| storage_error(path, error))?
-            .permissions()
-            .mode()
-            & 0o077
-            != 0
-        {
-            return Err(storage_error(path, "lock file permissions are not private"));
-        }
-    }
-    Ok(file)
+    labby_auth::util::open_restricted_lock_file(path).map_err(|error| storage_error(path, error))
 }
 
 fn load_path(path: &Path) -> Result<ExecutionLoadoutStore, ExecutionLoadoutError> {

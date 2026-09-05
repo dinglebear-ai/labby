@@ -14,8 +14,9 @@ use windows_sys::Win32::Foundation::GENERIC_READ;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfo, FileIdInfo, GetFileInformationByHandle,
-    GetFileInformationByHandleEx, SetFileInformationByHandle,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK, FileDispositionInfo, FileIdInfo,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetFileType,
+    SetFileInformationByHandle,
 };
 
 /// Filesystem identity, including the 128-bit ID required by ReFS.
@@ -122,6 +123,9 @@ pub fn identity(file: &File, directory: bool) -> io::Result<FileIdentity> {
     // SAFETY: live borrowed File owns the handle; both output buffers have the
     // exact documented layouts and remain valid until the synchronous calls end.
     unsafe {
+        if GetFileType(file.as_raw_handle()) != FILE_TYPE_DISK {
+            return Err(io::Error::other("protected object is not a disk file"));
+        }
         if GetFileInformationByHandle(file.as_raw_handle(), basic.as_mut_ptr()) == 0 {
             return Err(io::Error::last_os_error());
         }
