@@ -205,6 +205,25 @@ test('gateway detail uses a compact summary and endpoint control in mock preview
   assert.equal(hasHorizontalOverflow, false)
 })
 
+test('desktop shell exposes the full palette trigger, Settings, and Discover vocabulary', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
+
+  await assert.doesNotReject(() => page.getByRole('heading', { name: 'Discover', exact: true }).waitFor())
+  const paletteTrigger = page.getByRole('button', { name: 'Search and filter' })
+  const paletteBox = await paletteTrigger.boundingBox()
+  assert.ok(paletteBox && paletteBox.width >= 220, `expected full palette trigger, got ${paletteBox?.width ?? 0}px`)
+  await assert.doesNotReject(() => paletteTrigger.getByText(/Search —/).waitFor())
+
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  await assert.doesNotReject(() => page.getByRole('link', { name: 'Settings', exact: true }).waitFor())
+})
+
 test('gateway list stays compact without horizontal overflow in mock preview', { concurrency: false }, async (t) => {
   await startPreviewServer()
 

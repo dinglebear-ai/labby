@@ -947,18 +947,6 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   height: 1rem;
 }
 
-[data-searchbar] {
-  width: 2.25rem !important;
-  min-width: 2.25rem !important;
-  max-width: 2.25rem !important;
-  justify-content: center;
-  padding-inline: 0 !important;
-}
-
-[data-search-label],
-[data-search-notification] {
-  display: none !important;
-}
 [data-mobile-nav-backdrop] {
   display: none;
 }
@@ -1075,6 +1063,10 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
 }
 
 @media (max-width: 520px) {
+  [data-search-label],
+  [data-search-notification] {
+    display: none !important;
+  }
   [data-searchbar] {
     flex: 0 0 44px !important;
     width: 44px !important;
