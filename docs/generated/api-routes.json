@@ -834,7 +834,7 @@
     "handler_group": "oauth",
     "handler_identity": "auth_register",
     "feature": null,
-    "runtime_condition": "mounted only when OAuth is configured",
+    "runtime_condition": "mounted only when OAuth is configured and dynamic client registration is enabled",
     "auth_required": false,
     "bearer_only": false,
     "bootstrap_proof": false,

@@ -358,6 +358,7 @@ pub async fn require_delegated_actor(mut request: Request, next: Next) -> Respon
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "http-axum")]
     use std::sync::Arc;
 
     #[cfg(feature = "http-axum")]

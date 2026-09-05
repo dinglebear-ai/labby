@@ -302,7 +302,7 @@ pub(super) async fn refresh_token_grant(
     {
         info!(
             grant_type = "refresh_token",
-            client_id = %client_id,
+            client_id = %fingerprint(&client_id),
             refresh_token_id = %fingerprint(&refresh_token),
             "oauth refresh_token retry reused the prior rotated response"
         );
@@ -311,9 +311,9 @@ pub(super) async fn refresh_token_grant(
     let refresh_token_id = fingerprint(&refresh_token);
     debug!(
         grant_type = "refresh_token",
-        client_id = %client_id,
+        client_id = %fingerprint(&client_id),
         refresh_token_id = %refresh_token_id,
-        requested_resource = requested_resource.as_deref().unwrap_or("<refresh-token-resource>"),
+        requested_resource_id = %requested_resource.as_deref().map(fingerprint).unwrap_or_else(|| "<refresh-token-resource>".to_string()),
         "oauth refresh_token grant received"
     );
     let refresh_subject = state
@@ -324,7 +324,7 @@ pub(super) async fn refresh_token_grant(
         .ok_or_else(|| {
             debug!(
                 refresh_token_id = %refresh_token_id,
-                client_id = %client_id,
+                client_id = %fingerprint(&client_id),
                 "oauth token rejected: unknown or expired refresh token"
             );
             AuthError::InvalidGrant("unknown refresh_token".to_string())
@@ -337,7 +337,7 @@ pub(super) async fn refresh_token_grant(
             .await?;
     debug!(
         grant_type = "refresh_token",
-        client_id = %client_id,
+        client_id = %fingerprint(&client_id),
         refresh_token_id = %refresh_token_id,
         subject_id = %subject_id,
         lock_wait_ms,
@@ -362,7 +362,7 @@ pub(super) async fn refresh_token_grant(
             {
                 info!(
                     grant_type = "refresh_token",
-                    client_id = %client_id,
+                    client_id = %fingerprint(&client_id),
                     refresh_token_id = %refresh_token_id,
                     lock_wait_ms,
                     "oauth concurrent refresh reused the prior rotated response"
@@ -376,7 +376,7 @@ pub(super) async fn refresh_token_grant(
         }
         debug!(
             refresh_token_id = %refresh_token_id,
-            client_id = %client_id,
+            client_id = %fingerprint(&client_id),
             "oauth token rejected: unknown or expired refresh token"
         );
         return Err(AuthError::InvalidGrant("unknown refresh_token".to_string()));
@@ -643,8 +643,8 @@ async fn complete_claimed_refresh(
     if stored.client_id != client_id {
         warn!(
             refresh_token_id = %refresh_token_id,
-            requested_client_id = client_id,
-            stored_client_id = %stored.client_id,
+            requested_client_id = %fingerprint(client_id),
+            stored_client_id = %fingerprint(&stored.client_id),
             "oauth token rejected: client_id does not match refresh token"
         );
         return Err(AuthError::InvalidGrant(
@@ -661,8 +661,8 @@ async fn complete_claimed_refresh(
     {
         warn!(
             refresh_token_id = %refresh_token_id,
-            requested_resource = %requested_resource,
-            stored_resource = %stored_resource,
+            requested_resource_id = %fingerprint(&requested_resource),
+            stored_resource_id = %fingerprint(&stored_resource),
             "oauth token rejected: resource does not match refresh token"
         );
         return Err(AuthError::InvalidGrant(
@@ -727,11 +727,11 @@ async fn complete_claimed_refresh(
 
     info!(
         grant_type = "refresh_token",
-        client_id = %stored.client_id,
+        client_id = %fingerprint(&stored.client_id),
         refresh_token_id = %refresh_token_id,
         subject_id = %fingerprint(&google.subject),
-        resource = %stored_resource,
-        scope = %refreshed_scope,
+        resource_id = %fingerprint(&stored_resource),
+        scope_id = %fingerprint(&refreshed_scope),
         "oauth refresh_token grant rotated local token and issued new access token"
     );
 

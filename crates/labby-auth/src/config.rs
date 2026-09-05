@@ -357,16 +357,7 @@ impl AuthConfig {
         }
 
         if matches!(self.mode, AuthMode::OAuth) {
-            let Some(public_url) = self.public_url.as_ref() else {
-                return Err(AuthError::Config(format!(
-                    "{prefix}_PUBLIC_URL is required when {prefix}_AUTH_MODE=oauth"
-                )));
-            };
-            if public_url.scheme() != "https" && !is_loopback_http_url(public_url) {
-                return Err(AuthError::Config(format!(
-                    "{prefix}_PUBLIC_URL must use https when {prefix}_AUTH_MODE=oauth, except for loopback development origins"
-                )));
-            }
+            self.validate_oauth_public_url()?;
             if self.google.client_id.is_empty() {
                 return Err(AuthError::Config(format!(
                     "{prefix}_GOOGLE_CLIENT_ID is required when {prefix}_AUTH_MODE=oauth"
@@ -392,6 +383,32 @@ impl AuthConfig {
             }
         }
 
+        Ok(())
+    }
+
+    /// Validate before constructing issuer metadata or opening runtime stores.
+    /// Never normalize away credentials or suffixes: that would change issuer identity.
+    pub(crate) fn validate_oauth_public_url(&self) -> Result<(), AuthError> {
+        let prefix = &self.env_prefix;
+        let Some(url) = self.public_url.as_ref() else {
+            return Err(AuthError::Config(format!(
+                "{prefix}_PUBLIC_URL is required when {prefix}_AUTH_MODE=oauth"
+            )));
+        };
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(AuthError::Config(format!(
+                "{prefix}_PUBLIC_URL must not contain user information, a query, or a fragment"
+            )));
+        }
+        if url.scheme() != "https" && !is_loopback_http_url(url) {
+            return Err(AuthError::Config(format!(
+                "{prefix}_PUBLIC_URL must use https when {prefix}_AUTH_MODE=oauth, except for loopback development origins"
+            )));
+        }
         Ok(())
     }
 }
@@ -806,6 +823,40 @@ mod tests {
         assert_eq!(cfg.key_path.file_name().unwrap(), "auth-jwt.pem");
         assert_eq!(cfg.google.callback_path, "/auth/google/callback");
         assert!(!cfg.codex_issuer_compatibility);
+    }
+
+    #[test]
+    fn oauth_public_url_rejects_sensitive_or_ambiguous_components_without_echoing_them() {
+        for url in [
+            "https://user:secret-canary@auth.example.com/issuer",
+            "https://user@auth.example.com/issuer",
+            "https://auth.example.com/issuer?secret-canary=value",
+            "https://auth.example.com/issuer#secret-canary",
+            "https://auth.example.com/issuer?",
+            "https://auth.example.com/issuer#",
+        ] {
+            let error = AuthConfig::from_sources(fake_env_with_many([
+                ("LAB_AUTH_MODE", "oauth"),
+                ("LAB_PUBLIC_URL", url),
+                ("LAB_GOOGLE_CLIENT_ID", "id"),
+                ("LAB_GOOGLE_CLIENT_SECRET", "secret"),
+                ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+                ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+            ]))
+            .unwrap_err();
+            assert!(error.to_string().contains("must not contain"));
+            assert!(!error.to_string().contains("secret-canary"));
+            assert!(!error.to_string().contains("auth.example.com"));
+        }
+        let config = AuthConfig {
+            public_url: Some(url::Url::parse("https://auth.example.com/issuer/path").unwrap()),
+            ..AuthConfig::default()
+        };
+        config.validate_oauth_public_url().unwrap();
+        assert_eq!(
+            config.public_url.unwrap().as_str(),
+            "https://auth.example.com/issuer/path"
+        );
     }
 
     #[test]

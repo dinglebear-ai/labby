@@ -300,6 +300,9 @@ impl AuthState {
                 prefix = config.env_prefix
             )));
         }
+        // Programmatic construction must enforce the same issuer URL boundary
+        // as environment configuration, before metadata, redirects, or I/O.
+        config.validate_oauth_public_url()?;
         if config.token_encryption_key.is_none() {
             return Err(AuthError::Config(format!(
                 "{prefix}_TOKEN_ENCRYPTION_KEY is required when {prefix}_AUTH_MODE=oauth; \
@@ -329,15 +332,17 @@ impl AuthState {
             redirect_uri,
         )?;
         google.scopes.clone_from(&config.google.scopes);
+        let sqlite_path_id = crate::util::fingerprint(&config.sqlite_path.to_string_lossy());
+        let key_path_id = crate::util::fingerprint(&config.key_path.to_string_lossy());
         info!(
             crate_name = "labby-auth",
             env_prefix = %config.env_prefix,
             auth_mode = "oauth",
-            public_url = %public_url,
-            google_redirect_uri = %google.redirect_uri,
-            sqlite_path = %config.sqlite_path.display(),
-            key_path = %config.key_path.display(),
-            google_scopes = ?config.google.scopes,
+            public_url_id = %crate::util::fingerprint(public_url.as_str()),
+            google_redirect_uri_id = %crate::util::fingerprint(google.redirect_uri.as_str()),
+            sqlite_path_id = %sqlite_path_id,
+            key_path_id = %key_path_id,
+            google_scope_count = config.google.scopes.len(),
             "auth state initialized"
         );
 
@@ -594,6 +599,35 @@ mod tests {
     use crate::util::now_unix;
 
     #[tokio::test]
+    async fn programmatic_state_rejects_unsafe_public_url_before_creating_files() {
+        for public_url in [
+            "https://user:secret-canary@auth.example.com",
+            "https://auth.example.com?secret-canary=value",
+            "https://auth.example.com#secret-canary",
+            "http://auth.example.com",
+        ] {
+            let directory = tempdir().unwrap();
+            let config = AuthConfig {
+                mode: AuthMode::OAuth,
+                public_url: Some(Url::parse(public_url).unwrap()),
+                sqlite_path: directory.path().join("auth.db"),
+                key_path: directory.path().join("auth.pem"),
+                token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                    "fixture",
+                )),
+                ..AuthConfig::default()
+            };
+            let error = AuthState::new(config)
+                .await
+                .err()
+                .expect("unsafe issuer accepted");
+            assert!(error.to_string().contains("PUBLIC_URL"));
+            assert!(!error.to_string().contains("secret-canary"));
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn cloned_auth_states_share_resource_registry() {
         let state = resolve_state("admin@example.com").await;
         let clone = state.clone();
@@ -608,6 +642,47 @@ mod tests {
             .unwrap();
 
         assert_eq!(clone.resource_registry().lease_count(), 1);
+    }
+
+    #[cfg(feature = "http-axum")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn auth_state_initialization_logs_redact_configuration_metadata() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let directory = tempdir().unwrap();
+        let public_url_sentinel = "sentinel-public.example";
+        let redirect_sentinel = "sentinel-google-redirect.example";
+        let scope_sentinel = "sentinel-state-scope-secret";
+        let sqlite_sentinel = "sentinel-auth-storage.db";
+        let key_sentinel = "sentinel-auth-signing.pem";
+        let mut config = crate::authorize::tests::test_auth_config();
+        config.public_url =
+            Some(Url::parse(&format!("https://{public_url_sentinel}/gateway")).unwrap());
+        config.google.callback_url =
+            Some(Url::parse(&format!("https://{redirect_sentinel}/callback")).unwrap());
+        config.google.scopes = vec![scope_sentinel.to_string()];
+        config.sqlite_path = directory.path().join(sqlite_sentinel);
+        config.key_path = directory.path().join(key_sentinel);
+
+        let state = AuthState::new(config).await.expect("auth state");
+        drop(state);
+
+        let logs = crate::test_support::captured_logs(buf);
+        for sentinel in [
+            public_url_sentinel,
+            redirect_sentinel,
+            scope_sentinel,
+            sqlite_sentinel,
+            key_sentinel,
+        ] {
+            assert!(
+                !logs.contains(sentinel),
+                "auth configuration metadata leaked into logs: {sentinel}\n{logs}"
+            );
+        }
+        assert!(logs.contains("google_scope_count"), "{logs}");
+        assert!(logs.contains("sqlite_path_id"), "{logs}");
+        assert!(logs.contains("key_path_id"), "{logs}");
     }
 
     #[tokio::test]

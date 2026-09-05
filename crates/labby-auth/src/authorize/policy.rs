@@ -104,7 +104,7 @@ pub(crate) fn validate_scope(
         } else {
             supported.join(" ")
         };
-        debug!(resource = %resource, scope = %scope, "oauth authorize defaulted scope");
+        debug!(resource_id = %fingerprint(resource), scope_id = %fingerprint(&scope), "oauth authorize defaulted scope");
         return Ok(scope);
     }
     let requested = normalized.split_whitespace().collect::<Vec<_>>();
@@ -113,10 +113,10 @@ pub(crate) fn validate_scope(
         .all(|scope| supported.iter().any(|allowed| allowed == scope))
     {
         let scope = requested.join(" ");
-        debug!(resource = %resource, requested_scope = %normalized, normalized_scope = %scope, "oauth authorize scope accepted");
+        debug!(resource_id = %fingerprint(resource), requested_scope_id = %fingerprint(normalized), normalized_scope_id = %fingerprint(&scope), "oauth authorize scope accepted");
         return Ok(scope);
     }
-    warn!(scope = %normalized, resource = %resource, supported_scopes = ?supported, "oauth authorize rejected: unsupported scope");
+    warn!(scope_id = %fingerprint(normalized), resource_id = %fingerprint(resource), "oauth authorize rejected: unsupported scope");
     Err(AuthError::Validation(format!(
         "scope must be one of: {}",
         supported.join(", ")
@@ -133,10 +133,10 @@ pub(crate) fn validate_resource(
     };
     let requested = requested.trim_end_matches('/');
     if requested == canonical || state.is_allowed_resource_url(requested) {
-        debug!(requested_resource = %requested, canonical_resource = %canonical, protected_resource = requested != canonical, "oauth resource accepted");
+        debug!(requested_resource_id = %fingerprint(requested), protected_resource = requested != canonical, "oauth resource accepted");
         return Ok(requested.to_string());
     }
-    warn!(requested_resource = %requested, expected_resource = %canonical, "oauth request rejected: resource does not match an allowed MCP endpoint");
+    warn!(requested_resource_id = %fingerprint(requested), "oauth request rejected: resource does not match an allowed MCP endpoint");
     Err(AuthError::Validation(format!(
         "resource must be `{canonical}` or a configured protected MCP route"
     )))
