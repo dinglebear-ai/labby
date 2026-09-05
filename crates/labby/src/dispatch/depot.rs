@@ -3,6 +3,9 @@
 pub mod cursor;
 #[cfg(test)]
 mod cursor_tests;
+pub mod discovery;
+#[cfg(test)]
+mod discovery_tests;
 pub mod health;
 pub mod manager;
 #[cfg(test)]

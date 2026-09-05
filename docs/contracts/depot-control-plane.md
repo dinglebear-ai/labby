@@ -12,8 +12,8 @@ relative Labby URLs; only Labby holds a Depot credential. Depot remains the
 authority for Artifact visibility, mutation policy, immutable revisions, and
 audit truth.
 
-The checked manifest at
-[`fixtures/depot-control-plane/compatibility-v1.json`](fixtures/depot-control-plane/compatibility-v1.json)
+The checked federated manifest at
+[`fixtures/depot-control-plane/compatibility-v2.json`](fixtures/depot-control-plane/compatibility-v2.json)
 is the release denominator. A UI action is available only when its required
 operation and contract fingerprint are present. Missing or unknown required
 contracts render `incompatible`; they never fall back to a generic operation
@@ -63,6 +63,12 @@ checks.
   digest verified, and subject to Labby's existing file/package limits.
 - Authority responses use `Cache-Control: private, no-store`. Redirects,
   alternate origins, HTML fallthrough, and unbounded decompression are errors.
+
+Federated discovery uses provider-qualified identities and a random 256-bit
+Labby cursor. It fairly merges at most one bounded page from each provider,
+keeps upstream continuations server-side, reports pending and failed coverage
+separately, and expires backscroll after two replayable transitions. Artifact
+detail always requires the exact pair of provider ID and raw artifact ID.
 
 ## Retry and result truth
 

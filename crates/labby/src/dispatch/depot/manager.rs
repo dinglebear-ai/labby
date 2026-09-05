@@ -100,6 +100,7 @@ pub struct ProviderStatus {
 pub struct Manager {
     topology: RwLock<Arc<Topology>>,
     pub scheduler: Scheduler,
+    pub cursors: super::cursor::CursorStore,
 }
 impl Default for Manager {
     fn default() -> Self {
@@ -116,6 +117,7 @@ impl Manager {
         Self {
             topology: RwLock::new(Arc::new(build(config, secrets, policy, None))),
             scheduler: Scheduler::default(),
+            cursors: super::cursor::CursorStore::default(),
         }
     }
     pub fn snapshot(&self) -> Arc<Topology> {
