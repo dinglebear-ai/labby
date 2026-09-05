@@ -10,10 +10,11 @@
 use std::path::PathBuf;
 
 /// Resolve the lab home directory: `$LABBY_HOME` if set and non-empty, else
-/// `$HOME/.labby/`.
+/// `$HOME/.labby/` (`USERPROFILE` is the Windows fallback).
 ///
-/// Falls back to a relative `.lab` only when neither variable is set — callers
-/// that store secrets/state should ensure `HOME` is present.
+/// Falls back to a fixed absolute directory below the system temporary
+/// directory when neither variable is set. This keeps daemon and Windows CI
+/// callers from anchoring durable state to the process working directory.
 #[must_use]
 pub fn lab_home() -> PathBuf {
     if let Ok(home) = std::env::var("LABBY_HOME")
@@ -23,7 +24,10 @@ pub fn lab_home() -> PathBuf {
     }
     match std::env::var("HOME") {
         Ok(home) if !home.is_empty() => PathBuf::from(home).join(".labby"),
-        _ => PathBuf::from(".labby"),
+        _ => match std::env::var("USERPROFILE") {
+            Ok(home) if !home.is_empty() => PathBuf::from(home).join(".labby"),
+            _ => std::env::temp_dir().join("labby"),
+        },
     }
 }
 
