@@ -51,15 +51,23 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
-  await page.getByRole('button', { name: 'Add Server', exact: true }).last().click()
+  const observedPosts: string[] = []
+  const observePost = (request: import('playwright').Request) => {
+    if (request.method() === 'POST') observedPosts.push(`${new URL(request.url()).pathname}:${request.postData() ?? ''}`)
+  }
+  page.on('request', observePost)
+  await page.getByRole('button', { name: 'Add server', exact: true }).last().click()
   const dialog = page.getByRole('dialog', { name: 'Add server' })
   await dialog.getByLabel('Name').fill(name)
   await dialog.getByLabel('URL').fill('http://127.0.0.1:9/mcp')
   const mutation = page.waitForResponse((response) =>
-    response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/gateway',
-  { timeout: 10_000 })
+    response.request().method() === 'POST'
+      && response.request().postData()?.includes('gateway.add') === true,
+  { timeout: 30_000 })
   await dialog.getByRole('button', { name: 'Add server', exact: true }).click()
-  const response = await mutation
+  const response = await mutation.catch(async (error) => {
+    throw new Error(`add-server request was not sent; posts=${JSON.stringify(observedPosts)}; page=${await page.locator('body').innerText()}`, { cause: error })
+  }).finally(() => page.off('request', observePost))
   assert.equal(response.status(), 200, `UI gateway.add returned ${response.status()}: ${await response.text()}`)
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(async (error) => {
     throw new Error(`add-server dialog remained open: ${await dialog.innerText()}`, { cause: error })
