@@ -38,6 +38,7 @@ use labby_runtime::gateway_config::GatewayConfig;
 
 use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 
+use super::agent_execution::AgentExecutionStore;
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
 use super::execution_loadout::ExecutionLoadoutStore;
@@ -144,6 +145,9 @@ pub struct GatewayManager {
         Arc<std::sync::Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>>,
     pub(super) execution_capabilities: Arc<ArcSwap<PublishedCapabilityCatalog>>,
     pub(super) execution_capability_publication: Arc<std::sync::RwLock<()>>,
+    pub(super) agent_executions: Arc<AgentExecutionStore>,
+    pub(super) agent_execution_cancellations:
+        Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,
     notifier: Option<CatalogChangeNotifier>,
