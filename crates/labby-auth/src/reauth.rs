@@ -66,6 +66,7 @@ pub struct TrustedAuthEvent {
 }
 
 impl TrustedAuthEvent {
+    #[cfg(feature = "http-axum")]
     pub(crate) fn from_google(
         authority: &BrowserAuthority,
         evidence: &crate::google::GoogleFreshAuth,
@@ -120,10 +121,12 @@ impl Purpose {
         })
     }
 
+    #[cfg(feature = "http-axum")]
     pub(crate) fn stored_parts(&self) -> ([u8; 32], &str, &str) {
         (self.digest, &self.operation, &self.scope)
     }
 
+    #[cfg(feature = "http-axum")]
     pub(crate) fn from_stored(
         digest: [u8; 32],
         operation: String,
