@@ -347,8 +347,16 @@ async fn opportunistic_code_mode_failure_preserves_trusted_local_fallback() {
         .mount(&server)
         .await;
 
+    // Code Mode startup is substantially slower on a saturated hosted Windows
+    // runner. This is only the outer integration-harness deadline; product
+    // connection and execution deadlines remain unchanged.
+    let harness_deadline = if cfg!(windows) {
+        Duration::from_secs(90)
+    } else {
+        Duration::from_secs(30)
+    };
     let output = tokio::time::timeout(
-        Duration::from_secs(30),
+        harness_deadline,
         opportunistic_command(home.path(), &server)
             .args(["gateway", "code", "exec", "--code", "return 7;"])
             .output(),
