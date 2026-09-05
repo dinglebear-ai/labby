@@ -33,7 +33,7 @@ const FOLDED_KEY = 'labby-nav-folded'
 const ORDER_KEY = 'labby-nav-order-v2'
 
 // Measured off the rendered mock (`Gateway Console.dc.html`), not inferred.
-const SIDEBAR_WIDTH_EXPANDED = '220px'
+const SIDEBAR_WIDTH_EXPANDED = '236px'
 const SIDEBAR_WIDTH_COLLAPSED = '52px'
 
 /** The sidebar's own tinted plate — the mock lifts it off the page background. */
