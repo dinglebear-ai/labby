@@ -90,10 +90,13 @@ fn assert_runtime_cleanup(mode: &str) {
                 .expect("the pipe-holding descendant started after job admission")
                 .parse()
                 .unwrap();
-            assert!(matches!(
-                labby_winjob::pid_liveness(descendant).expect("inspect owned descendant"),
-                labby_winjob::ProcessLiveness::Exited | labby_winjob::ProcessLiveness::NotFound
-            ), "descendant survived");
+            assert!(
+                matches!(
+                    labby_winjob::pid_liveness(descendant).expect("inspect owned descendant"),
+                    labby_winjob::ProcessLiveness::Exited | labby_winjob::ProcessLiveness::NotFound
+                ),
+                "descendant survived"
+            );
         }
     }
     #[cfg(unix)]
