@@ -32,6 +32,7 @@ test = false
 [dependencies]
 labby-apis = { path = "../labby-apis" }
 labby-auth = { path = "../labby-auth", features = ["http-axum", "upstream-oauth-rmcp"] }
+labby-browser = { path = "../labby-browser" }
 labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }
 labby-codemode = { path = "../labby-codemode", optional = true }

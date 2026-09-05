@@ -671,6 +671,162 @@
         ]
       }
     },
+    "/v1/browser": {
+      "post": {
+        "tags": [
+          "browser"
+        ],
+        "summary": "Dispatch action to browser",
+        "description": "Execute an action on the browser service. Use `action: \"help\"` to list available actions. Actions whose schema reports `requires_admin: true` require the `lab:admin` scope. Every non-2xx response uses AgentErrorResponse; follow `recovery.guidance` and do not repeat requests unchanged when `side_effects` is `possible` or `unknown`.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful action response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown action or malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing, invalid, or must be renewed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated caller lacks required scope or policy permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Requested service, action target, or upstream was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, ambiguity, stale state, or restart required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request or generated content exceeds the configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation, confirmation, path-safety, or tool-execution error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit or queue saturation; honor recovery.retry_after_ms when present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure requiring diagnostic inspection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream gateway, provider, OAuth-resource, or transport failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service or provider temporarily unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Operation timed out; use recovery guidance before retrying",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/bundles": {
       "post": {
         "tags": [
@@ -3676,6 +3832,100 @@
             "type": "string"
           },
           "status": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "browser.status",
+              "browser.list",
+              "browser.revoke",
+              "browser.pairing.list",
+              "browser.pairing.approve",
+              "browser.sessions",
+              "browser.session.enable",
+              "browser.call"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "BrowserBrowserCallParams": {
+        "type": "object",
+        "required": [
+          "browser_id",
+          "tab_id",
+          "document_id",
+          "catalog_revision",
+          "tool_name"
+        ],
+        "properties": {
+          "arguments": {
+            "type": "object"
+          },
+          "browser_id": {
+            "type": "string"
+          },
+          "catalog_revision": {
+            "type": "integer"
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "tab_id": {
+            "type": "integer"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          },
+          "tool_name": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserBrowserPairingApproveParams": {
+        "type": "object",
+        "required": [
+          "pairing_id"
+        ],
+        "properties": {
+          "pairing_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserBrowserRevokeParams": {
+        "type": "object",
+        "required": [
+          "browser_id"
+        ],
+        "properties": {
+          "browser_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserBrowserSessionEnableParams": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "session_id": {
             "type": "string"
           }
         }

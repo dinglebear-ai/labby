@@ -19,6 +19,25 @@
     "metadata_source": "registry synthetic metadata"
   },
   {
+    "name": "browser",
+    "display_name": "browser",
+    "description": "Bridge browser-native WebMCP tools into Labby",
+    "category": "bootstrap",
+    "status": "available",
+    "feature": null,
+    "exposure": "always_on",
+    "surfaces": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "default_port": null,
+    "docs_url": null,
+    "supports_multi_instance": false,
+    "metadata_source": "registry synthetic metadata"
+  },
+  {
     "name": "bundles",
     "display_name": "bundles",
     "description": "Curate and publish immutable Artifact bundles",

@@ -211,8 +211,8 @@ fn builtin_service_annotations(service: &RegisteredService) -> ToolAnnotations {
         "fs" | "lab_admin" => (true, derived_destructive, true, false),
         "skills" => (true, derived_destructive, true, true),
         "doctor" => (false, derived_destructive, true, true),
-        "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs" | "sources"
-        | "uploads" => (false, derived_destructive, false, true),
+        "browser" | "gateway" | "setup" | "snippets" | "artifacts" | "bundles" | "jobs"
+        | "sources" | "uploads" => (false, derived_destructive, false, true),
         // `server_logs` is operationally read-only, but advertising it as such
         // would bypass the conservative next-hop gate described above.
         SERVER_LOGS_TOOL_NAME => (false, true, false, false),
@@ -696,6 +696,7 @@ mod tests {
     const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
         ("doctor", false, false, true, true),
         ("artifacts", false, true, false, true),
+        ("browser", false, false, false, true),
         ("bundles", false, true, false, true),
         ("fs", true, false, true, false),
         ("gateway", false, true, false, true),
@@ -941,6 +942,7 @@ mod tests {
 
         // Reachable by a caller with `can_execute() == false` at hop 2.
         let expected_callable = [
+            "browser",
             "doctor",
             "fs",
             "jobs",

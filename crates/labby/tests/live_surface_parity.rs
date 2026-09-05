@@ -46,6 +46,7 @@ fn every_current_multi_surface_service_has_a_parity_partition() {
             multi,
             BTreeSet::from([
                 "artifacts",
+                "browser",
                 "bundles",
                 "doctor",
                 "fs",

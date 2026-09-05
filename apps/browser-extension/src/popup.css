@@ -1,0 +1,10 @@
+:root { color-scheme: light dark; font: 14px/1.45 system-ui, sans-serif; }
+body { margin: 0; min-width: 340px; }
+main { padding: 18px; display: grid; gap: 14px; }
+h1, p { margin: 0; }
+label { display: grid; gap: 5px; }
+input, select, button { font: inherit; padding: 8px; }
+.check { display: flex; align-items: center; }
+.actions { display: flex; gap: 8px; }
+#disclosure { padding: 10px; border: 1px solid #e11d48; background: #fff1f2; color: #881337; }
+.note { color: #667085; font-size: 12px; }

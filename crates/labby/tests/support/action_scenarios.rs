@@ -154,6 +154,7 @@ pub(crate) fn disposition(intent: &CaseIntent) -> Disposition {
 pub(crate) fn fixtures() -> BTreeMap<String, ServiceFixture> {
     let values = [
         include_str!("../fixtures/e2e_actions/doctor.json"),
+        include_str!("../fixtures/e2e_actions/browser.json"),
         include_str!("../fixtures/e2e_actions/fs.json"),
         include_str!("../fixtures/e2e_actions/gateway.json"),
         include_str!("../fixtures/e2e_actions/lab_admin.json"),

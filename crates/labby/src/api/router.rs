@@ -1907,6 +1907,7 @@ fn build_v1_router(
     v1 = v1.nest("/catalog", services::catalog::routes(state.clone()));
     v1 = v1.nest("/depot", services::depot::routes(state.clone()));
     if api_auth_configured && !integrated_trusted_host {
+        v1 = v1.nest("/browser", services::browser::routes(state.clone()));
         v1 = v1.nest(
             "/oauth/relay",
             services::oauth_relay::admin_routes(state.clone()),
@@ -2364,7 +2365,13 @@ pub(crate) fn build_router_with_external_auth(
         );
     let mut route_group = public_core.merge(v1_protected);
     if !integrated_trusted_host {
-        route_group = route_group.merge(services::oauth_relay::public_routes(state.clone()));
+        route_group = route_group
+            .merge(services::browser::public_routes().map_router(|router| {
+                router.layer(axum::middleware::from_fn(
+                    crate::api::host_validation::host_validation_layer,
+                ))
+            }))
+            .merge(services::oauth_relay::public_routes(state.clone()));
     }
     #[cfg(feature = "gateway")]
     if !integrated_trusted_host {
@@ -2837,8 +2844,8 @@ mod tests {
         let path = match service {
             "lab_admin" => return None,
             "fs" => "/v1/fs/list".to_string(),
-            name @ ("artifacts" | "bundles" | "doctor" | "gateway" | "jobs" | "server_logs"
-            | "setup" | "snippets" | "sources" | "uploads") => {
+            name @ ("artifacts" | "browser" | "bundles" | "doctor" | "gateway" | "jobs"
+            | "server_logs" | "setup" | "snippets" | "sources" | "uploads") => {
                 format!("/v1/{name}")
             }
             unknown => panic!(

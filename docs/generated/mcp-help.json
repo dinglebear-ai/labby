@@ -1,6 +1,171 @@
 {
   "services": [
     {
+      "name": "browser",
+      "description": "Bridge browser-native WebMCP tools into Labby",
+      "category": "bootstrap",
+      "status": "available",
+      "requires_http_subject": false,
+      "actions": [
+        {
+          "name": "browser.status",
+          "description": "Show browser bridge health and live connection counts",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [],
+          "returns": "BrowserBridgeStatus"
+        },
+        {
+          "name": "browser.list",
+          "description": "List paired browsers and current connection state",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "BrowserList"
+        },
+        {
+          "name": "browser.revoke",
+          "description": "Revoke one paired browser identity and close its active sessions",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "browser_id",
+              "ty": "string",
+              "required": true,
+              "description": "Paired browser id"
+            }
+          ],
+          "returns": "Browser"
+        },
+        {
+          "name": "browser.pairing.list",
+          "description": "List pending browser-extension pairing requests",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "BrowserPairingList"
+        },
+        {
+          "name": "browser.pairing.approve",
+          "description": "Approve one pending browser-extension pairing request",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "pairing_id",
+              "ty": "string",
+              "required": true,
+              "description": "Pending pairing request id"
+            }
+          ],
+          "returns": "Browser"
+        },
+        {
+          "name": "browser.sessions",
+          "description": "List observed browser documents and sanitized WebMCP catalogs",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [],
+          "returns": "BrowserSessionList"
+        },
+        {
+          "name": "browser.session.enable",
+          "description": "Enable or disable WebMCP calls for one exact observed document",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "session_id",
+              "ty": "string",
+              "required": true,
+              "description": "Observed document session id"
+            },
+            {
+              "name": "enabled",
+              "ty": "boolean",
+              "required": true,
+              "description": "Whether calls are allowed"
+            }
+          ],
+          "returns": "BrowserSession"
+        },
+        {
+          "name": "browser.call",
+          "description": "Invoke one WebMCP tool on an exact browser document and catalog revision",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "browser_id",
+              "ty": "string",
+              "required": true,
+              "description": "Paired browser id"
+            },
+            {
+              "name": "tab_id",
+              "ty": "integer",
+              "required": true,
+              "description": "Chrome tab id"
+            },
+            {
+              "name": "document_id",
+              "ty": "string",
+              "required": true,
+              "description": "Immutable Chrome document id"
+            },
+            {
+              "name": "catalog_revision",
+              "ty": "integer",
+              "required": true,
+              "description": "Observed catalog revision"
+            },
+            {
+              "name": "tool_name",
+              "ty": "string",
+              "required": true,
+              "description": "WebMCP tool name"
+            },
+            {
+              "name": "arguments",
+              "ty": "object",
+              "required": false,
+              "description": "Tool arguments"
+            },
+            {
+              "name": "timeout_ms",
+              "ty": "integer",
+              "required": false,
+              "description": "Bounded call deadline in milliseconds"
+            }
+          ],
+          "returns": "PageToolResult"
+        }
+      ]
+    },
+    {
       "name": "gateway",
       "description": "Manage proxied upstream MCP gateways",
       "category": "bootstrap",

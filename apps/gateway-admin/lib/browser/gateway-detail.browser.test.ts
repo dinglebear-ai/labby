@@ -568,6 +568,38 @@ test('gateway list row action disable flow opens and completes successfully', { 
   )
 })
 
+test('browser bridge operator flow approves pairing and grants exact page consent', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => browser.close())
+  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  let approved = false
+  let enabled = false
+  const browserRow = { id: 'browser-1', display_name: 'Work Chrome', extension_id: 'a'.repeat(32), paired_at: 1_787_976_000, last_seen_at: 1_787_976_060, revoked_at: null, connected: true }
+  await page.route('**/v1/browser', async (route) => {
+    const body = route.request().postDataJSON() as { action: string; params: Record<string, unknown> }
+    if (body.action === 'browser.pairing.approve') approved = true
+    if (body.action === 'browser.session.enable') enabled = body.params.enabled === true
+    const response = body.action === 'browser.list' ? { browsers: approved ? [browserRow] : [] }
+      : body.action === 'browser.pairing.list' ? { pairings: approved ? [] : [{ id: 'pair-1', display_name: 'Work Chrome', extension_id: 'a'.repeat(32), status: 'pending', expires_at: 1_887_976_000, browser_id: null }] }
+        : body.action === 'browser.sessions' ? { sessions: approved ? [{ id: 'session-1', browser_id: 'browser-1', tab_id: 7, document_id: 'doc-1', origin: 'https://example.com', sanitized_path: '/tools', page_title: 'Example tools', catalog_revision: 42, catalog_fingerprint: 'hash', tools: [{ name: 'search', description: 'Search the example catalog', input_schema: { type: 'object' }, annotations: {} }], enabled, status: 'active', last_seen_at: 1_787_976_060 }] : [] }
+          : body.action === 'browser.pairing.approve' ? browserRow
+            : body.action === 'browser.session.enable' ? { enabled }
+              : {}
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(response) })
+  })
+
+  await page.goto(`${baseUrl}/browsers/`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Approve' }).click()
+  await assert.doesNotReject(() => page.getByText('Example tools').waitFor())
+  const consent = page.getByRole('switch', { name: 'Enable tool execution for Example tools' })
+  await consent.click()
+  await assert.doesNotReject(() => page.getByText('Execution enabled', { exact: true }).waitFor())
+  assert.equal(approved, true)
+  assert.equal(enabled, true)
+  assert.ok((await page.locator('body').evaluate((body) => body.scrollWidth <= body.clientWidth)))
+})
+
 test('stale Loadouts clients hard-navigate after a new static build is deployed', { concurrency: false }, async (t) => {
   await startPreviewServer()
 

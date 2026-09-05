@@ -26,6 +26,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 
 | Service | Product doc | Notes |
 | --- | --- | --- |
+| `browser` | [services/BROWSER.md](./services/BROWSER.md) | Rust-native WebMCP browser bridge, pairing, discovery, consent, and bounded invocation |
 | `doctor` | [services/DOCTOR.md](./services/DOCTOR.md) | Always-on system, auth, OAuth relay, and proxy diagnostics |
 | `gateway` | [services/GATEWAY.md](./services/GATEWAY.md) | Upstream catalog, protected routes, virtual servers, OAuth, Code Mode host |
 | upstream proxy runtime | [services/UPSTREAM.md](./services/UPSTREAM.md) | HTTP/Unix/stdio upstream MCP connections, discovery, filtering, health, OAuth, skills |

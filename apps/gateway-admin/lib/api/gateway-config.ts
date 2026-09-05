@@ -23,6 +23,10 @@ export function snippetsActionUrl(baseUrl?: string): string {
   return `${normalizeGatewayApiBase(baseUrl)}/snippets`
 }
 
+export function browserActionUrl(baseUrl?: string): string {
+  return `${normalizeGatewayApiBase(baseUrl)}/browser`
+}
+
 export function serverLogsActionUrl(baseUrl?: string): string {
   return `${normalizeGatewayApiBase(baseUrl)}/server_logs`
 }
