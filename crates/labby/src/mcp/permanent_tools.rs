@@ -696,6 +696,7 @@ mod tests {
     const EXPECTED_SERVICE_ANNOTATIONS: &[(&str, bool, bool, bool, bool)] = &[
         ("doctor", false, false, true, true),
         ("artifacts", false, true, false, true),
+        ("browser", false, false, false, true),
         ("bundles", false, true, false, true),
         ("fs", true, false, true, false),
         ("gateway", false, true, false, true),
