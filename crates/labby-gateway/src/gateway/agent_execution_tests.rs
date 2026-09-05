@@ -109,6 +109,42 @@ fn stale_delegation_and_context_fail_closed() {
 }
 
 #[test]
+fn context_cannot_outlive_delegation_or_server_maximum() {
+    let (_dir, store) = store();
+    let delegation = store.issue_delegation("actor", "svc", &[]).unwrap();
+    assert!(
+        store
+            .create_context(
+                "svc",
+                &delegation.delegation_token,
+                "l",
+                1,
+                delegation.expires_at_unix_ms + 1,
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .delegation_actor("svc", &delegation.delegation_token)
+            .is_ok()
+    );
+}
+
+#[test]
+fn canonical_digest_sorts_top_level_and_nested_object_keys() {
+    let first: serde_json::Value =
+        serde_json::from_str(r#"{"owner":"a","nested":{"repo":"b","labels":[{"z":1,"a":2}]}}"#)
+            .unwrap();
+    let reordered: serde_json::Value =
+        serde_json::from_str(r#"{"nested":{"labels":[{"a":2,"z":1}],"repo":"b"},"owner":"a"}"#)
+            .unwrap();
+    assert_eq!(
+        canonical_args_hash(&first).unwrap(),
+        canonical_args_hash(&reordered).unwrap()
+    );
+}
+
+#[test]
 fn approval_is_fully_bound_and_single_use() {
     let (_dir, store) = store();
     let context = context(&store);
@@ -437,4 +473,109 @@ fn persisted_audit_is_correlated_and_redacted() {
         .unwrap();
     assert!(tokens.starts_with("sha256:"));
     assert!(!tokens.contains("dlg_"));
+}
+
+#[test]
+fn result_cap_and_bounded_pruning_preserve_replay_window() {
+    let (_dir, store) = store();
+    let context = context(&store);
+    store
+        .reserve(
+            &context.execution_context_id,
+            "axon-service",
+            "large",
+            "mcp:github::create",
+            "args",
+            "contract",
+            None,
+            false,
+        )
+        .unwrap();
+    let oversized = serde_json::json!({"data": "x".repeat(MAX_RESULT_BYTES + 1)});
+    let receipt = store
+        .finish(
+            "large",
+            AgentExecutionStatus::Succeeded,
+            Some(&oversized),
+            None,
+        )
+        .unwrap();
+    assert_eq!(receipt.status, AgentExecutionStatus::Failed);
+    assert_eq!(receipt.error_kind.as_deref(), Some("result_too_large"));
+    assert!(receipt.result.is_none());
+    assert_eq!(
+        store.prune_expired().unwrap(),
+        0,
+        "fresh replay is retained"
+    );
+    store
+        .conn()
+        .unwrap()
+        .execute(
+            "UPDATE agent_requests SET updated_at=?1 WHERE idempotency_key='large'",
+            [now_ms() - REPLAY_RETENTION_MS - 1],
+        )
+        .unwrap();
+    assert_eq!(store.prune_expired().unwrap(), 1);
+    assert!(store.status("large").unwrap().is_none());
+}
+
+#[test]
+fn operational_reads_prune_expired_rows_without_new_delegation() {
+    let (_dir, store) = store();
+    store.issue_delegation("actor", "service", &[]).unwrap();
+    store
+        .conn()
+        .unwrap()
+        .execute("UPDATE agent_delegations SET expires_at=?1", [now_ms() - 1])
+        .unwrap();
+    store.last_prune_at.store(0, Ordering::Release);
+
+    assert!(store.status("unrelated-status-poll").unwrap().is_none());
+    let remaining: i64 = store
+        .conn()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM agent_delegations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[test]
+fn migration_is_versioned_transactional_and_accepts_only_duplicate_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.sqlite3");
+    {
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    let migrated = AgentExecutionStore::open(path.clone()).unwrap();
+    let version: i64 = migrated
+        .conn()
+        .unwrap()
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, AGENT_SCHEMA_VERSION);
+    drop(migrated);
+
+    let broken_path = dir.path().join("broken.sqlite3");
+    let connection = Connection::open(&broken_path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE agent_contexts(wrong TEXT); PRAGMA user_version=0;")
+        .unwrap();
+    drop(connection);
+    let error = AgentExecutionStore::open(broken_path).err().unwrap();
+    assert!(error.to_string().contains("agent execution storage failed"));
+    let connection = Connection::open(dir.path().join("broken.sqlite3")).unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 0, "failed migration must roll back its version");
 }
