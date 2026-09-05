@@ -14,6 +14,7 @@ import {
   Palette,
   Pin,
   ScrollText,
+  Settings,
   Sun,
 } from 'lucide-react'
 import { useTheme } from 'next-themes'
@@ -420,6 +421,25 @@ export function AccountMenu({ placement = 'sidebar' }: { placement?: 'sidebar' |
                 {isDark ? 'Dark' : 'Light'}
               </span>
             </button>
+            <Link
+              href="/settings"
+              data-menurow="1"
+              onClick={() => setOpen(false)}
+              style={{ ...menuRowStyle, textDecoration: 'none' }}
+            >
+              <span
+                style={{
+                  flexShrink: 0,
+                  display: 'grid',
+                  placeItems: 'center',
+                  width: 16,
+                  height: 16,
+                }}
+              >
+                <Settings size={14} strokeWidth={1.7} />
+              </span>
+              <span style={{ flex: 1, whiteSpace: 'nowrap' }}>Settings</span>
+            </Link>
             {/* Docs and the Aurora gallery are reference surfaces, not console
                 destinations — the mock keeps its nav to the four working
                 sections, so these live here rather than in the sidebar list. */}

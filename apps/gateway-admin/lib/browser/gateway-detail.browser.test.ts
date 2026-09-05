@@ -205,6 +205,37 @@ test('gateway detail uses a compact summary and endpoint control in mock preview
   assert.equal(hasHorizontalOverflow, false)
 })
 
+test('desktop shell exposes the full palette trigger, Settings, and Discover vocabulary', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+
+  const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
+  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
+
+  await assert.doesNotReject(() => page.getByRole('heading', { name: 'Discover', exact: true }).waitFor())
+  assert.equal(await page.locator('[data-crumbleaf]').textContent(), 'Discover')
+  const paletteTrigger = page.getByRole('button', { name: 'Search and filter' })
+  const paletteBox = await paletteTrigger.boundingBox()
+  assert.ok(paletteBox && paletteBox.width >= 220, `expected full palette trigger, got ${paletteBox?.width ?? 0}px`)
+  await assert.doesNotReject(() => paletteTrigger.getByText(/Search —/).waitFor())
+
+  await page.getByRole('button', { name: 'Account menu' }).click()
+  const settingsLink = page.getByRole('link', { name: 'Settings', exact: true })
+  await assert.doesNotReject(() => settingsLink.waitFor())
+  assert.equal(await settingsLink.getAttribute('href'), '/settings/')
+  await settingsLink.click()
+  await page.waitForURL(`${baseUrl}/settings/`)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`${baseUrl}/depot/`, { waitUntil: 'networkidle' })
+  const mobilePaletteTrigger = page.getByRole('button', { name: 'Search and filter' })
+  const mobilePaletteBox = await mobilePaletteTrigger.boundingBox()
+  assert.equal(mobilePaletteBox?.width, 44)
+  assert.equal(await mobilePaletteTrigger.getByText(/Search —/).isVisible(), false)
+})
+
 test('gateway list stays compact without horizontal overflow in mock preview', { concurrency: false }, async (t) => {
   await startPreviewServer()
 
