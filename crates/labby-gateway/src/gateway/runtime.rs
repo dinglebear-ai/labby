@@ -1148,11 +1148,13 @@ mod tests {
     async fn runtime_state_atomic_write_surfaces_unwritable_parent_shape() {
         let dir = tempfile::tempdir().expect("tempdir");
         let parent_file = dir.path().join("not-a-directory");
-        std::fs::write(&parent_file, "x").expect("parent file");
+        std::fs::create_dir(&parent_file).expect("temporary config parent");
         let manager = GatewayManager::new(
             parent_file.join("config.toml"),
             GatewayRuntimeHandle::default(),
         );
+        std::fs::remove_dir(&parent_file).expect("remove temporary config parent");
+        std::fs::write(&parent_file, "x").expect("parent file");
         assert!(
             manager
                 .persist_runtime_state(&PersistedGatewayRuntimeState::default())

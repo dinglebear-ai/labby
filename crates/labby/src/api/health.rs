@@ -205,15 +205,18 @@ mod tests {
     #[cfg(feature = "gateway")]
     #[tokio::test]
     async fn ready_returns_503_when_gateway_pool_absent() {
-        use std::path::PathBuf;
         use std::sync::Arc;
 
         use crate::dispatch::gateway::config_store::test_gateway_manager;
         use crate::dispatch::gateway::manager::GatewayRuntimeHandle;
 
         let runtime = GatewayRuntimeHandle::default();
+        let directory = tempfile::tempdir().expect("tempdir");
         // Pool starts as None — manager is wired but pool not yet loaded.
-        let manager = Arc::new(test_gateway_manager(PathBuf::from("/tmp/test"), runtime));
+        let manager = Arc::new(test_gateway_manager(
+            directory.path().join("config.toml"),
+            runtime,
+        ));
         let state = AppState::new().with_gateway_manager(manager);
 
         let resp = ready(State(state)).await.into_response();
