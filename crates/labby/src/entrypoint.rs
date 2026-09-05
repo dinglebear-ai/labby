@@ -538,7 +538,6 @@ fn run_root_catalog(flags: &GlobalFlags) -> ExitCode {
     }
 }
 
-#[tokio::main]
 pub async fn run() -> ExitCode {
     let argv = std::env::args_os().collect::<Vec<_>>();
     if let Some(exit_code) = crate::stdio_sandbox::maybe_run(&argv) {
