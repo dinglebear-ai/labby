@@ -106,6 +106,7 @@ pub struct GoogleProvider {
     pub scopes: Vec<String>,
     pub http: reqwest::Client,
     authorize_endpoint: Url,
+    #[cfg(test)]
     token_endpoint: Url,
     jwks_endpoint: Url,
     jwks_cache: Arc<RwLock<Option<CachedGoogleJwks>>>,
@@ -467,6 +468,7 @@ impl GoogleProvider {
         let authorize_endpoint = Url::parse(GOOGLE_AUTHORIZE_ENDPOINT).map_err(|error| {
             AuthError::Config(format!("parse google authorize endpoint: {error}"))
         })?;
+        #[cfg(test)]
         let token_endpoint = Url::parse(GOOGLE_TOKEN_ENDPOINT)
             .map_err(|error| AuthError::Config(format!("parse google token endpoint: {error}")))?;
         let jwks_endpoint = Url::parse(GOOGLE_JWKS_ENDPOINT)
@@ -483,6 +485,7 @@ impl GoogleProvider {
             ],
             http,
             authorize_endpoint,
+            #[cfg(test)]
             token_endpoint,
             jwks_endpoint,
             jwks_cache: Arc::new(RwLock::new(None)),
@@ -502,6 +505,18 @@ impl GoogleProvider {
     pub fn with_jwks_endpoint(mut self, jwks_endpoint: Url) -> Self {
         self.jwks_endpoint = jwks_endpoint;
         self
+    }
+
+    fn token_endpoint(&self) -> Result<Url, AuthError> {
+        #[cfg(test)]
+        {
+            Ok(self.token_endpoint.clone())
+        }
+        #[cfg(not(test))]
+        {
+            Url::parse(GOOGLE_TOKEN_ENDPOINT)
+                .map_err(|error| AuthError::Config(format!("parse google token endpoint: {error}")))
+        }
     }
 
     pub fn authorize_url(&self, request: &AuthorizeUrlRequest) -> Result<Url, AuthError> {
@@ -558,21 +573,16 @@ impl GoogleProvider {
         expected_subject: &str,
         challenge_issued_at: i64,
     ) -> Result<GoogleFreshAuth, AuthError> {
-        let trace = GoogleRequestTrace::start("reauth_code_exchange", "POST", &self.token_endpoint);
-        // The endpoint override is compiled only for unit tests so WireMock can
-        // stand in for Google; production construction always uses the fixed
-        // GOOGLE_TOKEN_ENDPOINT above.
-        let request = self
-            .http
-            .post(self.token_endpoint.clone()) // lgtm[rust/request-forgery]
-            .form(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("client_id", self.client_id.as_str()),
-                ("client_secret", self.client_secret.as_str()),
-                ("redirect_uri", self.redirect_uri.as_str()),
-                ("code_verifier", code_verifier),
-            ]);
+        let token_endpoint = self.token_endpoint()?;
+        let trace = GoogleRequestTrace::start("reauth_code_exchange", "POST", &token_endpoint);
+        let request = self.http.post(token_endpoint.clone()).form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("client_id", self.client_id.as_str()),
+            ("client_secret", self.client_secret.as_str()),
+            ("redirect_uri", self.redirect_uri.as_str()),
+            ("code_verifier", code_verifier),
+        ]);
         let payload: GoogleTokenResponse = read_json_response(
             trace,
             request,
@@ -616,7 +626,8 @@ impl GoogleProvider {
         code: &str,
         code_verifier: &str,
     ) -> Result<GoogleExchange, AuthError> {
-        let trace = GoogleRequestTrace::start("code_exchange", "POST", &self.token_endpoint);
+        let token_endpoint = self.token_endpoint()?;
+        let trace = GoogleRequestTrace::start("code_exchange", "POST", &token_endpoint);
         info!(
             provider = "google",
             oauth_code_id = %fingerprint(code),
@@ -625,7 +636,7 @@ impl GoogleProvider {
         );
         let payload: GoogleTokenResponse = read_json_response(
             trace,
-            self.http.post(self.token_endpoint.clone()).form(&[
+            self.http.post(token_endpoint.clone()).form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("client_id", self.client_id.as_str()),
@@ -678,7 +689,8 @@ impl GoogleProvider {
         expected_subject: &str,
         existing_email: Option<&str>,
     ) -> Result<GoogleExchange, AuthError> {
-        let trace = GoogleRequestTrace::start("refresh", "POST", &self.token_endpoint);
+        let token_endpoint = self.token_endpoint()?;
+        let trace = GoogleRequestTrace::start("refresh", "POST", &token_endpoint);
         info!(
             provider = "google",
             refresh_token_id = %fingerprint(refresh_token),
@@ -686,7 +698,7 @@ impl GoogleProvider {
         );
         let payload: GoogleTokenResponse = read_json_response(
             trace,
-            self.http.post(self.token_endpoint.clone()).form(&[
+            self.http.post(token_endpoint.clone()).form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token),
                 ("client_id", self.client_id.as_str()),
