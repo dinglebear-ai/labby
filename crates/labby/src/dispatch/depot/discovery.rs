@@ -175,6 +175,8 @@ pub async fn discover(
         .map(|provider| provider.page.clone())
         .collect();
     let mut response = merge_page(&mut pages, federation.start, request.limit)?;
+    response.scope = stored_binding.scope.clone();
+    response.scope_epoch = stored_binding.authority_epoch.clone();
     pages.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
     for provider in &mut federation.providers {
         if let Some(page) = pages.iter().find(|page| page.provider_id == provider.id) {
@@ -382,6 +384,9 @@ impl ProviderPage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveryResponse {
+    pub schema_version: String,
+    pub scope: String,
+    pub scope_epoch: String,
     pub items: Vec<Value>,
     pub provider_outcomes: Vec<ProviderOutcome>,
     pub failures: Vec<ProviderFailure>,
@@ -408,6 +413,7 @@ pub struct ProviderFailure {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetailResponse {
+    pub schema_version: String,
     pub provider_id: String,
     pub artifact_id: String,
     pub artifact: Value,
@@ -471,6 +477,7 @@ pub async fn detail(
         .ok_or(DiscoveryError::InvalidProvider)?;
     let artifact = project_detail(artifact_id, raw)?;
     Ok(DetailResponse {
+        schema_version: "labby.depot-compatibility/v2".into(),
         provider_id: provider_id.into(),
         artifact_id: artifact_id.into(),
         artifact,
@@ -556,6 +563,9 @@ pub fn merge_page(
     }
     .to_owned();
     let response = DiscoveryResponse {
+        schema_version: "labby.depot-compatibility/v2".into(),
+        scope: String::new(),
+        scope_epoch: String::new(),
         items,
         provider_outcomes: providers
             .iter()

@@ -3,6 +3,10 @@ import { z } from 'zod'
 import { gatewayRequestInit } from './gateway-request'
 
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
+const FEDERATED_SCHEMA = 'labby.depot-compatibility/v2'
+const bounded = (max: number) => z.string().max(max)
+const rawId = bounded(2048).refine(value => new TextEncoder().encode(value).length <= 2048, 'artifact ID exceeds 2048 UTF-8 bytes')
+const cursorSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/)
 
 const contractSchema = z.object({
   schemaVersion: z.literal(COMPATIBILITY_SCHEMA),
@@ -90,4 +94,79 @@ export async function depotCall<T>(operation: string, params: Record<string, unk
   if (operation === 'depot.artifacts.list') return validate(listSchema, value, 'artifact list response') as T
   if (operation === 'depot.artifacts.get') return validate(detailSchema, value, 'artifact detail response') as T
   throw new Error(`Unsupported Depot operation: ${operation}`)
+}
+
+const federatedArtifactSchema = z.object({
+  providerId: bounded(64), artifactId: rawId, id: rawId.optional(), kind: bounded(128).optional(),
+  namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(),
+  description: bounded(16384).optional(), currentRevisionId: bounded(512).optional(),
+  contentDigest: bounded(512).optional(), license: z.unknown().optional(), publication: z.unknown().optional(),
+}).strict()
+const outcomeSchema = z.object({ providerId: bounded(64), state: z.enum(['pending', 'participating', 'exhausted', 'failed']) }).strict()
+const failureSchema = z.object({ providerId: bounded(64), kind: bounded(128) }).strict()
+const discoverySchema = z.object({
+  schemaVersion: z.literal(FEDERATED_SCHEMA), scope: bounded(64), scopeEpoch: bounded(128),
+  items: z.array(federatedArtifactSchema).max(200), providerOutcomes: z.array(outcomeSchema).max(16),
+  failures: z.array(failureSchema).max(16), coverageComplete: z.boolean(),
+  knownTotal: z.number().safe().int().nonnegative().nullable().optional(), totalIsExact: z.boolean(),
+  state: z.enum(['complete', 'partial', 'deferred', 'empty', 'all_disabled', 'all_failed']),
+  nextCursor: cursorSchema.nullable().optional(),
+}).strict()
+const detailArtifactSchema = z.object({
+  id: rawId, descriptor: z.unknown().optional(), currentRevisionId: bounded(512).optional(),
+  currentRevision: z.unknown().optional(), publication: z.unknown().optional(), license: z.unknown().optional(),
+}).strict()
+const detailV2Schema = z.object({
+  schemaVersion: z.literal(FEDERATED_SCHEMA), providerId: bounded(64), artifactId: rawId,
+  artifact: detailArtifactSchema,
+}).strict()
+const providerSchema = z.object({
+  id: bounded(64).refine(value => value !== 'all'), name: bounded(256), endpoint: bounded(2048),
+  enabled: z.boolean(), credentialConfigured: z.boolean(), health: z.object({
+    state: z.enum(['unknown', 'healthy', 'unauthorized', 'incompatible', 'unavailable']),
+    observedAt: z.number().safe().int().nonnegative().nullable(), provenance: bounded(64).nullable(),
+    retryNotBefore: z.number().safe().int().nonnegative().nullable(),
+  }).strict(),
+}).strict()
+
+export type FederatedArtifact = z.infer<typeof federatedArtifactSchema>
+export type DiscoveryPage = z.infer<typeof discoverySchema>
+export type DepotProvider = z.infer<typeof providerSchema>
+export type CredentialOperation = { action: 'retain' } | { action: 'replace'; value: string } | { action: 'clear' }
+
+export class DepotClientError extends Error {
+  constructor(public readonly status: number, public readonly kind: string, message: string, public readonly recovery?: unknown, public readonly requestId?: string) { super(message) }
+}
+
+async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T>, label: string): Promise<T> {
+  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init })
+  const requestId = response.headers.get('x-request-id') ?? undefined
+  let body: unknown
+  try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Depot returned invalid JSON (${response.status})`, undefined, requestId) }
+  if (!response.ok) {
+    const error = z.object({ kind: bounded(128), message: bounded(4096), recovery: z.unknown().optional() }).passthrough().safeParse(body)
+    throw new DepotClientError(response.status, error.success ? error.data.kind : 'request_failed', error.success ? error.data.message : `Depot request failed (${response.status})`, error.success ? error.data.recovery : undefined, requestId)
+  }
+  return validate(schema, body, label)
+}
+
+export async function listArtifacts(input: { provider?: string; query?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
+  const query = input.query ?? ''
+  if (query.length > 200 || (query.length > 0 && query.length < 3)) throw new Error('Query must be empty or contain 3 to 200 characters')
+  const provider = input.provider ?? 'all'
+  if (provider !== 'all' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)) throw new Error('Invalid provider')
+  const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response')
+  if (page.scope !== provider) throw new Error('Depot returned the wrong discovery scope')
+  if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Depot returned an artifact from the wrong provider')
+  return page
+}
+
+export async function getArtifact(providerId: string, artifactId: string, signal?: AbortSignal) {
+  const value = await requestV2('/v1/depot/artifacts/detail', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerId, artifactId }) }, detailV2Schema, 'artifact detail response')
+  if (value.providerId !== providerId || value.artifactId !== artifactId || value.artifact.id !== artifactId) throw new Error('Depot returned the wrong artifact identity')
+  return value
+}
+
+export async function listProviders(signal?: AbortSignal): Promise<DepotProvider[]> {
+  return requestV2('/v1/depot/providers', { signal }, z.array(providerSchema).max(16), 'provider list response')
 }

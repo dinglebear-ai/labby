@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { depotCall, depotStatus } from './depot-client.ts'
+import { depotCall, depotStatus, getArtifact, listArtifacts, listProviders } from './depot-client.ts'
 
 async function withFetch(response: Response, run: () => Promise<void>) {
   const original = globalThis.fetch
@@ -42,4 +42,25 @@ test('rejects incompatible contracts and unknown operations', async () => {
 
 test('preserves server error codes', async () => {
   await withFetch(json({ error: 'depot_unavailable' }, 502), async () => assert.rejects(depotStatus(), /depot_unavailable/))
+})
+
+const v2Page = { schemaVersion: 'labby.depot-compatibility/v2', scope: 'all', scopeEpoch: 'epoch', items: [{ providerId: 'public', artifactId: 'artifact-1', id: 'artifact-1' }], providerOutcomes: [{ providerId: 'public', state: 'exhausted' }], failures: [], coverageComplete: true, knownTotal: 1, totalIsExact: true, state: 'complete', nextCursor: null }
+
+test('v2 discovery rejects unknown fields, unsafe totals, and wrong scope', async () => {
+  await withFetch(json({ ...v2Page, injected: true }), async () => assert.rejects(listArtifacts(), /unrecognized/i))
+  await withFetch(json({ ...v2Page, knownTotal: Number.MAX_SAFE_INTEGER + 1 }), async () => assert.rejects(listArtifacts(), /9007199254740991/))
+  await withFetch(json({ ...v2Page, scope: 'team' }), async () => assert.rejects(listArtifacts(), /wrong discovery scope/i))
+})
+
+test('v2 exact detail preserves raw IDs and verifies every identity field', async () => {
+  const artifactId = 'space + % / 雪'
+  const response = { schemaVersion: 'labby.depot-compatibility/v2', providerId: 'public', artifactId, artifact: { id: artifactId } }
+  await withFetch(json(response), async () => assert.equal((await getArtifact('public', artifactId)).artifact.id, artifactId))
+  await withFetch(json({ ...response, artifact: { id: 'other' } }), async () => assert.rejects(getArtifact('public', artifactId), /wrong artifact identity/i))
+})
+
+test('admin provider projection is strict and contains no credential material', async () => {
+  const provider = { id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, credentialConfigured: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }
+  await withFetch(json([{ ...provider, token: 'secret' }]), async () => assert.rejects(listProviders(), /unrecognized/i))
+  await withFetch(json([provider]), async () => assert.equal((await listProviders())[0]?.credentialConfigured, true))
 })
