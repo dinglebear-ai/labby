@@ -2112,7 +2112,14 @@ mod tests {
             })
         ));
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        // Loaded Windows CI runners can take longer to schedule the blocking
+        // reconciliation task after the deliberately injected timeout.
+        let reconciliation_timeout = if cfg!(windows) {
+            std::time::Duration::from_secs(5)
+        } else {
+            std::time::Duration::from_secs(1)
+        };
+        tokio::time::timeout(reconciliation_timeout, async {
             loop {
                 if store.library_snapshot().unwrap().version == 1
                     && publication.health() == (PublicationHealth::Ready { library_version: 1 })
