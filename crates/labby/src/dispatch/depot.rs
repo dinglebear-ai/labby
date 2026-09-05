@@ -1,5 +1,8 @@
 //! Bounded server-side transport for the optional Depot control plane.
 
+pub mod cursor;
+#[cfg(test)]
+mod cursor_tests;
 pub mod health;
 pub mod manager;
 #[cfg(test)]
