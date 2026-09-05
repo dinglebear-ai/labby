@@ -60,6 +60,26 @@ current `artifacts` service does not yet expose Agent authoring, validation, or 
 Any future transport must project the shared `artifacts` control plane rather than introduce a
 parallel Agent service namespace, and materialization does not grant automatic activation.
 
+## Hook artifact materialization
+
+The surface-neutral Artifact runtime can materialize a bounded, inert Hook declaration from
+exactly one `HOOK.json` file. The declaration names one supported host event, a bare executable
+name, and a bounded argument vector. Executable names and arguments reject NUL and control
+characters, but arguments are otherwise opaque values: quotes, spaces, shell metacharacters,
+environment-variable syntax, and response-file prefixes are data rather than syntax.
+Materialization validates and content-addresses the declaration but never registers or executes it.
+
+Any future host activation must use a direct process API with the declared executable and each
+argument supplied as a distinct argument-vector element. It must not concatenate fields into a
+command line, invoke a shell implicitly, or reinterpret argument contents. Choosing an executable,
+including a shell executable, remains an explicit activation decision by the trusted host.
+
+The resulting Artifact uses `kind = "hook"`, records an explicit-activation execution policy, and
+defaults provenance to the `labby.hook/v1` adapter. Hook transport and authoring operations use the
+shared `artifacts` control plane. This domain type does not restore retired automatic Claude Code
+hooks, introduce a parallel Hook service namespace, add CLI/API/MCP/UI activation surfaces, or
+grant activation authority.
+
 ## Non-goals for the first slice
 
 The first slice does not add hosted registry authority, crawling/enrichment, trust scoring, compatibility aliases for retired products, a new Skills protocol, remote deployment execution, or transport-specific business logic. It does not silently update a fork when an upstream changes.
