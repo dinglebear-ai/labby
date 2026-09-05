@@ -309,14 +309,12 @@ async fn require_admin_mutation(
     if !grant.has_scope("lab:admin") {
         return Err(forbidden());
     }
-    crate::api::services::remote_control::require_session_csrf(action, headers, Some(auth)).map_err(
-        |error| {
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(json!({"kind":error.kind(),"message":error.to_string()})),
-            )
-        },
-    )
+    crate::api::services::require_session_csrf(action, headers, Some(auth)).map_err(|error| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"kind":error.kind(),"message":error.to_string()})),
+        )
+    })
 }
 
 fn unavailable() -> (StatusCode, Json<Value>) {
