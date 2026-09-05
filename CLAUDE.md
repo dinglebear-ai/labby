@@ -28,7 +28,7 @@ The workspace has 11 members:
 | `labby-openapi` | OpenAPI ingestion/projection helpers |
 | `labby-runtime` | surface-neutral shared runtime contracts/helpers |
 | `labby-web` | static web asset embedding/resolution/header helpers |
-| `labby-winjob` | Windows Job Object process-tree containment; sanctioned unsafe boundary |
+| `labby-winjob` | Windows process containment and verified filesystem primitives; sanctioned unsafe boundary |
 | `labby` | product binary/library, dispatch, CLI, MCP, HTTP API, setup, local services |
 | `xtask` | repository build/maintenance tasks |
 

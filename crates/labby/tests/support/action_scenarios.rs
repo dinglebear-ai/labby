@@ -10,7 +10,10 @@ use crate::action_matrix::{CaseIntent, EvidenceLevel, ScenarioKind, ScenarioOwne
 use crate::live_labby::isolated_command;
 
 pub(crate) const MATRIX_DEADLINE: Duration = Duration::from_secs(90);
-pub(crate) const CHILD_DEADLINE: Duration = Duration::from_secs(12);
+// Live Code Mode/snippet calls can contend with parallel feature-slice linking
+// on shared CI runners. Keep the aggregate matrix bound strict, but give one
+// real child/request enough room to finish under that expected load.
+pub(crate) const CHILD_DEADLINE: Duration = Duration::from_secs(30);
 pub(crate) const MAX_CHILDREN: usize = 4;
 pub(crate) const RESPONSE_LIMIT: usize = 1024 * 1024;
 pub(crate) const SECRET_CANARY: &str = "live-action-matrix-secret-canary";

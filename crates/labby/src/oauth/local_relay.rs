@@ -16,6 +16,7 @@ use tokio::net::TcpListener;
 use url::form_urlencoded;
 
 const MAX_CALLBACK_QUERY_BYTES: usize = 8 * 1024;
+const MAX_CALLBACK_RESPONSE_BYTES: usize = 1024 * 1024;
 
 use crate::oauth::error::OauthRelayError;
 use crate::oauth::target::{
@@ -200,9 +201,22 @@ async fn relay_callback(
 
     let status = response.status();
     let response_headers = filter_hop_by_hop_response_headers(response.headers());
-    let response_body = match response.bytes().await {
-        Ok(bytes) => bytes,
-        Err(error) if error.is_timeout() => {
+    let response_body = match labby_runtime::response_body::read_response_body_capped(
+        response,
+        MAX_CALLBACK_RESPONSE_BYTES,
+    )
+    .await
+    {
+        Ok(bytes) => Bytes::from(bytes),
+        Err(labby_runtime::response_body::CappedResponseBodyError::TooLarge { .. }) => {
+            return json_error(
+                StatusCode::BAD_GATEWAY,
+                "oauth relay target response_too_large",
+            );
+        }
+        Err(labby_runtime::response_body::CappedResponseBodyError::Transport(error))
+            if error.is_timeout() =>
+        {
             return json_error(
                 StatusCode::GATEWAY_TIMEOUT,
                 OauthRelayError::UpstreamTimeout {
@@ -215,7 +229,7 @@ async fn relay_callback(
         Err(error) => {
             return json_error(
                 StatusCode::BAD_GATEWAY,
-                format_upstream_error(&forward_url, &redact_forward_target(&forward_url), &error),
+                format_response_body_error(&forward_url, &error),
             );
         }
     };
@@ -305,6 +319,19 @@ fn format_upstream_error(
         "failed to reach oauth relay target `{}`: {}",
         redacted_target, sanitized_source
     )
+}
+
+fn format_response_body_error(
+    url: &reqwest::Url,
+    error: &labby_runtime::response_body::CappedResponseBodyError,
+) -> String {
+    let redacted = redact_forward_target(url);
+    match error {
+        labby_runtime::response_body::CappedResponseBodyError::Transport(error) => {
+            format_upstream_error(url, &redacted, error)
+        }
+        _ => format!("oauth relay target {redacted} response read failed: {error}"),
+    }
 }
 
 #[cfg(test)]
@@ -659,6 +686,27 @@ mod tests {
         assert!(!body.contains(&"x".repeat(128)));
 
         relay.abort();
+    }
+
+    #[test]
+    fn response_body_transport_error_redacts_callback_credentials() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let url = reqwest::Url::parse(
+            "http://127.0.0.1:8765/callback/node?code=private-code&state=private-state",
+        )
+        .unwrap();
+        let transport_error = reqwest::Client::new()
+            .get("http://[invalid")
+            .build()
+            .unwrap_err()
+            .with_url(url.clone());
+        assert!(transport_error.to_string().contains("private-code"));
+        let error =
+            labby_runtime::response_body::CappedResponseBodyError::Transport(transport_error);
+        let rendered = format_response_body_error(&url, &error);
+        assert!(rendered.contains("127.0.0.1:8765/callback/node"));
+        assert!(!rendered.contains("private-code"));
+        assert!(!rendered.contains("private-state"));
     }
 
     #[test]

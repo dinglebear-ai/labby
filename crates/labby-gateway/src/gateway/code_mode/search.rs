@@ -55,7 +55,7 @@ fn normalized_tool_safety(tool: &UpstreamTool) -> Option<CodeModeToolSafety> {
     (!safety.is_empty()).then_some(safety)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn embedding_corpus_fingerprint(tools: &[UpstreamTool]) -> String {
     let mut corpus = tools
         .iter()

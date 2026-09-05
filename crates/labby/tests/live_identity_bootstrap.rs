@@ -274,7 +274,9 @@ async fn concurrent_first_prepare_in_one_installation_has_one_owned_winner() {
 
 #[tokio::test]
 async fn credential_and_derived_session_expire_at_the_public_ttl() {
-    let mut identity = LiveIdentity::bootstrap_with_ttl("expiry@example.test", 10)
+    // Leave enough admission time for a loaded Windows runner to start the
+    // disposable server and consume the one-time proof before testing expiry.
+    let mut identity = LiveIdentity::bootstrap_with_ttl("expiry@example.test", 30)
         .await
         .unwrap();
     identity.create_session().await.unwrap();

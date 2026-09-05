@@ -1,125 +1,51 @@
-name: lab
-
-# Production/runtime stack. Uses the published Lab image by default.
-#
-#   docker compose -f docker-compose.prod.yml up -d
-#
-# The development stack in docker-compose.yml extends this service and replaces
-# the image with a local build.
+name: labby
 
 services:
   labby-master:
-    container_name: labby
-    image: ${LABBY_IMAGE:-ghcr.io/dinglebear-ai/labby:latest}
+    image: ${LABBY_IMAGE:?set LABBY_IMAGE to ghcr.io/dinglebear-ai/labby@sha256:<digest>}
     restart: unless-stopped
-    # Run Docker's tiny init as PID 1 so provider grandchildren orphaned by
-    # launch wrappers such as npx are reaped after Lab terminates the process group.
     init: true
-    working_dir: /workspace/lab
-
-    # Stable alias for "the host" reachable from inside the container. On Linux
-    # Docker Engine this is not auto-provided, so we map it to the special
-    # `host-gateway` value (Docker substitutes the current host gateway IP across
-    # whichever bridge the container is on). Lets config.toml reference host
-    # services by name — the adb server and the LM Studio/Ollama/TEI endpoints on
-    # :52000 — instead of a hardcoded, IPAM-assigned bridge IP. The dev override
-    # inherits this via `extends`.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     ports:
-      # LABBY_HOST_PORT lets you remap the host-side port without editing this file.
-      - "${LABBY_HOST_PORT:-8765}:8765"
-
+      - "127.0.0.1:${LABBY_HOST_PORT:-8765}:8765"
     volumes:
-      # Bind-mount Labby's auth, gateway, OAuth, and operator state so it
-      # persists across container restarts and image rebuilds.
-      - ${HOME}/.labby:/home/labby/.labby
-      # Named volume for the log DB only — it is redirected to ~/.local via
-      # the [local_logs].store_path config.toml setting and is ephemeral
-      # (TTL-pruned), so keeping it off the host .lab directory avoids churn
-      # in host storage.
+      - ${LABBY_CONFIG_DIR:?set LABBY_CONFIG_DIR}:/home/labby/.config/labby:ro
+      - labby-home:/home/labby/.labby
       - labby-data:/home/labby/.local
-      # Host config file — also visible via the .lab bind mount above, but
-      # the explicit :ro mount here makes the intent clear.
-      - ${HOME}/.labby/config.toml:/home/labby/.config/labby/config.toml:ro
-      # Runtime MCP gateways imported from Codex can reference plugin
-      # entrypoints by absolute host path. Mirror those paths for stdio
-      # gateways such as Bitwarden.
-      - ${HOME}/.codex/plugins:${HOME}/.codex/plugins:ro
-      # beads-mcp shells out to the host-managed bd binary. Mount it at a
-      # stable container path and point BEADS_PATH there in the gateway config.
-      - ${HOME}/.local/bin/bd:/usr/local/bin/bd:ro
-      # Bitwarden MCP validates the host-managed BW_SESSION file and shells
-      # out to the Bitwarden CLI before starting the pinned MCP package.
-      - /run/user/1000/bitwarden-mcp:/run/user/1000/bitwarden-mcp:ro
-      - ${HOME}/.config/Bitwarden CLI:/home/labby/.config/Bitwarden CLI
-      - ${HOME}/.local/share/fnm/node-versions/v24.13.0/installation:${HOME}/.local/share/fnm/node-versions/v24.13.0/installation:ro
-      - ${HOME}/.gemini:/home/labby/.gemini
-      # Local stdio MCP gateways often use absolute host paths under the user's
-      # home directory. Mirror it so adding another local server does not
-      # require a new per-repo container mount.
-      - ${HOME}:${HOME}
-      # Keep the container-local Synapse alias for tools/scripts that expect it.
-      - ${SYNAPSE2_WORKSPACE:-${HOME}/workspace/synapse2}:/workspace/synapse2
-      - .:/workspace/lab
-
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
     environment:
-      # Bind to all container interfaces so the port mapping works.
-      # The host-side port mapping (above) controls external exposure.
       LABBY_MCP_HTTP_HOST: "0.0.0.0"
       LABBY_MCP_HTTP_PORT: "8765"
-      # Override host-only paths from ~/.labby/.env for the container filesystem.
-      LABBY_WEB_ASSETS_DIR: ""
-      # Structured log levels — RUST_LOG for tracing, LABBY_LOG for app filter.
       RUST_LOG: "labby=info,warn"
-      LABBY_LOG: "info"
-      # Docker pipes stderr as a non-TTY; force ANSI colors for docker compose logs -f.
-      # LABBY_LOG_COLOR forces ColorPolicy::Color in tracing's with_ansi().
-      # CLICOLOR_FORCE forces console::colors_enabled() which the custom log formatter uses.
-      LABBY_LOG_COLOR: "force"
-      CLICOLOR_FORCE: "1"
-      # Parallel upstream MCP server discovery. Default is 3; bump so startup
-      # warms ~20 upstreams in roughly one 15s window instead of seven.
-      LABBY_UPSTREAM_DISCOVERY_CONCURRENCY: "16"
-      # Beads gateway upstreams inherit these so the mounted bd binary can use
-      # the same external Dolt server/auth context as the host CLI.
-      BEADS_DOLT_SERVER_MODE: "${BEADS_DOLT_SERVER_MODE:-}"
-      BEADS_DOLT_SERVER_HOST: "${BEADS_DOLT_SERVER_HOST:-}"
-      BEADS_DOLT_SERVER_PORT: "${BEADS_DOLT_SERVER_PORT:-}"
-      BEADS_DOLT_SERVER_TLS: "${BEADS_DOLT_SERVER_TLS:-}"
-      BEADS_DOLT_SERVER_USER: "${BEADS_DOLT_SERVER_USER:-}"
-      BEADS_DOLT_PASSWORD: "${BEADS_DOLT_PASSWORD:-}"
-
-    # ── Hard outer boundary ──────────────────────────────────────────────────
-    # Even if the spawn-guard logic in the binary fails, the container's pid
-    # namespace + these limits prevent a fork-bomb from reaching the host.
-    networks:
-      - lab
-      - axon
+    healthcheck:
+      test: [CMD, /usr/local/bin/labby-healthcheck]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
     deploy:
       resources:
-        limits:
-          memory: 4G
-          cpus: "2.0"
-          pids: 1000
+        limits: {memory: 2G, cpus: "2.0", pids: 512}
+
+  integrations:
+    profiles: [integrations]
+    image: ${LABBY_IMAGE:?set LABBY_IMAGE to an immutable digest}
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    network_mode: none
+    volumes:
+      - ${LABBY_INTEGRATIONS_DIR:-./config/integrations}:/integrations:ro
+    entrypoint: [/bin/true]
 
 volumes:
-  labby-data:
-    driver: local
-
-networks:
-  # Compose creates and manages this network on first `up`. Override the name
-  # via the DOCKER_NETWORK env var to attach to an existing bridge shared with
-  # other compose stacks — Compose joins a pre-existing network of that name
-  # without re-creating it. Host-local `.env` files can set DOCKER_NETWORK to
-  # the shared bridge used on that machine.
-  lab:
-    name: ${DOCKER_NETWORK:-lab}
-    external: ${DOCKER_NETWORK_EXTERNAL:-false}
-  # Qdrant and TEI for semantic gateway/code_search live in the Axon stack.
-  # Lab keeps host-loopback URLs usable for host CLIs, but rewrites them to
-  # these Docker DNS names when running in a container.
-  axon:
-    external: true
-    name: ${AXON_DOCKER_NETWORK:-jakenet}
+  labby-home: {}
+  labby-data: {}

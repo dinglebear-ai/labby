@@ -29,11 +29,14 @@ Common action-dispatch equivalents:
 
 ## Adding And Testing Upstreams
 
-Test before saving when possible:
+The CLI tests a configured gateway by name. Add it first (or update an existing
+gateway), then test the saved configuration:
 
 ```bash
-labby gateway test --name candidate --url https://example.invalid/mcp --json
-labby gateway test --name candidate --command node --arg server.js --json
+labby gateway add --name candidate --url https://example.invalid/mcp --json
+labby gateway test --name candidate --json
+labby gateway update candidate --url https://new.example.invalid/mcp --json
+labby gateway test --name candidate --json
 ```
 
 Add HTTP or stdio upstreams:
@@ -64,7 +67,7 @@ OAuth config. Labby supports no-auth HTTP upstreams.
 ```bash
 labby gateway update <name> --url https://new.example.invalid/mcp --json
 labby gateway update <name> --bearer-token-env LABBY_GW_NEW_AUTH_HEADER --json
-labby gateway remove <name> -y --json
+labby gateway remove <name> --json
 labby gateway reload --json
 ```
 
@@ -121,7 +124,7 @@ from CLI:
 labby gateway mcp auth status <name> --json
 labby gateway mcp auth start <name> --json
 labby gateway mcp auth open <name> --wait --json
-labby gateway mcp auth clear <name> -y --json
+labby gateway mcp auth clear <name> --json
 ```
 
 Use the server-side OAuth status path when browser OAuth looks connected but
@@ -134,9 +137,9 @@ The gateway-wide code-mode setting exposes the synthetic public MCP tools
 `codemode` instead of raw upstream tools:
 
 ```bash
-labby gateway code-mode status --json
-labby gateway code-mode enable --top-k-default 10 --max-tools 5000 --json
-labby gateway code-mode disable --json
+labby gateway code status --json
+labby gateway code enable --json
+labby gateway code disable --json
 ```
 
 In action dispatch:
@@ -193,14 +196,10 @@ Backend targets are validated to avoid unsafe local/link-local targets.
 
 ## Config Mutation Actions
 
-Use service-config actions for Labby-owned service config fields:
-
-```json
-{ "action": "gateway.service_config.get", "params": { "service": "deploy" } }
-{ "action": "gateway.service_config.set", "params": { "service": "deploy", "values": {} } }
-```
-
-Values are redacted on reads when fields are marked secret.
+Use the current typed gateway commands (`labby gateway add`, `update`,
+`remove`, `import`, and `reload`) for upstream configuration. Discover the
+live action schema before dispatching the equivalent MCP action. Values are
+redacted on reads when fields are marked secret.
 
 ## Common Failure Routing
 

@@ -68,7 +68,7 @@ fn canonicalize_workspace_dir(path: PathBuf) -> std::io::Result<PathBuf> {
 }
 
 #[allow(dead_code)] // Read by MCP fs dispatch when no AppState is available.
-static WORKSPACE_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+static WORKSPACE_ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
 /// Return the canonical workspace root, or a structured error if config is
 /// invalid. First call canonicalizes; subsequent calls
@@ -76,10 +76,14 @@ static WORKSPACE_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
 #[allow(dead_code)] // Read by MCP fs dispatch when the fs service is mounted.
 pub fn require_workspace_root() -> Result<&'static PathBuf, ToolError> {
     let cached = WORKSPACE_ROOT.get_or_init(|| {
-        let cfg = crate::config::load_toml(&crate::config::toml_candidates()).ok()?;
-        resolve_workspace_root(&cfg).ok()
+        let candidates = crate::config::toml_candidates().map_err(|error| error.to_string())?;
+        let cfg = crate::config::load_toml(&candidates).map_err(|error| error.to_string())?;
+        resolve_workspace_root(&cfg).map_err(|error| error.to_string())
     });
-    cached.as_ref().ok_or_else(not_configured_error)
+    cached.as_ref().map_err(|message| ToolError::Sdk {
+        sdk_kind: "config_read_error".into(),
+        message: message.clone(),
+    })
 }
 
 #[cfg(feature = "fs")]

@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{ErrorKind, Read as _, Write as _};
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::SystemTime;
@@ -160,6 +160,24 @@ pub enum MergeError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "commit replaced {path}, but the parent directory was not durably synced; recovery backup: {backup_path:?}: {source}"
+    )]
+    CommittedNotDurable {
+        path: PathBuf,
+        backup_path: Option<PathBuf>,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "commit replaced {path}, but post-commit maintenance failed; recovery backup: {backup_path:?}: {source}"
+    )]
+    CommittedMaintenanceFailed {
+        path: PathBuf,
+        backup_path: Option<PathBuf>,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -203,6 +221,8 @@ impl MergeError {
             Self::WriteConflict { .. } => "merge_write_conflict",
             Self::WriteFailed { .. } => "write_failed",
             Self::CommitRollbackFailed { .. } => "commit_rollback_failed",
+            Self::CommittedNotDurable { .. } => "merge_committed_not_durable",
+            Self::CommittedMaintenanceFailed { .. } => "merge_committed_maintenance_failed",
         }
     }
 }
@@ -227,17 +247,12 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
     // Serialize every sanctioned writer across processes. A separate stable
     // lock path remains valid while the target itself is atomically replaced.
     let lock_path = PathBuf::from(format!("{}.lock", path.display()));
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|error| MergeError::WriteFailed {
+    let lock_file = labby_auth::util::open_restricted_lock_file(&lock_path).map_err(|error| {
+        MergeError::WriteFailed {
             path: lock_path.clone(),
-            reason: WriteFailReason::from_io(&error),
-        })?;
-    set_secure_perms(&lock_path)?;
+            reason: WriteFailReason::Other(error.to_string()),
+        }
+    })?;
     lock_file.lock().map_err(|error| MergeError::WriteFailed {
         path: lock_path,
         reason: WriteFailReason::from_io(&error),
@@ -362,10 +377,15 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
     }
 
     // Atomic write.
-    write_atomically(path, &out_lines, &parent)?;
+    write_atomically(path, &out_lines, &parent, backup_path.as_deref())?;
 
     // Prune backups (post-write).
-    let pruned = prune_backups(&parent, path).unwrap_or_default();
+    let pruned =
+        prune_backups(&parent, path).map_err(|source| MergeError::CommittedMaintenanceFailed {
+            path: path.to_path_buf(),
+            backup_path: backup_path.clone(),
+            source,
+        })?;
 
     Ok(MergeOutcome {
         written: written_count,
@@ -452,11 +472,17 @@ fn conflict_warning(key: &str) -> String {
     format!("CONFLICT: {key} already set; skipping (set force=true to overwrite)")
 }
 
-fn write_atomically(path: &Path, lines: &[String], parent: &Path) -> Result<(), MergeError> {
+fn write_atomically(
+    path: &Path,
+    lines: &[String],
+    parent: &Path,
+    backup_path: Option<&Path>,
+) -> Result<(), MergeError> {
     let mut tmp = NamedTempFile::new_in(parent).map_err(|e| MergeError::TempCreate {
         parent: parent.to_path_buf(),
         source: e,
     })?;
+    set_secure_perms(tmp.path())?;
     {
         let file = tmp.as_file_mut();
         for line in lines {
@@ -484,11 +510,30 @@ fn write_atomically(path: &Path, lines: &[String], parent: &Path) -> Result<(), 
     // fsync the parent directory so the rename is durable across power loss.
     // tempfile::persist guarantees atomicity on the rename, but Linux durability
     // requires an additional fsync on the parent to flush the directory entry.
-    if let Ok(dir) = fs::File::open(parent) {
-        dir.sync_all().ok();
-    }
-    set_secure_perms(path)?;
+    set_secure_perms(path).map_err(|error| MergeError::CommittedMaintenanceFailed {
+        path: path.to_path_buf(),
+        backup_path: backup_path.map(Path::to_path_buf),
+        source: std::io::Error::other(error.to_string()),
+    })?;
+    sync_parent_directory(parent).map_err(|source| MergeError::CommittedNotDurable {
+        path: path.to_path_buf(),
+        backup_path: backup_path.map(Path::to_path_buf),
+        source,
+    })?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
+    // File data is flushed before atomic replacement. Windows does not provide
+    // the Unix directory-fsync guarantee here; still reject an absent,
+    // non-directory, or reparse-point parent rather than reporting success.
+    labby_winjob::fs::open_directory(parent).map(drop)
 }
 
 #[cfg(unix)]
@@ -533,12 +578,28 @@ fn create_backup(path: &Path) -> Result<PathBuf, MergeError> {
 }
 
 fn prune_backups(parent: &Path, target: &Path) -> std::io::Result<PruneStats> {
+    prune_backups_with_retention(
+        parent,
+        target,
+        super::ConfigBackupRetention {
+            max_count: BACKUP_RETENTION,
+            max_age: super::CONFIG_BACKUP_MAX_AGE,
+            max_bytes: super::CONFIG_BACKUP_MAX_BYTES,
+        },
+    )
+}
+
+fn prune_backups_with_retention(
+    parent: &Path,
+    target: &Path,
+    retention: super::ConfigBackupRetention,
+) -> std::io::Result<PruneStats> {
     let target_name = target.file_name().and_then(|s| s.to_str()).unwrap_or("");
     if target_name.is_empty() {
         return Ok(PruneStats::default());
     }
     let prefix = format!("{target_name}.bak.");
-    let mut backups: Vec<(PathBuf, SystemTime)> = Vec::new();
+    let mut backups = Vec::new();
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -548,32 +609,25 @@ fn prune_backups(parent: &Path, target: &Path) -> std::io::Result<PruneStats> {
         if !name_str.starts_with(&prefix) {
             continue;
         }
-        let mtime = entry.metadata()?.modified()?;
-        backups.push((entry.path(), mtime));
-    }
-    if backups.len() <= BACKUP_RETENTION {
-        return Ok(PruneStats {
-            kept: backups.len(),
-            removed: 0,
+        let metadata = entry.metadata()?;
+        backups.push(super::ConfigBackupCandidate {
+            path: entry.path(),
+            modified: metadata.modified()?,
+            bytes: metadata.len(),
         });
     }
-    backups.sort_by_key(|(_, mtime)| *mtime);
-    let to_remove = backups.len() - BACKUP_RETENTION;
+    let original_count = backups.len();
+    let removals = super::select_config_backups_to_prune(backups, SystemTime::now(), retention);
     let mut removed = 0;
-    for (path, _) in backups.iter().take(to_remove) {
-        match fs::remove_file(path) {
-            Ok(()) => removed += 1,
-            Err(e) => tracing::warn!(
-                subsystem = "env_merge",
-                phase = "backup.prune",
-                path = %path.display(),
-                error = %e,
-                "could not remove old backup; continuing"
-            ),
-        }
+    for path in removals {
+        fs::remove_file(path)?;
+        removed += 1;
+    }
+    if removed != 0 {
+        sync_parent_directory(parent)?;
     }
     Ok(PruneStats {
-        kept: BACKUP_RETENTION,
+        kept: original_count.saturating_sub(removed),
         removed,
     })
 }
@@ -589,8 +643,9 @@ pub fn restore_backup(target: &Path, backup: &Path) -> Result<(), MergeError> {
     Ok(())
 }
 
-fn copy_file_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
+fn copy_file_contents(src: &Path, dest_path: &Path) -> std::io::Result<()> {
     let mut src = fs::File::open(src)?;
+    let dest_existed = dest_path.exists();
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -598,15 +653,20 @@ fn copy_file_contents(src: &Path, dest: &Path) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut dest = options.open(dest)?;
-    let mut buf = [0_u8; 8 * 1024];
-    loop {
-        let read = src.read(&mut buf)?;
-        if read == 0 {
-            return Ok(());
+    let mut dest = options.open(dest_path)?;
+    if let Err(error) = labby_auth::util::harden_secret_file(dest_path) {
+        drop(dest);
+        if !dest_existed {
+            drop(fs::remove_file(dest_path));
         }
-        dest.write_all(&buf[..read])?;
+        return Err(std::io::Error::other(error.to_string()));
     }
+    let copied = std::io::copy(&mut src, &mut dest).map(|_| ());
+    if copied.is_err() && !dest_existed {
+        drop(dest);
+        drop(fs::remove_file(dest_path));
+    }
+    copied
 }
 
 fn quote_value(value: &str) -> String {
@@ -774,6 +834,27 @@ mod tests {
         assert!(fs::read_to_string(&path).unwrap().contains("FOO=baz"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn merge_uses_private_persistent_lock() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_initial(dir.path(), ".env", "FOO=bar\n");
+        merge(
+            &path,
+            MergeRequest {
+                entries: vec![EnvEntry::new("BAR", "baz")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        assert_eq!(
+            fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     #[test]
     fn entry_force_overwrites_only_selected_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -907,6 +988,71 @@ mod tests {
             "expected {BACKUP_RETENTION} backups, got {}",
             backups.len()
         );
+    }
+
+    #[test]
+    fn dotenv_backup_pruning_applies_byte_budget_and_preserves_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(".env");
+        let oldest = dir.path().join(".env.bak.1");
+        let newest = dir.path().join(".env.bak.2");
+        fs::write(&oldest, vec![b'a'; 32]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&newest, vec![b'b'; 32]).unwrap();
+
+        let stats = prune_backups_with_retention(
+            dir.path(),
+            &target,
+            super::super::ConfigBackupRetention {
+                max_count: 10,
+                max_age: std::time::Duration::MAX,
+                max_bytes: 16,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(stats.removed, 1);
+        assert!(!oldest.exists());
+        assert!(newest.exists(), "newest known-good backup must survive");
+    }
+
+    #[test]
+    fn merge_reports_committed_with_recovery_metadata_when_backup_pruning_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = write_initial(dir.path(), ".env", "FOO=before\n");
+        for index in 0..=BACKUP_RETENTION {
+            let backup = dir.path().join(format!(".env.bak.{index:02}"));
+            if index == 0 {
+                fs::create_dir(&backup).unwrap();
+            } else {
+                fs::write(&backup, "backup").unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        let error = merge(
+            &target,
+            MergeRequest {
+                entries: vec![EnvEntry::new("FOO", "after")],
+                force: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "FOO=after\n");
+        match error {
+            MergeError::CommittedMaintenanceFailed { backup_path, .. } => {
+                assert!(backup_path.is_some(), "recovery backup must be reported");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parent_directory_sync_failure_is_visible() {
+        let missing = tempfile::tempdir().unwrap().path().join("missing-parent");
+
+        assert!(sync_parent_directory(&missing).is_err());
     }
 
     #[test]

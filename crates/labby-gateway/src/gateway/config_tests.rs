@@ -1803,3 +1803,82 @@ fn write_gateway_config_creates_file_with_0o600() {
         & 0o777;
     assert_eq!(mode, 0o600, "config.toml must be 0o600, got {mode:04o}");
 }
+
+#[test]
+fn documented_stdio_path_opt_in_is_valid_toml() {
+    let raw = r#"
+[[upstream]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+
+[upstream.env]
+UPSTREAM_STATE_DIR = "/var/lib/labby-upstreams/filesystem"
+UPSTREAM_READ_ONLY_PATHS = "/srv/data"
+"#;
+    let parsed: GatewayConfig = toml::from_str(raw).expect("documented opt-in TOML must parse");
+    assert_eq!(
+        parsed.upstream[0]
+            .env
+            .get("UPSTREAM_STATE_DIR")
+            .map(String::as_str),
+        Some("/var/lib/labby-upstreams/filesystem")
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn write_gateway_config_replaces_permissive_parent_acl_with_private_active_and_lock_acls() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[gateway]\n").unwrap();
+    let loosen = std::process::Command::new("icacls.exe")
+        .arg(dir.path())
+        .args(["/grant", "*S-1-1-0:(OI)(CI)(F)"])
+        .status()
+        .unwrap();
+    assert!(loosen.success());
+
+    write_gateway_config(&path, &GatewayConfig::default()).expect("write config");
+    let lock = lock_path(&path);
+    for protected in [&path, &lock] {
+        assert_private_windows_acl(protected);
+    }
+
+    let blocked = dir.path().join("blocked.toml");
+    std::fs::create_dir(&blocked).unwrap();
+    let error = write_gateway_config(&blocked, &GatewayConfig::default()).unwrap_err();
+    assert!(
+        error.to_string().contains("failed to persist"),
+        "wrong failure phase: {error}"
+    );
+    assert!(
+        blocked.is_dir(),
+        "failed replacement must preserve its target"
+    );
+    assert_private_windows_acl(&lock_path(&blocked));
+    let remaining: std::collections::BTreeSet<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        remaining,
+        [
+            "config.toml",
+            "config.toml.lock",
+            "blocked.toml",
+            "blocked.toml.lock"
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect(),
+        "only the owned lock may remain after failed persistence; no secret temp file"
+    );
+}
+
+#[cfg(windows)]
+pub(crate) fn assert_private_windows_acl(path: &Path) {
+    let file = labby_winjob::fs::open_read(path, false).expect("open protected file");
+    labby_winjob::fs::verify_current_user_only_dacl(&file)
+        .expect("private current-user FullControl ACL");
+}

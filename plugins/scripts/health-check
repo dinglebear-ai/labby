@@ -126,7 +126,8 @@ launch_probe() {
         return 0
     fi
 
-    local outfile="$RESULT_DIR/$(printf '%03d' "${#RESULT_FILES[@]}").out"
+    local outfile
+    outfile="$RESULT_DIR/$(printf '%03d' "${#RESULT_FILES[@]}").out"
     RESULT_FILES+=("$outfile")
     probe_to_file "$outfile" "$name" "$url" "$@" &
     PIDS+=("$!")

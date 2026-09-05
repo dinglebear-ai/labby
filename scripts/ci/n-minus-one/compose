@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+work=${RUNNER_TEMP:?}/labby-n-minus-one/compose
+project=labby-n1-${GITHUB_RUN_ID:-local}
+stage=${1:-}
+mkdir -p "$work/config"
+[[ -f "$work/current-image" ]] || printf '%s\n' "${LABBY_N_MINUS_ONE_PREVIOUS_IMAGE:?previous digest image required}" >"$work/current-image"
+cat >"$work/qualification.yml" <<'YAML'
+services:
+  labby-master:
+    environment:
+      LABBY_MCP_HTTP_TOKEN: n1-token
+YAML
+dc() {
+  LABBY_IMAGE="$(<"$work/current-image")" LABBY_CONFIG_DIR="$work/config" LABBY_HOST_PORT=18765 \
+    docker compose -p "$project" -f "$root/docker-compose.prod.yml" -f "$work/qualification.yml" "$@"
+}
+cleanup() {
+  rc=$?
+  # The common driver performs one final authenticated action after rollback
+  # verification. Preserve the containers and volumes until that last stage.
+  if [[ $rc -ne 0 || $stage == authenticated-action && "$(<"$work/current-image")" == "$LABBY_N_MINUS_ONE_PREVIOUS_IMAGE" ]]; then
+    dc down -v --remove-orphans >/dev/null 2>&1 || true
+  fi
+  return "$rc"
+}
+trap cleanup EXIT
+ready() { for _ in {1..30}; do curl -fsS http://127.0.0.1:18765/ready >/dev/null && return; sleep 1; done; return 1; }
+call() { curl -fsS -H 'Authorization: Bearer n1-token' -H 'Content-Type: application/json' --data "$2" "http://127.0.0.1:18765/v1/$1"; }
+auth() { call gateway '{"action":"gateway.list","params":{}}' >/dev/null; }
+state() { dc exec -T labby-master python3 /tmp/n-minus-one-durable-state.py verify /home/labby/.labby; call snippets '{"action":"snippets.get","params":{"name":"n-minus-one-state"}}' | grep -F 'preserved-state'; }
+case "$stage" in
+ install-previous) dc up -d; ready ;;
+ seed-state)
+   call snippets '{"action":"snippets.create","params":{"name":"n-minus-one-state","body":"async () => ({ value: \"preserved-state\" })","description":"release qualification state","force":true}}' >/dev/null
+   dc cp "$root/scripts/ci/n-minus-one-durable-state.py" labby-master:/tmp/n-minus-one-durable-state.py
+   dc exec -T labby-master python3 /tmp/n-minus-one-durable-state.py seed /home/labby/.labby
+   dc exec -T labby-master sh -lc 'tar -C /home/labby -czf /tmp/labby-state-backup.tar.gz .labby .local'
+   dc cp labby-master:/tmp/labby-state-backup.tar.gz "$work/labby-state-backup.tar.gz"
+   test -s "$work/labby-state-backup.tar.gz"
+   ;;
+ verify-previous) dc exec -T labby-master labby --version | grep -F "${LABBY_PREVIOUS_VERSION#v}"; state ;;
+ verify-provenance)
+   gh attestation verify "oci://${LABBY_N_MINUS_ONE_PREVIOUS_IMAGE}" --repo "$GITHUB_REPOSITORY" >/dev/null
+   "$root/scripts/ci/verify-release-provenance.sh" --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?}"
+   ;;
+ upgrade) printf '%s\n' "${LABBY_N_MINUS_ONE_CANDIDATE_IMAGE:?candidate digest image required}" >"$work/current-image"; dc up -d --force-recreate; ready ;;
+ verify-candidate) dc exec -T labby-master labby --version | grep -F "${LABBY_CANDIDATE_VERSION#v}"; state ;;
+ authenticated-action) auth ;;
+ restart) dc restart; ready ;;
+ verify-restart) auth; state; test -s "$work/labby-state-backup.tar.gz" ;;
+ rollback) printf '%s\n' "$LABBY_N_MINUS_ONE_PREVIOUS_IMAGE" >"$work/current-image"; dc up -d --force-recreate; ready ;;
+ verify-rollback) dc exec -T labby-master labby --version | grep -F "${LABBY_PREVIOUS_VERSION#v}"; state; test -s "$work/labby-state-backup.tar.gz" ;;
+ *) exit 64 ;;
+esac

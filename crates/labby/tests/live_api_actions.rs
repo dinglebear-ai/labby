@@ -46,7 +46,10 @@ async fn ensure_action_fixture(
     base: &str,
     intent: &action_matrix::CaseIntent,
 ) {
-    let prerequisite = if intent.action == "draft.commit" {
+    let prerequisite = if matches!(
+        intent.action.as_str(),
+        "draft.get" | "draft.commit" | "finalize"
+    ) {
         Some((
             "/v1/setup",
             "draft.set",

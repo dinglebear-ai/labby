@@ -30,6 +30,7 @@ impl TokenEndpointError {
                 | AuthError::Network(_)
                 | AuthError::Server(_)
                 | AuthError::Decode(_)
+                | AuthError::ResponseTooLarge { .. }
                 | AuthError::InsecurePermissions { .. },
             ) => "server_error",
         }
@@ -60,6 +61,7 @@ impl TokenEndpointError {
                 | AuthError::Network(_)
                 | AuthError::Server(_)
                 | AuthError::Decode(_)
+                | AuthError::ResponseTooLarge { .. }
                 | AuthError::InsecurePermissions { .. },
             ) => StatusCode::INTERNAL_SERVER_ERROR,
         }

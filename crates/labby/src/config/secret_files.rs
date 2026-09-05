@@ -27,7 +27,7 @@ pub(super) fn open_secret_file(path: &Path) -> std::io::Result<std::fs::File> {
     }
 }
 
-pub(super) fn restrict_secret_file_permissions(path: &Path) -> std::io::Result<()> {
+pub(crate) fn restrict_secret_file_permissions(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

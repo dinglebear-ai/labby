@@ -13,9 +13,26 @@ use tokio::process::{Child, Command as TokioCommand};
 
 use super::evidence::{EvidenceKind, RunEvidence, sanitize};
 
+#[cfg(not(windows))]
 const DEFAULT_DEADLINE: Duration = Duration::from_secs(20);
+#[cfg(windows)]
+const DEFAULT_DEADLINE: Duration = Duration::from_secs(45);
 const LOG_TAIL_BYTES: usize = 32 * 1024;
 const DROP_DEADLINE: Duration = Duration::from_secs(3);
+
+/// OS runtime inputs only; never inherit credentials, proxies, or user configuration.
+fn isolated_runtime_env() -> Vec<(&'static str, OsString)> {
+    let mut values = vec![("PATH", std::env::var_os("PATH").unwrap_or_default())];
+    if cfg!(windows) {
+        // Winsock provider initialization needs the Windows installation directory.
+        for key in ["SystemRoot", "WINDIR"] {
+            if let Some(value) = std::env::var_os(key) {
+                values.push((key, value));
+            }
+        }
+    }
+    values
+}
 
 fn labby_binary() -> PathBuf {
     std::env::var_os("LABBY_E2E_BINARY")
@@ -280,7 +297,7 @@ impl LiveLabbyBuilder {
                 .env("TMPDIR", &temp)
                 .env("LABBY_AUTH_MODE", "bearer")
                 .env("LABBY_MCP_HTTP_TOKEN", &credential_canary)
-                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .envs(isolated_runtime_env())
                 .envs(self.extra_env)
                 .stdin(Stdio::null())
                 .stdout(stdout)
@@ -429,7 +446,7 @@ impl LiveLabbyGuard {
             .env("TMPDIR", &recipe.temp)
             .env("LABBY_AUTH_MODE", "bearer")
             .env("LABBY_MCP_HTTP_TOKEN", &self.credential_canary)
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .envs(isolated_runtime_env())
             .envs(recipe.extra_env.clone())
             .stdin(Stdio::null())
             .stdout(stdout)
@@ -948,7 +965,7 @@ pub(crate) fn isolated_command(home: &Path) -> Command {
         // on the default port. Tests that intentionally exercise remote
         // discovery override this value after constructing the command.
         .env("LABBY_MCP_HTTP_PORT", "0")
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+        .envs(isolated_runtime_env());
     command
 }
 
@@ -1395,16 +1412,56 @@ mod tests {
                 "ambient {forbidden} was inherited"
             );
         }
-        assert_eq!(
-            explicit,
-            BTreeSet::from([
-                "HOME".into(),
-                "LABBY_HOME".into(),
-                "LABBY_LOG_DIR".into(),
-                "LABBY_MCP_HTTP_PORT".into(),
-                "PATH".into(),
-                "TMPDIR".into(),
-            ])
+        let mut expected = BTreeSet::from([
+            "HOME".into(),
+            "LABBY_HOME".into(),
+            "LABBY_LOG_DIR".into(),
+            "LABBY_MCP_HTTP_PORT".into(),
+            "PATH".into(),
+            "TMPDIR".into(),
+        ]);
+        for key in ["SystemRoot", "WINDIR"] {
+            if cfg!(windows) && std::env::var_os(key).is_some() {
+                expected.insert(key.into());
+            }
+        }
+        assert_eq!(explicit, expected);
+    }
+
+    #[tokio::test]
+    async fn isolated_runtime_supports_tcp_before_and_after_restart() {
+        #[cfg(windows)]
+        assert!(
+            isolated_runtime_env()
+                .iter()
+                .any(|(key, _)| *key == "SystemRoot")
+        );
+        let mut guard = LiveLabbyBuilder::new()
+            .start()
+            .await
+            .expect("isolated HTTP daemon");
+        for restarted in [false, true] {
+            if restarted {
+                guard.restart().await.expect("restart isolated HTTP daemon");
+            }
+            let address = guard
+                .connection()
+                .base_url
+                .trim_start_matches("http://")
+                .to_string();
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::net::TcpStream::connect(&address),
+            )
+            .await
+            .expect("bounded TCP connect")
+            .expect("TCP socket");
+        }
+        let cleanup = guard.finish().await;
+        assert!(
+            cleanup.is_clean(),
+            "isolated runtime cleanup: {:?}",
+            cleanup.failures
         );
     }
 

@@ -162,7 +162,7 @@ fn reject_path_against_denylist(
     Ok(())
 }
 
-/// Reject a path that exists on disk as a symlink.
+/// Reject a path that exists on disk as a symlink or Windows reparse point.
 ///
 /// This is a **lstat-based** check — it does not follow the link. Callers that
 /// need a post-canonicalize within-root guarantee must perform that check
@@ -171,7 +171,7 @@ fn reject_path_against_denylist(
 /// sole guard).
 ///
 /// Returns `ToolError::Sdk { sdk_kind: "not_found" }` when the path does not
-/// exist, and `ToolError::internal_message` when the path *is* a symlink.
+/// exist, and kind `symlink_rejected` for symlinks or Windows reparse points.
 /// Returns `Ok(())` for regular files and directories.
 pub fn reject_symlink(path: &Path) -> Result<(), ToolError> {
     let metadata = match std::fs::symlink_metadata(path) {
@@ -189,7 +189,7 @@ pub fn reject_symlink(path: &Path) -> Result<(), ToolError> {
             });
         }
     };
-    if metadata.file_type().is_symlink() {
+    if metadata_is_link(&metadata) {
         return Err(ToolError::Sdk {
             sdk_kind: "symlink_rejected".into(),
             message: format!("refusing to operate on symlinked path `{}`", path.display()),
@@ -250,9 +250,21 @@ pub fn reject_existing_symlink_ancestors(
 /// existing parent.
 pub fn reject_existing_symlinks_in_path(path: &Path) -> Result<(), ToolError> {
     let path = normalize_lexical(path);
+    if matches!(path.components().next(), Some(Component::Prefix(_))) && !path.has_root() {
+        return Err(ToolError::Sdk {
+            sdk_kind: "path_traversal".into(),
+            message: "drive-relative paths cannot be verified safely".into(),
+        });
+    }
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
+        // On rooted Windows paths, `C:` or `\\?\C:` is only a prefix, not
+        // the root directory. Wait for RootDir to form the real filesystem
+        // root, which is still inspected before every descendant.
+        if matches!(component, Component::Prefix(_)) && path.has_root() {
+            continue;
+        }
         reject_existing_symlink(&current)?;
     }
     Ok(())
@@ -260,7 +272,7 @@ pub fn reject_existing_symlinks_in_path(path: &Path) -> Result<(), ToolError> {
 
 fn reject_existing_symlink(path: &Path) -> Result<(), ToolError> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(ToolError::Sdk {
+        Ok(metadata) if metadata_is_link(&metadata) => Err(ToolError::Sdk {
             sdk_kind: "symlink_rejected".into(),
             message: format!(
                 "refusing to write through symlinked path `{}`",
@@ -274,6 +286,20 @@ fn reject_existing_symlink(path: &Path) -> Result<(), ToolError> {
             message: format!("lstat `{}` failed: {error}", path.display()),
         }),
     }
+}
+
+fn metadata_is_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        // Reject all reparse tags, including junctions, rather than relying on
+        // FileType's symbolic-link classification to cover every redirect.
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    metadata.file_type().is_symlink()
 }
 
 /// Render a relative path with `/` separators on every platform so the logical
@@ -342,6 +368,59 @@ mod tests {
     fn reject_symlink_accepts_directory() {
         let dir = tempdir().unwrap();
         assert!(reject_symlink(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn symlink_path_check_accepts_canonical_root_and_missing_descendants() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let file = root.join("regular.txt");
+        std::fs::write(&file, b"contents").unwrap();
+        for path in [&root, &file, &root.join("new").join("nested.txt")] {
+            reject_existing_symlinks_in_path(path).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symlink_path_check_rejects_drive_relative_paths() {
+        for path in [r"C:", r"C:relative\file.txt"] {
+            assert_eq!(
+                reject_existing_symlinks_in_path(Path::new(path))
+                    .unwrap_err()
+                    .kind(),
+                "path_traversal"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symlink_path_checks_reject_windows_directory_junctions() {
+        let directory = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let link = root.join("junction");
+        let sentinel = outside.path().join("sentinel.txt");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(directory.path().join("junction"))
+            .arg(outside.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "create test junction: {output:?}");
+
+        let results = [
+            reject_symlink(&link),
+            reject_existing_symlinks_in_path(&link.join("new.txt")),
+            reject_existing_symlink_ancestors(&root, &link.join("new.txt")),
+        ];
+        std::fs::remove_dir(&link).unwrap();
+        for result in results {
+            assert_eq!(result.unwrap_err().kind(), "symlink_rejected");
+        }
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"unchanged");
     }
 
     #[test]

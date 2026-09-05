@@ -3,21 +3,88 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
+use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use rmcp::RoleClient;
 use rmcp::service::{RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
+use super::helpers::max_transport_response_bytes;
 use super::logging::UpstreamRequestLog;
 use super::stdio_stderr::StdioDiagnostics;
 
 const CHILD_EXIT_WAIT: Duration = Duration::from_secs(3);
+
+/// Caps each newline-delimited JSON-RPC frame before rmcp can deserialize it.
+///
+/// Stdio MCP uses one JSON value per line. Tracking the current line in the
+/// transport reader gives stdio the same pre-materialization response bound as
+/// HTTP, while allowing an unlimited number of individually bounded messages.
+struct CappedJsonLineReader<R> {
+    inner: R,
+    max_frame_bytes: usize,
+    frame_bytes: usize,
+}
+
+impl<R> CappedJsonLineReader<R> {
+    const fn new(inner: R, max_frame_bytes: usize) -> Self {
+        Self {
+            inner,
+            max_frame_bytes,
+            frame_bytes: 0,
+        }
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for CappedJsonLineReader<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        // Validate bytes in a fixed-size staging buffer before exposing them
+        // to the caller. `AsyncRead` forbids returning an error after changing
+        // the caller's `ReadBuf`, and rmcp must never receive the over-limit
+        // portion of a frame.
+        let mut staging = [0_u8; 8 * 1024];
+        let capacity = staging.len().min(buf.remaining());
+        let mut staged = ReadBuf::new(&mut staging[..capacity]);
+        match Pin::new(&mut self.inner).poll_read(cx, &mut staged) {
+            Poll::Ready(Ok(())) => {
+                for byte in staged.filled() {
+                    if *byte == b'\n' {
+                        self.frame_bytes = 0;
+                    } else {
+                        self.frame_bytes = self.frame_bytes.saturating_add(1);
+                        if self.frame_bytes > self.max_frame_bytes {
+                            return Poll::Ready(Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "stdio MCP response exceeded {} byte limit",
+                                    self.max_frame_bytes
+                                ),
+                            )));
+                        }
+                    }
+                }
+                buf.put_slice(staged.filled());
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
 
 type ChildProcessParts = (
     Box<dyn ChildWrapper>,
@@ -225,7 +292,7 @@ async fn log_termination(
 /// here lets lifecycle logs retain upstream identity and exit status.
 pub(super) struct DiagnosticChildTransport {
     child: Option<Box<dyn ChildWrapper>>,
-    transport: AsyncRwTransport<RoleClient, ChildStdout, ChildStdin>,
+    transport: AsyncRwTransport<RoleClient, CappedJsonLineReader<ChildStdout>, ChildStdin>,
     upstream: String,
     generation: u64,
     pid: Option<u32>,
@@ -249,7 +316,10 @@ impl DiagnosticChildTransport {
         Ok((
             Self {
                 child: Some(child),
-                transport: AsyncRwTransport::new(stdout, stdin),
+                transport: AsyncRwTransport::new(
+                    CappedJsonLineReader::new(stdout, max_transport_response_bytes()),
+                    stdin,
+                ),
                 upstream,
                 generation,
                 pid,
@@ -360,6 +430,7 @@ impl Transport<RoleClient> for DiagnosticChildTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn inflight_registry_is_scoped_to_connection_generation() {
@@ -376,5 +447,62 @@ mod tests {
         assert!(requests[0].contains("Bash"));
         drop(guard);
         assert!(register_inflight(event, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn stdio_reader_rejects_an_oversized_json_frame_before_materialization() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        tokio::spawn(async move {
+            writer
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"result\":\"oversized\"}\n")
+                .await
+                .expect("write fixture");
+        });
+
+        let mut capped = CappedJsonLineReader::new(reader, 16);
+        let mut output = Vec::new();
+        let error = capped
+            .read_to_end(&mut output)
+            .await
+            .expect_err("oversized frame must fail at the transport reader");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("16 byte limit"));
+        assert!(output.len() <= 16, "oversized frame must not materialize");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "skills")]
+    async fn stdio_reader_accepts_skills_frames_above_the_ordinary_limit() {
+        use super::super::helpers::{DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_SKILL_RESPONSE_BYTES};
+
+        let payload = vec![b'x'; DEFAULT_MAX_RESPONSE_BYTES + 1];
+        let mut capped =
+            CappedJsonLineReader::new(payload.as_slice(), DEFAULT_MAX_SKILL_RESPONSE_BYTES);
+        let mut output = Vec::new();
+        capped
+            .read_to_end(&mut output)
+            .await
+            .expect("Skills wire allowance");
+        assert_eq!(output, payload);
+    }
+
+    #[tokio::test]
+    async fn stdio_reader_resets_its_budget_at_each_json_frame() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        tokio::spawn(async move {
+            writer
+                .write_all(b"{\"id\":1}\n{\"id\":2}\n")
+                .await
+                .expect("write fixture");
+        });
+
+        let mut capped = CappedJsonLineReader::new(reader, 10);
+        let mut output = Vec::new();
+        capped
+            .read_to_end(&mut output)
+            .await
+            .expect("bounded frames");
+        assert_eq!(output, b"{\"id\":1}\n{\"id\":2}\n");
     }
 }
