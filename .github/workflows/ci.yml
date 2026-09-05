@@ -51,6 +51,10 @@ jobs:
           python scripts/ci/check_workflow_policy.py
           --release-file-regex '(^|/)(release|build-incus-image)\.ya?ml$'
           --allow-arm64
+      - name: Verify workflow policy tests and Node toolchain sync
+        run: |
+          python -m unittest scripts/ci/test_workflow_policy.py scripts/ci/test_ci_supply_policy.py
+          python scripts/ci/check_node_toolchain_sync.py
       - name: Enforce shared-cache capability boundary
         run: >-
           python scripts/ci/check-cache-boundary.py
@@ -82,11 +86,13 @@ jobs:
       rust_compile: ${{ steps.classify.outputs.rust_compile }}
       rust_test: ${{ steps.classify.outputs.rust_test }}
       web: ${{ steps.classify.outputs.web }}
+      browser_extension: ${{ steps.classify.outputs.browser_extension }}
       palette: ${{ steps.classify.outputs.palette }}
       unraid: ${{ steps.classify.outputs.unraid }}
       npm: ${{ steps.classify.outputs.npm }}
       docker: ${{ steps.classify.outputs.docker }}
       security: ${{ steps.classify.outputs.security }}
+      javascript_advisories: ${{ steps.classify.outputs.javascript_advisories }}
       release: ${{ steps.classify.outputs.release }}
       # Comma-separated routing keys this workflow gates on that the trusted
       # base-branch classifier could not emit. The classify step already forced
@@ -488,6 +494,30 @@ jobs:
           NODE
       - run: pnpm test:browser
 
+  browser-extension:
+    name: Browser extension tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: changes
+    if: ${{ needs.changes.outputs.browser_extension == 'true' }}
+    defaults:
+      run:
+        working-directory: apps/browser-extension
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/browser-extension/package-lock.json
+      - run: npm ci
+      - name: Test and type-check browser extension
+        run: |
+          npm test
+          npm run typecheck
+
   live-e2e-core:
     name: Live E2E core
     runs-on: ubuntu-24.04
@@ -619,6 +649,26 @@ jobs:
             --all-features \
             check
 
+  javascript-advisories:
+    name: JavaScript dependency advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.javascript_advisories == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Audit every committed JavaScript dependency graph
+        run: python scripts/ci/js_advisory_gate.py
+
   # The former `check` job (cargo check --workspace --all-features --locked)
   # was strictly subsumed by `msrv`: the toolchain pin (1.97.1) IS the MSRV,
   # and msrv additionally checks --all-targets.
@@ -661,7 +711,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -726,7 +776,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -820,7 +870,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -911,7 +961,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -1029,7 +1079,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -1080,7 +1130,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -1123,7 +1173,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -1461,7 +1511,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
           path: apps/gateway-admin/out
@@ -1526,9 +1576,11 @@ jobs:
       - macos-installer
       - frontend-assets
       - gateway-admin-browser
+      - browser-extension
       - live-e2e-core
       - fmt
       - deny
+      - javascript-advisories
       - msrv
       - npm-launcher
       - feature-slices
@@ -1610,9 +1662,11 @@ jobs:
           require_success_or_skipped macos-installer "${{ needs.macos-installer.result }}"
           require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
           require_success_or_skipped gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
+          require_success_or_skipped browser-extension "${{ needs.browser-extension.result }}"
           require_success_or_skipped live-e2e-core "${{ needs.live-e2e-core.result }}"
           require_success_or_skipped fmt "${{ needs.fmt.result }}"
           require_success_or_skipped deny "${{ needs.deny.result }}"
+          require_success_or_skipped javascript-advisories "${{ needs.javascript-advisories.result }}"
           require_success_or_skipped msrv "${{ needs.msrv.result }}"
           require_success_or_skipped npm-launcher "${{ needs.npm-launcher.result }}"
           require_success_or_skipped feature-slices "${{ needs.feature-slices.result }}"

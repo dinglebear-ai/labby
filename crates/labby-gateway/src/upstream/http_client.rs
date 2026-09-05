@@ -104,6 +104,29 @@ pub struct BodyCappedHttpClient {
     response_weight: u32,
 }
 
+fn sanitized_transport_error(status: reqwest::StatusCode, body: &str) -> String {
+    let normalized = body.to_ascii_lowercase();
+    let compatibility_marker = [
+        "unsupported mcp-protocol-version",
+        "unsupported protocol version",
+        "method not found",
+        "method not supported",
+        "unknown method",
+        "missing session id",
+        "no valid session id",
+        "expect initialize request",
+        "expected initialize request",
+        "invalid request parameters",
+    ]
+    .into_iter()
+    .find(|marker| normalized.contains(marker));
+
+    compatibility_marker.map_or_else(
+        || format!("HTTP {status}"),
+        |marker| format!("HTTP {status}: {marker}"),
+    )
+}
+
 const RESPONSE_BUDGET_QUANTUM: usize = 1024;
 const AGGREGATE_RESPONSE_BUDGET_BYTES: usize = 80 * 1024 * 1024;
 const AGGREGATE_RESPONSE_BUDGET_PERMITS: usize =
@@ -706,8 +729,12 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                     response_session_id,
                 ));
             }
+            // The response body is upstream-controlled and may reflect bearer
+            // credentials, signed URLs, personal data, or terminal controls.
+            // It is parsed above only for a valid JSON-RPC error; every other
+            // transport failure exposes stable metadata, never raw body text.
             return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
-                format!("HTTP {status}: {body}"),
+                sanitized_transport_error(status, &body),
             )));
         }
         match content_type.as_deref() {
@@ -1099,6 +1126,35 @@ mod tests {
             .post_message(uri, jsonrpc_request(), None, None, HashMap::new())
             .await;
         assert!(result.is_ok(), "small response should succeed: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn non_json_error_body_is_never_exposed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_raw(b"Bearer top-secret\n\x1b[31mforged".to_vec(), "text/plain"),
+            )
+            .mount(&server)
+            .await;
+
+        let error = build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect_err("upstream failure must remain an error");
+        let text = error.to_string();
+        assert!(text.contains("500"));
+        assert!(!text.contains("top-secret"));
+        assert!(!text.contains("forged"));
+        assert!(!text.contains('\u{1b}'));
     }
 
     #[tokio::test]

@@ -166,7 +166,13 @@ pub(crate) async fn fetch_launcher_catalog(
 ) -> Result<LabbyHttpResult, String> {
     let settings = merged_settings(&app).await?;
     let base_url = validate_saved_server_url(&settings.server_url)?;
-    let url = format!("{}/v1/palette/catalog", base_url.trim_end_matches('/'));
+    // The desktop palette only renders a bounded shortlist. Exact schemas are
+    // fetched separately after selection, so never pull the full catalog into
+    // renderer memory.
+    let url = format!(
+        "{}/v1/palette/search?q=&limit=100",
+        base_url.trim_end_matches('/')
+    );
     let client = (*bridge).client();
     let static_token = settings
         .static_token
@@ -193,7 +199,10 @@ pub(crate) async fn fetch_launcher_catalog(
         Ok(result) => Ok(result),
         Err(err) if err == WRONG_API_HOST_HINT => {
             let discovered = discover_api_base_url(client, &base_url).await?;
-            let url = format!("{}/v1/palette/catalog", discovered.trim_end_matches('/'));
+            let url = format!(
+                "{}/v1/palette/search?q=&limit=100",
+                discovered.trim_end_matches('/')
+            );
             let make = |token: Option<&str>| {
                 let mut b = client
                     .get(&url)

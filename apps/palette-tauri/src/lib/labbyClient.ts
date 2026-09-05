@@ -48,6 +48,7 @@ export interface LabbyCatalog {
 export interface LauncherCatalog {
   fingerprint: string;
   entries: LauncherEntry[];
+  truncated?: boolean;
 }
 
 export interface LauncherSchema {
@@ -144,7 +145,7 @@ export async function fetchLauncherCatalog(etag?: string | null): Promise<Launch
     return {
       ok: false,
       status: result.status,
-      path: "/v1/palette/catalog",
+      path: "/v1/palette/search",
       method: "GET",
       payload: result.payload,
     };

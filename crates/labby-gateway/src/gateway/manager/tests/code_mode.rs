@@ -966,6 +966,64 @@ async fn palette_catalog_discovers_configured_upstream_tools() {
     assert_eq!(entry.id, "mcp:alpha::ping");
     assert_eq!(entry.source, "alpha");
     assert_eq!(entry.tool, "ping");
+    assert!(
+        entry.input_schema.is_none(),
+        "catalog rows must not retain exact schemas"
+    );
+    assert!(!catalog.truncated);
+}
+
+#[tokio::test]
+async fn palette_catalog_caps_cross_upstream_projection_but_exact_lookup_remains_available() {
+    let (manager, pool) = code_mode_manager_with_upstreams(vec![
+        fixture_http_upstream("alpha"),
+        fixture_http_upstream("beta"),
+    ])
+    .await;
+    for upstream in ["alpha", "beta"] {
+        let upstream_name: Arc<str> = Arc::from(upstream);
+        let tools = (0..600)
+            .map(|index| {
+                let name = format!("tool_{index:04}");
+                let tool = rmcp::model::Tool::new(
+                    name.clone(),
+                    "bounded palette fixture",
+                    Arc::new(serde_json::Map::new()),
+                );
+                (
+                    name,
+                    UpstreamTool {
+                        tool,
+                        input_schema: Some(json!({"type": "object"})),
+                        output_schema: None,
+                        upstream_name: Arc::clone(&upstream_name),
+                        destructive: false,
+                    },
+                )
+            })
+            .collect();
+        pool.insert_entry_for_tests(upstream, fixture_upstream_entry(upstream, tools))
+            .await;
+    }
+
+    let caller = crate::gateway::palette::PaletteCaller::admin(Some("admin"), Some("req-1"));
+    let catalog = manager
+        .palette_catalog_snapshot(&caller)
+        .await
+        .expect("bounded catalog");
+    assert_eq!(catalog.entries.len(), 1_000);
+    assert!(catalog.truncated);
+    assert!(catalog.entries.iter().all(|entry| match entry {
+        crate::gateway::palette::LauncherEntryView::McpTool(entry) => entry.input_schema.is_none(),
+        crate::gateway::palette::LauncherEntryView::LabbyAction(_) => false,
+    }));
+
+    let exact = manager
+        .palette_catalog_snapshot_for_tool(&caller, "mcp:beta::tool_0599")
+        .await
+        .expect("exact lookup outside bounded catalog");
+    assert_eq!(exact.entries.len(), 1);
+    assert!(!exact.truncated);
 }
 
 #[tokio::test]

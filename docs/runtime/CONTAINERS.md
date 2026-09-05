@@ -13,6 +13,14 @@ has no fixed container name or host-home mount. The process runs as uid/gid
 1000, with a read-only root filesystem, every Linux capability dropped, and
 only named state/data volumes writable. The HTTP port binds to loopback.
 
+Compose sets `LABBY_HOME=/home/labby/.labby`. The `labby-home` named volume
+owns that writable installation root, while
+`${LABBY_CONFIG_DIR}/config.toml` and `.env` are mounted read-only at the exact
+canonical paths beneath `/home/labby/.labby`. Databases, artifacts, snippets,
+and other durable state therefore remain writable without allowing the container to
+replace operator policy. The startup `bootstrap.start` event and setup settings
+state expose this non-secret effective source path for activation checks.
+
 Optional host integrations are not part of the baseline. Enable the explicit
 `integrations` profile only after reviewing and setting `LABBY_INTEGRATIONS_DIR`;
 that sidecar has no network and receives only that read-only directory.
@@ -23,6 +31,12 @@ LABBY_RELEASE_TAG='vMAJOR.MINOR.PATCH' \
 LABBY_CONFIG_DIR="$PWD/config/labby" \
 scripts/run-compose-prod.sh up -d
 ```
+
+The selected directory must contain both `config.toml` and `.env`, even when
+one is intentionally empty. Give `.env` owner-only host permissions and never
+commit it. Container policy is intentionally immutable: edit the reviewed host
+files and recreate the service to activate a change. Settings and gateway
+mutation actions cannot replace these read-only bind mounts.
 
 The supported production launcher always runs
 `scripts/ci/validate-container-inputs.sh` before Compose. It rejects tags and

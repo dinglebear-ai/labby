@@ -27,4 +27,5 @@ services:
     # binaries still need a rebuild).
     # volumes:
     #   - lab-data:/home/labby/.local
-    #   - ./config/config.toml:/home/labby/.config/labby/config.toml:ro
+    #   - ./config/config.example.toml:/home/labby/.labby/config.toml:ro
+    #   - ./config/.env.example:/home/labby/.labby/.env:ro

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::error::{BrowserError, Result};
@@ -68,16 +68,18 @@ impl Drop for CallGuard {
                 "cancelled browser call cleanup failed"
             );
         }
-        if let Err(error) = self.bridge.store.abandon_invocation(
-            &self.audit_id,
-            i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX),
-        ) {
-            tracing::warn!(
-                audit_id = self.audit_id,
-                error_kind = error.kind(),
-                "cancelled browser call audit cleanup failed"
-            );
-        }
+        let store = self.bridge.store.clone();
+        let audit_id = self.audit_id.clone();
+        let duration = i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        tokio::spawn(async move {
+            if let Err(error) = store.abandon_invocation(&audit_id, duration).await {
+                tracing::warn!(
+                    audit_id,
+                    error_kind = error.kind(),
+                    "cancelled browser call audit cleanup failed"
+                );
+            }
+        });
     }
 }
 
@@ -92,25 +94,25 @@ struct HubState {
 pub struct BrowserBridge {
     store: Store,
     state: Arc<Mutex<HubState>>,
-    authority: Arc<Mutex<()>>,
+    authority: Arc<AsyncMutex<()>>,
 }
 
 impl BrowserBridge {
     /// Open a durable browser bridge.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
-            store: Store::open(path)?,
+            store: Store::open(path).await?,
             state: Arc::new(Mutex::new(HubState::default())),
-            authority: Arc::new(Mutex::new(())),
+            authority: Arc::new(AsyncMutex::new(())),
         })
     }
 
     /// Build an in-memory bridge for tests.
-    pub fn memory() -> Result<Self> {
+    pub async fn memory() -> Result<Self> {
         Ok(Self {
-            store: Store::memory()?,
+            store: Store::memory().await?,
             state: Arc::new(Mutex::new(HubState::default())),
-            authority: Arc::new(Mutex::new(())),
+            authority: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -121,7 +123,7 @@ impl BrowserBridge {
     }
 
     /// Accept an unauthenticated pairing request from a loopback-gated adapter.
-    pub fn request_pairing(
+    pub async fn request_pairing(
         &self,
         display_name: &str,
         extension_id: &str,
@@ -129,11 +131,12 @@ impl BrowserBridge {
     ) -> Result<PairingRequest> {
         self.store
             .request_pairing(display_name, extension_id, decode_public_key(public_key)?)
+            .await
     }
 
     /// Issue a one-time challenge.
-    pub fn issue_challenge(&self, browser_id: &str) -> Result<BrowserEnvelope> {
-        let challenge = self.store.create_challenge(browser_id)?;
+    pub async fn issue_challenge(&self, browser_id: &str) -> Result<BrowserEnvelope> {
+        let challenge = self.store.create_challenge(browser_id).await?;
         Ok(BrowserEnvelope::new(
             None,
             BrowserMessage::AuthNonce {
@@ -145,12 +148,16 @@ impl BrowserBridge {
     }
 
     /// Verify and consume a challenge, then install this connection as current.
-    pub fn authenticate(&self, challenge_id: &str, signature: &str) -> Result<BrowserConnection> {
-        let _authority = self.lock_authority()?;
-        let challenge = self.store.take_challenge(challenge_id)?;
+    pub async fn authenticate(
+        &self,
+        challenge_id: &str,
+        signature: &str,
+    ) -> Result<BrowserConnection> {
+        let challenge = self.store.take_challenge(challenge_id).await?;
         let browser = self
             .store
-            .browser(&challenge.browser_id)?
+            .browser(&challenge.browser_id)
+            .await?
             .ok_or(BrowserError::AuthenticationFailed)?;
         if browser.revoked_at.is_some() {
             return Err(BrowserError::AuthenticationFailed);
@@ -169,28 +176,32 @@ impl BrowserBridge {
             .map_err(|_| BrowserError::AuthenticationFailed)?
             .verify(&challenge.nonce, &signature)
             .map_err(|_| BrowserError::AuthenticationFailed)?;
-        self.store.touch_browser(&browser.id)?;
+        let _authority = self.authority.lock().await;
+        self.store.touch_browser(&browser.id).await?;
         let (sender, receiver) = mpsc::channel(128);
         let generation = Uuid::new_v4();
-        let mut state = self.lock_state()?;
         if self
             .store
-            .browser(&browser.id)?
+            .browser(&browser.id)
+            .await?
             .is_none_or(|current| current.revoked_at.is_some())
         {
             return Err(BrowserError::AuthenticationFailed);
         }
+        let mut state = self.lock_state()?;
         if let Some(replaced) = state
             .connections
             .insert(browser.id.clone(), LiveConnection { generation, sender })
         {
             finish_generation(&mut state, replaced.generation);
         }
-        Ok(BrowserConnection {
+        let connection = BrowserConnection {
             browser_id: browser.id,
             connection_id: generation.to_string(),
             receiver,
-        })
+        };
+        drop(state);
+        Ok(connection)
     }
 
     /// Remove exactly the connection generation owned by an adapter.
@@ -207,28 +218,30 @@ impl BrowserBridge {
     }
 
     /// Persist an authenticated catalog observation.
-    pub fn observe(
+    pub async fn observe(
         &self,
         browser_id: &str,
         connection_id: &str,
         observation: &CatalogObservation,
     ) -> Result<()> {
-        let _authority = self.lock_authority()?;
+        let _authority = self.authority.lock().await;
         self.ensure_current(browser_id, connection_id)?;
-        self.store.observe(browser_id, observation)
+        self.store.observe(browser_id, observation).await
     }
 
     /// Close one exact document owned by an authenticated browser.
-    pub fn close_document(
+    pub async fn close_document(
         &self,
         browser_id: &str,
         connection_id: &str,
         tab_id: i64,
         document_id: &str,
     ) -> Result<()> {
-        let _authority = self.lock_authority()?;
+        let _authority = self.authority.lock().await;
         self.ensure_current(browser_id, connection_id)?;
-        self.store.close_document(browser_id, tab_id, document_id)
+        self.store
+            .close_document(browser_id, tab_id, document_id)
+            .await
     }
 
     /// Complete a call only from its owning browser and current generation.
@@ -287,14 +300,17 @@ impl BrowserBridge {
         let call_id = Uuid::new_v4().to_string();
         let (reply, wait) = oneshot::channel();
         let (sender, generation, catalog_fingerprint) = {
-            let _authority = self.lock_authority()?;
-            let catalog_fingerprint = self.store.validate_call(
-                browser_id,
-                tab_id,
-                &document_id,
-                catalog_revision,
-                &tool_name,
-            )?;
+            let _authority = self.authority.lock().await;
+            let catalog_fingerprint = self
+                .store
+                .validate_call(
+                    browser_id,
+                    tab_id,
+                    &document_id,
+                    catalog_revision,
+                    &tool_name,
+                )
+                .await?;
             let mut state = self.lock_state()?;
             if state.pending.len() >= MAX_PENDING_CALLS {
                 return Err(BrowserError::ServerBusy);
@@ -336,6 +352,7 @@ impl BrowserBridge {
                 &tool_name,
                 catalog_revision,
             )
+            .await
             .inspect_err(|error| {
                 if let Err(cleanup) = self.remove_pending(&call_id, generation) {
                     tracing::warn!(
@@ -357,7 +374,7 @@ impl BrowserBridge {
         if sender.send(event).await.is_err() {
             self.remove_pending(&call_id, generation)?;
             let result = Err(BrowserError::BrowserOffline);
-            self.finish_audit(&audit_id, &result, started);
+            self.finish_audit(&audit_id, &result, started).await;
             guard.disarm();
             return result;
         }
@@ -386,7 +403,7 @@ impl BrowserBridge {
                 Err(BrowserError::ToolTimeout)
             }
         };
-        self.finish_audit(&audit_id, &result, started);
+        self.finish_audit(&audit_id, &result, started).await;
         guard.disarm();
         result
     }
@@ -399,9 +416,9 @@ impl BrowserBridge {
     }
 
     /// Revoke a browser, close its live connection, and fail its pending calls.
-    pub fn revoke_browser(&self, browser_id: &str) -> Result<crate::store::BrowserRecord> {
-        let _authority = self.lock_authority()?;
-        let browser = self.store.revoke_browser(browser_id)?;
+    pub async fn revoke_browser(&self, browser_id: &str) -> Result<crate::store::BrowserRecord> {
+        let _authority = self.authority.lock().await;
+        let browser = self.store.revoke_browser(browser_id).await?;
         let mut state = self.lock_state()?;
         if let Some(connection) = state.connections.remove(browser_id) {
             finish_generation(&mut state, connection.generation);
@@ -410,21 +427,23 @@ impl BrowserBridge {
     }
 
     /// Approve pairing and evict every superseded identity for its extension.
-    pub fn approve_pairing(&self, pairing_id: &str) -> Result<crate::store::BrowserRecord> {
-        let _authority = self.lock_authority()?;
+    pub async fn approve_pairing(&self, pairing_id: &str) -> Result<crate::store::BrowserRecord> {
+        let _authority = self.authority.lock().await;
         let extension_id = self
             .store
-            .pairing(pairing_id)?
+            .pairing(pairing_id)
+            .await?
             .ok_or(BrowserError::NotFound)?
             .extension_id;
         let superseded: Vec<_> = self
             .store
-            .browsers()?
+            .browsers()
+            .await?
             .into_iter()
             .filter(|browser| browser.extension_id == extension_id && browser.revoked_at.is_none())
             .map(|browser| browser.id)
             .collect();
-        let browser = self.store.approve_pairing(pairing_id)?;
+        let browser = self.store.approve_pairing(pairing_id).await?;
         let mut state = self.lock_state()?;
         for browser_id in superseded {
             if let Some(connection) = state.connections.remove(&browser_id) {
@@ -465,18 +484,16 @@ impl BrowserBridge {
             .map_err(|_| BrowserError::InvalidRequest("browser hub lock poisoned".to_string()))
     }
 
-    fn lock_authority(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
-        self.authority.lock().map_err(|_| {
-            BrowserError::InvalidRequest("browser authority lock poisoned".to_string())
-        })
-    }
-
-    fn finish_audit(&self, audit_id: &str, result: &Result<Value>, started: Instant) {
-        if let Err(error) = self.store.finish_invocation(
-            audit_id,
-            result,
-            i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
-        ) {
+    async fn finish_audit(&self, audit_id: &str, result: &Result<Value>, started: Instant) {
+        if let Err(error) = self
+            .store
+            .finish_invocation(
+                audit_id,
+                result,
+                i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+            )
+            .await
+        {
             tracing::warn!(
                 audit_id,
                 error_kind = error.kind(),
@@ -506,23 +523,24 @@ mod tests {
 
     const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
 
-    fn pair_and_authenticate(bridge: &BrowserBridge) -> BrowserConnection {
+    async fn pair_and_authenticate(bridge: &BrowserBridge) -> BrowserConnection {
         let signing = SigningKey::from_bytes(&[9; 32]);
         let public_key = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(signing.verifying_key().as_bytes());
         let pairing = bridge
             .request_pairing("Chrome", EXTENSION_ID, &public_key)
+            .await
             .unwrap();
-        let browser = bridge.store().approve_pairing(&pairing.id).unwrap();
-        authenticate_browser(bridge, &browser.id, &signing)
+        let browser = bridge.store().approve_pairing(&pairing.id).await.unwrap();
+        authenticate_browser(bridge, &browser.id, &signing).await
     }
 
-    fn authenticate_browser(
+    async fn authenticate_browser(
         bridge: &BrowserBridge,
         browser_id: &str,
         signing: &SigningKey,
     ) -> BrowserConnection {
-        let challenge = bridge.issue_challenge(browser_id).unwrap();
+        let challenge = bridge.issue_challenge(browser_id).await.unwrap();
         assert!(matches!(
             challenge.message,
             BrowserMessage::AuthNonce { .. }
@@ -533,17 +551,20 @@ mod tests {
             ..
         } = challenge.message
         else {
-            return bridge.authenticate("invalid", "invalid").unwrap();
+            return bridge.authenticate("invalid", "invalid").await.unwrap();
         };
         let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(nonce)
             .unwrap();
         let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(signing.sign(&nonce).to_bytes());
-        bridge.authenticate(&challenge_id, &signature).unwrap()
+        bridge
+            .authenticate(&challenge_id, &signature)
+            .await
+            .unwrap()
     }
 
-    fn enable_tool(
+    async fn enable_tool(
         bridge: &BrowserBridge,
         browser_id: &str,
         connection_id: &str,
@@ -571,21 +592,29 @@ mod tests {
                     }],
                 },
             )
+            .await
             .unwrap();
-        let session = bridge.store().sessions().unwrap().remove(0);
+        let session = bridge
+            .store()
+            .sessions(None, None)
+            .await
+            .unwrap()
+            .sessions
+            .remove(0);
         bridge
             .store()
             .set_session_enabled(&session.id, true)
+            .await
             .unwrap();
     }
 
     #[tokio::test]
     async fn routes_call_and_accepts_only_current_browser_completion() {
-        let bridge = BrowserBridge::memory().unwrap();
-        let mut connection = pair_and_authenticate(&bridge);
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut connection = pair_and_authenticate(&bridge).await;
         let browser_id = connection.browser_id.clone();
         let connection_id = connection.connection_id.clone();
-        enable_tool(&bridge, &browser_id, &connection_id, 7, 3, "search");
+        enable_tool(&bridge, &browser_id, &connection_id, 7, 3, "search").await;
         let task_bridge = bridge.clone();
         let task_browser = browser_id.clone();
         let task = tokio::spawn(async move {
@@ -623,12 +652,12 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_sends_exact_cancellation() {
-        let bridge = BrowserBridge::memory().unwrap();
-        let mut connection = pair_and_authenticate(&bridge);
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let mut connection = pair_and_authenticate(&bridge).await;
         let task_bridge = bridge.clone();
         let browser_id = connection.browser_id.clone();
         let connection_id = connection.connection_id.clone();
-        enable_tool(&bridge, &browser_id, &connection_id, 1, 1, "slow");
+        enable_tool(&bridge, &browser_id, &connection_id, 1, 1, "slow").await;
         let task = tokio::spawn(async move {
             task_bridge
                 .call(
@@ -654,10 +683,10 @@ mod tests {
 
     #[tokio::test]
     async fn replacement_socket_is_the_only_authoritative_generation() {
-        let bridge = BrowserBridge::memory().unwrap();
-        let old = pair_and_authenticate(&bridge);
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let old = pair_and_authenticate(&bridge).await;
         let signing = SigningKey::from_bytes(&[9; 32]);
-        let current = authenticate_browser(&bridge, &old.browser_id, &signing);
+        let current = authenticate_browser(&bridge, &old.browser_id, &signing).await;
 
         assert!(old.receiver.is_closed());
         assert_eq!(
@@ -676,6 +705,7 @@ mod tests {
                         tools: vec![],
                     },
                 )
+                .await
                 .unwrap_err()
                 .kind(),
             "auth_failed"
@@ -690,10 +720,10 @@ mod tests {
 
     #[tokio::test]
     async fn stale_generation_cannot_complete_current_call_or_disconnect_it() {
-        let bridge = BrowserBridge::memory().unwrap();
-        let old = pair_and_authenticate(&bridge);
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let old = pair_and_authenticate(&bridge).await;
         let signing = SigningKey::from_bytes(&[9; 32]);
-        let mut current = authenticate_browser(&bridge, &old.browser_id, &signing);
+        let mut current = authenticate_browser(&bridge, &old.browser_id, &signing).await;
         enable_tool(
             &bridge,
             &current.browser_id,
@@ -701,7 +731,8 @@ mod tests {
             4,
             1,
             "search",
-        );
+        )
+        .await;
         let task_bridge = bridge.clone();
         let browser_id = current.browser_id.clone();
         let task_browser_id = browser_id.clone();
@@ -756,11 +787,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn challenge_cannot_authenticate_after_revocation() {
-        let bridge = BrowserBridge::memory().unwrap();
-        let connection = pair_and_authenticate(&bridge);
-        let challenge = bridge.issue_challenge(&connection.browser_id).unwrap();
+    #[tokio::test]
+    async fn challenge_cannot_authenticate_after_revocation() {
+        let bridge = BrowserBridge::memory().await.unwrap();
+        let connection = pair_and_authenticate(&bridge).await;
+        let challenge = bridge
+            .issue_challenge(&connection.browser_id)
+            .await
+            .unwrap();
         let BrowserMessage::AuthNonce {
             challenge_id,
             nonce,
@@ -779,9 +813,9 @@ mod tests {
                 )
                 .to_bytes(),
         );
-        bridge.revoke_browser(&connection.browser_id).unwrap();
+        bridge.revoke_browser(&connection.browser_id).await.unwrap();
         assert!(matches!(
-            bridge.authenticate(&challenge_id, &signature),
+            bridge.authenticate(&challenge_id, &signature).await,
             Err(BrowserError::AuthenticationFailed)
         ));
     }

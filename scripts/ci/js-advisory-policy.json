@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "minimum_severity": "high",
+  "workspaces": [
+    {"manifest": "package.json", "lockfile": "package-lock.json", "manager": "npm"},
+    {"manifest": "apps/browser-extension/package.json", "lockfile": "apps/browser-extension/package-lock.json", "manager": "npm"},
+    {"manifest": "apps/gateway-admin/package.json", "lockfile": "apps/gateway-admin/pnpm-lock.yaml", "manager": "pnpm"},
+    {"manifest": "apps/palette-tauri/package.json", "lockfile": "apps/palette-tauri/pnpm-lock.yaml", "manager": "pnpm"},
+    {"manifest": "config/agent-clis/package.json", "lockfile": "config/agent-clis/package-lock.json", "manager": "npm"},
+    {"manifest": "packages/labby-mcp/package.json", "lockfile": "packages/labby-mcp/pnpm-lock.yaml", "manager": "pnpm"}
+  ],
+  "ignored_advisories": []
+}

@@ -12,12 +12,16 @@ services:
     ports:
       - "127.0.0.1:${LABBY_HOST_PORT:-8765}:8765"
     volumes:
-      - ${LABBY_CONFIG_DIR:?set LABBY_CONFIG_DIR}:/home/labby/.config/labby:ro
+      # Mount only immutable policy into the writable installation volume.
+      # Runtime diagnostics report this exact canonical path.
+      - ${LABBY_CONFIG_DIR:?set LABBY_CONFIG_DIR}/config.toml:/home/labby/.labby/config.toml:ro
+      - ${LABBY_CONFIG_DIR:?set LABBY_CONFIG_DIR}/.env:/home/labby/.labby/.env:ro
       - labby-home:/home/labby/.labby
       - labby-data:/home/labby/.local
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000
     environment:
+      LABBY_HOME: "/home/labby/.labby"
       LABBY_MCP_HTTP_HOST: "0.0.0.0"
       LABBY_MCP_HTTP_PORT: "8765"
       RUST_LOG: "labby=info,warn"

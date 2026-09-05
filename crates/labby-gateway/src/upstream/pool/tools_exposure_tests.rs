@@ -143,6 +143,43 @@ async fn subject_catalogs_are_isolated_from_each_other_and_the_global_catalog() 
     assert!(pool.healthy_tools().await.is_empty());
 }
 
+#[tokio::test]
+async fn exact_subject_scoped_lookup_projects_only_the_requested_tool() {
+    let pool = super::UpstreamPool::new();
+    let config = oauth_upstream_config("private", &["*"]);
+    let connection = take_fixture_connection("private").await;
+    let peer = connection.peer.clone();
+    let mut tools = (0..1_000)
+        .map(|index| test_tool(&format!("tool_{index:04}")))
+        .collect::<Vec<_>>();
+    tools[999].input_schema = Arc::new(serde_json::Map::from_iter([(
+        "marker".to_string(),
+        serde_json::json!({"const": "exact"}),
+    )]));
+    pool.subject_connections.write().await.insert(
+        ("private".to_string(), "alice".to_string()),
+        SubjectScopedConnection {
+            _connection: connection,
+            peer,
+            tools,
+            last_used: Instant::now(),
+        },
+    );
+
+    let exact = pool
+        .subject_scoped_upstream_tool_allowed(&config, "alice", "tool_0999")
+        .await
+        .expect("exact exposed tool");
+    assert_eq!(exact.tool.name.as_ref(), "tool_0999");
+    assert_eq!(
+        exact
+            .input_schema
+            .as_ref()
+            .and_then(|schema| schema.get("marker")),
+        Some(&serde_json::json!({"const": "exact"}))
+    );
+}
+
 /// `expose_tools` must hide the same tools on the OAuth subject-scoped path as
 /// it does on the catalog-backed path.
 ///

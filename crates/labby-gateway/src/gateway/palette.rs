@@ -24,6 +24,7 @@ use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 const MAX_SCHEMA_BYTES: usize = 64 * 1024;
 const MAX_SCHEMA_DEPTH: usize = 64;
 const MAX_CONTRACT_BYTES: usize = 160 * 1024;
+const MAX_CATALOG_ENTRIES: usize = 1_000;
 const CAPABILITY_CONTRACT_VERSION: u8 = 1;
 const MAX_DESCRIPTION_CHARS: usize = 2_048;
 
@@ -150,6 +151,8 @@ impl CapabilityContract {
 pub struct LauncherCatalogView {
     pub fingerprint: String,
     pub entries: Vec<LauncherEntryView>,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -438,7 +441,7 @@ impl GatewayManager {
         }
         let start = Instant::now();
         let mut entries = Vec::new();
-        let mut schema_bytes = 0usize;
+        let mut truncated = false;
 
         if refresh {
             self.refresh_code_mode_catalog_allowed(
@@ -458,28 +461,51 @@ impl GatewayManager {
                         .allowed_upstreams()
                         .is_none_or(|allowed| allowed.contains(&upstream.name))
             }) {
-                let mut tools = if upstream.oauth.is_some() {
-                    pool.subject_scoped_upstream_tools_allowed(
+                let remaining = MAX_CATALOG_ENTRIES.saturating_sub(entries.len());
+                let mut tools = if upstream.oauth.is_some()
+                    && let Some((_, tool_name)) = selected
+                {
+                    pool.subject_scoped_upstream_tool_allowed(
+                        upstream,
+                        &caller.oauth_subject,
+                        tool_name,
+                    )
+                    .await
+                    .into_iter()
+                    .collect()
+                } else if upstream.oauth.is_some() {
+                    pool.subject_scoped_upstream_tools_allowed_bounded(
                         std::slice::from_ref(upstream),
                         &caller.oauth_subject,
                         None,
+                        remaining.saturating_add(1),
                     )
                     .await
+                } else if let Some((_, tool_name)) = selected {
+                    pool.healthy_tool_for_upstream(&upstream.name, tool_name)
+                        .await
+                        .into_iter()
+                        .collect()
                 } else {
-                    pool.healthy_tools_for_upstream(&upstream.name).await
+                    pool.healthy_tools_for_upstream_bounded(
+                        &upstream.name,
+                        remaining.saturating_add(1),
+                    )
+                    .await
                 };
-                tools.sort_by(|a, b| a.tool.name.cmp(&b.tool.name));
+                if selected.is_none() && tools.len() > remaining {
+                    tools.truncate(remaining);
+                    truncated = true;
+                }
                 for tool in tools {
                     if selected.is_some_and(|(_, name)| tool.tool.name.as_ref() != name) {
                         continue;
                     }
                     let entry = mcp_entry(&upstream.name, tool)?;
-                    schema_bytes += entry
-                        .input_schema
-                        .as_ref()
-                        .map(|schema| schema.to_string().len())
-                        .unwrap_or(0);
                     entries.push(LauncherEntryView::McpTool(entry));
+                }
+                if truncated {
+                    break;
                 }
             }
         }
@@ -491,15 +517,16 @@ impl GatewayManager {
             service = "palette",
             action = "palette.catalog",
             entry_count = entries.len(),
-            schema_bytes,
             fingerprint,
             cache_hit = false,
+            truncated,
             elapsed_ms = start.elapsed().as_millis(),
             "palette launcher catalog built"
         );
         Ok(LauncherCatalogView {
             fingerprint,
             entries,
+            truncated,
         })
     }
 
@@ -670,7 +697,9 @@ fn mcp_entry(upstream: &str, tool: UpstreamTool) -> Result<McpToolLauncherEntry,
         ),
         source: upstream.to_string(),
         destructive: tool.destructive,
-        input_schema,
+        // Catalog rows are bounded display hints. The exact schema is fetched
+        // through `palette_schema` only after the operator selects an entry.
+        input_schema: None,
         schema_fingerprint,
         contract_hash: contract.contract_hash,
         upstream: upstream.to_string(),

@@ -215,6 +215,123 @@ test('auto OAuth opens authorization URL when popups are allowed', async () => {
   }
 })
 
+test('renaming a gateway invalidates an in-flight OAuth start', async () => {
+  const window = installGatewayDialogDom()
+  const openedTabs: string[] = []
+  Object.defineProperty(window, 'open', {
+    configurable: true,
+    value: (url?: string | URL) => {
+      openedTabs.push(String(url))
+      return { closed: false, opener: window, location: { href: '' }, close: () => {} }
+    },
+  })
+
+  const originalFetch = globalThis.fetch
+  let startResolve: ((response: Response) => void) | null = null
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') return gatewayActionResponse(init, {})
+    if (path === '/v1/gateway/oauth/probe') {
+      return jsonResponse({
+        upstream: 'old-name',
+        url: 'https://github.example/mcp',
+        oauth_discovered: true,
+        issuer: 'https://github.example',
+      })
+    }
+    if (path === '/v1/gateway/oauth/start') {
+      return new Promise<Response>((resolve) => { startResolve = resolve })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const view = await renderOpenGatewayDialog()
+    const nameInput = document.querySelector('#name') as HTMLInputElement | null
+    const urlInput = document.querySelector('#url') as HTMLInputElement | null
+    assert.ok(nameInput)
+    assert.ok(urlInput)
+    await setInputValue(window, nameInput, 'old-name')
+    await setInputValue(window, urlInput, 'https://github.example/mcp')
+    await waitFor(() => assert.ok(startResolve))
+
+    await setInputValue(window, nameInput, 'new-name')
+    await act(async () => {
+      startResolve?.(jsonResponse({ authorization_url: 'https://github.example/oauth/authorize' }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.deepEqual(openedTabs, [])
+    assert.doesNotMatch(document.body.textContent ?? '', /Waiting\.\.\./)
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('switching away from OAuth invalidates an in-flight OAuth start', async () => {
+  const window = installGatewayDialogDom()
+  const openedTabs: string[] = []
+  Object.defineProperty(window, 'open', {
+    configurable: true,
+    value: (url?: string | URL) => {
+      openedTabs.push(String(url))
+      return { closed: false, opener: window, location: { href: '' }, close: () => {} }
+    },
+  })
+
+  const originalFetch = globalThis.fetch
+  let startResolve: ((response: Response) => void) | null = null
+  globalThis.fetch = (async (input, init) => {
+    const path = String(input)
+    if (path === '/v1/gateway' && init?.method === 'POST') return gatewayActionResponse(init, {})
+    if (path === '/v1/gateway/oauth/probe') {
+      return jsonResponse({
+        upstream: 'github',
+        url: 'https://github.example/mcp',
+        oauth_discovered: true,
+        issuer: 'https://github.example',
+      })
+    }
+    if (path === '/v1/gateway/oauth/start') {
+      return new Promise<Response>((resolve) => { startResolve = resolve })
+    }
+    throw new Error(`unexpected fetch ${path}`)
+  }) as typeof fetch
+
+  try {
+    const view = await renderOpenGatewayDialog()
+    const urlInput = document.querySelector('#url') as HTMLInputElement | null
+    assert.ok(urlInput)
+    await setInputValue(window, urlInput, 'https://github.example/mcp')
+    await waitFor(() => assert.ok(startResolve))
+
+    const authSelect = document.querySelector('[role="combobox"]') as HTMLElement | null
+    assert.ok(authSelect)
+    await act(async () => {
+      authSelect.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const noAuth = [...document.querySelectorAll('[role="option"]')]
+      .find((option) => option.textContent?.includes('No auth')) as HTMLElement | undefined
+    assert.ok(noAuth)
+    await act(async () => {
+      noAuth.click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    await act(async () => {
+      startResolve?.(jsonResponse({ authorization_url: 'https://github.example/oauth/authorize' }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    assert.deepEqual(openedTabs, [])
+    assert.doesNotMatch(document.body.textContent ?? '', /Waiting\.\.\./)
+    await view.unmount()
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('blocked OAuth popup can be retried from a user click', async () => {
   const window = installGatewayDialogDom()
   const tabs: Array<{ closed: boolean; location: { href: string }; close: () => void }> = []

@@ -106,7 +106,7 @@ describe("launcher client wrappers", () => {
     await expect(fetchLauncherCatalog()).resolves.toEqual({
       ok: false,
       status: 422,
-      path: "/v1/palette/catalog",
+      path: "/v1/palette/search",
       method: "GET",
       payload: { kind: "invalid_param", message: "bad params" },
     });

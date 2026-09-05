@@ -5,7 +5,6 @@ import {
   Container,
   Bot,
   Activity,
-  Inbox,
   Logs,
   Warehouse,
   LayoutDashboard,
@@ -157,7 +156,6 @@ const CONSOLE_NAV_SOURCE: ConsoleNavSectionSource[] = [
     items: [
       { id: 'Agents', label: 'Agents', href: '/agents', icon: Bot },
       { id: 'Tasks', label: 'Tasks', href: '/tasks', icon: Clock3 },
-      { id: 'Stash', label: 'Stash', href: '/stash', icon: Inbox },
       { id: 'Dev Containers', label: 'Dev Containers', href: '/dev-containers', icon: Container },
     ],
   },

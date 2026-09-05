@@ -119,6 +119,7 @@ async fn search(
         let mut catalog = LauncherCatalogView {
             fingerprint: String::new(),
             entries: Vec::new(),
+            truncated: false,
         };
         if exact_labby && query_id.starts_with("labby:") {
             append_labby_actions(&mut catalog, &state, auth);
@@ -133,7 +134,10 @@ async fn search(
         catalog
     } else {
         let mut catalog = compact_palette_catalog(&state, &headers, auth).await?;
-        catalog.entries = search_entries(catalog.entries, &query.q, query.limit.min(100));
+        let limit = query.limit.clamp(1, 100);
+        let (entries, search_truncated) = search_entries(catalog.entries, &query.q, limit);
+        catalog.entries = entries;
+        catalog.truncated |= search_truncated;
         catalog
     };
     catalog.fingerprint = catalog_fingerprint(&catalog.entries);
@@ -380,7 +384,7 @@ fn search_entries(
     entries: Vec<LauncherEntryView>,
     query: &str,
     limit: usize,
-) -> Vec<LauncherEntryView> {
+) -> (Vec<LauncherEntryView>, bool) {
     let needle = query.trim().to_ascii_lowercase();
     let mut scored = entries
         .into_iter()
@@ -390,7 +394,8 @@ fn search_entries(
         })
         .collect::<Vec<_>>();
     let limit = limit.max(1);
-    if scored.len() > limit {
+    let truncated = scored.len() > limit;
+    if truncated {
         scored.select_nth_unstable_by(limit, |(left, left_score), (right, right_score)| {
             right_score
                 .cmp(left_score)
@@ -403,11 +408,10 @@ fn search_entries(
             .cmp(left_score)
             .then_with(|| compare_launcher_entries(left, right))
     });
-    scored
-        .into_iter()
-        .take(limit)
-        .map(|(entry, _)| entry)
-        .collect()
+    (
+        scored.into_iter().map(|(entry, _)| entry).collect(),
+        truncated,
+    )
 }
 
 fn launcher_search_score(entry: &LauncherEntryView, needle: &str) -> u16 {
@@ -1912,7 +1916,7 @@ mod tests {
 
     #[test]
     fn palette_search_ranks_case_insensitive_partial_mcp_tool_matches() {
-        let entries = search_entries(
+        let (entries, truncated) = search_entries(
             vec![
                 LauncherEntryView::McpTool(labby_gateway::gateway::palette::McpToolLauncherEntry {
                     id: "mcp:github::list_issues".to_string(),
@@ -1945,6 +1949,10 @@ mod tests {
 
         assert_eq!(entry_id(&entries[0]), "mcp:github::search_repos");
         assert_eq!(entries.len(), 1);
+        assert!(!truncated, "filtering alone must not imply truncation");
+
+        let (_, truncated) = search_entries(vec![entries[0].clone(), entries[0].clone()], "", 1);
+        assert!(truncated);
     }
 
     #[test]
@@ -2132,6 +2140,7 @@ mod tests {
         let mut catalog = LauncherCatalogView {
             fingerprint: String::new(),
             entries: Vec::new(),
+            truncated: false,
         };
         append_labby_actions(&mut catalog, &state, Some(&auth));
 
@@ -2165,6 +2174,7 @@ mod tests {
         let mut catalog = LauncherCatalogView {
             fingerprint: String::new(),
             entries: Vec::new(),
+            truncated: false,
         };
         append_labby_actions(&mut catalog, &state, Some(&auth));
 

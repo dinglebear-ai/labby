@@ -12,8 +12,27 @@ import yaml
 
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
+DOWNLOAD_ARTIFACT_SHA = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
 NEEDS_OUTPUT = re.compile(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z_][A-Za-z0-9_-]*)")
 NEEDS_RESULT = re.compile(r"needs\.([A-Za-z0-9_-]+)\.result")
+
+
+def external_use_errors(path: pathlib.Path, use: str) -> list[str]:
+    errors = []
+    if use.startswith("./"):
+        return errors
+    if use.startswith("docker://"):
+        if "@sha256:" not in use:
+            errors.append(f"{path}: mutable container action {use}")
+        return errors
+    if "@" not in use or not SHA.fullmatch(use.rsplit("@", 1)[1]):
+        errors.append(f"{path}: mutable external action {use}")
+    if use.startswith("actions/download-artifact@") and use != f"actions/download-artifact@{DOWNLOAD_ARTIFACT_SHA}":
+        errors.append(
+            f"{path}: actions/download-artifact must use reviewed revision "
+            f"{DOWNLOAD_ARTIFACT_SHA}, found {use}"
+        )
+    return errors
 
 
 def main() -> int:
@@ -40,14 +59,7 @@ def main() -> int:
 
         for match in re.finditer(r"(?m)^\s*uses:\s*([^#\s]+)", text):
             use = match.group(1)
-            if use.startswith("./"):
-                continue
-            if use.startswith("docker://"):
-                if "@sha256:" not in use:
-                    errors.append(f"{path}: mutable container action {use}")
-                continue
-            if "@" not in use or not SHA.fullmatch(use.rsplit("@", 1)[1]):
-                errors.append(f"{path}: mutable external action {use}")
+            errors.extend(external_use_errors(path, use))
 
         jobs = data.get("jobs", {})
         for name, job in jobs.items():

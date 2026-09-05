@@ -276,10 +276,13 @@ the stable wire and CLI vocabulary.
 
 `labby-apis` never reads config files or ambient env on its own. Config loading lives in `labby`.
 
-- secrets: `~/.labby/.env`
-- preferences: `config.toml` (`./` → `~/.labby/` → `~/.config/labby/`)
+- secrets: `$LABBY_HOME/.env` (normally `~/.labby/.env`)
+- preferences: exactly `$LABBY_HOME/config.toml` when the absolute override is
+  set, otherwise `~/.labby/config.toml`
 
 The binary resolves those inputs, then constructs clients explicitly.
+See [Runtime Configuration](./runtime/CONFIG.md) for the authoritative
+precedence and path contract.
 
 ## Service Model
 

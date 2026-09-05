@@ -244,22 +244,62 @@ impl UpstreamPool {
     }
 
     pub async fn healthy_tools_for_upstream(&self, upstream: &str) -> Vec<UpstreamTool> {
+        self.healthy_tools_for_upstream_bounded(upstream, usize::MAX)
+            .await
+    }
+
+    /// Return at most `limit` exposed, routable tools for one upstream in name order.
+    ///
+    /// Selection happens against borrowed catalog entries so callers serving a
+    /// bounded projection do not clone schemas that they will immediately discard.
+    pub async fn healthy_tools_for_upstream_bounded(
+        &self,
+        upstream: &str,
+        limit: usize,
+    ) -> Vec<UpstreamTool> {
         let catalog = self.catalog.read().await;
-        let mut tools = catalog
+        let Some(entry) = catalog
             .get(upstream)
-            .into_iter()
             .filter(|entry| entry.tool_health.is_routable())
-            .flat_map(|entry| {
-                entry.tools.values().filter_map(|tool| {
-                    entry
-                        .exposure_policy
-                        .matches(tool.tool.name.as_ref())
-                        .then(|| tool.clone())
+        else {
+            return Vec::new();
+        };
+        let mut selected = Vec::with_capacity(limit.min(entry.tools.len()));
+        for tool in entry
+            .tools
+            .values()
+            .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
+        {
+            let insert_at = selected
+                .binary_search_by(|existing: &&UpstreamTool| {
+                    existing.tool.name.cmp(&tool.tool.name)
                 })
-            })
-            .collect::<Vec<_>>();
-        tools.sort_by(|left, right| left.tool.name.cmp(&right.tool.name));
-        tools
+                .unwrap_or_else(std::convert::identity);
+            if insert_at < limit {
+                selected.insert(insert_at, tool);
+                if selected.len() > limit {
+                    selected.pop();
+                }
+            }
+        }
+        selected.into_iter().cloned().collect()
+    }
+
+    /// Return one exact exposed, routable tool without cloning its siblings.
+    pub async fn healthy_tool_for_upstream(
+        &self,
+        upstream: &str,
+        tool_name: &str,
+    ) -> Option<UpstreamTool> {
+        let catalog = self.catalog.read().await;
+        let entry = catalog
+            .get(upstream)
+            .filter(|entry| entry.tool_health.is_routable())?;
+        let tool = entry.tools.get(tool_name)?;
+        entry
+            .exposure_policy
+            .matches(tool.tool.name.as_ref())
+            .then(|| tool.clone())
     }
 
     pub(super) async fn has_healthy_tools_for_upstream(&self, upstream: &str) -> bool {
@@ -662,6 +702,22 @@ impl UpstreamPool {
         subject: &str,
         allowed: Option<&BTreeSet<String>>,
     ) -> Vec<UpstreamTool> {
+        self.subject_scoped_upstream_tools_allowed_bounded(
+            configs,
+            subject,
+            allowed,
+            MAX_UPSTREAM_TOOLS,
+        )
+        .await
+    }
+
+    pub async fn subject_scoped_upstream_tools_allowed_bounded(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        allowed: Option<&BTreeSet<String>>,
+        limit: usize,
+    ) -> Vec<UpstreamTool> {
         let configs = configs
             .iter()
             .filter(|config| config.enabled && upstream_allowed(allowed, &config.name))
@@ -669,16 +725,61 @@ impl UpstreamPool {
             .collect::<Vec<_>>();
         let mut routed = Vec::new();
         for (upstream, tools) in self
-            .subject_scoped_tools_bounded(&configs, subject, MAX_UPSTREAM_TOOLS)
+            .subject_scoped_tools_bounded(&configs, subject, limit)
             .await
         {
             let upstream_name = std::sync::Arc::<str>::from(upstream);
             for tool in tools {
                 let (_, tool) = cached_upstream_tool(tool, &upstream_name);
-                insert_bounded_upstream_tool(&mut routed, tool, MAX_UPSTREAM_TOOLS);
+                insert_bounded_upstream_tool(&mut routed, tool, limit);
             }
         }
         routed
+    }
+
+    /// Resolve one exact OAuth subject-scoped tool before constructing the
+    /// schema-bearing routed projection for any of its siblings.
+    pub async fn subject_scoped_upstream_tool_allowed(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+        tool_name: &str,
+    ) -> Option<UpstreamTool> {
+        if !config.enabled || config.oauth.is_none() {
+            return None;
+        }
+        let exposure_policy =
+            resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
+        let result = tokio::time::timeout(SUBJECT_SCOPED_ENUMERATION_TIMEOUT, async {
+            let _permit = self
+                .acquire_catalog_fanout_permit()
+                .await
+                .map_err(anyhow::Error::msg)?;
+            self.acquire_or_connect_subject_tool(config, subject, tool_name)
+                .await
+        })
+        .await;
+        let tool = match result {
+            Ok(Ok((_peer, tool))) => tool,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    upstream = %config.name,
+                    error = %error,
+                    "subject-scoped upstream exact tool discovery failed"
+                );
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    upstream = %config.name,
+                    "subject-scoped upstream exact tool discovery timed out"
+                );
+                return None;
+            }
+        };
+        let tool = tool.filter(|tool| exposure_policy.matches(tool.name.as_ref()))?;
+        let upstream_name = std::sync::Arc::<str>::from(config.name.as_str());
+        Some(cached_upstream_tool(tool, &upstream_name).1)
     }
 
     async fn subject_scoped_tools_inner(
