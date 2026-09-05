@@ -21,6 +21,13 @@ test('library kind filter uses normalized artifact kind', () => {
   assert.equal(filterArtifacts(artifacts, 'all').length, 2)
 })
 
+test('library normalizes plural and protocol-specific kinds for stable filters', () => {
+  assert.equal(artifactKind({ kind: 'MCP Server' }), 'mcp')
+  assert.equal(artifactKind({ kind: 'ACP Agent' }), 'acp')
+  assert.equal(artifactKind({ kind: 'Marketplaces' }), 'marketplace')
+  assert.equal(artifactKind({ descriptor: { kind: 'Prompts' } }), 'prompt')
+})
+
 test('library exports portable, readable artifact metadata', () => {
   assert.equal(artifactExportFilename({ name: 'Review / Triage!' }), 'review-triage.depot.json')
   assert.deepEqual(JSON.parse(serializeArtifact(artifacts[0])), artifacts[0])

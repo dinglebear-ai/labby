@@ -74,14 +74,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! grep -Fq \
-  "rmcp = { git = \"${LABBY_RMCP_REPOSITORY}\", rev = \"${LABBY_RMCP_REVISION}\"" \
-  "${repo_root}/Cargo.toml"; then
-  echo \
-    "Cargo.toml must pin rmcp to ${LABBY_RMCP_REPOSITORY}@${LABBY_RMCP_REVISION}" \
-    >&2
-  exit 1
-fi
+python3 "${repo_root}/scripts/ci/check_mcp_sdk_pin.py" \
+  "${repo_root}/Cargo.toml" "$LABBY_RMCP_REPOSITORY" "$LABBY_RMCP_REVISION"
 
 mkdir -p "$output_dir"
 

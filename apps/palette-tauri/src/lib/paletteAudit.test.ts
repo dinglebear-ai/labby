@@ -30,25 +30,22 @@ describe("palette audit trail", () => {
 
   it("records receipt metadata without persisting any parameter values", () => {
     const canary = "INNOCUOUS-PARAM-CANARY";
-    recordPaletteLaunch(
-      action,
-      {
-        ok: true,
-        status: 200,
-        path: "/v1/palette/execute",
-        method: "POST",
-        payload: {
-          harmless: canary,
-          receipt: {
-            requestId: "req-123",
-            toolId: action.id,
-            contractHash: action.contractHash,
-            catalogRevision: "pool:42",
-            truncated: false,
-          },
+    recordPaletteLaunch(action, {
+      ok: true,
+      status: 200,
+      path: "/v1/palette/execute",
+      method: "POST",
+      payload: {
+        harmless: canary,
+        receipt: {
+          requestId: "req-123",
+          toolId: action.id,
+          contractHash: action.contractHash,
+          catalogRevision: "pool:42",
+          truncated: false,
         },
       },
-    );
+    });
 
     expect(readPaletteLaunches()).toMatchObject([
       {
@@ -77,18 +74,75 @@ describe("palette audit trail", () => {
     });
 
     expect(() =>
-      recordPaletteLaunch(
-        action,
-        {
-          ok: true,
-          status: 200,
-          path: "/v1/palette/execute",
-          method: "POST",
-          payload: { ok: true },
-        },
-      ),
+      recordPaletteLaunch(action, {
+        ok: true,
+        status: 200,
+        path: "/v1/palette/execute",
+        method: "POST",
+        payload: { ok: true },
+      }),
     ).not.toThrow();
 
     setItem.mockRestore();
+  });
+
+  it.each([
+    "exact",
+    "labby_action",
+  ])("preserves %s execution evidence across storage reads", (executionMode) => {
+    recordPaletteLaunch(action, {
+      ok: true,
+      status: 200,
+      path: "/v1/palette/execute",
+      method: "POST",
+      payload: {
+        receipt: {
+          requestId: "req-mode",
+          toolId: action.id,
+          contractHash: action.contractHash,
+          catalogRevision: "pool:42",
+          executionMode,
+          truncated: false,
+        },
+      },
+    });
+    expect(readPaletteLaunches()[0].receipt?.executionMode).toBe(executionMode);
+    expect(
+      JSON.parse(window.localStorage.getItem("labby.palette.recentLaunches") ?? "[]")[0].receipt
+        .executionMode,
+    ).toBe(executionMode);
+  });
+
+  it.each([
+    undefined,
+    "delegated",
+    0,
+    null,
+    { secret: "MODE-CANARY" },
+  ])("does not invent execution evidence for legacy or invalid mode %j", (executionMode) => {
+    const receipt = {
+      requestId: "req-legacy",
+      toolId: action.id,
+      contractHash: action.contractHash,
+      catalogRevision: "pool:42",
+      truncated: false,
+      executionMode,
+    };
+    recordPaletteLaunch(action, {
+      ok: true,
+      status: 200,
+      path: "/v1/palette/execute",
+      method: "POST",
+      payload: { receipt },
+    });
+    expect(readPaletteLaunches()[0].receipt).toMatchObject({ requestId: "req-legacy" });
+    expect(readPaletteLaunches()[0].receipt).not.toHaveProperty("executionMode");
+    // Revalidate old or externally modified history as well as new responses.
+    const stored = readPaletteLaunches()[0];
+    window.localStorage.setItem(
+      "labby.palette.recentLaunches",
+      JSON.stringify([{ ...stored, receipt }]),
+    );
+    expect(readPaletteLaunches()[0].receipt).not.toHaveProperty("executionMode");
   });
 });

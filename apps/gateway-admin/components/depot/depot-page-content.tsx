@@ -13,13 +13,23 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { getArtifact, listArtifacts, listProviderOptions, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
+import { getArtifact, listArtifacts, listProviderOptions, type DepotArtifact, type DepotProviderOption, type FederatedArtifact } from '@/lib/api/depot-client'
 import { artifactKey } from '@/lib/depot/provider-model'
 import { appendDiscoveryPage, createDiscoveryWindow, visibleArtifacts, type DiscoveryWindow } from './discovery-window'
 import { RequestLanes } from './request-lanes'
 
 type LoadState = { loading: boolean; error?: string; window: DiscoveryWindow; cursor?: string; total?: number; exact: boolean; coverage?: string; scopeEpoch?: string }
 type View = 'cards' | 'list'
+
+export function mergeArtifactPages(current: DepotArtifact[], incoming: DepotArtifact[]): DepotArtifact[] {
+  const seen = new Set(current.map(artifact => artifact.id ?? artifact.descriptor?.id).filter(Boolean))
+  return [...current, ...incoming.filter(artifact => {
+    const id = artifact.id ?? artifact.descriptor?.id
+    if (!id || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })]
+}
 
 export function DepotPageContent() {
   const router = useRouter(), pathname = usePathname(), searchParams = useSearchParams()
@@ -31,6 +41,8 @@ export function DepotPageContent() {
   const [detail,setDetail] = useState<FederatedArtifact|null>(null), [detailLoading,setDetailLoading] = useState(false)
   const [copied,setCopied] = useState<string>(), [view,setView] = useState<View>('cards')
   const lanes = useRef(new RequestLanes()), inFlight = useRef<string | undefined>(undefined)
+  const loadMoreRef = useRef<HTMLDivElement>(null)
+  const paginationControllerRef = useRef<AbortController>(null)
 
   const load = useCallback(async (searchQuery:string,cursor?:string,signal?:AbortSignal) => {
     const key = JSON.stringify([selectedProvider,searchQuery,cursor??null])
@@ -47,9 +59,11 @@ export function DepotPageContent() {
   },[selectedProvider])
 
   useEffect(()=>{const controller=new AbortController();void listProviderOptions(controller.signal).then(setProviders).catch(()=>{});return()=>controller.abort()},[])
+  useEffect(()=>()=>paginationControllerRef.current?.abort(),[])
 
   useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,window:createDiscoveryWindow(),cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
   useEffect(()=>{const generation=lanes.current.begin('detail');if(!selectedId||!selectedArtifactProvider){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(lanes.current.isCurrent('detail',generation))setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted)toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted)setDetailLoading(false)});return()=>controller.abort()},[selectedArtifactProvider,selectedId])
+  useEffect(()=>{const target=loadMoreRef.current;if(!target||!state.cursor||state.loading||state.error)return;const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting)){observer.disconnect();const controller=new AbortController();paginationControllerRef.current=controller;void load(activeQuery,state.cursor,controller.signal)}},{rootMargin:'600px 0px'});observer.observe(target);return()=>observer.disconnect()},[activeQuery,load,state.cursor,state.error,state.loading])
 
   const artifactHref=useCallback((providerId?:string,id?:string)=>{const params=new URLSearchParams();if(activeQuery)params.set('q',activeQuery);if(selectedProvider!=='all')params.set('provider',selectedProvider);if(providerId&&id){params.set('artifactProvider',providerId);params.set('artifact',id)}return `${pathname}${params.size?`?${params}`:''}`},[activeQuery,pathname,selectedProvider])
   const copyValue=useCallback(async(label:string,value?:string)=>{if(!value)return;await navigator.clipboard.writeText(value);setCopied(label);toast.success(`${label} copied`);window.setTimeout(()=>setCopied(c=>c===label?undefined:c),1500)},[])
@@ -71,7 +85,7 @@ export function DepotPageContent() {
         {state.window.historyExpired?<p role="status" className="text-xs text-aurora-text-muted">Earlier results left the bounded local window. Refresh this search to revisit older history.</p>:null}
         {visible.leadingRows>0?<div aria-hidden="true" style={{height:Math.min(visible.leadingRows*8,320)}} />:null}
         {query.length>0&&query.length<3?<p className="text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={visible.items} loading={state.loading} view={view} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref}/>} 
-        {state.cursor?<Button variant="outline" onClick={()=>void load(activeQuery,state.cursor)} disabled={state.loading}>{state.loading?<Loader2 className="size-4 animate-spin"/>:null}Load more</Button>:null}
+        {state.cursor?<div ref={loadMoreRef} className="flex min-h-12 items-center justify-center" role="status" aria-live="polite"><Button variant="outline" onClick={()=>void load(activeQuery,state.cursor)} disabled={state.loading}>{state.loading?<Loader2 className="size-4 animate-spin"/>:null}{state.loading?'Loading more artifacts…':'Load more'}</Button></div>:null}
       </section>
     </div></div>
     <ArtifactInspection artifact={detail} loading={detailLoading} open={Boolean(selectedId&&selectedArtifactProvider)} closeHref={artifactHref()} copied={copied} onOpenChange={open=>{if(!open)router.push(artifactHref(),{scroll:false})}} onCopy={copyValue} onExport={exportArtifact}/>

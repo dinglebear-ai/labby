@@ -330,7 +330,16 @@ pub struct PaletteExecutionReceipt {
     pub tool_id: String,
     pub contract_hash: String,
     pub catalog_revision: String,
+    pub execution_mode: PaletteExecutionMode,
     pub truncated: bool,
+}
+
+/// The launcher dispatch path, not a claim about work inside the selected tool.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteExecutionMode {
+    Exact,
+    LabbyAction,
 }
 
 impl GatewayManager {
@@ -393,20 +402,33 @@ impl GatewayManager {
         &self,
         caller: &PaletteCaller,
     ) -> Result<LauncherCatalogView, ToolError> {
-        self.palette_catalog_inner(caller, true).await
+        self.palette_catalog_inner(caller, true, None).await
     }
 
     pub async fn palette_catalog_snapshot(
         &self,
         caller: &PaletteCaller,
     ) -> Result<LauncherCatalogView, ToolError> {
-        self.palette_catalog_inner(caller, false).await
+        self.palette_catalog_inner(caller, false, None).await
+    }
+
+    /// Read one caller-visible tool from the published catalog without connecting
+    /// upstreams or requiring Code Mode execution to be enabled.
+    pub async fn palette_catalog_snapshot_for_tool(
+        &self,
+        caller: &PaletteCaller,
+        id: &str,
+    ) -> Result<LauncherCatalogView, ToolError> {
+        let selected = parse_mcp_launcher_id(id)?;
+        self.palette_catalog_inner(caller, false, Some(selected))
+            .await
     }
 
     async fn palette_catalog_inner(
         &self,
         caller: &PaletteCaller,
         refresh: bool,
+        selected: Option<(&str, &str)>,
     ) -> Result<LauncherCatalogView, ToolError> {
         if !caller.caller.can_read() {
             return Err(ToolError::Sdk {
@@ -431,6 +453,7 @@ impl GatewayManager {
             for upstream in cfg.upstream.iter().filter(|upstream| {
                 upstream.enabled
                     && upstream.priority > 0.0
+                    && selected.is_none_or(|(name, _)| upstream.name == name)
                     && caller
                         .allowed_upstreams()
                         .is_none_or(|allowed| allowed.contains(&upstream.name))
@@ -447,6 +470,9 @@ impl GatewayManager {
                 };
                 tools.sort_by(|a, b| a.tool.name.cmp(&b.tool.name));
                 for tool in tools {
+                    if selected.is_some_and(|(_, name)| tool.tool.name.as_ref() != name) {
+                        continue;
+                    }
                     let entry = mcp_entry(&upstream.name, tool)?;
                     schema_bytes += entry
                         .input_schema
@@ -536,6 +562,7 @@ impl GatewayManager {
                 tool_id: tool_id.clone(),
                 contract_hash: checked.contract_hash,
                 catalog_revision: checked.catalog_revision,
+                execution_mode: PaletteExecutionMode::Exact,
                 truncated: false,
             };
             Ok(execution_response(

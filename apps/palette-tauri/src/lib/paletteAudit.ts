@@ -19,6 +19,7 @@ export interface PaletteReceiptAudit {
   toolId: string;
   contractHash: string;
   catalogRevision: string;
+  executionMode?: "exact" | "labby_action";
   truncated: boolean;
 }
 
@@ -55,12 +56,16 @@ function paletteReceipt(payload: unknown): PaletteReceiptAudit | undefined {
     typeof value.contractHash !== "string" ||
     typeof value.catalogRevision !== "string" ||
     typeof value.truncated !== "boolean"
-  ) return undefined;
+  )
+    return undefined;
   return {
     requestId: value.requestId,
     toolId: value.toolId,
     contractHash: value.contractHash,
     catalogRevision: value.catalogRevision,
+    ...(value.executionMode === "exact" || value.executionMode === "labby_action"
+      ? { executionMode: value.executionMode }
+      : {}),
     truncated: value.truncated,
   };
 }
@@ -69,7 +74,12 @@ export function readPaletteLaunches(): PaletteLaunchAudit[] {
   try {
     if (typeof window === "undefined" || !window.localStorage) return [];
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "[]");
-    return Array.isArray(parsed) ? parsed.filter(isPaletteLaunchAudit) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(isPaletteLaunchAudit).map((entry) => ({
+          ...entry,
+          receipt: paletteReceipt(entry),
+        }))
+      : [];
   } catch {
     return [];
   }
