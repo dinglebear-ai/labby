@@ -1276,7 +1276,14 @@ pub fn run_auth_checks() -> Vec<Finding> {
     let resolved = crate::config::toml_candidates()
         .and_then(|candidates| crate::config::load_toml(&candidates))
         .and_then(|config| crate::config::resolve_auth_for_config(&config));
-    run_auth_checks_with_config(resolved.as_ref().ok())
+    match resolved {
+        Ok(config) => run_auth_checks_with_config(Some(&config)),
+        Err(error) => {
+            let mut findings = run_auth_checks_with_config(None);
+            findings.push(super::auth_config_error_finding(&error.to_string()));
+            findings
+        }
+    }
 }
 
 pub fn run_auth_checks_with_config(
@@ -1368,17 +1375,45 @@ pub fn run_auth_checks_with_config(
         Severity::Ok,
         format!("issued access tokens can retain authority for at most {access_ttl} seconds after policy or provider changes"),
     ));
-    let config_fingerprint = config
-        .and_then(|config| config.inbound_provider_fingerprint().ok())
-        .unwrap_or_else(|| "unresolved".to_string());
-    findings.push(auth_finding(
-        "auth:provider-config-fingerprint",
-        Severity::Ok,
-        format!(
-            "provider config fingerprint: {}",
-            config_fingerprint.chars().take(16).collect::<String>()
+    let config_fingerprint = config.and_then(|config| {
+        config.inbound_provider_fingerprint().map_or_else(
+            |error| {
+                let error =
+                    labby_runtime::agent_error::sanitize_error_text(&error.to_string(), 1024);
+                tracing::warn!(
+                    surface = "doctor",
+                    phase = "auth.config.fingerprint",
+                    kind = "config_error",
+                    error = %error,
+                    "auth provider configuration fingerprint failed"
+                );
+                None
+            },
+            Some,
+        )
+    });
+    findings.push(match config {
+        Some(_) => match config_fingerprint.as_deref() {
+            Some(fingerprint) => auth_finding(
+                "auth:provider-config-fingerprint",
+                Severity::Ok,
+                format!(
+                    "provider config fingerprint: {}",
+                    fingerprint.chars().take(16).collect::<String>()
+                ),
+            ),
+            None => auth_finding(
+                "auth:provider-config-fingerprint",
+                Severity::Fail,
+                "provider configuration cannot be fingerprinted; verify the selected provider settings",
+            ),
+        },
+        None => auth_finding(
+            "auth:provider-config-fingerprint",
+            Severity::Warn,
+            "provider configuration was not resolved; fingerprint unavailable",
         ),
-    ));
+    });
 
     // --- Auth mode ---
     let mode_label = match mode.as_str() {
@@ -1494,59 +1529,66 @@ pub fn run_auth_checks_with_config(
     };
     findings.push(auth_finding("auth:public-url", url_severity, url_message));
 
-    // --- Google credentials ---
-    let (gid_severity, gid_message) = oauth_required_env(
-        &google_id,
-        is_oauth && uses_google,
-        "LABBY_GOOGLE_CLIENT_ID is set",
-        "LABBY_GOOGLE_CLIENT_ID not set — required for LABBY_AUTH_MODE=oauth",
-        "LABBY_GOOGLE_CLIENT_ID not set — required if using LABBY_AUTH_MODE=oauth",
-    );
-    findings.push(auth_finding(
-        "auth:google-client-id",
-        gid_severity,
-        gid_message,
-    ));
+    // --- Provider credentials ---
+    // Inactive-provider credentials are deliberately omitted from the report.
+    // A valid Authelia deployment must not look degraded merely because Google
+    // credentials are absent (and vice versa).
+    if uses_google {
+        let (gid_severity, gid_message) = oauth_required_env(
+            &google_id,
+            is_oauth && uses_google,
+            "LABBY_GOOGLE_CLIENT_ID is set",
+            "LABBY_GOOGLE_CLIENT_ID not set — required for LABBY_AUTH_MODE=oauth",
+            "LABBY_GOOGLE_CLIENT_ID not set — required if using LABBY_AUTH_MODE=oauth",
+        );
+        findings.push(auth_finding(
+            "auth:google-client-id",
+            gid_severity,
+            gid_message,
+        ));
 
-    let (gsec_severity, gsec_message) = oauth_required_env(
-        &google_secret,
-        is_oauth && uses_google,
-        "LABBY_GOOGLE_CLIENT_SECRET is set",
-        "LABBY_GOOGLE_CLIENT_SECRET not set — required for LABBY_AUTH_MODE=oauth",
-        "LABBY_GOOGLE_CLIENT_SECRET not set — required if using LABBY_AUTH_MODE=oauth",
-    );
-    findings.push(auth_finding(
-        "auth:google-client-secret",
-        gsec_severity,
-        gsec_message,
-    ));
+        let (gsec_severity, gsec_message) = oauth_required_env(
+            &google_secret,
+            is_oauth && uses_google,
+            "LABBY_GOOGLE_CLIENT_SECRET is set",
+            "LABBY_GOOGLE_CLIENT_SECRET not set — required for LABBY_AUTH_MODE=oauth",
+            "LABBY_GOOGLE_CLIENT_SECRET not set — required if using LABBY_AUTH_MODE=oauth",
+        );
+        findings.push(auth_finding(
+            "auth:google-client-secret",
+            gsec_severity,
+            gsec_message,
+        ));
+    }
 
-    for (id, value, ok, fail, warn) in [
-        (
-            "auth:authelia-issuer",
-            &authelia_issuer,
-            "LABBY_AUTHELIA_ISSUER_URL is set",
-            "LABBY_AUTHELIA_ISSUER_URL not set — required for the Authelia provider",
-            "LABBY_AUTHELIA_ISSUER_URL not set — required only for the Authelia provider",
-        ),
-        (
-            "auth:authelia-client-id",
-            &authelia_id,
-            "LABBY_AUTHELIA_CLIENT_ID is set",
-            "LABBY_AUTHELIA_CLIENT_ID not set — required for the Authelia provider",
-            "LABBY_AUTHELIA_CLIENT_ID not set — required only for the Authelia provider",
-        ),
-        (
-            "auth:authelia-client-secret",
-            &authelia_secret,
-            "LABBY_AUTHELIA_CLIENT_SECRET is set",
-            "LABBY_AUTHELIA_CLIENT_SECRET not set — required for the Authelia provider",
-            "LABBY_AUTHELIA_CLIENT_SECRET not set — required only for the Authelia provider",
-        ),
-    ] {
-        let (severity, message) =
-            oauth_required_env(value, is_oauth && provider == "authelia", ok, fail, warn);
-        findings.push(auth_finding(id, severity, message));
+    if provider == "authelia" {
+        for (id, value, ok, fail, warn) in [
+            (
+                "auth:authelia-issuer",
+                &authelia_issuer,
+                "LABBY_AUTHELIA_ISSUER_URL is set",
+                "LABBY_AUTHELIA_ISSUER_URL not set — required for the Authelia provider",
+                "LABBY_AUTHELIA_ISSUER_URL not set — required only for the Authelia provider",
+            ),
+            (
+                "auth:authelia-client-id",
+                &authelia_id,
+                "LABBY_AUTHELIA_CLIENT_ID is set",
+                "LABBY_AUTHELIA_CLIENT_ID not set — required for the Authelia provider",
+                "LABBY_AUTHELIA_CLIENT_ID not set — required only for the Authelia provider",
+            ),
+            (
+                "auth:authelia-client-secret",
+                &authelia_secret,
+                "LABBY_AUTHELIA_CLIENT_SECRET is set",
+                "LABBY_AUTHELIA_CLIENT_SECRET not set — required for the Authelia provider",
+                "LABBY_AUTHELIA_CLIENT_SECRET not set — required only for the Authelia provider",
+            ),
+        ] {
+            let (severity, message) =
+                oauth_required_env(value, is_oauth && provider == "authelia", ok, fail, warn);
+            findings.push(auth_finding(id, severity, message));
+        }
     }
 
     // --- Provider credential and local refresh replay encryption ---
@@ -1633,16 +1675,22 @@ pub fn run_auth_checks_with_config(
                     | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
             .and_then(|conn| {
+                let schema: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                if schema < 15 {
+                    return Ok(None);
+                }
                 conn.query_row(
                     "SELECT provider, config_fingerprint, generation FROM inbound_identity_provider WHERE singleton = 1",
                     [],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
-                )
+                ).map(Some)
             });
             match durable {
-                Ok((durable_provider, durable_fingerprint, generation)) => findings.push(auth_finding(
+                Ok(Some((durable_provider, durable_fingerprint, generation))) => findings.push(auth_finding(
                     "auth:provider-generation",
-                    if durable_provider == provider && durable_fingerprint == config_fingerprint {
+                    if durable_provider == provider
+                        && config_fingerprint.as_deref() == Some(durable_fingerprint.as_str())
+                    {
                         Severity::Ok
                     } else {
                         Severity::Fail
@@ -1651,6 +1699,11 @@ pub fn run_auth_checks_with_config(
                         "durable provider generation {generation}; provider={durable_provider}; fingerprint={}",
                         durable_fingerprint.chars().take(16).collect::<String>()
                     ),
+                )),
+                Ok(None) => findings.push(auth_finding(
+                    "auth:provider-generation",
+                    Severity::Warn,
+                    "auth database schema predates v15; provider metadata will be created by the pending migration".to_string(),
                 )),
                 Err(error) => findings.push(auth_finding(
                     "auth:provider-generation",
@@ -1747,5 +1800,72 @@ fn file_perms_check(service: &str, label: &str, path: &str) -> Finding {
             severity: Severity::Warn,
             message: format!("{path}: could not read permissions: {e}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    fn authelia_test_config(dir: &std::path::Path) -> labby_auth::config::AuthConfig {
+        labby_auth::config::AuthConfigBuilder::new()
+            .env_prefix("LABBY")
+            .default_data_dir(dir)
+            .build_from_sources([
+                ("LABBY_AUTH_MODE".into(), "oauth".into()),
+                ("LABBY_AUTH_PROVIDER".into(), "authelia".into()),
+                ("LABBY_PUBLIC_URL".into(), "https://lab.example.com".into()),
+                ("LABBY_AUTH_ADMIN_EMAIL".into(), "admin@example.com".into()),
+                (
+                    "LABBY_AUTHELIA_ISSUER_URL".into(),
+                    "https://auth.example.com".into(),
+                ),
+                ("LABBY_AUTHELIA_CLIENT_ID".into(), "labby".into()),
+                (
+                    "LABBY_AUTHELIA_CLIENT_SECRET".into(),
+                    "not-a-real-secret".into(),
+                ),
+                (
+                    "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                    "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                ),
+            ])
+            .unwrap()
+    }
+
+    #[test]
+    fn authelia_checks_do_not_report_inactive_google_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = authelia_test_config(dir.path());
+
+        let findings = run_auth_checks_with_config(Some(&config));
+        assert!(findings.iter().all(|finding| !matches!(
+            finding.check.as_str(),
+            "auth:google-client-id" | "auth:google-client-secret"
+        )));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.check == "auth:authelia-client-id")
+        );
+    }
+
+    #[test]
+    fn pre_v15_database_reports_pending_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = authelia_test_config(dir.path());
+        if let Some(parent) = config.sqlite_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let conn = rusqlite::Connection::open(&config.sqlite_path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 14;").unwrap();
+        drop(conn);
+
+        let finding = run_auth_checks_with_config(Some(&config))
+            .into_iter()
+            .find(|finding| finding.check == "auth:provider-generation")
+            .unwrap();
+        assert!(matches!(finding.severity, Severity::Warn));
+        assert!(finding.message.contains("pending migration"));
     }
 }

@@ -104,9 +104,10 @@ async fn handle(
         req,
         ACTIONS,
         move |action, params| async move {
-            crate::dispatch::doctor::dispatch_with_clients_and_relay(
+            crate::dispatch::doctor::dispatch_with_clients_relay_and_auth(
                 &clients,
                 state.public_relay.clone(),
+                crate::dispatch::doctor::AuthConfigSource::Authoritative(state.auth_config.clone()),
                 &action,
                 params,
                 "api",
@@ -140,10 +141,16 @@ async fn stream_audit_full(
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::dispatch::doctor::Finding>(64);
     let clients = Arc::clone(&state.clients);
     let public_relay = state.public_relay.clone();
+    let auth = state.auth_config.as_deref().cloned();
 
     let producer = tokio::spawn(async move {
-        crate::dispatch::doctor::service::stream_audit_full_with_relay(clients, public_relay, tx)
-            .await;
+        crate::dispatch::doctor::service::stream_audit_full_with_relay_and_auth(
+            clients,
+            public_relay,
+            auth,
+            tx,
+        )
+        .await;
     });
 
     info!(

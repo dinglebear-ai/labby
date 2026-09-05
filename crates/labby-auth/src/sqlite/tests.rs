@@ -7,9 +7,9 @@ use rusqlite::Connection;
 use crate::at_rest::TokenEncryptionKey;
 use crate::jwt::{AccessClaims, SigningKeys};
 use crate::types::{
-    AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, GoogleProviderCredentialUpdate,
-    ProviderSwitchRevocation, RefreshTokenRow, RegisteredClient, UpstreamOauthCredentialRow,
-    UpstreamOauthStateRow,
+    AllowedUserRow, AuthorizationCodeRow, BrowserLoginStateRow, BrowserSessionRow,
+    GoogleProviderCredentialUpdate, ProviderSwitchRevocation, RefreshTokenRow, RegisteredClient,
+    UpstreamOauthCredentialRow, UpstreamOauthStateRow,
 };
 
 use crate::util::now_unix;
@@ -1459,7 +1459,7 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        15
+        16
     );
 }
 
@@ -1515,7 +1515,7 @@ async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker
         })
         .await
         .unwrap();
-    assert_eq!(schema_version, 15);
+    assert_eq!(schema_version, 16);
     let row = migrated
         .find_google_provider_credential("google-subject-v7")
         .await
@@ -1652,9 +1652,221 @@ fn v12_migration_fault_rolls_back_columns_and_schema_version() {
     assert_eq!(columns, vec!["state"]);
 }
 
+#[test]
+fn v13_migration_fault_rolls_back_tables_and_schema_version() {
+    let path = temp_db_path();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    drop(runtime.block_on(SqliteStore::open(path.clone())).unwrap());
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "DROP TABLE browser_reauth_challenges;
+         DROP TABLE reauth_attempts;
+         DROP TABLE reauth_proofs;
+         PRAGMA user_version = 12;",
+    )
+    .unwrap();
+
+    let error = migrations::run_migrations_with_fault(&conn, "v13_before_commit")
+        .expect_err("fault must abort v13");
+    assert!(error.to_string().contains("injected v13 migration fault"));
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        12
+    );
+    assert!(!conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reauth_proofs')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap());
+}
+
+#[test]
+fn v14_migration_fault_rolls_back_table_and_schema_version() {
+    let path = temp_db_path();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    drop(runtime.block_on(SqliteStore::open(path.clone())).unwrap());
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "DROP TABLE browser_reauth_challenges;
+         PRAGMA user_version = 13;",
+    )
+    .unwrap();
+
+    let error = migrations::run_migrations_with_fault(&conn, "v14_before_commit")
+        .expect_err("fault must abort v14");
+    assert!(error.to_string().contains("injected v14 migration fault"));
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        13
+    );
+    assert!(!conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'browser_reauth_challenges')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap());
+}
+
+#[test]
+fn v16_migration_fault_rolls_back_and_retry_installs_expiry_indexes() {
+    let path = temp_db_path();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    drop(runtime.block_on(SqliteStore::open(path.clone())).unwrap());
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(
+        "DROP INDEX idx_authorization_requests_expiry;
+         DROP INDEX idx_authorization_codes_expiry;
+         DROP INDEX idx_refresh_tokens_expiry;
+         DROP INDEX idx_browser_sessions_expiry;
+         DROP INDEX idx_browser_login_states_expiry;
+         DROP INDEX idx_native_authorization_results_expiry;
+         DROP INDEX idx_upstream_oauth_credentials_expiry_refresh;
+         PRAGMA user_version = 15;",
+    )
+    .unwrap();
+
+    let error = migrations::run_migrations_with_fault(&conn, "v16_before_commit")
+        .expect_err("fault must abort v16");
+    assert!(error.to_string().contains("injected v16 migration fault"));
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        15
+    );
+    let index_exists = |name: &str| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+            [name],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    };
+    assert!(!index_exists("idx_refresh_tokens_expiry"));
+
+    migrations::run_migrations(&conn).expect("retry must complete v16");
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        16
+    );
+    for index in [
+        "idx_authorization_requests_expiry",
+        "idx_authorization_codes_expiry",
+        "idx_refresh_tokens_expiry",
+        "idx_browser_sessions_expiry",
+        "idx_browser_login_states_expiry",
+        "idx_native_authorization_results_expiry",
+        "idx_upstream_oauth_credentials_expiry_refresh",
+    ] {
+        assert!(index_exists(index), "missing {index}");
+    }
+}
+
+#[tokio::test]
+async fn refresh_replay_lookup_rejects_mismatched_provider_generation() {
+    let store = temp_store().await;
+    register_test_client(&store, "client").await;
+    store
+        .activate_inbound_provider(
+            "authelia",
+            "https://auth.example.test",
+            "replay-generation-test",
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    store
+        .upsert_refresh_token(sample_refresh_token("client", "predecessor"))
+        .await
+        .unwrap();
+    let binding = store
+        .claim_bound_refresh_token("predecessor", "claim", now_unix() + 60)
+        .await
+        .unwrap()
+        .unwrap()
+        .binding;
+    let response = crate::types::TokenResponse {
+        access_token: "access".into(),
+        token_type: "Bearer".into(),
+        expires_in: 300,
+        refresh_token: Some("replacement".into()),
+        scope: "lab".into(),
+    };
+    store
+        .rotate_claimed_refresh_token(
+            "predecessor",
+            "claim",
+            sample_refresh_token("client", "replacement"),
+            &response,
+            now_unix() + 60,
+            binding,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .execute_test_statement(
+            "UPDATE refresh_token_replays
+             SET provider_generation = provider_generation + 1",
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        store
+            .find_refresh_token_replay("predecessor", "client", None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .find_refresh_token_replay_client("predecessor")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    store
+        .execute_test_statement(
+            "UPDATE refresh_token_replays SET provider_generation = 0;
+             UPDATE refresh_tokens SET provider_generation = 0;",
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .find_refresh_token_replay("predecessor", "client", None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .find_refresh_token_replay_client("predecessor")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn v15_backfills_google_and_provider_switch_revokes_old_generation() {
     let store = temp_store().await;
+    store
+        .activate_inbound_provider(
+            "google",
+            "https://accounts.google.com",
+            "established-google-config",
+            now_unix(),
+        )
+        .await
+        .unwrap();
     store
         .register_client(RegisteredClient {
             client_id: "client".into(),
@@ -1689,6 +1901,31 @@ async fn v15_backfills_google_and_provider_switch_revokes_old_generation() {
     assert_eq!(legacy.provider, "google");
     assert_eq!(legacy.issuer, "https://accounts.google.com");
     assert_eq!(legacy.generation, 1);
+    assert_eq!(legacy.config_fingerprint, "established-google-config");
+
+    let startup_mismatch = store
+        .activate_inbound_provider_checked(
+            "google",
+            "https://accounts.google.com",
+            "real-google-config",
+            Some("configured-google-client"),
+            now_unix(),
+        )
+        .await
+        .expect_err("normal startup must not replace a populated provider binding");
+    assert!(
+        startup_mismatch
+            .to_string()
+            .contains("authenticated admin endpoint")
+    );
+    assert_eq!(store.inbound_provider_state().await.unwrap(), legacy);
+    assert!(
+        store
+            .find_refresh_token("refresh-v13")
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     let adopted = store
         .activate_inbound_provider(
@@ -1699,9 +1936,9 @@ async fn v15_backfills_google_and_provider_switch_revokes_old_generation() {
         )
         .await
         .unwrap();
-    assert_eq!(adopted.generation, 1);
-    assert_eq!(adopted.revoked_authorization_codes, 0);
-    assert!(store.redeem_auth_code("code-123").await.is_ok());
+    assert_eq!(adopted.generation, 2);
+    assert_eq!(adopted.revoked_authorization_codes, 1);
+    assert!(store.redeem_auth_code("code-123").await.is_err());
     store.insert_auth_code(sample_code()).await.unwrap();
 
     let switched = store
@@ -1713,10 +1950,58 @@ async fn v15_backfills_google_and_provider_switch_revokes_old_generation() {
         )
         .await
         .unwrap();
-    assert_eq!(switched.generation, 2);
+    assert_eq!(switched.generation, 3);
     assert_eq!(switched.revoked_authorization_codes, 1);
-    assert_eq!(switched.revoked_refresh_tokens, 1);
-    assert_eq!(switched.revoked_browser_sessions, 1);
+    assert_eq!(switched.revoked_refresh_tokens, 0);
+    assert_eq!(switched.revoked_browser_sessions, 0);
+
+    store
+        .insert_authorization_request(crate::types::AuthorizationRequestRow {
+            state: "authelia-request".into(),
+            client_id: "client".into(),
+            redirect_uri: "http://127.0.0.1:7777/callback".into(),
+            client_state: "client-state".into(),
+            native_poll_token_hash: None,
+            resource: "https://lab.example.com/mcp".into(),
+            scope: "lab".into(),
+            provider_code_verifier: "provider-verifier".into(),
+            code_challenge: "challenge".into(),
+            code_challenge_method: "S256".into(),
+            created_at: now_unix(),
+            expires_at: now_unix() + 600,
+        })
+        .await
+        .unwrap();
+    store
+        .insert_browser_login_state(BrowserLoginStateRow {
+            state: "authelia-login".into(),
+            return_to: "/".into(),
+            provider_code_verifier: "provider-verifier".into(),
+            created_at: now_unix(),
+            expires_at: now_unix() + 600,
+        })
+        .await
+        .unwrap();
+    let stamped_providers = store
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT provider FROM authorization_requests WHERE state = 'authelia-request'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(sqlite_error)?,
+                conn.query_row(
+                    "SELECT provider FROM browser_login_states WHERE state = 'authelia-login'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(sqlite_error)?,
+            ))
+        })
+        .await
+        .unwrap();
+    assert_eq!(stamped_providers, ("authelia".into(), "authelia".into()));
 
     store.insert_auth_code(sample_code()).await.unwrap();
     let stamped: (String, i64) = store
@@ -1731,7 +2016,7 @@ async fn v15_backfills_google_and_provider_switch_revokes_old_generation() {
         })
         .await
         .unwrap();
-    assert_eq!(stamped, ("https://auth.example.test".into(), 2));
+    assert_eq!(stamped, ("https://auth.example.test".into(), 3));
     store
         .execute_test_statement(
             "INSERT INTO authorization_codes
@@ -1762,11 +2047,11 @@ async fn v15_backfills_google_and_provider_switch_revokes_old_generation() {
         )
         .await
         .unwrap();
-    assert_eq!(repeated.generation, 2);
+    assert_eq!(repeated.generation, 3);
     assert_eq!(
         repeated,
         ProviderSwitchRevocation {
-            generation: 2,
+            generation: 3,
             ..Default::default()
         }
     );

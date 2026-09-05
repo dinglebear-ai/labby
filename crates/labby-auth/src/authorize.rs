@@ -95,7 +95,7 @@ pub async fn authorize(
         .await?
         .ok_or_else(|| {
             warn!(
-                client_id = %query.client_id,
+                client_id = %fingerprint(&query.client_id),
                 client_state_id = %client_state_id,
                 "oauth authorize rejected: unknown client_id"
             );
@@ -107,7 +107,7 @@ pub async fn authorize(
         .any(|uri| uri == &query.redirect_uri)
     {
         warn!(
-            client_id = %query.client_id,
+            client_id = %fingerprint(&query.client_id),
             redirect_uri_id = %fingerprint(&query.redirect_uri),
             client_state_id = %client_state_id,
             "oauth authorize rejected: redirect URI does not match registered client"
@@ -149,16 +149,16 @@ pub async fn authorize(
         client_id = %fingerprint(&query.client_id),
         redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
-        resource = %resource,
-        requested_scope = %query.scope,
-        normalized_scope = %scope,
+        resource_id = %fingerprint(&resource),
+        requested_scope_id = %fingerprint(&query.scope),
+        normalized_scope_id = %fingerprint(&scope),
         "oauth authorize request received"
     );
     if query.code_challenge_method != "S256" {
         warn!(
-            client_id = %query.client_id,
+            client_id = %fingerprint(&query.client_id),
             client_state_id = %client_state_id,
-            code_challenge_method = %query.code_challenge_method,
+            code_challenge_method_id = %fingerprint(&query.code_challenge_method),
             "oauth authorize rejected: unsupported PKCE method"
         );
         return response::authorization_error_redirect(
@@ -221,23 +221,27 @@ pub async fn authorize(
         )
         .await?;
 
-    // Google's refresh credential belongs to the Google account and Labby's
-    // Google OAuth client, not to the downstream DCR/CIMD client. On a
-    // single-account gateway, one verified email-scoped provider credential
-    // can therefore serve every local OAuth client without minting hundreds
-    // of duplicate Google refresh tokens. With multiple allowed accounts we
-    // still force consent because the selected subject is unknown until the
-    // callback returns.
     let allowed_emails = state.resolve_allowed_emails().await?;
-    let sole_account_has_credential = match allowed_emails.as_slice() {
-        [email] => state
-            .store
-            .find_google_provider_credential_by_email(email)
-            .await?
-            .is_some_and(|credential| credential.client_id == state.inbound_provider.client_id()),
-        _ => false,
-    };
-    let force_consent = allowed_emails.len() != 1 || !sole_account_has_credential;
+    // Google's refresh credential belongs to the Google account and Labby's
+    // Google OAuth client, not to the downstream DCR/CIMD client. This consent
+    // policy is deliberately Google-only; generic OIDC providers control
+    // refresh-token consent through their own server-side policy.
+    let (provider_credential_present, force_consent) =
+        if state.inbound_provider.kind() == crate::config::InboundProviderKind::Google {
+            let present = match allowed_emails.as_slice() {
+                [email] => state
+                    .store
+                    .find_google_provider_credential_by_email(email)
+                    .await?
+                    .is_some_and(|credential| {
+                        credential.client_id == state.inbound_provider.client_id()
+                    }),
+                _ => false,
+            };
+            (Some(present), allowed_emails.len() != 1 || !present)
+        } else {
+            (None, false)
+        };
     let location = state.inbound_provider.authorize_url(&AuthorizeUrlRequest {
         state: request_state,
         scope: scope.clone(),
@@ -247,7 +251,7 @@ pub async fn authorize(
         force_consent,
     })?;
     info!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         redirect_uri_id = %fingerprint(&query.redirect_uri),
         client_state_id = %client_state_id,
         oauth_state_id = %oauth_state_id,
@@ -255,12 +259,12 @@ pub async fn authorize(
         scope_id = %fingerprint(&scope),
         provider = ?state.inbound_provider.kind(),
         allowed_email_count = allowed_emails.len(),
-        provider_credential_present = sole_account_has_credential,
+        provider_credential_present,
         force_consent,
         "oauth authorize request redirected to upstream provider"
     );
     debug!(
-        client_id = %query.client_id,
+        client_id = %fingerprint(&query.client_id),
         oauth_state_id = %oauth_state_id,
         provider_authorization_endpoint = %sanitized_authorization_endpoint(&location),
         "oauth authorize redirect URL generated"
@@ -457,12 +461,12 @@ pub async fn callback(
         );
     }
     info!(
-        client_id = %request.client_id,
+        client_id = %fingerprint(&request.client_id),
         redirect_uri_id = %fingerprint(&request.redirect_uri),
         oauth_state_id = %oauth_state_id,
         client_state_id = %fingerprint(&request.client_state),
-        resource = %request.resource,
-        scope = %request.scope,
+        resource_id = %fingerprint(&request.resource),
+        scope_id = %fingerprint(&request.scope),
         "oauth callback state redeemed"
     );
     macro_rules! callback_try {
@@ -681,7 +685,7 @@ pub async fn callback(
         (existing.refresh_token.clone(), true)
     } else {
         warn!(
-            client_id = %request.client_id,
+            client_id = %fingerprint(&request.client_id),
             oauth_state_id = %oauth_state_id,
             subject_id = %subject_id,
             kind = "oauth_needs_reauth",
@@ -751,7 +755,7 @@ pub async fn callback(
             "server_error"
         );
         warn!(
-            client_id = %request.client_id,
+            client_id = %fingerprint(&request.client_id),
             oauth_state_id = %oauth_state_id,
             subject_id = %subject_id,
             observed_provider_generation = ?existing_credential.as_ref().map(|row| row.generation),
@@ -771,7 +775,7 @@ pub async fn callback(
         );
     }
     info!(
-        client_id = %request.client_id,
+        client_id = %fingerprint(&request.client_id),
         oauth_state_id = %oauth_state_id,
         subject_id = %subject_id,
         provider_credential_present = true,
@@ -779,131 +783,14 @@ pub async fn callback(
         reused_provider_refresh_token,
         "oauth callback exchanged upstream code successfully"
     );
-    let auth_code = callback_try!(random_token(24), "server_error");
-    let auth_code_id = fingerprint(&auth_code);
-    // The user just passed `check_email_allowlist`, which IS the admin gate:
-    // operators are added to the allowlist explicitly to grant access. Elevate
-    // their scope to include `<default_scope>:admin` so MCP clients (which
-    // typically don't know to request elevated scopes) can call destructive
-    // gateway/setup actions without a separate flow. If they explicitly
-    // requested only the base scope, this is a no-op deny — they get admin.
-    let elevated_scope =
-        elevate_scope_for_allowed_user(&request.scope, &state.config.default_scope);
-    let request_client_id = request.client_id.clone();
-    let request_resource = request.resource.clone();
-    let request_scope = elevated_scope.clone();
-    callback_try!(
-        state
-            .store
-            .insert_bound_auth_code(
-                AuthorizationCodeRow {
-                    code: auth_code.clone(),
-                    client_id: request.client_id,
-                    subject: google.subject,
-                    redirect_uri: request.redirect_uri.clone(),
-                    resource: request.resource,
-                    scope: elevated_scope,
-                    code_challenge: request.code_challenge,
-                    code_challenge_method: request.code_challenge_method,
-                    provider_refresh_token: None,
-                    created_at: now_unix(),
-                    expires_at: callback_try!(
-                        expires_at(
-                            now_unix(),
-                            state.config.auth_code_ttl,
-                            &format!("{}_AUTH_CODE_TTL_SECS", state.config.env_prefix),
-                        ),
-                        "server_error"
-                    ),
-                },
-                provider_binding.clone()
-            )
-            .await,
-        "server_error"
-    );
-    info!(
-        auth_code_id = %auth_code_id,
-        oauth_state_id = %oauth_state_id,
-        client_id = %request_client_id,
-        resource = %request_resource,
-        scope = %request_scope,
-        redirect_uri_id = %fingerprint(&request.redirect_uri),
-        "oauth callback issued local authorization code"
-    );
-
-    // Native-flow clients (desktop/mobile apps with no loopback listener or
-    // custom URI scheme) register `redirect_uri = native_callback_endpoint` —
-    // our own HTTPS route — instead of a client-hosted URL. In that case there
-    // is no redirect target to send the browser back to: stash the code keyed
-    // by the independently generated polling-token hash for the client to
-    // retrieve via `POST /native/poll`, and show a
-    // plain "signed in" page directly.
-    let native_callback_endpoint = crate::metadata::native_callback_endpoint(&state);
-    if request.redirect_uri == native_callback_endpoint {
-        let now = now_unix();
-        state
-            .store
-            .insert_bound_native_authorization_result(
-                NativeAuthorizationResultRow {
-                    poll_token_hash: request.native_poll_token_hash.ok_or_else(|| {
-                        AuthError::Storage(
-                            "native authorization request is missing its polling credential"
-                                .to_string(),
-                        )
-                    })?,
-                    code: auth_code,
-                    created_at: now,
-                    expires_at: expires_at(
-                        now,
-                        state.config.auth_code_ttl,
-                        &format!("{}_AUTH_CODE_TTL_SECS", state.config.env_prefix),
-                    )?,
-                },
-                provider_binding,
-            )
-            .await?;
-        let mut response = axum::response::Html(NATIVE_SUCCESS_PAGE).into_response();
-        response
-            .headers_mut()
-            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        debug!(
-            auth_code_id = %auth_code_id,
-            native_callback_endpoint = %native_callback_endpoint,
-            "oauth callback stored native authorization code for polling"
-        );
-        return Ok(response);
-    }
-
-    let redirect_uri = callback_try!(
-        reqwest::Url::parse(&request.redirect_uri).map_err(|error| {
-            AuthError::Storage(format!(
-                "registered redirect_uri is not a valid URL: {error}"
-            ))
-        }),
-        "server_error"
-    );
-    let mut redirect_uri = redirect_uri;
-    redirect_uri
-        .query_pairs_mut()
-        .append_pair("code", &auth_code)
-        .append_pair("state", &request.client_state);
-    response::append_authorization_response_issuer(&state, &mut redirect_uri);
-    let (has_code, has_state, has_issuer) =
-        response::authorization_response_query_presence(&redirect_uri);
-    info!(
-        auth_code_id = %auth_code_id,
-        oauth_state_id = %oauth_state_id,
-        client_id = %request_client_id,
-        authorization_response_has_code = has_code,
-        authorization_response_has_state = has_state,
-        authorization_response_has_issuer = has_issuer,
-        redirect_scheme = redirect_uri.scheme(),
-        redirect_host = redirect_uri.host_str(),
-        redirect_path = redirect_uri.path(),
-        "oauth callback authorization response prepared"
-    );
-
-    Ok(Redirect::to(redirect_uri.as_str()).into_response())
+    finish_local_authorization(
+        &state,
+        request,
+        google.subject,
+        oauth_state_id,
+        provider_binding,
+    )
+    .await
 }
 
 async fn finish_local_authorization(
@@ -918,6 +805,9 @@ async fn finish_local_authorization(
         elevate_scope_for_allowed_user(&request.scope, &state.config.default_scope);
     let redirect_uri_raw = request.redirect_uri.clone();
     let client_state = request.client_state.clone();
+    let client_id = request.client_id.clone();
+    let resource = request.resource.clone();
+    let scope = elevated_scope.clone();
     state
         .store
         .insert_bound_auth_code(
@@ -941,6 +831,16 @@ async fn finish_local_authorization(
             provider_binding.clone(),
         )
         .await?;
+    let auth_code_id = fingerprint(&auth_code);
+    info!(
+        auth_code_id = %auth_code_id,
+        oauth_state_id = %oauth_state_id,
+        client_id = %fingerprint(&client_id),
+        resource_id = %fingerprint(&resource),
+        scope_id = %fingerprint(&scope),
+        redirect_uri_id = %fingerprint(&redirect_uri_raw),
+        "oauth callback issued local authorization code"
+    );
     let native_callback_endpoint = crate::metadata::native_callback_endpoint(state);
     if redirect_uri_raw == native_callback_endpoint {
         let now = now_unix();
@@ -968,6 +868,11 @@ async fn finish_local_authorization(
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        debug!(
+            auth_code_id = %auth_code_id,
+            native_callback_endpoint_id = %fingerprint(&native_callback_endpoint),
+            "oauth callback stored native authorization code for polling"
+        );
         return Ok(response);
     }
     let mut redirect_uri = reqwest::Url::parse(&redirect_uri_raw)
@@ -977,13 +882,26 @@ async fn finish_local_authorization(
         .append_pair("code", &auth_code)
         .append_pair("state", &client_state);
     response::append_authorization_response_issuer(state, &mut redirect_uri);
-    info!(oauth_state_id = %oauth_state_id, auth_code_id = %fingerprint(&auth_code), "OIDC callback issued local authorization code");
+    let (has_code, has_state, has_issuer) =
+        response::authorization_response_query_presence(&redirect_uri);
+    info!(
+        oauth_state_id = %oauth_state_id,
+        auth_code_id = %auth_code_id,
+        client_id = %fingerprint(&client_id),
+        authorization_response_has_code = has_code,
+        authorization_response_has_state = has_state,
+        authorization_response_has_issuer = has_issuer,
+        redirect_scheme = redirect_uri.scheme(),
+        redirect_host = redirect_uri.host_str(),
+        redirect_path = redirect_uri.path(),
+        "oauth callback authorization response prepared"
+    );
     Ok(Redirect::to(redirect_uri.as_str()).into_response())
 }
 
 /// Direct-hit fallback for the registered native `redirect_uri`. In the real
 /// flow this path is never dereferenced by an actual browser redirect —
-/// Google's redirect target is always `/auth/google/callback`, which detects
+/// The provider redirect target is the active provider callback, which detects
 /// a native-flow authorization request and short-circuits into stashing the
 /// code for `/native/poll` instead of redirecting here. This handler only
 /// answers a stray direct visit (e.g. a stale bookmark or a misconfigured
@@ -2474,6 +2392,35 @@ pub mod tests {
             .body(Body::from(format!("grant_type=authorization_code&code={code}&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&code_verifier=downstream-verifier")))
             .unwrap()).await.unwrap();
         assert_eq!(token.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authelia_authorization_does_not_inherit_google_consent_policy() {
+        let (state, _server) = test_auth_state_with_mock_authelia("unused-nonce-state").await;
+        let response = router(state)
+            .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1234))))
+            .oneshot(
+                Request::builder()
+                    .uri("/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&state=client-state&scope=lab&code_challenge=pkce&code_challenge_method=S256")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let query: std::collections::HashMap<_, _> = Url::parse(location)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        assert!(!query.contains_key("prompt"), "{location}");
     }
 
     #[tokio::test]

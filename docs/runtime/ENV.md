@@ -142,12 +142,8 @@ Rules:
 - bearer mode keeps using `LABBY_MCP_HTTP_TOKEN`
 - oauth mode requires `LABBY_PUBLIC_URL`, `LABBY_AUTH_ADMIN_EMAIL`, and exactly one complete Google or Authelia provider configuration
 - Authelia support is open beta and pinned in CI to 4.39.10. Register only the exact `/auth/oidc/callback`, `client_secret_basic`, authorization code flow, and PKCE S256 with `openid email profile`; do not grant `offline_access`.
-- `LABBY_AUTH_ADMIN_EMAIL` is the bootstrap admin Google email; startup fails closed if unset under oauth mode so no Google account can authenticate without explicit permission. Future SQLite-backed allowlist (web-UI managed) will grant access to additional users.
-- `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` grants access to every member of one or more Google
-  Workspace domains, in addition to the admin email and the SQLite-backed allowlist. It is
-  matched against the ID token's `hd` (hosted domain) claim, never the address suffix, so a
-  consumer account cannot claim a domain it does not belong to. Empty (the default) disables
-  domain-based access. `email_verified` is still enforced.
+- `LABBY_AUTH_ADMIN_EMAIL` is the provider-neutral bootstrap admin email; startup fails closed if unset under oauth mode so no identity can authenticate without explicit permission. The SQLite-backed allowlist grants access to additional users.
+- `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` grants access to verified identities in the configured domains. For Google it is matched against the provider-asserted `hd` (hosted domain) claim, never the address suffix. For Authelia it is matched against the domain of the verified email claim and is not equivalent to a Google `hd` assertion. Empty (the default) disables domain-based access.
 - `LABBY_GOOGLE_CALLBACK_URL` optionally sends the browser callback to a webapp host that differs from the stable OAuth issuer in `LABBY_PUBLIC_URL`
 - `LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY=true` is an explicit temporary workaround for [openai/codex#34684](https://github.com/openai/codex/issues/34684); it disables RFC 9207 response-issuer advertisement and emission and should be removed after affected Codex clients are fixed
 - the old external issuer variables (`LABBY_OAUTH_ISSUER`, `LABBY_OAUTH_AUDIENCE`, `LABBY_OAUTH_CLIENT_ID`) are no longer used

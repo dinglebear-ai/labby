@@ -2017,11 +2017,18 @@
         },
         {
           "name": "auth.check",
-          "description": "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
+          "description": "Check auth/OAuth configuration and optionally probe Authelia discovery and JWKS",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
-          "params": [],
+          "params": [
+            {
+              "name": "live",
+              "ty": "boolean",
+              "required": false,
+              "description": "When true and Authelia is selected, probe its discovery and JWKS endpoints"
+            }
+          ],
           "returns": "DoctorReport"
         },
         {

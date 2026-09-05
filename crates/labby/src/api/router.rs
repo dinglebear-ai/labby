@@ -2490,27 +2490,30 @@ pub(crate) fn build_router_with_external_auth(
         );
     }
     if !integrated_trusted_host && let Some(auth_state) = auth_state.as_ref() {
-        let descriptors = crate::api::route_registry::oauth_protocol_descriptors_for_provider(
+        let routes = crate::api::route_registry::oauth_protocol_routes_for_provider(
             auth_state.inbound_provider.kind(),
         );
         let mut auth_routes = crate::api::route_registry::RouteGroup::empty();
-        for descriptor in descriptors {
-            let methods = match descriptor.handler {
-                "auth_authorization_server_metadata" => get(auth_authorization_server_metadata),
-                "auth_protected_resource_metadata" => get(auth_protected_resource_metadata),
-                "auth_jwks" => get(auth_jwks),
-                "auth_register" if auth_state.config.enable_dynamic_registration => {
+        for (route_id, descriptor) in routes {
+            use labby_auth::routes::AuthRouteId;
+            let methods = match route_id {
+                AuthRouteId::AuthorizationServerMetadata
+                | AuthRouteId::AuthorizationServerMetadataPath => {
+                    get(auth_authorization_server_metadata)
+                }
+                AuthRouteId::ProtectedResourceMetadata => get(auth_protected_resource_metadata),
+                AuthRouteId::Jwks => get(auth_jwks),
+                AuthRouteId::Register if auth_state.config.enable_dynamic_registration => {
                     post(auth_register)
                 }
-                "auth_register" => continue,
-                "auth_authorize" => get(auth_authorize),
-                "auth_browser_login" => get(auth_browser_login),
-                "auth_callback" => get(auth_callback),
-                "auth_native_callback" => get(auth_native_callback),
-                "auth_native_poll" => post(auth_native_poll),
-                "auth_token" => post(auth_token),
-                "auth_revoke" => post(auth_revoke),
-                _ => continue,
+                AuthRouteId::Register => continue,
+                AuthRouteId::Authorize => get(auth_authorize),
+                AuthRouteId::BrowserLogin => get(auth_browser_login),
+                AuthRouteId::ProviderCallback => get(auth_callback),
+                AuthRouteId::NativeCallback => get(auth_native_callback),
+                AuthRouteId::NativePoll => post(auth_native_poll),
+                AuthRouteId::Token => post(auth_token),
+                AuthRouteId::Revoke => post(auth_revoke),
             };
             auth_routes = auth_routes.route(descriptor, methods);
         }

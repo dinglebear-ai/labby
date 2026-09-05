@@ -2332,13 +2332,16 @@ mod tests {
             .add_allowed_user("user@example.com", "admin", crate::util::now_unix())
             .await
             .unwrap();
+        let provider_verified_at = crate::util::now_unix()
+            - i64::try_from(state.config.refresh_token_ttl.as_secs()).unwrap()
+            + 30;
         state
             .store
             .upsert_verified_inbound_identity(
                 issuer,
                 "authelia-subject",
                 "user@example.com",
-                crate::util::now_unix(),
+                provider_verified_at,
             )
             .await
             .unwrap();
@@ -2375,6 +2378,78 @@ mod tests {
             .unwrap();
         let token: TokenResponse = serde_json::from_slice(&body).unwrap();
         let replacement = token.refresh_token.unwrap();
+        let replacement_row = state
+            .store
+            .find_refresh_token(&replacement)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            replacement_row.expires_at
+                <= provider_verified_at
+                    + i64::try_from(state.config.refresh_token_ttl.as_secs()).unwrap()
+        );
+
+        state
+            .store
+            .add_allowed_user("expired@example.com", "admin", crate::util::now_unix())
+            .await
+            .unwrap();
+        state
+            .store
+            .upsert_verified_inbound_identity(
+                issuer,
+                "expired-subject",
+                "expired@example.com",
+                crate::util::now_unix()
+                    - i64::try_from(state.config.refresh_token_ttl.as_secs()).unwrap()
+                    - 1,
+            )
+            .await
+            .unwrap();
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: "expired-provider-auth-refresh".into(),
+                client_id: "client".into(),
+                subject: "expired-subject".into(),
+                resource: "https://lab.example.com/mcp".into(),
+                scope: "lab".into(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let expired_auth = app
+            .clone()
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", "expired-provider-auth-refresh"),
+                    ("client_id", "client"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(expired_auth.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            state
+                .store
+                .find_refresh_token("expired-provider-auth-refresh")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .store
+                .current_verified_inbound_email(issuer, "expired-subject")
+                .await
+                .unwrap()
+                .is_none()
+        );
         let replay_predecessor = replacement.clone();
         let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..10 {

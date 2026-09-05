@@ -1,15 +1,16 @@
-/// At-rest encryption for upstream provider refresh tokens.
+/// At-rest encryption for provider credentials and local refresh replay responses.
 ///
-/// Provider tokens (e.g. Google refresh tokens) are encrypted with
-/// ChaCha20-Poly1305 before being written to SQLite so that a copied
-/// `auth.db` cannot be used as an upstream-account pivot.
+/// Provider tokens (e.g. Google refresh tokens) and serialized local refresh
+/// replay responses are encrypted with ChaCha20-Poly1305 before being written
+/// to SQLite so a copied `auth.db` cannot expose reusable OAuth authority.
 ///
 /// # Key management
 ///
 /// The encryption key is a 32-byte value derived from the
 /// `{PREFIX}_TOKEN_ENCRYPTION_KEY` environment variable, which must be
-/// either 64 hex digits or 43 base64url-no-pad characters.  When the env
-/// Product OAuth and the central Google credential broker require this key.
+/// either 64 hex digits or 43 base64url-no-pad characters. Product OAuth
+/// requires this key for local refresh replay encryption, and the central
+/// Google credential broker requires it for provider credentials.
 /// The optional helpers remain available only for credential stores whose
 /// callers explicitly support an unencrypted mode.
 ///

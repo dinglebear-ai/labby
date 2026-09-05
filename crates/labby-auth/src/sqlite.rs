@@ -32,6 +32,7 @@ use crate::types::{
 };
 
 const UPSTREAM_OAUTH_STATE_MAX_TTL_SECS: i64 = 600;
+const VERIFIED_IDENTITY_ORPHAN_GRACE_SECS: i64 = 600;
 /// Schema version for the `PRAGMA user_version` migration guard.
 /// Increment this whenever a migration step is added to `run_migrations`.
 use crate::util::{ensure_restrictive_permissions, now_unix, set_restrictive_permissions};
@@ -189,8 +190,8 @@ impl SqliteStore {
                 "INSERT INTO authorization_requests (
                     state, client_id, redirect_uri, client_state, resource, scope, provider_code_verifier,
                     code_challenge, code_challenge_method, created_at, expires_at, native_poll_token_hash,
-                    identity_issuer, provider_generation
-                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, issuer, generation
+                    provider, identity_issuer, provider_generation
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, provider, issuer, generation
                      FROM inbound_identity_provider WHERE singleton = 1",
                 params![
                     request.state,
@@ -687,8 +688,8 @@ impl SqliteStore {
             conn.execute(
                 "INSERT INTO browser_login_states (
                     state, return_to, provider_code_verifier, created_at, expires_at,
-                    identity_issuer, provider_generation
-                 ) SELECT ?1, ?2, ?3, ?4, ?5, issuer, generation
+                    provider, identity_issuer, provider_generation
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, provider, issuer, generation
                      FROM inbound_identity_provider WHERE singleton = 1",
                 params![
                     login.state,
@@ -955,6 +956,37 @@ impl SqliteStore {
                             WHERE expires_at <= ?1 LIMIT ?2
                          )",
                     params![now, i64::from(limit)],
+                )
+                .map_err(sqlite_error)?;
+            total += deleted as u64;
+            let deleted = transaction
+                .execute(
+                    "DELETE FROM inbound_verified_identities
+                     WHERE (identity_issuer, subject, provider_generation) IN (
+                       SELECT identity_issuer, subject, provider_generation
+                       FROM inbound_verified_identities AS identity
+                       WHERE verified_at <= ?2 AND NOT EXISTS (
+                         SELECT 1 FROM authorization_codes AS code
+                         WHERE code.identity_issuer = identity.identity_issuer
+                           AND code.subject = identity.subject
+                           AND code.provider_generation = identity.provider_generation
+                       ) AND NOT EXISTS (
+                         SELECT 1 FROM refresh_tokens AS token
+                         WHERE token.identity_issuer = identity.identity_issuer
+                           AND token.subject = identity.subject
+                           AND token.provider_generation = identity.provider_generation
+                       ) AND NOT EXISTS (
+                         SELECT 1 FROM browser_sessions AS session
+                         WHERE session.identity_issuer = identity.identity_issuer
+                           AND session.subject = identity.subject
+                           AND session.provider_generation = identity.provider_generation
+                       )
+                       LIMIT ?1
+                     )",
+                    params![
+                        i64::from(limit),
+                        now.saturating_sub(VERIFIED_IDENTITY_ORPHAN_GRACE_SECS)
+                    ],
                 )
                 .map_err(sqlite_error)?;
             total += deleted as u64;
@@ -2663,7 +2695,7 @@ mod tests {
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            15
+            16
         );
     }
 
@@ -2719,7 +2751,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(schema_version, 15);
+        assert_eq!(schema_version, 16);
         let row = migrated
             .find_google_provider_credential("google-subject-v7")
             .await

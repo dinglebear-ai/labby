@@ -62,7 +62,7 @@ pub enum InboundProvider {
 /// Closed runtime dispatch for inbound human identity providers.
 ///
 /// Google retains its established credential-broker implementation while
-/// Authelia uses the common OIDC verifier and local-policy refresh path.
+/// Authelia uses its OIDC verifier and local-policy refresh path.
 /// Keeping this enum closed prevents inbound provider behavior from leaking
 /// into the separate upstream OAuth credential-store abstraction.
 #[derive(Clone, Debug)]

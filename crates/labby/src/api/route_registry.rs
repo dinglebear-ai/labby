@@ -633,6 +633,15 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
 pub(crate) fn oauth_protocol_descriptors_for_provider(
     provider: labby_auth::config::InboundProviderKind,
 ) -> Vec<RouteDescriptor> {
+    oauth_protocol_routes_for_provider(provider)
+        .into_iter()
+        .map(|(_, descriptor)| descriptor)
+        .collect()
+}
+
+pub(crate) fn oauth_protocol_routes_for_provider(
+    provider: labby_auth::config::InboundProviderKind,
+) -> Vec<(labby_auth::routes::AuthRouteId, RouteDescriptor)> {
     use labby_auth::routes::AuthRouteId;
     labby_auth::routes::auth_route_specs(provider)
         .into_iter()
@@ -655,17 +664,29 @@ pub(crate) fn oauth_protocol_descriptors_for_provider(
             };
             let condition = if spec.id == AuthRouteId::Register {
                 "mounted only when OAuth is configured and dynamic client registration is enabled"
+            } else if spec.id == AuthRouteId::ProviderCallback {
+                match provider {
+                    labby_auth::config::InboundProviderKind::Google => {
+                        "mounted only when OAuth is configured with the Google provider"
+                    }
+                    labby_auth::config::InboundProviderKind::Authelia => {
+                        "mounted only when OAuth is configured with the Authelia provider"
+                    }
+                }
             } else {
                 "mounted only when OAuth is configured"
             };
-            RouteDescriptor::new(
-                spec.method,
-                spec.path,
-                handler,
-                "oauth",
-                RouteAuth::OAuthProtocol,
+            (
+                spec.id,
+                RouteDescriptor::new(
+                    spec.method,
+                    spec.path,
+                    handler,
+                    "oauth",
+                    RouteAuth::OAuthProtocol,
+                )
+                .when(condition),
             )
-            .when(condition)
         })
         .collect()
 }

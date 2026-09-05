@@ -40,11 +40,16 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "auth.check",
-        description: "Check auth/OAuth configuration: env vars, file presence, and Unix file permissions",
+        description: "Check auth/OAuth configuration and optionally probe Authelia discovery and JWKS",
         destructive: false,
         requires_admin: false,
         returns: "DoctorReport",
-        params: &[],
+        params: &[ParamSpec {
+            name: "live",
+            ty: "boolean",
+            required: false,
+            description: "When true and Authelia is selected, probe its discovery and JWKS endpoints",
+        }],
     },
     ActionSpec {
         name: "access.check",

@@ -43,7 +43,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_KEY_PATH` | no | Override path for the persisted JWT signing key. |
 | `LABBY_AUTH_ALLOWED_REDIRECT_URIS` | no | Comma-separated redirect URI patterns allowed for dynamic client registration. When unset, Labby seeds common ChatGPT/Claude callback patterns. Set it explicitly to replace those defaults; use `https://*` only when the operator intentionally trusts any HTTPS DCR callback. Loopback/native-app callbacks are accepted by the auth layer. |
 | `LABBY_AUTH_ADMIN_EMAIL` | oauth mode | Verified email address of the bootstrap admin for the selected provider. Normalized to lowercase at startup; startup fails closed if unset. Additional users come from the SQLite-backed allowlist. |
-| `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated Google Workspace domains whose members may log in, in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. Matching is against the ID token's `hd` (hosted domain) claim rather than the email address suffix: Google asserts `hd` only for accounts genuinely hosted in that Workspace domain, so suffix lookalikes such as `user@evil-example.com` are not accepted. `email_verified` is enforced first, and a token refresh that returns no fresh `id_token` carries no `hd`, so domain access is never re-established from a reused identity. Empty (the default) disables domain-based access. |
+| `LABBY_AUTH_ALLOWED_EMAIL_DOMAINS` | no | Comma-separated domains whose members may log in, in addition to `LABBY_AUTH_ADMIN_EMAIL` and the SQLite-backed allowlist. Entries are trimmed, stripped of a leading `@`, and lowercased. Google authorization matches the provider-asserted `hd` claim; Authelia authorization matches the exact domain of its verified email claim. `email_verified` is enforced first. Empty (the default) disables domain-based access. |
 | `LABBY_GOOGLE_CALLBACK_URL` | no | Absolute Google OAuth callback URL. Use this when the browser webapp host differs from the OAuth issuer; when unset, Labby derives the callback from `LABBY_PUBLIC_URL` and `LABBY_GOOGLE_CALLBACK_PATH`. |
 | `LABBY_GOOGLE_CALLBACK_PATH` | no | Callback path appended to `LABBY_PUBLIC_URL`. Defaults to `/auth/google/callback`. |
 | `LABBY_GOOGLE_SCOPES` | no | Comma-separated Google scopes. Defaults to `openid,email,profile`. |
@@ -66,6 +66,32 @@ one confidential authorization-code client in Authelia with:
 - scopes `openid`, `email`, and `profile`, with claims `sub`, `email`, and
   `email_verified`; and
 - no `offline_access` grant. Labby intentionally stores no Authelia refresh token.
+
+Authelia 4.39.10 requires the requested identity claims to be linked to the
+client through a claims policy. A minimal client fragment is:
+
+```yaml
+identity_providers:
+  oidc:
+    claims_policies:
+      labby:
+        id_token: [email, email_verified]
+    clients:
+      - client_id: labby
+        client_secret: '$pbkdf2-sha512$...'
+        claims_policy: labby
+        redirect_uris:
+          - https://lab.example.com/auth/oidc/callback
+        scopes: [openid, profile, email]
+        grant_types: [authorization_code]
+        response_types: [code]
+        token_endpoint_auth_method: client_secret_basic
+        require_pkce: true
+        pkce_challenge_method: S256
+```
+
+Without the `claims_policy` link, authentication can succeed at Authelia but
+Labby will reject the ID token because its verified email evidence is absent.
 
 The callback is fixed for this provider. Google keeps its separate
 `/auth/google/callback` contract; provider selection does not alias or leave
@@ -131,7 +157,7 @@ Startup also fails if:
 
 Labby supports two separate first-owner flows:
 
-- `POST /v1/access/bootstrap-owner` remains the Google-backed browser flow. It
+- `POST /v1/access/bootstrap-owner` remains the inbound-provider-backed browser flow. It
   requires the authenticated browser session, CSRF token, `lab:admin`, the
   canonical external identity, and an email matching
   `LABBY_AUTH_ADMIN_EMAIL`.
@@ -166,6 +192,7 @@ OAuth mode exposes:
 - `POST /register`
 - `GET /authorize`
 - `GET /auth/google/callback`
+- `GET /auth/oidc/callback`
 - `GET /native/callback`
 - `POST /native/poll`
 - `POST /token`
@@ -214,16 +241,22 @@ Flow summary:
 
 1. A client registers a loopback redirect URI, a native-app URI, a product-default callback URI, or one that matches the configured allowlist.
 2. The client sends the user to `/authorize` with `response_type=code`.
-3. Labby stores the request state, generates PKCE data, and redirects to Google.
-4. Google redirects back to `/auth/google/callback`.
+3. Labby stores the request state, generates PKCE data, and redirects to the
+   selected provider.
+4. The selected provider redirects back to its exclusive callback:
+   `/auth/google/callback` for Google or `/auth/oidc/callback` for Authelia.
 5. Labby enforces the merged allowlist: `LABBY_AUTH_ADMIN_EMAIL`, configured
    Workspace domains, and the current SQLite-backed allowed-user list managed
    through settings. The id_token's `email_verified` claim is required —
    unverified accounts are rejected even when an address or domain matches.
    Browser-login callers receive a 401; OAuth-client callers receive an RFC
    6749 §4.1.2.1 redirect with `error=access_denied`.
-6. Labby exchanges the Google code server-side, stores a local authorization code, and redirects the client back to its registered redirect URI with the local code.
-7. The client exchanges that local code at `/token` for a Labby access token and, when Google granted offline access, a Labby refresh token.
+6. Labby exchanges the provider code server-side, stores a local authorization
+   code, and redirects the client back to its registered redirect URI with the
+   local code.
+7. The client exchanges that local code at `/token` for a Labby access token.
+   Google may also yield a renewable Labby grant when it granted upstream
+   offline access; Authelia renewal is local-policy-only.
 
 Google access and refresh tokens remain server-side only.
 
@@ -1110,17 +1143,35 @@ An invalid configured key aborts the restart rather than replacing it.
 Provider cutover is a stop-the-world maintenance operation. Stop every Labby
 process that can write the shared auth database, run `labby doctor auth --live`
 with the proposed Authelia configuration, and take a SQLite backup before the
-first new binary starts. Provider discovery completes before v13 migration, but
-once v13 commits, older writers must remain stopped. Verify the durable state
+first new binary starts. Provider discovery completes before the v15 migration,
+but once v15 commits, older writers must remain stopped. Verify the durable state
 after startup with:
 
 ```sql
 PRAGMA user_version;
 PRAGMA integrity_check;
+PRAGMA foreign_key_check;
+SELECT COUNT(*) AS provider_rows FROM inbound_identity_provider;
 SELECT provider, issuer, generation FROM inbound_identity_provider WHERE singleton = 1;
+SELECT 'authorization_codes' AS source, identity_issuer, provider_generation, COUNT(*)
+FROM authorization_codes GROUP BY identity_issuer, provider_generation
+UNION ALL
+SELECT 'refresh_tokens', identity_issuer, provider_generation, COUNT(*)
+FROM refresh_tokens GROUP BY identity_issuer, provider_generation
+UNION ALL
+SELECT 'browser_sessions', identity_issuer, provider_generation, COUNT(*)
+FROM browser_sessions GROUP BY identity_issuer, provider_generation;
 ```
 
-Rollback after v13 requires stopping all writers and restoring the matching
+The expected final `user_version` is `16`: provider metadata and identity
+backfill are installed by v15, then v16 adds expiry-leading cleanup indexes.
+`integrity_check` must return `ok`,
+`foreign_key_check` must return no rows, and the singleton provider query must
+return exactly one row matching the selected provider. Compare each grouped
+identity-bearing row count with its pre-migration table count; v14 rows must be
+mapped to Google's canonical issuer and generation `1`.
+
+Rollback after the v15/v16 migration sequence requires stopping all writers and restoring the matching
 pre-cutover database backup; changing only the binary or provider environment
 is not a supported downgrade.
 

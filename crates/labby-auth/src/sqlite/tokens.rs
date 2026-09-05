@@ -408,8 +408,8 @@ impl SqliteStore {
                 .execute(
                     "INSERT INTO refresh_token_replays (
                         predecessor_token_hash, client_id, resource, response,
-                        replacement_token_hash, created_at, expires_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        replacement_token_hash, created_at, expires_at, provider_generation
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         old_hash,
                         replay_client_id,
@@ -418,6 +418,7 @@ impl SqliteStore {
                         new_hash,
                         now,
                         replay_expires_at,
+                        binding.provider_generation,
                     ],
                 )
                 .map_err(sqlite_error)?;
@@ -450,7 +451,9 @@ impl SqliteStore {
                      WHERE replay.predecessor_token_hash = ?1
                        AND replay.client_id = ?2
                        AND replay.expires_at > ?3
-                       AND replacement.expires_at > ?3",
+                       AND replacement.expires_at > ?3
+                       AND replay.provider_generation = replacement.provider_generation
+                       AND replay.provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
                     params![predecessor_hash, client_id, now],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
@@ -488,7 +491,9 @@ impl SqliteStore {
                    ON replacement.refresh_token_hash = replay.replacement_token_hash
                  WHERE replay.predecessor_token_hash = ?1
                    AND replay.expires_at > ?2
-                   AND replacement.expires_at > ?2",
+                   AND replacement.expires_at > ?2
+                   AND replay.provider_generation = replacement.provider_generation
+                   AND replay.provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
                 params![predecessor_hash, now],
                 |row| row.get(0),
             )

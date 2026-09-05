@@ -18,6 +18,11 @@ use super::service;
 use super::system;
 use super::types::Report;
 
+pub enum AuthConfigSource {
+    Resolve,
+    Authoritative(Option<Arc<labby_auth::config::AuthConfig>>),
+}
+
 /// Standard MCP-path dispatch: builds `ServiceClients` from env on demand.
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     dispatch_with_surface(action, params, "mcp").await
@@ -39,12 +44,15 @@ pub async fn dispatch_with_surface(
             return to_json(Report { findings });
         }
         "auth.check" => {
-            let findings = tokio::task::spawn_blocking(system::run_auth_checks)
-                .await
-                .map_err(|e| ToolError::Sdk {
-                    sdk_kind: "internal_error".to_string(),
-                    message: format!("auth.check task panicked: {e}"),
-                })?;
+            let live = optional_bool(&params, "live")?;
+            let (resolved, config_error) = resolve_auth_config();
+            let mut findings = auth_findings(resolved.as_ref()).await?;
+            if let Some(error) = config_error.as_deref() {
+                findings.push(super::auth_config_error_finding(error));
+            }
+            if live {
+                findings.push(super::provider::live_probe(resolved.as_ref()).await);
+            }
             return to_json(Report { findings });
         }
         "access.check" => {
@@ -93,12 +101,39 @@ pub async fn dispatch_with_clients(
     action: &str,
     params: Value,
 ) -> Result<Value, ToolError> {
-    dispatch_with_clients_and_relay(clients, None, action, params, "api").await
+    dispatch_with_clients_relay_and_auth(
+        clients,
+        None,
+        AuthConfigSource::Resolve,
+        action,
+        params,
+        "api",
+    )
+    .await
 }
 
 pub async fn dispatch_with_clients_and_relay(
     clients: &Arc<ServiceClients>,
     public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
+    action: &str,
+    params: Value,
+    surface: &'static str,
+) -> Result<Value, ToolError> {
+    dispatch_with_clients_relay_and_auth(
+        clients,
+        public_relay,
+        AuthConfigSource::Resolve,
+        action,
+        params,
+        surface,
+    )
+    .await
+}
+
+pub async fn dispatch_with_clients_relay_and_auth(
+    clients: &Arc<ServiceClients>,
+    public_relay: Option<Arc<crate::oauth::public_relay::PublicRelayRegistryManager>>,
+    auth: AuthConfigSource,
     action: &str,
     params: Value,
     surface: &'static str,
@@ -120,13 +155,24 @@ pub async fn dispatch_with_clients_and_relay(
         "system.checks" => to_json(Report {
             findings: system::run_system_checks().await,
         }),
-        "auth.check" => match tokio::task::spawn_blocking(system::run_auth_checks).await {
-            Ok(findings) => to_json(Report { findings }),
-            Err(e) => Err(ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!("auth.check task panicked: {e}"),
-            }),
-        },
+        "auth.check" => {
+            let live = optional_bool(&params, "live")?;
+            let (resolved, config_error) = match auth {
+                AuthConfigSource::Authoritative(config) => (config, None),
+                AuthConfigSource::Resolve => {
+                    let (config, error) = resolve_auth_config();
+                    (config.map(Arc::new), error)
+                }
+            };
+            let mut findings = auth_findings(resolved.as_deref()).await?;
+            if let Some(error) = config_error.as_deref() {
+                findings.push(super::auth_config_error_finding(error));
+            }
+            if live {
+                findings.push(super::provider::live_probe(resolved.as_deref()).await);
+            }
+            to_json(Report { findings })
+        }
         "access.check" => to_json(access::check_access_store().await),
         "gateway.upstreams" => to_json(gateway::check_gateway_upstreams().await),
         "proxy.check" => {
@@ -145,12 +191,28 @@ pub async fn dispatch_with_clients_and_relay(
             let (tx, mut rx) = tokio::sync::mpsc::channel(64);
             let clients = clients.clone();
             let public_relay = public_relay.clone();
+            let (resolved_auth, config_error) = match auth {
+                AuthConfigSource::Authoritative(config) => (config, None),
+                AuthConfigSource::Resolve => {
+                    let (config, error) = resolve_auth_config();
+                    (config.map(Arc::new), error)
+                }
+            };
             tokio::spawn(async move {
-                service::stream_audit_full_with_relay(clients, public_relay, tx).await;
+                service::stream_audit_full_with_relay_and_auth(
+                    clients,
+                    public_relay,
+                    resolved_auth.as_deref().cloned(),
+                    tx,
+                )
+                .await;
             });
             let mut findings = Vec::new();
             while let Some(f) = rx.recv().await {
                 findings.push(f);
+            }
+            if let Some(error) = config_error.as_deref() {
+                findings.push(super::auth_config_error_finding(error));
             }
             to_json(Report { findings })
         }
@@ -188,4 +250,37 @@ pub async fn dispatch_with_clients_and_relay(
         ),
     }
     result
+}
+
+fn optional_bool(params: &Value, name: &str) -> Result<bool, ToolError> {
+    match params.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(ToolError::InvalidParam {
+            message: format!("`{name}` must be a boolean"),
+            param: name.to_string(),
+        }),
+    }
+}
+
+fn resolve_auth_config() -> (Option<labby_auth::config::AuthConfig>, Option<String>) {
+    match crate::config::toml_candidates()
+        .and_then(|candidates| crate::config::load_toml(&candidates))
+        .and_then(|config| crate::config::resolve_auth_for_config(&config))
+    {
+        Ok(config) => (Some(config), None),
+        Err(error) => (None, Some(error.to_string())),
+    }
+}
+
+async fn auth_findings(
+    config: Option<&labby_auth::config::AuthConfig>,
+) -> Result<Vec<super::Finding>, ToolError> {
+    let config = config.cloned();
+    tokio::task::spawn_blocking(move || system::run_auth_checks_with_config(config.as_ref()))
+        .await
+        .map_err(|e| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("auth.check task panicked: {e}"),
+        })
 }

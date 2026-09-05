@@ -4,7 +4,7 @@ use crate::error::AuthError;
 use crate::state::AuthState;
 use crate::util::fingerprint;
 
-/// Enforces the configured email allowlist using Google's verified identity claims.
+/// Enforces the configured email allowlist using verified provider identity claims.
 pub(crate) fn check_email_allowlist(
     email: Option<&str>,
     email_verified: Option<bool>,
@@ -16,15 +16,15 @@ pub(crate) fn check_email_allowlist(
         return Ok(());
     }
     if email_verified != Some(true) {
-        warn!("oauth callback rejected: google did not return a verified email address");
+        warn!("oauth callback rejected: identity provider did not return a verified email address");
         return Err(AuthError::AuthFailed(
-            "google did not return a verified email address".to_string(),
+            "identity provider did not return a verified email address".to_string(),
         ));
     }
     let Some(email) = email else {
-        warn!("oauth callback rejected: google did not return an email address");
+        warn!("oauth callback rejected: identity provider did not return an email address");
         return Err(AuthError::AuthFailed(
-            "google did not return an email address".to_string(),
+            "identity provider did not return an email address".to_string(),
         ));
     };
     let email = email.trim();
@@ -48,7 +48,7 @@ pub(crate) fn check_email_allowlist(
         "oauth callback rejected: email not in allowed list"
     );
     Err(AuthError::AuthFailed(
-        "google account is not permitted to access this gateway".to_string(),
+        "identity is not permitted to access this gateway".to_string(),
     ))
 }
 

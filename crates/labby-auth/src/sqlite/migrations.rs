@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 15;
+pub(crate) const SCHEMA_VERSION: i64 = 16;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
@@ -349,12 +349,44 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
         transaction.commit().map_err(sqlite_error)?;
     }
     if current < 15 {
-        migrate_v15(conn, fault)?;
+        migrate_v15(conn, current, fault)?;
+    }
+    if current < 16 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        transaction
+            .execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_authorization_requests_expiry
+                   ON authorization_requests(expires_at);
+                 CREATE INDEX IF NOT EXISTS idx_authorization_codes_expiry
+                   ON authorization_codes(expires_at);
+                 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expiry
+                   ON refresh_tokens(expires_at);
+                 CREATE INDEX IF NOT EXISTS idx_browser_sessions_expiry
+                   ON browser_sessions(expires_at);
+                 CREATE INDEX IF NOT EXISTS idx_browser_login_states_expiry
+                   ON browser_login_states(expires_at);
+                 CREATE INDEX IF NOT EXISTS idx_native_authorization_results_expiry
+                   ON native_authorization_results(expires_at);
+                 CREATE INDEX IF NOT EXISTS idx_upstream_oauth_credentials_expiry_refresh
+                   ON upstream_oauth_credentials(access_token_expires_at, refresh_token_present);
+                 PRAGMA user_version = 16;",
+            )
+            .map_err(sqlite_error)?;
+        if fault == Some("v16_before_commit") {
+            return Err(AuthError::Storage(
+                "injected v16 migration fault".to_string(),
+            ));
+        }
+        transaction.commit().map_err(sqlite_error)?;
     }
     Ok(())
 }
 
-fn migrate_v15(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> {
+fn migrate_v15(
+    conn: &Connection,
+    previous_schema: i64,
+    fault: Option<&str>,
+) -> Result<(), AuthError> {
     // IMMEDIATE takes the database write lock before inspecting or mutating the
     // schema, serializing two processes that race to open the same database.
     conn.execute_batch("BEGIN IMMEDIATE;")
@@ -468,9 +500,6 @@ fn migrate_v15(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> 
                verified_at INTEGER NOT NULL,
                PRIMARY KEY (identity_issuer, subject, provider_generation)
              );
-             INSERT OR IGNORE INTO inbound_identity_provider
-               (singleton, provider, issuer, config_fingerprint, generation, updated_at)
-             VALUES (1, 'google', 'https://accounts.google.com', 'legacy-google', 1, 0);
              CREATE INDEX IF NOT EXISTS idx_authorization_requests_provider_generation_expiry
                ON authorization_requests(provider_generation, expires_at);
              CREATE INDEX IF NOT EXISTS idx_authorization_codes_identity_generation_expiry
@@ -489,6 +518,19 @@ fn migrate_v15(conn: &Connection, fault: Option<&str>) -> Result<(), AuthError> 
                ON allowed_users(email COLLATE NOCASE);
              CREATE INDEX IF NOT EXISTS idx_inbound_verified_identities_generation
                ON inbound_verified_identities(provider_generation, identity_issuer, subject);",
+        )
+        .map_err(sqlite_error)?;
+
+        let initial_fingerprint = if previous_schema > 0 {
+            "legacy-google"
+        } else {
+            "uninitialized"
+        };
+        conn.execute(
+            "INSERT OR IGNORE INTO inbound_identity_provider
+               (singleton, provider, issuer, config_fingerprint, generation, updated_at)
+             VALUES (1, 'google', 'https://accounts.google.com', ?1, 1, 0)",
+            [initial_fingerprint],
         )
         .map_err(sqlite_error)?;
         if fault == Some("v15_after_backfill") {

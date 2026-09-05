@@ -4457,6 +4457,14 @@
           }
         }
       },
+      "DoctorAuthCheckParams": {
+        "type": "object",
+        "properties": {
+          "live": {
+            "type": "boolean"
+          }
+        }
+      },
       "DoctorOauthRelayCheckParams": {
         "type": "object",
         "properties": {

@@ -6,7 +6,7 @@ updated: "2026-09-05"
 
 # Inbound Identity Provider Contract
 
-**Status:** Accepted for implementation
+**Status:** Implemented
 **Scope:** `labby-auth` interactive human login
 **Tracking:** `lab-tp2d9`
 
@@ -132,10 +132,11 @@ cascade semantics. Authelia does not join that broker.
 The schema change is additive and runs as one serialized transaction. It creates
 the provider metadata, adds issuer/generation columns and supporting indexes,
 performs set-based Google backfill, validates integrity, and advances
-`user_version` last. A failed migration rolls back the v13 transaction;
+`user_version` last. A failed migration rolls back the v15 transaction;
 restart retries safely. A binary that does not understand the advanced schema
 must refuse to open it. Downgrade after migration requires restoring a database
-backup unless a future release explicitly proves reverse compatibility.
+backup created at v14 unless a future release explicitly proves reverse
+compatibility.
 
 ## Failure Behavior
 
@@ -161,10 +162,10 @@ strings. Metrics use bounded provider/result labels only.
 
 ## Implementation Checklist
 
-- [ ] Closed provider config preserves legacy Google behavior and redacts secrets.
-- [ ] Persistence keys identities by issuer and subject and fences generations.
-- [ ] Google is adapted without changing its credential-broker invariants.
-- [ ] Authelia discovery, HTTP, JWKS, and claim validation obey the bounds above.
-- [ ] Authorize, browser, native, refresh, and session paths carry issuer/generation.
-- [ ] Product config, setup, doctor, routes, documentation, and catalogs agree.
-- [ ] Mock conformance and pinned real-Authelia interoperability both pass.
+- [x] Closed provider config preserves legacy Google behavior and redacts secrets.
+- [x] Persistence keys identities by issuer and subject and fences generations.
+- [x] Google is adapted without changing its credential-broker invariants.
+- [x] Authelia discovery, HTTP, JWKS, and claim validation obey the bounds above.
+- [x] Authorize, browser, native, refresh, and session paths carry issuer/generation.
+- [x] Product config, setup, doctor, routes, documentation, and catalogs agree.
+- [x] Mock conformance and pinned real-Authelia interoperability both pass.

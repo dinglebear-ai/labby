@@ -61,7 +61,7 @@ This is a global inventory, not the active runtime exposure or authorization pol
 | `bundles` | `schema` | true | false | false |  | `action*: string` | `ActionSpec` | mcp, api |
 | `doctor` | `access.check` | false | false | false |  |  | `DoctorReport` | mcp, api |
 | `doctor` | `audit.full` | false | false | false |  |  | `stream&lt;Finding&gt;` | cli, mcp, api |
-| `doctor` | `auth.check` | false | false | false |  |  | `DoctorReport` | cli, mcp, api |
+| `doctor` | `auth.check` | false | false | false |  | `live: boolean` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `help` | false | false | false |  |  | `Catalog` | mcp, api |
 | `doctor` | `oauth.relay.check` | false | false | true | lab:admin | `probe_targets: boolean` | `DoctorReport` | cli, mcp, api |
 | `doctor` | `proxy.check` | false | false | false |  | `app_url*: string`<br>`mcp_url*: string`<br>`route*: string`<br>`backend_url: string` | `DoctorReport` | cli, mcp, api |

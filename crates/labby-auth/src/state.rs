@@ -31,6 +31,7 @@ const RATE_LIMIT_IDLE_TTL_SECS: u64 = 10 * 60;
 const REMOTE_FETCH_MAX_CONCURRENT: usize = 16;
 const EXPIRED_RECORD_CLEANUP_INTERVAL: Duration = Duration::from_mins(5);
 const EXPIRED_RECORD_CLEANUP_BATCH: u32 = 256;
+const EXPIRED_RECORD_CLEANUP_MAX_BATCHES: u32 = 16;
 
 struct CleanupTask {
     abort: tokio::task::AbortHandle,
@@ -53,19 +54,47 @@ fn spawn_expired_record_cleanup(
         loop {
             ticker.tick().await;
             let started = Instant::now();
-            match store.cleanup_expired_bounded(batch_limit).await {
-                Ok(0) => debug!(
+            let mut deleted_rows = 0_u64;
+            let mut batches = 0_u32;
+            let mut hit_batch_cap = false;
+            let cleanup_result = loop {
+                match store.cleanup_expired_bounded(batch_limit).await {
+                    Ok(0) => break Ok(()),
+                    Ok(deleted) => {
+                        deleted_rows = deleted_rows.saturating_add(deleted);
+                        batches += 1;
+                        if batches >= EXPIRED_RECORD_CLEANUP_MAX_BATCHES {
+                            hit_batch_cap = true;
+                            break Ok(());
+                        }
+                    }
+                    Err(error) => break Err(error),
+                }
+            };
+            match cleanup_result {
+                Ok(()) if deleted_rows == 0 => debug!(
                     crate_name = "labby-auth",
                     phase = "auth.cleanup_expired.finish",
-                    deleted_rows = 0_u64,
+                    deleted_rows,
+                    batches,
                     batch_limit,
                     elapsed_ms = started.elapsed().as_millis(),
                     "bounded expired auth record cleanup completed"
                 ),
-                Ok(deleted_rows) => info!(
+                Ok(()) if hit_batch_cap => warn!(
+                    crate_name = "labby-auth",
+                    phase = "auth.cleanup_expired.saturated",
+                    deleted_rows,
+                    batches,
+                    batch_limit,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "expired auth record cleanup reached its batch cap; cleanup will resume"
+                ),
+                Ok(()) => info!(
                     crate_name = "labby-auth",
                     phase = "auth.cleanup_expired.finish",
                     deleted_rows,
+                    batches,
                     batch_limit,
                     elapsed_ms = started.elapsed().as_millis(),
                     "bounded expired auth record cleanup completed"
@@ -74,6 +103,7 @@ fn spawn_expired_record_cleanup(
                     crate_name = "labby-auth",
                     phase = "auth.cleanup_expired.error",
                     kind = error.kind(),
+                    error = %error,
                     batch_limit,
                     elapsed_ms = started.elapsed().as_millis(),
                     "bounded expired auth record cleanup failed"
@@ -380,6 +410,7 @@ impl AuthState {
         .await?;
         let signing_keys = SigningKeys::load_or_create(&config.key_path)?;
         let config_fingerprint = config.inbound_provider_fingerprint()?;
+        let previous_provider = store.inbound_provider_state().await?;
         let activation = store
             .activate_inbound_provider_checked(
                 match inbound_provider.kind() {
@@ -392,6 +423,27 @@ impl AuthState {
                 crate::util::now_unix(),
             )
             .await?;
+        let activation_mode = if activation.generation != previous_provider.generation {
+            "switched"
+        } else if previous_provider.config_fingerprint != config_fingerprint {
+            "adopted"
+        } else {
+            "unchanged"
+        };
+        info!(
+            crate_name = "labby-auth",
+            phase = "auth.provider.activate",
+            inbound_provider = ?inbound_provider.kind(),
+            provider_generation = activation.generation,
+            activation_mode,
+            revoked_authorization_requests = activation.revoked_authorization_requests,
+            revoked_authorization_codes = activation.revoked_authorization_codes,
+            revoked_refresh_tokens = activation.revoked_refresh_tokens,
+            revoked_browser_sessions = activation.revoked_browser_sessions,
+            revoked_browser_login_states = activation.revoked_browser_login_states,
+            revoked_native_authorization_results = activation.revoked_native_authorization_results,
+            "inbound provider activation completed"
+        );
         let sqlite_path_id = crate::util::fingerprint(&config.sqlite_path.to_string_lossy());
         let key_path_id = crate::util::fingerprint(&config.key_path.to_string_lossy());
         info!(

@@ -36,9 +36,9 @@ pub(crate) enum TokenAuthMethod {
 
 const DEFAULT_JWKS_TTL: Duration = Duration::from_hours(1);
 /// Per-request timeout on the JWKS GET. Bound aggressively (5s) so a slow
-/// upstream JWKS endpoint cannot starve a tokio worker holding the JWKS
-/// write lock. Token exchange / refresh keep the provider's own looser
-/// timeout because those can legitimately take longer.
+/// upstream JWKS endpoint cannot consume admission capacity or hold
+/// single-flight waiters indefinitely. Token exchange / refresh keep the
+/// provider's own looser timeout because those can legitimately take longer.
 const JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_ADMISSION_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -109,13 +109,14 @@ struct CachedJwks {
 
 type JwksFlight = Arc<OnceCell<Result<Jwks, AuthError>>>;
 
-/// Shared RS256 ID-token verifier for OIDC-shaped upstream providers
-/// (Google, Authelia). Caches the provider's JWKS document and validates
+/// RS256 ID-token verifier used by the Authelia inbound provider. Caches the
+/// provider's JWKS document and validates
 /// signature, expiry, audience, and issuer on every [`Self::verify`] call.
 ///
-/// `Clone` (all fields are cheap-to-clone handles: `Arc`, `String`,
-/// `reqwest::Client`, `Url`) so `GoogleProvider`/`AutheliaProvider` can stay
-/// `#[derive(Clone)]` themselves, matching their pre-existing public API.
+/// The verifier is intentionally kept separate from Google's established
+/// verifier contract: Google has provider-specific issuer aliases, hosted
+/// domain claims, and token-response behavior. `Clone` is cheap because all
+/// mutable state is held behind shared handles.
 #[derive(Clone)]
 pub(crate) struct OidcVerifier {
     provider_id: &'static str,
@@ -204,7 +205,7 @@ impl OidcVerifier {
         info!(
             provider = self.provider_id,
             oauth_code_id = %fingerprint(code),
-            redirect_uri = %redirect_uri,
+            redirect_uri_id = %fingerprint(redirect_uri.as_str()),
             "oauth upstream code exchange started"
         );
         let payload: OidcTokenResponse = {

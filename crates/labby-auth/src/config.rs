@@ -164,18 +164,17 @@ pub struct AuthConfig {
     pub key_path: PathBuf,
     pub bootstrap_secret: Option<String>,
     pub allowed_client_redirect_uris: Vec<String>,
-    /// Single bootstrap admin email permitted to log in via Google OAuth.
+    /// Single bootstrap admin email permitted to log in via the inbound provider.
     /// Required when `mode == AuthMode::OAuth`. Additional users are granted
     /// through the SQLite-backed allowlist managed via the web UI.
     pub admin_email: String,
-    /// Google Workspace hosted domains whose members may log in, in addition to
+    /// Verified identity domains whose members may log in, in addition to
     /// [`Self::admin_email`] and the SQLite-backed per-email allowlist.
     ///
-    /// Matching is against the Google ID token's `hd` (hosted domain) claim, not
-    /// the email address suffix. Google asserts `hd` only for accounts hosted in
-    /// that Workspace domain, so a consumer account cannot claim one; suffix
-    /// matching on the address would accept lookalikes such as
-    /// `user@evil-example.com` or unverified subdomains.
+    /// Google matching uses the ID token's provider-asserted `hd` claim. Authelia
+    /// does not expose an equivalent hosted-domain claim, so matching uses the
+    /// domain of its verified `email` claim. In both cases the evidence has been
+    /// signature-checked and issuer-bound before this policy runs.
     ///
     /// Empty (the default) disables domain-based access entirely.
     pub allowed_email_domains: Vec<String>,
@@ -231,13 +230,15 @@ pub struct AuthConfig {
     /// token whenever OAuth is active. Defaults to `false` (lab keeps the
     /// historical break-glass behavior); syslog-mcp overrides to `true`.
     pub disable_static_token_with_oauth: bool,
-    /// At-rest encryption key for upstream provider refresh tokens.
+    /// At-rest encryption key for provider credentials and local refresh replay responses.
     ///
-    /// When present, provider refresh tokens are encrypted with
-    /// ChaCha20-Poly1305 before being written to SQLite.  Set via
+    /// When present, upstream provider refresh tokens and serialized local
+    /// refresh replay responses are encrypted with ChaCha20-Poly1305 before
+    /// being written to SQLite. Set via
     /// `{PREFIX}_TOKEN_ENCRYPTION_KEY` (64 hex digits or 43 base64url chars).
-    /// Required in OAuth mode because the central Google credential broker
-    /// never permits plaintext persistence. Bearer-only consumers may omit it.
+    /// Required in OAuth mode because neither Google broker credentials nor
+    /// provider-neutral local replay material may be persisted as plaintext.
+    /// Bearer-only consumers may omit it.
     pub token_encryption_key: Option<TokenEncryptionKey>,
     /// Out-of-band machine identities authorized for the optional MCP OAuth
     /// Client Credentials extension.

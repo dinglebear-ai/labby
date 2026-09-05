@@ -781,11 +781,11 @@ async fn complete_local_policy_refresh(
     stored_resource: String,
     provider_binding: crate::types::ProviderBinding,
 ) -> Result<TokenResponse, AuthError> {
-    let email = state
+    let identity = state
         .store
-        .current_verified_inbound_email(&provider_binding.identity_issuer, &stored.subject)
+        .current_verified_inbound_identity(&provider_binding.identity_issuer, &stored.subject)
         .await?;
-    let Some(email) = email else {
+    let Some((email, verified_at)) = identity else {
         state
             .store
             .revoke_inbound_identity(&provider_binding.identity_issuer, &stored.subject)
@@ -804,6 +804,20 @@ async fn complete_local_policy_refresh(
         ));
     }
     let now = now_unix();
+    let provider_auth_expires_at = expires_at(
+        verified_at,
+        state.config.refresh_token_ttl,
+        &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
+    )?;
+    if provider_auth_expires_at <= now {
+        state
+            .store
+            .revoke_inbound_identity(&provider_binding.identity_issuer, &stored.subject)
+            .await?;
+        return Err(AuthError::OauthNeedsReauth(
+            "provider authentication is too old; reauthorization required".into(),
+        ));
+    }
     let replacement_refresh_token = random_token(24)?;
     let replacement = RefreshTokenRow {
         refresh_token: replacement_refresh_token.clone(),
@@ -817,7 +831,8 @@ async fn complete_local_policy_refresh(
             now,
             state.config.refresh_token_ttl,
             &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
-        )?,
+        )?
+        .min(provider_auth_expires_at),
     };
     let response = build_token_response(
         state,

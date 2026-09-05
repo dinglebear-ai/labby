@@ -90,6 +90,27 @@ impl SqliteStore {
         .await
     }
 
+    pub async fn current_verified_inbound_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<(String, i64)>, AuthError> {
+        let issuer = issuer.to_string();
+        let subject = subject.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT email, verified_at FROM inbound_verified_identities
+                  WHERE identity_issuer = ?1 AND subject = ?2
+                    AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                params![issuer, subject],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     pub async fn inbound_provider_state(&self) -> Result<InboundProviderState, AuthError> {
         self.with_conn(|conn| {
             conn.query_row(
@@ -122,12 +143,13 @@ impl SqliteStore {
         config_fingerprint: &str,
         updated_at: i64,
     ) -> Result<ProviderSwitchRevocation, AuthError> {
-        self.activate_inbound_provider_checked(
+        self.activate_inbound_provider_inner(
             provider,
             issuer,
             config_fingerprint,
             None,
             updated_at,
+            true,
         )
         .await
     }
@@ -139,6 +161,26 @@ impl SqliteStore {
         config_fingerprint: &str,
         provider_client_id: Option<&str>,
         updated_at: i64,
+    ) -> Result<ProviderSwitchRevocation, AuthError> {
+        self.activate_inbound_provider_inner(
+            provider,
+            issuer,
+            config_fingerprint,
+            provider_client_id,
+            updated_at,
+            false,
+        )
+        .await
+    }
+
+    async fn activate_inbound_provider_inner(
+        &self,
+        provider: &str,
+        issuer: &str,
+        config_fingerprint: &str,
+        provider_client_id: Option<&str>,
+        updated_at: i64,
+        allow_populated_switch: bool,
     ) -> Result<ProviderSwitchRevocation, AuthError> {
         if provider.is_empty() || issuer.is_empty() || config_fingerprint.is_empty() {
             return Err(AuthError::Validation(
@@ -179,7 +221,41 @@ impl SqliteStore {
                 });
             }
 
-            // The v13 backfill cannot know the operator's Google client
+            if let Some((_, _, old_fingerprint, generation)) = current.as_ref()
+                && old_fingerprint == "uninitialized"
+            {
+                transaction
+                    .execute(
+                        "UPDATE inbound_identity_provider
+                            SET provider = ?1, issuer = ?2, config_fingerprint = ?3, updated_at = ?4
+                          WHERE singleton = 1 AND generation = ?5",
+                        params![provider, issuer, config_fingerprint, updated_at, generation],
+                    )
+                    .map_err(sqlite_error)?;
+                transaction.commit().map_err(sqlite_error)?;
+                return Ok(ProviderSwitchRevocation {
+                    generation: *generation,
+                    ..ProviderSwitchRevocation::default()
+                });
+            }
+
+            if !allow_populated_switch
+                && current
+                    .as_ref()
+                    .is_some_and(|(old_provider, _, fingerprint, _)| {
+                        fingerprint != "legacy-google"
+                            || old_provider != "google"
+                            || provider != "google"
+                    })
+                && provider_state_has_live_grants(&transaction)?
+            {
+                return Err(AuthError::Config(
+                    "configured inbound provider does not match the provider bound to the populated auth database; switch providers through the authenticated admin endpoint"
+                        .into(),
+                ));
+            }
+
+            // The v15 backfill cannot know the operator's Google client
             // fingerprint. Adopt it in place on first startup so an upgrade
             // preserves active Google grants instead of treating configuration
             // discovery as a provider switch.
@@ -292,17 +368,38 @@ fn legacy_google_client_matches(
     configured_client_id: Option<&str>,
 ) -> Result<bool, AuthError> {
     let Some(configured_client_id) = configured_client_id else {
-        return Ok(true);
+        return Ok(false);
     };
-    let mismatch: i64 = transaction
+    let (matching, mismatch): (i64, i64) = transaction
         .query_row(
-            "SELECT COUNT(*) FROM google_provider_credentials
-              WHERE client_id <> '' AND client_id <> ?1",
+            "SELECT
+               COALESCE(SUM(CASE WHEN client_id = ?1 THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN client_id <> '' AND client_id <> ?1 THEN 1 ELSE 0 END), 0)
+             FROM google_provider_credentials",
             params![configured_client_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(sqlite_error)?;
+    Ok(matching > 0 && mismatch == 0)
+}
+
+fn provider_state_has_live_grants(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<bool, AuthError> {
+    let count: i64 = transaction
+        .query_row(
+            "SELECT
+               (SELECT COUNT(*) FROM authorization_requests) +
+               (SELECT COUNT(*) FROM authorization_codes) +
+               (SELECT COUNT(*) FROM refresh_tokens) +
+               (SELECT COUNT(*) FROM browser_sessions) +
+               (SELECT COUNT(*) FROM browser_login_states) +
+               (SELECT COUNT(*) FROM native_authorization_results)",
+            [],
             |row| row.get(0),
         )
         .map_err(sqlite_error)?;
-    Ok(mismatch == 0)
+    Ok(count > 0)
 }
 
 fn delete_old(
