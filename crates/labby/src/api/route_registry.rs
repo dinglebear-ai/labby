@@ -433,6 +433,11 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
     ];
 
     routes.extend(crate::api::services::oauth_relay::public_descriptors());
+    routes.extend(crate::api::services::browser::public_descriptors());
+    routes.extend(prefixed(
+        "/v1/browser",
+        crate::api::services::browser::descriptors(),
+    ));
     routes.extend(prefixed(
         "/v1/integration",
         crate::api::services::integration_identity::descriptors(),
@@ -566,7 +571,8 @@ pub fn build_integrated_trusted_host_route_descriptors() -> Vec<RouteDescriptor>
         .filter(|route| {
             !matches!(
                 route.mount,
-                "oauth"
+                "browser"
+                    | "oauth"
                     | "dev"
                     | "mcp"
                     | "oauth_relay"

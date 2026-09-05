@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{ConnectInfo, State},
     http::HeaderMap,
     response::Response,
@@ -16,17 +16,49 @@ use serde_json::Value;
 
 use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
+use crate::api::route_registry::{RouteAuth, RouteDescriptor, RouteGroup};
 use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
 use crate::dispatch::browser::runtime::browser_bridge;
 use crate::dispatch::error::ToolError;
 
-pub fn routes(_state: AppState) -> Router<AppState> {
-    Router::new().route("/", post(handle_action))
+pub fn routes(_state: AppState) -> RouteGroup {
+    RouteGroup::empty().route(
+        descriptors().into_iter().next().expect("call descriptor"),
+        post(handle_action),
+    )
 }
 
-pub fn public_routes() -> Router<AppState> {
-    Router::new().route("/browser/socket", get(upgrade))
+pub(crate) fn descriptors() -> Vec<RouteDescriptor> {
+    vec![
+        RouteDescriptor::new("POST", "/", "call", "browser", RouteAuth::V1)
+            .private_no_store()
+            .when("mounted only when API authentication is configured on a standalone host")
+            .side_effects("browser pairing or page-tool invocation"),
+    ]
+}
+
+pub fn public_routes() -> RouteGroup {
+    RouteGroup::empty().route(
+        public_descriptors()
+            .into_iter()
+            .next()
+            .expect("browser socket descriptor"),
+        get(upgrade),
+    )
+}
+
+pub(crate) fn public_descriptors() -> Vec<RouteDescriptor> {
+    vec![
+        RouteDescriptor::new(
+            "GET",
+            "/browser/socket",
+            "browser_socket",
+            "browser",
+            RouteAuth::Public,
+        )
+        .side_effects("loopback browser-extension WebSocket upgrade"),
+    ]
 }
 
 async fn handle_action(

@@ -2364,20 +2364,14 @@ pub(crate) fn build_router_with_external_auth(
             get(labby_discovery),
         );
     let mut route_group = public_core.merge(v1_protected);
-    route_group = route_group.merge_runtime_router(
-        services::browser::public_routes().layer(axum::middleware::from_fn(
-            crate::api::host_validation::host_validation_layer,
-        )),
-        [RouteDescriptor::new(
-            "GET",
-            "/browser/socket",
-            "browser_socket",
-            "browser",
-            RouteAuth::Public,
-        )],
-    );
     if !integrated_trusted_host {
-        route_group = route_group.merge(services::oauth_relay::public_routes(state.clone()));
+        route_group = route_group
+            .merge(services::browser::public_routes().map_router(|router| {
+                router.layer(axum::middleware::from_fn(
+                    crate::api::host_validation::host_validation_layer,
+                ))
+            }))
+            .merge(services::oauth_relay::public_routes(state.clone()));
     }
     #[cfg(feature = "gateway")]
     if !integrated_trusted_host {
