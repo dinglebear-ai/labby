@@ -451,7 +451,13 @@ fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::R
                 if ace.is_null() {
                     return Err(denied());
                 }
-                let header = &*ace.cast::<windows_sys::Win32::Security::ACE_HEADER>();
+                // GetAce guarantees that a successful non-null result points
+                // at an ACE inside the already validated ACL. Copy the fixed
+                // header instead of manufacturing a Rust reference to the
+                // variable-length native allocation.
+                let header = ace
+                    .cast::<windows_sys::Win32::Security::ACE_HEADER>()
+                    .read_unaligned();
                 if directory && header.AceType == 1 {
                     continue;
                 } // deny cannot grant foreign access
@@ -469,17 +475,17 @@ fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::R
                 if directory && header.AceFlags & 0x08 != 0 {
                     continue;
                 } // does not apply to parent itself
-                let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-                let sid_bytes = std::ptr::addr_of!(allowed.SidStart).cast::<u8>();
+                let allowed = ace.cast::<ACCESS_ALLOWED_ACE>().read_unaligned();
                 let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
                 if usize::from(header.AceSize) < sid_offset + 8 {
                     return Err(denied());
                 }
-                let sid_len = 8 + usize::from(*sid_bytes.add(1)) * 4;
+                let sid_bytes = ace.cast::<u8>().add(sid_offset);
+                let sid_len = 8 + usize::from(sid_bytes.add(1).read()) * 4;
                 if usize::from(header.AceSize) < sid_offset + sid_len {
                     return Err(denied());
                 }
-                let sid = sid_bytes.cast_mut().cast();
+                let sid = sid_bytes.cast();
                 if IsValidSid(sid) == 0 {
                     return Err(denied());
                 }
