@@ -74,9 +74,9 @@ pub async fn token(
         request.client_id = Some(data.claims.sub);
     }
     debug!(
-        grant_type = %request.grant_type,
-        client_id = request.client_id.as_deref().unwrap_or("<missing>"),
-        requested_resource = request.resource.as_deref().unwrap_or("<default>"),
+        grant_type_id = %fingerprint(&request.grant_type),
+        client_id = %request.client_id.as_deref().map(fingerprint).unwrap_or_else(|| "<missing>".to_string()),
+        requested_resource_id = %request.resource.as_deref().map(fingerprint).unwrap_or_else(|| "<default>".to_string()),
         "oauth token request received"
     );
     let response: Result<TokenResponseWithCache, TokenEndpointError> = match request
@@ -100,7 +100,7 @@ pub async fn token(
             .map(|response| TokenResponseWithCache(Json(response)))
             .map_err(TokenEndpointError::Auth),
         other => {
-            warn!(grant_type = %other, "oauth token rejected: unsupported grant type");
+            warn!(grant_type_id = %fingerprint(other), "oauth token rejected: unsupported grant type");
             Err(TokenEndpointError::UnsupportedGrantType(other.to_string()))
         }
     };
@@ -632,7 +632,7 @@ async fn authenticate_oauth_client(
     };
     if !published(presented) {
         warn!(
-            client_id = %client_id,
+            client_id = %fingerprint(client_id),
             presented_auth_method = presented,
             declared_auth_method = %client.token_endpoint_auth_method,
             published_auth_methods = ?client.token_endpoint_auth_methods,
@@ -677,7 +677,7 @@ async fn authenticate_oauth_client(
             // came through; it must never be quiet again.
             warn!(
                 kind = "auth_failed",
-                client_id = %client_id,
+                client_id = %fingerprint(client_id),
                 presented_auth_method = presented,
                 has_client_secret = client_secret.is_some(),
                 has_client_assertion = client_assertion.is_some(),
@@ -734,7 +734,7 @@ async fn validate_client_assertion(
     let header = decode_header(assertion).map_err(|_| {
         warn!(
             kind = "auth_failed",
-            client_id = %client_id,
+            client_id = %fingerprint(client_id),
             reason = "undecodable_header",
             "oauth token rejected: client assertion header could not be decoded"
         );
@@ -743,7 +743,7 @@ async fn validate_client_assertion(
     ensure_allowed_algorithm(header.alg).inspect_err(|_| {
         warn!(
             kind = "auth_failed",
-            client_id = %client_id,
+            client_id = %fingerprint(client_id),
             alg = ?header.alg,
             reason = "disallowed_algorithm",
             "oauth token rejected: client assertion uses an unsupported signing algorithm"
@@ -752,7 +752,7 @@ async fn validate_client_assertion(
     let kid = header.kid.as_deref().ok_or_else(|| {
         warn!(
             kind = "auth_failed",
-            client_id = %client_id,
+            client_id = %fingerprint(client_id),
             reason = "missing_kid",
             "oauth token rejected: client assertion header has no kid"
         );
@@ -769,8 +769,8 @@ async fn validate_client_assertion(
     let jwk = jwks.find(kid).ok_or_else(|| {
         warn!(
             kind = "auth_failed",
-            client_id = %client_id,
-            kid = %kid,
+            client_id = %fingerprint(client_id),
+            kid_id = %fingerprint(kid),
             key_count = jwks.keys.len(),
             reason = "unknown_kid",
             "oauth token rejected: client assertion kid is absent from the client key set"
@@ -780,8 +780,8 @@ async fn validate_client_assertion(
     ensure_jwk_algorithm(jwk, header.alg).inspect_err(|_| {
         warn!(
             kind = "auth_failed",
-            client_id = %client_id,
-            kid = %kid,
+            client_id = %fingerprint(client_id),
+            kid_id = %fingerprint(kid),
             reason = "key_algorithm_mismatch",
             "oauth token rejected: client assertion key algorithm does not match its header"
         );
@@ -789,8 +789,8 @@ async fn validate_client_assertion(
     let key = DecodingKey::from_jwk(jwk).map_err(|_| {
         warn!(
             kind = "auth_failed",
-            client_id = %client_id,
-            kid = %kid,
+            client_id = %fingerprint(client_id),
+            kid_id = %fingerprint(kid),
             reason = "unusable_key",
             "oauth token rejected: client assertion key could not be parsed"
         );
@@ -802,13 +802,12 @@ async fn validate_client_assertion(
     validation.set_issuer(&[client_id]);
     validation.set_required_spec_claims(&["exp", "iat", "iss", "sub", "aud", "jti"]);
     let claims = decode::<ClientAssertionClaims>(assertion, &key, &validation)
-        .map_err(|error| {
+        .map_err(|_| {
             warn!(
                 kind = "auth_failed",
-                client_id = %client_id,
-                kid = %kid,
+                client_id = %fingerprint(client_id),
+                kid_id = %fingerprint(kid),
                 reason = "signature_or_claims_rejected",
-                error = %error,
                 "oauth token rejected: client assertion failed signature or claim validation"
             );
             AuthError::AuthFailed("invalid client assertion".to_string())
@@ -823,8 +822,8 @@ async fn validate_client_assertion(
     {
         warn!(
             kind = "auth_failed",
-            client_id = %client_id,
-            kid = %kid,
+            client_id = %fingerprint(client_id),
+            kid_id = %fingerprint(kid),
             reason = "claim_mismatch_or_expired",
             "oauth token rejected: client assertion issuer, subject, audience, or lifetime is invalid"
         );
@@ -931,7 +930,7 @@ pub async fn revoke(
             if let Err(error) = state.store.revoke_refresh_token(&request.token).await {
                 return TokenEndpointError::Auth(error).into_response();
             }
-            info!(token_id = %token_id, client_id = %row.client_id, "oauth refresh token revoked");
+            info!(token_id = %token_id, client_id = %fingerprint(&row.client_id), "oauth refresh token revoked");
             apply_token_cache_headers(StatusCode::OK.into_response())
         }
         Ok(None) => {
@@ -1003,10 +1002,10 @@ async fn authorization_code_grant(
     let auth_code_id = fingerprint(&code);
     info!(
         grant_type = "authorization_code",
-        client_id = %client_id,
+        client_id = %fingerprint(&client_id),
         auth_code_id = %auth_code_id,
         redirect_uri_id = %fingerprint(&redirect_uri),
-        requested_resource = requested_resource.as_deref().unwrap_or("<authorization-code-resource>"),
+        requested_resource_id = %requested_resource.as_deref().map(fingerprint).unwrap_or_else(|| "<authorization-code-resource>".to_string()),
         "oauth authorization_code grant redeeming local code"
     );
 
@@ -1025,7 +1024,7 @@ async fn authorization_code_grant(
         .map_err(|error| {
             warn!(
                 auth_code_id = %auth_code_id,
-                client_id = %client_id,
+                client_id = %fingerprint(&client_id),
                 error = %error,
                 "oauth token rejected: authorization code is invalid, expired, already redeemed, or does not match the grant"
             );
@@ -1038,7 +1037,7 @@ async fn authorization_code_grant(
     {
         warn!(
             grant_type = "authorization_code",
-            client_id = %row.client_id,
+            client_id = %fingerprint(&row.client_id),
             auth_code_id = %auth_code_id,
             subject_id = %fingerprint(&row.subject),
             kind = "oauth_needs_reauth",
@@ -1070,11 +1069,11 @@ async fn authorization_code_grant(
         .await?;
     info!(
         grant_type = "authorization_code",
-        client_id = %row.client_id,
+        client_id = %fingerprint(&row.client_id),
         auth_code_id = %auth_code_id,
         subject_id = %fingerprint(&row.subject),
-        resource = %row.resource,
-        scope = %row.scope,
+        resource_id = %fingerprint(&row.resource),
+        scope_id = %fingerprint(&row.scope),
         "oauth authorization_code grant issued lab access token and refresh token"
     );
     let refresh_token = Some(refresh_token);
@@ -1139,10 +1138,10 @@ fn build_token_response(
         identity_credential_id,
     })?;
     info!(
-        client_id = %client_id,
+        client_id = %fingerprint(&client_id),
         subject_id = %subject_id,
-        resource = %resource,
-        scope = %scope,
+        resource_id = %fingerprint(&resource),
+        scope_id = %fingerprint(&scope),
         expires_in_secs = state.config.access_token_ttl.as_secs(),
         refresh_token_issued = refresh_token.is_some(),
         "oauth token response minted access token"
@@ -1189,6 +1188,93 @@ mod tests {
     use super::super::authorize::tests::{
         test_auth_state_with_mock_google, test_auth_state_with_registered_client,
     };
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_token_logs_redact_attacker_controlled_values() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let app = router(test_auth_state_with_registered_client().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/token")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("grant_type=sentinel-grant-secret&client_id=sentinel-client-secret&resource=https%3A%2F%2Fsentinel-resource.example%2Fmcp"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let logs = crate::test_support::captured_logs(buf);
+        for sentinel in [
+            "sentinel-grant-secret",
+            "sentinel-client-secret",
+            "sentinel-resource.example",
+        ] {
+            assert!(
+                !logs.contains(sentinel),
+                "OAuth token value leaked into logs: {sentinel}\n{logs}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_client_assertion_logs_redact_attacker_controlled_kid() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let state = test_auth_state_with_registered_client().await;
+        let sentinel = "sentinel-jwt-kid-secret";
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(sentinel.to_string());
+        let encoded_header = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let assertion = format!("{encoded_header}.e30.invalid");
+        let empty_keys = jsonwebtoken::jwk::JwkSet { keys: Vec::new() };
+
+        let result = super::validate_client_assertion(
+            &state,
+            &assertion,
+            "client",
+            super::ClientKeySource::Inline(&empty_keys),
+        )
+        .await;
+        assert!(result.is_err());
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(!logs.contains(sentinel), "JWT kid leaked into logs: {logs}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn malformed_client_assertion_claims_are_not_logged() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let state = test_auth_state_with_registered_client().await;
+        let (key, keys) = assertion_key();
+        let keys: jsonwebtoken::jwk::JwkSet = serde_json::from_value(keys).unwrap();
+        let sentinel = "sentinel-invalid-exp-secret";
+        let assertion = sign_assertion(
+            &key,
+            &serde_json::json!({
+                "iss": "client", "sub": "client", "aud": "https://lab.example.com/token",
+                "exp": sentinel, "iat": crate::util::now_unix(), "jti": "test-assertion"
+            }),
+            None,
+        );
+        assert!(
+            super::validate_client_assertion(
+                &state,
+                &assertion,
+                "client",
+                super::ClientKeySource::Inline(&keys)
+            )
+            .await
+            .is_err()
+        );
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(
+            !logs.contains(sentinel),
+            "malformed assertion claims leaked: {logs}"
+        );
+    }
 
     #[tokio::test]
     async fn unknown_jwks_kid_is_negatively_cached_per_document() {
@@ -2909,15 +2995,18 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn token_endpoint_rejects_refresh_token_client_mismatch() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
         let state = test_auth_state_with_registered_client().await;
+        let mismatched_client = "sentinel-refresh-client-secret";
         // Authenticate the second client successfully so this test reaches the
         // refresh-token binding check instead of testing unknown-client auth.
         state
             .store
             .register_client(crate::types::RegisteredClient {
-                client_id: "other-client".to_string(),
+                client_id: mismatched_client.to_string(),
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
@@ -2930,7 +3019,7 @@ mod tests {
         state
             .store
             .register_client(crate::types::RegisteredClient {
-                client_id: "other-client".to_string(),
+                client_id: mismatched_client.to_string(),
                 redirect_uris: vec!["http://127.0.0.1:8888/callback".to_string()],
                 created_at: crate::util::now_unix(),
                 token_endpoint_auth_method: "none".to_string(),
@@ -2964,9 +3053,9 @@ mod tests {
                         header::CONTENT_TYPE,
                         "application/x-www-form-urlencoded",
                     )
-                    .body(Body::from(
-                        "grant_type=refresh_token&refresh_token=refresh-token&client_id=other-client",
-                    ))
+                    .body(Body::from(format!(
+                        "grant_type=refresh_token&refresh_token=refresh-token&client_id={mismatched_client}",
+                    )))
                     .unwrap(),
             )
             .await
@@ -2994,6 +3083,11 @@ mod tests {
         assert_eq!(
             json["error_description"],
             "client_id does not match the refresh token"
+        );
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(
+            !logs.contains(mismatched_client),
+            "refresh client ID leaked into logs: {logs}"
         );
     }
 

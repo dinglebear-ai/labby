@@ -28,7 +28,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_MODE` | no | `bearer` or `oauth`. Defaults to `bearer`. |
 | `LABBY_MCP_HTTP_TOKEN` | bearer mode | Static bearer token for protected HTTP routes. |
 | `LABBY_TOKEN_ENCRYPTION_KEY` | OAuth mode | 32-byte key encoded as 64 hex digits or 43 base64url characters; encrypts reusable Google provider credentials in `auth.db`. |
-| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
+| `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported; user information, queries, and fragments are rejected rather than stripped. Both environment loading and programmatic auth-state construction validate this boundary before serving metadata. |
 | `LABBY_GOOGLE_CLIENT_ID` | oauth mode | Google OAuth client ID. |
 | `LABBY_GOOGLE_CLIENT_SECRET` | oauth mode | Google OAuth client secret. |
 | `LABBY_AUTH_SQLITE_PATH` | no | Override path for the SQLite auth database. |
@@ -474,6 +474,9 @@ Current constraints:
 - successful refresh grants atomically rotate the local refresh token; the old
   token is invalid immediately
 - `POST /revoke` implements idempotent refresh-token revocation
+- concurrent Google refresh callers share one immutable result generation;
+  waiters cannot receive a later refresh result, and owner cancellation wakes
+  its waiters with a server error so a later caller can retry
 - machine clients are preregistered out of band with
   `LABBY_AUTH_MACHINE_CLIENTS_JSON` and authenticate with `client_secret_basic`
   or RFC 7523 `private_key_jwt`
@@ -507,6 +510,13 @@ oversized CIMD responses; successful documents are cached according to
 `Cache-Control: max-age`.
 
 ### Auth Failure Semantics
+
+OAuth request identifiers, resource/scope values, callback endpoints, and Google
+configuration metadata are correlated with bounded fingerprints rather than
+raw values in logs. Google response decode/transport failures retain stable
+error kinds without embedding endpoint URLs or response contents. The 1 MiB
+Google JSON response limit still applies before deserialization, including
+decoded error payloads and JWKS; oversized payloads retain `response_too_large`.
 
 Labby distinguishes unauthenticated callers from internal auth outages.
 

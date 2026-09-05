@@ -4,7 +4,7 @@ use tracing::warn;
 use crate::error::AuthError;
 use crate::state::AuthState;
 use crate::types::RegisteredClient;
-use crate::util::now_unix;
+use crate::util::{fingerprint, now_unix};
 
 const MAX_CACHE_ENTRIES: usize = 1_024;
 const MAX_REMOTE_FETCH_LOCKS: usize = 2_048;
@@ -231,7 +231,7 @@ fn validate_document(
     if document.client_id != expected_client_id {
         warn!(
             kind = "validation_failed",
-            client_id = %expected_client_id,
+            client_id = %fingerprint(expected_client_id),
             "cimd rejected: document client_id does not match the URL it was fetched from"
         );
         return Err(AuthError::InvalidGrant(
@@ -241,7 +241,7 @@ fn validate_document(
     if document.client_name.trim().is_empty() || document.redirect_uris.is_empty() {
         warn!(
             kind = "validation_failed",
-            client_id = %expected_client_id,
+            client_id = %fingerprint(expected_client_id),
             has_client_name = !document.client_name.trim().is_empty(),
             redirect_uri_count = document.redirect_uris.len(),
             "cimd rejected: document is missing client_name or redirect_uris"
@@ -257,7 +257,7 @@ fn validate_document(
     {
         warn!(
             kind = "validation_failed",
-            client_id = %expected_client_id,
+            client_id = %fingerprint(expected_client_id),
             redirect_uri_count = document.redirect_uris.len(),
             "cimd rejected: document contains a redirect URI outside the allowlist"
         );
@@ -283,13 +283,14 @@ fn validate_document(
     {
         warn!(
             kind = "validation_failed",
-            client_id = %expected_client_id,
-            unsupported_auth_method = %unsupported,
+            client_id = %fingerprint(expected_client_id),
+            unsupported_auth_method_id = %fingerprint(unsupported),
             "cimd rejected: document publishes an unimplemented token_endpoint_auth_method"
         );
-        return Err(AuthError::Validation(format!(
-            "client metadata token_endpoint_auth_method `{unsupported}` must be none or private_key_jwt"
-        )));
+        return Err(AuthError::Validation(
+            "client metadata token_endpoint_auth_method must be none or private_key_jwt"
+                .to_string(),
+        ));
     }
     // draft-ietf-oauth-client-id-metadata-document section 8.2 lets a
     // `private_key_jwt` client publish its public keys either inline (`jwks`)
@@ -306,7 +307,7 @@ fn validate_document(
     {
         warn!(
             kind = "validation_failed",
-            client_id = %expected_client_id,
+            client_id = %fingerprint(expected_client_id),
             "cimd rejected: private_key_jwt document publishes neither jwks nor jwks_uri"
         );
         return Err(AuthError::Validation(
@@ -597,7 +598,38 @@ mod tests {
             &chatgpt_redirect_patterns(),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("client_secret_basic"));
+        assert!(
+            error
+                .to_string()
+                .contains("must be none or private_key_jwt")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejected_documents_redact_client_ids_and_auth_methods() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let client_id = "https://sentinel-cimd-client.example/secret-document";
+        for case in 0..5 {
+            let mut document = chatgpt_shaped_document(None, None);
+            document.client_id = client_id.to_string();
+            document.redirect_uris = vec!["http://127.0.0.1:7777/callback".to_string()];
+            document.token_endpoint_auth_method = "none".to_string();
+            match case {
+                0 => document.client_id = "mismatched-client".to_string(),
+                1 => document.client_name.clear(),
+                2 => document.redirect_uris = vec!["http://unsafe.example/callback".to_string()],
+                3 => {
+                    document.token_endpoint_auth_method = "sentinel-cimd-method-secret".to_string()
+                }
+                _ => document.token_endpoint_auth_method = "private_key_jwt".to_string(),
+            }
+            let error = validate_document(client_id, document, &[]).unwrap_err();
+            assert!(!error.to_string().contains("sentinel-cimd-"), "{error}");
+        }
+        let logs = crate::test_support::captured_logs(buf);
+        assert!(!logs.contains("sentinel-cimd-"), "{logs}");
+        assert!(logs.contains("unsupported_auth_method_id"), "{logs}");
     }
 
     #[test]

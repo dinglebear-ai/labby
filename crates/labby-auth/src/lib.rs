@@ -13,6 +13,7 @@ pub mod cimd;
 pub mod config;
 pub mod error;
 pub mod google;
+#[cfg(any(test, feature = "http-axum", feature = "upstream-oauth-rmcp"))]
 mod google_refresh;
 pub mod jwt;
 #[cfg(feature = "http-axum")]

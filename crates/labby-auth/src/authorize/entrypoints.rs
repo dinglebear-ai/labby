@@ -95,7 +95,7 @@ pub async fn register_client(
     };
     state.store.register_client(client.clone()).await?;
     info!(
-        client_id = %client.client_id,
+        client_id = %fingerprint(&client.client_id),
         redirect_uri_count = client.redirect_uris.len(),
         "oauth client registration accepted"
     );

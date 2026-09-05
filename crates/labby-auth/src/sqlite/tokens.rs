@@ -15,7 +15,7 @@ use crate::util::now_unix;
 use super::{SqliteStore, hash_token, sqlite_error};
 
 impl SqliteStore {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "http-axum"))]
     pub(crate) async fn refresh_claim_state(
         &self,
         refresh_token: &str,
@@ -412,7 +412,7 @@ impl SqliteStore {
         .await
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "http-axum"))]
     pub(crate) async fn expire_refresh_token_replay(
         &self,
         predecessor_token: &str,
@@ -431,7 +431,7 @@ impl SqliteStore {
         .await
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "http-axum"))]
     pub(crate) async fn refresh_token_replay_expires_at(
         &self,
         predecessor_token: &str,

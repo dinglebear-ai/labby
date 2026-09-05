@@ -605,8 +605,13 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
     ]
     .into_iter()
     .map(|(method, path, handler)| {
-        RouteDescriptor::new(method, path, handler, "oauth", RouteAuth::OAuthProtocol)
-            .when(condition)
+        RouteDescriptor::new(method, path, handler, "oauth", RouteAuth::OAuthProtocol).when(
+            if path == "/register" {
+                "mounted only when OAuth is configured and dynamic client registration is enabled"
+            } else {
+                condition
+            },
+        )
     })
     .collect::<Vec<_>>()
     .into_iter()
@@ -637,6 +642,29 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
 mod tests {
     use super::*;
     use axum::routing::get;
+
+    #[test]
+    fn oauth_registration_descriptor_records_the_dynamic_registration_gate() {
+        let routes = oauth_protocol_descriptors();
+        let registration = routes
+            .iter()
+            .find(|route| route.method == "POST" && route.path == "/register")
+            .expect("registration route descriptor");
+        assert_eq!(
+            registration.runtime_condition,
+            Some(
+                "mounted only when OAuth is configured and dynamic client registration is enabled"
+            )
+        );
+        for route in routes.iter().filter(|route| route.path != "/register") {
+            assert_eq!(
+                route.runtime_condition,
+                Some("mounted only when OAuth is configured"),
+                "registration opt-in must not gate {}",
+                route.path
+            );
+        }
+    }
 
     #[test]
     fn route_builder_records_the_descriptor_for_the_route_it_mounts() {

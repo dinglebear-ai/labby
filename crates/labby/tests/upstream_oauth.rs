@@ -617,7 +617,8 @@ async fn build_auth_client_logs_near_expiry_refresh_lifecycle_without_secrets_in
     assert!(logs.contains("upstream oauth: token refresh attempt"));
     assert!(logs.contains("upstream oauth: token refresh succeeded"));
     assert!(logs.contains("\"provider\":\"test\""));
-    assert!(logs.contains("\"scope\":\"read\""));
+    assert!(logs.contains("\"scope\":\"count=1;id="));
+    assert!(!logs.contains("\"scope\":\"read\""));
     assert!(!logs.contains("access-xyz"), "access token leaked: {logs}");
     assert!(
         !logs.contains("refresh-xyz"),
