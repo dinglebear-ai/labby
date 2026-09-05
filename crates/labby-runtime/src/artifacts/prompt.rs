@@ -153,11 +153,15 @@ pub fn materialize_logical_prompt(
 }
 
 fn split_frontmatter(content: &str) -> Result<(&str, &str), ArtifactError> {
-    let rest = content
-        .strip_prefix("---\n")
-        .ok_or_else(|| invalid("frontmatter", "missing"))?;
+    let (rest, closing) = if let Some(rest) = content.strip_prefix("---\r\n") {
+        (rest, "\r\n---\r\n")
+    } else if let Some(rest) = content.strip_prefix("---\n") {
+        (rest, "\n---\n")
+    } else {
+        return Err(invalid("frontmatter", "missing"));
+    };
     let (yaml, body) = rest
-        .split_once("\n---\n")
+        .split_once(closing)
         .ok_or_else(|| invalid("frontmatter", "unterminated"))?;
     Ok((yaml, body))
 }
@@ -195,6 +199,20 @@ mod tests {
         assert_eq!(prompt.interchange.descriptor.name, "release-notes");
         assert!(prompt.files["PROMPT.md"].ends_with(hostile.as_bytes()));
         assert_eq!(prompt.preview_text(), hostile);
+    }
+
+    #[test]
+    fn windows_line_endings_preserve_content_addressed_source() {
+        let source =
+            "---\r\nname: release-notes\r\ndescription: Draft release notes\r\n---\r\nBody\r\n";
+        let prompt = materialize_logical_prompt(
+            "release-notes",
+            vec![LogicalPromptFile::new("PROMPT.md", source)],
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(prompt.files["PROMPT.md"], source.as_bytes());
+        assert_eq!(prompt.preview_text(), "Body\r\n");
     }
 
     #[test]
