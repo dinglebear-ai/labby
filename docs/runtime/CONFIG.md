@@ -349,6 +349,8 @@ host or use it as a substitute for reverse-proxy authentication.
 
 Current Labby does not accept MCP Registry browser settings, ACP providers or
 sessions, Marketplace sources, Fleet/node roles, Deploy-product policies, or
-Stash workspace configuration. Historical schemas are preserved under
+the retired Agent Artifact Manager's Stash workspace configuration. The newly
+approved File Stash contract has distinct configuration and does not revive that
+schema. Historical schemas are preserved under
 [../archive/retired-labby](../archive/retired-labby/) and must not be
 reintroduced as compatibility aliases.

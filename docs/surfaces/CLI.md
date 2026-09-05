@@ -66,5 +66,10 @@ shared source of truth.
 
 The current CLI does not include ACP sessions, Registry browsing/installing,
 Marketplace product commands, Fleet/node enrollment, Deploy-product commands, or
-Stash workspaces. Historical command contracts are archived under
-[../archive/retired-labby](../archive/retired-labby/).
+old Agent Artifact Manager workspaces. Historical command contracts are archived
+under [../archive/retired-labby](../archive/retired-labby/).
+
+When implemented, File Stash uses the generated generic service dispatch shape;
+no bespoke component/revision/provider/deploy command tree is permitted. It is
+not currently available. Implementation and qualification must add it to the
+generated CLI catalog before current-service docs advertise it.

@@ -41,6 +41,11 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 
 Do not hand-maintain a duplicate action inventory in prose. Use the generated [action catalog](./generated/action-catalog.md) for exact action names, parameters, scopes, destructive classification, and surfaces.
 
+[File Stash](./services/STASH.md) is an approved product contract pending
+implementation, not a current registered service. It enters the table above only
+after implementation and end-to-end qualification promote it into the generated
+service and action catalogs.
+
 The browser-only [access owner bootstrap workflow](./services/ACCESS.md) is an
 HTTP route, not a registered multi-surface service.
 

@@ -155,6 +155,11 @@ CSRF protections. Do not make a route public merely to simplify browser calls.
 ## Unsupported Legacy Shapes
 
 The hosted runtime does not expose Fleet/node WebSockets, node enrollment APIs,
-Marketplace preview routes, ACP session endpoints, Stash APIs, or MCP Registry
-compatibility endpoints. Their historical transport contracts are archived under
-[../archive/retired-labby](../archive/retired-labby/).
+Marketplace preview routes, ACP session endpoints, old Agent Artifact Manager
+APIs, or MCP Registry compatibility endpoints. Their historical transport
+contracts are archived under [../archive/retired-labby](../archive/retired-labby/).
+The approved, not-yet-implemented File Stash contract reserves
+`/v1/stash/files`; its bounded upload/download behavior and identity requirements
+are specified in [STASH.md](../services/STASH.md). The route is not supported
+until it appears in the generated route catalog and passes end-to-end
+qualification.
