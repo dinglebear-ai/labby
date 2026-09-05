@@ -544,7 +544,8 @@ impl GoogleProvider {
             .append_pair("nonce", &request.nonce)
             .append_pair("code_challenge", &request.code_challenge)
             .append_pair("code_challenge_method", "S256")
-            .append_pair("prompt", "select_account")
+            .append_pair("prompt", "login")
+            .append_pair("max_age", "0")
             .append_pair("claims", r#"{"id_token":{"auth_time":{"essential":true}}}"#);
         Ok(url)
     }
@@ -558,20 +559,23 @@ impl GoogleProvider {
         challenge_issued_at: i64,
     ) -> Result<GoogleFreshAuth, AuthError> {
         let trace = GoogleRequestTrace::start("reauth_code_exchange", "POST", &self.token_endpoint);
-        let payload: GoogleTokenResponse = read_json_response(
-            trace,
-            // The endpoint override is compiled only for unit tests so WireMock
-            // can stand in for Google; production construction always uses the
-            // fixed GOOGLE_TOKEN_ENDPOINT above.
-            // lgtm[rust/request-forgery]
-            self.http.post(self.token_endpoint.clone()).form(&[
+        // The endpoint override is compiled only for unit tests so WireMock can
+        // stand in for Google; production construction always uses the fixed
+        // GOOGLE_TOKEN_ENDPOINT above.
+        let request = self
+            .http
+            .post(self.token_endpoint.clone()) // lgtm[rust/request-forgery]
+            .form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("client_id", self.client_id.as_str()),
                 ("client_secret", self.client_secret.as_str()),
                 ("redirect_uri", self.redirect_uri.as_str()),
                 ("code_verifier", code_verifier),
-            ]),
+            ]);
+        let payload: GoogleTokenResponse = read_json_response(
+            trace,
+            request,
             GoogleRequestErrors {
                 transport_context: "exchange google reauthentication code",
                 transport_log: "oauth upstream reauthentication exchange failed",
@@ -1061,8 +1065,9 @@ mod tests {
         );
         assert_eq!(
             pairs.get("prompt").map(|value| value.as_ref()),
-            Some("select_account")
+            Some("login")
         );
+        assert_eq!(pairs.get("max_age").map(|value| value.as_ref()), Some("0"));
         assert_eq!(
             pairs.get("claims").map(|value| value.as_ref()),
             Some(r#"{"id_token":{"auth_time":{"essential":true}}}"#)
