@@ -115,10 +115,15 @@ async fn providers(
     Extension(authority): Extension<BrowserAuthority>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let grant = authority.revalidate().await.map_err(|_| forbidden())?;
-    if !grant.has_scope("lab:admin") {
+    if !grant.has_scope("lab:read") {
         return Err(forbidden());
     }
-    serde_json::to_value(state.depot_manager.admin_status())
+    let value = if grant.has_scope("lab:admin") {
+        serde_json::to_value(state.depot_manager.admin_status())
+    } else {
+        serde_json::to_value(state.depot_manager.status())
+    };
+    value
         .map(Json)
         .map_err(|_| {
             (

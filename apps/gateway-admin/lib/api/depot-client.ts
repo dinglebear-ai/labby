@@ -100,7 +100,12 @@ const federatedArtifactSchema = z.object({
   providerId: bounded(64), artifactId: rawId, id: rawId.optional(), kind: bounded(128).optional(),
   namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(),
   description: bounded(16384).optional(), currentRevisionId: bounded(512).optional(),
-  contentDigest: bounded(512).optional(), license: z.unknown().optional(), publication: z.unknown().optional(),
+  contentDigest: bounded(512).optional(),
+  license: z.object({ redistribution: bounded(128).optional(), reviewState: bounded(128).optional(), takedownState: bounded(128).optional() }).strict().optional(),
+  publication: z.object({ state: bounded(128).optional(), visibility: bounded(128).optional(), distribution: bounded(128).optional() }).strict().optional(),
+  revisionCount: z.number().safe().int().nonnegative().optional(),
+  descriptor: z.object({ id: rawId.optional(), kind: bounded(128).optional(), namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(), description: bounded(16384).optional() }).strict().optional(),
+  currentRevision: z.object({ id: bounded(512).optional(), contentDigest: bounded(512).optional() }).strict().optional(),
 }).strict()
 const outcomeSchema = z.object({ providerId: bounded(64), state: z.enum(['pending', 'participating', 'exhausted', 'failed']) }).strict()
 const failureSchema = z.object({ providerId: bounded(64), kind: bounded(128) }).strict()
@@ -112,10 +117,7 @@ const discoverySchema = z.object({
   state: z.enum(['complete', 'partial', 'deferred', 'empty', 'all_disabled', 'all_failed']),
   nextCursor: cursorSchema.nullable().optional(),
 }).strict()
-const detailArtifactSchema = z.object({
-  id: rawId, descriptor: z.unknown().optional(), currentRevisionId: bounded(512).optional(),
-  currentRevision: z.unknown().optional(), publication: z.unknown().optional(), license: z.unknown().optional(),
-}).strict()
+const detailArtifactSchema = federatedArtifactSchema.omit({ providerId: true, artifactId: true }).extend({ id: rawId }).strict()
 const detailV2Schema = z.object({
   schemaVersion: z.literal(FEDERATED_SCHEMA), providerId: bounded(64), artifactId: rawId,
   artifact: detailArtifactSchema,
@@ -128,10 +130,12 @@ const providerSchema = z.object({
     retryNotBefore: z.number().safe().int().nonnegative().nullable(),
   }).strict(),
 }).strict()
+const providerOptionSchema = z.object({ id: bounded(64).refine(value => value !== 'all'), name: bounded(256), enabled: z.boolean(), health: providerSchema.shape.health }).strict()
 
 export type FederatedArtifact = z.infer<typeof federatedArtifactSchema>
 export type DiscoveryPage = z.infer<typeof discoverySchema>
 export type DepotProvider = z.infer<typeof providerSchema>
+export type DepotProviderOption = z.infer<typeof providerOptionSchema>
 export type CredentialOperation = { action: 'retain' } | { action: 'replace'; value: string } | { action: 'clear' }
 
 export class DepotClientError extends Error {
@@ -169,4 +173,8 @@ export async function getArtifact(providerId: string, artifactId: string, signal
 
 export async function listProviders(signal?: AbortSignal): Promise<DepotProvider[]> {
   return requestV2('/v1/depot/providers', { signal }, z.array(providerSchema).max(16), 'provider list response')
+}
+
+export async function listProviderOptions(signal?: AbortSignal): Promise<DepotProviderOption[]> {
+  return requestV2('/v1/depot/providers', { signal }, z.array(providerOptionSchema).max(16), 'provider options response')
 }
