@@ -981,6 +981,9 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
   [data-slot='dropdown-menu-trigger']:has(svg),
   [data-icon-text-control]:has(svg) {
     --aurora-icon-control-size: 2.75rem;
+    height: var(--aurora-icon-control-size) !important;
+    min-height: var(--aurora-icon-control-size) !important;
+    max-height: var(--aurora-icon-control-size) !important;
   }
   [data-main-scroll] {
     padding: 12px !important;

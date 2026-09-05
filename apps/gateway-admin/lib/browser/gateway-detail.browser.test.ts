@@ -351,6 +351,22 @@ test('icon-led actions are square, touch-sized, and retain accessible labels', {
 
   const textOnly = page.getByRole('link', { name: 'Artifacts', exact: true })
   assert.notEqual(await textOnly.evaluate((element) => getComputedStyle(element).fontSize), '0px')
+
+  await page.goto(`${baseUrl}/create/`, { waitUntil: 'networkidle' })
+  const artifactTypeMenu = page.getByRole('button', { name: 'Skill', exact: true })
+  await assert.doesNotReject(() => artifactTypeMenu.waitFor())
+  assert.equal(await artifactTypeMenu.getAttribute('data-slot'), 'dropdown-menu-trigger')
+  const exportStyle = await artifactTypeMenu.evaluate((element) => ({
+    fontSize: getComputedStyle(element).fontSize,
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+    label: element.getAttribute('aria-label'),
+  }))
+  assert.equal(exportStyle.fontSize, '0px')
+  assert.ok(exportStyle.width >= 44 && exportStyle.height >= 44)
+  assert.equal(exportStyle.label, 'Skill')
+  await artifactTypeMenu.click()
+  await assert.doesNotReject(() => page.getByRole('menu').waitFor())
 })
 
 test('Library follows responsive view defaults until the operator chooses a view', { concurrency: false }, async (t) => {
@@ -431,13 +447,29 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     assert.equal(await page.locator('[data-mobile-nav-backdrop]').count(), 0)
     const menuBox = await menu.boundingBox()
     assert.ok(menuBox && menuBox.width >= 44 && menuBox.height >= 44)
+    await page.evaluate(() => { document.body.style.overflow = 'clip' })
     await menu.click()
     await assert.doesNotReject(() => page.locator('aside[data-mobile-open="1"]').waitFor())
     await assert.doesNotReject(() => page.getByRole('dialog', { name: 'Navigation' }).waitFor())
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.contains(document.activeElement))
+    assert.equal(await page.evaluate(() => document.body.style.overflow), 'hidden')
+    const drawerControls = page.locator('aside[data-console-sidebar] a[href]:visible, aside[data-console-sidebar] button:not([disabled]):visible, aside[data-console-sidebar] [tabindex]:not([tabindex="-1"]):visible')
+    const firstControl = drawerControls.first()
+    const lastControl = drawerControls.last()
+    await lastControl.focus()
+    await page.keyboard.press('Tab')
+    assert.equal(await firstControl.evaluate((element) => element === document.activeElement), true)
+    await page.keyboard.press('Shift+Tab')
+    assert.equal(await lastControl.evaluate((element) => element === document.activeElement), true)
     await page.keyboard.press('Escape')
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
     await page.waitForFunction(() => document.activeElement === document.querySelector('[data-mobile-menu]'))
+    assert.equal(await page.evaluate(() => document.body.style.overflow), 'clip')
+    await menu.click()
+    await page.setViewportSize({ width: 1000, height: 800 })
+    await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    assert.equal(await page.locator('aside[data-console-sidebar]').getAttribute('aria-hidden'), 'true')
     await menu.click()
     await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')

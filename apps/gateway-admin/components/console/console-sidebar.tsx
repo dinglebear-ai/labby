@@ -642,11 +642,14 @@ export function ConsoleSidebar() {
 
   React.useEffect(() => {
     const media = window.matchMedia('(max-width: 900px)')
-    const update = () => setIsMobile(media.matches)
+    const update = () => {
+      setIsMobile(media.matches)
+      if (!media.matches) setMobileNavOpen(false)
+    }
     update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
-  }, [])
+  }, [setMobileNavOpen])
 
   React.useEffect(() => {
     setMobileNavOpen(false)
