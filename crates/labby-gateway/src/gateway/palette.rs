@@ -297,7 +297,7 @@ impl PaletteCaller {
         }
     }
 
-    pub(crate) fn allowed_upstreams(&self) -> Option<&BTreeSet<String>> {
+    fn allowed_upstreams(&self) -> Option<&BTreeSet<String>> {
         self.scope.allowed_namespaces()
     }
 }

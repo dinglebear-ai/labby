@@ -31,6 +31,7 @@ pub mod path_safety;
 pub mod phabby_delivery;
 pub mod redact;
 pub mod response_body;
+pub mod secure_atomic_file;
 pub mod skills;
 
 pub use helpers::{env_non_empty, home_dir, lab_home};

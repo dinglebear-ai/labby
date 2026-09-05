@@ -21,6 +21,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
@@ -135,6 +137,8 @@ pub struct GatewayManager {
     /// Per-turn capability selections. This is deliberately separate from
     /// `GatewayConfig::loadouts`, which configures mounted gateway routes.
     pub(super) execution_loadouts: Arc<RwLock<ExecutionLoadoutStore>>,
+    #[cfg(test)]
+    pub(super) execution_loadout_fail_persist: Arc<AtomicBool>,
     pub(super) execution_capabilities: Arc<ArcSwap<PublishedCapabilityCatalog>>,
     pub(super) code_mode_app_state: CodeModeAppState,
     lazy_pool_init: Arc<Mutex<()>>,

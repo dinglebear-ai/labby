@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 
 use arc_swap::ArcSwap;
@@ -208,6 +210,8 @@ impl GatewayManager {
             mcp_catalog_refresh_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             mcp_catalog_refresh_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
             execution_loadouts: Arc::new(RwLock::new(execution_loadouts)),
+            #[cfg(test)]
+            execution_loadout_fail_persist: Arc::new(AtomicBool::new(false)),
             execution_capabilities: Arc::new(ArcSwap::from_pointee(
                 super::super::execution_loadout::PublishedCapabilityCatalog::default(),
             )),

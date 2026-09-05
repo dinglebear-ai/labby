@@ -9,8 +9,11 @@ fn manager() -> GatewayManager {
     GatewayManager::new(path, GatewayRuntimeHandle::default())
 }
 
-fn caller() -> PaletteCaller {
-    PaletteCaller::admin(Some("principal-1"), Some("request-1"))
+fn caller() -> ExecutionLoadoutContext {
+    ExecutionLoadoutContext {
+        principal: ExecutionPrincipal::new("principal-1").unwrap(),
+        allowed_providers: None,
+    }
 }
 
 fn member(family: CapabilityFamily) -> CapabilityRef {
@@ -151,7 +154,7 @@ async fn preview_is_principal_runtime_bound_and_all_families_are_effective() {
         )
         .await
         .expect("create");
-    let caller = PaletteCaller::admin(Some("principal-1"), Some("request-1"));
+    let caller = caller();
     let preview = manager
         .execution_loadout_preview(&caller, "preview", "runtime-1")
         .await
@@ -195,7 +198,10 @@ async fn mixed_family_activation_is_atomic_and_cross_principal_access_is_private
         .expect("activate all advertised families");
     assert_eq!(activation.preview.effective.len(), 7);
 
-    let other = PaletteCaller::admin(Some("principal-2"), Some("request-2"));
+    let other = ExecutionLoadoutContext {
+        principal: ExecutionPrincipal::new("principal-2").unwrap(),
+        allowed_providers: None,
+    };
     assert!(matches!(
         manager.execution_loadout_get(&other, "mixed").await,
         Err(ExecutionLoadoutError::NotFound { .. })
@@ -266,6 +272,22 @@ async fn non_tool_activation_rejects_missing_stale_and_unpublished_principal_mem
             .await
             .is_err()
     );
+    assert!(
+        manager
+            .publish_execution_capability_snapshots(vec![
+                CapabilityCatalogSnapshot {
+                    generation: "same".into(),
+                    principal: "principal-1".into(),
+                    members: Vec::new(),
+                },
+                CapabilityCatalogSnapshot {
+                    generation: "same".into(),
+                    principal: "principal-1".into(),
+                    members: Vec::new(),
+                },
+            ])
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -283,7 +305,7 @@ async fn activation_creates_immutable_revision_and_rollback_revises_draft() {
         )
         .await
         .expect("create");
-    let caller = PaletteCaller::admin(Some("principal-1"), Some("request-1"));
+    let caller = caller();
     let activation = manager
         .execution_loadout_activate(&caller, "lifecycle", 1, "runtime-1")
         .await
@@ -347,4 +369,232 @@ async fn revisions_survive_manager_restart_in_separate_atomic_store() {
             .draft_revision,
         1
     );
+}
+
+#[tokio::test]
+async fn persistence_failures_never_publish_candidate_state() {
+    let manager = manager();
+    manager.fail_next_execution_loadout_persist();
+    assert!(
+        manager
+            .execution_loadout_create(
+                &caller(),
+                ExecutionLoadoutCreate {
+                    id: "durable-first".into(),
+                    name: "Draft".into(),
+                    description: None,
+                    members: Vec::new(),
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        manager
+            .execution_loadout_get(&caller(), "durable-first")
+            .await
+            .is_err()
+    );
+
+    manager
+        .execution_loadout_create(
+            &caller(),
+            ExecutionLoadoutCreate {
+                id: "durable-first".into(),
+                name: "Draft".into(),
+                description: None,
+                members: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    manager.fail_next_execution_loadout_persist();
+    assert!(
+        manager
+            .execution_loadout_patch(
+                &caller(),
+                "durable-first",
+                ExecutionLoadoutPatch {
+                    expected_draft_revision: 1,
+                    name: Some("Changed".into()),
+                    description: None,
+                    members: None,
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        manager
+            .execution_loadout_get(&caller(), "durable-first")
+            .await
+            .unwrap()
+            .name,
+        "Draft"
+    );
+
+    manager.fail_next_execution_loadout_persist();
+    assert!(
+        manager
+            .execution_loadout_activate(&caller(), "durable-first", 1, "runtime")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        manager
+            .execution_loadout_get(&caller(), "durable-first")
+            .await
+            .unwrap()
+            .effective_runtime_revision,
+        None
+    );
+
+    manager
+        .execution_loadout_activate(&caller(), "durable-first", 1, "runtime")
+        .await
+        .unwrap();
+    manager
+        .execution_loadout_patch(
+            &caller(),
+            "durable-first",
+            ExecutionLoadoutPatch {
+                expected_draft_revision: 1,
+                name: None,
+                description: None,
+                members: Some(vec![member(CapabilityFamily::Plugin)]),
+            },
+        )
+        .await
+        .unwrap();
+    manager.fail_next_execution_loadout_persist();
+    assert!(
+        manager
+            .execution_loadout_rollback(&caller(), "durable-first", 2, 1)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        manager
+            .execution_loadout_get(&caller(), "durable-first")
+            .await
+            .unwrap()
+            .members
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn activation_retry_and_concurrent_callers_share_one_revision() {
+    let manager = manager();
+    manager
+        .execution_loadout_create(
+            &caller(),
+            ExecutionLoadoutCreate {
+                id: "activate-once".into(),
+                name: "Once".into(),
+                description: None,
+                members: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let first_caller = caller();
+    let second_caller = caller();
+    let (first, second) = tokio::join!(
+        manager.execution_loadout_activate(&first_caller, "activate-once", 1, "runtime"),
+        manager.execution_loadout_activate(&second_caller, "activate-once", 1, "runtime"),
+    );
+    assert_eq!(first.unwrap().revision.revision, 1);
+    assert_eq!(second.unwrap().revision.revision, 1);
+    let retry = manager
+        .execution_loadout_activate(&caller(), "activate-once", 1, "runtime")
+        .await
+        .unwrap();
+    assert_eq!(retry.revision.revision, 1);
+}
+
+#[tokio::test]
+async fn preview_rejects_a_runtime_other_than_the_active_binding() {
+    let manager = manager();
+    manager
+        .execution_loadout_create(
+            &caller(),
+            ExecutionLoadoutCreate {
+                id: "bound".into(),
+                name: "Bound".into(),
+                description: None,
+                members: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    manager
+        .execution_loadout_activate(&caller(), "bound", 1, "runtime-a")
+        .await
+        .unwrap();
+    assert!(
+        manager
+            .execution_loadout_preview(&caller(), "bound", "runtime-b")
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn rejects_ambiguous_identity_and_mixed_publication_generations() {
+    assert!(ExecutionPrincipal::new("shared").is_err());
+    assert!(ExecutionPrincipal::new("bad\0principal").is_err());
+    assert!(RecordKey::new(&ExecutionPrincipal::new("principal").unwrap(), "bad\0id").is_err());
+    let manager = manager();
+    assert!(
+        manager
+            .publish_execution_capability_snapshots(vec![
+                CapabilityCatalogSnapshot {
+                    generation: "one".into(),
+                    principal: "principal-1".into(),
+                    members: Vec::new()
+                },
+                CapabilityCatalogSnapshot {
+                    generation: "two".into(),
+                    principal: "principal-2".into(),
+                    members: Vec::new()
+                },
+            ])
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn concurrent_managers_serialize_against_the_durable_store() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("labby.toml");
+    let first = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let second = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let first_caller = caller();
+    let second_caller = caller();
+    let (a, b) = tokio::join!(
+        first.execution_loadout_create(
+            &first_caller,
+            ExecutionLoadoutCreate {
+                id: "a".into(),
+                name: "A".into(),
+                description: None,
+                members: Vec::new(),
+            }
+        ),
+        second.execution_loadout_create(
+            &second_caller,
+            ExecutionLoadoutCreate {
+                id: "b".into(),
+                name: "B".into(),
+                description: None,
+                members: Vec::new(),
+            }
+        ),
+    );
+    a.unwrap();
+    b.unwrap();
+    let restarted = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    assert_eq!(restarted.execution_loadout_list(&caller()).await.len(), 2);
 }

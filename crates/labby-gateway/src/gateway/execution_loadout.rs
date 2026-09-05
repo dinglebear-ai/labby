@@ -3,15 +3,16 @@
 //! Execution loadouts are not gateway route configuration. They select an
 //! authorized subset of one immutable catalog snapshot for a caller/runtime.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 use labby_runtime::error::ToolError;
 use serde::{Deserialize, Serialize};
 
 use self::validation::{normalize_members, validate_text};
 use super::manager::GatewayManager;
-use super::palette::{LauncherEntryView, PaletteCaller};
 
 mod error_impl;
 mod persistence;
@@ -20,8 +21,39 @@ mod tests;
 mod validation;
 
 const MAX_LOADOUTS: usize = 256;
+const MAX_TOTAL_LOADOUTS: usize = 4096;
 const MAX_MEMBERS: usize = 512;
 const MAX_TEXT_BYTES: usize = 256;
+const MAX_PUBLISHED_PRINCIPALS: usize = 256;
+const MAX_PUBLISHED_MEMBERS: usize = 16_384;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(transparent)]
+pub struct ExecutionPrincipal(String);
+
+impl ExecutionPrincipal {
+    pub fn new(value: impl Into<String>) -> Result<Self, ExecutionLoadoutError> {
+        let value = value.into();
+        validate_text("principal", &value)?;
+        if value == "shared" || value.contains('\0') {
+            return Err(ExecutionLoadoutError::Invalid {
+                field: "principal".into(),
+                message: "an explicit, unambiguous principal is required".into(),
+            });
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutionLoadoutContext {
+    pub principal: ExecutionPrincipal,
+    pub allowed_providers: Option<BTreeSet<String>>,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -59,9 +91,31 @@ pub struct CapabilityCatalogSnapshot {
     pub members: Vec<CapabilityRef>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+struct RecordKey(String);
+
+impl RecordKey {
+    fn new(principal: &ExecutionPrincipal, id: &str) -> Result<Self, ExecutionLoadoutError> {
+        validate_text("id", id)?;
+        if id.contains('\0') {
+            return Err(ExecutionLoadoutError::Invalid {
+                field: "id".into(),
+                message: "NUL is not allowed".into(),
+            });
+        }
+        Ok(Self(format!(
+            "{}:{}{}",
+            principal.as_str().len(),
+            principal.as_str(),
+            id
+        )))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct PublishedCapabilityCatalog {
-    snapshots: HashMap<String, CapabilityCatalogSnapshot>,
+    snapshots: HashMap<ExecutionPrincipal, CapabilityCatalogSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -91,8 +145,7 @@ pub struct ExecutionLoadoutPatch {
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionLoadoutDraft {
     pub id: String,
-    #[serde(default = "shared_principal")]
-    pub owner_principal: String,
+    pub owner_principal: ExecutionPrincipal,
     #[serde(default)]
     pub runtime_identity: Option<String>,
     pub name: String,
@@ -109,6 +162,7 @@ pub struct ExecutionLoadoutDraft {
 pub struct ExecutionLoadoutRevision {
     pub loadout_id: String,
     pub revision: u64,
+    pub draft_revision: u64,
     pub members: Vec<CapabilityRef>,
     pub catalog_generation: String,
 }
@@ -204,25 +258,120 @@ pub(super) struct Record {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ExecutionLoadoutStore {
-    pub(super) records: HashMap<String, Record>,
+    records: HashMap<RecordKey, Record>,
+}
+
+impl ExecutionLoadoutStore {
+    fn validate_integrity(&self) -> Result<(), ExecutionLoadoutError> {
+        if self.records.len() > MAX_TOTAL_LOADOUTS {
+            return Err(ExecutionLoadoutError::LimitExceeded {
+                limit: MAX_TOTAL_LOADOUTS,
+            });
+        }
+        let mut per_principal = HashMap::<&ExecutionPrincipal, usize>::new();
+        for (key, record) in &self.records {
+            ExecutionPrincipal::new(record.draft.owner_principal.as_str())?;
+            let expected = RecordKey::new(&record.draft.owner_principal, &record.draft.id)?;
+            if key != &expected {
+                return Err(invalid_store(
+                    "record key does not match its principal and id",
+                ));
+            }
+            let count = per_principal
+                .entry(&record.draft.owner_principal)
+                .or_default();
+            *count += 1;
+            if *count > MAX_LOADOUTS {
+                return Err(ExecutionLoadoutError::LimitExceeded {
+                    limit: MAX_LOADOUTS,
+                });
+            }
+            normalize_members(record.draft.members.clone())?;
+            for (number, revision) in &record.revisions {
+                if revision.revision != *number
+                    || revision.loadout_id != record.draft.id
+                    || revision.draft_revision == 0
+                {
+                    return Err(invalid_store("immutable revision metadata is inconsistent"));
+                }
+                normalize_members(revision.members.clone())?;
+            }
+            for active in [
+                record.draft.desired_active_revision,
+                record.draft.effective_runtime_revision,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !record.revisions.contains_key(&active) {
+                    return Err(invalid_store("active revision does not exist"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn invalid_store(message: &str) -> ExecutionLoadoutError {
+    ExecutionLoadoutError::Storage {
+        message: message.into(),
+    }
 }
 
 impl GatewayManager {
+    #[cfg(test)]
+    fn fail_next_execution_loadout_persist(&self) {
+        self.execution_loadout_fail_persist
+            .store(true, Ordering::Release);
+    }
+
+    fn take_execution_loadout_persist_failure(&self) -> bool {
+        #[cfg(test)]
+        {
+            return self
+                .execution_loadout_fail_persist
+                .swap(false, Ordering::AcqRel);
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
     /// Atomically publish complete principal-filtered snapshots prepared by the
     /// authoritative product host. A single swap prevents mixed generations.
     pub fn publish_execution_capability_snapshots(
         &self,
         snapshots: Vec<CapabilityCatalogSnapshot>,
     ) -> Result<(), ExecutionLoadoutError> {
+        if snapshots.len() > MAX_PUBLISHED_PRINCIPALS {
+            return Err(ExecutionLoadoutError::LimitExceeded {
+                limit: MAX_PUBLISHED_PRINCIPALS,
+            });
+        }
         let mut published = PublishedCapabilityCatalog::default();
+        let mut publication_generation = None;
+        let mut total_members = 0usize;
         for snapshot in snapshots {
             validate_text("generation", &snapshot.generation)?;
-            validate_text("principal", &snapshot.principal)?;
-            let principal = snapshot.principal.clone();
+            if publication_generation.get_or_insert_with(|| snapshot.generation.clone())
+                != &snapshot.generation
+            {
+                return Err(ExecutionLoadoutError::Invalid {
+                    field: "generation".into(),
+                    message: "all snapshots in one publication must share one generation".into(),
+                });
+            }
+            let principal = ExecutionPrincipal::new(snapshot.principal.clone())?;
             let snapshot = CapabilityCatalogSnapshot {
                 members: normalize_members(snapshot.members)?,
                 ..snapshot
             };
+            total_members = total_members.saturating_add(snapshot.members.len());
+            if total_members > MAX_PUBLISHED_MEMBERS {
+                return Err(ExecutionLoadoutError::LimitExceeded {
+                    limit: MAX_PUBLISHED_MEMBERS,
+                });
+            }
             if published.snapshots.insert(principal, snapshot).is_some() {
                 return Err(ExecutionLoadoutError::Invalid {
                     field: "principal".into(),
@@ -236,14 +385,14 @@ impl GatewayManager {
 
     pub async fn execution_loadout_list(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
     ) -> Vec<ExecutionLoadoutSummary> {
-        let principal = caller_principal(caller);
+        let principal = &context.principal;
         let store = self.execution_loadouts.read().await;
         let mut rows = store
             .records
             .values()
-            .filter(|record| record.draft.owner_principal == principal)
+            .filter(|record| &record.draft.owner_principal == principal)
             .map(|record| ExecutionLoadoutSummary {
                 id: record.draft.id.clone(),
                 name: record.draft.name.clone(),
@@ -258,21 +407,22 @@ impl GatewayManager {
 
     pub async fn execution_loadout_get(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
         id: &str,
     ) -> Result<ExecutionLoadoutDraft, ExecutionLoadoutError> {
+        let key = RecordKey::new(&context.principal, id)?;
         self.execution_loadouts
             .read()
             .await
             .records
-            .get(&record_key(&caller_principal(caller), id))
+            .get(&key)
             .map(|r| r.draft.clone())
             .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })
     }
 
     pub async fn execution_loadout_create(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
         input: ExecutionLoadoutCreate,
     ) -> Result<ExecutionLoadoutDraft, ExecutionLoadoutError> {
         let members = normalize_members(input.members)?;
@@ -281,43 +431,57 @@ impl GatewayManager {
         if let Some(value) = input.description.as_deref() {
             validate_text("description", value)?;
         }
-        let mut store = self.execution_loadouts.write().await;
-        let owner_principal = caller_principal(caller);
-        let key = record_key(&owner_principal, &input.id);
-        if store.records.contains_key(&key) {
-            return Err(ExecutionLoadoutError::AlreadyExists { id: input.id });
-        }
-        if store.records.len() >= MAX_LOADOUTS {
-            return Err(ExecutionLoadoutError::LimitExceeded {
-                limit: MAX_LOADOUTS,
-            });
-        }
-        let draft = ExecutionLoadoutDraft {
-            id: input.id.clone(),
-            owner_principal,
-            runtime_identity: None,
-            name: input.name,
-            description: input.description,
-            members,
-            draft_revision: 1,
-            desired_active_revision: None,
-            effective_runtime_revision: None,
-            restart_required: false,
-        };
-        store.records.insert(
-            key,
-            Record {
-                draft: draft.clone(),
-                revisions: BTreeMap::new(),
-            },
-        );
-        store.persist(&self.path)?;
+        let owner_principal = context.principal.clone();
+        let key = RecordKey::new(&owner_principal, &input.id)?;
+        let fail = self.take_execution_loadout_persist_failure();
+        let mut current = self.execution_loadouts.write().await;
+        let (candidate, draft) = ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
+            if store.records.contains_key(&key) {
+                return Err(ExecutionLoadoutError::AlreadyExists { id: input.id });
+            }
+            if store.records.len() >= MAX_TOTAL_LOADOUTS {
+                return Err(ExecutionLoadoutError::LimitExceeded {
+                    limit: MAX_TOTAL_LOADOUTS,
+                });
+            }
+            let principal_count = store
+                .records
+                .values()
+                .filter(|record| record.draft.owner_principal == owner_principal)
+                .count();
+            if principal_count >= MAX_LOADOUTS {
+                return Err(ExecutionLoadoutError::LimitExceeded {
+                    limit: MAX_LOADOUTS,
+                });
+            }
+            let draft = ExecutionLoadoutDraft {
+                id: input.id.clone(),
+                owner_principal,
+                runtime_identity: None,
+                name: input.name,
+                description: input.description,
+                members,
+                draft_revision: 1,
+                desired_active_revision: None,
+                effective_runtime_revision: None,
+                restart_required: false,
+            };
+            store.records.insert(
+                key,
+                Record {
+                    draft: draft.clone(),
+                    revisions: BTreeMap::new(),
+                },
+            );
+            Ok(draft)
+        })?;
+        *current = candidate;
         Ok(draft)
     }
 
     pub async fn execution_loadout_patch(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
         id: &str,
         patch: ExecutionLoadoutPatch,
     ) -> Result<ExecutionLoadoutDraft, ExecutionLoadoutError> {
@@ -328,58 +492,69 @@ impl GatewayManager {
         if let Some(Some(value)) = patch.description.as_ref() {
             validate_text("description", value)?;
         }
-        let mut store = self.execution_loadouts.write().await;
-        let record = store
-            .records
-            .get_mut(&record_key(&caller_principal(caller), id))
-            .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
-        if patch.expected_draft_revision != record.draft.draft_revision {
-            return Err(ExecutionLoadoutError::StaleRevision {
-                expected: patch.expected_draft_revision,
-                current: record.draft.draft_revision,
-                changed_fields: vec!["name".into(), "description".into(), "members".into()],
-            });
-        }
-        if let Some(value) = patch.name {
-            record.draft.name = value;
-        }
-        if let Some(value) = patch.description {
-            record.draft.description = value;
-        }
-        if let Some(value) = normalized {
-            record.draft.members = value;
-        }
-        record.draft.draft_revision += 1;
-        let draft = record.draft.clone();
-        store.persist(&self.path)?;
+        let key = RecordKey::new(&context.principal, id)?;
+        let fail = self.take_execution_loadout_persist_failure();
+        let mut current = self.execution_loadouts.write().await;
+        let (candidate, draft) = ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
+            let record = store
+                .records
+                .get_mut(&key)
+                .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
+            if patch.expected_draft_revision != record.draft.draft_revision {
+                return Err(ExecutionLoadoutError::StaleRevision {
+                    expected: patch.expected_draft_revision,
+                    current: record.draft.draft_revision,
+                    changed_fields: vec!["name".into(), "description".into(), "members".into()],
+                });
+            }
+            if let Some(value) = patch.name {
+                record.draft.name = value;
+            }
+            if let Some(value) = patch.description {
+                record.draft.description = value;
+            }
+            if let Some(value) = normalized {
+                record.draft.members = value;
+            }
+            record.draft.draft_revision += 1;
+            Ok(record.draft.clone())
+        })?;
+        *current = candidate;
         Ok(draft)
     }
 
     pub async fn execution_loadout_preview(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
         id: &str,
         runtime_identity: &str,
     ) -> Result<ExecutionLoadoutPreview, ToolError> {
         validate_text("runtimeIdentity", runtime_identity).map_err(ToolError::from)?;
         let draft = self
-            .execution_loadout_get(caller, id)
+            .execution_loadout_get(context, id)
             .await
             .map_err(ToolError::from)?;
-        self.resolve_execution_loadout(caller, &draft, runtime_identity)
+        if draft
+            .runtime_identity
+            .as_deref()
+            .is_some_and(|bound| bound != runtime_identity)
+        {
+            return Err(ExecutionLoadoutError::NotFound { id: id.into() }.into());
+        }
+        self.resolve_execution_loadout(context, &draft, runtime_identity)
             .await
     }
 
     pub async fn execution_loadout_activate(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
         id: &str,
         expected_draft_revision: u64,
         runtime_identity: &str,
     ) -> Result<ExecutionLoadoutActivation, ToolError> {
         // Never trust a cached preview: capture and resolve a fresh atomic catalog snapshot.
         let draft = self
-            .execution_loadout_get(caller, id)
+            .execution_loadout_get(context, id)
             .await
             .map_err(ToolError::from)?;
         if draft.draft_revision != expected_draft_revision {
@@ -391,7 +566,7 @@ impl GatewayManager {
             .into());
         }
         let preview = self
-            .resolve_execution_loadout(caller, &draft, runtime_identity)
+            .resolve_execution_loadout(context, &draft, runtime_identity)
             .await?;
         if preview
             .resolved
@@ -403,117 +578,126 @@ impl GatewayManager {
             }
             .into());
         }
-        let mut store = self.execution_loadouts.write().await;
-        let record = store
-            .records
-            .get_mut(&record_key(&caller_principal(caller), id))
-            .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
-        if record.draft.draft_revision != expected_draft_revision {
-            return Err(ExecutionLoadoutError::StaleRevision {
-                expected: expected_draft_revision,
-                current: record.draft.draft_revision,
-                changed_fields: vec!["members".into()],
-            }
-            .into());
-        }
-        if record
-            .draft
-            .runtime_identity
-            .as_deref()
-            .is_some_and(|bound| bound != runtime_identity)
-        {
-            return Err(ExecutionLoadoutError::NotFound { id: id.into() }.into());
-        }
-        record.draft.runtime_identity = Some(runtime_identity.into());
-        let revision_number = record.revisions.keys().next_back().copied().unwrap_or(0) + 1;
-        let revision = ExecutionLoadoutRevision {
-            loadout_id: id.into(),
-            revision: revision_number,
-            members: record.draft.members.clone(),
-            catalog_generation: preview.catalog_generation.clone(),
-        };
-        record.revisions.insert(revision_number, revision.clone());
-        record.draft.desired_active_revision = Some(revision_number);
-        record.draft.effective_runtime_revision = Some(revision_number);
-        record.draft.restart_required = false;
-        let loadout = record.draft.clone();
-        store.persist(&self.path).map_err(ToolError::from)?;
-        Ok(ExecutionLoadoutActivation {
-            loadout,
-            revision,
-            preview,
-        })
+        let key = RecordKey::new(&context.principal, id).map_err(ToolError::from)?;
+        let fail = self.take_execution_loadout_persist_failure();
+        let mut current = self.execution_loadouts.write().await;
+        let (candidate, activation) =
+            ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
+                let record = store
+                    .records
+                    .get_mut(&key)
+                    .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
+                if record.draft.draft_revision != expected_draft_revision {
+                    return Err(ExecutionLoadoutError::StaleRevision {
+                        expected: expected_draft_revision,
+                        current: record.draft.draft_revision,
+                        changed_fields: vec!["members".into()],
+                    });
+                }
+                if record
+                    .draft
+                    .runtime_identity
+                    .as_deref()
+                    .is_some_and(|bound| bound != runtime_identity)
+                {
+                    return Err(ExecutionLoadoutError::NotFound { id: id.into() });
+                }
+                if let Some(existing) = record
+                    .revisions
+                    .values()
+                    .find(|revision| revision.draft_revision == expected_draft_revision)
+                    .cloned()
+                {
+                    let mut preview = preview;
+                    preview.active_revision = existing.revision;
+                    return Ok(ExecutionLoadoutActivation {
+                        loadout: record.draft.clone(),
+                        revision: existing,
+                        preview,
+                    });
+                }
+                record.draft.runtime_identity = Some(runtime_identity.into());
+                let revision_number = record.revisions.keys().next_back().copied().unwrap_or(0) + 1;
+                let revision = ExecutionLoadoutRevision {
+                    loadout_id: id.into(),
+                    revision: revision_number,
+                    draft_revision: expected_draft_revision,
+                    members: record.draft.members.clone(),
+                    catalog_generation: preview.catalog_generation.clone(),
+                };
+                record.revisions.insert(revision_number, revision.clone());
+                record.draft.desired_active_revision = Some(revision_number);
+                record.draft.effective_runtime_revision = Some(revision_number);
+                record.draft.restart_required = false;
+                let loadout = record.draft.clone();
+                Ok(ExecutionLoadoutActivation {
+                    loadout,
+                    revision,
+                    preview,
+                })
+            })
+            .map_err(ToolError::from)?;
+        *current = candidate;
+        Ok(activation)
     }
 
     pub async fn execution_loadout_rollback(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
         id: &str,
         expected_draft_revision: u64,
         revision: u64,
     ) -> Result<ExecutionLoadoutDraft, ExecutionLoadoutError> {
-        let mut store = self.execution_loadouts.write().await;
-        let record = store
-            .records
-            .get_mut(&record_key(&caller_principal(caller), id))
-            .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
-        if record.draft.draft_revision != expected_draft_revision {
-            return Err(ExecutionLoadoutError::StaleRevision {
-                expected: expected_draft_revision,
-                current: record.draft.draft_revision,
-                changed_fields: vec!["members".into()],
-            });
-        }
-        let prior =
-            record
-                .revisions
-                .get(&revision)
-                .ok_or_else(|| ExecutionLoadoutError::Invalid {
-                    field: "revision".into(),
-                    message: "unknown immutable revision".into(),
+        let key = RecordKey::new(&context.principal, id)?;
+        let fail = self.take_execution_loadout_persist_failure();
+        let mut current = self.execution_loadouts.write().await;
+        let (candidate, draft) =
+            ExecutionLoadoutStore::mutate(&self.path, fail, move |store| {
+                let record = store
+                    .records
+                    .get_mut(&key)
+                    .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
+                if record.draft.draft_revision != expected_draft_revision {
+                    return Err(ExecutionLoadoutError::StaleRevision {
+                        expected: expected_draft_revision,
+                        current: record.draft.draft_revision,
+                        changed_fields: vec!["members".into()],
+                    });
+                }
+                let prior = record.revisions.get(&revision).ok_or_else(|| {
+                    ExecutionLoadoutError::Invalid {
+                        field: "revision".into(),
+                        message: "unknown immutable revision".into(),
+                    }
                 })?;
-        record.draft.members = prior.members.clone();
-        record.draft.draft_revision += 1;
-        let draft = record.draft.clone();
-        store.persist(&self.path)?;
+                record.draft.members = prior.members.clone();
+                record.draft.draft_revision += 1;
+                Ok(record.draft.clone())
+            })?;
+        *current = candidate;
         Ok(draft)
     }
 
     async fn resolve_execution_loadout(
         &self,
-        caller: &PaletteCaller,
+        context: &ExecutionLoadoutContext,
         draft: &ExecutionLoadoutDraft,
         runtime_identity: &str,
     ) -> Result<ExecutionLoadoutPreview, ToolError> {
-        let catalog = self.palette_catalog_snapshot(caller).await?;
         let published = self.execution_capabilities.load_full();
-        let principal = caller_principal(caller);
-        let non_tool_catalog = published.snapshots.get(&principal);
+        let principal = context.principal.clone();
+        let catalog = published.snapshots.get(&principal);
         let mut available = BTreeMap::new();
-        for entry in catalog.entries {
-            if let LauncherEntryView::McpTool(tool) = entry {
+        if let Some(snapshot) = catalog {
+            for member in &snapshot.members {
                 available.insert(
                     (
-                        tool.upstream.clone(),
-                        CapabilityFamily::Tool,
-                        tool.id.clone(),
+                        member.provider.clone(),
+                        member.family,
+                        member.member_id.clone(),
                     ),
-                    tool.contract_hash,
+                    member.expected_revision.clone(),
                 );
-            }
-        }
-        if let Some(snapshot) = non_tool_catalog {
-            for member in &snapshot.members {
-                if member.family != CapabilityFamily::Tool {
-                    available.insert(
-                        (
-                            member.provider.clone(),
-                            member.family,
-                            member.member_id.clone(),
-                        ),
-                        member.expected_revision.clone(),
-                    );
-                }
             }
         }
         let mut resolved = Vec::with_capacity(draft.members.len());
@@ -526,8 +710,9 @@ impl GatewayManager {
                 capability.family,
                 capability.member_id.clone(),
             );
-            let provider_authorized = caller
-                .allowed_upstreams()
+            let provider_authorized = context
+                .allowed_providers
+                .as_ref()
                 .is_none_or(|allowed| allowed.contains(&capability.provider))
                 || capability.provider == "labby";
             let (status, current, diagnostic) = if !provider_authorized {
@@ -572,10 +757,10 @@ impl GatewayManager {
             loadout_id: draft.id.clone(),
             draft_revision: draft.draft_revision,
             active_revision: draft.effective_runtime_revision.unwrap_or(0),
-            catalog_generation: non_tool_catalog
-                .map(|snapshot| format!("{}:{}", catalog.fingerprint, snapshot.generation))
-                .unwrap_or(catalog.fingerprint),
-            principal,
+            catalog_generation: catalog
+                .map(|snapshot| snapshot.generation.clone())
+                .unwrap_or_default(),
+            principal: principal.as_str().to_owned(),
             runtime_identity: runtime_identity.into(),
             resolved,
             effective,
@@ -583,20 +768,4 @@ impl GatewayManager {
             conflicts,
         })
     }
-}
-
-fn caller_principal(caller: &PaletteCaller) -> String {
-    caller
-        .caller_auth
-        .sub
-        .clone()
-        .unwrap_or_else(|| "shared".into())
-}
-
-fn record_key(principal: &str, id: &str) -> String {
-    format!("{principal}\0{id}")
-}
-
-fn shared_principal() -> String {
-    "shared".into()
 }
