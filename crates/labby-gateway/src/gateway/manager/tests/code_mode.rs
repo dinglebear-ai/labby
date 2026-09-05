@@ -10,6 +10,43 @@ use tracing_subscriber::layer::SubscriberExt;
 use super::*;
 
 #[tokio::test]
+async fn code_mode_host_resource_read_connects_a_cold_upstream() {
+    let mut upstream = fixture_http_upstream("alpha");
+    upstream.proxy_resources = true;
+    let (manager, _) = code_mode_manager_with_pool(upstream).await;
+    let error = CodeModeHost::read_resource(
+        &manager,
+        "lab://upstream/alpha/fixture://skill".to_string(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+    )
+    .await
+    .expect_err("unreachable fixture must fail connection, not report a missing resource");
+    assert!(
+        matches!(error, ToolError::Sdk { sdk_kind, .. } if sdk_kind == "upstream_connect_error")
+    );
+}
+
+#[tokio::test]
+async fn code_mode_host_resource_read_checks_scope_before_connecting() {
+    let mut upstream = fixture_http_upstream("alpha");
+    upstream.proxy_resources = true;
+    let (manager, pool) = code_mode_manager_with_pool(upstream).await;
+    let error = CodeModeHost::read_resource(
+        &manager,
+        "lab://upstream/alpha/fixture://skill".to_string(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::scoped_namespaces(vec!["beta".to_string()], Vec::new()),
+    )
+    .await
+    .expect_err("out-of-scope resource must be refused");
+    assert!(matches!(error, ToolError::Sdk { sdk_kind, .. } if sdk_kind == "forbidden"));
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
+#[tokio::test]
 async fn search_tools_seeds_cold_lazy_runtime_before_searching() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config.toml");
