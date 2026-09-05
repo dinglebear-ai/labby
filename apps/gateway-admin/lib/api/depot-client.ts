@@ -124,7 +124,7 @@ const detailV2Schema = z.object({
 }).strict()
 const providerSchema = z.object({
   id: bounded(64).refine(value => value !== 'all'), name: bounded(256), endpoint: bounded(2048),
-  enabled: z.boolean(), credentialConfigured: z.boolean(), health: z.object({
+  enabled: z.boolean(), authMode: z.enum(['anonymous', 'bearer']), builtin: z.boolean(), configVersion: bounded(128), credentialConfigured: z.boolean(), health: z.object({
     state: z.enum(['unknown', 'healthy', 'unauthorized', 'incompatible', 'unavailable']),
     observedAt: z.number().safe().int().nonnegative().nullable(), provenance: bounded(64).nullable(),
     retryNotBefore: z.number().safe().int().nonnegative().nullable(),
@@ -137,6 +137,10 @@ export type DiscoveryPage = z.infer<typeof discoverySchema>
 export type DepotProvider = z.infer<typeof providerSchema>
 export type DepotProviderOption = z.infer<typeof providerOptionSchema>
 export type CredentialOperation = { action: 'retain' } | { action: 'replace'; value: string } | { action: 'clear' }
+const mutationSchema = z.object({ operationId: bounded(128), version: bounded(128), committed: z.boolean() }).strict()
+const probeSchema = z.object({ providerId: bounded(64), state: z.enum(['healthy', 'unauthorized', 'incompatible', 'unavailable']), observedAt: z.number().safe().int().nonnegative() }).strict()
+
+export type ProviderDraft = { id: string; name: string; endpoint: string; enabled: boolean; authMode: 'anonymous' | 'bearer'; credential: CredentialOperation; expectedVersion: string; operationId: string; proof?: string }
 
 export class DepotClientError extends Error {
   constructor(public readonly status: number, public readonly kind: string, message: string, public readonly recovery?: unknown, public readonly requestId?: string) { super(message) }
@@ -176,5 +180,22 @@ export async function listProviders(signal?: AbortSignal): Promise<DepotProvider
 }
 
 export async function listProviderOptions(signal?: AbortSignal): Promise<DepotProviderOption[]> {
-  return requestV2('/v1/depot/providers', { signal }, z.array(providerOptionSchema).max(16), 'provider options response')
+  const providers = await requestV2('/v1/depot/providers', { signal }, z.array(z.union([providerOptionSchema, providerSchema])).max(16), 'provider options response')
+  return providers.map(({ id, name, enabled, health }) => ({ id, name, enabled, health }))
+}
+
+export async function upsertProvider(input: ProviderDraft, csrf: string, signal?: AbortSignal) {
+  return requestV2('/v1/depot/providers', { method: 'POST', signal, headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify(input) }, mutationSchema, 'provider mutation response')
+}
+
+export async function removeProvider(providerId: string, expectedVersion: string, operationId: string, proof: string, csrf: string, signal?: AbortSignal) {
+  return requestV2(`/v1/depot/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE', signal, headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify({ expectedVersion, operationId, proof }) }, mutationSchema, 'provider removal response')
+}
+
+export async function probeProvider(input: Pick<ProviderDraft, 'id' | 'name' | 'endpoint' | 'enabled' | 'authMode' | 'credential'>, csrf: string, signal?: AbortSignal) {
+  return requestV2('/v1/depot/providers/probe', { method: 'POST', signal, headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify(input) }, probeSchema, 'provider probe response')
+}
+
+export async function providerOperation(operationId: string, signal?: AbortSignal) {
+  return requestV2(`/v1/depot/provider-operations/${encodeURIComponent(operationId)}`, { signal }, mutationSchema, 'provider operation response')
 }

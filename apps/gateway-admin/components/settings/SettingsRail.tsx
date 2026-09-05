@@ -20,7 +20,9 @@ import {
   PlugZap,
   Server,
   Shield,
+  Warehouse,
 } from 'lucide-react'
+import { useBrowserSession } from '@/lib/auth/session'
 
 import { settingsSegmentStyle, SETTINGS_CONTROL_STYLE } from './SettingsChrome'
 
@@ -43,7 +45,11 @@ const ENTRIES: RailEntry[] = [
 export function SettingsRail(): React.ReactElement {
   const pathname = usePathname() ?? ''
   const router = useRouter()
-  const activeEntry = ENTRIES.find((entry) => pathname.startsWith(entry.href)) ?? ENTRIES[0]
+  const session = useBrowserSession()
+  const entries = session.status === 'authenticated' && session.isAdmin
+    ? [...ENTRIES, { href: '/settings/depot/', label: 'Depot', icon: Warehouse }]
+    : ENTRIES
+  const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
   const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
   return (
     <nav aria-label="Settings sections">
@@ -57,7 +63,7 @@ export function SettingsRail(): React.ReactElement {
         className="w-full md:hidden"
         style={{ ...SETTINGS_CONTROL_STYLE, width: '100%' }}
       >
-        {ENTRIES.map((entry) => (
+        {entries.map((entry) => (
           <option key={entry.href} value={entry.href}>
             {entry.label}
           </option>
@@ -67,7 +73,7 @@ export function SettingsRail(): React.ReactElement {
         className="hidden md:flex"
         style={{ gap: 4, flexWrap: 'wrap', alignItems: 'center' }}
       >
-        {ENTRIES.map((entry) => {
+        {entries.map((entry) => {
           const active = pathname.startsWith(entry.href)
           const Icon = entry.icon
           return (

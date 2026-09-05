@@ -103,6 +103,9 @@ pub struct ProviderAdminStatus {
     pub name: String,
     pub endpoint: String,
     pub enabled: bool,
+    pub auth_mode: crate::config::depot::AuthMode,
+    pub builtin: bool,
+    pub config_version: String,
     pub credential_configured: bool,
     pub health: HealthView,
 }
@@ -196,6 +199,9 @@ impl Manager {
                 name: provider.view.name.clone(),
                 endpoint: provider.view.endpoint.clone(),
                 enabled: provider.view.enabled,
+                auth_mode: provider.view.auth_mode,
+                builtin: provider.view.id == crate::config::depot::PUBLIC_ID,
+                config_version: self.snapshot().version.clone(),
                 credential_configured: provider.view.auth_mode
                     == crate::config::depot::AuthMode::Bearer,
                 health: provider.runtime.health.view(),

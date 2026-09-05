@@ -60,7 +60,7 @@ test('v2 exact detail preserves raw IDs and verifies every identity field', asyn
 })
 
 test('admin provider projection is strict and contains no credential material', async () => {
-  const provider = { id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, credentialConfigured: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }
+  const provider = { id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, authMode: 'bearer', builtin: false, configVersion: 'v1', credentialConfigured: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } }
   await withFetch(json([{ ...provider, token: 'secret' }]), async () => assert.rejects(listProviders(), /unrecognized/i))
   await withFetch(json([provider]), async () => assert.equal((await listProviders())[0]?.credentialConfigured, true))
 })
