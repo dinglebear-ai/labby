@@ -7,7 +7,11 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::tool_declarations::{self, SnippetToolDeclarations};
 use crate::error::ToolError;
+
+#[cfg(test)]
+mod tool_declaration_tests;
 
 const SNIPPET_EXTENSIONS: &[&str] = &["md", "js"];
 
@@ -36,6 +40,9 @@ pub enum SnippetSource {
 /// Discovery metadata for a built-in or user Code Mode snippet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnippetInfo {
+    /// Optional exact-tool declaration; currently descriptive, not enforced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<SnippetToolDeclarations>,
     /// Stable snippet name.
     pub name: String,
     /// Optional human-readable description.
@@ -56,6 +63,10 @@ pub struct SnippetInfo {
 /// Fully resolved snippet including its source body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedSnippet {
+    /// Optional declaration; an empty list expresses intended deny-all access.
+    /// Execution does not yet enforce this metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<SnippetToolDeclarations>,
     /// Stable snippet name.
     pub name: String,
     /// Optional human-readable description.
@@ -76,6 +87,8 @@ pub struct ResolvedSnippet {
 /// Parsed YAML frontmatter from a Markdown snippet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetFrontmatter {
+    /// Optional exact-tool declaration, distinct from omitted metadata.
+    pub tools: Option<SnippetToolDeclarations>,
     /// Declared snippet name.
     pub name: String,
     /// Declared human-readable description.
@@ -248,8 +261,10 @@ pub fn create_user_snippet(
     }
     let body = render_user_snippet_body(name, body, description)?;
     atomic_write_snippet(&path, &body, force)?;
-    let (description, tags, inputs) = snippet_metadata_fields(frontmatter(&body).ok().flatten());
+    let (description, tags, inputs, tools) =
+        snippet_metadata_fields(frontmatter(&body).ok().flatten());
     Ok(SnippetInfo {
+        tools,
         name: name.to_string(),
         description,
         tags,
@@ -387,9 +402,10 @@ fn collect_snippets(
         if validate_snippet_body(stem, &body).is_err() {
             continue;
         }
-        let (description, tags, inputs) =
+        let (description, tags, inputs, tools) =
             snippet_metadata_fields(frontmatter(&body).ok().flatten());
         out.push(SnippetInfo {
+            tools,
             name: stem.to_string(),
             description,
             tags,
@@ -422,9 +438,10 @@ fn read_resolved(
 ) -> Result<ResolvedSnippet, ToolError> {
     let body = fs::read_to_string(&path).map_err(|e| io_error("read snippet", &path, e))?;
     validate_snippet_body(name, &body)?;
-    let (description, tags, inputs) =
+    let (description, tags, inputs, tools) =
         snippet_metadata_fields(frontmatter(&body)?.filter(|m| m.name == name));
     Ok(ResolvedSnippet {
+        tools,
         name: name.to_string(),
         description,
         tags,
@@ -455,9 +472,17 @@ fn snippet_metadata_fields(
     Option<String>,
     Vec<String>,
     BTreeMap<String, SnippetInputSpec>,
+    Option<SnippetToolDeclarations>,
 ) {
     metadata
-        .map(|metadata| (Some(metadata.description), metadata.tags, metadata.inputs))
+        .map(|metadata| {
+            (
+                Some(metadata.description),
+                metadata.tags,
+                metadata.inputs,
+                metadata.tools,
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -537,6 +562,7 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
     let mut name = None;
     let mut description = None;
     let mut tags = Vec::new();
+    let mut tools = None;
     let lines: Vec<&str> = raw.lines().collect();
     let mut inputs = BTreeMap::new();
     let mut i = 0;
@@ -547,6 +573,19 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
             continue;
         }
         let line = raw_line.trim();
+        if let Some((key, value)) = line.split_once(':')
+            && key.trim() == "tools"
+        {
+            if tools.is_some() {
+                return Err(tool_declarations::invalid(
+                    "frontmatter tools must not be repeated",
+                ));
+            }
+            let (parsed, next) = tool_declarations::parse(&lines, i + 1, value.trim())?;
+            tools = Some(parsed);
+            i = next;
+            continue;
+        }
         if line == "inputs:" {
             let (parsed, next) = parse_inputs_block(&lines, i + 1)?;
             inputs = parsed;
@@ -576,6 +615,7 @@ pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> 
     let name = required_frontmatter_field(name, "name")?;
     let description = required_frontmatter_field(description, "description")?;
     Ok(Some(SnippetFrontmatter {
+        tools,
         name,
         description,
         tags,
@@ -1128,6 +1168,7 @@ mod tests {
             .expect("frontmatter parsed")
             .expect("metadata");
         let snippet = ResolvedSnippet {
+            tools: metadata.tools,
             name: "demo".to_string(),
             description: Some(metadata.description),
             tags: metadata.tags,

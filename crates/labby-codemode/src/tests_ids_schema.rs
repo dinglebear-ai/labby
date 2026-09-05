@@ -91,6 +91,7 @@ fn artifact_write_protocol_round_trips() {
 #[test]
 fn snippet_catalog_entry_projects_to_codemode_run() {
     let info = SnippetInfo {
+        tools: None,
         name: "repo-summary".to_string(),
         description: Some("Summarize repo health".to_string()),
         tags: vec!["repo".to_string()],
@@ -133,6 +134,7 @@ fn snippet_catalog_json_input_schema_allows_any_json_value() {
         },
     );
     let info = SnippetInfo {
+        tools: None,
         name: "json-snippet".to_string(),
         description: None,
         tags: Vec::new(),
