@@ -1745,6 +1745,7 @@ fn default_stash_total_seconds() -> u64 {
 fn default_stash_pending_seconds() -> u64 {
     1_800
 }
+const STASH_PENDING_MARGIN_SECONDS: u64 = 60;
 fn default_stash_janitor_batch() -> usize {
     100
 }
@@ -1776,7 +1777,11 @@ impl FileStashPreferences {
             && (1..=4).contains(&self.max_concurrent_mcp_reads)
             && (1..=30).contains(&self.upload_idle_seconds)
             && (self.upload_idle_seconds..=600).contains(&self.upload_total_seconds)
-            && (self.upload_total_seconds..=1_800).contains(&self.pending_ttl_seconds)
+            && self.pending_ttl_seconds
+                >= self
+                    .upload_total_seconds
+                    .saturating_add(STASH_PENDING_MARGIN_SECONDS)
+            && self.pending_ttl_seconds <= 1_800
             && (1..=100).contains(&self.janitor_batch_size)
             && (1..=300).contains(&self.janitor_backoff_max_seconds)
             && (1..=3_600).contains(&self.janitor_interval_seconds);
@@ -3643,6 +3648,9 @@ mcp = true
         assert_eq!(config.file_stash.max_concurrent_downloads, 16);
         assert!(config.validate().is_ok());
         config.file_stash.queue_capacity = 0;
+        assert!(config.validate().is_err());
+        let mut config = LabConfig::default();
+        config.file_stash.pending_ttl_seconds = config.file_stash.upload_total_seconds;
         assert!(config.validate().is_err());
     }
 

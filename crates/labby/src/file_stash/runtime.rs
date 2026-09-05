@@ -1,4 +1,8 @@
-use super::store::{FileStashStore, FileStashStoreError};
+use super::{
+    blob::BlobStore,
+    store::{FileStashStore, FileStashStoreError},
+};
+use crate::config::FileStashPreferences;
 use std::{
     fs::File,
     io::{Read, Write},
@@ -34,6 +38,7 @@ pub(crate) struct FileStashRuntime {
     root: Arc<PathBuf>,
     _root_handle: Option<Arc<File>>,
     state: Arc<Mutex<State>>,
+    blobs: Option<BlobStore>,
     janitor_admission: Arc<Semaphore>,
     janitor_cancel: tokio_util::sync::CancellationToken,
     janitor_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -46,21 +51,33 @@ impl FileStashRuntime {
             state: Arc::new(Mutex::new(State::Blocked(
                 FileStashBlockedReason::Unavailable,
             ))),
+            blobs: None,
             janitor_admission: Arc::new(Semaphore::new(1)),
             janitor_cancel: tokio_util::sync::CancellationToken::new(),
             janitor_task: Mutex::new(None),
         }
     }
     pub(crate) async fn initialize(root: PathBuf) -> Self {
-        Self::initialize_with_interval(root, std::time::Duration::from_mins(1)).await
+        Self::initialize_with_preferences(root, FileStashPreferences::default()).await
     }
     pub(crate) async fn initialize_with_interval(
         root: PathBuf,
         janitor_interval: std::time::Duration,
     ) -> Self {
+        let preferences = FileStashPreferences {
+            janitor_interval_seconds: janitor_interval.as_secs(),
+            ..FileStashPreferences::default()
+        };
+        Self::initialize_with_preferences(root, preferences).await
+    }
+
+    pub(crate) async fn initialize_with_preferences(
+        root: PathBuf,
+        preferences: FileStashPreferences,
+    ) -> Self {
         #[cfg(target_os = "macos")]
         {
-            let _ = janitor_interval;
+            drop(preferences);
             tracing::warn!(
                 "File Stash is unavailable on macOS: descriptor-rooted SQLite is not supported"
             );
@@ -70,6 +87,7 @@ impl FileStashRuntime {
                 state: Arc::new(Mutex::new(State::Blocked(
                     FileStashBlockedReason::UnsafeRoot,
                 ))),
+                blobs: None,
                 janitor_admission: Arc::new(Semaphore::new(1)),
                 janitor_cancel: tokio_util::sync::CancellationToken::new(),
                 janitor_task: Mutex::new(None),
@@ -77,28 +95,49 @@ impl FileStashRuntime {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let initialized = initialize_owned(&root).await;
+            let initialized = initialize_owned(&root, &preferences).await;
             let admission = Arc::new(Semaphore::new(1));
             let cancel = tokio_util::sync::CancellationToken::new();
-            let (state, root_handle, janitor_task) = match initialized {
-                Ok((store, handle)) => {
+            let (state, root_handle, blobs, janitor_task) = match initialized {
+                Ok((store, handle, tmp, blob_dir)) => {
+                    let blob_store =
+                        BlobStore::new(tmp, blob_dir, store.clone(), preferences.clone());
+                    if let Err(error) = blob_store.recover().await {
+                        tracing::warn!(?error, "file stash recovery blocked initialization");
+                        return Self {
+                            root: Arc::new(root),
+                            _root_handle: Some(Arc::new(handle)),
+                            state: Arc::new(Mutex::new(State::Blocked(map_store_error(error)))),
+                            blobs: None,
+                            janitor_admission: Arc::new(Semaphore::new(1)),
+                            janitor_cancel: tokio_util::sync::CancellationToken::new(),
+                            janitor_task: Mutex::new(None),
+                        };
+                    }
                     let task = spawn_janitor(
-                        store.clone(),
+                        blob_store.clone(),
                         Arc::clone(&admission),
                         cancel.clone(),
-                        janitor_interval,
+                        std::time::Duration::from_secs(preferences.janitor_interval_seconds),
+                        std::time::Duration::from_secs(preferences.janitor_backoff_max_seconds),
                     );
-                    (State::Ready(store), Some(Arc::new(handle)), Some(task))
+                    (
+                        State::Ready(store),
+                        Some(Arc::new(handle)),
+                        Some(blob_store),
+                        Some(task),
+                    )
                 }
                 Err(reason) => {
                     tracing::warn!(?reason, "file stash runtime initialization blocked");
-                    (State::Blocked(reason), None, None)
+                    (State::Blocked(reason), None, None, None)
                 }
             };
             Self {
                 root: Arc::new(root),
                 _root_handle: root_handle,
                 state: Arc::new(Mutex::new(state)),
+                blobs,
                 janitor_admission: admission,
                 janitor_cancel: cancel,
                 janitor_task: Mutex::new(janitor_task),
@@ -117,6 +156,16 @@ impl FileStashRuntime {
             State::Ready(store) => Ok(store.clone()),
             State::Blocked(reason) => Err(*reason),
             State::Shutdown => Err(FileStashBlockedReason::Unavailable),
+        }
+    }
+    pub(crate) async fn blob_store(&self) -> Result<BlobStore, FileStashBlockedReason> {
+        match self.status().await {
+            FileStashStatus::Ready => self
+                .blobs
+                .clone()
+                .ok_or(FileStashBlockedReason::Unavailable),
+            FileStashStatus::Blocked(reason) => Err(reason),
+            FileStashStatus::Shutdown => Err(FileStashBlockedReason::Unavailable),
         }
     }
     pub(crate) async fn shutdown(&self) {
@@ -148,21 +197,25 @@ impl FileStashRuntime {
 }
 
 fn spawn_janitor(
-    store: FileStashStore,
+    blobs: BlobStore,
     admission: Arc<Semaphore>,
     cancel: tokio_util::sync::CancellationToken,
     interval: std::time::Duration,
+    max_backoff: std::time::Duration,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut delay = interval;
         loop {
             tokio::select! {
                 () = cancel.cancelled() => break,
-                () = tokio::time::sleep(interval) => {
+                () = tokio::time::sleep(delay) => {
                     let Ok(_permit) = Arc::clone(&admission).try_acquire_owned() else { continue };
-                    if let Err(error) = store.with_connection(|connection| {
-                        connection.query_row("SELECT 1", [], |_| Ok(())).map_err(FileStashStoreError::sqlite)
-                    }).await {
-                        tracing::warn!(?error, "file stash janitor health pass failed");
+                    match blobs.cleanup_expired().await {
+                        Ok(_) => delay = interval,
+                        Err(error) => {
+                            tracing::warn!(?error, "file stash janitor pass failed");
+                            delay = delay.saturating_mul(2).min(max_backoff);
+                        }
                     }
                 }
             }
@@ -170,7 +223,10 @@ fn spawn_janitor(
     })
 }
 
-async fn initialize_owned(root: &Path) -> Result<(FileStashStore, File), FileStashBlockedReason> {
+async fn initialize_owned(
+    root: &Path,
+    preferences: &FileStashPreferences,
+) -> Result<(FileStashStore, File, File, File), FileStashBlockedReason> {
     let owned = root.to_path_buf();
     let verified = tokio::task::spawn_blocking(move || prepare_root(&owned))
         .await
@@ -179,21 +235,52 @@ async fn initialize_owned(root: &Path) -> Result<(FileStashStore, File), FileSta
     let marker =
         read_or_create_marker(&verified.handle).map_err(|_| FileStashBlockedReason::UnsafeRoot)?;
     let database = anchored_child_path(&verified.handle, &verified.path, "metadata.sqlite3")?;
-    let store = FileStashStore::open(database, marker)
-        .await
-        .map_err(map_store_error)?;
+    let store = FileStashStore::open_with_limits(
+        database,
+        marker,
+        preferences.queue_capacity,
+        std::time::Duration::from_millis(preferences.database_deadline_ms),
+    )
+    .await
+    .map_err(map_store_error)?;
     verify_database_identity(&verified.handle, store.path())?;
-    Ok((store, verified.handle))
+    let tmp = open_private_directory(&verified.handle, "tmp")?;
+    let blobs = open_private_directory(&verified.handle, "blobs")?;
+    Ok((store, verified.handle, tmp, blobs))
 }
 fn map_store_error(error: FileStashStoreError) -> FileStashBlockedReason {
     match error {
         FileStashStoreError::Corrupt => FileStashBlockedReason::Corrupt,
         FileStashStoreError::NewerSchema(_) => FileStashBlockedReason::NewerSchema,
         FileStashStoreError::BackupMismatch => FileStashBlockedReason::BackupMismatch,
-        FileStashStoreError::Busy | FileStashStoreError::Unavailable => {
-            FileStashBlockedReason::Unavailable
+        FileStashStoreError::Integrity | FileStashStoreError::LengthMismatch => {
+            FileStashBlockedReason::Corrupt
         }
+        FileStashStoreError::Busy
+        | FileStashStoreError::Unavailable
+        | FileStashStoreError::QuotaExceeded
+        | FileStashStoreError::Conflict => FileStashBlockedReason::Unavailable,
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn open_private_directory(root: &File, name: &str) -> Result<File, FileStashBlockedReason> {
+    use rustix::fs::{Mode, OFlags, openat};
+    let fd = openat(
+        root,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| FileStashBlockedReason::UnsafeRoot)?;
+    let file = File::from(fd);
+    validate_private_directory(&file)?;
+    Ok(file)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn open_private_directory(_: &File, _: &str) -> Result<File, FileStashBlockedReason> {
+    Err(FileStashBlockedReason::UnsafeRoot)
 }
 
 #[cfg(unix)]
@@ -430,15 +517,11 @@ fn verify_database_identity(_: &File, _: &Path) -> Result<(), FileStashBlockedRe
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn anchored_child_path(
-    root: &File,
-    _: &Path,
+    _: &File,
+    root_path: &Path,
     child: &str,
 ) -> Result<PathBuf, FileStashBlockedReason> {
-    use std::os::fd::AsRawFd as _;
-    Ok(PathBuf::from(format!(
-        "/proc/self/fd/{}/{child}",
-        root.as_raw_fd()
-    )))
+    Ok(root_path.join(child))
 }
 #[cfg(target_os = "macos")]
 fn anchored_child_path(
@@ -528,6 +611,29 @@ mod tests {
             FileStashRuntime::initialize(insecure).await.status().await,
             FileStashStatus::Blocked(FileStashBlockedReason::Permission)
         );
+    }
+
+    #[tokio::test]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    async fn database_symlink_substitution_is_rejected_before_target_mutation() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::TempDir::new().unwrap();
+        let stash_root = root(&temp, "stash");
+        let runtime = FileStashRuntime::initialize(stash_root.clone()).await;
+        assert_eq!(runtime.status().await, FileStashStatus::Ready);
+        runtime.shutdown().await;
+        std::fs::remove_file(stash_root.join("metadata.sqlite3")).unwrap();
+        let target = temp.path().join("victim");
+        std::fs::write(&target, b"must-not-change").unwrap();
+        symlink(&target, stash_root.join("metadata.sqlite3")).unwrap();
+        assert_eq!(
+            FileStashRuntime::initialize(stash_root)
+                .await
+                .status()
+                .await,
+            FileStashStatus::Blocked(FileStashBlockedReason::UnsafeRoot)
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"must-not-change");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -365,9 +365,9 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     };
     let file_stash_runtime = match crate::config::file_stash_root_path(config) {
         Ok(root) => Arc::new(
-            crate::file_stash::FileStashRuntime::initialize_with_interval(
+            crate::file_stash::FileStashRuntime::initialize_with_preferences(
                 root,
-                Duration::from_secs(config.file_stash.janitor_interval_seconds),
+                config.file_stash.clone(),
             )
             .await,
         ),
