@@ -51,9 +51,32 @@ impl ExecutionPrincipal {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(transparent)]
+pub struct ExecutionTenant(String);
+
+impl ExecutionTenant {
+    pub fn new(value: impl Into<String>) -> Result<Self, ExecutionLoadoutError> {
+        let value = value.into();
+        validate_text("tenant", &value)?;
+        if value == "shared" || value.contains('\0') {
+            return Err(ExecutionLoadoutError::Invalid {
+                field: "tenant".into(),
+                message: "an explicit, unambiguous tenant is required".into(),
+            });
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutionLoadoutContext {
     pub principal: ExecutionPrincipal,
+    pub tenant: ExecutionTenant,
     pub allowed_providers: Option<BTreeSet<String>>,
 }
 

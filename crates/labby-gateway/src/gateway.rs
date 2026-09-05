@@ -43,7 +43,8 @@ pub use execution_loadout::{
     CapabilityCatalogSnapshot, CapabilityFamily, CapabilityRef, ExecutionCapabilityCatalogProvider,
     ExecutionLoadoutActivation, ExecutionLoadoutContext, ExecutionLoadoutCreate,
     ExecutionLoadoutDraft, ExecutionLoadoutError, ExecutionLoadoutPatch, ExecutionLoadoutPreview,
-    ExecutionLoadoutRevision, ExecutionLoadoutSummary, ExecutionPrincipal, ResolutionStatus,
+    ExecutionLoadoutRevision, ExecutionLoadoutSummary, ExecutionPrincipal, ExecutionTenant,
+    ResolutionStatus,
 };
 pub use manager::{
     LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,
