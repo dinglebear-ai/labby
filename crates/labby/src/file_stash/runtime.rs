@@ -259,7 +259,8 @@ fn map_store_error(error: FileStashStoreError) -> FileStashBlockedReason {
         FileStashStoreError::Busy
         | FileStashStoreError::Unavailable
         | FileStashStoreError::QuotaExceeded
-        | FileStashStoreError::Conflict => FileStashBlockedReason::Unavailable,
+        | FileStashStoreError::Conflict
+        | FileStashStoreError::NotFound => FileStashBlockedReason::Unavailable,
     }
 }
 

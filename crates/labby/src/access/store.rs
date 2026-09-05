@@ -130,6 +130,35 @@ impl AccessStore {
         .await
     }
 
+    pub(crate) async fn lease_active_file_stash_principal(
+        &self,
+        principal: super::AccessPrincipalId,
+    ) -> AccessStoreResult<super::ActiveFileStashPrincipalLease> {
+        let permit = Arc::clone(&self.connection_admission)
+            .acquire_owned()
+            .await
+            .map_err(|_| AccessStoreError::Unavailable("connection admission closed".into()))?;
+        let connection = Arc::clone(&self.connection);
+        let active = tokio::task::spawn_blocking(move || {
+            let connection = connection
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM principals p JOIN organizations o ON o.organization_id=p.organization_id WHERE p.principal_id=?1 AND p.status='active' AND o.status='active')",
+                    [principal.as_str()],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(map_sqlite_error)
+        })
+        .await
+        .map_err(|error| AccessStoreError::Unavailable(error.to_string()))??;
+        if !active {
+            return Err(AccessStoreError::IdentityUnavailable);
+        }
+        Ok(super::ActiveFileStashPrincipalLease { _permit: permit })
+    }
+
     pub(crate) async fn select_project(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -1271,6 +1300,45 @@ mod tests {
         .unwrap();
         assert!(matches!(
             store.resolve_file_stash_principal(missing).await,
+            Err(AccessStoreError::IdentityUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_stash_active_principal_lease_linearizes_deactivation() {
+        let directory = super::super::test_support::secure_tempdir();
+        let store = AccessStore::open(secure_test_path(&directory))
+            .await
+            .unwrap();
+        store.execute_test_statement("INSERT INTO organizations VALUES('org','Org','active',0,1,1); INSERT INTO principals VALUES('recipient','org','user','active',NULL,1,1);").await.unwrap();
+        let lease = store
+            .lease_active_file_stash_principal(super::super::AccessPrincipalId::for_test(
+                "recipient",
+            ))
+            .await
+            .unwrap();
+        let mutation_store = store.clone();
+        let mut mutation = tokio::spawn(async move {
+            mutation_store
+                .execute_test_statement(
+                    "UPDATE principals SET status='disabled' WHERE principal_id='recipient'",
+                )
+                .await
+                .unwrap();
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut mutation)
+                .await
+                .is_err()
+        );
+        drop(lease);
+        mutation.await.unwrap();
+        assert!(matches!(
+            store
+                .lease_active_file_stash_principal(super::super::AccessPrincipalId::for_test(
+                    "recipient"
+                ))
+                .await,
             Err(AccessStoreError::IdentityUnavailable)
         ));
     }

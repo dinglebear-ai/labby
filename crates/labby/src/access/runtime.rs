@@ -225,6 +225,22 @@ impl AccessRuntime {
             })
     }
 
+    pub(crate) async fn lease_active_file_stash_principal(
+        &self,
+        principal: super::AccessPrincipalId,
+    ) -> Result<super::ActiveFileStashPrincipalLease, FileStashPrincipalResolutionError> {
+        self.store()
+            .await?
+            .lease_active_file_stash_principal(principal)
+            .await
+            .map_err(|error| match error {
+                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
+                    FileStashPrincipalResolutionError::IdentityUnavailable
+                }
+                _ => FileStashPrincipalResolutionError::StoreUnavailable,
+            })
+    }
+
     pub(super) async fn credential_reads(&self) -> Result<CredentialReadPool, AccessRuntimeError> {
         match &*self.state.lock().await {
             RuntimeState::Ready {

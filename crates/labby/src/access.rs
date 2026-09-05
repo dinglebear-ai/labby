@@ -37,6 +37,17 @@ impl AccessPrincipalId {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+/// Keeps AccessStore mutation admission leased after a fresh active-principal
+/// read, so a grant commit can linearize ahead of recipient deactivation.
+pub(crate) struct ActiveFileStashPrincipalLease {
+    _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 #[allow(unused_imports)]

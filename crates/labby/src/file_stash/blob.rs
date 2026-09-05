@@ -1015,4 +1015,78 @@ mod tests {
             super::super::FileStashStatus::Blocked(super::super::FileStashBlockedReason::Corrupt)
         );
     }
+
+    #[tokio::test]
+    async fn revoke_wins_before_final_authorization_but_an_authorized_open_may_finish() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let runtime =
+            super::super::FileStashRuntime::initialize_with_preferences(root(&temp), preferences())
+                .await;
+        let blobs = runtime.blob_store().await.unwrap();
+        let store = runtime.store().await.unwrap();
+        let (reservation, admission) = blobs
+            .reserve_for_owner("owner", "shared.txt".into(), "shared.txt".into(), 3)
+            .await
+            .unwrap();
+        let file_id = blobs
+            .write_reserved(
+                reservation,
+                admission,
+                &b"abc"[..],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let grant = store
+            .create_grant("owner".into(), file_id.clone(), "reader".into())
+            .await
+            .unwrap();
+
+        let first_snapshot = store
+            .authorized_file("reader".into(), file_id.clone())
+            .await
+            .unwrap();
+        let opened = blobs
+            .open_blob(&first_snapshot.blob_key, first_snapshot.size_bytes, false)
+            .await
+            .unwrap();
+        let reached_open = Arc::new(tokio::sync::Barrier::new(2));
+        let permit_recheck = Arc::new(tokio::sync::Barrier::new(2));
+        let task_store = store.clone();
+        let task_file_id = file_id.clone();
+        let task_reached = Arc::clone(&reached_open);
+        let task_permit = Arc::clone(&permit_recheck);
+        let recheck = tokio::spawn(async move {
+            let _opened = opened;
+            task_reached.wait().await;
+            task_permit.wait().await;
+            task_store
+                .authorized_file("reader".into(), task_file_id)
+                .await
+        });
+        reached_open.wait().await;
+        store
+            .revoke_grant("owner".into(), file_id.clone(), grant.grant_id)
+            .await
+            .unwrap();
+        permit_recheck.wait().await;
+        assert!(matches!(
+            recheck.await.unwrap(),
+            Err(FileStashStoreError::NotFound)
+        ));
+
+        let owner = store
+            .authorized_file("owner".into(), file_id.clone())
+            .await
+            .unwrap();
+        let mut already_open = blobs
+            .open_blob(&owner.blob_key, owner.size_bytes, false)
+            .await
+            .unwrap();
+        let blob_key = store.delete_file("owner".into(), file_id).await.unwrap();
+        blobs.remove_blob(&blob_key).unwrap();
+        let mut bytes = Vec::new();
+        already_open.file.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, b"abc");
+    }
 }

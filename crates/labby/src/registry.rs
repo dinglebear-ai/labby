@@ -797,12 +797,17 @@ mod tests {
 
     #[test]
     fn retired_services_never_register() {
-        for retired in ["acp", "device", "deploy", "marketplace", "stash"] {
+        for retired in ["acp", "device", "deploy", "marketplace"] {
             assert!(
                 !registry_has_service(retired),
                 "{retired} has been retired from the gateway host"
             );
         }
+    }
+
+    #[test]
+    fn stash_registration_matches_descriptor_relative_platform_support() {
+        assert!(!registry_has_service("stash"));
     }
 
     /// Guard that the MCP registry and the HTTP router mount identical service sets.

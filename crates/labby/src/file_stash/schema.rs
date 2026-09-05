@@ -2,7 +2,7 @@ use super::store::{FileStashStoreError, Result};
 use rusqlite::{Connection, TransactionBehavior, params};
 pub(super) const APPLICATION_ID: i64 = 0x4c_46_53_31;
 pub(super) const SCHEMA_VERSION: i64 = 1;
-pub(super) const SCHEMA_FINGERPRINT: &str = "labby-file-stash-v1-20260905";
+pub(super) const SCHEMA_FINGERPRINT: &str = "labby-file-stash-v1-20260905-service-2";
 pub(super) fn migrate(connection: &mut Connection, snapshot_id: &str) -> Result<()> {
     let found: i64 = connection
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -63,8 +63,10 @@ CREATE TABLE files(file_id TEXT PRIMARY KEY,owner_principal_id TEXT NOT NULL CHE
 CREATE UNIQUE INDEX stash_files_owner_name ON files(owner_principal_id,collision_key); CREATE INDEX stash_files_owner_list ON files(owner_principal_id,ready,created_at DESC,file_id DESC);
 CREATE TRIGGER stash_file_claim_insert AFTER INSERT ON files BEGIN INSERT INTO name_claims VALUES(NEW.owner_principal_id,NEW.collision_key,'file',NEW.file_id); END;
 CREATE TRIGGER stash_file_claim_delete AFTER DELETE ON files BEGIN DELETE FROM name_claims WHERE record_kind='file' AND record_id=OLD.file_id; END;
+CREATE TRIGGER stash_file_claim_update AFTER UPDATE OF collision_key ON files BEGIN UPDATE name_claims SET collision_key=NEW.collision_key WHERE record_kind='file' AND record_id=OLD.file_id; END;
 CREATE TABLE grants(grant_id TEXT PRIMARY KEY,file_id TEXT NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,grantee_principal_id TEXT NOT NULL CHECK(length(trim(grantee_principal_id))>0),state TEXT NOT NULL CHECK(state IN('active','revoked')),created_at INTEGER NOT NULL,revoked_at INTEGER,CHECK((state='active' AND revoked_at IS NULL)OR(state='revoked' AND revoked_at IS NOT NULL))) STRICT;
 CREATE UNIQUE INDEX stash_grants_active_unique ON grants(file_id,grantee_principal_id) WHERE state='active'; CREATE INDEX stash_grants_file_grantee ON grants(file_id,grantee_principal_id,state);
+CREATE INDEX stash_grants_grantee_files ON grants(grantee_principal_id,state,file_id);
 CREATE TRIGGER stash_grant_not_owner BEFORE INSERT ON grants WHEN EXISTS(SELECT 1 FROM files WHERE file_id=NEW.file_id AND owner_principal_id=NEW.grantee_principal_id) BEGIN SELECT RAISE(ABORT,'owner cannot be grantee'); END;
 CREATE TRIGGER stash_grant_update_not_owner BEFORE UPDATE OF file_id,grantee_principal_id ON grants WHEN EXISTS(SELECT 1 FROM files WHERE file_id=NEW.file_id AND owner_principal_id=NEW.grantee_principal_id) BEGIN SELECT RAISE(ABORT,'owner cannot be grantee'); END;
 ";

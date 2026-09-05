@@ -10,4 +10,7 @@ pub(crate) use blob::{BlobStore, OpenedBlob, UploadAdmission};
 #[allow(unused_imports)]
 pub(crate) use runtime::{FileStashBlockedReason, FileStashRuntime, FileStashStatus};
 #[allow(unused_imports)]
-pub(crate) use store::{FileStashStore, FileStashStoreError, StashUsage, UploadReservation};
+pub(crate) use store::{
+    FileStashStore, FileStashStoreError, StashCursor, StashFile, StashGrant, StashUsage,
+    UploadReservation,
+};

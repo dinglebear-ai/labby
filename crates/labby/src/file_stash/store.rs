@@ -18,6 +18,8 @@ pub(crate) enum FileStashStoreError {
     QuotaExceeded,
     #[error("File Stash name already exists")]
     Conflict,
+    #[error("File Stash object was not found")]
+    NotFound,
     #[error("File Stash upload length does not match its reservation")]
     LengthMismatch,
     #[error("File Stash metadata and blob state do not agree")]
@@ -47,6 +49,37 @@ pub(crate) struct StashUsage {
     pub(crate) reserved_bytes: u64,
     pub(crate) live_files: u64,
     pub(crate) owned_shared_file_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StashFile {
+    pub(crate) file_id: String,
+    pub(crate) display_name: String,
+    pub(crate) size_bytes: u64,
+    pub(crate) blob_key: String,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
+    pub(crate) owned: bool,
+}
+
+impl StashFile {
+    pub(crate) fn uri(&self) -> String {
+        format!("stash://me/files/{}", self.file_id)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StashGrant {
+    pub(crate) grant_id: String,
+    pub(crate) file_id: String,
+    pub(crate) grantee_principal_id: String,
+    pub(crate) created_at: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StashCursor {
+    pub(crate) created_at: i64,
+    pub(crate) id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -265,6 +298,127 @@ impl FileStashStore {
         }).await
     }
 
+    pub(crate) async fn list_files(
+        &self,
+        principal: String,
+        query: Option<String>,
+        after: Option<StashCursor>,
+        limit: usize,
+    ) -> Result<Vec<StashFile>> {
+        self.with_connection(move |connection| {
+            let query = query.unwrap_or_default();
+            let pattern = format!("%{}%", escape_like(&query));
+            let (after_created, after_id) = after
+                .map(|cursor| (cursor.created_at, cursor.id))
+                .unwrap_or((i64::MAX, String::new()));
+            let mut statement = connection.prepare(
+                "SELECT f.file_id,f.display_name,f.size_bytes,f.blob_key,f.created_at,f.updated_at,\
+                 CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END \
+                 FROM files f WHERE f.ready=1 \
+                 AND (f.owner_principal_id=?1 OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id=?1 AND g.state='active')) \
+                 AND (?2='' OR f.collision_key LIKE ?3 ESCAPE '\\') \
+                 AND (f.created_at<?4 OR (f.created_at=?4 AND (?5='' OR f.file_id<?5))) \
+                 ORDER BY f.created_at DESC,f.file_id DESC LIMIT ?6"
+            ).map_err(FileStashStoreError::sqlite)?;
+            let rows = statement.query_map(
+                params![principal, query, pattern, after_created, after_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+                |row| Ok(StashFile {
+                    file_id: row.get(0)?, display_name: row.get(1)?,
+                    size_bytes: row.get::<_, i64>(2)? as u64, blob_key: row.get(3)?,
+                    created_at: row.get(4)?, updated_at: row.get(5)?, owned: row.get::<_, i64>(6)? != 0,
+                }),
+            ).map_err(FileStashStoreError::sqlite)?;
+            rows.collect::<std::result::Result<Vec<_>, _>>().map_err(FileStashStoreError::sqlite)
+        }).await
+    }
+
+    pub(crate) async fn authorized_file(
+        &self,
+        principal: String,
+        file_id: String,
+    ) -> Result<StashFile> {
+        self.with_connection(move |connection| {
+            connection.query_row(
+                "SELECT f.file_id,f.display_name,f.size_bytes,f.blob_key,f.created_at,f.updated_at,CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END FROM files f WHERE f.file_id=?2 AND f.ready=1 AND (f.owner_principal_id=?1 OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id=?1 AND g.state='active'))",
+                params![principal,file_id],
+                |row| Ok(StashFile { file_id:row.get(0)?,display_name:row.get(1)?,size_bytes:row.get::<_,i64>(2)? as u64,blob_key:row.get(3)?,created_at:row.get(4)?,updated_at:row.get(5)?,owned:row.get::<_,i64>(6)? != 0 }),
+            ).optional().map_err(FileStashStoreError::sqlite)?.ok_or(FileStashStoreError::NotFound)
+        }).await
+    }
+
+    pub(crate) async fn rename_file(
+        &self,
+        owner: String,
+        file_id: String,
+        display_name: String,
+        collision_key: String,
+    ) -> Result<StashFile> {
+        self.with_connection(move |connection| {
+            let changed = connection.execute(
+                "UPDATE files SET display_name=?3,collision_key=?4,updated_at=unixepoch() WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1",
+                params![owner,file_id,display_name,collision_key],
+            ).map_err(map_constraint)?;
+            if changed != 1 { return Err(FileStashStoreError::NotFound); }
+            connection.query_row("SELECT file_id,display_name,size_bytes,blob_key,created_at,updated_at FROM files WHERE file_id=?1", [&file_id], |row| Ok(StashFile { file_id:row.get(0)?,display_name:row.get(1)?,size_bytes:row.get::<_,i64>(2)? as u64,blob_key:row.get(3)?,created_at:row.get(4)?,updated_at:row.get(5)?,owned:true })).map_err(FileStashStoreError::sqlite)
+        }).await
+    }
+
+    pub(crate) async fn delete_file(&self, owner: String, file_id: String) -> Result<String> {
+        self.with_connection(move |connection| {
+            let tx=connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(FileStashStoreError::sqlite)?;
+            let blob:Option<String>=tx.query_row("SELECT blob_key FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1",params![owner,file_id],|r|r.get(0)).optional().map_err(FileStashStoreError::sqlite)?;
+            let Some(blob)=blob else{return Err(FileStashStoreError::NotFound)};
+            tx.execute("DELETE FROM files WHERE file_id=?1",[&file_id]).map_err(FileStashStoreError::sqlite)?;
+            tx.commit().map_err(FileStashStoreError::sqlite)?;
+            Ok(blob)
+        }).await
+    }
+
+    pub(crate) async fn create_grant(
+        &self,
+        owner: String,
+        file_id: String,
+        grantee: String,
+    ) -> Result<StashGrant> {
+        let grant_id = ulid::Ulid::new().to_string();
+        self.with_connection(move|connection|{
+            if owner==grantee{return Err(FileStashStoreError::Conflict)}
+            let owns:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1)",params![owner,file_id],|r|r.get(0)).map_err(FileStashStoreError::sqlite)?;
+            if !owns{return Err(FileStashStoreError::NotFound)}
+            let now=unix_now();
+            connection.execute("INSERT INTO grants(grant_id,file_id,grantee_principal_id,state,created_at,revoked_at) VALUES(?1,?2,?3,'active',?4,NULL)",params![grant_id,file_id,grantee,now]).map_err(map_constraint)?;
+            Ok(StashGrant{grant_id,file_id,grantee_principal_id:grantee,created_at:now})
+        }).await
+    }
+
+    pub(crate) async fn revoke_grant(
+        &self,
+        owner: String,
+        file_id: String,
+        grant_id: String,
+    ) -> Result<()> {
+        self.with_connection(move|connection|{
+            let changed=connection.execute("UPDATE grants SET state='revoked',revoked_at=unixepoch() WHERE grant_id=?3 AND file_id=?2 AND state='active' AND EXISTS(SELECT 1 FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1)",params![owner,file_id,grant_id]).map_err(FileStashStoreError::sqlite)?;
+            if changed==1{Ok(())}else{Err(FileStashStoreError::NotFound)}
+        }).await
+    }
+
+    pub(crate) async fn list_grants(
+        &self,
+        owner: String,
+        file_id: String,
+        after: String,
+        limit: usize,
+    ) -> Result<Vec<StashGrant>> {
+        self.with_connection(move|connection|{
+            let owns:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1)",params![owner,file_id],|r|r.get(0)).map_err(FileStashStoreError::sqlite)?;
+            if !owns{return Err(FileStashStoreError::NotFound)}
+            let mut statement=connection.prepare("SELECT grant_id,file_id,grantee_principal_id,created_at FROM grants WHERE file_id=?1 AND state='active' AND grant_id>?2 ORDER BY grant_id LIMIT ?3").map_err(FileStashStoreError::sqlite)?;
+            let rows=statement.query_map(params![file_id,after,i64::try_from(limit).unwrap_or(i64::MAX)],|r|Ok(StashGrant{grant_id:r.get(0)?,file_id:r.get(1)?,grantee_principal_id:r.get(2)?,created_at:r.get(3)?})).map_err(FileStashStoreError::sqlite)?;
+            rows.collect::<std::result::Result<Vec<_>,_>>().map_err(FileStashStoreError::sqlite)
+        }).await
+    }
+
     pub(crate) async fn pending_for_recovery(
         &self,
         after: String,
@@ -352,6 +506,13 @@ impl FileStashStore {
             Ok(())
         }).await
     }
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "android")))]
@@ -620,5 +781,219 @@ mod tests {
                 .owned_shared_file_count,
             0
         );
+    }
+
+    #[tokio::test]
+    async fn grants_are_non_enumerating_and_revocation_removes_access() {
+        let (_temp, store) = store().await;
+        let pending = store
+            .reserve_upload(
+                "owner".into(),
+                "Report.txt".into(),
+                "report.txt".into(),
+                4,
+                i64::MAX,
+                20,
+                20,
+                3,
+            )
+            .await
+            .unwrap();
+        store
+            .mark_blob_published(pending.upload_id.clone())
+            .await
+            .unwrap();
+        let file_id = store.commit_upload(pending.upload_id).await.unwrap();
+
+        assert!(matches!(
+            store
+                .authorized_file("stranger".into(), file_id.clone())
+                .await,
+            Err(FileStashStoreError::NotFound)
+        ));
+        assert!(matches!(
+            store
+                .create_grant("stranger".into(), file_id.clone(), "reader".into())
+                .await,
+            Err(FileStashStoreError::NotFound)
+        ));
+        assert!(matches!(
+            store
+                .create_grant("owner".into(), file_id.clone(), "owner".into())
+                .await,
+            Err(FileStashStoreError::Conflict)
+        ));
+        let grant = store
+            .create_grant("owner".into(), file_id.clone(), "reader".into())
+            .await
+            .unwrap();
+        assert!(
+            !store
+                .authorized_file("reader".into(), file_id.clone())
+                .await
+                .unwrap()
+                .owned
+        );
+        assert!(matches!(
+            store
+                .create_grant("owner".into(), file_id.clone(), "reader".into())
+                .await,
+            Err(FileStashStoreError::Conflict)
+        ));
+        store
+            .revoke_grant("owner".into(), file_id.clone(), grant.grant_id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.authorized_file("reader".into(), file_id).await,
+            Err(FileStashStoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_search_and_delete_preserve_principal_boundaries() {
+        let (_temp, store) = store().await;
+        let mut ids = Vec::new();
+        for (owner, name) in [
+            ("owner", "Alpha.txt"),
+            ("owner", "Beta.txt"),
+            ("other", "Alpha other.txt"),
+        ] {
+            let pending = store
+                .reserve_upload(
+                    owner.into(),
+                    name.into(),
+                    name.to_lowercase(),
+                    1,
+                    i64::MAX,
+                    20,
+                    20,
+                    3,
+                )
+                .await
+                .unwrap();
+            store
+                .mark_blob_published(pending.upload_id.clone())
+                .await
+                .unwrap();
+            ids.push(store.commit_upload(pending.upload_id).await.unwrap());
+        }
+        store
+            .create_grant("other".into(), ids[2].clone(), "owner".into())
+            .await
+            .unwrap();
+        let available = store
+            .list_files("owner".into(), None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(available.len(), 3);
+        assert_eq!(available.iter().filter(|file| file.owned).count(), 2);
+        let matches = store
+            .list_files("owner".into(), Some("ALPHA".into()), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(
+            matches
+                .iter()
+                .all(|file| file.display_name.to_lowercase().contains("alpha"))
+        );
+        assert!(matches!(
+            store.delete_file("other".into(), ids[0].clone()).await,
+            Err(FileStashStoreError::NotFound)
+        ));
+        store
+            .delete_file("owner".into(), ids[0].clone())
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.authorized_file("owner".into(), ids[0].clone()).await,
+            Err(FileStashStoreError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rename_moves_the_name_claim_and_rejects_pending_and_committed_collisions() {
+        let (_temp, store) = store().await;
+        let mut ids = Vec::new();
+        for name in ["first", "second"] {
+            let pending = store
+                .reserve_upload(
+                    "owner".into(),
+                    name.into(),
+                    name.into(),
+                    1,
+                    i64::MAX,
+                    20,
+                    20,
+                    5,
+                )
+                .await
+                .unwrap();
+            store
+                .mark_blob_published(pending.upload_id.clone())
+                .await
+                .unwrap();
+            ids.push(store.commit_upload(pending.upload_id).await.unwrap());
+        }
+        let pending = store
+            .reserve_upload(
+                "owner".into(),
+                "pending".into(),
+                "pending".into(),
+                1,
+                i64::MAX,
+                20,
+                20,
+                5,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .rename_file(
+                    "owner".into(),
+                    ids[0].clone(),
+                    "second".into(),
+                    "second".into()
+                )
+                .await,
+            Err(FileStashStoreError::Conflict)
+        ));
+        assert!(matches!(
+            store
+                .rename_file(
+                    "owner".into(),
+                    ids[0].clone(),
+                    "pending".into(),
+                    "pending".into()
+                )
+                .await,
+            Err(FileStashStoreError::Conflict)
+        ));
+        store
+            .rename_file(
+                "owner".into(),
+                ids[0].clone(),
+                "renamed".into(),
+                "renamed".into(),
+            )
+            .await
+            .unwrap();
+        let reused = store
+            .reserve_upload(
+                "owner".into(),
+                "first".into(),
+                "first".into(),
+                1,
+                i64::MAX,
+                20,
+                20,
+                5,
+            )
+            .await
+            .unwrap();
+        store.cancel_upload(reused.upload_id).await.unwrap();
+        store.cancel_upload(pending.upload_id).await.unwrap();
     }
 }
