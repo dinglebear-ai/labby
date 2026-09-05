@@ -3438,16 +3438,19 @@ mod tests {
         );
         std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
 
-        guard.ledger.process_start_identity = Some("pid-reuse-simulation".into());
-        write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
-        assert!(
-            guard
-                .validate_ownership()
-                .unwrap_err()
-                .contains("start identity")
-        );
-        guard.ledger = original_ledger;
-        std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
+        #[cfg(unix)]
+        {
+            guard.ledger.process_start_identity = Some("pid-reuse-simulation".into());
+            write_ledger(&guard.manifest_path, &guard.ledger).unwrap();
+            assert!(
+                guard
+                    .validate_ownership()
+                    .unwrap_err()
+                    .contains("start identity")
+            );
+            guard.ledger = original_ledger;
+            std::fs::write(&guard.manifest_path, &original_manifest).unwrap();
+        }
 
         let cleanup = guard.finish().await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
