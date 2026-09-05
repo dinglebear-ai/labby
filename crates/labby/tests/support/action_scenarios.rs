@@ -279,10 +279,7 @@ pub(crate) async fn initialize_browser_fixture(base_url: &str) {
 pub(crate) async fn run_cli_probe(home: &Path, args: &[String]) -> Result<Output, String> {
     let mut command = tokio::process::Command::from(isolated_command(home));
     command.args(args).env("LABBY_MATRIX_CANARY", SECRET_CANARY);
-    tokio::time::timeout(CHILD_DEADLINE, command.output())
-        .await
-        .map_err(|_| format!("CLI child exceeded {CHILD_DEADLINE:?}"))?
-        .map_err(|error| error.to_string())
+    crate::live_labby::bounded_cli_output(&mut command, CHILD_DEADLINE).await
 }
 
 pub(crate) async fn run_cli(home: &Path, args: &[&str]) -> Result<Output, String> {
@@ -303,10 +300,7 @@ pub(crate) async fn run_cli_in_install(
         .env("LABBY_HOME", labby_home)
         .env("LABBY_MATRIX_CANARY", SECRET_CANARY)
         .args(args);
-    tokio::time::timeout(CHILD_DEADLINE, command.output())
-        .await
-        .map_err(|_| format!("CLI child exceeded {CHILD_DEADLINE:?}"))?
-        .map_err(|error| error.to_string())
+    crate::live_labby::bounded_cli_output(&mut command, CHILD_DEADLINE).await
 }
 
 pub(crate) fn assert_sanitized(bytes: &[u8], context: &str) {

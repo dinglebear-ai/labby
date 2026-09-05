@@ -8,6 +8,8 @@ mod action_scenarios;
 mod cli_gateway_e2e;
 #[path = "support/cli_misc_e2e.rs"]
 mod cli_misc_e2e;
+#[path = "support/cli_output_tests.rs"]
+mod cli_output_tests;
 #[path = "support/evidence.rs"]
 mod evidence;
 #[path = "support/live_labby.rs"]
@@ -92,10 +94,7 @@ async fn run_cli_case(
     command
         .args(case.argv)
         .env("LABBY_MATRIX_CANARY", action_scenarios::SECRET_CANARY);
-    tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
-        .await
-        .map_err(|_| "CLI child exceeded 30s".to_owned())?
-        .map_err(|error| error.to_string())
+    live_labby::bounded_cli_output(&mut command, std::time::Duration::from_secs(30)).await
 }
 
 fn record_asserted_cli_result((case, output): (CliActionCase, std::process::Output)) {
@@ -1106,10 +1105,9 @@ async fn explicit_remote_failure_never_falls_back_or_creates_local_state() {
     command
         .env("LABBY_SERVER_URL", "http://127.0.0.1:9")
         .args(["gateway", "list", "--json"]);
-    let output = tokio::time::timeout(action_scenarios::CHILD_DEADLINE, command.output())
+    let output = live_labby::bounded_cli_output(&mut command, action_scenarios::CHILD_DEADLINE)
         .await
-        .expect("explicit remote failure deadline")
-        .unwrap();
+        .expect("explicit remote failure deadline");
     assert!(
         !output.status.success(),
         "explicit remote silently fell back"
