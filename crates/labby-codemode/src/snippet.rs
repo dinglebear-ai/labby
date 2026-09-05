@@ -6,3 +6,5 @@
 
 /// Snippet storage, validation, resolution, and input-merging primitives.
 pub mod store;
+/// Validated, presence-aware exact-tool declarations for saved snippets.
+pub mod tool_declarations;

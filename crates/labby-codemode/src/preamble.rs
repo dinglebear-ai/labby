@@ -235,6 +235,7 @@ codemode.search = async function(input) {{
         signature: entry.signature,
         safety: entry.safety,
         tags: entry.tags || [],
+        tools: entry.tools,
         score: score
       }};
       lexicalById[entry.id] = record;
@@ -298,6 +299,7 @@ codemode.search = async function(input) {{
             path: de.path, id: de.id, kind: de.kind, namespace: de.namespace,
             name: de.name, description: de.description, signature: de.signature,
             safety: de.safety,
+            tools: de.tools,
             tags: de.tags || [], score: 0,
             blendedScore: semanticSimilarity01 * BLEND_WEIGHT
           }};
@@ -326,7 +328,7 @@ codemode.search = async function(input) {{
     return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
   }}
   var results = scored.slice(0, limit).map(function(r) {{
-    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, safety: r.safety, score: r.score }};
+    return {{ path: r.path, id: r.id, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, tools: r.tools, safety: r.safety, score: r.score }};
   }});
   return {{ results: results, total: total, truncated: total > limit }};
 }};
@@ -382,7 +384,9 @@ codemode.describe = async function(target) {{
       if (input.description) bits.push(input.description);
       return bits.join(" - ");
     }}).join("\n");
+    var toolDeclaration = entry.tools === undefined ? "omitted (caller policy unchanged)" : (entry.tools.length ? entry.tools.join(", ") : "[] (intended deny-all)");
     markdown = "# " + entry.name + "\n\nKind: snippet\n\nName: `" + entry.name + "`\n\nDescription: " + entry.description + "\n\nRun: `codemode.run(" + JSON.stringify(entry.name) + ", input)`\n" + (inputLines ? "\nInputs:\n" + inputLines + "\n" : "\nInputs: none\n");
+    markdown += "\nDeclared upstream tools: " + toolDeclaration + "\nMetadata only: declarations do not currently restrict execution.\n";
   }} else {{
     markdown = "# " + entry.path + "\n\n" + entry.description + "\n\n- kind: `tool`\n- id: `" + entry.id + "`\n- helper: `" + entry.helper + "`\n- signature: `" + entry.signature + "`\n";
     // Fetched from the host on demand rather than embedded in the sandbox
@@ -605,6 +609,9 @@ pub(crate) fn generate_js_proxy_from_catalog(tools: &[&ToolDescriptor]) -> Resul
 }
 
 #[cfg(test)]
+mod snippet_declaration_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::ToolDescriptor;
@@ -612,6 +619,7 @@ mod tests {
     fn discovery_entry(namespace: &str, name: &str, description: &str) -> CodeModeDiscoveryEntry {
         let path = format!("{namespace}.{name}");
         CodeModeDiscoveryEntry {
+            tools: None,
             kind: CodeModeCatalogKind::Tool,
             id: format!("{namespace}::{name}"),
             path: path.clone(),
