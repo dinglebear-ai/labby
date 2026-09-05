@@ -202,17 +202,8 @@ impl GatewayManager {
             path.with_file_name("agent-executions.sqlite3"),
         )?;
         #[cfg(any(test, feature = "testkit"))]
-        let agent_executions = if path
-            .parent()
-            .is_none_or(|parent| parent.as_os_str().is_empty())
-        {
-            super::super::agent_execution::AgentExecutionStore::open_in_memory()?
-        } else {
-            super::super::agent_execution::AgentExecutionStore::open(
-                path.with_file_name("agent-executions.sqlite3"),
-            )
-            .or_else(|_| super::super::agent_execution::AgentExecutionStore::open_in_memory())?
-        };
+        let agent_executions =
+            super::super::agent_execution::AgentExecutionStore::open_in_memory()?;
         Ok(Self {
             path,
             store,
