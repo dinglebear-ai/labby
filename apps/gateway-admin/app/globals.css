@@ -1019,7 +1019,6 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
     background: rgba(2, 10, 17, 0.7);
     opacity: 1;
     pointer-events: auto;
-    transition: opacity 180ms ease-out;
     backdrop-filter: blur(3px);
   }
   aside[data-console-sidebar] nav {
