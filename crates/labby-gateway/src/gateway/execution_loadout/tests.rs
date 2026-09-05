@@ -12,6 +12,7 @@ fn manager() -> GatewayManager {
 fn caller() -> ExecutionLoadoutContext {
     ExecutionLoadoutContext {
         principal: ExecutionPrincipal::new("principal-1").unwrap(),
+        tenant: ExecutionTenant::new("tenant-1").unwrap(),
         allowed_providers: None,
     }
 }
@@ -111,6 +112,7 @@ async fn provider_refresh_publishes_explicit_principals_in_one_generation() {
     let contexts = [
         ExecutionLoadoutContext {
             principal: ExecutionPrincipal::new("principal-2").unwrap(),
+            tenant: ExecutionTenant::new("tenant-1").unwrap(),
             allowed_providers: None,
         },
         caller(),
@@ -257,6 +259,7 @@ async fn mixed_family_activation_is_atomic_and_cross_principal_access_is_private
 
     let other = ExecutionLoadoutContext {
         principal: ExecutionPrincipal::new("principal-2").unwrap(),
+        tenant: ExecutionTenant::new("tenant-1").unwrap(),
         allowed_providers: None,
     };
     assert!(matches!(
@@ -695,6 +698,8 @@ async fn preview_rejects_a_runtime_other_than_the_active_binding() {
 fn rejects_ambiguous_identity_and_mixed_publication_generations() {
     assert!(ExecutionPrincipal::new("shared").is_err());
     assert!(ExecutionPrincipal::new("bad\0principal").is_err());
+    assert!(ExecutionTenant::new("shared").is_err());
+    assert!(ExecutionTenant::new("bad\0tenant").is_err());
     assert!(RecordKey::new(&ExecutionPrincipal::new("principal").unwrap(), "bad\0id").is_err());
     let manager = manager();
     assert!(
