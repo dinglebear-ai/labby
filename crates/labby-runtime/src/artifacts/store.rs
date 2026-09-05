@@ -28,6 +28,8 @@ use super::validation::{
 
 /// Maximum immutable revision manifests accepted by one bounded read batch.
 pub const MAX_REVISION_READ_BATCH: usize = 100;
+/// Maximum local Artifact head records returned by one bounded catalog read.
+pub const MAX_ARTIFACT_LIST_RECORDS: usize = 16_384;
 static NEXT_WORKSPACE_STAGING_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Inputs for importing a local file or multi-file package.
@@ -154,6 +156,39 @@ impl ArtifactStore {
         validate_id(artifact_id, "artifact_id")?;
         self.read_record_optional(artifact_id)?
             .ok_or(ArtifactError::NotFound("record"))
+    }
+
+    /// Read all canonical local Artifact heads within the catalog safety budget.
+    pub fn list_records(&self) -> Result<Vec<ArtifactRecord>, ArtifactError> {
+        let artifacts = self.root.join("artifacts");
+        let mut records = Vec::new();
+        for entry in std::fs::read_dir(&artifacts)? {
+            if records.len() >= MAX_ARTIFACT_LIST_RECORDS {
+                return Err(ArtifactError::LimitExceeded {
+                    what: "artifact_count",
+                    limit: MAX_ARTIFACT_LIST_RECORDS as u64,
+                });
+            }
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(ArtifactError::UnsafePath("stored_symlink"));
+            }
+            if !file_type.is_dir() {
+                return Err(ArtifactError::UnsafePath("stored_entry"));
+            }
+            let path = entry.path().join("artifact.json");
+            reject_symlink(&path).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+            let record: ArtifactRecord = read_json(&path, MAX_RECORD_JSON_BYTES)?;
+            record.validate()?;
+            let expected_key = storage_key(&record.descriptor.id);
+            if entry.file_name() != std::ffi::OsStr::new(&expected_key) {
+                return Err(ArtifactError::Conflict("record_identity_mismatch"));
+            }
+            records.push(record);
+        }
+        records.sort_by(|left, right| left.descriptor.id.cmp(&right.descriptor.id));
+        Ok(records)
     }
 
     /// Read and verify an immutable revision.
@@ -724,6 +759,56 @@ impl MutationLock {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn list_records_reads_generic_artifact_heads_in_stable_order() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let first = data.path().join("first.md");
+        let second = data.path().join("second.md");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        store
+            .import_local(ArtifactImportRequest::new("prompt", "test", "zeta"), &first)
+            .unwrap();
+        store
+            .import_local(
+                ArtifactImportRequest::new("agent", "test", "alpha"),
+                &second,
+            )
+            .unwrap();
+
+        let records = store.list_records().unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records[0].descriptor.id < records[1].descriptor.id);
+        assert!(
+            records
+                .iter()
+                .any(|record| record.descriptor.kind == "prompt")
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.descriptor.kind == "agent")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_records_rejects_symlinked_catalog_entries() {
+        use std::os::unix::fs::symlink;
+
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let outside = data.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        symlink(&outside, store.root().join("artifacts").join("attacker")).unwrap();
+
+        assert!(matches!(
+            store.list_records(),
+            Err(ArtifactError::UnsafePath("stored_symlink"))
+        ));
+    }
 
     #[test]
     fn revision_batch_rejects_more_than_the_page_cap() {

@@ -107,6 +107,10 @@ async fn build_manager_with_upstream_oauth_runtime(
             resource_registry: None,
             usage_store: usage_store.clone(),
             code_mode_app_state: Default::default(),
+            execution_capability_provider: Some(
+                crate::dispatch::execution_catalog::CanonicalExecutionCatalogProvider::production()
+                    .map_err(anyhow::Error::from)?,
+            ),
         },
         runtime,
     )?;

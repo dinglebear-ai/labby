@@ -9,7 +9,7 @@
 pub(crate) mod access_bootstrap;
 mod bootstrap;
 mod catalog;
-mod claude_plugins;
+pub(crate) mod claude_plugins;
 mod client;
 mod constrained_yaml;
 mod dispatch;

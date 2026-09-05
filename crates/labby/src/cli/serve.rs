@@ -1721,6 +1721,10 @@ async fn build_gateway_runtime(
             resource_registry,
             usage_store: usage_store.clone(),
             code_mode_app_state: notifier.code_mode_app_state.clone(),
+            execution_capability_provider: Some(
+                crate::dispatch::execution_catalog::CanonicalExecutionCatalogProvider::production()
+                    .context("open canonical ExecutionLoadout catalogs")?,
+            ),
         },
         gateway_runtime,
     )?;

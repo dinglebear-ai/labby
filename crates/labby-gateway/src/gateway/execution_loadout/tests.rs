@@ -44,6 +44,7 @@ async fn normalizes_every_family_deterministically_and_rejects_duplicate_refs() 
         CapabilityFamily::Resource,
         CapabilityFamily::Skill,
         CapabilityFamily::Agent,
+        CapabilityFamily::Hook,
         CapabilityFamily::McpApp,
         CapabilityFamily::McpServer,
         CapabilityFamily::Plugin,
@@ -81,6 +82,62 @@ async fn normalizes_every_family_deterministically_and_rejects_duplicate_refs() 
         .await
         .expect_err("duplicates fail closed");
     assert!(matches!(error, ExecutionLoadoutError::Invalid { .. }));
+}
+
+struct ContextCatalogProvider;
+
+impl ExecutionCapabilityCatalogProvider for ContextCatalogProvider {
+    fn members<'a>(
+        &'a self,
+        _manager: &'a GatewayManager,
+        context: &'a ExecutionLoadoutContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CapabilityRef>, ExecutionLoadoutError>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            Ok(vec![CapabilityRef {
+                provider: "labby".into(),
+                family: CapabilityFamily::Prompt,
+                member_id: context.principal.as_str().to_owned(),
+                expected_revision: "revision-1".into(),
+            }])
+        })
+    }
+}
+
+#[tokio::test]
+async fn provider_refresh_publishes_explicit_principals_in_one_generation() {
+    let mut manager = manager();
+    manager.execution_capability_provider = Some(Arc::new(ContextCatalogProvider));
+    let contexts = [
+        ExecutionLoadoutContext {
+            principal: ExecutionPrincipal::new("principal-2").unwrap(),
+            allowed_providers: None,
+        },
+        caller(),
+    ];
+
+    manager
+        .refresh_execution_capability_snapshots(&contexts)
+        .await
+        .unwrap();
+
+    let published = manager.execution_capabilities.load_full();
+    assert_eq!(published.snapshots.len(), 2);
+    let generations = published
+        .snapshots
+        .values()
+        .map(|snapshot| snapshot.generation.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(generations.len(), 1);
+    assert_eq!(
+        published
+            .snapshots
+            .get(&ExecutionPrincipal::new("principal-1").unwrap())
+            .unwrap()
+            .members[0]
+            .member_id,
+        "principal-1"
+    );
 }
 
 #[tokio::test]

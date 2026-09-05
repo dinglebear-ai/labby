@@ -122,6 +122,8 @@ pub struct GatewayManagerConfig {
     pub usage_store: Option<Arc<crate::usage::UsageStore>>,
     /// Shared live state for the explicit Code Mode MCP App surface.
     pub code_mode_app_state: CodeModeAppState,
+    pub execution_capability_provider:
+        Option<Arc<dyn crate::gateway::execution_loadout::ExecutionCapabilityCatalogProvider>>,
 }
 
 /// OAuth components needed by the manager, bundled to avoid partial-move issues.
@@ -161,6 +163,7 @@ impl GatewayManager {
         if let Some(store) = cfg.usage_store {
             manager = manager.with_usage_store(store);
         }
+        manager.execution_capability_provider = cfg.execution_capability_provider;
         Ok(manager)
     }
 }
@@ -225,6 +228,7 @@ impl GatewayManager {
                 super::super::execution_loadout::PublishedCapabilityCatalog::default(),
             )),
             execution_capability_publication: Arc::new(std::sync::RwLock::new(())),
+            execution_capability_provider: None,
             agent_executions: Arc::new(agent_executions),
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
