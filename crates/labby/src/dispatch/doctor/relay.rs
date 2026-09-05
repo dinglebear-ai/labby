@@ -73,7 +73,8 @@ pub async fn check_public_relay(
             }
             push_backup_accumulation_finding(&mut findings, manager.store());
             if probe_targets {
-                let probe_pass = stream::iter(manager.probe_targets().await)
+                let probe_batch = manager.probe_targets().await;
+                let probe_pass = stream::iter(probe_batch.targets)
                     .map(|(machine, target)| async move {
                         match target {
                             Ok(target) => probe_target(&target).await,
@@ -88,7 +89,17 @@ pub async fn check_public_relay(
                     .buffer_unordered(TARGET_PROBE_CONCURRENCY)
                     .collect::<Vec<_>>();
                 match tokio::time::timeout(TARGET_PROBE_TOTAL_TIMEOUT, probe_pass).await {
-                    Ok(target_findings) => findings.extend(target_findings),
+                    Ok(target_findings) => {
+                        findings.extend(target_findings);
+                        if probe_batch.truncated {
+                            findings.push(Finding {
+                                service: SERVICE.into(),
+                                check: "targets:probe_limit".into(),
+                                severity: Severity::Warn,
+                                message: "target probing stopped at the bounded registry snapshot limit".into(),
+                            });
+                        }
+                    }
                     Err(_) => findings.push(Finding {
                         service: SERVICE.into(),
                         check: "targets:probe".into(),

@@ -23,6 +23,7 @@ const GOOGLE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// can legitimately take longer.
 const GOOGLE_JWKS_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const GOOGLE_DEFAULT_JWKS_TTL: Duration = Duration::from_hours(1);
+const GOOGLE_MAX_JSON_RESPONSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AuthorizeUrlRequest {
@@ -347,6 +348,31 @@ struct GoogleRequestErrors {
     invalid_grant_requires_reauth: bool,
 }
 
+async fn decode_capped_json<T: DeserializeOwned>(
+    mut response: reqwest::Response,
+    decode_context: &'static str,
+) -> Result<T, AuthError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        AuthError::Network(format!("{decode_context}: read response body: {error}"))
+    })? {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(AuthError::ResponseTooLarge {
+                limit: GOOGLE_MAX_JSON_RESPONSE_BYTES,
+            })?;
+        if next_len > GOOGLE_MAX_JSON_RESPONSE_BYTES {
+            return Err(AuthError::ResponseTooLarge {
+                limit: GOOGLE_MAX_JSON_RESPONSE_BYTES,
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&body)
+        .map_err(|error| AuthError::Decode(format!("{decode_context}: {error}")))
+}
+
 async fn read_json_response<T: DeserializeOwned>(
     trace: GoogleRequestTrace<'_>,
     request: reqwest::RequestBuilder,
@@ -379,15 +405,17 @@ async fn read_json_response<T: DeserializeOwned>(
             }
         } else if status.is_server_error() {
             AuthError::Server(format!("{}: {error}", errors.status_context))
-        } else if errors.invalid_grant_requires_reauth
-            && response
-                .json::<GoogleTokenErrorResponse>()
+        } else if errors.invalid_grant_requires_reauth {
+            match decode_capped_json::<GoogleTokenErrorResponse>(response, errors.decode_context)
                 .await
-                .is_ok_and(|payload| payload.error == "invalid_grant")
-        {
-            AuthError::OauthNeedsReauth(
-                "google refresh token is expired or revoked; reauthorization required".to_string(),
-            )
+            {
+                Ok(payload) if payload.error == "invalid_grant" => AuthError::OauthNeedsReauth(
+                    "google refresh token is expired or revoked; reauthorization required"
+                        .to_string(),
+                ),
+                Err(error @ AuthError::ResponseTooLarge { .. }) => error,
+                _ => AuthError::AuthFailed(format!("{}: {error}", errors.status_context)),
+            }
         } else {
             AuthError::AuthFailed(format!("{}: {error}", errors.status_context))
         };
@@ -402,17 +430,18 @@ async fn read_json_response<T: DeserializeOwned>(
         return Err(auth_error);
     }
     trace.finish(status);
-    response.json::<T>().await.map_err(|error| {
-        let auth_error = AuthError::Decode(format!("{}: {error}", errors.decode_context));
-        warn!(
-            provider = "google",
-            error = %error,
-            kind = auth_error.kind(),
-            "{}",
-            errors.decode_log
-        );
-        auth_error
-    })
+    decode_capped_json(response, errors.decode_context)
+        .await
+        .map_err(|auth_error| {
+            warn!(
+                provider = "google",
+                error = %auth_error,
+                kind = auth_error.kind(),
+                "{}",
+                errors.decode_log
+            );
+            auth_error
+        })
 }
 
 impl GoogleProvider {
@@ -835,10 +864,12 @@ impl GoogleProvider {
             AuthError::Storage(format!("google jwks endpoint error: {error}"))
         })?;
         trace.finish(status);
-        let jwks = response.json::<GoogleJwks>().await.map_err(|error| {
-            warn!(provider = "google", error = %error, "google jwks payload unreadable");
-            AuthError::Storage(format!("decode google jwks response: {error}"))
-        })?;
+        let jwks: GoogleJwks = decode_capped_json(response, "decode google jwks response")
+            .await
+            .map_err(|error| {
+                warn!(provider = "google", error = %error, "google jwks payload unreadable");
+                error
+            })?;
 
         *cache = Some(CachedGoogleJwks {
             jwks: jwks.clone(),
@@ -1129,6 +1160,76 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind(), "oauth_needs_reauth");
+    }
+
+    #[tokio::test]
+    async fn google_token_success_body_is_streamed_with_a_hard_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+                b' ';
+                super::GOOGLE_MAX_JSON_RESPONSE_BYTES
+                    + 1
+            ]))
+            .mount(&server)
+            .await;
+        let provider = test_google_provider().with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        );
+
+        let error = provider
+            .refresh("refresh-token", "subject", None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), "response_too_large");
+    }
+
+    #[tokio::test]
+    async fn google_token_error_body_is_streamed_with_a_hard_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_bytes(vec![
+                b'x';
+                super::GOOGLE_MAX_JSON_RESPONSE_BYTES
+                    + 1
+            ]))
+            .mount(&server)
+            .await;
+        let provider = test_google_provider().with_endpoints(
+            server.uri().parse::<Url>().unwrap(),
+            server.uri().parse::<Url>().unwrap().join("/token").unwrap(),
+        );
+
+        let error = provider
+            .refresh("refresh-token", "subject", None)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), "response_too_large");
+    }
+
+    #[tokio::test]
+    async fn google_jwks_body_is_streamed_with_a_hard_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/certs"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+                b' ';
+                super::GOOGLE_MAX_JSON_RESPONSE_BYTES
+                    + 1
+            ]))
+            .mount(&server)
+            .await;
+        let provider = test_google_provider()
+            .with_jwks_endpoint(server.uri().parse::<Url>().unwrap().join("/certs").unwrap());
+
+        let error = provider.refresh_jwks().await.unwrap_err();
+
+        assert_eq!(error.kind(), "response_too_large");
     }
 
     #[tokio::test]

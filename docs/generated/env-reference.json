@@ -225,6 +225,60 @@
     "default_port": null
   },
   {
+    "service": "lab",
+    "env_var": "LABBY_LOG",
+    "required": false,
+    "secret": false,
+    "description": "Tracing filter directive",
+    "example": "labby=info,labby_apis=warn",
+    "default_port": null
+  },
+  {
+    "service": "lab",
+    "env_var": "LABBY_LOG_FORMAT",
+    "required": false,
+    "secret": false,
+    "description": "Tracing output format",
+    "example": "json",
+    "default_port": null
+  },
+  {
+    "service": "lab",
+    "env_var": "LABBY_MCP_GATEWAY_URL",
+    "required": false,
+    "secret": false,
+    "description": "Canonical public MCP gateway URL",
+    "example": "https://mcp.example.com",
+    "default_port": null
+  },
+  {
+    "service": "lab",
+    "env_var": "LABBY_MCP_HTTP_HOST",
+    "required": false,
+    "secret": false,
+    "description": "HTTP MCP bind host",
+    "example": "127.0.0.1",
+    "default_port": null
+  },
+  {
+    "service": "lab",
+    "env_var": "LABBY_MCP_HTTP_PORT",
+    "required": false,
+    "secret": false,
+    "description": "HTTP MCP bind port",
+    "example": "8765",
+    "default_port": null
+  },
+  {
+    "service": "lab",
+    "env_var": "LABBY_RECOVERY_KEY_PATH",
+    "required": true,
+    "secret": true,
+    "description": "External HMAC key for durable-state export, verification, and restore",
+    "example": "/secure/labby-recovery.key",
+    "default_port": null
+  },
+  {
     "service": "proxy",
     "env_var": "LABBY_GW_UPSTREAM_STDERR",
     "required": false,

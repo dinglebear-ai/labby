@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::fs;
 
 use labby::installation::{InstallationLifecycleLock, InstallationPaths};

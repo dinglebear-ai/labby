@@ -52,17 +52,20 @@ after the join. Leave `TS_AUTHKEY` unset to skip Tailscale.
 
 The plan is explicit about privilege. Root actions are limited to the apt
 package floor (`git`, `openssh-client`, `gh`, `ca-certificates`, `curl`,
-`xz-utils`, `zsh`), `labby` user creation, writing
+`xz-utils`, `zsh`, `jq`, `ripgrep`, `lsof`, `rsync`, `python3`, and `ffmpeg`), `labby`
+user creation, writing
 `/etc/systemd/system/labby.service`, and enabling/restarting the service.
 User-space actions run as `labby` and install Node v24.x, `uv` plus Python,
 `claude`, `codex`, and `gemini`.
 
-Provisioning does not install or initialize Incus, silently install leaf
-packages such as `ffmpeg`, or expose root package/user/systemd mutation through
+Provisioning does not install or initialize Incus, install the optional Android
+SDK or `adb` by default, or expose root package/user/systemd mutation through
 MCP, HTTP, Code Mode, or remote admin actions.
 
 Supply-chain trust is intentionally explicit: the Labby release install path
-requires the GitHub release checksum, and Node downloads are verified against
+requires GitHub CLI and verifies the archive attestation's repository, release
+workflow, exact tag, and hosted-runner identity as well as the GitHub release
+checksum. Node downloads are verified against
 the upstream SHA256 manifest. `uv`, Tailscale, and the agent CLIs still trust
 their upstream installer/package channels (`astral.sh`, `tailscale.com`, and
 npm) during provisioning. Use this path only when those upstreams are acceptable
@@ -82,6 +85,31 @@ systemctl status labby --no-pager
 `host-service install` writes or updates `/etc/systemd/system/labby.service`,
 installs the current binary when `--install-self` is provided, enables the unit,
 and restarts the service.
+
+Installation is a prepare/commit/verify transaction. Before mutation it captures
+the exact prior unit bytes and enabled/active state. Unit verification, reload,
+enable, restart, or readiness failure restores that snapshot. A failed restore
+is reported together with the original activation error and requires operator
+reconciliation.
+
+A successful `--install-self` upgrade retains the verified prior binary and its
+exact service state. Roll it back through the same host-service transaction:
+
+```bash
+labby setup host-service rollback -y
+```
+
+Set `LABBY_HOST_WATCHDOG=1` during installation to opt into an external bounded
+readiness owner. Its three-second active probe runs every 30 seconds and pauses
+while `/run/labby-maintenance` exists. A failed probe waits five seconds,
+synchronously requests a restart, and probes completion with bounded 1, 2, 4,
+and 8 second backoff. Restart rejection, start-limit exhaustion, or continued
+unreadiness triggers `labby-watchdog-escalation.service`, which appends service
+state and the last 100 journal lines to
+`/home/labby/.labby/watchdog/recovery-failures.log` and emits the
+`labby-watchdog-escalation` journal tag. The deployment's external notification
+owner must alert on that tag. The main unit's five-crash start limit prevents an
+unbounded restart loop.
 
 The unit runs:
 
@@ -109,7 +137,7 @@ After bootstrap or provisioning:
 ```bash
 incus exec labby -- systemctl status labby --no-pager
 incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
-incus exec labby -- su - lab
+incus exec labby -- su - labby
 ```
 
 Then run the interactive agent logins inside that `labby` shell:
@@ -204,16 +232,16 @@ docker compose -f docker-compose.yml stop labby-master
 labby setup host-service install --install-self -y
 ```
 
-## Rollback
+## Rollback And Runtime Recovery
 
-Rollback from the Incus path by stopping or deleting the container:
+Roll back the most recent successful Incus sync through its retained,
+transactional prior-release snapshot:
 
 ```bash
-incus stop labby
-incus delete labby
+labby incus sync --container labby --rollback
 ```
 
-Rollback to Docker for a compatibility smoke only:
+Switch temporarily to Docker for a compatibility smoke:
 
 ```bash
 systemctl disable --now labby.service
@@ -223,8 +251,9 @@ curl -fsS http://127.0.0.1:8765/ready
 
 ## Dependency Diagnostics
 
-The gateway runtime floor covers `npx`, `uvx`, `python`, and `ssh`. Missing leaf
-dependencies are diagnosed from the existing bounded upstream stderr/health path
-and reported as redacted hints. For example, an upstream that fails with
-`ffmpeg: command not found` reports an explicit `sudo apt install ffmpeg` hint,
-but Labby does not run that command automatically.
+The gateway runtime floor covers `npx`, `uvx`, `python`, `ssh`, and `ffmpeg`.
+Missing commands are diagnosed from the bounded upstream stderr/health path and
+reported as redacted hints. On a provisioned host, `ffmpeg: command not found`
+means the package-floor converger is incomplete or has drifted; rerun the
+provision dry run and reconcile the declared plan rather than treating it as an
+optional leaf dependency.

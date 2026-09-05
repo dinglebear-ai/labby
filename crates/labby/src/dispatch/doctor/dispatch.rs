@@ -35,12 +35,7 @@ pub async fn dispatch_with_surface(
             return action_schema(ACTIONS, a);
         }
         "system.checks" => {
-            let findings = tokio::task::spawn_blocking(system::run_system_checks)
-                .await
-                .map_err(|e| ToolError::Sdk {
-                    sdk_kind: "internal_error".to_string(),
-                    message: format!("system.checks task panicked: {e}"),
-                })?;
+            let findings = system::run_system_checks().await;
             return to_json(Report { findings });
         }
         "auth.check" => {
@@ -122,13 +117,9 @@ pub async fn dispatch_with_clients_and_relay(
             let a = crate::dispatch::helpers::require_str(&params, "action")?;
             action_schema(ACTIONS, a)
         }
-        "system.checks" => match tokio::task::spawn_blocking(system::run_system_checks).await {
-            Ok(findings) => to_json(Report { findings }),
-            Err(e) => Err(ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!("system.checks task panicked: {e}"),
-            }),
-        },
+        "system.checks" => to_json(Report {
+            findings: system::run_system_checks().await,
+        }),
         "auth.check" => match tokio::task::spawn_blocking(system::run_auth_checks).await {
             Ok(findings) => to_json(Report { findings }),
             Err(e) => Err(ToolError::Sdk {

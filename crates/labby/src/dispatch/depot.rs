@@ -321,7 +321,10 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
         DepotClient {
             http: Client::builder()
-                .timeout(Duration::from_millis(250))
+                // Loopback refusal can outlast 250 ms on Windows. This fixture
+                // verifies connect classification, not the request timeout.
+                .timeout(Duration::from_secs(5))
+                .no_proxy()
                 .build()
                 .unwrap(),
             base_url: Some(base_url),
@@ -417,10 +420,10 @@ mod tests {
         );
 
         let error = client.session("actor").await.unwrap_err();
-        assert!(matches!(
-            error,
-            DepotError::Unavailable(TransportFailure::Connect)
-        ));
+        assert!(
+            matches!(error, DepotError::Unavailable(TransportFailure::Connect)),
+            "expected a connection failure, got {error:?}"
+        );
         assert_eq!(error_body(&error), json!({"error":"depot_unavailable"}));
     }
 }

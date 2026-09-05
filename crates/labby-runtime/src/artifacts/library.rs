@@ -10,13 +10,13 @@
 )]
 
 use std::collections::BTreeMap;
-use std::fs::File;
 
 use serde::{Deserialize, Serialize};
 
 use super::canonical_json;
 use super::local_io::{
-    SnapshotFile, read_json, write_bytes_atomic_with_faults, write_json_atomic_with_faults,
+    SnapshotFile, read_json, sync_directory, write_bytes_atomic_with_faults,
+    write_json_atomic_with_faults,
 };
 use super::model::{ArtifactRecord, ArtifactRevision};
 use super::validation::{validate_id, validate_reference_id};
@@ -1544,7 +1544,7 @@ impl ArtifactStore {
             std::fs::remove_file(&path)?;
         }
         std::fs::remove_file(applied)?;
-        File::open(path.parent().ok_or(ArtifactError::UnsafePath("library"))?)?.sync_all()?;
+        sync_directory(path.parent().ok_or(ArtifactError::UnsafePath("library"))?)?;
         Ok(())
     }
 

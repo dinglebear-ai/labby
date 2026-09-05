@@ -30,6 +30,7 @@ pub mod path_safety;
 /// Versioned Phabby/Depot delivery wire contracts and fail-closed validation.
 pub mod phabby_delivery;
 pub mod redact;
+pub mod response_body;
 pub mod skills;
 
 pub use helpers::{env_non_empty, home_dir, lab_home};

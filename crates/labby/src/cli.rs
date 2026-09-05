@@ -25,6 +25,7 @@ pub mod setup;
 pub mod skills;
 #[cfg(feature = "gateway")]
 pub mod snippets;
+pub mod state;
 pub mod style;
 pub mod update;
 // [lab-scaffold: cli-modules]
@@ -84,6 +85,8 @@ pub enum Command {
     Incus(incus::IncusArgs),
     /// Update labby from the latest GitHub release.
     Update(update::UpdateArgs),
+    /// Export, verify, or restore the complete durable installation state offline.
+    State(state::StateArgs),
     /// Generate shell completions.
     Completions(completions::CompletionsArgs),
     /// Manage proxied upstream MCP gateways.
@@ -123,6 +126,7 @@ impl Command {
             Self::Setup(_) => "setup",
             Self::Incus(_) => "incus",
             Self::Update(_) => "update",
+            Self::State(_) => "state",
             Self::Completions(_) => "completions",
             #[cfg(feature = "gateway")]
             Self::Gateway(_) => "gateway",
@@ -139,36 +143,37 @@ impl Command {
 }
 
 /// Dispatch a parsed [`Cli`] to the correct handler.
-// The command enum intentionally carries each surface's parsed arguments. This
-// adapter immediately delegates the selected variant and does not recurse, so
-// the bounded frame is preferable to adding per-command boxing to the public
-// CLI contract solely to remain below Clippy's platform-sensitive threshold.
-#[allow(clippy::large_stack_frames)]
-pub async fn dispatch(cli: Cli, config: LabConfig) -> Result<ExitCode> {
-    let format = cli.format();
-    match cli.command {
-        Command::Serve(args) => serve::run(args, &config).await,
-        Command::Mcp(args) => serve::run_mcp(args, &config).await,
-        Command::Doctor(args) => doctor::run(args, format).await,
-        Command::Docs(args) => docs::run(args, format),
-        Command::Health => health::run(format).await,
-        Command::Logs(args) => logs::run(args).await,
-        Command::Setup(args) => setup::run(args, format).await,
-        Command::Incus(args) => incus::run(args, format).await,
-        Command::Update(args) => update::run(args, format).await,
-        Command::Completions(args) => completions::run(&args),
-        #[cfg(feature = "gateway")]
-        Command::Gateway(args) => gateway::run(args, format, &config).await,
-        #[cfg(feature = "gateway")]
-        Command::Snippets(args) => snippets::run(args, format, &config).await,
-        #[cfg(feature = "skills")]
-        Command::Skills(args) => skills::run(args, format, &config).await,
-        Command::Oauth(args) => oauth::run(args, format, &config).await,
-        Command::Proxy(args) => proxy::run(args, &config, format).await,
-        #[cfg(feature = "gateway")]
-        Command::Internal(args) => internal::run(args),
-        // [lab-scaffold: cli-dispatch]
-    }
+pub fn dispatch(cli: Cli, config: LabConfig) -> impl Future<Output = Result<ExitCode>> {
+    // Allocate the selected CLI future before returning it to the entrypoint.
+    // Otherwise its large state is copied into the entrypoint and runtime
+    // construction frames, exhausting a one-mebibyte main-thread stack.
+    Box::pin(async move {
+        let format = cli.format();
+        match cli.command {
+            Command::Serve(args) => serve::run(args, &config).await,
+            Command::Mcp(args) => serve::run_mcp(args, &config).await,
+            Command::Doctor(args) => doctor::run(args, format).await,
+            Command::Docs(args) => docs::run(args, format),
+            Command::Health => health::run(format).await,
+            Command::Logs(args) => logs::run(args).await,
+            Command::Setup(args) => setup::run(args, format).await,
+            Command::Incus(args) => incus::run(args, format).await,
+            Command::Update(args) => update::run(args, format).await,
+            Command::State(args) => state::run(args, format),
+            Command::Completions(args) => completions::run(&args),
+            #[cfg(feature = "gateway")]
+            Command::Gateway(args) => gateway::run(args, format, &config).await,
+            #[cfg(feature = "gateway")]
+            Command::Snippets(args) => snippets::run(args, format, &config).await,
+            #[cfg(feature = "skills")]
+            Command::Skills(args) => skills::run(args, format, &config).await,
+            Command::Oauth(args) => oauth::run(args, format, &config).await,
+            Command::Proxy(args) => proxy::run(args, &config, format).await,
+            #[cfg(feature = "gateway")]
+            Command::Internal(args) => internal::run(args),
+            // [lab-scaffold: cli-dispatch]
+        }
+    })
 }
 
 #[cfg(test)]

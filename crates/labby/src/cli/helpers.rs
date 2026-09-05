@@ -29,65 +29,70 @@ pub fn print_dry_run(service: &str, action: &str, params: &Value, format: Output
 use crate::output::{OutputFormat, print};
 
 /// Run an action-style CLI command and emit the canonical dispatch log shape.
-pub async fn run_action_command<F, Fut>(
+pub fn run_action_command<F, Fut>(
     service: &'static str,
     action: String,
     params: Value,
     format: OutputFormat,
     dispatch: F,
-) -> Result<ExitCode>
+) -> impl Future<Output = Result<ExitCode>>
 where
     F: FnOnce(String, Value) -> Fut,
     Fut: Future<Output = Result<Value, ToolError>>,
 {
-    #[cfg(feature = "gateway")]
-    {
-        if let Some(manager) = crate::dispatch::gateway::current_gateway_manager() {
-            if !manager.surface_enabled_for_service(service, "cli").await {
-                let error = ToolError::Sdk {
-                    sdk_kind: "not_found".to_string(),
-                    message: format!("service `{service}` is not enabled on the cli surface"),
-                };
-                return Err(anyhow::anyhow!(
-                    "{}",
-                    serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
-                ));
+    // Keep the complete action future out of each command arm's poll frame.
+    // These adapters run once per invocation; one allocation avoids stacking
+    // copies of the dispatch state on Windows' small main-thread stack.
+    Box::pin(async move {
+        #[cfg(feature = "gateway")]
+        {
+            if let Some(manager) = crate::dispatch::gateway::current_gateway_manager() {
+                if !manager.surface_enabled_for_service(service, "cli").await {
+                    let error = ToolError::Sdk {
+                        sdk_kind: "not_found".to_string(),
+                        message: format!("service `{service}` is not enabled on the cli surface"),
+                    };
+                    return Err(anyhow::anyhow!(
+                        "{}",
+                        serde_json::to_string(&error).unwrap_or_else(|_| error.to_string())
+                    ));
+                }
             }
         }
-    }
 
-    let start = std::time::Instant::now();
-    let result = dispatch(action.clone(), params).await;
-    let elapsed_ms = start.elapsed().as_millis();
+        let start = std::time::Instant::now();
+        let result = dispatch(action.clone(), params).await;
+        let elapsed_ms = start.elapsed().as_millis();
 
-    match &result {
-        Ok(_) => tracing::info!(surface = "cli", service, action, elapsed_ms, "dispatch ok"),
-        Err(e) if e.is_internal() => tracing::error!(
-            surface = "cli",
-            service,
-            action,
-            elapsed_ms,
-            kind = e.kind(),
-            "dispatch error"
-        ),
-        Err(e) => tracing::warn!(
-            surface = "cli",
-            service,
-            action,
-            elapsed_ms,
-            kind = e.kind(),
-            "dispatch error"
-        ),
-    }
+        match &result {
+            Ok(_) => tracing::info!(surface = "cli", service, action, elapsed_ms, "dispatch ok"),
+            Err(e) if e.is_internal() => tracing::error!(
+                surface = "cli",
+                service,
+                action,
+                elapsed_ms,
+                kind = e.kind(),
+                "dispatch error"
+            ),
+            Err(e) => tracing::warn!(
+                surface = "cli",
+                service,
+                action,
+                elapsed_ms,
+                kind = e.kind(),
+                "dispatch error"
+            ),
+        }
 
-    let value = result.map_err(|e| {
-        anyhow::anyhow!(
-            "{}",
-            serde_json::to_string(&e).unwrap_or_else(|_| e.to_string())
-        )
-    })?;
-    print(&value, format)?;
-    Ok(ExitCode::SUCCESS)
+        let value = result.map_err(|e| {
+            anyhow::anyhow!(
+                "{}",
+                serde_json::to_string(&e).unwrap_or_else(|_| e.to_string())
+            )
+        })?;
+        print(&value, format)?;
+        Ok(ExitCode::SUCCESS)
+    })
 }
 
 /// Run an action-style CLI command with destructive confirmation support.

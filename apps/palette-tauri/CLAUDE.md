@@ -3,9 +3,9 @@
 Contributor guide for `apps/palette-tauri`, the desktop command palette for a
 `labby serve` instance. Read `README.md` first for the runtime/security model.
 
-The palette is versioned independently from the CLI (`package.json` /
-`tauri.conf.json` carry the palette version). Do not sync it to the workspace
-Cargo version.
+The palette is versioned independently from the CLI. Keep its version aligned
+across `package.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and
+`tauri.conf.json`; do not sync it to the workspace Cargo version.
 
 ## Architecture
 

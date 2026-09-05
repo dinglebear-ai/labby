@@ -3,17 +3,17 @@
 //! These helpers are intentionally CLI-only. They are not in the setup action
 //! catalog and must not be exposed through MCP, HTTP, or Code Mode.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use serde_yaml::Value;
+use serde_yaml_ng::Value;
 use sha2::{Digest, Sha256};
 
 use crate::dispatch::error::ToolError;
@@ -36,6 +36,24 @@ const SERVICE_NAME: &str = "labby.service";
 const REMOTE_BINARY_PATH: &str = "/usr/local/bin/labby";
 const REMOTE_WEB_ASSETS_DIR: &str = "/home/labby/.labby/web-assets";
 const READY_URL: &str = "http://127.0.0.1:8765/ready";
+const PREVIOUS_RELEASE_DIR: &str = "/var/lib/labby/deployments/previous-release";
+const COMMAND_OUTPUT_TAIL_BYTES: usize = 64 * 1024;
+const INCUS_TARGET_CONCURRENCY: usize = 8;
+
+#[derive(Debug)]
+struct BoundedCommandOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+#[derive(Debug)]
+struct OutputTail {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
 
 #[derive(Debug, Deserialize)]
 struct IncusConfigDocument {
@@ -100,6 +118,7 @@ pub(crate) struct IncusSyncOptions {
     pub check_url: Option<String>,
     pub force_fallback: bool,
     pub dry_run: bool,
+    pub rollback: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -392,7 +411,21 @@ pub(crate) fn incus_ssh_bootstrap(
     )?;
     if !public_key_output.status.success() {
         return Err(ToolError::Sdk {
-            message: "failed to read container SSH public key".into(),
+            message: format!(
+                "failed to read container SSH public key: {}{}",
+                String::from_utf8_lossy(&public_key_output.stderr),
+                if public_key_output.stderr_truncated {
+                    " [stderr tail truncated]"
+                } else {
+                    ""
+                }
+            ),
+            sdk_kind: "incus_ssh_public_key_read_failed".into(),
+        });
+    }
+    if public_key_output.stdout_truncated {
+        return Err(ToolError::Sdk {
+            message: "container SSH public key output exceeded the capture budget".into(),
             sdk_kind: "incus_ssh_public_key_read_failed".into(),
         });
     }
@@ -405,14 +438,21 @@ pub(crate) fn incus_ssh_bootstrap(
             sdk_kind: "incus_ssh_public_key_read_failed".into(),
         });
     }
-    for target in &outcome.targets {
-        match authorize_target(
-            target,
-            &public_key,
-            &options.ssh_config,
-            options.timeout_seconds,
-        ) {
-            Ok(()) => outcome.authorized.push(target_ssh_destination(target)),
+    let public_key_for_jobs = public_key.clone();
+    let ssh_config = options.ssh_config.clone();
+    let results = run_bounded_target_jobs(
+        &outcome.targets,
+        INCUS_TARGET_CONCURRENCY,
+        Duration::from_secs(options.timeout_seconds),
+        options.fail_fast,
+        IncusTargetJob::Authorize {
+            public_key: public_key_for_jobs,
+            ssh_config,
+        },
+    );
+    for (target, result) in outcome.targets.iter().zip(results) {
+        match result {
+            Ok(destination) => outcome.authorized.push(destination),
             Err(err) if options.fail_fast => return Err(err),
             Err(err) => {
                 outcome.failed.push(IncusSshFailure {
@@ -450,9 +490,18 @@ pub(crate) fn incus_ssh_verify(
         skipped_excluded: plan.skipped_excluded,
         skipped_not_included: plan.skipped_not_included,
     };
-    for target in &outcome.targets {
-        match verify_container_target(options, target) {
-            Ok(()) => outcome.verified.push(target_ssh_destination(target)),
+    let results = run_bounded_target_jobs(
+        &outcome.targets,
+        INCUS_TARGET_CONCURRENCY,
+        Duration::from_secs(options.timeout_seconds),
+        options.fail_fast,
+        IncusTargetJob::Verify {
+            options: options.clone(),
+        },
+    );
+    for (target, result) in outcome.targets.iter().zip(results) {
+        match result {
+            Ok(destination) => outcome.verified.push(destination),
             Err(err) if options.fail_fast => return Err(err),
             Err(err) => outcome.failed.push(IncusSshFailure {
                 target: target_ssh_destination(target),
@@ -472,10 +521,11 @@ pub(crate) fn parse_backup_config(path: &Path) -> Result<Vec<BackupConfigEntry>,
 }
 
 pub(crate) fn parse_backup_config_str(raw: &str) -> Result<Vec<BackupConfigEntry>, ToolError> {
-    let doc: IncusConfigDocument = serde_yaml::from_str(raw).map_err(|e| ToolError::Sdk {
-        message: format!("invalid Incus backup YAML: {e}"),
-        sdk_kind: "incus_backup_config_invalid_yaml".into(),
-    })?;
+    let doc: IncusConfigDocument =
+        super::constrained_yaml::parse(raw).map_err(|e| ToolError::Sdk {
+            message: format!("invalid Incus backup YAML: {e}"),
+            sdk_kind: "incus_backup_config_invalid_yaml".into(),
+        })?;
 
     let mut entries = Vec::new();
     for (key, value) in doc.config {
@@ -514,7 +564,7 @@ pub(crate) fn apply_backup_config(
                 .arg(container)
                 .arg(&entry.key)
                 .arg(&entry.value)
-                .status()
+                .bounded_status()
                 .map_err(|e| ToolError::Sdk {
                     message: format!("failed to run incus config set: {e}"),
                     sdk_kind: "incus_config_set_failed".into(),
@@ -655,7 +705,7 @@ pub(crate) fn run_incus_bootstrap(options: IncusBootstrapOptions) -> Result<(), 
     let status = Command::new(&command.program)
         .args(&command.args)
         .current_dir(&command.current_dir)
-        .status()
+        .bounded_status()
         .map_err(|e| ToolError::Sdk {
             message: format!("failed to run Incus bootstrap: {e}"),
             sdk_kind: "incus_bootstrap_failed".into(),
@@ -671,6 +721,59 @@ pub(crate) fn run_incus_bootstrap(options: IncusBootstrapOptions) -> Result<(), 
 
 pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOutcome, ToolError> {
     let container = resolve_sync_container(options.container.as_deref())?;
+    if options.rollback {
+        if options.dry_run {
+            return Ok(IncusSyncOutcome {
+                container,
+                binary: PathBuf::from("<previous-release>"),
+                web_assets_dir: None,
+                remote_web_assets_dir: Some(REMOTE_WEB_ASSETS_DIR.into()),
+                dry_run: true,
+                fallback_restart_used: false,
+                old_pid: None,
+                new_pid: None,
+                local_sha256: None,
+                remote_sha256: None,
+                local_version: None,
+                remote_version: None,
+                local_web_index_sha256: None,
+                served_web_index_sha256: None,
+                ready: false,
+                check_url: options.check_url,
+                check_url_ok: None,
+                steps: vec!["restore the retained previous Incus release transactionally".into()],
+            });
+        }
+        incus_exec(
+            &container,
+            &[
+                "sh",
+                "-lc",
+                &remote_release_rollback_script(PREVIOUS_RELEASE_DIR),
+            ],
+        )?;
+        let (remote_version, new_pid, remote_sha256) = verify_explicit_rollback(&container)?;
+        return Ok(IncusSyncOutcome {
+            container,
+            binary: PathBuf::from("<previous-release>"),
+            web_assets_dir: None,
+            remote_web_assets_dir: Some(REMOTE_WEB_ASSETS_DIR.into()),
+            dry_run: false,
+            fallback_restart_used: false,
+            old_pid: None,
+            new_pid: Some(new_pid),
+            local_sha256: None,
+            remote_sha256: Some(remote_sha256),
+            local_version: None,
+            remote_version: Some(remote_version),
+            local_web_index_sha256: None,
+            served_web_index_sha256: None,
+            ready: true,
+            check_url: options.check_url,
+            check_url_ok: None,
+            steps: vec!["restored and verified the retained previous Incus release".into()],
+        });
+    }
     let binary = resolve_sync_binary(options.binary.as_deref())?;
     let web_assets_dir = if options.sync_web_assets {
         resolve_sync_web_assets_dir(options.web_assets_dir.as_deref())?
@@ -690,14 +793,15 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
             .map(|dir| file_sha256(&dir.join("index.html")))
             .transpose()?
     };
-    let local_version = command_stdout(
-        Command::new(&binary).arg("--version").output(),
+    let local_version = Some(require_version_output(
+        command_stdout(
+            Command::new(&binary).arg("--version").bounded_output(),
+            "incus_sync_local_version_failed",
+            "failed to read local labby version",
+        ),
         "incus_sync_local_version_failed",
-        "failed to read local labby version",
-    )
-    .ok()
-    .map(|value| value.trim().to_string())
-    .filter(|value| !value.is_empty());
+        "local labby --version",
+    )?);
     let mut steps = Vec::new();
     let mut fallback_restart_used = false;
 
@@ -747,7 +851,24 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     }
 
     ensure_container_running(&container)?;
-    let old_pid = service_main_pid(&container).ok().flatten();
+    let deployment_dir = PREVIOUS_RELEASE_DIR.to_string();
+    incus_exec(
+        &container,
+        &["sh", "-lc", &remote_release_backup_script(&deployment_dir)],
+    )?;
+    let mut activation = IncusActivationGuard::new(container.clone(), deployment_dir.clone());
+    macro_rules! activate {
+        ($operation:expr) => {
+            match $operation {
+                Ok(value) => value,
+                Err(error) => return Err(activation.failure(error)),
+            }
+        };
+    }
+    steps.push(format!(
+        "prepared prior-release manifest at {deployment_dir}/manifest.env"
+    ));
+    let old_pid = activate!(service_main_pid(&container));
     steps.push(format!(
         "old {SERVICE_NAME} MainPID: {}",
         old_pid
@@ -758,47 +879,47 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     if let Err(err) = incus_exec(&container, &["systemctl", "stop", SERVICE_NAME]) {
         steps.push(format!("systemctl stop failed: {}", err));
         if options.force_fallback {
-            force_restart_container(&container)?;
+            activate!(force_restart_container(&container));
             fallback_restart_used = true;
         } else {
-            return Err(err);
+            return Err(activation.failure(err));
         }
     } else {
         steps.push(format!("stopped {SERVICE_NAME}"));
     }
     if let Some(pid) = old_pid {
-        wait_pid_gone(&container, pid, Duration::from_secs(20))?;
+        activate!(wait_pid_gone(&container, pid, Duration::from_secs(20)));
         steps.push(format!("old MainPID {pid} exited"));
     }
     if let Err(err) = reap_lingering_service_processes(&container) {
         steps.push(format!("lingering service reaper failed: {err}"));
         if options.force_fallback {
-            force_restart_container(&container)?;
+            activate!(force_restart_container(&container));
             fallback_restart_used = true;
-            ensure_container_running(&container)?;
+            activate!(ensure_container_running(&container));
             drop(incus_exec(&container, &["systemctl", "stop", SERVICE_NAME]));
-            reap_lingering_service_processes(&container)?;
+            activate!(reap_lingering_service_processes(&container));
             steps.push("used Incus force restart fallback".to_string());
         } else {
-            return Err(err);
+            return Err(activation.failure(err));
         }
     }
     steps.push(format!("reaped lingering {SERVICE_NAME} processes"));
 
     let remote_tmp = format!("/tmp/.labby-sync-{}", std::process::id());
     let target = format!("{container}{remote_tmp}");
-    command_ok(
+    activate!(command_ok(
         Command::new("incus")
             .arg("file")
             .arg("push")
             .arg(&binary)
             .arg(&target)
-            .output(),
+            .bounded_output(),
         "incus_sync_push_failed",
         "failed to push labby binary into Incus container",
-    )?;
+    ));
     steps.push(format!("pushed `{}` to `{remote_tmp}`", binary.display()));
-    incus_exec(
+    activate!(incus_exec(
         &container,
         &[
             "sh",
@@ -807,21 +928,23 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
                 "set -eu; install -m 0755 {remote_tmp} {REMOTE_BINARY_PATH}.new; mv -f {REMOTE_BINARY_PATH}.new {REMOTE_BINARY_PATH}; rm -f {remote_tmp}"
             ),
         ],
-    )?;
+    ));
     steps.push(format!("installed {REMOTE_BINARY_PATH} atomically"));
+    activate!(incus_sync_checkpoint("binary"));
 
     if let Some(assets_dir) = &web_assets_dir {
-        sync_web_assets_to_container(&container, assets_dir)?;
+        activate!(sync_web_assets_to_container(&container, assets_dir));
         steps.push(format!(
             "synced web assets `{}` to `{REMOTE_WEB_ASSETS_DIR}`",
             assets_dir.display()
         ));
     } else if options.sync_web_assets {
-        clear_remote_web_assets(&container)?;
+        activate!(clear_remote_web_assets(&container));
         steps.push(format!(
             "cleared `{REMOTE_WEB_ASSETS_DIR}` so embedded web assets are used"
         ));
     }
+    activate!(incus_sync_checkpoint("assets"));
 
     drop(incus_exec(
         &container,
@@ -830,60 +953,68 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
     if let Err(err) = incus_exec(&container, &["systemctl", "start", SERVICE_NAME]) {
         steps.push(format!("systemctl start failed: {}", err));
         if options.force_fallback {
-            force_restart_container(&container)?;
+            activate!(force_restart_container(&container));
             fallback_restart_used = true;
         } else {
-            return Err(err);
+            return Err(activation.failure(err));
         }
     } else {
         steps.push(format!("started {SERVICE_NAME}"));
     }
+    activate!(incus_sync_checkpoint("service-start"));
 
-    let new_pid = wait_service_pid(&container, old_pid, Duration::from_secs(30))?;
+    let new_pid = activate!(wait_service_pid(
+        &container,
+        old_pid,
+        Duration::from_secs(30)
+    ));
     steps.push(format!("new {SERVICE_NAME} MainPID: {new_pid}"));
-    wait_ready(&container, Duration::from_secs(30))?;
+    activate!(wait_ready(&container, Duration::from_secs(30)));
+    activate!(incus_sync_checkpoint("readiness"));
     steps.push(format!("verified {READY_URL}"));
 
     let served_web_index_sha256 = if let Some(expected) = local_web_index_sha256.as_deref() {
-        let actual = remote_web_index_sha256(&container)?;
-        verify_web_index_hash(expected, &actual)?;
+        let actual = activate!(remote_web_index_sha256(&container));
+        activate!(verify_web_index_hash(expected, &actual));
         steps.push("verified served web index hash".to_string());
         Some(actual)
     } else {
         None
     };
 
-    let remote_sha256 = Some(remote_sha256(&container)?);
+    let remote_sha256 = Some(activate!(remote_sha256(&container)));
     if local_sha256 != remote_sha256 {
-        return Err(ToolError::Sdk {
+        return Err(activation.failure(ToolError::Sdk {
             message: "remote labby binary hash does not match local binary after sync".into(),
             sdk_kind: "incus_sync_hash_mismatch".into(),
-        });
+        }));
     }
     steps.push("verified remote binary hash".to_string());
 
-    let remote_version = incus_exec_stdout(&container, &[REMOTE_BINARY_PATH, "--version"])
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    if local_version.is_some() && remote_version.is_some() && local_version != remote_version {
-        return Err(ToolError::Sdk {
+    let remote_version = Some(activate!(require_version_output(
+        incus_exec_stdout(&container, &[REMOTE_BINARY_PATH, "--version"]),
+        "incus_sync_remote_version_failed",
+        "deployed labby --version",
+    )));
+    if local_version != remote_version {
+        return Err(activation.failure(ToolError::Sdk {
             message: "remote labby version does not match local binary after sync".into(),
             sdk_kind: "incus_sync_version_mismatch".into(),
-        });
+        }));
     }
-    if remote_version.is_some() {
-        steps.push("verified remote binary version".to_string());
-    }
+    steps.push("verified remote binary version".to_string());
 
     let check_url_ok = if let Some(url) = &options.check_url {
-        curl_check_url(url)?;
+        activate!(curl_check_url(url));
         steps.push(format!("verified {url}"));
         Some(true)
     } else {
         None
     };
 
+    if let Err(error) = activation.commit() {
+        return Err(activation.failure(error));
+    }
     Ok(IncusSyncOutcome {
         container,
         binary,
@@ -906,6 +1037,128 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
         check_url_ok,
         steps,
     })
+}
+
+fn incus_sync_checkpoint(label: &str) -> Result<(), ToolError> {
+    if std::env::var("LABBY_INCUS_SYNC_FAIL_AFTER").as_deref() == Ok(label) {
+        Err(ToolError::Sdk {
+            sdk_kind: "incus_sync_injected_failure".into(),
+            message: format!("injected Incus sync failure after {label}"),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+struct IncusActivationGuard {
+    container: String,
+    deployment_dir: String,
+    armed: bool,
+}
+
+impl IncusActivationGuard {
+    fn new(container: String, deployment_dir: String) -> Self {
+        Self {
+            container,
+            deployment_dir,
+            armed: true,
+        }
+    }
+
+    fn rollback(&mut self) -> Result<(), ToolError> {
+        if !self.armed {
+            return Ok(());
+        }
+        let script = remote_release_rollback_script(&self.deployment_dir);
+        let result = incus_exec(&self.container, &["sh", "-lc", &script]);
+        if result.is_ok() {
+            self.armed = false;
+        }
+        result
+    }
+
+    fn failure(&mut self, primary: ToolError) -> ToolError {
+        let message = primary.to_string();
+        match self.rollback() {
+            Ok(()) => deployment_failure(&message, Ok(())),
+            Err(rollback) => deployment_failure(&message, Err(rollback.user_message())),
+        }
+    }
+
+    fn commit(&mut self) -> Result<(), ToolError> {
+        // Keep one verified prior release so an explicit production rollback
+        // uses the same transactional restore path as activation failures.
+        self.armed = false;
+        Ok(())
+    }
+}
+
+impl Drop for IncusActivationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            drop(self.rollback());
+        }
+    }
+}
+
+fn remote_release_backup_script(deployment_dir: &str) -> String {
+    format!(
+        "set -eu; d='{deployment_dir}'; rm -rf \"$d\"; install -d -m 0700 \"$d\"; \
+         binary_present=0; assets_present=0; \
+         if test -e {REMOTE_BINARY_PATH}; then cp -a {REMOTE_BINARY_PATH} \"$d/labby\"; binary_present=1; fi; \
+         if test -e {REMOTE_WEB_ASSETS_DIR}; then cp -a {REMOTE_WEB_ASSETS_DIR} \"$d/web\"; assets_present=1; fi; \
+         state=$(systemctl show {SERVICE_NAME} --property=ActiveState,UnitFileState --no-pager); \
+         active_state=$(printf '%s\\n' \"$state\" | sed -n 's/^ActiveState=//p'); unit_file_state=$(printf '%s\\n' \"$state\" | sed -n 's/^UnitFileState=//p'); \
+         case \"$active_state\" in active|inactive|failed) ;; *) printf 'unsupported or missing ActiveState: %s\\n' \"$active_state\" >&2; exit 70 ;; esac; \
+         case \"$unit_file_state\" in enabled|enabled-runtime|disabled) ;; *) printf 'unsupported or missing UnitFileState: %s\\n' \"$unit_file_state\" >&2; exit 70 ;; esac; \
+         printf 'binary_present=%s\\nassets_present=%s\\nactive_state=%s\\nunit_file_state=%s\\n' \"$binary_present\" \"$assets_present\" \"$active_state\" \"$unit_file_state\" >\"$d/manifest.env\"; \
+         sync \"$d/manifest.env\""
+    )
+}
+
+fn remote_release_rollback_script(deployment_dir: &str) -> String {
+    remote_release_rollback_script_for(
+        deployment_dir,
+        REMOTE_BINARY_PATH,
+        REMOTE_WEB_ASSETS_DIR,
+        SERVICE_NAME,
+        READY_URL,
+    )
+}
+
+fn remote_release_rollback_script_for(
+    deployment_dir: &str,
+    binary_path: &str,
+    assets_dir: &str,
+    service_name: &str,
+    ready_url: &str,
+) -> String {
+    format!(
+        "set -u; d='{deployment_dir}'; test -f \"$d/manifest.env\" || exit 70; . \"$d/manifest.env\"; failed=''; \
+         systemctl stop {service_name} || failed=\"$failed service-stop\"; \
+         if test \"$binary_present\" = 1; then install -m 0755 \"$d/labby\" {binary_path} || failed=\"$failed binary\"; else rm -f {binary_path} || failed=\"$failed binary-remove\"; fi; \
+         if test \"$assets_present\" = 1; then rm -rf {assets_dir} || failed=\"$failed assets-remove\"; cp -a \"$d/web\" {assets_dir} || failed=\"$failed assets\"; else rm -rf {assets_dir} || failed=\"$failed assets-remove\"; fi; \
+         case \"$unit_file_state\" in enabled) systemctl enable {service_name} || failed=\"$failed service-enable\" ;; enabled-runtime) systemctl disable {service_name} || failed=\"$failed service-disable\"; systemctl enable --runtime {service_name} || failed=\"$failed service-enable-runtime\" ;; disabled) systemctl disable {service_name} || failed=\"$failed service-disable\" ;; *) failed=\"$failed invalid-unit-file-state\" ;; esac; \
+         case \"$active_state\" in active) systemctl start {service_name} || failed=\"$failed service-start\"; curl -fsS {ready_url} >/dev/null || failed=\"$failed readiness\" ;; inactive) systemctl stop {service_name} || failed=\"$failed service-stop-final\"; systemctl reset-failed {service_name} || failed=\"$failed service-reset-failed\" ;; failed) systemctl start {service_name} >/dev/null 2>&1 || :; actual=$(systemctl show {service_name} --property=ActiveState --value --no-pager); test \"$actual\" = failed || failed=\"$failed service-failed-state\" ;; *) failed=\"$failed invalid-active-state\" ;; esac; \
+         if test -n \"$failed\"; then printf 'rollback residuals:%s\\n' \"$failed\" >&2; exit 70; fi; rm -rf \"$d\""
+    )
+}
+
+fn deployment_failure(primary: &str, rollback: Result<(), &str>) -> ToolError {
+    match rollback {
+        Ok(()) => ToolError::Sdk {
+            message: format!(
+                "Incus activation failed and the prior release was restored: {primary}"
+            ),
+            sdk_kind: "incus_sync_rolled_back".into(),
+        },
+        Err(rollback) => ToolError::Sdk {
+            message: format!(
+                "Incus activation failed: {primary}; restoring the prior release also failed: {rollback}; recovery requires inspecting the retained deployment manifest"
+            ),
+            sdk_kind: "incus_sync_rollback_failed".into(),
+        },
+    }
 }
 
 fn write_materialized_file(path: &Path, content: &str, mode: u32) -> Result<(), ToolError> {
@@ -945,7 +1198,7 @@ fn resolve_sync_container(explicit: Option<&str>) -> Result<String, ToolError> {
             .arg("csv")
             .arg("-c")
             .arg("ns")
-            .output(),
+            .bounded_output(),
         "incus_sync_list_failed",
         "failed to list Incus containers",
     )?;
@@ -1074,7 +1327,7 @@ fn ensure_container_running(container: &str) -> Result<(), ToolError> {
             .arg("csv")
             .arg("-c")
             .arg("s")
-            .output(),
+            .bounded_output(),
         "incus_sync_container_state_failed",
         "failed to read Incus container state",
     )?;
@@ -1082,7 +1335,10 @@ fn ensure_container_running(container: &str) -> Result<(), ToolError> {
         return Ok(());
     }
     command_ok(
-        Command::new("incus").arg("start").arg(container).output(),
+        Command::new("incus")
+            .arg("start")
+            .arg(container)
+            .bounded_output(),
         "incus_sync_container_start_failed",
         "failed to start Incus container",
     )
@@ -1103,7 +1359,7 @@ fn sync_web_assets_to_container(container: &str, assets_dir: &Path) -> Result<()
                 .arg("-cf")
                 .arg(&archive)
                 .arg(".")
-                .output(),
+                .bounded_output(),
             "incus_sync_web_assets_archive_failed",
             "failed to archive local web assets",
         )?;
@@ -1113,7 +1369,7 @@ fn sync_web_assets_to_container(container: &str, assets_dir: &Path) -> Result<()
                 .arg("push")
                 .arg(&archive)
                 .arg(format!("{container}{remote_archive}"))
-                .output(),
+                .bounded_output(),
             "incus_sync_web_assets_push_failed",
             "failed to push web assets archive into Incus container",
         )?;
@@ -1174,7 +1430,14 @@ fn verify_web_index_hash(expected: &str, actual: &str) -> Result<(), ToolError> 
 }
 
 fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
-    let raw = incus_exec_stdout(
+    service_main_pid_with_timeout(container, DEPLOYMENT_COMMAND_TIMEOUT)
+}
+
+fn service_main_pid_with_timeout(
+    container: &str,
+    timeout: Duration,
+) -> Result<Option<u32>, ToolError> {
+    let raw = incus_exec_stdout_with_timeout(
         container,
         &[
             "systemctl",
@@ -1184,17 +1447,44 @@ fn service_main_pid(container: &str) -> Result<Option<u32>, ToolError> {
             "MainPID",
             "--value",
         ],
+        timeout,
     )?;
-    let pid = raw.trim().parse::<u32>().ok().filter(|pid| *pid > 0);
-    Ok(pid)
+    parse_service_main_pid(&raw)
+}
+
+fn parse_service_main_pid(raw: &str) -> Result<Option<u32>, ToolError> {
+    let pid = raw.trim().parse::<u32>().map_err(|error| ToolError::Sdk {
+        message: format!("systemctl returned an invalid {SERVICE_NAME} MainPID: {error}"),
+        sdk_kind: "incus_sync_main_pid_invalid".into(),
+    })?;
+    Ok((pid > 0).then_some(pid))
 }
 
 fn wait_pid_gone(container: &str, pid: u32, timeout: Duration) -> Result<(), ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        let alive = incus_exec(container, &["sh", "-lc", &format!("kill -0 {pid}")]).is_ok();
-        if !alive {
-            return Ok(());
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let probe_timeout = remaining.min(Duration::from_secs(2));
+        let state = incus_exec_stdout_with_timeout(
+            container,
+            &[
+                "sh",
+                "-lc",
+                &format!("if [ -d /proc/{pid} ]; then printf alive; else printf gone; fi"),
+            ],
+            probe_timeout,
+        )?;
+        match state.trim() {
+            "gone" => return Ok(()),
+            "alive" => {}
+            value => {
+                return Err(ToolError::Sdk {
+                    message: format!(
+                        "old {SERVICE_NAME} MainPID probe returned invalid state: {value}"
+                    ),
+                    sdk_kind: "incus_sync_old_pid_probe_invalid".into(),
+                });
+            }
         }
         thread::sleep(Duration::from_millis(250));
     }
@@ -1211,7 +1501,10 @@ fn wait_service_pid(
 ) -> Result<u32, ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(pid) = service_main_pid(container)? {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if let Some(pid) =
+            service_main_pid_with_timeout(container, remaining.min(Duration::from_secs(2)))?
+        {
             if Some(pid) != old_pid {
                 return Ok(pid);
             }
@@ -1227,8 +1520,28 @@ fn wait_service_pid(
 fn wait_ready(container: &str, timeout: Duration) -> Result<(), ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if incus_exec(container, &["curl", "-fsS", READY_URL]).is_ok() {
-            return Ok(());
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let state = incus_exec_stdout_with_timeout(
+            container,
+            &[
+                "sh",
+                "-lc",
+                &format!(
+                    "if curl -fsS {} >/dev/null; then printf ready; else printf not-ready; fi",
+                    shell_quote(READY_URL)
+                ),
+            ],
+            remaining.min(Duration::from_secs(2)),
+        )?;
+        match state.trim() {
+            "ready" => return Ok(()),
+            "not-ready" => {}
+            value => {
+                return Err(ToolError::Sdk {
+                    message: format!("readiness probe returned invalid state: {value}"),
+                    sdk_kind: "incus_sync_ready_probe_invalid".into(),
+                });
+            }
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -1268,9 +1581,25 @@ fn reap_lingering_service_processes(container: &str) -> Result<(), ToolError> {
 fn wait_no_labby_serve(container: &str, timeout: Duration) -> Result<(), ToolError> {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        let alive = incus_exec(container, &["pgrep", "-f", "^/usr/local/bin/labby serve"]).is_ok();
-        if !alive {
-            return Ok(());
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let state = incus_exec_stdout_with_timeout(
+            container,
+            &[
+                "sh",
+                "-lc",
+                "if pgrep -f '^/usr/local/bin/labby serve' >/dev/null; then printf alive; elif [ $? -eq 1 ]; then printf gone; else exit 2; fi",
+            ],
+            remaining.min(Duration::from_secs(2)),
+        )?;
+        match state.trim() {
+            "gone" => return Ok(()),
+            "alive" => {}
+            value => {
+                return Err(ToolError::Sdk {
+                    message: format!("lingering-process probe returned invalid state: {value}"),
+                    sdk_kind: "incus_sync_lingering_process_probe_invalid".into(),
+                });
+            }
         }
         thread::sleep(Duration::from_millis(250));
     }
@@ -1286,12 +1615,15 @@ fn force_restart_container(container: &str) -> Result<(), ToolError> {
             .arg("stop")
             .arg(container)
             .arg("--force")
-            .output(),
+            .bounded_output(),
         "incus_sync_force_stop_failed",
         "failed to force stop Incus container",
     )?;
     command_ok(
-        Command::new("incus").arg("start").arg(container).output(),
+        Command::new("incus")
+            .arg("start")
+            .arg(container)
+            .bounded_output(),
         "incus_sync_force_start_failed",
         "failed to start Incus container after force stop",
     )
@@ -1307,6 +1639,86 @@ fn remote_sha256(container: &str) -> Result<String, ToolError> {
         ],
     )?;
     Ok(raw.trim().to_string())
+}
+
+fn require_version_output(
+    output: Result<String, ToolError>,
+    kind: &'static str,
+    probe: &'static str,
+) -> Result<String, ToolError> {
+    let value = output.map_err(|error| ToolError::Sdk {
+        message: format!("{probe} failed: {}", error.user_message()),
+        sdk_kind: kind.into(),
+    })?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ToolError::Sdk {
+            message: format!("{probe} returned empty output"),
+            sdk_kind: kind.into(),
+        });
+    }
+    Ok(value.to_string())
+}
+
+fn verify_explicit_rollback(container: &str) -> Result<(String, u32, String), ToolError> {
+    verify_explicit_rollback_with(
+        || incus_exec_stdout(container, &[REMOTE_BINARY_PATH, "--version"]),
+        || service_main_pid(container),
+        || remote_sha256(container),
+        || wait_ready(container, Duration::from_secs(30)),
+    )
+}
+
+fn verify_explicit_rollback_with<V, P, H, R>(
+    version: V,
+    pid: P,
+    sha256: H,
+    readiness: R,
+) -> Result<(String, u32, String), ToolError>
+where
+    V: FnOnce() -> Result<String, ToolError>,
+    P: FnOnce() -> Result<Option<u32>, ToolError>,
+    H: FnOnce() -> Result<String, ToolError>,
+    R: FnOnce() -> Result<(), ToolError>,
+{
+    let version = require_version_output(
+        version(),
+        "incus_sync_rollback_version_failed",
+        "restored labby --version",
+    )?;
+    let pid = pid()
+        .map_err(|error| ToolError::Sdk {
+            message: format!(
+                "failed to verify restored labby MainPID: {}",
+                error.user_message()
+            ),
+            sdk_kind: "incus_sync_rollback_pid_failed".into(),
+        })?
+        .ok_or_else(|| ToolError::Sdk {
+            message: "restored labby service has no running MainPID".into(),
+            sdk_kind: "incus_sync_rollback_pid_failed".into(),
+        })?;
+    let sha256 = sha256().map_err(|error| ToolError::Sdk {
+        message: format!(
+            "failed to verify restored labby binary hash: {}",
+            error.user_message()
+        ),
+        sdk_kind: "incus_sync_rollback_hash_failed".into(),
+    })?;
+    if sha256.trim().is_empty() {
+        return Err(ToolError::Sdk {
+            message: "restored labby binary hash was empty".into(),
+            sdk_kind: "incus_sync_rollback_hash_failed".into(),
+        });
+    }
+    readiness().map_err(|error| ToolError::Sdk {
+        message: format!(
+            "failed to verify restored labby readiness: {}",
+            error.user_message()
+        ),
+        sdk_kind: "incus_sync_rollback_readiness_failed".into(),
+    })?;
+    Ok((version, pid, sha256.trim().to_string()))
 }
 
 fn file_sha256(path: &Path) -> Result<String, ToolError> {
@@ -1341,7 +1753,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 
 fn curl_check_url(url: &str) -> Result<(), ToolError> {
     command_ok(
-        Command::new("curl").arg("-fsS").arg(url).output(),
+        Command::new("curl").arg("-fsS").arg(url).bounded_output(),
         "incus_sync_check_url_failed",
         "failed optional sync check URL",
     )
@@ -1351,24 +1763,67 @@ fn incus_exec(container: &str, args: &[&str]) -> Result<(), ToolError> {
     let mut command = Command::new("incus");
     command.arg("exec").arg(container).arg("--").args(args);
     command_ok(
-        command.output(),
+        command.bounded_output(),
         "incus_sync_exec_failed",
         "failed to run command inside Incus container",
     )
 }
 
 fn incus_exec_stdout(container: &str, args: &[&str]) -> Result<String, ToolError> {
+    incus_exec_stdout_with_timeout(container, args, DEPLOYMENT_COMMAND_TIMEOUT)
+}
+
+fn incus_exec_stdout_with_timeout(
+    container: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, ToolError> {
     let mut command = Command::new("incus");
     command.arg("exec").arg(container).arg("--").args(args);
     command_stdout(
-        command.output(),
+        command_output_with_timeout(&mut command, "incus_command_failed", timeout),
         "incus_sync_exec_failed",
         "failed to run command inside Incus container",
     )
 }
 
+const DEPLOYMENT_COMMAND_TIMEOUT: Duration = Duration::from_mins(2);
+
+trait BoundedCommandExt {
+    fn bounded_output(&mut self) -> Result<BoundedCommandOutput, ToolError>;
+    fn bounded_status(&mut self) -> std::io::Result<std::process::ExitStatus>;
+}
+
+impl BoundedCommandExt for Command {
+    fn bounded_output(&mut self) -> Result<BoundedCommandOutput, ToolError> {
+        command_output_with_timeout(self, "incus_command_failed", DEPLOYMENT_COMMAND_TIMEOUT)
+    }
+
+    fn bounded_status(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            self.process_group(0);
+        }
+        let mut child = self.spawn()?;
+        let mut tree_guard = command_tree_guard(&mut child, "incus_command_failed")
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let result = wait_child_with_timeout(
+            &mut child,
+            DEPLOYMENT_COMMAND_TIMEOUT,
+            "deployment command",
+            "incus_command_failed",
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()));
+        if result.is_ok() {
+            tree_guard.disarm();
+        }
+        result
+    }
+}
+
 fn command_ok(
-    output: std::io::Result<Output>,
+    output: Result<BoundedCommandOutput, ToolError>,
     sdk_kind: &'static str,
     context: &'static str,
 ) -> Result<(), ToolError> {
@@ -1384,7 +1839,7 @@ fn command_ok(
 }
 
 fn command_stdout(
-    output: std::io::Result<Output>,
+    output: Result<BoundedCommandOutput, ToolError>,
     sdk_kind: &'static str,
     context: &'static str,
 ) -> Result<String, ToolError> {
@@ -1399,7 +1854,11 @@ fn command_stdout(
     }
 }
 
-fn command_error(output: Output, sdk_kind: &'static str, context: &'static str) -> ToolError {
+fn command_error(
+    output: BoundedCommandOutput,
+    sdk_kind: &'static str,
+    context: &'static str,
+) -> ToolError {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let detail = if !stderr.trim().is_empty() {
@@ -1407,11 +1866,17 @@ fn command_error(output: Output, sdk_kind: &'static str, context: &'static str) 
     } else {
         stdout.trim()
     };
+    let truncation = match (output.stdout_truncated, output.stderr_truncated) {
+        (true, true) => " (stdout and stderr tails truncated)",
+        (true, false) => " (stdout tail truncated)",
+        (false, true) => " (stderr tail truncated)",
+        (false, false) => "",
+    };
     ToolError::Sdk {
         message: if detail.is_empty() {
             format!("{context}: command exited with {}", output.status)
         } else {
-            format!("{context}: {detail}")
+            format!("{context}: {detail}{truncation}")
         },
         sdk_kind: sdk_kind.into(),
     }
@@ -1583,7 +2048,8 @@ fn install_container_ssh_config(
     targets: &[IncusSshTarget],
 ) -> Result<(), ToolError> {
     let config = render_sanitized_ssh_config(targets);
-    let mut child = Command::new("incus")
+    let mut command = Command::new("incus");
+    command
         .arg("exec")
         .arg(&options.container)
         .arg("--")
@@ -1592,12 +2058,17 @@ fn install_container_ssh_config(
         .arg(&options.user)
         .arg("-c")
         .arg("umask 077; mkdir -p ~/.ssh; cat > ~/.ssh/config")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| ToolError::Sdk {
-            message: format!("failed to start container SSH config install: {e}"),
-            sdk_kind: "incus_ssh_config_install_failed".into(),
-        })?;
+        .stdin(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|e| ToolError::Sdk {
+        message: format!("failed to start container SSH config install: {e}"),
+        sdk_kind: "incus_ssh_config_install_failed".into(),
+    })?;
+    let mut tree_guard = command_tree_guard(&mut child, "incus_ssh_config_install_failed")?;
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
             .write_all(config.as_bytes())
@@ -1612,6 +2083,7 @@ fn install_container_ssh_config(
         "container SSH config install",
         "incus_ssh_config_install_failed",
     )?;
+    tree_guard.disarm();
     if status.success() {
         Ok(())
     } else {
@@ -1627,8 +2099,14 @@ fn authorize_target(
     public_key: &str,
     ssh_config: &Path,
     timeout_seconds: u64,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), ToolError> {
     let mut command = authorize_target_command(target, ssh_config, timeout_seconds);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     let mut child = command
         .stdin(std::process::Stdio::piped())
         .spawn()
@@ -1639,6 +2117,7 @@ fn authorize_target(
             ),
             sdk_kind: "incus_ssh_authorize_failed".into(),
         })?;
+    let mut tree_guard = command_tree_guard(&mut child, "incus_ssh_authorize_failed")?;
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
             .write_all(public_key.as_bytes())
@@ -1651,12 +2130,14 @@ fn authorize_target(
                 sdk_kind: "incus_ssh_authorize_failed".into(),
             })?;
     }
-    let status = wait_child_with_timeout(
+    let status = wait_child_with_timeout_or_cancel(
         &mut child,
         Duration::from_secs(timeout_seconds),
         &format!("ssh authorization on {}", target_ssh_destination(target)),
         "incus_ssh_authorize_failed",
+        cancellation,
     )?;
+    tree_guard.disarm();
     if status.success() {
         Ok(())
     } else {
@@ -1692,8 +2173,9 @@ fn authorize_target_command(
 fn verify_container_target(
     options: &IncusSshBootstrapOptions,
     target: &IncusSshTarget,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<(), ToolError> {
-    run_status(
+    run_status_with_cancellation(
         Command::new("incus")
             .arg("exec")
             .arg(&options.container)
@@ -1710,15 +2192,33 @@ fn verify_container_target(
             )),
         "incus_ssh_verify_failed",
         Duration::from_secs(options.timeout_seconds),
+        cancellation,
     )
 }
 
 fn run_status(command: &mut Command, kind: &str, timeout: Duration) -> Result<(), ToolError> {
+    run_status_with_cancellation(command, kind, timeout, None)
+}
+
+fn run_status_with_cancellation(
+    command: &mut Command,
+    kind: &str,
+    timeout: Duration,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(), ToolError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     let mut child = command.spawn().map_err(|e| ToolError::Sdk {
         message: format!("failed to run command: {e}"),
         sdk_kind: kind.into(),
     })?;
-    let status = wait_child_with_timeout(&mut child, timeout, "command", kind)?;
+    let mut tree_guard = command_tree_guard(&mut child, kind)?;
+    let status =
+        wait_child_with_timeout_or_cancel(&mut child, timeout, "command", kind, cancellation)?;
+    tree_guard.disarm();
     if status.success() {
         Ok(())
     } else {
@@ -1733,7 +2233,12 @@ fn command_output_with_timeout(
     command: &mut Command,
     kind: &str,
     timeout: Duration,
-) -> Result<Output, ToolError> {
+) -> Result<BoundedCommandOutput, ToolError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1742,25 +2247,203 @@ fn command_output_with_timeout(
             message: format!("failed to run command: {e}"),
             sdk_kind: kind.into(),
         })?;
-    let status = wait_child_with_timeout(&mut child, timeout, "command", kind)?;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout).map_err(|e| ToolError::Sdk {
-            message: format!("failed to read command stdout: {e}"),
+    let mut tree_guard = command_tree_guard(&mut child, kind)?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stdout_reader = thread::spawn(move || read_output_tail(stdout));
+    let stderr_reader = thread::spawn(move || read_output_tail(stderr));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| ToolError::Sdk {
+            message: format!("failed to poll command: {e}"),
             sdk_kind: kind.into(),
-        })?;
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_end(&mut stderr).map_err(|e| ToolError::Sdk {
-            message: format!("failed to read command stderr: {e}"),
-            sdk_kind: kind.into(),
-        })?;
-    }
-    Ok(Output {
+        })? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            terminate_command_group(&mut child);
+            drop(child.wait());
+            drop(stdout_reader.join());
+            drop(stderr_reader.join());
+            return Err(ToolError::Sdk {
+                message: format!("command timed out after {}s", timeout.as_secs_f64()),
+                sdk_kind: kind.into(),
+            });
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    tree_guard.disarm();
+    let stdout = join_output_reader(stdout_reader, deadline, &mut child, "stdout", kind)?;
+    let stderr = join_output_reader(stderr_reader, deadline, &mut child, "stderr", kind)?;
+    Ok(BoundedCommandOutput {
         status,
-        stdout,
-        stderr,
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+        stdout_truncated: stdout.truncated,
+        stderr_truncated: stderr.truncated,
+    })
+}
+
+fn read_output_tail(mut pipe: impl Read) -> std::io::Result<OutputTail> {
+    let mut tail = Vec::with_capacity(COMMAND_OUTPUT_TAIL_BYTES);
+    let mut chunk = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let read = pipe.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        if tail.len() + read > COMMAND_OUTPUT_TAIL_BYTES {
+            let overflow = tail.len() + read - COMMAND_OUTPUT_TAIL_BYTES;
+            if overflow >= tail.len() {
+                tail.clear();
+            } else {
+                tail.drain(..overflow);
+            }
+            truncated = true;
+        }
+        let start = read.saturating_sub(COMMAND_OUTPUT_TAIL_BYTES);
+        tail.extend_from_slice(&chunk[start..read]);
+    }
+    Ok(OutputTail {
+        bytes: tail,
+        truncated,
+    })
+}
+
+fn join_output_reader(
+    reader: thread::JoinHandle<std::io::Result<OutputTail>>,
+    deadline: Instant,
+    child: &mut std::process::Child,
+    stream: &str,
+    kind: &str,
+) -> Result<OutputTail, ToolError> {
+    while !reader.is_finished() {
+        if Instant::now() >= deadline {
+            terminate_command_group(child);
+            drop(child.wait());
+            drop(reader.join());
+            return Err(ToolError::Sdk {
+                message: format!("command timed out while draining {stream}"),
+                sdk_kind: kind.into(),
+            });
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    reader
+        .join()
+        .map_err(|_| ToolError::Sdk {
+            message: format!("command {stream} reader panicked"),
+            sdk_kind: kind.into(),
+        })?
+        .map_err(|error| ToolError::Sdk {
+            message: format!("failed to read command {stream}: {error}"),
+            sdk_kind: kind.into(),
+        })
+}
+
+#[cfg(unix)]
+fn terminate_command_group(child: &mut std::process::Child) {
+    use nix::sys::signal::{Signal, killpg};
+    use nix::unistd::Pid;
+
+    if let Ok(pid) = i32::try_from(child.id()) {
+        let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+    drop(child.kill());
+}
+
+#[cfg(not(unix))]
+fn terminate_command_group(child: &mut std::process::Child) {
+    drop(child.kill());
+}
+
+#[cfg(windows)]
+struct CommandTreeGuard {
+    job: Option<labby_winjob::JobObject>,
+}
+
+#[cfg(windows)]
+impl CommandTreeGuard {
+    fn disarm(&mut self) {
+        self.job.take();
+    }
+}
+
+#[cfg(windows)]
+fn command_tree_guard(
+    child: &mut std::process::Child,
+    kind: &str,
+) -> Result<CommandTreeGuard, ToolError> {
+    labby_winjob::JobObject::assign(child.id())
+        .map(|job| CommandTreeGuard { job: Some(job) })
+        .map_err(|error| {
+            terminate_command_group(child);
+            drop(child.wait());
+            ToolError::Sdk {
+                message: format!("failed to contain command process tree: {error}"),
+                sdk_kind: kind.into(),
+            }
+        })
+}
+
+#[cfg(unix)]
+struct CommandTreeGuard {
+    process_group: i32,
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl CommandTreeGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for CommandTreeGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        use nix::sys::signal::{Signal, killpg};
+        use nix::sys::wait::waitpid;
+        use nix::unistd::Pid;
+        let pid = Pid::from_raw(self.process_group);
+        let _ = killpg(pid, Signal::SIGKILL);
+        let _ = waitpid(pid, None);
+    }
+}
+
+#[cfg(unix)]
+fn command_tree_guard(
+    child: &mut std::process::Child,
+    _kind: &str,
+) -> Result<CommandTreeGuard, ToolError> {
+    Ok(CommandTreeGuard {
+        process_group: i32::try_from(child.id()).unwrap_or(i32::MAX),
+        armed: true,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+struct CommandTreeGuard;
+
+#[cfg(not(any(unix, windows)))]
+impl CommandTreeGuard {
+    fn disarm(&mut self) {}
+}
+
+#[cfg(not(any(unix, windows)))]
+fn command_tree_guard(
+    child: &mut std::process::Child,
+    kind: &str,
+) -> Result<CommandTreeGuard, ToolError> {
+    terminate_command_group(child);
+    drop(child.wait());
+    Err(ToolError::Sdk {
+        message: "process-tree containment is unavailable on this platform".into(),
+        sdk_kind: kind.into(),
     })
 }
 
@@ -1770,6 +2453,16 @@ fn wait_child_with_timeout(
     label: &str,
     kind: &str,
 ) -> Result<std::process::ExitStatus, ToolError> {
+    wait_child_with_timeout_or_cancel(child, timeout, label, kind, None)
+}
+
+fn wait_child_with_timeout_or_cancel(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    label: &str,
+    kind: &str,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<std::process::ExitStatus, ToolError> {
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait().map_err(|e| ToolError::Sdk {
@@ -1778,8 +2471,16 @@ fn wait_child_with_timeout(
         })? {
             return Ok(status);
         }
+        if cancellation.is_some_and(|token| token.load(std::sync::atomic::Ordering::Acquire)) {
+            terminate_command_group(child);
+            drop(child.wait());
+            return Err(ToolError::Sdk {
+                message: format!("{label} cancelled at aggregate deadline"),
+                sdk_kind: kind.into(),
+            });
+        }
         if Instant::now() >= deadline {
-            drop(child.kill());
+            terminate_command_group(child);
             drop(child.wait());
             return Err(ToolError::Sdk {
                 message: format!("{label} timed out after {}s", timeout.as_secs()),
@@ -1794,9 +2495,798 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+#[derive(Clone)]
+enum IncusTargetJob {
+    Authorize {
+        public_key: String,
+        ssh_config: PathBuf,
+    },
+    Verify {
+        options: IncusSshBootstrapOptions,
+    },
+    #[cfg(test)]
+    Fixture(TargetJobFixture),
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+enum TargetJobFixture {
+    Concurrent {
+        active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    },
+    FailEveryTen,
+    Cooperative {
+        started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    },
+    #[cfg(unix)]
+    HangingProcess,
+    FailFirst {
+        started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    },
+}
+
+impl IncusTargetJob {
+    fn execute(
+        &self,
+        target: &IncusSshTarget,
+        remaining: Duration,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, ToolError> {
+        match self {
+            Self::Authorize {
+                public_key,
+                ssh_config,
+            } => {
+                authorize_target(
+                    target,
+                    public_key,
+                    ssh_config,
+                    remaining.as_secs().max(1),
+                    Some(cancelled),
+                )?;
+                Ok(target_ssh_destination(target))
+            }
+            Self::Verify { options } => {
+                let mut options = options.clone();
+                options.timeout_seconds = remaining.as_secs().max(1);
+                verify_container_target(&options, target, Some(cancelled))?;
+                Ok(target_ssh_destination(target))
+            }
+            #[cfg(test)]
+            Self::Fixture(fixture) => fixture.execute(target, remaining, cancelled),
+        }
+    }
+}
+
+#[cfg(test)]
+impl TargetJobFixture {
+    fn execute(
+        &self,
+        target: &IncusSshTarget,
+        remaining: Duration,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, ToolError> {
+        use std::sync::atomic::Ordering;
+        #[cfg(not(unix))]
+        let _ = remaining;
+        let index: usize = target.alias.parse().expect("numeric fixture alias");
+        match self {
+            Self::Concurrent { active, peak } => {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(current, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis((10 - index.min(10)) as u64));
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(target.alias.clone())
+            }
+            Self::FailEveryTen if index.is_multiple_of(10) => Err(ToolError::Sdk {
+                message: format!("failed-{index}"),
+                sdk_kind: "test_target_failed".into(),
+            }),
+            Self::FailEveryTen => Ok(target.alias.clone()),
+            Self::Cooperative { started } => {
+                started.fetch_add(1, Ordering::SeqCst);
+                while !cancelled.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Ok(target.alias.clone())
+            }
+            #[cfg(unix)]
+            Self::HangingProcess => {
+                let mut command = Command::new("sh");
+                command.args(["-c", "sleep 30 & wait"]);
+                run_status_with_cancellation(
+                    &mut command,
+                    "test_hanging_target",
+                    remaining,
+                    Some(cancelled),
+                )?;
+                Ok(target.alias.clone())
+            }
+            Self::FailFirst { started } => {
+                started.fetch_add(1, Ordering::SeqCst);
+                if index == 0 {
+                    Err(ToolError::Sdk {
+                        message: "injected".into(),
+                        sdk_kind: "injected".into(),
+                    })
+                } else {
+                    Ok(target.alias.clone())
+                }
+            }
+        }
+    }
+}
+
+fn run_bounded_target_jobs(
+    targets: &[IncusSshTarget],
+    concurrency: usize,
+    aggregate_timeout: Duration,
+    fail_fast: bool,
+    job: IncusTargetJob,
+) -> Vec<Result<String, ToolError>> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
+
+    let deadline = Instant::now() + aggregate_timeout;
+    let queue = Arc::new(Mutex::new(
+        targets.iter().cloned().enumerate().collect::<VecDeque<_>>(),
+    ));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let job = Arc::new(job);
+    let (tx, rx) = mpsc::channel();
+    let mut workers = Vec::new();
+    for _ in 0..concurrency.max(1).min(targets.len().max(1)) {
+        let queue = Arc::clone(&queue);
+        let cancelled = Arc::clone(&cancelled);
+        let job = Arc::clone(&job);
+        let tx = tx.clone();
+        workers.push(thread::spawn(move || {
+            loop {
+                if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+                    break;
+                }
+                let next = queue.lock().expect("target job queue lock").pop_front();
+                let Some((index, target)) = next else {
+                    break;
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let result = job.execute(&target, remaining, &cancelled);
+                if fail_fast && result.is_err() {
+                    cancelled.store(true, Ordering::Release);
+                }
+                if tx.send((index, result)).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+    drop(tx);
+    let mut results: Vec<Option<Result<String, ToolError>>> = std::iter::repeat_with(|| None)
+        .take(targets.len())
+        .collect();
+    let mut received = 0;
+    while received < targets.len() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok((index, result)) => {
+                results[index] = Some(result);
+                received += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    cancelled.store(true, Ordering::Release);
+    for worker in workers {
+        // Production jobs are restricted to the cancellation-aware command
+        // primitives above. They own their process-tree guard, poll this token,
+        // kill/reap the tree, and return before their passed `remaining`
+        // deadline. Joining here proves no worker survives the fleet result.
+        drop(worker.join());
+    }
+    results
+        .into_iter()
+        .enumerate()
+        .map(|(index, result)| {
+            result.unwrap_or_else(|| {
+                Err(ToolError::Sdk {
+                    message: format!(
+                        "target {index} was cancelled at the aggregate deadline after {:.3}s",
+                        aggregate_timeout.as_secs_f64()
+                    ),
+                    sdk_kind: "incus_ssh_aggregate_timeout".into(),
+                })
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_main_pid_accepts_only_numeric_systemd_output() {
+        assert_eq!(parse_service_main_pid("0\n").unwrap(), None);
+        assert_eq!(parse_service_main_pid("42\n").unwrap(), Some(42));
+        assert_eq!(
+            parse_service_main_pid("not-a-pid").unwrap_err().kind(),
+            "incus_sync_main_pid_invalid"
+        );
+        assert_eq!(
+            parse_service_main_pid("").unwrap_err().kind(),
+            "incus_sync_main_pid_invalid"
+        );
+    }
+
+    #[cfg(unix)]
+    fn process_is_running(pid: i32) -> bool {
+        use nix::errno::Errno;
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+
+        match kill(Pid::from_raw(pid), None) {
+            Err(Errno::ESRCH) => false,
+            Err(_) => true,
+            Ok(()) => {
+                // An orphaned descendant can briefly remain as a zombie until
+                // the platform's reaper collects it. `kill(pid, 0)` reports
+                // that PID as present even though it can no longer execute.
+                let output = Command::new("ps")
+                    .args(["-o", "stat=", "-p", &pid.to_string()])
+                    .output();
+                !matches!(output, Ok(output) if output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).trim_start().starts_with('Z'))
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_process_terminates(pid: i32) {
+        for _ in 0..80 {
+            if !process_is_running(pid) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("descendant process {pid} remained runnable after process-tree termination");
+    }
+
+    #[test]
+    fn deployment_code_has_no_direct_unbounded_command_execution() {
+        let source = include_str!("incus.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source prefix");
+        assert!(!production.contains(".output()"));
+        assert!(!production.contains(".status()"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_capture_drains_both_streams_concurrently_with_bounded_tails() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "i=0; while [ $i -lt 8192 ]; do printf '0123456789abcdef' >&1; printf 'fedcba9876543210' >&2; i=$((i+1)); done",
+        ]);
+
+        let output = command_output_with_timeout(
+            &mut command,
+            "test_command_failed",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), COMMAND_OUTPUT_TAIL_BYTES);
+        assert_eq!(output.stderr.len(), COMMAND_OUTPUT_TAIL_BYTES);
+        assert!(output.stdout_truncated);
+        assert!(output.stderr_truncated);
+        assert!(output.stdout.ends_with(b"0123456789abcdef"));
+        assert!(output.stderr.ends_with(b"fedcba9876543210"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_timeout_kills_the_spawned_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("grandchild.pid");
+        let mut command = Command::new("sh");
+        command.env("LABBY_TEST_GRANDCHILD_PID", &pid_path).args([
+            "-c",
+            "sleep 30 & echo $! > \"$LABBY_TEST_GRANDCHILD_PID\"; wait",
+        ]);
+
+        let error = command_output_with_timeout(
+            &mut command,
+            "test_command_failed",
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "test_command_failed");
+
+        let pid: i32 = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_process_terminates(pid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_tree_guard_terminates_descendant_when_stdin_write_returns_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("early-return-grandchild.pid");
+        let result = (|| -> std::io::Result<()> {
+            let mut command = Command::new("sh");
+            command
+                .env("LABBY_TEST_GRANDCHILD_PID", &pid_path)
+                .args([
+                    "-c",
+                    "sleep 30 & echo $! > \"$LABBY_TEST_GRANDCHILD_PID\"; exec 0<&-; sleep 30",
+                ])
+                .stdin(std::process::Stdio::piped());
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+            let mut child = command.spawn()?;
+            let _guard = command_tree_guard(&mut child, "test")
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            for _ in 0..100 {
+                if pid_path.exists() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            thread::sleep(Duration::from_millis(20));
+            child
+                .stdin
+                .as_mut()
+                .expect("piped stdin")
+                .write_all(&vec![b'x'; 1 << 20])?;
+            Ok(())
+        })();
+        assert!(result.is_err(), "fixture must force the early-return path");
+        let pid: i32 = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_process_terminates(pid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_timeout_kills_the_spawned_process_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("status-grandchild.pid");
+        let mut command = Command::new("sh");
+        command.env("LABBY_TEST_GRANDCHILD_PID", &pid_path).args([
+            "-c",
+            "sleep 30 & echo $! > \"$LABBY_TEST_GRANDCHILD_PID\"; wait",
+        ]);
+
+        run_status(
+            &mut command,
+            "test_status_failed",
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        let pid: i32 = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_process_terminates(pid);
+    }
+
+    #[test]
+    fn target_jobs_bound_concurrency_and_preserve_order_for_ten() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let targets = fixture_targets(10);
+        let results = run_bounded_target_jobs(
+            &targets,
+            3,
+            Duration::from_secs(2),
+            false,
+            IncusTargetJob::Fixture(TargetJobFixture::Concurrent {
+                active: Arc::clone(&active),
+                peak: Arc::clone(&peak),
+            }),
+        );
+
+        assert_eq!(peak.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            results.into_iter().collect::<Result<Vec<_>, _>>().unwrap(),
+            targets
+                .into_iter()
+                .map(|target| target.alias)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn target_jobs_return_deterministic_failures_for_one_hundred() {
+        let targets = fixture_targets(100);
+        let results = run_bounded_target_jobs(
+            &targets,
+            8,
+            Duration::from_secs(2),
+            false,
+            IncusTargetJob::Fixture(TargetJobFixture::FailEveryTen),
+        );
+
+        let failed: Vec<usize> = results
+            .iter()
+            .enumerate()
+            .filter_map(|(index, result)| result.is_err().then_some(index))
+            .collect();
+        assert_eq!(failed, vec![0, 10, 20, 30, 40, 50, 60, 70, 80, 90]);
+    }
+
+    #[test]
+    fn target_jobs_fail_fast_cancels_pending_work_immediately() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let targets = fixture_targets(100);
+        let results = run_bounded_target_jobs(
+            &targets,
+            1,
+            Duration::from_secs(2),
+            true,
+            IncusTargetJob::Fixture(TargetJobFixture::FailFirst {
+                started: Arc::clone(&started),
+            }),
+        );
+
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert!(results.iter().all(Result::is_err));
+    }
+
+    #[test]
+    fn target_jobs_cancel_unstarted_work_at_aggregate_deadline_for_one_thousand() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let targets = fixture_targets(1000);
+        let results = run_bounded_target_jobs(
+            &targets,
+            4,
+            Duration::from_millis(20),
+            false,
+            IncusTargetJob::Fixture(TargetJobFixture::Cooperative {
+                started: Arc::clone(&started),
+            }),
+        );
+
+        assert_eq!(results.len(), 1000);
+        assert!(started.load(Ordering::SeqCst) <= 4);
+        assert!(results.iter().all(Result::is_err));
+        assert!(
+            results[999]
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("aggregate deadline")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn target_jobs_cancel_and_join_a_hanging_external_process() {
+        let started = Instant::now();
+        let results = run_bounded_target_jobs(
+            &fixture_targets(1),
+            1,
+            Duration::from_millis(50),
+            false,
+            IncusTargetJob::Fixture(TargetJobFixture::HangingProcess),
+        );
+
+        assert!(started.elapsed() < Duration::from_millis(400));
+        assert!(results[0].is_err());
+    }
+
+    fn fixture_targets(count: usize) -> Vec<IncusSshTarget> {
+        (0..count)
+            .map(|index| IncusSshTarget {
+                alias: index.to_string(),
+                host: "fixture.invalid".into(),
+                user: None,
+                port: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn release_backup_manifest_versions_binary_and_assets() {
+        let script = remote_release_backup_script("/var/lib/labby/deployments/tx-7");
+        assert!(script.contains("manifest.env"));
+        assert!(script.contains("binary_present="));
+        assert!(script.contains("assets_present="));
+        assert!(script.contains("active_state=%s"));
+        assert!(script.contains("unit_file_state=%s"));
+        assert!(script.contains("cp -a /usr/local/bin/labby"));
+        assert!(script.contains("cp -a /home/labby/.labby/web-assets"));
+    }
+
+    #[test]
+    fn release_manifest_and_rollback_preserve_exact_supported_systemd_states() {
+        let backup = remote_release_backup_script(PREVIOUS_RELEASE_DIR);
+        assert!(backup.contains("active|inactive|failed"));
+        assert!(backup.contains("enabled|enabled-runtime|disabled"));
+        assert!(!backup.contains("service_active="));
+        assert!(!backup.contains("service_enabled="));
+
+        let rollback = remote_release_rollback_script(PREVIOUS_RELEASE_DIR);
+        assert!(rollback.contains("systemctl enable --runtime"));
+        assert!(rollback.contains("systemctl reset-failed"));
+        assert!(rollback.contains("test \"$actual\" = failed"));
+    }
+
+    #[test]
+    fn successful_sync_retains_the_previous_release_for_explicit_rollback() {
+        assert_eq!(
+            PREVIOUS_RELEASE_DIR,
+            "/var/lib/labby/deployments/previous-release"
+        );
+        let guard_source = include_str!("incus.rs");
+        assert!(guard_source.contains("Keep one verified prior release"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn release_backup_rejects_incomplete_service_state_before_manifest() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        let deployment = root.path().join("deployment");
+        std::fs::create_dir(&bin).unwrap();
+        let systemctl = bin.join("systemctl");
+        std::fs::write(&systemctl, "#!/bin/sh\nprintf 'ActiveState=active\\n'\n").unwrap();
+        std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let status = Command::new("sh")
+            .args([
+                "-c",
+                &remote_release_backup_script(deployment.to_str().unwrap()),
+            ])
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(70));
+        assert!(!deployment.join("manifest.env").exists());
+    }
+
+    #[test]
+    fn rollback_failure_preserves_primary_and_recovery_failure() {
+        let error = deployment_failure("candidate verification failed", Err("restore denied"));
+        assert_eq!(error.kind(), "incus_sync_rollback_failed");
+        let message = error.to_string();
+        assert!(message.contains("candidate verification failed"));
+        assert!(message.contains("restore denied"));
+    }
+
+    fn probe_failure(message: &str) -> ToolError {
+        ToolError::Sdk {
+            message: message.into(),
+            sdk_kind: "fixture_failure".into(),
+        }
+    }
+
+    #[test]
+    fn version_verification_rejects_command_failure_and_empty_output() {
+        for (output, expected) in [
+            (Err(probe_failure("command failed")), "command failed"),
+            (Ok(" \n\t".to_string()), "empty output"),
+        ] {
+            let error = require_version_output(
+                output,
+                "incus_sync_local_version_failed",
+                "local labby --version",
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), "incus_sync_local_version_failed");
+            assert!(error.to_string().contains(expected));
+        }
+
+        for (output, expected) in [
+            (
+                Err(probe_failure("remote command failed")),
+                "remote command failed",
+            ),
+            (Ok(String::new()), "empty output"),
+        ] {
+            let error = require_version_output(
+                output,
+                "incus_sync_remote_version_failed",
+                "deployed labby --version",
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), "incus_sync_remote_version_failed");
+            assert!(error.to_string().contains(expected));
+        }
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_version_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Err(probe_failure("version unavailable")),
+            || Ok(Some(42)),
+            || Ok("abc".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_version_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_absent_pid() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(None),
+            || Ok("abc".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_pid_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_pid_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Err(probe_failure("pid unavailable")),
+            || Ok("abc".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_pid_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_hash_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(Some(42)),
+            || Err(probe_failure("hash unavailable")),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_hash_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_empty_hash() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(Some(42)),
+            || Ok(" \n".into()),
+            || Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_hash_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_rejects_readiness_probe_failure() {
+        let error = verify_explicit_rollback_with(
+            || Ok("labby 1.2.3".into()),
+            || Ok(Some(42)),
+            || Ok("abc".into()),
+            || Err(probe_failure("not ready")),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_rollback_readiness_failed");
+    }
+
+    #[test]
+    fn explicit_rollback_returns_only_fully_verified_state() {
+        let verified = verify_explicit_rollback_with(
+            || Ok(" labby 1.2.3\n".into()),
+            || Ok(Some(42)),
+            || Ok("abc\n".into()),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(verified, ("labby 1.2.3".into(), 42, "abc".into()));
+    }
+
+    #[test]
+    fn bootstrap_exposes_mutation_faults_and_durable_residual_reporting() {
+        for checkpoint in [
+            "storage",
+            "profile",
+            "container-launch",
+            "container-start",
+            "backup-config",
+            "hostname",
+            "binary",
+            "provision",
+            "readiness",
+            "tailscale-key",
+            "tailscale-up",
+            "tailscale-cleanup",
+        ] {
+            assert!(INCUS_BOOTSTRAP_SCRIPT.contains(&format!("checkpoint {checkpoint}")));
+        }
+        assert!(INCUS_BOOTSTRAP_SCRIPT.contains("LABBY_INCUS_FAIL_AFTER"));
+        assert!(INCUS_BOOTSTRAP_SCRIPT.contains("/var/tmp/labby-incus-rollback-residual-"));
+        assert!(INCUS_BOOTSTRAP_SCRIPT.contains("rollback residual"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_executes_all_independent_restores_when_systemctl_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let deployment = root.path().join("deployment");
+        let bin_dir = root.path().join("fake-bin");
+        let binary = root.path().join("labby");
+        let assets = root.path().join("web-assets");
+        let log = root.path().join("commands.log");
+        std::fs::create_dir_all(deployment.join("web")).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(deployment.join("labby"), b"prior-binary").unwrap();
+        std::fs::write(deployment.join("web/index.html"), b"prior-assets").unwrap();
+        std::fs::write(
+            deployment.join("manifest.env"),
+            "binary_present=1\nassets_present=1\nactive_state=active\nunit_file_state=enabled\n",
+        )
+        .unwrap();
+        std::fs::write(&binary, b"candidate").unwrap();
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("index.html"), b"candidate-assets").unwrap();
+        let systemctl = bin_dir.join("systemctl");
+        std::fs::write(
+            &systemctl,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$COMMAND_LOG\"\n[ \"$1\" != stop ]\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let curl = bin_dir.join("curl");
+        std::fs::write(&curl, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = remote_release_rollback_script_for(
+            deployment.to_str().unwrap(),
+            binary.to_str().unwrap(),
+            assets.to_str().unwrap(),
+            "labby.service",
+            "http://127.0.0.1/ready",
+        );
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()))
+            .env("COMMAND_LOG", &log)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(70));
+        assert_eq!(std::fs::read(&binary).unwrap(), b"prior-binary");
+        assert_eq!(
+            std::fs::read(assets.join("index.html")).unwrap(),
+            b"prior-assets"
+        );
+        let calls = std::fs::read_to_string(log).unwrap();
+        assert!(calls.contains("stop labby.service"));
+        assert!(calls.contains("enable labby.service"));
+        assert!(calls.contains("start labby.service"));
+        assert!(deployment.exists(), "failed rollback must retain manifest");
+    }
     use std::ffi::OsStr;
 
     #[test]

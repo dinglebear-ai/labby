@@ -1,8 +1,12 @@
+# check=skip=InvalidDefaultArgInFrom
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
 # Requires Rust 1.97.1+ (Cargo.toml: rust-version = "1.97.1", edition = "2024")
-# TODO: pin by digest (FROM rust:1-slim@sha256:...) for reproducible builds —
-#       floating tag resolves a fresh image per build.
-FROM rust:1-slim AS builder
+# Supply-chain policy requires callers to pass a versioned, digest-pinned image.
+ARG LABBY_BUILDER_IMAGE
+ARG LABBY_RUNTIME_IMAGE
+ARG LABBY_DEBIAN_SNAPSHOT
+FROM ${LABBY_BUILDER_IMAGE} AS builder
+ARG LABBY_DEBIAN_SNAPSHOT
 
 WORKDIR /build
 
@@ -17,7 +21,12 @@ ENV CARGO_PROFILE_RELEASE_LTO=false \
 #   build-essential — C compiler for rusqlite's bundled SQLite + other -sys crates
 #   libssl-dev     — headers/pkg-config metadata for crates pulling openssl-sys
 #   libclang-dev   — libclang for rquickjs-sys bindgen during Code Mode builds
-RUN apt-get update \
+RUN printf '%s\n' \
+      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${LABBY_DEBIAN_SNAPSHOT}/ trixie main" \
+      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${LABBY_DEBIAN_SNAPSHOT}/ trixie-security main" \
+      > /etc/apt/sources.list \
+ && rm -f /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       pkg-config \
       build-essential \
@@ -43,7 +52,7 @@ COPY crates/xtask/Cargo.toml crates/xtask/Cargo.toml
 
 # Create stub source files so cargo can parse ALL manifests without error.
 #
-# labby has two [[bin]] targets plus a [lib] target — stub all three.
+# labby has three explicit [[bin]] targets plus a [lib] target — stub all four.
 #
 # We also need apps/gateway-admin/out/ to exist for include_dir!() in web.rs,
 # but we copy the real one below — for the dep-cache step a stub dir suffices.
@@ -63,6 +72,7 @@ RUN mkdir -p \
       apps/gateway-admin/out \
  && echo 'fn main(){}' > crates/labby/src/main.rs \
  && echo 'fn main(){}' > crates/labby/tests/fixtures/stdio_mcp_fixture.rs \
+ && echo 'fn main(){}' > crates/labby/tests/fixtures/live_harness_fixture.rs \
  && echo 'fn main(){}' > crates/xtask/src/main.rs \
  && echo 'fn main(){}' > crates/labby-web/build.rs \
  && touch \
@@ -121,16 +131,21 @@ RUN find crates -type f -exec touch {} + \
  && cargo build --workspace --all-features --release
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-# TODO: pin by digest (FROM debian:trixie-slim@sha256:...) for reproducible
-#       builds — floating tag resolves a fresh image per build.
-FROM debian:trixie-slim AS runtime
+# Supply-chain policy requires callers to pass a versioned, digest-pinned image.
+FROM ${LABBY_RUNTIME_IMAGE} AS runtime
 
-ARG NPM_VERSION="12.0.2"
-ARG NPM_SHA512="b885e890b9418fa1693544d05f53e64f9a73ec194837d4258b15fecdd692347b1dd2a517b1b0cbaf9d31cd8e92c3b70956bd2ecc72833a57b4b3098f5bfa7943"
-ARG NPM_BRACE_EXPANSION_VERSION="5.0.9"
-ARG NPM_BRACE_EXPANSION_SHA512="49c43822ebc8105d533253fb66dfaf8c9ffff7394f6f64837315b13376e4f2ceade8619d27b28ed5d09c4e274e3c929e3d6df42c4ff6713ef00b23e1a3dfd6c6"
-ARG NPM_IP_ADDRESS_VERSION="10.3.1"
-ARG NPM_IP_ADDRESS_SHA512="d5ef5dde46fdecd1c94c8243656f6b2aa5b687af9d15ae740f2d1fa4f48c429d800e37b982f2ac5e67622ba770639b7be93693b79f8fe4dd58fcba13a08c4fea"
+ARG LABBY_NPM_VERSION
+ARG LABBY_NPM_SHA512
+ARG LABBY_NPM_BRACE_EXPANSION_VERSION
+ARG LABBY_NPM_BRACE_EXPANSION_SHA512
+ARG LABBY_NPM_IP_ADDRESS_VERSION
+ARG LABBY_NPM_IP_ADDRESS_SHA512
+ARG LABBY_DEBIAN_SNAPSHOT
+ARG LABBY_NODE_VERSION
+ARG LABBY_NODE_SHA256
+ARG LABBY_UV_VERSION
+ARG LABBY_UV_SHA256
+ARG LABBY_AGENT_CLIS_LOCK_SHA256
 
 LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
 
@@ -141,55 +156,56 @@ LABEL io.modelcontextprotocol.server.name="ai.dinglebear/labby"
 # upgraded to the current security candidates before the release image is scanned.
 # Replace NodeSource's bundled npm from a digest-pinned tarball, then patch
 # fixed bundled dependencies that have not yet landed in an npm release.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates curl git gnupg \
-      bsdutils libblkid1 liblastlog2-2 libmount1 libsmartcols1 libuuid1 \
-      login mount util-linux \
- && mkdir -p /etc/apt/keyrings \
- && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
- && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
-    > /etc/apt/sources.list.d/nodesource.list \
+RUN printf '%s\n' \
+      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${LABBY_DEBIAN_SNAPSHOT}/ trixie main" \
+      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${LABBY_DEBIAN_SNAPSHOT}/ trixie-security main" \
+      > /etc/apt/sources.list \
+ && rm -f /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
- && apt-get install -y --no-install-recommends nodejs zsh \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl git \
+      bsdutils libblkid1 liblastlog2-2 libmount1 libsmartcols1 libuuid1 \
+      login mount util-linux xz-utils zsh \
+ && curl -fsSLo /tmp/node.tar.xz --connect-timeout 10 --max-time 300 "https://nodejs.org/dist/v${LABBY_NODE_VERSION}/node-v${LABBY_NODE_VERSION}-linux-x64.tar.xz" \
+ && echo "${LABBY_NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check --strict \
+ && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+ && rm /tmp/node.tar.xz \
  && npm_root="$(npm root --global)" \
- && curl -fsSLo /tmp/npm.tgz "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz" \
- && echo "${NPM_SHA512}  /tmp/npm.tgz" | sha512sum --check --strict \
+ && curl -fsSLo /tmp/npm.tgz --connect-timeout 10 --max-time 300 "https://registry.npmjs.org/npm/-/npm-${LABBY_NPM_VERSION}.tgz" \
+ && echo "${LABBY_NPM_SHA512}  /tmp/npm.tgz" | sha512sum --check --strict \
  && mkdir -p /tmp/npm-package \
  && tar -xzf /tmp/npm.tgz --strip-components=1 -C /tmp/npm-package \
  && rm -rf "${npm_root}/npm" \
  && mv /tmp/npm-package "${npm_root}/npm" \
- && curl -fsSLo /tmp/brace-expansion.tgz "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${NPM_BRACE_EXPANSION_VERSION}.tgz" \
- && echo "${NPM_BRACE_EXPANSION_SHA512}  /tmp/brace-expansion.tgz" | sha512sum --check --strict \
+ && curl -fsSLo /tmp/brace-expansion.tgz --connect-timeout 10 --max-time 300 "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${LABBY_NPM_BRACE_EXPANSION_VERSION}.tgz" \
+ && echo "${LABBY_NPM_BRACE_EXPANSION_SHA512}  /tmp/brace-expansion.tgz" | sha512sum --check --strict \
  && rm -rf "${npm_root}/npm/node_modules/brace-expansion" \
  && mkdir -p "${npm_root}/npm/node_modules/brace-expansion" \
  && tar -xzf /tmp/brace-expansion.tgz --strip-components=1 -C "${npm_root}/npm/node_modules/brace-expansion" \
- && curl -fsSLo /tmp/ip-address.tgz "https://registry.npmjs.org/ip-address/-/ip-address-${NPM_IP_ADDRESS_VERSION}.tgz" \
- && echo "${NPM_IP_ADDRESS_SHA512}  /tmp/ip-address.tgz" | sha512sum --check --strict \
+ && curl -fsSLo /tmp/ip-address.tgz --connect-timeout 10 --max-time 300 "https://registry.npmjs.org/ip-address/-/ip-address-${LABBY_NPM_IP_ADDRESS_VERSION}.tgz" \
+ && echo "${LABBY_NPM_IP_ADDRESS_SHA512}  /tmp/ip-address.tgz" | sha512sum --check --strict \
  && rm -rf "${npm_root}/npm/node_modules/ip-address" \
  && mkdir -p "${npm_root}/npm/node_modules/ip-address" \
  && tar -xzf /tmp/ip-address.tgz --strip-components=1 -C "${npm_root}/npm/node_modules/ip-address" \
  && ln -sf "${npm_root}/npm/bin/npm-cli.js" /usr/local/bin/npm \
  && ln -sf "${npm_root}/npm/bin/npx-cli.js" /usr/local/bin/npx \
- && test "$(npm --version)" = "${NPM_VERSION}" \
+ && test "$(npm --version)" = "${LABBY_NPM_VERSION}" \
  && test "$(node -p "require('${npm_root}/npm/node_modules/tar/package.json').version")" = "7.5.19" \
  && test "$(node -p "require('${npm_root}/npm/node_modules/undici/package.json').version")" = "6.27.0" \
- && test "$(node -p "require('${npm_root}/npm/node_modules/brace-expansion/package.json').version")" = "${NPM_BRACE_EXPANSION_VERSION}" \
- && test "$(node -p "require('${npm_root}/npm/node_modules/ip-address/package.json').version")" = "${NPM_IP_ADDRESS_VERSION}" \
+ && test "$(node -p "require('${npm_root}/npm/node_modules/brace-expansion/package.json').version")" = "${LABBY_NPM_BRACE_EXPANSION_VERSION}" \
+ && test "$(node -p "require('${npm_root}/npm/node_modules/ip-address/package.json').version")" = "${LABBY_NPM_IP_ADDRESS_VERSION}" \
  && rm -f /tmp/npm.tgz /tmp/brace-expansion.tgz /tmp/ip-address.tgz \
  && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs used by stdio MCP servers that shell out to provider tools.
 # Keep these deterministic so container behavior matches local development.
+# npm 12 blocks unapproved dependency install scripts; run Claude Code's pinned
+# postinstall explicitly so its platform-native optional binary is installed.
+COPY config/agent-clis/package.json config/agent-clis/package-lock.json /opt/agent-clis/
 RUN mkdir -p /opt/agent-clis \
  && cd /opt/agent-clis \
- && npm init -y >/dev/null \
- && npm install --omit=dev --no-audit --no-fund \
-      @anthropic-ai/claude-code@2.1.163 \
-      @openai/codex@0.130.0 \
- # npm 12 blocks unapproved dependency install scripts; run Claude Code's pinned
- # postinstall explicitly so its platform-native optional binary is installed.
+ && echo "${LABBY_AGENT_CLIS_LOCK_SHA256}  package-lock.json" | sha256sum --check --strict \
+ && npm ci --omit=dev --no-audit --no-fund \
  && node node_modules/@anthropic-ai/claude-code/install.cjs \
  && ln -sf /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
@@ -200,14 +216,12 @@ RUN mkdir -p /opt/agent-clis \
 # Python MCP servers commonly use `uvx` as their stdio launcher. Install uv
 # into PATH for gateway child processes.
 #
-# Reproducibility: the astral.sh installer pins a version when UV_VERSION is set
-# (it fetches that exact release instead of "latest"). UV_VERSION is currently
-# empty, so this tracks the latest uv at build time.
-# TODO: pin uv by setting UV_VERSION to a verified release tag (e.g. "0.x.y")
-#       so the runtime image is reproducible across builds.
-ARG UV_VERSION=""
-RUN curl -LsSf https://astral.sh/uv/install.sh \
-    | env UV_INSTALL_DIR=/usr/local/bin UV_VERSION="${UV_VERSION}" sh \
+RUN curl -fsSLo /tmp/uv.tar.gz --connect-timeout 10 --max-time 300 "https://github.com/astral-sh/uv/releases/download/${LABBY_UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${LABBY_UV_SHA256}  /tmp/uv.tar.gz" | sha256sum --check --strict \
+ && tar -xzf /tmp/uv.tar.gz -C /tmp \
+ && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv \
+ && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/uvx \
+ && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu \
  && uv --version \
  && uvx --version
 
@@ -223,6 +237,12 @@ RUN mkdir -p \
 
 COPY --from=builder /build/target/release/labby /usr/local/bin/labby
 
+# Health recovery has one explicit owner. After three failed probes the helper
+# records redacted evidence in the persistent state volume and terminates PID 1.
+# It exponentially backs off restart requests and stops requesting replacement
+# after the bounded storm threshold, leaving the container unhealthy for review.
+COPY --chmod=0755 scripts/ci/container-healthcheck.sh /usr/local/bin/labby-healthcheck
+
 ENV HOME=/home/labby
 USER 1000:1000
 WORKDIR /home/labby
@@ -231,7 +251,7 @@ WORKDIR /home/labby
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:8765/health || exit 1
+    CMD ["/usr/local/bin/labby-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/labby"]
 # Master HTTP mode by default.

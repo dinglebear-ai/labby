@@ -1,50 +1,52 @@
-# TODO: pin by digest (FROM ubuntu:25.10@sha256:...) for reproducible builds —
-#       floating tag resolves a fresh image per build.
-FROM ubuntu:25.10
+ARG LABBY_RUNTIME_IMAGE=docker.io/library/debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+FROM ${LABBY_RUNTIME_IMAGE}
+ARG LABBY_DEBIAN_SNAPSHOT=20260904T000000Z
+ARG LABBY_NODE_VERSION=24.13.0
+ARG LABBY_NODE_SHA256=e798599612f4bb71333a3397ab0d095fd62214e115aea45aa858a145fc72d67e
+ARG LABBY_UV_VERSION=0.11.10
+ARG LABBY_UV_SHA256=077e1a0777bcf516e02f4ef245e269c8d1baa780438e4c50e09c5c997f85538a
+ARG LABBY_AGENT_CLIS_LOCK_SHA256=bb0d908f4dbdb457ca8d84f14e686c45ab53ae6d1bbeedc367ddfa0e2d705298
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
- && mkdir -p /etc/apt/keyrings \
- && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
- && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
-    > /etc/apt/sources.list.d/nodesource.list \
+RUN printf '%s\n' \
+      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${LABBY_DEBIAN_SNAPSHOT}/ trixie main" \
+      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${LABBY_DEBIAN_SNAPSHOT}/ trixie-security main" \
+      > /etc/apt/sources.list \
+ && rm -f /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
- && apt-get install -y --no-install-recommends nodejs zsh \
+ && apt-get install -y --no-install-recommends ca-certificates curl git xz-utils zsh \
+ && curl -fsSLo /tmp/node.tar.xz --connect-timeout 10 --max-time 300 "https://nodejs.org/dist/v${LABBY_NODE_VERSION}/node-v${LABBY_NODE_VERSION}-linux-x64.tar.xz" \
+ && echo "${LABBY_NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check --strict \
+ && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+ && rm /tmp/node.tar.xz \
  && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs remain available for stdio MCP servers that invoke provider tools.
 # Install only the native CLIs, pinned exactly; ACP adapters are intentionally absent.
-RUN mkdir -p /opt/agent-clis \
- && cd /opt/agent-clis \
- && npm init -y >/dev/null \
- && npm install --omit=dev --no-audit --no-fund \
-      @anthropic-ai/claude-code@2.1.163 \
-      @openai/codex@0.130.0 \
-      @google/gemini-cli@0.40.0 \
+COPY config/agent-clis/package.json config/agent-clis/package-lock.json /opt/agent-clis/
+RUN cd /opt/agent-clis \
+ && echo "${LABBY_AGENT_CLIS_LOCK_SHA256}  package-lock.json" | sha256sum --check --strict \
+ && npm ci --omit=dev --no-audit --no-fund \
+ && node node_modules/@anthropic-ai/claude-code/install.cjs \
  && ln -sf /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
- && ln -sf /opt/agent-clis/node_modules/.bin/gemini /usr/local/bin/gemini \
  && npm cache clean --force
 
 # Python MCP servers commonly use `uvx` as their stdio launcher. Install uv
 # into PATH for gateway child processes.
-#
-# Reproducibility: the astral.sh installer pins a version when UV_VERSION is set
-# (it fetches that exact release instead of "latest"). UV_VERSION is currently
-# empty, so this tracks the latest uv at build time.
-# TODO: pin uv by setting UV_VERSION to a verified release tag (e.g. "0.x.y")
-#       so the image is reproducible across builds.
-ARG UV_VERSION=""
-RUN curl -LsSf https://astral.sh/uv/install.sh \
-    | env UV_INSTALL_DIR=/usr/local/bin UV_VERSION="${UV_VERSION}" sh \
+RUN curl -fsSLo /tmp/uv.tar.gz --connect-timeout 10 --max-time 300 "https://github.com/astral-sh/uv/releases/download/${LABBY_UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+ && echo "${LABBY_UV_SHA256}  /tmp/uv.tar.gz" | sha256sum --check --strict \
+ && tar -xzf /tmp/uv.tar.gz -C /tmp \
+ && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv \
+ && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/uvx \
+ && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu \
  && uv --version \
  && uvx --version
 
 RUN mkdir -p /home/labby/.labby /home/labby/.config/labby /home/labby/.local/state/labby /home/labby/.local/share/labby /home/labby/.npm /home/labby/.cache \
  && chown -R 1000:1000 /home/labby
 COPY bin/labby /usr/local/bin/labby
+COPY --chmod=0755 scripts/ci/container-healthcheck.sh /usr/local/bin/labby-healthcheck
 RUN chmod +x /usr/local/bin/labby
 ENV HOME=/home/labby
 USER 1000:1000
@@ -52,7 +54,7 @@ WORKDIR /home/labby
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:8765/health || exit 1
+    CMD ["/usr/local/bin/labby-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/labby"]
 CMD ["serve"]

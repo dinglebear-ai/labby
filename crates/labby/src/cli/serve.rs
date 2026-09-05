@@ -243,7 +243,14 @@ fn bootstrap_selected_skill_library_with<T>(
 }
 
 /// Run the serve subcommand.
-pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
+pub fn run(args: ServeArgs, config: &LabConfig) -> impl Future<Output = Result<ExitCode>> {
+    // Keep the long-lived server future off the CLI and stdio shortcut frames.
+    // Those frames remain on the main thread during MCP initialization, which
+    // must leave room for the protocol decoder on a one-mebibyte stack.
+    Box::pin(run_server(args, config))
+}
+
+async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let transport = resolve_transport(
         args.transport,
         args.command.as_ref(),
@@ -279,7 +286,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     let trusted_host_verifier =
         resolve_trusted_host_verifier(transport, unix_listener_config.as_ref(), peer_auth_enabled)?;
     let integrated_trusted_host = trusted_host_verifier.is_some();
-    let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
+    let config_path = config_toml_path()?;
     tracing::info!(
         subsystem = "startup",
         phase = "bootstrap.start",
@@ -375,7 +382,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // secrets are read.  heal_env_file_permissions is idempotent and a no-op on
     // non-Unix targets.  Do NOT call this after secrets are already in memory —
     // only the on-disk file mode matters here.
-    if let Some(env_path) = dotenv_path() {
+    if let Ok(env_path) = dotenv_path() {
         heal_env_file_permissions(&env_path);
     }
 
@@ -599,7 +606,7 @@ pub async fn run(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .with_depot_snapshot(depot_secrets, depot_policy)
         .with_depot_storage(
             config_path.clone(),
-            dotenv_path().unwrap_or_else(|| ".env".into()),
+            dotenv_path().unwrap_or_else(|_| ".env".into()),
             config_path
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
@@ -1618,7 +1625,7 @@ async fn build_gateway_runtime(
     );
     crate::config::set_process_code_mode_enabled(config.code_mode.enabled);
     let usage_store = if crate::config::usage_telemetry_enabled() {
-        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()).await {
+        match labby_gateway::usage::UsageStore::open(crate::config::usage_db_path()?).await {
             Ok(store) => Some(Arc::new(store)),
             Err(error) => {
                 tracing::warn!(
@@ -1633,7 +1640,7 @@ async fn build_gateway_runtime(
     };
     let step_journal = if crate::config::codemode_journal_enabled() {
         match labby_gateway::codemode_journal::StepJournalStore::open(
-            crate::config::codemode_journal_db_path(),
+            crate::config::codemode_journal_db_path()?,
         )
         .await
         {
@@ -1684,7 +1691,7 @@ async fn build_gateway_runtime(
             .run_upstream_notifications(gateway_runtime.clone()),
     );
     let _catalog_notifier_task = tokio::spawn(notifier.clone().run(notify_rx));
-    let config_path = config_toml_path().unwrap_or_else(|| "config.toml".into());
+    let config_path = config_toml_path()?;
     let live_config = Arc::new(std::sync::RwLock::new(config.clone()));
     let store: Arc<dyn labby_gateway::gateway::config_store::GatewayConfigStore> = Arc::new(
         LabConfigStore::new(Arc::clone(&live_config), config_path.clone())
@@ -1897,105 +1904,109 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
     Ok(ExitCode::SUCCESS)
 }
 
-async fn run_stdio(
+fn run_stdio(
     registry: Arc<ToolRegistry>,
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
     access_runtime: Arc<AccessRuntime>,
     notifier: PeerNotifier,
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
-) -> Result<ExitCode> {
-    if suppress_upstream_runtime {
-        tracing::warn!(
-            surface = "mcp",
-            service = "stdio",
-            action = "recursion_guard.detected",
-            subsystem = "mcp_server",
-            phase = "stdio.recursion_guard",
-            transport = "stdio",
-            spawn_depth,
-            "LABBY_SPAWN_DEPTH is set for stdio MCP serve; upstream spawning is disabled in this mode"
-        );
-    } else {
-        tracing::info!(
-            surface = "mcp",
-            service = "stdio",
-            action = "recursion_guard.clear",
-            subsystem = "mcp_server",
-            phase = "stdio.recursion_guard",
-            transport = "stdio",
-            spawn_depth,
-            "stdio MCP recursion guard clear"
-        );
-    }
-    tracing::info!(
-        surface = "mcp",
-        service = "stdio",
-        action = "server.start",
-        subsystem = "mcp_server",
-        phase = "start",
-        transport = "stdio",
-        services = registry.services().len(),
-        "starting stdio mcp server"
-    );
-    tracing::info!(
-        subsystem = "startup",
-        phase = "ready",
-        transport = "stdio",
-        services = registry.services().len(),
-        "labby serve ready"
-    );
-    let service_count = registry.services().len();
-    let server = LabMcpServer {
-        registry,
-        access_runtime,
-        #[cfg(feature = "gateway")]
-        gateway_manager: Some(Arc::clone(&gateway_manager)),
-        peers: Arc::clone(&notifier.peers),
-        code_mode_app_state: notifier.code_mode_app_state.clone(),
-        last_listed_tool_contract: Default::default(),
-        route_runtime: Default::default(),
-        #[cfg(feature = "gateway")]
-        client_registry: notifier.client_registry.clone(),
-        transport_label: "stdio",
-        logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-            crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
-        )),
-        route_scope: crate::mcp::route_scope::McpRouteScope::Root,
-        relay_session_id: crate::mcp::server::next_relay_session_id(),
-        #[cfg(test)]
-        code_mode_widget_callbacks_enabled_for_test: false,
-    };
-    let running = server.serve(rmcp::transport::stdio()).await;
-    let server_result: Result<()> = match running {
-        Ok(running) => {
+) -> impl Future<Output = Result<ExitCode>> {
+    // The server bootstrap stays on the stack throughout this session. Keep
+    // the protocol future on the heap rather than copying it into that frame.
+    Box::pin(async move {
+        if suppress_upstream_runtime {
+            tracing::warn!(
+                surface = "mcp",
+                service = "stdio",
+                action = "recursion_guard.detected",
+                subsystem = "mcp_server",
+                phase = "stdio.recursion_guard",
+                transport = "stdio",
+                spawn_depth,
+                "LABBY_SPAWN_DEPTH is set for stdio MCP serve; upstream spawning is disabled in this mode"
+            );
+        } else {
             tracing::info!(
                 surface = "mcp",
                 service = "stdio",
-                action = "server.ready",
+                action = "recursion_guard.clear",
                 subsystem = "mcp_server",
-                phase = "ready",
+                phase = "stdio.recursion_guard",
                 transport = "stdio",
-                services = service_count,
-                "stdio mcp server ready"
+                spawn_depth,
+                "stdio MCP recursion guard clear"
             );
-            running.waiting().await.map(|_| ()).map_err(Into::into)
         }
-        Err(error) => Err(error.into()),
-    };
-    #[cfg(feature = "gateway")]
-    gateway_manager.shutdown_code_mode_runner_pool().await;
-    server_result?;
-    tracing::info!(
-        surface = "mcp",
-        service = "stdio",
-        action = "server.stop",
-        subsystem = "mcp_server",
-        phase = "stop",
-        transport = "stdio",
-        "stdio mcp server stopped"
-    );
-    Ok(ExitCode::SUCCESS)
+        tracing::info!(
+            surface = "mcp",
+            service = "stdio",
+            action = "server.start",
+            subsystem = "mcp_server",
+            phase = "start",
+            transport = "stdio",
+            services = registry.services().len(),
+            "starting stdio mcp server"
+        );
+        tracing::info!(
+            subsystem = "startup",
+            phase = "ready",
+            transport = "stdio",
+            services = registry.services().len(),
+            "labby serve ready"
+        );
+        let service_count = registry.services().len();
+        let server = LabMcpServer {
+            registry,
+            access_runtime,
+            #[cfg(feature = "gateway")]
+            gateway_manager: Some(Arc::clone(&gateway_manager)),
+            peers: Arc::clone(&notifier.peers),
+            code_mode_app_state: notifier.code_mode_app_state.clone(),
+            last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
+            #[cfg(feature = "gateway")]
+            client_registry: notifier.client_registry.clone(),
+            transport_label: "stdio",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
+                crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
+            )),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+            relay_session_id: crate::mcp::server::next_relay_session_id(),
+            #[cfg(test)]
+            code_mode_widget_callbacks_enabled_for_test: false,
+        };
+        let running = server.serve(rmcp::transport::stdio()).await;
+        let server_result: Result<()> = match running {
+            Ok(running) => {
+                tracing::info!(
+                    surface = "mcp",
+                    service = "stdio",
+                    action = "server.ready",
+                    subsystem = "mcp_server",
+                    phase = "ready",
+                    transport = "stdio",
+                    services = service_count,
+                    "stdio mcp server ready"
+                );
+                running.waiting().await.map(|_| ()).map_err(Into::into)
+            }
+            Err(error) => Err(error.into()),
+        };
+        #[cfg(feature = "gateway")]
+        gateway_manager.shutdown_code_mode_runner_pool().await;
+        server_result?;
+        tracing::info!(
+            surface = "mcp",
+            service = "stdio",
+            action = "server.stop",
+            subsystem = "mcp_server",
+            phase = "stop",
+            transport = "stdio",
+            "stdio mcp server stopped"
+        );
+        Ok(ExitCode::SUCCESS)
+    })
 }
 
 fn resolve_lab_spawn_depth(env: Option<String>) -> Option<u32> {

@@ -36,6 +36,7 @@ pub mod config;
 pub mod dispatch;
 #[allow(unreachable_pub)]
 pub mod docs;
+pub mod durable_state;
 mod entrypoint;
 pub mod installation;
 #[cfg(feature = "gateway")]
@@ -59,6 +60,7 @@ pub mod proxy;
 pub mod registry;
 #[cfg(feature = "skills")]
 pub(crate) mod skills;
+mod stdio_sandbox;
 #[cfg(test)]
 pub mod test_support;
 #[cfg(unix)]

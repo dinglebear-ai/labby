@@ -33,7 +33,7 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 | `server_logs` | [services/SERVER_LOGS.md](./services/SERVER_LOGS.md) | Labby's own server-process log query and journal tail |
 | `fs` | [services/FILESYSTEM.md](./services/FILESYSTEM.md) | Optional jailed read-only workspace browsing and preview |
 | `snippets` | [services/SNIPPETS.md](./services/SNIPPETS.md) | Reusable Code Mode workflow storage, validation, execution, testing, promotion |
-| `artifacts` | [services/SKILLS.md](./services/SKILLS.md) | Durable Artifact library, remote authority control plane, and native Agent Skills projection |
+| `artifacts`, `bundles`, `jobs`, `sources`, `uploads` | [services/SKILLS.md](./services/SKILLS.md) and [artifacts/](./artifacts/) | Durable Artifact library, provider-backed control-plane projections, and native Agent Skills projection |
 | `lab_admin` | [services/LAB_ADMIN.md](./services/LAB_ADMIN.md) | Runtime-conditional onboarding audit surface |
 | access owner bootstrap | [services/ACCESS.md](./services/ACCESS.md) | Browser-only explicit creation of the first access-control owner |
 | direct stdio proxy | [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) | One selected stdio MCP server exposed over Streamable HTTP |
@@ -63,6 +63,8 @@ HTTP route, not a registered multi-surface service.
 - [Unraid plugin](./runtime/UNRAID.md)
 - [GitHub Actions runner](./runtime/ACTIONS_RUNNER.md)
 - [CI/CD](./runtime/CICD.md)
+- [Container runtime](./runtime/CONTAINERS.md)
+- [Durable-state disaster recovery](./runtime/DISASTER_RECOVERY.md)
 - [Operations](./OPERATIONS.md)
 - [Technology and Rust build](./TECH.md)
 

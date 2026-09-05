@@ -285,6 +285,7 @@ mod host_config {
 
     // Exactly the fields written by LabConfig::apply_gateway_config.
     const GATEWAY_KEYS: &[&str] = &[
+        "config_version",
         "code_mode",
         "mcp_apps",
         "upstream_request_timeout_ms",

@@ -57,13 +57,17 @@ done
 entity_value() {
     # $1 = entity name. Tolerates the column-aligned whitespace used in
     # labby.plg's DTD block (e.g. "<!ENTITY name         \"labby\">").
-    grep -oP "(?<=<!ENTITY $1)\s+\"\K[^\"]+" "$plg"
+    sed -nE "s|.*<!ENTITY $1[[:space:]]+\"([^\"]+)\".*|\\1|p" "$plg"
 }
 
 set_entity() {
     # $1 = entity name, $2 = new value. Preserves existing alignment
     # whitespace between the entity name and its opening quote.
-    sed -i -E "s|(<!ENTITY $1[[:space:]]+)\"[^\"]*\"|\1\"$2\"|" "$plg"
+    local temp
+    temp="$(mktemp "${TMPDIR:-/tmp}/labby-plg.XXXXXX")"
+    cp -p "$plg" "$temp"
+    sed -E "s|(<!ENTITY $1[[:space:]]+)\"[^\"]*\"|\\1\"$2\"|" "$plg" >"$temp"
+    mv -f "$temp" "$plg"
 }
 
 mismatch=0
@@ -123,7 +127,7 @@ expand_plugin_url() {
 
 if [ -f "$ca" ]; then
     plg_plugin_url="$(expand_plugin_url)"
-    ca_plugin_url="$(grep -oP '(?<=<PluginURL>)[^<]+' "$ca" || true)"
+    ca_plugin_url="$(sed -nE 's|.*<PluginURL>([^<]+)</PluginURL>.*|\1|p' "$ca")"
     if [ "$plg_plugin_url" != "$ca_plugin_url" ]; then
         echo "::error::unraid/ca/labby.xml <PluginURL> is '$ca_plugin_url' but unraid/labby.plg's pluginURL entity resolves to '$plg_plugin_url'. Community Applications requires these to match exactly; fix whichever is wrong by hand." >&2
         mismatch=1

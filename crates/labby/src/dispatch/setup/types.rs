@@ -84,6 +84,21 @@ pub struct PrepareFileIdentity {
     pub mode: u32,
     #[cfg(unix)]
     pub links: u64,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub volume: u64,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub file_id: [u8; 16],
+    #[cfg(windows)]
+    #[serde(default)]
+    pub parent_volume: u64,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub parent_file_id: [u8; 16],
+    #[cfg(windows)]
+    #[serde(default)]
+    pub links: u32,
 }
 
 /// Secret-free, installation-owned crash recovery authority.

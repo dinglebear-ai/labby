@@ -87,6 +87,7 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
                 check_url: args.check_url,
                 force_fallback: args.force_fallback || !args.no_force_fallback,
                 dry_run: false,
+                rollback: false,
             },
         ) {
             Ok(outcome) => (Some(outcome), None),

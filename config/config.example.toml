@@ -1,25 +1,25 @@
 # Lab configuration — preferences only, no secrets.
 #
-# Copy to ~/.labby/config.toml and uncomment sections as needed.
-# A ./config.toml in the working directory also works as a per-repo override.
+# Copy to $LABBY_HOME/config.toml and uncomment sections as needed. LABBY_HOME
+# must be absolute and defaults to ~/.labby. Labby does not implicitly read a
+# working-directory or XDG fallback config.
 #
-# Docker: docker-compose.yml mounts ${HOME}/.labby/config.toml directly, so
-# Docker and local `labby serve` share the same config.
+# Docker: set LABBY_CONFIG_DIR to the directory containing config.toml; Compose
+# mounts that directory read-only at /home/labby/.config/labby.
 #
-# Secrets (API keys, tokens, passwords, URLs) belong in ~/.labby/.env.
+# Secrets (API keys, tokens, passwords, URLs) belong in $LABBY_HOME/.env
+# (normally ~/.labby/.env).
 # Everything else belongs here. Only settings with a documented environment
 # alias can be overridden that way; proxy preferences intentionally do not
 # invent one-to-one aliases. Where an alias exists, env wins over config.toml.
 #
-# Config search order (first found wins):
-#   1. ./config.toml              (repo/CWD override)
-#   2. ~/.labby/config.toml         (user-level, next to .env)
-#   3. ~/.config/labby/config.toml  (XDG-style fallback)
+# Configuration authority:
+#   $LABBY_HOME/config.toml (normally ~/.labby/config.toml)
 #
 # Value precedence (highest wins):
 #   1. CLI flags
-#   2. Environment variables (including those loaded from ~/.labby/.env)
-#   3. config.toml (from whichever location was found)
+#   2. Environment variables (including those loaded from $LABBY_HOME/.env)
+#   3. $LABBY_HOME/config.toml
 #   4. Built-in defaults
 
 # ── Output ───────────────────────────────────────────────────────────────────
@@ -102,7 +102,10 @@
 # If unset, `labby serve` auto-detects the repo-local fallback at apps/gateway-admin/out.
 # assets_dir = "/srv/labby/out"
 
-# Disable /v1/* auth for the hosted web UI. Only for trusted reverse-proxy setups.
+# Local development only: bypass /v1/* browser authentication only while the
+# server is bound directly to a loopback address. This must not be used on a
+# network-reachable deployment or behind a reverse proxy, even if that proxy
+# performs its own authentication.
 # Override with LABBY_WEB_UI_AUTH_DISABLED=true.
 # disable_auth = false                    # default: false
 

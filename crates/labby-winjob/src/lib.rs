@@ -7,6 +7,11 @@
 //! `windows-sys` calls are encapsulated here behind a **safe** public API:
 //! callers never write `unsafe`.
 //!
+//! The small `fs` module extends this same boundary to protected bootstrap
+//! files: pinned ancestors, full Windows file identities, handle-based ACL
+//! verification, and exact-handle deletion. Product policy remains outside
+//! this crate; these primitives never interpret credentials or journals.
+//!
 //! On Windows there is no concept of a process group. A Job Object is the
 //! nearest OS equivalent: the kernel associates a child process (and, when
 //! `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is set, its entire descendant tree)
@@ -62,6 +67,10 @@
 //!
 //! On non-Windows targets this crate compiles to an empty library (`lab` only
 //! depends on it under `cfg(windows)`).
+
+/// Safe handle-based Windows filesystem primitives for protected product state.
+#[cfg(windows)]
+pub mod fs;
 
 #[cfg(windows)]
 use windows_sys::Win32::{

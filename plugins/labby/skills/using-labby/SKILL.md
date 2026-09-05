@@ -1,11 +1,11 @@
 ---
 name: using-labby
-description: "This skill should be used when the user mentions labby, the labby CLI, the Lab gateway, or any Lab operator surface. Triggers include: \"run labby doctor\", \"check labby health\", \"start the labby MCP server\", \"configure ~/.labby/.env\", \"search upstream MCP tools with Code Mode\", \"use labby gateway to import servers\", \"manage the Labby marketplace\", \"reload the gateway\", or any request to run labby CLI commands, inspect gateway upstreams, or dispatch an action against a Lab service."
+description: "Use when operating Labby through its CLI, MCP, HTTP API, or web UI; installing or updating Labby; configuring LABBY_HOME; bootstrapping, repairing, or rolling back an Incus gateway or host service; exporting, verifying, or restoring durable state; checking health or logs; managing gateway upstreams, OAuth, or protected routes; or discovering and executing upstream MCP tools with Code Mode."
 ---
 
 # Using the `labby` CLI
 
-`labby` is the Lab binary. Treat generated help and `docs/` as source of truth when this skill and the repo disagree.
+`labby` is the Labby binary. Treat generated help and `docs/` as source of truth when this skill and the repo disagree.
 
 ## Quick Start
 
@@ -23,7 +23,7 @@ Use `labby`, not the old `lab` command name.
 read `docs/generated/service-catalog.md`, `docs/generated/action-catalog.md`, or
 use service `help`/`schema` actions through MCP/API dispatch.
 
-## Top-Level Surfaces
+## Common Top-Level Surfaces
 
 | Command | Purpose |
 |---------|---------|
@@ -35,12 +35,18 @@ use service `help`/`schema` actions through MCP/API dispatch.
 | `labby gateway ...` | Manage proxied upstream MCP gateways and Code Mode |
 | `labby gateway discover` | Scan local MCP client configs for upstream servers |
 | `labby gateway import [-y]` | Import discovered MCP servers into the gateway |
-| `labby server-logs ...` | Search local Labby server logs |
+| `labby logs ...` | Read or follow Labby service logs |
+| `labby incus ...` | Manage the supported Incus gateway container |
+| `labby update ...` | Install a selected or latest Labby release |
+| `labby state ...` | Export, verify, or restore complete durable installation state |
 | `labby snippets ...` | Manage Code Mode snippets |
+| `labby skills ...` | Inspect Agent Skills visible to the local CLI |
+| `labby proxy ...` | Proxy a stdio MCP server to Streamable HTTP |
 | `labby docs ...` | Generate and verify code-owned catalogs |
 
-Use only current top-level commands from `labby --help`. Prefer `setup` and
-`gateway` for operator workflows.
+This is a common-workflow list, not a command inventory. Use only current
+top-level commands from `labby --help`. Prefer `setup` and `gateway` for
+operator workflows.
 
 For command details and workflows, read:
 
@@ -65,113 +71,29 @@ For direct MCP stdio use, run `labby mcp`. For browser/API/admin workflows, run 
 
 ## Code Mode Gotchas
 
-Labby exposes the public Code Mode tool as `codemode`. Use `codemode.search()` inside the async function first to inspect live upstream tool IDs, schemas, output schemas, TypeScript signatures, and `codemode.*` helper names. Do not guess parameter names from memory or older examples.
-
-If another skill instructs you to call a tool you don't see in your tool list (e.g. `mcp__lab__<service>` or `mcp__<server>__<tool>`), that capability is almost certainly an upstream behind this gateway, not a missing tool. Translate the instruction: search with `codemode.search()`, then call through `callTool()` or the generated helper. Never conclude a capability is unavailable without searching first.
-
-Use `codemode` with JavaScript that evaluates to an async function:
+Labby exposes the public Code Mode tool as `codemode`. Its JavaScript must
+evaluate to an async function. Search the live catalog before calling an
+upstream; do not guess tool IDs, helper names, schemas, or parameter envelopes:
 
 ```js
 async () => {
-  const result = await callTool("github::search_issues", { q: "bug" });
-  return result.items?.length ?? 0;
+  const hits = await codemode.search({ query: "github issues", limit: 5 });
+  return hits.results.map(t => ({ id: t.id, signature: t.signature }));
 }
 ```
 
-Prefer `callTool("<upstream>::<tool>", params)` when dynamically selecting tools. Use `codemode.<upstream>.<tool>(params)` only after `codemode.search()` confirms the helper name.
+Use `callTool("<upstream>::<tool>", params)` for dynamic targets. Use generated
+`codemode.<upstream>.<tool>(params)` helpers only after search confirms the
+path. Narrow execution with the top-level `upstreams` or `tools` allowlists.
 
-### Full Code Mode examples
+If a call returns `confirmation_required`, inspect the live upstream schema and
+put confirmation exactly where that schema requires it. Do not use
+`allow_destructive_actions`; it is not a public `codemode` parameter.
 
-Use these as complete payloads for the Labby MCP `codemode` tool. Keep the
-outer JSON fields (`code`, `upstreams`, `tools`) on the Labby tool call, not
-inside upstream params.
-
-Discover the exact tool IDs, signatures, and helper names first:
-
-```json
-{
-  "code": "async () => {\n    const hits = await codemode.search({ query: \"axon\", limit: 5 });\n    return hits.results.map(t => ({ path: t.path, id: t.id, signature: t.signature }));\n  }"
-}
-```
-
-Call a discovered tool with the raw ID. This is the safest form when a tool ID
-or upstream name is selected dynamically:
-
-```json
-{
-  "code": "async () => {\n    const help = await callTool(\"axon::axon\", { action: \"help\" });\n    return { ok: true, actions: help.actions ?? help };\n  }",
-  "tools": ["axon::axon"]
-}
-```
-
-Call an action-dispatched upstream using the shape from `codemode.search()` and
-`codemode.describe()`. Axon uses flat action fields:
-
-```json
-{
-  "code": "async () => {\n    const result = await callTool(\"axon::axon\", {\n      action: \"search\",\n      query: \"Labby Code Mode examples\",\n      limit: 5\n    });\n    const results = result.data?.data?.results ?? [];\n    return { count: results.length, results };\n  }",
-  "upstreams": ["axon"]
-}
-```
-
-Use a generated helper only after `codemode.search()` confirms the helper path:
-
-```json
-{
-  "code": "async () => {\n    const help = await codemode.axon.axon({ action: \"help\" });\n    return { ok: true, help_type: typeof help };\n  }",
-  "upstreams": ["axon"]
-}
-```
-
-Fan out independent reads and keep partial failures instead of losing the whole
-run:
-
-```json
-{
-  "code": "async () => {\n    const calls = await Promise.allSettled([\n      callTool(\"axon::axon\", { action: \"help\" }),\n      callTool(\"unraid::unraid\", { action: \"help\" }),\n      callTool(\"cortex::cortex\", { action: \"help\" })\n    ]);\n    return calls.map((r, index) => r.status === \"fulfilled\"\n      ? { index, ok: true, type: typeof r.value }\n      : { index, ok: false, error: JSON.parse(String(r.reason.message)) });\n  }",
-  "upstreams": ["axon", "unraid", "cortex"]
-}
-```
-
-Call a Windows helper through the live-confirmed helper path:
-
-```json
-{
-  "code": "async () => {\n    const result = await codemode.agent_os_windows_mcp.PowerShell({\n      command: \"$PSVersionTable.PSVersion.ToString()\"\n    });\n    return { ok: true, result };\n  }",
-  "tools": ["windows_windows-mcp::PowerShell"]
-}
-```
-
-Many upstreams are action-dispatched — one tool taking an `action` plus
-action-specific fields (e.g. `axon`, and the rmcp family: `unraid`, `unifi`,
-`cortex`, ...). The exact envelope is upstream-specific. Discover actions with
-`{ "action": "help" }`, `codemode.search()`, and `codemode.describe()` before
-calling. Guessing shapes rejects as `invalid_param` (`params must match exactly
-one schema`). See `references/code-mode.md` for the full pattern.
-
-If a call returns `confirmation_required`, inspect the upstream schema and retry
-with the confirmation field exactly where that upstream expects it. Do not try
-`allow_destructive_actions`; that is an internal flag surfaced by older error
-text, not a public MCP `codemode` parameter.
-
-Use `upstreams` or `tools` allowlists to narrow risky executions:
-
-```json
-{
-  "code": "async () => { return await codemode.agent_os_windows_mcp.Wait({ duration: 2 }); }",
-  "upstreams": ["windows_windows-mcp"]
-}
-```
-
-For `Wait`, use the live schema field:
-
-```js
-await codemode.agent_os_windows_mcp.Wait({ duration: 2 });
-```
-
-Do not use `{ seconds: ... }` unless the current `codemode.search()` result explicitly shows that field.
-
-For deeper Code Mode details, read `references/code-mode.md`.
+If another skill names a tool that is not directly visible, search Code Mode
+before concluding the capability is unavailable. Read `references/code-mode.md`
+for complete payloads, action-dispatched upstreams, safe fan-out, limits,
+result shaping, and error recovery.
 
 ## Configuration
 

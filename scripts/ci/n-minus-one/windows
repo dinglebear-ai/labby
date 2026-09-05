@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+runner_temp=${RUNNER_TEMP:?RUNNER_TEMP is required}
+if command -v cygpath >/dev/null 2>&1; then
+    runner_temp=$(cygpath -u "$runner_temp")
+fi
+work_root="$runner_temp/labby-n-minus-one/windows"
+install_dir="$work_root/bin"
+pwsh_install_dir="$install_dir"
+if command -v cygpath >/dev/null 2>&1; then
+    pwsh_install_dir=$(cygpath -w "$install_dir")
+fi
+labby_home="$work_root/home"
+pwsh_labby_home="$labby_home"
+if command -v cygpath >/dev/null 2>&1; then
+    pwsh_labby_home=$(cygpath -w "$labby_home")
+fi
+state_digest="$work_root/persisted-state.sha256"
+pid_file="$work_root/labby.pid"
+pwsh_pid_file="$pid_file"
+if command -v cygpath >/dev/null 2>&1; then
+    pwsh_pid_file=$(cygpath -w "$pid_file")
+fi
+
+seed_persisted_state() {
+    mkdir -p "$labby_home"
+    cat >"$labby_home/config.toml" <<'EOF'
+config_version = 1
+[gateway]
+extra_stdio_commands = ["labby"]
+[[upstream]]
+id = "n-minus-one"
+name = "n-minus-one"
+transport = "stdio"
+command = "labby"
+args = ["mcp"]
+EOF
+    printf 'LABBY_MCP_HTTP_TOKEN=%064d\n' 0 >"$labby_home/.env"
+    python "$repo_root/scripts/ci/n-minus-one-durable-state.py" seed "$labby_home"
+    (cd "$labby_home" && sha256sum config.toml .env) >"$state_digest"
+}
+
+verify_persisted_state() {
+    python "$repo_root/scripts/ci/n-minus-one-durable-state.py" verify "$labby_home"
+    (cd "$labby_home" && sha256sum -c "$state_digest")
+    LABBY_HOME="$pwsh_labby_home" pwsh -NoLogo -NoProfile -Command \
+        "\$env:PATH='$pwsh_install_dir;' + \$env:PATH; & '$pwsh_install_dir\\labby.exe' --json gateway list" |
+        grep -Fq '"id": "n-minus-one"'
+}
+
+run_installer() {
+    pwsh -NoLogo -NoProfile -File "$repo_root/scripts/install.ps1" -InstallDir "$pwsh_install_dir" -NoPathUpdate "$@"
+}
+
+verify_version() {
+    local expected=${1#v}
+    pwsh -NoLogo -NoProfile -Command "& '$pwsh_install_dir\\labby.exe' --version" | grep -Fq "$expected"
+}
+verify_provenance() {
+    : "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?exact candidate archive is required}"
+    : "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256:?exact candidate archive SHA-256 is required}"
+    "$repo_root/scripts/ci/verify-and-activate-release.sh" \
+        --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" --workflow release.yml \
+        --ref "${GITHUB_REF:?GITHUB_REF is required}" \
+        --artifact "$LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE" -- true
+}
+start_service() {
+    pwsh -NoLogo -NoProfile -Command \
+        "\$env:LABBY_HOME='$pwsh_labby_home'; \$p=Start-Process -FilePath '$pwsh_install_dir\\labby.exe' -ArgumentList 'serve' -PassThru; Set-Content -NoNewline -Path '$pwsh_pid_file' -Value \$p.Id"
+    for _ in {1..50}; do curl -fsS http://127.0.0.1:8765/ready >/dev/null && return; sleep 0.2; done
+    echo 'service did not become ready' >&2; return 1
+}
+stop_service() {
+    [[ -f "$pid_file" ]] || return 0
+    pwsh -NoLogo -NoProfile -Command "Stop-Process -Id (Get-Content '$pwsh_pid_file') -Force -ErrorAction SilentlyContinue"
+    rm -f "$pid_file"
+}
+authenticated_action() {
+    [[ -f "$pid_file" ]] || start_service
+    token=$(sed -n 's/^LABBY_MCP_HTTP_TOKEN=//p' "$labby_home/.env")
+    curl -fsS -X POST -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        --data '{"action":"gateway.list","params":{}}' \
+        http://127.0.0.1:8765/v1/gateway >/dev/null
+}
+
+case "${1:-}" in
+    install-previous) mkdir -p "$work_root"; run_installer -Version "$LABBY_PREVIOUS_VERSION" ;;
+    seed-state) start_service; seed_persisted_state; stop_service ;;
+    verify-previous) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state ;;
+    verify-provenance) verify_provenance ;;
+    upgrade)
+        : "${LABBY_N_MINUS_ONE_CANDIDATE_BINARY:?exact candidate binary is required}"
+        : "${LABBY_N_MINUS_ONE_CANDIDATE_SHA256:?exact candidate SHA-256 is required}"
+        candidate_binary="$LABBY_N_MINUS_ONE_CANDIDATE_BINARY"
+        command -v cygpath >/dev/null 2>&1 && candidate_binary=$(cygpath -w "$candidate_binary")
+        "$repo_root/scripts/ci/verify-and-activate-release.sh" \
+            --repo "$GITHUB_REPOSITORY" --workflow release.yml --ref "$GITHUB_REF" \
+            --artifact "${LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE:?exact candidate archive is required}" -- \
+            pwsh -NoLogo -NoProfile -File "$repo_root/scripts/install.ps1" \
+            -InstallDir "$pwsh_install_dir" -NoPathUpdate -Version "$LABBY_CANDIDATE_VERSION" \
+            -LocalBinary "$candidate_binary" -LocalSha256 "$LABBY_N_MINUS_ONE_CANDIDATE_SHA256"
+        ;;
+    verify-candidate) verify_version "$LABBY_CANDIDATE_VERSION"; verify_persisted_state ;;
+    authenticated-action) authenticated_action ;;
+    restart) stop_service; start_service ;;
+    verify-restart) verify_version "$LABBY_CANDIDATE_VERSION"; verify_persisted_state; authenticated_action ;;
+    rollback) stop_service; run_installer -Rollback ;;
+    verify-rollback) verify_version "$LABBY_PREVIOUS_VERSION"; verify_persisted_state ;;
+    *) echo "unknown stage: ${1:-}" >&2; exit 64 ;;
+esac

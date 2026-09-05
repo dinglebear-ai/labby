@@ -2912,9 +2912,15 @@ mod tests {
     }
 
     fn run_node(script: &str) {
+        // A file keeps the full browser fixture independent of Windows' much
+        // smaller process command-line limit. Explicit CommonJS matches `-e`.
+        let source = tempfile::Builder::new()
+            .suffix(".cjs")
+            .tempfile()
+            .expect("create MCP App behavior test script");
+        std::fs::write(source.path(), script).expect("write MCP App behavior test script");
         let output = Command::new("node")
-            .arg("-e")
-            .arg(script)
+            .arg(source.path())
             .output()
             .expect("node must be available for MCP App behavior tests");
         assert!(

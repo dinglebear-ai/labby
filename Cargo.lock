@@ -1031,6 +1031,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
+name = "enumflags2"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+dependencies = [
+ "enumflags2_derive",
+]
+
+[[package]]
+name = "enumflags2_derive"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "env_filter"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1909,6 +1929,7 @@ dependencies = [
  "labby-runtime",
  "labby-web",
  "labby-winjob",
+ "landlock",
  "nix",
  "oauth2",
  "process-wrap",
@@ -1922,7 +1943,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
- "serde_yaml",
+ "serde_yaml_ng",
  "sha2 0.11.0",
  "sse-stream",
  "strip-ansi-escapes",
@@ -1988,12 +2009,14 @@ dependencies = [
  "jsonwebtoken",
  "labby-primitives",
  "labby-runtime",
+ "labby-winjob",
  "oauth2",
  "rand 0.10.2",
  "reqwest",
  "rmcp",
  "rsa",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
@@ -2118,12 +2141,13 @@ version = "1.14.1"
 dependencies = [
  "atomic-write-file",
  "base64 0.22.1",
+ "futures",
  "jiff",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
- "serde_yaml",
+ "serde_yaml_ng",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
@@ -2149,8 +2173,20 @@ dependencies = [
 name = "labby-winjob"
 version = "1.14.1"
 dependencies = [
+ "tempfile",
  "tracing",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "landlock"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cca98e95f35b29d469dade6724c6f96cec9236640f745a0e99b0334ec320ab1"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3355,10 +3391,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
+name = "serde_yaml_ng"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
 dependencies = [
  "indexmap",
  "itoa",

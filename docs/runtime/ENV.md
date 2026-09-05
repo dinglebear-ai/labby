@@ -21,6 +21,19 @@ path `$LABBY_HOME/access.db`. Without it, the durable state root defaults to
 `~/.labby`. Do not use a relative working-directory path for daemon or stdio
 launches.
 
+An explicit `LABBY_HOME` is exclusive: Labby does not consult a conflicting
+current-directory `config.toml` or `.env`, and gateway credential writes use
+the same selected root. Without an explicit root, the same files live under
+`~/.labby`; current-directory files are not implicit overrides. Selected dotenv
+files fail visibly on read or parse errors rather than producing partial
+settings state.
+
+The fixed `labby.service` lifecycle preflight resolves its port only from
+`/home/labby/.labby/.env`, then `/home/labby/.labby/config.toml`, then the
+built-in `8765` default. An invoking administrator's `LABBY_MCP_HTTP_PORT`,
+`HOME`, or `LABBY_HOME` is not inherited by systemd and cannot influence the
+install/restart collision check.
+
 The access store has no independent environment override.
 `LABBY_AUTH_SQLITE_PATH` selects the OAuth authorization store, not
 `access.db`. A standalone stdio fallback uses its own resolved state root, so

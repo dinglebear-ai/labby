@@ -226,8 +226,9 @@ pub async fn consume_prepare(prepare_id: &str) -> anyhow::Result<serde_json::Val
     let bundle = load_bundle(prepare_id)?;
     let base =
         std::env::var("LABBY_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".to_owned());
-    let url = format!("{}/auth/bootstrap/consume", base.trim_end_matches('/'));
-    let client = reqwest::Client::builder().no_proxy().build()?;
+    let origin = bootstrap_api_origin(&base)?;
+    let url = origin.join("auth/bootstrap/consume")?;
+    let client = bootstrap_http_client()?;
     let response = client
         .post(url)
         .header("X-Labby-Bootstrap-Proof", &bundle.proof)
@@ -239,16 +240,13 @@ pub async fn consume_prepare(prepare_id: &str) -> anyhow::Result<serde_json::Val
         return Ok(response.json().await?);
     }
     let credential = load_credential(prepare_id)?;
-    let self_url = format!("{}/v1/access/credentials/self", base.trim_end_matches('/'));
+    let self_url = origin.join("v1/access/credentials/self")?;
     let probe = client.get(self_url).bearer_auth(&credential).send().await?;
     if probe.status().is_success() {
         return Ok(probe.json().await?);
     }
     let retry = client
-        .post(format!(
-            "{}/auth/bootstrap/consume",
-            base.trim_end_matches('/')
-        ))
+        .post(origin.join("auth/bootstrap/consume")?)
         .header("X-Labby-Bootstrap-Proof", &bundle.proof)
         .header(reqwest::header::CACHE_CONTROL, "no-store")
         .json(&bundle.manifest)
@@ -266,10 +264,10 @@ pub async fn status_prepare(prepare_id: &str) -> anyhow::Result<serde_json::Valu
     let bundle = load_bundle(prepare_id)?;
     let base =
         std::env::var("LABBY_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".to_owned());
-    let url = format!("{}/auth/bootstrap/status", base.trim_end_matches('/'));
-    let response = reqwest::Client::builder()
-        .no_proxy()
-        .build()?
+    let origin = bootstrap_api_origin(&base)?;
+    let url = origin.join("auth/bootstrap/status")?;
+    let client = bootstrap_http_client()?;
+    let response = client
         .post(url)
         .header("X-Labby-Bootstrap-Proof", bundle.proof)
         .json(&serde_json::json!({ "prepare_id": prepare_id }))
@@ -279,18 +277,43 @@ pub async fn status_prepare(prepare_id: &str) -> anyhow::Result<serde_json::Valu
         return Ok(response.json().await?);
     }
     let credential = load_credential(prepare_id)?;
-    let self_url = format!("{}/v1/access/credentials/self", base.trim_end_matches('/'));
-    let probe = reqwest::Client::builder()
-        .no_proxy()
-        .build()?
-        .get(self_url)
-        .bearer_auth(credential)
-        .send()
-        .await?;
+    let self_url = origin.join("v1/access/credentials/self")?;
+    let probe = client.get(self_url).bearer_auth(credential).send().await?;
     if !probe.status().is_success() {
         anyhow::bail!("bootstrap status and credential recovery were denied");
     }
     Ok(probe.json().await?)
+}
+
+fn bootstrap_api_origin(raw: &str) -> anyhow::Result<reqwest::Url> {
+    let url = reqwest::Url::parse(raw)
+        .map_err(|_| anyhow::anyhow!("LABBY_API_BASE_URL must be an absolute URL"))?;
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("LABBY_API_BASE_URL must not contain credentials");
+    }
+    if url.query().is_some() || url.fragment().is_some() || url.path() != "/" {
+        anyhow::bail!(
+            "LABBY_API_BASE_URL must contain only a trusted origin, without path, query, or fragment"
+        );
+    }
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+        anyhow::bail!("LABBY_API_BASE_URL must use HTTPS, except for explicit loopback HTTP");
+    }
+    Ok(url)
+}
+
+fn bootstrap_http_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?)
 }
 
 fn load_credential(prepare_id: &str) -> anyhow::Result<String> {
@@ -757,6 +780,87 @@ mod tests {
         let mut invalid = request();
         invalid.scopes.clear();
         assert!(normalize_manifest("install", "credential", "idem", invalid).is_err());
+    }
+
+    #[test]
+    fn credential_endpoint_policy_allows_https_and_loopback_http_only() {
+        for allowed in [
+            "https://lab.example.com",
+            "https://lab.example.com:8443/",
+            "http://127.0.0.1:8765",
+            "http://[::1]:8765",
+            "http://localhost:8765",
+        ] {
+            assert!(
+                bootstrap_api_origin(allowed).is_ok(),
+                "should allow {allowed}"
+            );
+        }
+        for rejected in [
+            "http://lab.example.com",
+            "http://192.168.1.10:8765",
+            "https://user:secret@lab.example.com",
+            "https://lab.example.com/prefix",
+            "https://lab.example.com?token=secret",
+            "https://lab.example.com/#fragment",
+            "file:///tmp/socket",
+            "not a URL",
+        ] {
+            assert!(
+                bootstrap_api_origin(rejected).is_err(),
+                "must reject {rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn credential_client_refuses_all_redirects() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let policy = bootstrap_http_client().expect("client policy");
+        // Debug output is stable enough to prove construction succeeds, while
+        // the two-server async test below proves the no-forward behavior.
+        assert!(!format!("{policy:?}").is_empty());
+    }
+
+    #[tokio::test]
+    async fn credential_client_never_forwards_secrets_to_redirect_origin() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let redirect = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let sink = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_addr = redirect.local_addr().unwrap();
+        let sink_addr = sink.local_addr().unwrap();
+        let responder = tokio::spawn(async move {
+            let (mut socket, _) = redirect.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = socket.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..read]).contains("secret-sentinel"));
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{sink_addr}/capture\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let response = bootstrap_http_client()
+            .unwrap()
+            .get(format!("http://{redirect_addr}/start"))
+            .bearer_auth("secret-sentinel")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TEMPORARY_REDIRECT);
+        responder.await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), sink.accept())
+                .await
+                .is_err(),
+            "redirect target received a credential-bearing connection"
+        );
     }
 
     #[cfg(unix)]

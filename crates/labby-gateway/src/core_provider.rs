@@ -4,7 +4,9 @@
 //! over a Unix socket and projects actor-filtered operations into Labby's
 //! existing Code Mode host catalog under the reserved `unraid` namespace.
 
-use std::{collections::HashSet, path::Path, time::Duration};
+#[cfg(unix)]
+use std::time::Duration;
+use std::{collections::HashSet, path::Path};
 
 use futures::StreamExt;
 use labby_codemode::{
@@ -23,6 +25,7 @@ const MAX_CATALOG_PAGES: usize = 20;
 const PAGE_SIZE: usize = 50;
 const RESPONSE_HEADER_BYTES_MAX: usize = 32 * 1024;
 const RESPONSE_HEADER_COUNT_MAX: usize = 100;
+#[cfg(unix)]
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]

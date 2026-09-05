@@ -111,13 +111,16 @@ fn auto_import_partition_does_not_tombstone_same_source_when_fingerprint_changes
 
 #[tokio::test]
 async fn approve_pending_import_persists_through_injected_store() {
+    let dir = tempfile::tempdir().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(SlowPersistStore {
         calls: Arc::clone(&calls),
         delay: Duration::from_millis(0),
     });
     let manager = GatewayManager::with_store(
-        PathBuf::from("config.toml"),
+        std::fs::canonicalize(dir.path())
+            .unwrap()
+            .join("config.toml"),
         GatewayRuntimeHandle::default(),
         store,
     );
@@ -145,13 +148,16 @@ async fn approve_pending_import_persists_through_injected_store() {
 
 #[tokio::test]
 async fn reject_pending_import_persists_through_injected_store() {
+    let dir = tempfile::tempdir().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let store = Arc::new(SlowPersistStore {
         calls: Arc::clone(&calls),
         delay: Duration::from_millis(0),
     });
     let manager = GatewayManager::with_store(
-        PathBuf::from("config.toml"),
+        std::fs::canonicalize(dir.path())
+            .unwrap()
+            .join("config.toml"),
         GatewayRuntimeHandle::default(),
         store,
     );

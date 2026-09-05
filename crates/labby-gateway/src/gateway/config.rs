@@ -1,7 +1,5 @@
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use fd_lock::RwLock;
 use tempfile::NamedTempFile;
 
@@ -103,16 +101,12 @@ pub fn write_gateway_config(path: &Path, cfg: &GatewayConfig) -> Result<(), Tool
     }
 
     let lock_path = lock_path(path);
-    let lock_file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("open {}", lock_path.display()))
-        .map_err(|e| ToolError::Sdk {
+    let lock_file = labby_auth::util::open_restricted_lock_file(&lock_path).map_err(|error| {
+        ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
-            message: e.to_string(),
-        })?;
+            message: format!("failed to open restricted gateway config lock: {error}"),
+        }
+    })?;
     let mut lock = RwLock::new(lock_file);
     let _guard = lock.try_write().map_err(|_| ToolError::Sdk {
         sdk_kind: "internal_error".to_string(),
@@ -1363,20 +1357,14 @@ fn lock_path(path: &Path) -> PathBuf {
         .join(file_name)
 }
 
-/// Set a file's permissions to owner-read/write only (0o600).
-/// No-op on non-Unix targets (homelab is Linux-only).
+/// Apply the platform-private secret-file policy (0600 on Unix, protected
+/// current-user-only ACL on Windows).
 pub(crate) fn set_file_permissions_600(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
+    labby_auth::util::harden_secret_file(path)
+        .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
 #[cfg(test)]
 #[allow(clippy::panic)]
 #[path = "config_tests.rs"]
-mod tests;
+pub(crate) mod tests;

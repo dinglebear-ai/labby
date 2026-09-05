@@ -237,10 +237,6 @@ fn insert_if_some<T: serde::Serialize>(
     }
 }
 
-// The command match contains the full clap command tree, so the generated
-// async state machine exceeds Clippy's conservative stack-frame threshold.
-// Keep this exception local to the one-shot CLI dispatcher.
-#[allow(clippy::large_stack_frames)]
 pub(super) async fn dispatch_command(
     manager: &LazyGatewayManager<'_>,
     config: &LabConfig,

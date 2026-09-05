@@ -444,6 +444,7 @@ impl BuiltinMcpRunner {
     }
 }
 
+#[cfg(unix)]
 fn process_start_identity(pid: u32) -> String {
     std::process::Command::new("ps")
         .args(["-o", "lstart=", "-p", &pid.to_string()])
@@ -453,6 +454,15 @@ fn process_start_identity(pid: u32) -> String {
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .filter(|identity| !identity.is_empty())
         .unwrap_or_else(|| "absent".to_string())
+}
+
+#[cfg(windows)]
+fn process_start_identity(pid: u32) -> String {
+    if labby_winjob::pid_is_alive(pid) {
+        format!("pid:{pid}:alive")
+    } else {
+        format!("pid:{pid}:absent")
+    }
 }
 
 async fn wait_for_process_exit(pid: u32, identity: &str) -> bool {

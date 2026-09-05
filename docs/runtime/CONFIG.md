@@ -10,19 +10,20 @@ Labby separates non-secret preferences from secrets and endpoint credentials.
 
 ## Files And Precedence
 
-Configuration lookup stops at the first existing TOML file:
+With an explicit `LABBY_HOME`, Labby reads exactly one TOML file:
 
-1. `./config.toml`
-2. `$LABBY_HOME/config.toml`, when `LABBY_HOME` is set
-3. `~/.labby/config.toml`
-4. `~/.config/labby/config.toml`
+1. `$LABBY_HOME/config.toml`
 
-`LABBY_HOME` must be an absolute path. When set, it replaces the two user-home
-candidates rather than adding another fallback. The access-control store is
-always `$LABBY_HOME/access.db`; without an override it is
-`~/.labby/access.db`. Relative state roots fail closed. Keep the database and
-its `-wal`/`-shm` sidecars together under a service-owned directory; there is
-no separate access-database path override.
+It does not inspect `./config.toml`, current-directory `.env`, or user-home
+fallbacks. This makes the selected installation root authoritative for TOML,
+dotenv credentials, and durable state. Without `LABBY_HOME`, the one canonical
+root is `~/.labby`, including `~/.labby/config.toml`.
+
+`LABBY_HOME` must be an absolute path. The access-control store is always
+`$LABBY_HOME/access.db`; without an override it is `~/.labby/access.db`.
+Relative or insecure state roots fail closed. Keep the database and its
+`-wal`/`-shm` sidecars together under a service-owned directory; there is no
+separate access-database path override.
 
 Runtime precedence is:
 
@@ -31,18 +32,41 @@ Runtime precedence is:
 3. `config.toml`
 4. Built-in defaults
 
-Existing process values win over dotenv files. Labby then loads
-`$LABBY_HOME/.env` (normally `~/.labby/.env`) and finally a current-directory
-`.env` for names that remain unset. Proxy CLI overrides are applied after the
-TOML model loads.
+Existing process values win over dotenv files. With an explicit root, Labby
+loads only `$LABBY_HOME/.env`; otherwise it loads only `~/.labby/.env`. Any
+selected dotenv read or parse error fails visibly. Development commands that
+need different state should set an absolute `LABBY_HOME` instead of relying on
+the shell's current directory. Proxy CLI overrides are applied after the TOML
+model loads.
 
 Keep secrets, tokens, passwords, OAuth client secrets, and upstream credential
-values in `~/.labby/.env`. Keep product preferences in TOML. The annotated
+values in `$LABBY_HOME/.env` (normally `~/.labby/.env`). Gateway credential
+mutations write beside the selected `config.toml`; they never independently
+fall back to another home. Keep product preferences in TOML. The annotated
 example in [../../config/config.example.toml](../../config/config.example.toml)
 is the canonical hand-written configuration sample. Generated environment
 metadata lives in [../generated/env-reference.md](../generated/env-reference.md).
 The code-owned proxy key inventory lives in
 [../generated/proxy-config-reference.md](../generated/proxy-config-reference.md).
+
+Persisted TOML uses `config_version = 1`. Legacy files without the key migrate
+to version 1 on their next supported mutation; a future/unsupported version
+fails closed. Unknown keys inside Labby-owned sections are errors with the
+offending field path. Unknown top-level scalar keys (for example `mcpp = 1` or
+`config_verzion = 1`) are also errors. Foreign extensions must be explicitly
+namespaced as TOML tables (for example `[vendor.example]`); those sections
+remain accepted and are preserved by supported gateway/settings mutations.
+
+Supported settings mutations create a mode-`0600` recovery copy beside
+`config.toml` before replacing it. Labby retains at most 10 copies, 30 days,
+and 64 MiB, while always preserving the newest recovery point. A successful
+mutation can therefore return `maintenance_warning` when the new configuration
+was durably committed but backup pruning or directory synchronization failed;
+do not retry the mutation as though it were unapplied. Verify the active file,
+run `labby doctor system --json`, preserve the newest
+`config.toml.bak.*`, then correct directory permissions/capacity and remove only
+older verified copies. Restore by stopping Labby, copying the selected backup
+over `config.toml` with mode `0600`, and restarting before running doctor again.
 
 ## Supported Sections
 
@@ -118,6 +142,12 @@ mapped IPv6 addresses. TLS hostname verification still applies. This policy is
 host-file configuration; browser provider edits cannot change it.
 
 ## Durable Depot Skill Imports
+
+Local Artifact persistence flushes file contents before atomic publication.
+On Unix it also synchronizes the containing directories. Windows validates
+those directories and rejects reparse points, but this path does not provide
+the equivalent Unix directory-entry crash-durability guarantee. Transaction
+journals and recovery checks remain active on both platforms.
 
 `proxy_skills` is live MCP catalog federation; it does not install anything.
 To make a Depot Skill survive a Depot outage or Labby restart, configure an

@@ -102,7 +102,8 @@ not a second copy of the list.
 Branch protection on `main` requires both `Repository Contract` and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
-fail the aggregate. Native Windows workspace and Palette jobs remain advisory.
+fail the aggregate. Native Windows workspace tests are required; the Palette
+Windows job remains advisory.
 
 Protected historical work products are enforced separately by
 `.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
@@ -148,7 +149,7 @@ jobs when their changed-path category is enabled:
 | Rust coverage | `rust_test` | Required PR/push LCOV gate with project and critical auth/gateway/dispatch/config floors |
 | Tests (Linux) | `rust_test` | warm normal `labby` lib/bins first, then `cargo nextest run --workspace --all-features --profile ci` on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
-| Tests (Windows, advisory) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; cached and visible but excluded from `ci-gate` |
+| Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` | version and Rust toolchain lockstep only; release builds do not run in PR CI |
@@ -170,6 +171,11 @@ Labby assets. It is a production build gate, not a TypeScript strictness gate:
 `apps/gateway-admin/next.config.mjs` currently sets
 `typescript.ignoreBuildErrors = true`. Run `pnpm test` in
 `apps/gateway-admin` for the frontend unit and install-script test contract.
+
+The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
+script with its declared shell, runs ShellCheck at warning severity, and runs
+PSScriptAnalyzer 1.24.0 against the shipped Windows installer. Analyzer setup,
+parse failures, warnings, and errors all fail the stable `ci-gate`.
 
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
@@ -193,8 +199,9 @@ land the required code/tests and the baseline update together.
   - `changes` classifies paths first and exports category booleans, forcing any gated key the trusted base-branch classifier cannot emit to `true`
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/gateway-admin/out` artifact
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
-  - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; they report portability regressions without blocking `ci-gate`
-  - Heavy release work starts only from a published stable GitHub release
+  - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; workspace tests block `ci-gate`, while Palette remains advisory
+  - Heavy release work starts from an immutable stable-version tag while the
+    matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 runners; native macOS and Windows artifacts use GitHub-hosted runners
 
 The pinned fleet policy and repository contract set `allow-arm64: true` for
@@ -209,9 +216,15 @@ All repository-defined Linux jobs use the GitHub-hosted `ubuntu-24.04` image.
 Native Windows jobs use `windows-latest`. No repository-defined job selects a
 self-hosted runner or a custom runner label.
 
-Rust jobs use the repository `setup-rust-kache` composite. Trusted jobs connect
-to the shared MinIO cache when credentials and the hosted runner tool cache are
-available. Other jobs use the GitHub Actions Cargo cache or bare Cargo.
+Rust jobs use the repository `setup-rust-kache` composite in credentialless
+GitHub Actions cache mode. Do not configure `KACHE_S3_ACCESS_KEY` or
+`KACHE_S3_SECRET_KEY` as repository secrets: same-repository pull requests can
+edit branch-controlled workflow files and therefore cannot safely coexist with
+repository-level shared-cache credentials. Remove any legacy copies of those
+secrets from repository settings. A future shared writer must use a separately
+protected environment whose deployment-branch policy permits only `main`, plus
+server-enforced least-privilege credentials; a client-side prefix is not an
+authorization boundary.
 
 The reusable fleet policy and repository contract are organization-managed
 workflow calls. Their execution environment is owned by the central workflows
@@ -246,28 +259,87 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 1. Release Please prepares the version/changelog PR.
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
-3. Publishing the stable release triggers all heavy release workflows. This step
-   is manual on purpose: npm and the MCP Registry cannot delete an
-   already-published version, so a human approves before anything irreversible
-   ships. A release left in draft produces **no artifacts at all**.
-   `release-publish-reminder.yml` keeps a single open issue listing every
-   pending draft release so an unpublished one cannot go unnoticed; it never
-   publishes a release itself.
-4. Preflight requires strict stable SemVer, ancestry from `origin/main`, and exact Cargo/npm/MCP/release-manifest version lockstep.
-5. Binary, Incus, and container candidates are built and smoke-tested on GitHub-hosted x86_64 runners.
-6. The final gated job verifies checksums, emits an SPDX SBOM and GitHub provenance attestations, uploads assets to the published release, then publishes the exact tested image by digest and signs it keylessly with Cosign.
-7. The immutable image tag and compatibility `latest` tag advance together; failure deletes a newly-created image version and restores the previous `latest` digest. The published GitHub release itself is never deleted by automation.
+3. The immutable tag triggers candidate work; no maintainer manually publishes
+   the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
+   exact Cargo/npm/MCP/release-manifest version lockstep.
+4. Each platform archive is built, smoke-tested, and attested in its build job.
+   The N-1 matrix verifies that exact archive attestation before extraction,
+   checks the archive sidecar, and records an archive-to-extracted-binary digest
+   binding. It then invokes a platform-owned adapter for Unix, Windows, macOS, Compose,
+   Incus, and host-service deployment. Each adapter must install N-1 and seed
+   real application-schema rows in registered OAuth clients, access security
+   events, and upstream usage calls, plus representative files in gateway
+   configuration and credentials, snippets, imported skills, and artifact
+   state. It must verify every class, verify candidate provenance before
+   activation, upgrade, perform authenticated work, restart and verify recovery,
+   roll back, restart the rolled-back service, verify the same state remains
+   readable, and repeat the authenticated action. A missing command or adapter
+   is a hard failure. Compose qualification uses the production descriptor,
+   digest-identifies both images, exercises every durable-state class and an
+   authenticated catalog action, captures a state backup, and always tears down
+   its isolated project after success or failure. The archive is the attestation subject; the extracted
+   binary digest is the activation-integrity binding, not a claimed attestation.
+5. The final gated job verifies archive checksums and creates one SPDX JSON SBOM
+   for each archive, installer, and the exact tested container image. It records every
+   subject digest in `release-manifest.json`, records every published checksum
+   as an auxiliary subject, and attests the archives, checksums, SBOMs, and
+   manifest.
+6. Before activation/promotion, the workflow runs `gh attestation verify` with
+   the exact repository, signer workflow, source ref, and hosted-runner policy.
+   Offline consumers may pass a downloaded bundle and trusted root through the
+   same GitHub CLI verification contract.
+7. The tested image is published by digest and signed keylessly. If publication
+   fails, the rollback transaction attempts deletion, `latest` restoration,
+   Incus-pointer restoration, and restoration of the GitHub release to draft.
+   It verifies each final state independently, emits one compound JSON record,
+   and fails if any recovery step or final-state proof fails. Because npm and
+   MCP versions are immutable, a failed transaction also records either
+   published identity as `manual_reconciliation_required`; rollback can never
+   claim success while one remains externally visible.
+8. The Incus and MCP Registry workflows are reusable calls from the candidate
+   graph. Incus publishes only immutable, version-namespaced candidate assets;
+   the parent release transaction verifies that generation in place, records
+   its checksummed `generation.json` alongside the versioned release, and moves
+   only the rolling Git ref with a force-with-lease compare-and-swap. The
+   recovery receipt retains the exact prior ref target, so rollback is another
+   pointer-only leased CAS and never rewrites generation contents.
+   They return validated 64-hex subject digests before the stable GitHub release
+   becomes visible. npm publishes the immutable version under a version-specific
+   candidate dist-tag; the `latest` consumer pointer is not advanced yet. No
+   distribution workflow is triggered by `release.published`.
+9. Only after every candidate qualification and publisher succeeds does
+   `release.yml` promote the draft through the verified promotion helper. It
+   advances and verifies npm's `latest` dist-tag only after that promotion.
+   Promotion failure enters the same recovery path and retains an actionable
+   record of immutable registry identities that cannot be deleted.
+10. The aggregate reconciler runs immediately after Release completes and on a
+   bounded schedule for eventual-consistency recovery. It paginates draft and
+   published releases. A draft missing its manifest is itself a version-keyed
+   incomplete record; manifest-bearing drafts are fully observed. Historical
+   published releases from before the manifest contract remain excluded. It keeps each
+   version's result independent so a newer complete release cannot hide an older
+   incomplete one. It downloads each manifest and observes
+   GitHub assets, npm version, GHCR digest, Incus asset digest, and the MCP v0.1
+   version endpoint. The MCP publisher and observer hash the same canonical JSON
+   object, so reconciliation fails closed unless the complete registry object,
+   not merely its name and version, matches the published manifest digest. It
+   also verifies the GitHub attestation identity for every
+   manifest-declared archive, checksum, SBOM, installer, and the manifest
+   itself. Missing, unexpected, unattested, or digest-mismatched subjects keep
+   one `Release publication is incomplete` incident open and the run failed.
 
 The npm and MCP registries do not support deleting an already-published
-version. If publication reaches one registry and then fails, rerun the same tag
-after correcting the failure: the release job checks each registry first,
-skips the version that already exists, republishes only the missing surface,
-and leaves the already-published GitHub release in place. Never create a replacement tag or bump the version to recover a
-partially published release.
+version. If one publisher succeeds and another fails, repair the discrepancy
+and rerun the same immutable tag. Release assets are uploaded only when absent;
+an existing byte-identical asset is reused and byte drift fails closed rather
+than clobbering it. Publishers are idempotent and the aggregate
+incident remains open until observations match the manifest. Never create a
+replacement tag or bump the version merely to hide partial publication.
 
 **Tag format:** `vX.Y.Z` — no other formats are accepted.
 
-**Version policy:** single version across the entire workspace. `lab` and `labby-apis` always share the same version number.
+**Version policy:** single version across the entire workspace. `labby` and
+`labby-apis` always share the same version number.
 
 ## Artifact Distribution
 
@@ -275,7 +347,31 @@ partially published release.
 - **Container surface:** GitHub Container Registry (`ghcr.io/dinglebear-ai/labby`)
 - **Artifacts per release:** one binary archive per supported target (Linux x86_64, macOS arm64, and Windows x86_64)
 - **Checksums:** every binary archive has a SHA-256 checksum file
+- **SBOMs:** one identity-bound SPDX JSON document per archive and one for the
+  exact tested container image
+- **Manifest:** `release-manifest.json` binds every promoted subject name, size,
+  and SHA-256 digest to its SBOM, and binds the exact GHCR digest to the
+  container SBOM, for reconciliation
 - **Package registries:** the `@dinglebear/labby` npm launcher and `server.json` MCP Registry metadata publish from the same validated version.
+
+Before activating a downloaded archive, consumers run the repository helper so
+the subject digest, source repository, signer workflow, tag ref, and hosted
+runner identity are all enforced:
+
+```bash
+scripts/ci/verify-release-provenance.sh \
+  --repo dinglebear-ai/labby \
+  --workflow release.yml \
+  --ref refs/tags/v1.14.1 \
+  --artifact lab-x86_64-unknown-linux-gnu.tar.gz
+```
+
+For offline verification, download the attestation bundle and trusted root on a
+connected trusted host, transfer them with the artifact, and add
+`--bundle attestation.jsonl --trusted-root trusted_root.jsonl`. The same
+repository/workflow/ref policy remains mandatory; offline mode never degrades
+to checksum-only verification. Wrong signer, repository, ref, subject digest,
+bundle, or trusted root is a hard failure before activation.
 
 ## MCP Registry DNS Key Rotation
 

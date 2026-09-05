@@ -59,7 +59,7 @@ impl ActorKeyDeriver {
     /// If absent, a per-installation secret is generated and appended to
     /// `~/.labby/.env`. The returned deriver should be cached by the caller.
     pub fn load_or_create() -> Result<Self> {
-        let path = dotenv_path().ok_or_else(|| anyhow!("HOME env var not set"))?;
+        let path = dotenv_path()?;
         Self::load_or_create_from_path(&path)
     }
 
