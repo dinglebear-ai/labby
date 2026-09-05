@@ -17,6 +17,9 @@ pub mod provider;
 pub mod scheduler;
 #[cfg(test)]
 mod scheduler_tests;
+pub mod store;
+#[cfg(test)]
+mod store_tests;
 
 use std::{env, sync::Arc, time::Duration};
 
