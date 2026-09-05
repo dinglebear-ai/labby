@@ -415,10 +415,12 @@ impl GatewayManager {
         tool_id: Option<&str>,
         contract_hash: Option<&str>,
     ) -> Result<(), ToolError> {
+        let principal = ExecutionPrincipal::new(principal.to_owned()).map_err(ToolError::from)?;
+        let key = RecordKey::new(&principal, id).map_err(ToolError::from)?;
         let store = self.execution_loadouts.read().await;
         let record = store
             .records
-            .get(&record_key(principal, id))
+            .get(&key)
             .ok_or_else(|| ExecutionLoadoutError::NotFound { id: id.into() })?;
         if record.draft.runtime_identity.as_deref() != Some(runtime_identity) {
             return Err(ExecutionLoadoutError::NotFound { id: id.into() }.into());
