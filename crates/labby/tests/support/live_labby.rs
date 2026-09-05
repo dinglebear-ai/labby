@@ -2576,8 +2576,21 @@ fn process_group_members_typed(
     group: i32,
     deadline: Instant,
 ) -> Result<Vec<u32>, process_inventory::Failure> {
-    let text = process_inventory::read(deadline)?;
-    parse_process_group_inventory(group, &text).map_err(Into::into)
+    // Linux can expose a process that exits between `ps` collecting its PID
+    // and PGID columns as a transient `-` PGID. Never authorize from that
+    // partial snapshot, but allow a fresh, fully parseable snapshot to replace
+    // it while the original cleanup deadline still applies.
+    let mut last_parse_error = None;
+    for _ in 0..3 {
+        let text = process_inventory::read(deadline)?;
+        match parse_process_group_inventory(group, &text) {
+            Ok(members) => return Ok(members),
+            Err(error) => last_parse_error = Some(error),
+        }
+    }
+    Err(last_parse_error
+        .expect("at least one inventory snapshot was parsed")
+        .into())
 }
 
 #[cfg(unix)]
