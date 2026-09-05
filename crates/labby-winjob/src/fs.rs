@@ -457,7 +457,7 @@ fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::R
                 // variable-length native allocation.
                 let header = ace
                     .cast::<windows_sys::Win32::Security::ACE_HEADER>()
-                    .read_unaligned();
+                    .read_unaligned(); // lgtm[rust/access-invalid-pointer]
                 if directory && header.AceType == 1 {
                     continue;
                 } // deny cannot grant foreign access
@@ -475,7 +475,7 @@ fn verify_acl_policy(file: &File, directory: bool, require_owner: bool) -> io::R
                 if directory && header.AceFlags & 0x08 != 0 {
                     continue;
                 } // does not apply to parent itself
-                let allowed = ace.cast::<ACCESS_ALLOWED_ACE>().read_unaligned();
+                let allowed = ace.cast::<ACCESS_ALLOWED_ACE>().read_unaligned(); // lgtm[rust/access-invalid-pointer]
                 let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
                 if usize::from(header.AceSize) < sid_offset + 8 {
                     return Err(denied());
