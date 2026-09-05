@@ -66,6 +66,60 @@ mod tests {
     use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 
     #[test]
+    fn adoption_rechecks_an_exited_leader_before_reporting_cleanup_failure() {
+        let supervisor = include_str!("../../../../../scripts/ci/labby-live-e2e.sh");
+        let adoption = supervisor
+            .split_once("adopt_cleanup_helpers() {")
+            .unwrap()
+            .1
+            .split_once("\nterminate_children() {")
+            .unwrap()
+            .0;
+        let registry = tempfile::tempdir().unwrap();
+        let entry = registry.path().join("admission-exited");
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(
+            entry.join("identity"),
+            "2147483646\nprevious start\ntoken\nadmission-exited\n",
+        )
+        .unwrap();
+        let script = format!(
+            r#"
+helper_registry=$1; mode=$2; cleanup=0
+ps() {{
+  case "$*" in
+    '-axo pid=,pgid=')
+      if [ ! -f "$helper_registry/inventory-seen" ]; then
+        touch "$helper_registry/inventory-seen"
+        printf '2147483646 2147483646\n'
+      elif [ "$mode" = live ]; then
+        printf '2147483647 2147483646\n'
+      elif [ "$mode" = failed ]; then
+        return 1
+      fi ;;
+    '-o lstart= -p 2147483646') return 1 ;;
+    *) return 99 ;;
+  esac
+}}
+register_group() {{ exit 98; }}
+adopt_cleanup_helpers() {{{adoption}
+adopt_cleanup_helpers
+exit "$cleanup"
+"#
+        );
+        for (mode, expected) in [("absent", 0), ("live", 1), ("failed", 1)] {
+            let status = Command::new("/bin/bash")
+                .args(["-c", &script, "exited-admission"])
+                .arg(registry.path())
+                .arg(mode)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(expected), "{mode}: {status}");
+            std::fs::remove_file(registry.path().join("inventory-seen")).unwrap();
+        }
+    }
+
+    #[test]
     fn outer_adoption_rejects_excess_entries_and_ignores_reused_group_identity() {
         let supervisor = include_str!("../../../../../scripts/ci/labby-live-e2e.sh");
         let adoption = supervisor

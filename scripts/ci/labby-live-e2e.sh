@@ -79,7 +79,14 @@ adopt_cleanup_helpers() {
     recorded_start="$(sed -n '2p' "$helper/identity" | sed 's/^ *//;s/ *$//')"
     token="$(sed -n '3p' "$helper/identity")"
     [ "$(sed -n '4p' "$helper/identity")" = "$admission_id" ] || { cleanup=1; continue; }
-    current_start="$(ps -o lstart= -p "$pid" 2>/dev/null)" || { cleanup=1; continue; }
+    if ! current_start="$(ps -o lstart= -p "$pid" 2>/dev/null)"; then
+      # A group can finish between the inventory snapshot and leader probe.
+      # A fresh successful empty observation grants no signaling authority.
+      inventory="$(ps -axo pid=,pgid=)" || { cleanup=1; continue; }
+      member="$(printf '%s\n' "$inventory" | awk -v group="$pid" '$2 == group { print $1; exit }')"
+      [ -z "$member" ] || cleanup=1
+      continue
+    fi
     current_start="$(printf '%s' "$current_start" | sed 's/^ *//;s/ *$//')"
     [ -n "$recorded_start" ] || { cleanup=1; continue; }
     # A retained admission can name a PID that the kernel subsequently reused.

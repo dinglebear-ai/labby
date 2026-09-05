@@ -403,7 +403,7 @@ mod tests {
                     builder.readiness_deadline = Duration::from_secs(3);
                 }
                 builder.identity_probe = Some(probe);
-                if restart {
+                let observed_error = if restart {
                     let mut guard = builder.start().await.unwrap();
                     let old_group = guard.ledger.process_group.unwrap();
                     let error = guard.restart().await.unwrap_err();
@@ -416,6 +416,7 @@ mod tests {
                         "{:?}",
                         cleanup.failures
                     );
+                    error
                 } else {
                     let error = builder
                         .start()
@@ -423,9 +424,15 @@ mod tests {
                         .err()
                         .expect("failed identity capture unexpectedly started");
                     assert!(error.contains(expected_error), "{error}");
-                }
+                    error
+                };
                 let records = captures.lock().unwrap();
-                assert_eq!(records.len(), 1);
+                assert_eq!(
+                    records.len(),
+                    1,
+                    "restart={restart} mode={mode}: {}",
+                    observed_error.chars().take(512).collect::<String>()
+                );
                 let (group, daemon_pid, address, members) = &records[0];
                 assert!(members.contains(daemon_pid));
                 assert!(

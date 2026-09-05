@@ -2524,13 +2524,24 @@ fn settle_inventory_failure(mut failure: process_inventory::Failure) -> String {
 #[cfg(unix)]
 fn parse_process_group_inventory(group: i32, inventory: &str) -> Result<Vec<u32>, String> {
     let mut members = Vec::new();
-    for line in inventory.lines().filter(|line| !line.trim().is_empty()) {
+    for (row, line) in inventory
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+    {
         let mut fields = line.split_whitespace();
         let pid = fields.next().and_then(|value| value.parse::<u32>().ok());
         let pgid = fields.next().and_then(|value| value.parse::<i32>().ok());
         let state = fields.next();
         let (Some(pid), Some(pgid), Some(state)) = (pid, pgid, state) else {
-            return Err("process inventory contained an invalid row".into());
+            return Err(format!(
+                "process inventory contained an invalid row: row={} fields={} pid_numeric={} pgid_numeric={} state_present={}",
+                row + 1,
+                line.split_whitespace().count(),
+                pid.is_some(),
+                pgid.is_some(),
+                state.is_some(),
+            ));
         };
         if pgid == group && !state.starts_with('Z') {
             members.push(pid);
@@ -2637,6 +2648,14 @@ mod tests {
         );
         assert!(parse_process_group_inventory(12, "unavailable").is_err());
         assert!(parse_process_group_inventory(12, "10 12").is_err());
+        let error =
+            parse_process_group_inventory(12, "10 12 S\nprivate-sentinel 12\n").unwrap_err();
+        assert_eq!(
+            error,
+            "process inventory contained an invalid row: row=2 fields=2 pid_numeric=false pgid_numeric=true state_present=false"
+        );
+        assert!(!error.contains("private-sentinel"));
+        assert!(error.len() < 200);
     }
 
     #[cfg(unix)]

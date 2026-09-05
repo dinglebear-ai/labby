@@ -22,7 +22,10 @@ impl From<String> for Failure {
 
 pub(super) fn read(deadline: Instant) -> Result<String, Failure> {
     let mut command = Command::new("/bin/ps");
-    command.args(["-axo", "pid=,pgid=,stat="]);
+    command
+        .env_clear()
+        .env("LC_ALL", "C")
+        .args(["-axo", "pid=,pgid=,stat="]);
     read_command(&mut command, deadline, OUTPUT_CAP)
 }
 
