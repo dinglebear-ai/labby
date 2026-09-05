@@ -1,4 +1,9 @@
 //! Canonical conversion between bounded Hook declarations and inert Artifacts.
+//!
+//! A hook command is an executable plus an argument vector. A future host
+//! activator must pass `command` and each `arguments` element directly to the
+//! operating-system process API. It must never concatenate them into a command
+//! line or invoke a shell implicitly.
 
 use std::collections::BTreeMap;
 
@@ -189,19 +194,8 @@ fn validate_arguments(arguments: &[String]) -> Result<(), ArtifactError> {
         return Err(invalid("arguments", "too_many"));
     }
     for argument in arguments {
-        if argument.len() > MAX_HOOK_ARGUMENT_BYTES
-            || argument.contains('\0')
-            || argument.contains('\n')
-            || argument.contains('\r')
-        {
+        if argument.len() > MAX_HOOK_ARGUMENT_BYTES || argument.chars().any(char::is_control) {
             return Err(invalid("arguments", "invalid"));
-        }
-        if argument.starts_with('@')
-            || argument
-                .chars()
-                .any(|character| matches!(character, '`' | '$' | ';' | '|' | '&' | '<' | '>'))
-        {
-            return Err(invalid("arguments", "command_injection"));
         }
     }
     Ok(())
@@ -251,19 +245,11 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_paths_executables_arguments_and_events_are_rejected() {
+    fn unsafe_paths_executables_control_characters_and_events_are_rejected() {
         assert!(
             materialize_logical_hook(
                 "audit-tools",
                 vec![LogicalHookFile::new("../HOOK.json", "{}")],
-                Default::default()
-            )
-            .is_err()
-        );
-        assert!(
-            materialize_logical_hook(
-                "audit-tools",
-                source("stop", "labby", serde_json::json!(["doctor;touch-pwned"])),
                 Default::default()
             )
             .is_err()
@@ -287,10 +273,97 @@ mod tests {
         assert!(
             materialize_logical_hook(
                 "audit-tools",
-                source("stop", "labby", serde_json::json!(["$(touch /tmp/pwned)"])),
+                source("stop", "labby", serde_json::json!(["line\nbreak"])),
                 Default::default()
             )
             .is_err()
         );
+        assert!(
+            materialize_logical_hook(
+                "audit-tools",
+                source("stop", "labby", serde_json::json!(["tab\tbreak"])),
+                Default::default()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unix_shell_metacharacters_are_literal_argument_values() {
+        let arguments = serde_json::json!([
+            "$(touch /tmp/labby-hook-must-not-exist)",
+            "doctor; rm -rf /tmp/example",
+            "`id` | cat",
+            "${HOME}",
+            "@response-file"
+        ]);
+        let hook = materialize_logical_hook(
+            "audit-tools",
+            source("stop", "labby", arguments.clone()),
+            Default::default(),
+        )
+        .expect("shell syntax is inert when retained as argv elements");
+        let preview: Value = serde_json::from_str(hook.preview_text()).unwrap();
+        assert_eq!(preview["arguments"], arguments);
+    }
+
+    #[test]
+    fn windows_shell_metacharacters_are_literal_argument_values() {
+        let arguments = serde_json::json!([
+            "& calc.exe",
+            "| whoami",
+            "%COMSPEC%",
+            "$(Get-Process)",
+            "@response-file",
+            "quoted value with spaces"
+        ]);
+        let hook = materialize_logical_hook(
+            "audit-tools",
+            source("stop", "labby.exe", arguments.clone()),
+            Default::default(),
+        )
+        .expect("shell syntax is inert when retained as argv elements");
+        let preview: Value = serde_json::from_str(hook.preview_text()).unwrap();
+        assert_eq!(preview["arguments"], arguments);
+    }
+
+    #[test]
+    fn direct_process_fields_enforce_count_size_nul_and_control_bounds() {
+        for command in ["", "labby\0shadow", "labby\nshadow"] {
+            assert!(
+                materialize_logical_hook(
+                    "audit-tools",
+                    source("stop", command, serde_json::json!([])),
+                    Default::default(),
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            materialize_logical_hook(
+                "audit-tools",
+                source(
+                    "stop",
+                    "labby",
+                    serde_json::json!(vec!["argument"; MAX_HOOK_ARGUMENTS + 1]),
+                ),
+                Default::default(),
+            )
+            .is_err()
+        );
+        for argument in [
+            "x".repeat(MAX_HOOK_ARGUMENT_BYTES + 1),
+            "nul\0argument".into(),
+            "control\u{7f}argument".into(),
+        ] {
+            assert!(
+                materialize_logical_hook(
+                    "audit-tools",
+                    source("stop", "labby", serde_json::json!([argument])),
+                    Default::default(),
+                )
+                .is_err()
+            );
+        }
     }
 }
