@@ -1,7 +1,8 @@
 import { z } from 'zod'
 
-import { getSessionCsrfToken } from '../auth/session-store'
+import { getBrowserSessionEpoch, getBrowserSessionState, getSessionCsrfToken } from '../auth/session-store'
 import { gatewayRequestInit } from './gateway-request'
+import { refreshBrowserSession } from './service-action-client'
 
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
 const FEDERATED_SCHEMA = 'labby.depot-compatibility/v2'
@@ -147,19 +148,43 @@ export class DepotClientError extends Error {
   constructor(public readonly status: number, public readonly kind: string, message: string, public readonly recovery?: unknown, public readonly requestId?: string) { super(message) }
 }
 
-async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T>, label: string): Promise<T> {
-  const headers = new Headers(init.headers)
-  const csrfToken = getSessionCsrfToken()
-  if (init.method && init.method !== 'GET' && csrfToken && !headers.has('x-csrf-token')) headers.set('x-csrf-token', csrfToken)
-  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init, headers })
-  const requestId = response.headers.get('x-request-id') ?? undefined
-  let body: unknown
-  try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Depot returned invalid JSON (${response.status})`, undefined, requestId) }
-  if (!response.ok) {
-    const error = z.object({ kind: bounded(128), message: bounded(4096), recovery: z.unknown().optional() }).passthrough().safeParse(body)
-    throw new DepotClientError(response.status, error.success ? error.data.kind : 'request_failed', error.success ? error.data.message : `Depot request failed (${response.status})`, error.success ? error.data.recovery : undefined, requestId)
+class DepotSessionChangedError extends Error {}
+
+async function requestV2<T>(path: string, init: RequestInit, schema: z.ZodType<T>, label: string, sessionCsrf: 'retry-once' | 'off' = 'off'): Promise<T> {
+  const baseHeaders = new Headers(init.headers)
+  const initialCsrfToken = getSessionCsrfToken()
+  const request = async () => {
+    const epoch = getBrowserSessionEpoch()
+    const headers = new Headers(baseHeaders)
+    const csrfToken = getSessionCsrfToken()
+    if (sessionCsrf === 'retry-once' && csrfToken) headers.set('x-csrf-token', csrfToken)
+    const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init, headers })
+    const requestId = response.headers.get('x-request-id') ?? undefined
+    let body: unknown
+    try { body = await response.json() } catch { throw new DepotClientError(response.status, 'invalid_response', `Depot returned invalid JSON (${response.status})`, undefined, requestId) }
+    if (epoch !== getBrowserSessionEpoch()) throw new DepotSessionChangedError('Session changed')
+    if (!response.ok) {
+      const error = z.object({ kind: bounded(128), message: bounded(4096), recovery: z.unknown().optional() }).passthrough().safeParse(body)
+      throw new DepotClientError(response.status, error.success ? error.data.kind : 'request_failed', error.success ? error.data.message : `Depot request failed (${response.status})`, error.success ? error.data.recovery : undefined, requestId)
+    }
+    return validate(schema, body, label)
   }
-  return validate(schema, body, label)
+
+  try {
+    return await request()
+  } catch (error) {
+    const currentSession = getBrowserSessionState()
+    if (sessionCsrf === 'retry-once' && error instanceof DepotSessionChangedError &&
+      currentSession.status === 'authenticated' && currentSession.csrfToken !== initialCsrfToken) return request()
+    const staleSession = sessionCsrf === 'retry-once' && error instanceof DepotClientError &&
+      [401, 403, 422].includes(error.status) &&
+      (error.kind === 'auth_failed' || error.message.toLowerCase().includes('csrf'))
+    if (!staleSession) throw error
+    if (currentSession.status === 'authenticated' && currentSession.csrfToken !== initialCsrfToken) return request()
+    const session = await refreshBrowserSession()
+    if (session.status !== 'authenticated') throw error
+    return request()
+  }
 }
 
 export async function listArtifacts(input: { provider?: string; query?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<DiscoveryPage> {
@@ -167,14 +192,14 @@ export async function listArtifacts(input: { provider?: string; query?: string; 
   if (query.length > 200 || (query.length > 0 && query.length < 3)) throw new Error('Query must be empty or contain 3 to 200 characters')
   const provider = input.provider ?? 'all'
   if (provider !== 'all' && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)) throw new Error('Invalid provider')
-  const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response')
+  const page = await requestV2('/v1/depot/discover', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: provider === 'all' ? null : provider, query, limit: input.limit ?? 50, cursor: input.cursor }) }, discoverySchema, 'discovery response', 'retry-once')
   if (page.scope !== provider) throw new Error('Depot returned the wrong discovery scope')
   if (provider !== 'all' && page.items.some(item => item.providerId !== provider)) throw new Error('Depot returned an artifact from the wrong provider')
   return page
 }
 
 export async function getArtifact(providerId: string, artifactId: string, signal?: AbortSignal) {
-  const value = await requestV2('/v1/depot/artifacts/detail', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerId, artifactId }) }, detailV2Schema, 'artifact detail response')
+  const value = await requestV2('/v1/depot/artifacts/detail', { method: 'POST', signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerId, artifactId }) }, detailV2Schema, 'artifact detail response', 'retry-once')
   if (value.providerId !== providerId || value.artifactId !== artifactId || value.artifact.id !== artifactId) throw new Error('Depot returned the wrong artifact identity')
   return value
 }

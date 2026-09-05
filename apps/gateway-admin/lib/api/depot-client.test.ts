@@ -67,6 +67,95 @@ test('read-only v2 POST requests carry the authenticated browser CSRF token', as
   assert.deepEqual(csrfHeaders, ['csrf-read', 'csrf-read'])
 })
 
+test('read-only v2 POST refreshes a stale browser CSRF token once', async () => {
+  const original = globalThis.fetch
+  const csrfHeaders: Array<string | null> = []
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-stale', isAdmin: false })
+  globalThis.fetch = (async (url, init) => {
+    if (String(url) === '/auth/session') {
+      return json({ authenticated: true, user: { sub: 'operator' }, expires_at: Date.now() + 60_000, csrf_token: 'csrf-fresh', is_admin: false })
+    }
+    csrfHeaders.push(new Headers(init?.headers).get('x-csrf-token'))
+    return csrfHeaders.length === 1
+      ? json({ kind: 'validation_failed', message: 'invalid csrf token' }, 422)
+      : json(v2Page)
+  }) as typeof fetch
+  try {
+    assert.equal((await listArtifacts()).knownTotal, 1)
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+  assert.deepEqual(csrfHeaders, ['csrf-stale', 'csrf-fresh'])
+})
+
+test('read-only v2 POST bounds stale-session recovery to one retry', async () => {
+  const original = globalThis.fetch
+  const urls: string[] = []
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-stale', isAdmin: false })
+  globalThis.fetch = (async (url) => {
+    urls.push(String(url))
+    return String(url) === '/auth/session'
+      ? json({ authenticated: true, user: { sub: 'operator' }, expires_at: Date.now() + 60_000, csrf_token: 'csrf-fresh', is_admin: false })
+      : json({ kind: 'validation_failed', message: 'invalid csrf token' }, 422)
+  }) as typeof fetch
+  try {
+    await assert.rejects(listArtifacts(), /invalid csrf token/)
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+  assert.deepEqual(urls, ['/v1/depot/discover', '/auth/session', '/v1/depot/discover'])
+})
+
+test('concurrent stale reads share one refresh and both retry with the fresh token', async () => {
+  const original = globalThis.fetch
+  const csrfHeaders: string[] = []
+  let sessionRequests = 0
+  let releaseSecondStaleResponse!: () => void
+  const secondStaleResponse = new Promise<void>((resolve) => { releaseSecondStaleResponse = resolve })
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-stale', isAdmin: false })
+  globalThis.fetch = (async (url, init) => {
+    if (String(url) === '/auth/session') {
+      sessionRequests += 1
+      releaseSecondStaleResponse()
+      return json({ authenticated: true, user: { sub: 'operator' }, expires_at: Date.now() + 60_000, csrf_token: 'csrf-fresh', is_admin: false })
+    }
+    const csrf = new Headers(init?.headers).get('x-csrf-token') ?? ''
+    csrfHeaders.push(csrf)
+    if (csrf === 'csrf-fresh') return json(v2Page)
+    if (csrfHeaders.filter(value => value === 'csrf-stale').length === 2) await secondStaleResponse
+    return json({ kind: 'validation_failed', message: 'invalid csrf token' }, 422)
+  }) as typeof fetch
+  try {
+    const [first, second] = await Promise.all([listArtifacts(), listArtifacts()])
+    assert.equal(first.knownTotal, 1)
+    assert.equal(second.knownTotal, 1)
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+  assert.equal(sessionRequests, 1)
+  assert.deepEqual(csrfHeaders.sort(), ['csrf-fresh', 'csrf-fresh', 'csrf-stale', 'csrf-stale'].sort())
+})
+
+test('read-only v2 POST does not refresh for unrelated validation failures', async () => {
+  const original = globalThis.fetch
+  const urls: string[] = []
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf-current', isAdmin: false })
+  globalThis.fetch = (async (url) => {
+    urls.push(String(url))
+    return json({ kind: 'validation_failed', message: 'invalid provider' }, 422)
+  }) as typeof fetch
+  try {
+    await assert.rejects(listArtifacts(), /invalid provider/)
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+  assert.deepEqual(urls, ['/v1/depot/discover'])
+})
+
 test('v2 discovery rejects unknown fields, unsafe totals, and wrong scope', async () => {
   await withFetch(json({ ...v2Page, injected: true }), async () => assert.rejects(listArtifacts(), /unrecognized/i))
   await withFetch(json({ ...v2Page, knownTotal: Number.MAX_SAFE_INTEGER + 1 }), async () => assert.rejects(listArtifacts(), /9007199254740991/))
@@ -89,6 +178,7 @@ test('admin provider projection is strict and contains no credential material', 
 test('provider mutations carry CSRF and preserve operation identity', async () => {
   const original = globalThis.fetch
   const requests: Array<{ url: string; init?: RequestInit }> = []
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'session-token', isAdmin: true })
   globalThis.fetch = (async (url, init) => {
     requests.push({ url: String(url), init })
     return json({ operationId: 'op-1', version: 'v2', committed: true })
@@ -97,9 +187,32 @@ test('provider mutations carry CSRF and preserve operation identity', async () =
     await upsertProvider({ id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, authMode: 'anonymous', credential: { action: 'retain' }, expectedVersion: 'v1', operationId: 'op-1' }, 'csrf-1')
     await removeProvider('team', 'v2', 'op-1', 'proof-1', 'csrf-2')
     await providerOperation('op-1')
-  } finally { globalThis.fetch = original }
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
   assert.equal(new Headers(requests[0]?.init?.headers).get('x-csrf-token'), 'csrf-1')
   assert.equal(new Headers(requests[1]?.init?.headers).get('x-csrf-token'), 'csrf-2')
   assert.equal(requests[1]?.url, '/v1/depot/providers/team')
   assert.equal(requests[2]?.url, '/v1/depot/provider-operations/op-1')
+})
+
+test('provider mutations never refresh or replay after a CSRF rejection', async () => {
+  const original = globalThis.fetch
+  const urls: string[] = []
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'session-token', isAdmin: true })
+  globalThis.fetch = (async (url) => {
+    urls.push(String(url))
+    return json({ kind: 'validation_failed', message: 'invalid csrf token' }, 422)
+  }) as typeof fetch
+  try {
+    await assert.rejects(
+      upsertProvider({ id: 'team', name: 'Team', endpoint: 'https://depot.example', enabled: true, authMode: 'anonymous', credential: { action: 'retain' }, expectedVersion: 'v1', operationId: 'op-1' }, 'explicit-token'),
+      /invalid csrf token/,
+    )
+  } finally {
+    globalThis.fetch = original
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+  assert.deepEqual(urls, ['/v1/depot/providers'])
 })
