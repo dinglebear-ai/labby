@@ -1,13 +1,21 @@
 import type { DepotArtifact } from '@/lib/api/depot-client'
 
 export type LibraryKind = 'all' | string
+export type ArtifactType = 'mcp' | 'acp' | 'agent' | 'skill' | 'command' | 'plugin' | 'marketplace' | 'prompt'
+
+const KIND_ALIASES: Record<string, ArtifactType> = {
+  mcp_server: 'mcp', mcpserver: 'mcp',
+  acp_agent: 'acp',
+  agents: 'agent', skills: 'skill', commands: 'command', plugins: 'plugin', marketplaces: 'marketplace', prompts: 'prompt',
+}
 
 export function artifactId(artifact: DepotArtifact): string {
   return artifact.id ?? artifact.descriptor?.id ?? ''
 }
 
 export function artifactKind(artifact: DepotArtifact): string {
-  return (artifact.kind ?? artifact.descriptor?.kind ?? 'artifact').toLocaleLowerCase()
+  const kind = (artifact.kind ?? artifact.descriptor?.kind ?? 'artifact').toLocaleLowerCase().replace(/[ -]+/g, '_')
+  return KIND_ALIASES[kind] ?? kind
 }
 
 export function artifactLabel(artifact: DepotArtifact): string {
