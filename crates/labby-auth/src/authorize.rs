@@ -305,6 +305,7 @@ fn sanitized_authorization_endpoint(location: &url::Url) -> String {
 
 pub async fn callback(
     State(state): State<AuthState>,
+    headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Response, AuthError> {
     let oauth_state_id = fingerprint(&query.state);
@@ -313,6 +314,17 @@ pub async fn callback(
         provider = "google",
         "oauth callback received"
     );
+    let browser_session = crate::session::read_cookie(&headers, &state.config.session_cookie_name);
+    if crate::reauth_browser::callback(
+        &state,
+        &query.state,
+        &query.code,
+        browser_session.as_deref(),
+    )
+    .await?
+    {
+        return Ok(Redirect::to(crate::reauth_browser::RETURN_PATH).into_response());
+    }
     if let Some(login) = state.store.take_browser_login_state(&query.state).await? {
         let google = state
             .google

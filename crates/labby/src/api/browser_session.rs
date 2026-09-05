@@ -1,5 +1,5 @@
 use axum::Extension;
-use axum::extract::State;
+use axum::extract::{Json, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::time::Instant;
@@ -10,6 +10,9 @@ use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::state::AppState;
 
+use labby_auth::browser_authority::BrowserAuthority;
+use labby_auth::reauth::ProofError;
+use labby_auth::reauth_browser::PurposeInput;
 use labby_auth::session::BROWSER_CSRF_HEADER_NAME;
 
 const DEV_SESSION_EXPIRES_AT: u64 = 253_402_300_799;
@@ -22,7 +25,7 @@ fn no_store_json(body: serde_json::Value) -> Response {
     (
         StatusCode::OK,
         [(header::CACHE_CONTROL, "private, no-store")],
-        axum::Json(body),
+        Json(body),
     )
         .into_response()
 }
@@ -103,7 +106,7 @@ fn internal_error_response(message: &'static str) -> Response {
 fn invalid_csrf_response() -> Response {
     let mut response = (
         StatusCode::UNPROCESSABLE_ENTITY,
-        axum::Json(serde_json::json!({
+        Json(serde_json::json!({
             "kind": "validation_failed",
             "message": "missing or invalid csrf token",
         })),
@@ -114,6 +117,97 @@ fn invalid_csrf_response() -> Response {
         header::HeaderValue::from_static("private, no-store"),
     );
     response
+}
+
+fn proof_error_response(error: ProofError) -> Response {
+    let status = match error {
+        ProofError::Denied | ProofError::Required => StatusCode::UNAUTHORIZED,
+        ProofError::RateLimited | ProofError::Capacity => StatusCode::TOO_MANY_REQUESTS,
+        ProofError::InvalidPurpose => StatusCode::UNPROCESSABLE_ENTITY,
+        ProofError::Unsupported => StatusCode::NOT_IMPLEMENTED,
+        ProofError::Expired | ProofError::Replayed => StatusCode::GONE,
+        ProofError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (
+        status,
+        [(header::CACHE_CONTROL, "private, no-store")],
+        Json(serde_json::json!({"kind": error.kind(), "message": error.to_string()})),
+    )
+        .into_response()
+}
+
+fn trusted_origin(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(expected) = state
+        .auth_config
+        .as_ref()
+        .and_then(|config| config.public_url.as_ref())
+        .map(|url| url.origin().ascii_serialization())
+    else {
+        return false;
+    };
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        == Some(expected.as_str())
+}
+
+pub async fn reauth_start(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+    headers: HeaderMap,
+    Json(input): Json<PurposeInput>,
+) -> Response {
+    if !trusted_origin(&state, &headers) {
+        return invalid_csrf_response();
+    }
+    let Some(auth) = oauth_state(&state) else {
+        return proof_error_response(ProofError::Unsupported);
+    };
+    match labby_auth::reauth_browser::start(auth, &authority, &input).await {
+        Ok(started) => no_store_json(serde_json::to_value(started).unwrap_or_default()),
+        Err(error) => proof_error_response(error),
+    }
+}
+
+pub async fn reauth_poll(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+    axum::extract::Path(interaction): axum::extract::Path<String>,
+) -> Response {
+    let Some(auth) = oauth_state(&state) else {
+        return proof_error_response(ProofError::Unsupported);
+    };
+    match labby_auth::reauth_browser::poll(auth, &authority, &interaction).await {
+        Ok(result) => no_store_json(serde_json::to_value(result).unwrap_or_default()),
+        Err(error) => proof_error_response(error),
+    }
+}
+
+pub async fn reauth_cancel(
+    State(state): State<AppState>,
+    Extension(authority): Extension<BrowserAuthority>,
+    headers: HeaderMap,
+    axum::extract::Path(interaction): axum::extract::Path<String>,
+) -> Response {
+    if !trusted_origin(&state, &headers) {
+        return invalid_csrf_response();
+    }
+    let Some(auth) = oauth_state(&state) else {
+        return proof_error_response(ProofError::Unsupported);
+    };
+    match labby_auth::reauth_browser::cancel(auth, &authority, &interaction).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => proof_error_response(error),
+    }
+}
+
+pub async fn reauth_return() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CACHE_CONTROL, "private, no-store")],
+        "<!doctype html><meta charset=utf-8><title>Authentication complete</title><p>Authentication complete. Return to Labby.</p>",
+    )
+        .into_response()
 }
 
 pub async fn auth_session(
@@ -430,6 +524,54 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
     use labby_auth::types::{BrowserSessionRow, ProjectSessionBinding};
+
+    #[test]
+    fn reauthentication_requires_the_exact_configured_origin() {
+        let config = labby_auth::config::AuthConfig {
+            public_url: Some("https://lab.example.com/base".parse().unwrap()),
+            ..Default::default()
+        };
+        let state = AppState::new().with_auth_config(config);
+        let mut headers = HeaderMap::new();
+        assert!(!trusted_origin(&state, &headers));
+        headers.insert(header::ORIGIN, HeaderValue::from_static("null"));
+        assert!(!trusted_origin(&state, &headers));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://attacker.example"),
+        );
+        assert!(!trusted_origin(&state, &headers));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://lab.example.com"),
+        );
+        assert!(trusted_origin(&state, &headers));
+    }
+
+    #[tokio::test]
+    async fn recent_auth_errors_keep_stable_public_kinds() {
+        for (error, status, kind) in [
+            (
+                ProofError::Unsupported,
+                StatusCode::NOT_IMPLEMENTED,
+                "recent_auth_unsupported",
+            ),
+            (ProofError::Expired, StatusCode::GONE, "recent_auth_expired"),
+            (ProofError::Denied, StatusCode::UNAUTHORIZED, "auth_failed"),
+        ] {
+            let response = proof_error_response(error);
+            assert_eq!(response.status(), status);
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "private, no-store"
+            );
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["kind"], kind);
+        }
+    }
 
     #[tokio::test]
     async fn authenticated_project_session_preserves_binding_and_expiry() {

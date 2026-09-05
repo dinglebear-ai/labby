@@ -29,6 +29,8 @@ use std::time::SystemTime;
 
 use tempfile::NamedTempFile;
 
+use super::host_write::HostConfigLock;
+
 /// Maximum number of `.env.bak.*` files retained after a successful merge.
 pub const BACKUP_RETENTION: usize = 10;
 
@@ -236,39 +238,16 @@ pub fn snapshot_mtime(path: &Path) -> Option<SystemTime> {
 /// Writers using this primitive are serialized through a sibling lock file.
 pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError> {
     let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-
-    if !parent.exists() {
-        fs::create_dir_all(&parent).map_err(|e| MergeError::WriteFailed {
-            path: parent.clone(),
-            reason: WriteFailReason::from_io(&e),
-        })?;
-    }
-
-    // Serialize every sanctioned writer across processes. A separate stable
-    // lock path remains valid while the target itself is atomically replaced.
-    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
-    let lock_file = labby_auth::util::open_restricted_lock_file(&lock_path).map_err(|error| {
-        MergeError::WriteFailed {
-            path: lock_path.clone(),
+    let host_lock = HostConfigLock::acquire(path).map_err(|error| MergeError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: WriteFailReason::Other(error.to_string()),
+    })?;
+    let existing_raw = host_lock
+        .read_raw()
+        .map_err(|error| MergeError::WriteFailed {
+            path: path.to_path_buf(),
             reason: WriteFailReason::Other(error.to_string()),
-        }
-    })?;
-    lock_file.lock().map_err(|error| MergeError::WriteFailed {
-        path: lock_path,
-        reason: WriteFailReason::from_io(&error),
-    })?;
-
-    // Read existing file (empty if absent).
-    let existing_raw = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(MergeError::WriteFailed {
-                path: path.to_path_buf(),
-                reason: WriteFailReason::from_io(&e),
-            });
-        }
-    };
+        })?;
 
     if let Some(expected) = req.expected_mtime
         && let Some(current) = snapshot_mtime(path)
@@ -377,7 +356,12 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
     }
 
     // Atomic write.
-    write_atomically(path, &out_lines, &parent, backup_path.as_deref())?;
+    host_lock
+        .write(&(out_lines.join("\n") + "\n"))
+        .map_err(|error| MergeError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: WriteFailReason::Other(error.to_string()),
+        })?;
 
     // Prune backups (post-write).
     let pruned =
@@ -472,6 +456,7 @@ fn conflict_warning(key: &str) -> String {
     format!("CONFLICT: {key} already set; skipping (set force=true to overwrite)")
 }
 
+#[allow(dead_code)]
 fn write_atomically(
     path: &Path,
     lines: &[String],

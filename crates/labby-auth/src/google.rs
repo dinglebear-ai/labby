@@ -43,6 +43,48 @@ pub struct AuthorizeUrlRequest {
     pub force_consent: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct GoogleReauthRequest {
+    pub state: String,
+    pub nonce: String,
+    pub code_challenge: String,
+}
+
+impl std::fmt::Debug for GoogleReauthRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleReauthRequest")
+            .field("state", &"<redacted>")
+            .field("nonce", &"<redacted>")
+            .field("code_challenge", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct GoogleFreshAuth {
+    subject: String,
+    authenticated_at: i64,
+}
+
+impl GoogleFreshAuth {
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    pub fn authenticated_at(&self) -> i64 {
+        self.authenticated_at
+    }
+}
+
+impl std::fmt::Debug for GoogleFreshAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GoogleFreshAuth")
+            .field("subject", &"<redacted>")
+            .field("authenticated_at", &self.authenticated_at)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for AuthorizeUrlRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthorizeUrlRequest")
@@ -64,6 +106,7 @@ pub struct GoogleProvider {
     pub scopes: Vec<String>,
     pub http: reqwest::Client,
     authorize_endpoint: Url,
+    #[cfg(test)]
     token_endpoint: Url,
     jwks_endpoint: Url,
     jwks_cache: Arc<RwLock<Option<CachedGoogleJwks>>>,
@@ -168,6 +211,10 @@ struct GoogleIdTokenClaims {
     /// Workspace domain; consumer accounts omit it.
     #[serde(default)]
     hd: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
+    #[serde(default)]
+    auth_time: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -421,6 +468,7 @@ impl GoogleProvider {
         let authorize_endpoint = Url::parse(GOOGLE_AUTHORIZE_ENDPOINT).map_err(|error| {
             AuthError::Config(format!("parse google authorize endpoint: {error}"))
         })?;
+        #[cfg(test)]
         let token_endpoint = Url::parse(GOOGLE_TOKEN_ENDPOINT)
             .map_err(|error| AuthError::Config(format!("parse google token endpoint: {error}")))?;
         let jwks_endpoint = Url::parse(GOOGLE_JWKS_ENDPOINT)
@@ -437,6 +485,7 @@ impl GoogleProvider {
             ],
             http,
             authorize_endpoint,
+            #[cfg(test)]
             token_endpoint,
             jwks_endpoint,
             jwks_cache: Arc::new(RwLock::new(None)),
@@ -456,6 +505,18 @@ impl GoogleProvider {
     pub fn with_jwks_endpoint(mut self, jwks_endpoint: Url) -> Self {
         self.jwks_endpoint = jwks_endpoint;
         self
+    }
+
+    fn token_endpoint(&self) -> Result<Url, AuthError> {
+        #[cfg(test)]
+        {
+            Ok(self.token_endpoint.clone())
+        }
+        #[cfg(not(test))]
+        {
+            Url::parse(GOOGLE_TOKEN_ENDPOINT)
+                .map_err(|error| AuthError::Config(format!("parse google token endpoint: {error}")))
+        }
     }
 
     pub fn authorize_url(&self, request: &AuthorizeUrlRequest) -> Result<Url, AuthError> {
@@ -487,12 +548,86 @@ impl GoogleProvider {
         Ok(url)
     }
 
+    pub fn reauth_url(&self, request: &GoogleReauthRequest) -> Result<Url, AuthError> {
+        let mut url = self.authorize_endpoint.clone();
+        url.query_pairs_mut()
+            .append_pair("client_id", &self.client_id)
+            .append_pair("redirect_uri", self.redirect_uri.as_str())
+            .append_pair("response_type", "code")
+            .append_pair("scope", &self.scopes.join(" "))
+            .append_pair("state", &request.state)
+            .append_pair("nonce", &request.nonce)
+            .append_pair("code_challenge", &request.code_challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("prompt", "login")
+            .append_pair("max_age", "0")
+            .append_pair("claims", r#"{"id_token":{"auth_time":{"essential":true}}}"#);
+        Ok(url)
+    }
+
+    pub async fn exchange_reauth_code(
+        &self,
+        code: &str,
+        code_verifier: &str,
+        expected_nonce: &str,
+        expected_subject: &str,
+        challenge_issued_at: i64,
+    ) -> Result<GoogleFreshAuth, AuthError> {
+        let token_endpoint = self.token_endpoint()?;
+        let trace = GoogleRequestTrace::start("reauth_code_exchange", "POST", &token_endpoint);
+        let request = self.http.post(token_endpoint.clone()).form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("client_id", self.client_id.as_str()),
+            ("client_secret", self.client_secret.as_str()),
+            ("redirect_uri", self.redirect_uri.as_str()),
+            ("code_verifier", code_verifier),
+        ]);
+        let payload: GoogleTokenResponse = read_json_response(
+            trace,
+            request,
+            GoogleRequestErrors {
+                transport_context: "exchange google reauthentication code",
+                transport_log: "oauth upstream reauthentication exchange failed",
+                status_context: "google reauthentication token endpoint error",
+                status_log: "oauth upstream reauthentication exchange returned error status",
+                decode_context: "decode google reauthentication response",
+                decode_log: "oauth upstream reauthentication response was unreadable",
+                invalid_grant_requires_reauth: false,
+            },
+        )
+        .await?;
+        let token = payload.id_token.as_deref().ok_or_else(|| {
+            AuthError::InvalidGrant("reauthentication response is missing id_token".to_string())
+        })?;
+        let claims = self.verify_id_token(token).await?;
+        let authenticated_at = claims.auth_time.ok_or_else(|| {
+            AuthError::InvalidGrant("reauthentication response is missing auth_time".to_string())
+        })?;
+        let now = crate::util::now_unix();
+        if claims.sub != expected_subject
+            || claims.nonce.as_deref() != Some(expected_nonce)
+            || authenticated_at <= challenge_issued_at
+            || authenticated_at > now
+            || authenticated_at <= now - 300
+        {
+            return Err(AuthError::InvalidGrant(
+                "reauthentication evidence does not match the active challenge".to_string(),
+            ));
+        }
+        Ok(GoogleFreshAuth {
+            subject: claims.sub,
+            authenticated_at,
+        })
+    }
+
     pub async fn exchange_code(
         &self,
         code: &str,
         code_verifier: &str,
     ) -> Result<GoogleExchange, AuthError> {
-        let trace = GoogleRequestTrace::start("code_exchange", "POST", &self.token_endpoint);
+        let token_endpoint = self.token_endpoint()?;
+        let trace = GoogleRequestTrace::start("code_exchange", "POST", &token_endpoint);
         info!(
             provider = "google",
             oauth_code_id = %fingerprint(code),
@@ -501,7 +636,7 @@ impl GoogleProvider {
         );
         let payload: GoogleTokenResponse = read_json_response(
             trace,
-            self.http.post(self.token_endpoint.clone()).form(&[
+            self.http.post(token_endpoint.clone()).form(&[
                 ("grant_type", "authorization_code"),
                 ("code", code),
                 ("client_id", self.client_id.as_str()),
@@ -554,7 +689,8 @@ impl GoogleProvider {
         expected_subject: &str,
         existing_email: Option<&str>,
     ) -> Result<GoogleExchange, AuthError> {
-        let trace = GoogleRequestTrace::start("refresh", "POST", &self.token_endpoint);
+        let token_endpoint = self.token_endpoint()?;
+        let trace = GoogleRequestTrace::start("refresh", "POST", &token_endpoint);
         info!(
             provider = "google",
             refresh_token_id = %fingerprint(refresh_token),
@@ -562,7 +698,7 @@ impl GoogleProvider {
         );
         let payload: GoogleTokenResponse = read_json_response(
             trace,
-            self.http.post(self.token_endpoint.clone()).form(&[
+            self.http.post(token_endpoint.clone()).form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh_token),
                 ("client_id", self.client_id.as_str()),
@@ -820,7 +956,7 @@ mod tests {
 
     use super::{
         AuthorizeUrlRequest, CachedGoogleJwks, GoogleExchange, GoogleIdentity, GoogleJwk,
-        GoogleJwks, GoogleProvider, merge_google_scopes,
+        GoogleJwks, GoogleProvider, GoogleReauthRequest, merge_google_scopes,
     };
 
     #[test]
@@ -919,6 +1055,101 @@ mod tests {
         let url = provider.authorize_url(&request).unwrap();
         assert!(url.as_str().contains("access_type=offline"));
         assert!(!url.as_str().contains("prompt="));
+    }
+
+    #[test]
+    fn google_reauth_url_requests_signed_freshness_and_nonce_without_offline_access() {
+        let provider = test_google_provider();
+        let nonce = format!("{:032x}", rand::random::<u128>());
+        let url = provider
+            .reauth_url(&GoogleReauthRequest {
+                state: "reauth-state".to_string(),
+                nonce: nonce.clone(),
+                code_challenge: "reauth-pkce".to_string(),
+            })
+            .unwrap();
+        let pairs = url
+            .query_pairs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            pairs.get("nonce").map(|value| value.as_ref()),
+            Some(nonce.as_str())
+        );
+        assert_eq!(
+            pairs.get("prompt").map(|value| value.as_ref()),
+            Some("login")
+        );
+        assert_eq!(pairs.get("max_age").map(|value| value.as_ref()), Some("0"));
+        assert_eq!(
+            pairs.get("claims").map(|value| value.as_ref()),
+            Some(r#"{"id_token":{"auth_time":{"essential":true}}}"#)
+        );
+        assert!(!pairs.contains_key("access_type"));
+        assert!(!pairs.contains_key("include_granted_scopes"));
+    }
+
+    #[tokio::test]
+    async fn google_reauth_accepts_only_matching_recent_signed_nonce_and_subject() {
+        let issued_at = unix_now() - 10;
+        let expected_nonce = format!("{:032x}", rand::random::<u128>());
+        let token = signed_reauth_token("google-subject-123", &expected_nonce, issued_at + 1);
+        let (_server, provider) = mocked_google_provider_with_id_token(token).await;
+        let fresh = provider
+            .exchange_reauth_code(
+                "code",
+                "verifier",
+                &expected_nonce,
+                "google-subject-123",
+                issued_at,
+            )
+            .await
+            .unwrap();
+        assert_eq!(fresh.authenticated_at(), issued_at + 1);
+        assert_eq!(fresh.subject(), "google-subject-123");
+        assert!(!format!("{fresh:?}").contains("google-subject-123"));
+    }
+
+    #[tokio::test]
+    async fn google_reauth_rejects_stale_nonce_and_account_switch() {
+        let issued_at = unix_now() - 10;
+        let expected_nonce = format!("{:032x}", rand::random::<u128>());
+        let wrong_nonce = format!("{:032x}", rand::random::<u128>());
+        for token in [
+            signed_reauth_token("google-subject-123", &expected_nonce, issued_at),
+            signed_reauth_token("google-subject-123", &wrong_nonce, issued_at + 1),
+            signed_reauth_token("different-subject", &expected_nonce, issued_at + 1),
+        ] {
+            let (_server, provider) = mocked_google_provider_with_id_token(token).await;
+            assert!(
+                provider
+                    .exchange_reauth_code(
+                        "code",
+                        "verifier",
+                        &expected_nonce,
+                        "google-subject-123",
+                        issued_at
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn google_reauth_rejects_an_id_token_without_freshness_claims() {
+        let (_server, provider) = mocked_google_provider().await;
+        let expected_nonce = format!("{:032x}", rand::random::<u128>());
+        let error = provider
+            .exchange_reauth_code(
+                "code",
+                "verifier",
+                &expected_nonce,
+                "google-subject-123",
+                unix_now() - 10,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("auth_time"));
     }
 
     #[tokio::test]
@@ -1298,6 +1529,22 @@ mod tests {
             "email": "user@example.com",
             "iat": (unix_now() - 10) as usize,
             "exp": if expired { (unix_now() - 3600) as usize } else { (unix_now() + 3600) as usize },
+        });
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-kid".to_string());
+        encode(&header, &claims, &test_encoding_key()).unwrap()
+    }
+
+    fn signed_reauth_token(subject: &str, nonce: &str, auth_time: i64) -> String {
+        let claims = json!({
+            "iss": "https://accounts.google.com",
+            "aud": "client-id",
+            "sub": subject,
+            "email": "user@example.com",
+            "iat": (unix_now() - 10) as usize,
+            "exp": (unix_now() + 3600) as usize,
+            "nonce": nonce,
+            "auth_time": auth_time,
         });
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("test-kid".to_string());

@@ -280,21 +280,7 @@ pub(crate) fn require_session_csrf(
     headers: &HeaderMap,
     auth: Option<&AuthContext>,
 ) -> Result<(), crate::dispatch::error::ToolError> {
-    let valid = auth.is_some_and(|auth| {
-        !auth.via_session
-            || auth.csrf_token.as_deref().is_some_and(|expected| {
-                headers
-                    .get(labby_auth::session::BROWSER_CSRF_HEADER_NAME)
-                    .and_then(|value| value.to_str().ok())
-                    == Some(expected)
-            })
-    });
-    valid
-        .then_some(())
-        .ok_or_else(|| crate::dispatch::error::ToolError::Forbidden {
-            message: format!("{action} requires a valid session CSRF token"),
-            required_scopes: vec!["lab:admin".to_owned()],
-        })
+    super::require_session_csrf(action, headers, auth)
 }
 
 pub(crate) async fn authorize_authority_context(

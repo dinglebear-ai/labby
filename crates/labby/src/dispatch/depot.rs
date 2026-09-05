@@ -1,5 +1,30 @@
 //! Bounded server-side transport for the optional Depot control plane.
 
+pub mod admin;
+#[cfg(test)]
+mod admin_tests;
+pub mod cursor;
+#[cfg(test)]
+mod cursor_tests;
+pub mod discovery;
+#[cfg(test)]
+mod discovery_tests;
+pub mod health;
+pub mod manager;
+#[cfg(test)]
+mod manager_tests;
+pub mod network;
+#[cfg(test)]
+mod network_tests;
+pub mod operations;
+pub mod provider;
+pub mod scheduler;
+#[cfg(test)]
+mod scheduler_tests;
+pub mod store;
+#[cfg(test)]
+mod store_tests;
+
 use std::{env, sync::Arc, time::Duration};
 
 use reqwest::{Client, StatusCode, Url};
@@ -64,6 +89,18 @@ impl TransportFailure {
 }
 
 impl DepotClient {
+    /// Inert compatibility facade until the browser adapters receive the manager.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            http: Client::new(),
+            base_url: None,
+            token: None,
+            enabled: false,
+            interactive: Arc::new(Semaphore::new(MAX_INTERACTIVE_REQUESTS)),
+            queue_timeout: QUEUE_TIMEOUT,
+        }
+    }
     #[must_use]
     pub fn from_env() -> Self {
         let enabled = env::var("LABBY_DEPOT_ENABLED").is_ok_and(|value| value == "1");

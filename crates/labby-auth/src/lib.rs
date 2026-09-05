@@ -5,6 +5,9 @@ pub mod at_rest;
 pub mod auth_context;
 #[cfg(feature = "http-axum")]
 pub mod authorize;
+pub mod browser_authority;
+#[cfg(test)]
+mod browser_authority_tests;
 #[cfg(feature = "http-axum")]
 pub mod cimd;
 pub mod config;
@@ -17,6 +20,11 @@ pub mod metadata;
 #[cfg(feature = "http-axum")]
 pub mod middleware;
 pub mod project_session;
+pub mod reauth;
+#[cfg(feature = "http-axum")]
+pub mod reauth_browser;
+#[cfg(test)]
+mod reauth_tests;
 #[cfg(feature = "http-axum")]
 mod remote;
 pub mod resource_registry;

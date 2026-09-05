@@ -456,6 +456,41 @@ pub struct BrowserLoginStateRow {
     pub expires_at: i64,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct BrowserReauthChallengeRow {
+    pub state: String,
+    pub interaction_hash: [u8; 32],
+    pub session_id: String,
+    pub subject: String,
+    pub provider_code_verifier: String,
+    pub nonce: String,
+    pub purpose_json: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+impl std::fmt::Debug for BrowserReauthChallengeRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrowserReauthChallengeRow")
+            .field("state", &"<redacted>")
+            .field("interaction_hash", &"<redacted>")
+            .field("session_id", &"<redacted>")
+            .field("subject", &"<redacted>")
+            .field("provider_code_verifier", &"<redacted>")
+            .field("nonce", &"<redacted>")
+            .field("purpose_json_len", &self.purpose_json.len())
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BrowserReauthResult {
+    Pending,
+    Completed(String),
+}
+
 /// Persisted upstream OAuth credential row.
 ///
 /// The encrypted `token_blob` is `chacha20poly1305(token_response_json)` sealed with a

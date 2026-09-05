@@ -3,6 +3,7 @@
 use std::fs::OpenOptions;
 use std::path::Path;
 
+#[allow(dead_code)]
 pub(super) fn open_secret_file(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {

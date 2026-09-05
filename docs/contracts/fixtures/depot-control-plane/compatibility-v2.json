@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "labby.depot-compatibility/v2",
+  "discoveryContract": "depot.discovery/v1",
+  "routes": ["GET /api/discovery", "POST /api/discovery/list", "POST /api/discovery/get"],
+  "identity": {"providerQualified": true, "rawArtifactIdRequired": true},
+  "cursor": {"opaqueRandomBits": 256, "idleSeconds": 900, "absoluteSeconds": 3600, "replayTransitions": 2},
+  "limits": {"providers": 16, "artifactPage": 200, "responseBytes": 1048576},
+  "coverageStates": ["complete", "partial", "deferred", "empty", "all_disabled", "all_failed"],
+  "partialResultsUseHttp200": true,
+  "anonymousPublicReadRequiresExplicitPublication": true
+}

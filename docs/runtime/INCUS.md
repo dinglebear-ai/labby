@@ -421,6 +421,11 @@ owned `/home/labby/.labby` state, netplan bytes, network service state, and
 customized Incus values, and happens automatically on verification failure.
 Stopping and deleting a container is **teardown**, not rollback: it
 destroys the target filesystem unless state was first snapshotted or exported.
+Before activation, retain a matched copy of the binary and web assets with their
+hashes and qualified state-format version. Do not restore older configuration,
+credentials, provider tombstones, or transaction state over accepted operator
+edits; freeze writes and reconcile the affected transaction when versions are
+incompatible.
 To intentionally tear down the target:
 
 ```bash

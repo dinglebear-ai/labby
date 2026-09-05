@@ -362,6 +362,37 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
             RouteAuth::BrowserSession,
         ),
         RouteDescriptor::new(
+            "POST",
+            "/auth/reauth",
+            "reauth_start",
+            "oauth",
+            RouteAuth::BrowserSession,
+        )
+        .when("mounted only when credential authentication is configured"),
+        RouteDescriptor::new(
+            "GET",
+            "/auth/reauth/{interaction}",
+            "reauth_poll",
+            "oauth",
+            RouteAuth::BrowserSession,
+        )
+        .when("mounted only when credential authentication is configured"),
+        RouteDescriptor::new(
+            "DELETE",
+            "/auth/reauth/{interaction}",
+            "reauth_cancel",
+            "oauth",
+            RouteAuth::BrowserSession,
+        )
+        .when("mounted only when credential authentication is configured"),
+        RouteDescriptor::new(
+            "GET",
+            "/auth/reauth/return",
+            "reauth_return",
+            "oauth",
+            RouteAuth::Public,
+        ),
+        RouteDescriptor::new(
             "GET",
             APPS_LAUNCHER_ROUTE,
             "apps_launcher_page",

@@ -14,8 +14,14 @@
 //! like `unraid` reads `UNRAID_URL` as the default instance and
 //! `UNRAID_NODE2_URL` as an additional instance labeled `node2`.
 
+pub mod depot;
+#[cfg(test)]
+mod depot_tests;
 pub mod env_merge;
 mod env_writer;
+pub mod host_write;
+#[cfg(test)]
+mod host_write_tests;
 mod paths;
 pub(crate) mod secret_files;
 
@@ -285,7 +291,6 @@ pub(crate) fn resolved_catalog_notification_timeout() -> Duration {
 use anyhow::{Context, Result};
 use labby_auth::config as auth_config;
 use serde::{Deserialize, Serialize, Serializer};
-use tempfile::NamedTempFile;
 
 pub const WEB_UI_AUTH_DISABLED_ENV: &str = "LABBY_WEB_UI_AUTH_DISABLED";
 pub const WEB_UI_AUTH_DISABLED_LEGACY_ENV: &str = "LABBY_WEB_UI_DISABLE_AUTH";
@@ -354,6 +359,9 @@ pub struct LabConfig {
     /// Persisted configuration schema version. Missing legacy values migrate to v1.
     #[serde(default = "current_config_version")]
     pub config_version: u32,
+    /// Instance-shared Depot discovery providers, independent of acquisition.
+    #[serde(default)]
+    pub depot: depot::DepotPreferences,
     /// Default output format for CLI commands that print tables.
     #[serde(default)]
     pub output: OutputPreferences,
@@ -1639,8 +1647,12 @@ pub(crate) fn load_toml_from_fixed_root(candidates: &[PathBuf]) -> Result<LabCon
 
 fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
     for path in candidates {
-        match std::fs::read_to_string(path) {
-            Ok(raw) => {
+        match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+            Ok(_) => {
+                let lock = host_write::HostConfigLock::acquire(path)?;
+                let raw = lock.read_raw()?;
                 validate_top_level_extension_boundary(&raw)
                     .with_context(|| format!("failed to parse {}", path.display()))?;
                 let mut cfg = toml::from_str::<LabConfig>(&raw)
@@ -1653,12 +1665,6 @@ fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
                 cfg.validate()
                     .with_context(|| format!("invalid config {}", path.display()))?;
                 return Ok(cfg);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                return Err(
-                    anyhow::Error::new(e).context(format!("failed to read {}", path.display()))
-                );
             }
         }
     }
@@ -1837,26 +1843,8 @@ pub fn patch_config_scalars_checked(
     entries: &[ConfigScalarPatch],
     expected: &[ExpectedConfigScalar],
 ) -> Result<ConfigPatchOutcome> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let lock_path = config_lock_path(path);
-    let lock_file = labby_auth::util::open_restricted_lock_file(&lock_path)
-        .with_context(|| format!("open restricted config lock {}", lock_path.display()))?;
-    let mut lock = fd_lock::RwLock::new(lock_file);
-    let _guard = lock
-        .try_write()
-        .with_context(|| format!("config is locked: {}", lock_path.display()))?;
-
-    let raw = match std::fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(anyhow::Error::new(e).context(format!("failed to read {}", path.display())));
-        }
-    };
+    let host_lock = host_write::HostConfigLock::acquire(path)?;
+    let raw = host_lock.read_raw()?;
     let mut document = raw
         .parse::<toml_edit::DocumentMut>()
         .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -1907,18 +1895,7 @@ pub fn patch_config_scalars_checked(
         None
     };
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut tmp = NamedTempFile::new_in(parent)
-        .with_context(|| format!("failed to create temp file in {}", parent.display()))?;
-    secret_files::restrict_secret_file_permissions(tmp.path())
-        .context("failed to restrict temp config before writing")?;
-    tmp.write_all(patched.as_bytes())
-        .context("failed to write temp config")?;
-    tmp.as_file()
-        .sync_all()
-        .context("failed to sync temp config")?;
-    tmp.persist(path)
-        .map_err(|e| anyhow::Error::new(e.error))
-        .with_context(|| format!("failed to persist {}", path.display()))?;
+    host_lock.write(&patched)?;
     let maintenance_warning = (|| -> Result<()> {
         #[cfg(test)]
         if parent
@@ -2203,6 +2180,7 @@ pub fn patch_built_in_upstream_apis_enabled(path: &Path, enabled: bool) -> Resul
     .config)
 }
 
+#[allow(dead_code)]
 fn config_lock_path(path: &Path) -> PathBuf {
     let mut lock = path.to_path_buf();
     let file_name = path

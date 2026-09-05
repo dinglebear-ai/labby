@@ -21,7 +21,7 @@ use std::sync::{Arc, RwLock};
 use labby_gateway::gateway::config_store::{GatewayConfigStore, StoreFuture};
 use labby_runtime::gateway_config::{GatewayConfig, ResolvedPublicUrls};
 
-use crate::config::{EnvCredential, LabConfig};
+use crate::config::{EnvCredential, LabConfig, home_dir};
 use crate::dispatch::clients::SharedServiceClients;
 use crate::dispatch::error::ToolError;
 
@@ -60,11 +60,9 @@ impl LabConfigStore {
     }
 
     fn resolved_env_path(&self) -> PathBuf {
-        self.config_path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join(".env")
+        home_dir()
+            .map(|h| h.join(".labby").join(".env"))
+            .unwrap_or_else(|| PathBuf::from(".env"))
     }
 
     /// Backup-first atomic write of `creds` via the canonical
@@ -128,13 +126,15 @@ impl GatewayConfigStore for LabConfigStore {
         // non-gateway config sections on disk after this store was constructed;
         // persisting gateway state must not overwrite those newer values with a
         // stale in-memory snapshot.
+        let host_lock = crate::config::host_write::HostConfigLock::acquire(&self.config_path)
+            .map_err(host_config::host_error)?;
         let mut guard = self
             .config
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut snapshot = load_gateway_config(&self.config_path)?;
+        let mut snapshot = host_config::load_locked(&host_lock)?;
         snapshot.apply_gateway_config(cfg);
-        write_gateway_config(&self.config_path, &snapshot)?;
+        host_config::write_locked(&host_lock, &snapshot)?;
 
         *guard = snapshot;
         Ok(())
@@ -276,31 +276,18 @@ pub(crate) fn test_gateway_manager(
 /// merge it into the existing document so foreign top-level keys (sections
 /// `LabConfig` does not model) survive byte-for-byte.
 mod host_config {
-    use std::io::Write as _;
     use std::path::Path;
 
-    use fd_lock::RwLock;
-    use tempfile::NamedTempFile;
+    use crate::config::host_write::{HostConfigLock, HostWriteError};
 
     use crate::config::LabConfig;
     use crate::dispatch::error::ToolError;
 
-    /// Top-level keys `LabConfig` models. On render these are removed from the
-    /// existing document and rewritten from the struct; every other foreign
-    /// key is preserved byte-for-byte.
-    const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
+    // Exactly the fields written by LabConfig::apply_gateway_config.
+    const GATEWAY_KEYS: &[&str] = &[
         "config_version",
-        "mcp",
-        "log",
-        "local_logs",
-        "api",
-        "web",
-        "workspace",
-        "oauth",
-        "admin",
-        "services",
-        "auth",
         "code_mode",
+        "mcp_apps",
         "upstream_request_timeout_ms",
         "upstream_relay_timeout_ms",
         "upstream",
@@ -311,17 +298,18 @@ mod host_config {
         "virtual_servers",
         "quarantined_virtual_servers",
         "gateway",
-        "public_urls",
     ];
 
-    fn lock_path(path: &Path) -> std::path::PathBuf {
-        let mut p = path.to_path_buf();
-        let name = p
-            .file_name()
-            .map(|n| format!("{}.lock", n.to_string_lossy()))
-            .unwrap_or_else(|| "config.toml.lock".to_string());
-        p.set_file_name(name);
-        p
+    pub(super) fn host_error(error: HostWriteError) -> ToolError {
+        ToolError::Sdk {
+            sdk_kind: match error {
+                HostWriteError::Busy => "configuration_busy",
+                HostWriteError::Durability => "durability_uncertain",
+                _ => "configuration_io_error",
+            }
+            .into(),
+            message: error.to_string(),
+        }
     }
 
     /// Load the gateway-relevant config from `path` as a full [`LabConfig`].
@@ -331,119 +319,44 @@ mod host_config {
     /// tests, stays lint-clean.
     #[allow(dead_code)]
     pub fn load_gateway_config(path: &Path) -> Result<LabConfig, ToolError> {
-        match std::fs::read_to_string(path) {
-            Ok(raw) => {
-                let mut cfg = toml::from_str::<LabConfig>(&raw).map_err(|e| ToolError::Sdk {
-                    sdk_kind: "internal_error".to_string(),
-                    message: format!("failed to parse {}: {e}", path.display()),
-                })?;
-                cfg.normalize_protected_mcp_routes()
-                    .map_err(|e| ToolError::Sdk {
-                        sdk_kind: "internal_error".to_string(),
-                        message: format!("invalid config {}: {e}", path.display()),
-                    })?;
-                Ok(cfg)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(LabConfig::default()),
-            Err(e) => Err(ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!("failed to read {}: {e}", path.display()),
-            }),
-        }
+        let lock = HostConfigLock::acquire(path).map_err(host_error)?;
+        load_locked(&lock)
+    }
+
+    pub(super) fn load_locked(lock: &HostConfigLock) -> Result<LabConfig, ToolError> {
+        let raw = lock.read_raw().map_err(host_error)?;
+        let mut cfg: LabConfig =
+            toml::from_str(&raw).map_err(|_| host_error(HostWriteError::InvalidDocument))?;
+        cfg.normalize_protected_mcp_routes()
+            .map_err(|_| host_error(HostWriteError::InvalidDocument))?;
+        Ok(cfg)
     }
 
     /// Render `cfg` into the existing document (preserving foreign keys) and
     /// atomically replace the file at `path`.
     pub fn write_gateway_config(path: &Path, cfg: &LabConfig) -> Result<(), ToolError> {
-        cfg.validate().map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("invalid config: {e}"),
-        })?;
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!("failed to create {}: {e}", parent.display()),
-            })?;
-        }
-
-        let lock_path = lock_path(path);
-        let lock_file =
-            labby_auth::util::open_restricted_lock_file(&lock_path).map_err(|error| {
-                ToolError::Sdk {
-                    sdk_kind: "internal_error".to_string(),
-                    message: format!("failed to open restricted gateway config lock: {error}"),
-                }
-            })?;
-        let mut lock = RwLock::new(lock_file);
-        let _guard = lock.try_write().map_err(|_| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("gateway config is locked: {}", lock_path.display()),
-        })?;
-
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let raw = render_gateway_config(path, cfg)?;
-
-        let mut tmp = NamedTempFile::new_in(parent).map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to create temp file in {}: {e}", parent.display()),
-        })?;
-        restrict_config_file_permissions(tmp.path())?;
-        tmp.write_all(raw.as_bytes()).map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to write temp gateway config: {e}"),
-        })?;
-        tmp.as_file().sync_all().map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to sync temp gateway config: {e}"),
-        })?;
-        tmp.persist(path).map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to persist {}: {}", path.display(), e.error),
-        })?;
-        restrict_config_file_permissions(path)?;
-
-        Ok(())
+        let lock = HostConfigLock::acquire(path).map_err(host_error)?;
+        write_locked(&lock, cfg)
     }
 
-    fn render_gateway_config(path: &Path, cfg: &LabConfig) -> Result<String, ToolError> {
-        let serialized = toml::to_string(cfg).map_err(|e| ToolError::Sdk {
-            sdk_kind: "internal_error".to_string(),
-            message: format!("failed to serialize gateway config: {e}"),
+    pub(super) fn write_locked(lock: &HostConfigLock, cfg: &LabConfig) -> Result<(), ToolError> {
+        cfg.validate().map_err(|_| ToolError::Sdk {
+            sdk_kind: "invalid_configuration".into(),
+            message: "invalid gateway configuration".into(),
         })?;
-        let desired = serialized
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!("failed to parse serialized gateway config: {e}"),
-            })?;
-
-        let Ok(existing_raw) = std::fs::read_to_string(path) else {
-            return Ok(serialized);
-        };
-        let Ok(mut existing) = existing_raw.parse::<toml_edit::DocumentMut>() else {
-            return Ok(serialized);
-        };
-
-        // Remove the keys we model so they are rewritten from the struct, then
-        // overlay the desired document. Foreign top-level keys are untouched.
-        for key in KNOWN_LAB_CONFIG_KEYS {
-            existing.as_table_mut().remove(key);
-        }
-        for (key, item) in desired.as_table() {
-            existing[key] = item.clone();
-        }
-
-        Ok(existing.to_string())
-    }
-
-    fn restrict_config_file_permissions(path: &Path) -> Result<(), ToolError> {
-        crate::config::secret_files::restrict_secret_file_permissions(path).map_err(|e| {
-            ToolError::Sdk {
-                sdk_kind: "internal_error".to_string(),
-                message: format!("failed to restrict {}: {e}", path.display()),
+        let serialized =
+            toml::to_string(cfg).map_err(|_| host_error(HostWriteError::InvalidDocument))?;
+        let desired: toml_edit::DocumentMut = serialized
+            .parse()
+            .map_err(|_| host_error(HostWriteError::InvalidDocument))?;
+        let mut document = lock.read().map_err(host_error)?;
+        for key in GATEWAY_KEYS {
+            document.as_table_mut().remove(key);
+            if let Some(item) = desired.get(key) {
+                document[key] = item.clone();
             }
-        })
+        }
+        lock.write(&document.to_string()).map_err(host_error)
     }
 }
 
@@ -468,18 +381,6 @@ mod tests {
             .join("config.toml");
 
         assert_eq!(isolated_test_config_path(explicit.clone()), explicit);
-    }
-
-    #[test]
-    fn credentials_share_the_selected_config_installation_root() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("selected-installation/config.toml");
-        let store = LabConfigStore::new(Arc::new(RwLock::new(LabConfig::default())), config_path);
-
-        assert_eq!(
-            GatewayConfigStore::env_path(&store),
-            dir.path().join("selected-installation/.env")
-        );
     }
 
     /// Trust invariant: persisting a gateway mutation through the host store must
@@ -605,31 +506,5 @@ url = \"https://alpha.example.com/mcp\"
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
-        let lock_mode = std::fs::metadata(path.with_extension("toml.lock"))
-            .expect("lock metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(
-            lock_mode, 0o600,
-            "config lock must use the secret-file policy"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn persist_restricts_windows_config_and_lock_acls() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "[gateway]\n").expect("write initial config");
-        let loaded = load_gateway_config(&path).expect("load config");
-        let store = LabConfigStore::new(Arc::new(RwLock::new(loaded.clone())), path.clone());
-        store.persist(&loaded.to_gateway_config()).expect("persist");
-        let lock_path = path.with_extension("toml.lock");
-        for protected in [&path, &lock_path] {
-            let file = labby_winjob::fs::open_read(protected, false).expect("open protected file");
-            labby_winjob::fs::verify_current_user_only_dacl(&file)
-                .expect("private current-user FullControl ACL");
-        }
     }
 }

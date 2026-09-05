@@ -11,6 +11,28 @@
 pub mod helpers;
 pub mod local_session;
 
+pub(crate) fn require_session_csrf(
+    action: &str,
+    headers: &axum::http::HeaderMap,
+    auth: Option<&labby_auth::AuthContext>,
+) -> Result<(), crate::dispatch::error::ToolError> {
+    let valid = auth.is_some_and(|auth| {
+        !auth.via_session
+            || auth.csrf_token.as_deref().is_some_and(|expected| {
+                headers
+                    .get(labby_auth::session::BROWSER_CSRF_HEADER_NAME)
+                    .and_then(|value| value.to_str().ok())
+                    == Some(expected)
+            })
+    });
+    valid
+        .then_some(())
+        .ok_or_else(|| crate::dispatch::error::ToolError::Forbidden {
+            message: format!("{action} requires a valid session CSRF token"),
+            required_scopes: vec!["lab:admin".to_owned()],
+        })
+}
+
 /// Admin-only allowlist management (`/v1/auth/allowed-emails`).
 pub mod auth_admin;
 

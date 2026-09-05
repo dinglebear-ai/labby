@@ -100,6 +100,47 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
 
+## Depot Discovery Configuration
+
+`[depot]` defines discovery preferences independently of acquisition sources.
+`public_enabled` defaults to `true`; the built-in provider identity is `public`,
+its display name is Public Depot, and its fixed endpoint is
+`https://depot.dinglebear.ai`. Configuration resolution performs no network I/O.
+
+Named providers use `[[depot.providers]]` with `id`, `name`, `endpoint`,
+`enabled`, and `auth_mode` (`anonymous` or `bearer`). Bearer providers reference
+a server-held `LABBY_DEPOT_*_TOKEN` key through `bearer_token_env`; secret values
+do not belong in TOML. HTTPS endpoints cannot contain credentials, queries, or
+fragments. Enabling a provider represents instance-shared read access, not
+acquisition or upstream mutation authority.
+
+There are at most 16 provider slots including Public and legacy configuration.
+IDs are lowercase ASCII slugs of 1–64 bytes; `public`, `all`, and `legacy` are
+reserved. Names contain 1–128 Unicode characters. Invalid entries and every
+entry with a duplicate ID are quarantined without preventing healthy siblings
+from resolving. Diagnostics expose bounded indices and error kinds, not raw
+values. Raw entries and unknown nested fields remain in the disk model for
+targeted editing. Malformed TOML remains a whole-file configuration error.
+Tombstones permanently reserve removed IDs, with a maximum of 4096 records.
+
+Legacy normalization keeps Public separate. A legacy URL with no explicit
+enable flag is enabled, but requires its bearer credential; it never becomes
+anonymous because a token is absent. Explicit disable preserves a disabled
+entry. A token or enable flag without a URL is invalid. `legacy_migrated` or a
+`legacy` tombstone suppresses legacy normalization to prevent resurrection.
+
+The server captures discovery credentials after effective configuration and
+environment precedence are resolved. Provider status is local; qualification
+is lazy and never gates readiness. Authentication and incompatible-contract
+failures require an explicit probe or a configuration change before retry.
+Transient failures use a cooldown of at most 30 seconds.
+
+Host administrators may configure `[depot.private_hosts]` with exact hostname
+keys and arrays of private IP address strings. Grants are bounded to 16 hosts
+and 32 addresses per host and cannot permit loopback, link-local, metadata, or
+mapped IPv6 addresses. TLS hostname verification still applies. This policy is
+host-file configuration; browser provider edits cannot change it.
+
 ## Durable Depot Skill Imports
 
 Local Artifact persistence flushes file contents before atomic publication.
