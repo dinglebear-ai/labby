@@ -44,6 +44,9 @@ use std::path::{Path, PathBuf};
 /// substrate, not peers. See `dispatch/CLAUDE.md` § "Shared subsystems".
 const SHARED_NON_SERVICES: &[&str] = &[
     // Shared subsystems (not 4-file action-dispatched services):
+    // `depot` backs provider discovery projected through the `artifacts`
+    // service; it is not itself a registered product service.
+    "depot",
     "node",
     "security",
     // `upstream` is now a temporary compatibility shim (`crate::dispatch::upstream`

@@ -120,9 +120,9 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
     },
 ];
 
-pub(crate) const PINNED_ROUTE_COUNT: usize = 93;
+pub(crate) const PINNED_ROUTE_COUNT: usize = 104;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "40973653cb3b952ccb14c61465588e09f3e31c93fd6977cb98d6844c49bd4fcf";
+    "9bcf503c14a6d373833255624f1cf7a1d98ac6c99522e50436feddae1addaab2";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
@@ -286,10 +286,14 @@ fn sample_path(template: &str) -> Result<String, String> {
         ("{machine_id}", "missing-machine"),
         ("{credential_id}", "missing-credential"),
         ("{email}", "nobody%40example.invalid"),
+        ("{interaction}", "missing-interaction"),
+        ("{operation_id}", "missing-operation"),
+        ("{provider_id}", "missing-provider"),
         ("{id}", "missing-upload"),
         ("{name}", "missing"),
         ("{service}", "doctor"),
         ("{*route}", "missing"),
+        ("{*rest}", "missing"),
         ("{*suffix}", "missing"),
         ("{runtime_protected_mcp_route}", "operator"),
     ]);
