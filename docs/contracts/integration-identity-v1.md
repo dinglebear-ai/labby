@@ -1,3 +1,9 @@
+---
+title: Integration identity v1
+created: 2026-09-04
+updated: 2026-09-05
+---
+
 # Integration identity v1
 
 `GET /v1/integration/identity` returns a non-authorizing snapshot of the local
