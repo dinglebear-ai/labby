@@ -40,10 +40,10 @@ pub use client::{current_gateway_manager, install_gateway_manager, require_gatew
 pub use config_store::GatewayConfigStore;
 pub use dispatch::{dispatch, dispatch_with_manager, dispatch_with_manager_scoped};
 pub use execution_loadout::{
-    CapabilityCatalogSnapshot, CapabilityFamily, CapabilityRef, ExecutionLoadoutActivation,
-    ExecutionLoadoutContext, ExecutionLoadoutCreate, ExecutionLoadoutDraft, ExecutionLoadoutError,
-    ExecutionLoadoutPatch, ExecutionLoadoutPreview, ExecutionLoadoutRevision,
-    ExecutionLoadoutSummary, ExecutionPrincipal, ResolutionStatus,
+    CapabilityCatalogSnapshot, CapabilityFamily, CapabilityRef, ExecutionCapabilityCatalogProvider,
+    ExecutionLoadoutActivation, ExecutionLoadoutContext, ExecutionLoadoutCreate,
+    ExecutionLoadoutDraft, ExecutionLoadoutError, ExecutionLoadoutPatch, ExecutionLoadoutPreview,
+    ExecutionLoadoutRevision, ExecutionLoadoutSummary, ExecutionPrincipal, ResolutionStatus,
 };
 pub use manager::{
     LoadoutMcpCatalogPublicationError, LoadoutServiceCatalogPublicationError,

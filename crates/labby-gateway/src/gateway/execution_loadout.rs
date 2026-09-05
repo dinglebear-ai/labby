@@ -4,6 +4,8 @@
 //! authorized subset of one immutable catalog snapshot for a caller/runtime.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
@@ -63,6 +65,7 @@ pub enum CapabilityFamily {
     Resource,
     Skill,
     Agent,
+    Hook,
     McpApp,
     McpServer,
     Plugin,
@@ -89,6 +92,15 @@ pub struct CapabilityCatalogSnapshot {
     pub generation: String,
     pub principal: String,
     pub members: Vec<CapabilityRef>,
+}
+
+/// Host-owned source of capabilities visible to one explicit execution principal.
+pub trait ExecutionCapabilityCatalogProvider: Send + Sync {
+    fn members<'a>(
+        &'a self,
+        manager: &'a GatewayManager,
+        context: &'a ExecutionLoadoutContext,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CapabilityRef>, ExecutionLoadoutError>> + Send + 'a>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -355,6 +367,99 @@ impl GatewayManager {
             0
         }
     }
+
+    /// Rebuild and atomically publish one coherent host-authoritative generation.
+    pub async fn refresh_execution_capability_snapshots(
+        &self,
+        contexts: &[ExecutionLoadoutContext],
+    ) -> Result<(), ExecutionLoadoutError> {
+        let provider = self.execution_capability_provider.as_ref().ok_or_else(|| {
+            ExecutionLoadoutError::Storage {
+                message: "canonical execution capability catalog is unavailable".into(),
+            }
+        })?;
+        let mut rows = Vec::with_capacity(contexts.len());
+        for context in contexts {
+            let members = normalize_members(provider.members(self, context).await?)?;
+            rows.push((context.principal.clone(), members));
+        }
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        let generation = canonical_revision(&rows)?;
+        let snapshots = rows
+            .into_iter()
+            .map(|(principal, members)| CapabilityCatalogSnapshot {
+                generation: generation.clone(),
+                principal: principal.as_str().to_owned(),
+                members,
+            })
+            .collect();
+        self.publish_execution_capability_snapshots(snapshots)
+    }
+
+    /// Canonical upstream-owned rows filtered by the principal's provider grants.
+    pub async fn canonical_upstream_execution_capabilities(
+        &self,
+        context: &ExecutionLoadoutContext,
+    ) -> Result<Vec<CapabilityRef>, ExecutionLoadoutError> {
+        let allowed = |name: &str| {
+            context
+                .allowed_providers
+                .as_ref()
+                .is_none_or(|set| set.contains(name))
+        };
+        let mut members = Vec::new();
+        if let Some(pool) = self.runtime.published_pool_snapshot().pool() {
+            let prompts = pool.published_prompt_catalog().await.map_err(|_| {
+                ExecutionLoadoutError::Storage {
+                    message: "published prompt catalog is unavailable".into(),
+                }
+            })?;
+            for route in prompts
+                .routes()
+                .iter()
+                .filter(|route| allowed(&route.upstream_name))
+            {
+                members.push(CapabilityRef {
+                    provider: route.upstream_name.to_string(),
+                    family: CapabilityFamily::Prompt,
+                    member_id: route.native_name.to_string(),
+                    expected_revision: canonical_revision(&route.prompt)?,
+                });
+            }
+            let resources = pool.published_resource_catalog().await.map_err(|_| {
+                ExecutionLoadoutError::Storage {
+                    message: "published resource catalog is unavailable".into(),
+                }
+            })?;
+            for route in resources
+                .routes()
+                .iter()
+                .filter(|route| allowed(&route.upstream_name))
+            {
+                members.push(CapabilityRef {
+                    provider: route.upstream_name.to_string(),
+                    family: CapabilityFamily::Resource,
+                    member_id: route.native_uri.to_string(),
+                    expected_revision: canonical_revision(&route.resource)?,
+                });
+            }
+        }
+        let config = self.current_config().await;
+        for upstream in config
+            .upstream
+            .iter()
+            .filter(|item| item.enabled && allowed(&item.name))
+        {
+            members.push(CapabilityRef {
+                provider: "labby".into(),
+                family: CapabilityFamily::McpServer,
+                member_id: upstream.name.clone(),
+                expected_revision: canonical_revision(upstream)?,
+            });
+        }
+        Ok(members)
+    }
+
     /// Atomically publish complete principal-filtered snapshots prepared by the
     /// authoritative product host. A single swap prevents mixed generations.
     pub fn publish_execution_capability_snapshots(
@@ -859,4 +964,16 @@ impl GatewayManager {
             conflicts,
         })
     }
+}
+
+fn canonical_revision(value: &impl Serialize) -> Result<String, ExecutionLoadoutError> {
+    use sha2::Digest as _;
+
+    let bytes = serde_json::to_vec(value).map_err(|_| ExecutionLoadoutError::Storage {
+        message: "canonical catalog row is not serializable".into(),
+    })?;
+    Ok(format!(
+        "sha256:{}",
+        hex::encode(sha2::Sha256::digest(bytes))
+    ))
 }

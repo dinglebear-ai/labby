@@ -41,8 +41,9 @@ use crate::upstream::pool::{HeaderRecoveryMetricsStore, InProcessConnector};
 use super::agent_execution::AgentExecutionStore;
 use super::code_mode::{CodeModeHistory, CodeModeSourceStore};
 use super::config_store::GatewayConfigStore;
-use super::execution_loadout::ExecutionLoadoutStore;
-use super::execution_loadout::PublishedCapabilityCatalog;
+use super::execution_loadout::{
+    ExecutionCapabilityCatalogProvider, ExecutionLoadoutStore, PublishedCapabilityCatalog,
+};
 use super::protected_routes::ProtectedRouteIndex;
 pub use super::runtime::GatewayRuntimeHandle;
 use super::service_registry::PublishedServiceRegistryState;
@@ -145,6 +146,7 @@ pub struct GatewayManager {
         Arc<std::sync::Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>>,
     pub(super) execution_capabilities: Arc<ArcSwap<PublishedCapabilityCatalog>>,
     pub(super) execution_capability_publication: Arc<std::sync::RwLock<()>>,
+    pub(super) execution_capability_provider: Option<Arc<dyn ExecutionCapabilityCatalogProvider>>,
     pub(super) agent_executions: Arc<AgentExecutionStore>,
     pub(super) agent_execution_cancellations:
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,
