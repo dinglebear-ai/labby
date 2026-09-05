@@ -1542,6 +1542,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gateway")]
     #[test]
     fn bearer_challenge_escapes_quoted_parameters() {
         assert_eq!(quoted_challenge_value("a\"b\\c"), "a\\\"b\\\\c");
