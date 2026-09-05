@@ -15,7 +15,9 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::dispatch::clients::ServiceClients;
-use crate::dispatch::doctor::{Finding, Report, Severity, run_auth_checks, run_system_checks};
+use crate::dispatch::doctor::{
+    Finding, Report, Severity, run_auth_checks_with_config, run_system_checks,
+};
 use crate::output::OutputFormat;
 use crate::output::theme::CliTheme;
 
@@ -28,13 +30,20 @@ pub struct DoctorArgs {
 #[derive(Debug, Subcommand)]
 pub enum DoctorCheck {
     /// Check auth/OAuth configuration (env vars, files, permissions)
-    Auth,
+    Auth(DoctorAuthArgs),
     /// Check public OAuth callback relay registry and optionally target sockets
     OauthRelay(DoctorOauthRelayArgs),
     /// Check public Lab and protected MCP proxy endpoints from caller-visible URLs
     Proxy(DoctorProxyArgs),
     /// Run local system checks (env vars, Docker, disk, toolchain)
     System,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorAuthArgs {
+    /// Explicitly probe the configured provider's discovery and JWKS endpoints
+    #[arg(long)]
+    pub live: bool,
 }
 
 #[derive(Debug, Args)]
@@ -61,10 +70,14 @@ pub struct DoctorOauthRelayArgs {
 }
 
 /// Run the doctor subcommand.
-pub async fn run(args: DoctorArgs, format: OutputFormat) -> Result<ExitCode> {
+pub async fn run(
+    args: DoctorArgs,
+    format: OutputFormat,
+    config: &crate::config::LabConfig,
+) -> Result<ExitCode> {
     match args.check {
-        None => run_full_audit(format).await,
-        Some(DoctorCheck::Auth) => run_auth(format).await,
+        None => run_full_audit(format, config).await,
+        Some(DoctorCheck::Auth(args)) => run_auth(args, format, config).await,
         Some(DoctorCheck::OauthRelay(args)) => run_oauth_relay(args, format).await,
         Some(DoctorCheck::Proxy(args)) => run_proxy(args, format).await,
         Some(DoctorCheck::System) => run_system(format).await,
@@ -75,15 +88,24 @@ pub async fn run(args: DoctorArgs, format: OutputFormat) -> Result<ExitCode> {
 // Full audit (existing default behaviour)
 // ---------------------------------------------------------------------------
 
-async fn run_full_audit(format: OutputFormat) -> Result<ExitCode> {
+async fn run_full_audit(
+    format: OutputFormat,
+    config: &crate::config::LabConfig,
+) -> Result<ExitCode> {
     use tokio::sync::mpsc;
     let clients = Arc::new(ServiceClients::from_env());
     let (tx, mut rx) = mpsc::channel(64);
     let public_relay = load_optional_public_relay_manager().await;
+    let resolved_auth = crate::config::resolve_auth_for_config(config).ok();
 
     tokio::spawn(async move {
-        crate::dispatch::doctor::service::stream_audit_full_with_relay(clients, public_relay, tx)
-            .await;
+        crate::dispatch::doctor::service::stream_audit_full_with_relay_and_auth(
+            clients,
+            public_relay,
+            resolved_auth,
+            tx,
+        )
+        .await;
     });
 
     let mut findings: Vec<Finding> = Vec::new();
@@ -109,10 +131,21 @@ async fn run_full_audit(format: OutputFormat) -> Result<ExitCode> {
 // auth subcommand
 // ---------------------------------------------------------------------------
 
-async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
-    let findings = tokio::task::spawn_blocking(run_auth_checks)
-        .await
-        .map_err(|e| anyhow::anyhow!("auth.check panicked: {e}"))?;
+async fn run_auth(
+    args: DoctorAuthArgs,
+    format: OutputFormat,
+    config: &crate::config::LabConfig,
+) -> Result<ExitCode> {
+    let resolved = crate::config::resolve_auth_for_config(config)?;
+    let resolved_for_checks = resolved.clone();
+    let mut findings = tokio::task::spawn_blocking(move || {
+        run_auth_checks_with_config(Some(&resolved_for_checks))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("auth.check panicked: {e}"))?;
+    if args.live {
+        findings.push(run_auth_live_probe(&resolved).await);
+    }
 
     let report = Report { findings };
 
@@ -127,11 +160,18 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
     // Group and label findings by check category
     let groups: &[(&str, &str)] = &[
         ("auth:mode", "Mode"),
+        ("auth:provider", "Provider"),
+        ("auth:provider-config-fingerprint", "Provider"),
+        ("auth:provider-generation", "Provider"),
+        ("auth:access-token-window", "Provider"),
         ("auth:web-ui-auth-disabled", "Safety gate"),
         ("auth:bearer-token", "Bearer token"),
         ("auth:public-url", "Public URL"),
         ("auth:google-client-id", "Google credentials"),
         ("auth:google-client-secret", "Google credentials"),
+        ("auth:authelia-issuer", "Authelia credentials"),
+        ("auth:authelia-client-id", "Authelia credentials"),
+        ("auth:authelia-client-secret", "Authelia credentials"),
         ("auth:token-encryption-key", "Credential encryption"),
         ("auth:sqlite-path", "Auth store"),
         ("auth:key-path", "Auth store"),
@@ -159,6 +199,63 @@ async fn run_auth(format: OutputFormat) -> Result<ExitCode> {
     println!();
 
     Ok(exit_code(&report))
+}
+
+async fn run_auth_live_probe(config: &labby_auth::config::AuthConfig) -> Finding {
+    let Some(authelia) = config.authelia.clone() else {
+        return Finding {
+            service: "auth".into(),
+            check: "auth:live-provider-probe".into(),
+            severity: Severity::Warn,
+            message: "live provider probe is currently available for Authelia".into(),
+        };
+    };
+    let Some(public_url) = config.public_url.as_ref() else {
+        return Finding {
+            service: "auth".into(),
+            check: "auth:live-provider-probe".into(),
+            severity: Severity::Fail,
+            message: "LABBY_PUBLIC_URL is required for the live provider probe".into(),
+        };
+    };
+    let redirect =
+        match public_url.join(labby_auth::config::AUTHELIA_CALLBACK_PATH.trim_start_matches('/')) {
+            Ok(url) => url,
+            Err(_) => {
+                return Finding {
+                    service: "auth".into(),
+                    check: "auth:live-provider-probe".into(),
+                    severity: Severity::Fail,
+                    message: "public URL cannot form the provider callback".into(),
+                };
+            }
+        };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(35),
+        labby_auth::authelia::AutheliaProvider::live_probe(authelia, redirect),
+    )
+    .await
+    {
+        Ok(Ok(())) => Finding {
+            service: "auth".into(),
+            check: "auth:live-provider-probe".into(),
+            severity: Severity::Ok,
+            message: "Authelia discovery and JWKS probe passed".into(),
+        },
+        Ok(Err(_)) => Finding {
+            service: "auth".into(),
+            check: "auth:live-provider-probe".into(),
+            severity: Severity::Fail,
+            message: "Authelia discovery/JWKS probe failed; inspect redacted server debug logs"
+                .into(),
+        },
+        Err(_) => Finding {
+            service: "auth".into(),
+            check: "auth:live-provider-probe".into(),
+            severity: Severity::Fail,
+            message: "Authelia discovery/JWKS probe exceeded 35 seconds".into(),
+        },
+    }
 }
 
 async fn run_oauth_relay(args: DoctorOauthRelayArgs, format: OutputFormat) -> Result<ExitCode> {
@@ -393,6 +490,16 @@ mod tests {
         assert!(findings.iter().any(|f| f.check == "auth:mode"));
         assert!(findings.iter().any(|f| f.check == "auth:bearer-token"));
         assert!(findings.iter().any(|f| f.check == "auth:public-url"));
+    }
+
+    #[tokio::test]
+    async fn live_probe_requires_an_authelia_configuration_without_network_io() {
+        let finding = super::run_auth_live_probe(&labby_auth::config::AuthConfig::default()).await;
+        assert_eq!(finding.check, "auth:live-provider-probe");
+        assert!(matches!(
+            finding.severity,
+            crate::dispatch::doctor::Severity::Warn
+        ));
     }
 
     #[test]

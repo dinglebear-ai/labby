@@ -1273,18 +1273,112 @@ fn oauth_required_env(
 /// Checks env vars, file presence, and Unix file permissions.
 /// No network I/O — all checks are local and synchronous.
 pub fn run_auth_checks() -> Vec<Finding> {
+    let resolved = crate::config::toml_candidates()
+        .and_then(|candidates| crate::config::load_toml(&candidates))
+        .and_then(|config| crate::config::resolve_auth_for_config(&config));
+    run_auth_checks_with_config(resolved.as_ref().ok())
+}
+
+pub fn run_auth_checks_with_config(
+    config: Option<&labby_auth::config::AuthConfig>,
+) -> Vec<Finding> {
     let mut findings = Vec::new();
     let home = std::env::var("HOME").unwrap_or_default();
 
-    let mode = std::env::var("LABBY_AUTH_MODE")
-        .unwrap_or_default()
-        .to_lowercase();
+    let mode = config.map_or_else(
+        || {
+            std::env::var("LABBY_AUTH_MODE")
+                .unwrap_or_default()
+                .to_lowercase()
+        },
+        |config| match config.mode {
+            labby_auth::config::AuthMode::OAuth => "oauth".into(),
+            labby_auth::config::AuthMode::Bearer => "bearer".into(),
+        },
+    );
     let is_oauth = mode == "oauth";
+    let provider = config
+        .and_then(|config| config.inbound_provider)
+        .map_or_else(
+            || {
+                std::env::var("LABBY_AUTH_PROVIDER")
+                    .unwrap_or_else(|_| "google".into())
+                    .to_lowercase()
+            },
+            |provider| match provider {
+                labby_auth::config::InboundProviderKind::Google => "google".into(),
+                labby_auth::config::InboundProviderKind::Authelia => "authelia".into(),
+            },
+        );
+    let uses_google = provider != "authelia";
 
     let bearer_token = std::env::var("LABBY_MCP_HTTP_TOKEN").unwrap_or_default();
-    let google_id = std::env::var("LABBY_GOOGLE_CLIENT_ID").unwrap_or_default();
-    let google_secret = std::env::var("LABBY_GOOGLE_CLIENT_SECRET").unwrap_or_default();
+    let google_id = config.map_or_else(
+        || std::env::var("LABBY_GOOGLE_CLIENT_ID").unwrap_or_default(),
+        |config| config.google.client_id.clone(),
+    );
+    let google_secret = config.map_or_else(
+        || std::env::var("LABBY_GOOGLE_CLIENT_SECRET").unwrap_or_default(),
+        |config| config.google.client_secret.clone(),
+    );
     let has_google = !google_id.is_empty() && !google_secret.is_empty();
+    let authelia_issuer = config
+        .and_then(|config| config.authelia.as_ref())
+        .map_or_else(
+            || std::env::var("LABBY_AUTHELIA_ISSUER_URL").unwrap_or_default(),
+            |config| config.issuer_url.to_string(),
+        );
+    let authelia_id = config
+        .and_then(|config| config.authelia.as_ref())
+        .map_or_else(
+            || std::env::var("LABBY_AUTHELIA_CLIENT_ID").unwrap_or_default(),
+            |config| config.client_id.clone(),
+        );
+    let authelia_secret = config
+        .and_then(|config| config.authelia.as_ref())
+        .map_or_else(
+            || std::env::var("LABBY_AUTHELIA_CLIENT_SECRET").unwrap_or_default(),
+            |config| config.client_secret.clone(),
+        );
+
+    let provider_valid = matches!(provider.as_str(), "google" | "authelia");
+    findings.push(auth_finding(
+        "auth:provider",
+        if provider_valid {
+            Severity::Ok
+        } else {
+            Severity::Fail
+        },
+        if provider_valid {
+            format!("selected inbound provider: {provider}")
+        } else {
+            "LABBY_AUTH_PROVIDER is invalid; expected google or authelia".to_string()
+        },
+    ));
+    let access_ttl = config
+        .map(|config| config.access_token_ttl.as_secs())
+        .or_else(|| {
+            std::env::var("LABBY_AUTH_ACCESS_TOKEN_TTL_SECS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or(3_600);
+    findings.push(auth_finding(
+        "auth:access-token-window",
+        Severity::Ok,
+        format!("issued access tokens can retain authority for at most {access_ttl} seconds after policy or provider changes"),
+    ));
+    let config_fingerprint = config
+        .and_then(|config| config.inbound_provider_fingerprint().ok())
+        .unwrap_or_else(|| "unresolved".to_string());
+    findings.push(auth_finding(
+        "auth:provider-config-fingerprint",
+        Severity::Ok,
+        format!(
+            "provider config fingerprint: {}",
+            config_fingerprint.chars().take(16).collect::<String>()
+        ),
+    ));
 
     // --- Auth mode ---
     let mode_label = match mode.as_str() {
@@ -1369,7 +1463,12 @@ pub fn run_auth_checks() -> Vec<Finding> {
     ));
 
     // --- LABBY_PUBLIC_URL ---
-    let public_url = std::env::var("LABBY_PUBLIC_URL").unwrap_or_default();
+    let public_url = config
+        .and_then(|config| config.public_url.as_ref())
+        .map_or_else(
+            || std::env::var("LABBY_PUBLIC_URL").unwrap_or_default(),
+            ToString::to_string,
+        );
     let (url_severity, url_message) = if !public_url.is_empty() {
         if public_url.starts_with("http://") || public_url.starts_with("https://") {
             (Severity::Ok, format!("LABBY_PUBLIC_URL={public_url}"))
@@ -1398,7 +1497,7 @@ pub fn run_auth_checks() -> Vec<Finding> {
     // --- Google credentials ---
     let (gid_severity, gid_message) = oauth_required_env(
         &google_id,
-        is_oauth,
+        is_oauth && uses_google,
         "LABBY_GOOGLE_CLIENT_ID is set",
         "LABBY_GOOGLE_CLIENT_ID not set — required for LABBY_AUTH_MODE=oauth",
         "LABBY_GOOGLE_CLIENT_ID not set — required if using LABBY_AUTH_MODE=oauth",
@@ -1411,7 +1510,7 @@ pub fn run_auth_checks() -> Vec<Finding> {
 
     let (gsec_severity, gsec_message) = oauth_required_env(
         &google_secret,
-        is_oauth,
+        is_oauth && uses_google,
         "LABBY_GOOGLE_CLIENT_SECRET is set",
         "LABBY_GOOGLE_CLIENT_SECRET not set — required for LABBY_AUTH_MODE=oauth",
         "LABBY_GOOGLE_CLIENT_SECRET not set — required if using LABBY_AUTH_MODE=oauth",
@@ -1422,22 +1521,62 @@ pub fn run_auth_checks() -> Vec<Finding> {
         gsec_message,
     ));
 
-    // --- Google provider credential encryption ---
-    let token_encryption_key = std::env::var("LABBY_TOKEN_ENCRYPTION_KEY").unwrap_or_default();
+    for (id, value, ok, fail, warn) in [
+        (
+            "auth:authelia-issuer",
+            &authelia_issuer,
+            "LABBY_AUTHELIA_ISSUER_URL is set",
+            "LABBY_AUTHELIA_ISSUER_URL not set — required for the Authelia provider",
+            "LABBY_AUTHELIA_ISSUER_URL not set — required only for the Authelia provider",
+        ),
+        (
+            "auth:authelia-client-id",
+            &authelia_id,
+            "LABBY_AUTHELIA_CLIENT_ID is set",
+            "LABBY_AUTHELIA_CLIENT_ID not set — required for the Authelia provider",
+            "LABBY_AUTHELIA_CLIENT_ID not set — required only for the Authelia provider",
+        ),
+        (
+            "auth:authelia-client-secret",
+            &authelia_secret,
+            "LABBY_AUTHELIA_CLIENT_SECRET is set",
+            "LABBY_AUTHELIA_CLIENT_SECRET not set — required for the Authelia provider",
+            "LABBY_AUTHELIA_CLIENT_SECRET not set — required only for the Authelia provider",
+        ),
+    ] {
+        let (severity, message) =
+            oauth_required_env(value, is_oauth && provider == "authelia", ok, fail, warn);
+        findings.push(auth_finding(id, severity, message));
+    }
+
+    // --- Provider credential and local refresh replay encryption ---
+    let token_encryption_key = config
+        .and_then(|config| config.token_encryption_key.as_ref())
+        .map_or_else(
+            || std::env::var("LABBY_TOKEN_ENCRYPTION_KEY").unwrap_or_default(),
+            |_| "<resolved-valid-key>".to_string(),
+        );
     let (encryption_severity, encryption_message) = if token_encryption_key.trim().is_empty() {
         if is_oauth {
             (
                 Severity::Fail,
-                "LABBY_TOKEN_ENCRYPTION_KEY not set — required for OAuth Google provider credential encryption at rest".to_string(),
+                "LABBY_TOKEN_ENCRYPTION_KEY not set — required for OAuth credential and refresh replay encryption at rest".to_string(),
             )
         } else {
             (
                 Severity::Ok,
-                "LABBY_TOKEN_ENCRYPTION_KEY not set — not required in bearer-only mode".to_string(),
+                "LABBY_TOKEN_ENCRYPTION_KEY not set — not required by the selected auth provider"
+                    .to_string(),
             )
         }
     } else {
-        match labby_auth::at_rest::TokenEncryptionKey::from_encoded(&token_encryption_key) {
+        if token_encryption_key == "<resolved-valid-key>" {
+            (
+                Severity::Ok,
+                "LABBY_TOKEN_ENCRYPTION_KEY is resolved and valid".to_string(),
+            )
+        } else {
+            match labby_auth::at_rest::TokenEncryptionKey::from_encoded(&token_encryption_key) {
             Ok(_) => (
                 Severity::Ok,
                 "LABBY_TOKEN_ENCRYPTION_KEY is set and valid".to_string(),
@@ -1446,6 +1585,7 @@ pub fn run_auth_checks() -> Vec<Finding> {
                 Severity::Fail,
                 "LABBY_TOKEN_ENCRYPTION_KEY is invalid — expected 64 hex digits or 43 base64url characters".to_string(),
             ),
+        }
         }
     };
     findings.push(auth_finding(
@@ -1456,10 +1596,20 @@ pub fn run_auth_checks() -> Vec<Finding> {
 
     // --- Auth store files (only meaningful when OAuth is configured) ---
     if is_oauth || has_google {
-        let sqlite_path = std::env::var("LABBY_AUTH_SQLITE_PATH")
-            .unwrap_or_else(|_| format!("{home}/.labby/auth.db"));
-        let key_path = std::env::var("LABBY_AUTH_KEY_PATH")
-            .unwrap_or_else(|_| format!("{home}/.labby/auth-jwt.pem"));
+        let sqlite_path = config.map_or_else(
+            || {
+                std::env::var("LABBY_AUTH_SQLITE_PATH")
+                    .unwrap_or_else(|_| format!("{home}/.labby/auth.db"))
+            },
+            |config| config.sqlite_path.display().to_string(),
+        );
+        let key_path = config.map_or_else(
+            || {
+                std::env::var("LABBY_AUTH_KEY_PATH")
+                    .unwrap_or_else(|_| format!("{home}/.labby/auth-jwt.pem"))
+            },
+            |config| config.key_path.display().to_string(),
+        );
 
         let sqlite_exists = std::path::Path::new(&sqlite_path).exists();
         findings.push(auth_finding(
@@ -1475,6 +1625,66 @@ pub fn run_auth_checks() -> Vec<Finding> {
                 format!("{sqlite_path} not found — will be created at first login")
             },
         ));
+
+        if sqlite_exists {
+            let durable = rusqlite::Connection::open_with_flags(
+                &sqlite_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .and_then(|conn| {
+                conn.query_row(
+                    "SELECT provider, config_fingerprint, generation FROM inbound_identity_provider WHERE singleton = 1",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+                )
+            });
+            match durable {
+                Ok((durable_provider, durable_fingerprint, generation)) => findings.push(auth_finding(
+                    "auth:provider-generation",
+                    if durable_provider == provider && durable_fingerprint == config_fingerprint {
+                        Severity::Ok
+                    } else {
+                        Severity::Fail
+                    },
+                    format!(
+                        "durable provider generation {generation}; provider={durable_provider}; fingerprint={}",
+                        durable_fingerprint.chars().take(16).collect::<String>()
+                    ),
+                )),
+                Err(error) => findings.push(auth_finding(
+                    "auth:provider-generation",
+                    Severity::Fail,
+                    format!("existing auth database is not ready ({})", error.sqlite_error_code().map_or("unavailable", |_| "sqlite error")),
+                )),
+            }
+        }
+
+        if provider == "authelia"
+            && let Some(path) = config
+                .and_then(|config| config.authelia.as_ref())
+                .and_then(|authelia| authelia.ca_certificate_path.as_ref())
+        {
+            let ready = std::fs::read(path)
+                .ok()
+                .and_then(|pem| reqwest::Certificate::from_pem(&pem).ok())
+                .is_some();
+            findings.push(auth_finding(
+                "auth:authelia-ca-certificate",
+                if ready { Severity::Ok } else { Severity::Fail },
+                if ready {
+                    format!(
+                        "{} is readable and contains a valid PEM certificate",
+                        path.display()
+                    )
+                } else {
+                    format!(
+                        "{} is missing, unreadable, or not a valid PEM certificate",
+                        path.display()
+                    )
+                },
+            ));
+        }
 
         let key_exists = std::path::Path::new(&key_path).exists();
         findings.push(auth_finding(

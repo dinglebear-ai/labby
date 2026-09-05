@@ -15,7 +15,7 @@
 //! Coverage:
 //! - Unauthenticated requests (no cookie, no bearer) → 401
 //! - JWT bearer (valid OAuth token) → 403 (authenticated but not via session)
-//! - Browser session, email != admin_email → 403
+//! - Browser session, email != admin_email → 401 and session revocation
 //! - Browser session, email == admin_email → 200 / 201 / 204
 //! - POST missing email field → 422 (JSON parse fails → 422)
 //! - POST empty email → 422
@@ -194,11 +194,24 @@ impl Harness {
             expires_at: i64::MAX,
             project_binding: None,
         };
+        let binding = self.auth_state.inbound_provider_binding();
         self.auth_state
             .store
-            .upsert_browser_session(session.clone())
+            .upsert_bound_browser_session(session.clone(), binding.clone())
             .await
             .expect("upsert session");
+        if let Some(email) = email {
+            self.auth_state
+                .store
+                .upsert_bound_verified_inbound_identity(
+                    &session.subject,
+                    email,
+                    now_unix(),
+                    binding,
+                )
+                .await
+                .expect("upsert verified identity");
+        }
         session
     }
 
@@ -396,7 +409,7 @@ async fn post_jwt_bearer_returns_403() {
 }
 
 #[tokio::test]
-async fn get_non_admin_session_returns_403() {
+async fn get_non_admin_session_is_revoked_and_returns_401() {
     let h = Harness::new().await;
     let session = h
         .seed_session(Some("notadmin@example.com"), "csrf-na")
@@ -409,9 +422,17 @@ async fn get_non_admin_session_returns_403() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let json = body_json(response).await;
-    assert_eq!(json["kind"], "forbidden");
+    assert_eq!(json["kind"], "auth_failed");
+    assert!(
+        h.auth_state
+            .store
+            .find_browser_session(&session.session_id)
+            .await
+            .expect("find session")
+            .is_none()
+    );
 }
 
 // ── success path tests ────────────────────────────────────────────────────────

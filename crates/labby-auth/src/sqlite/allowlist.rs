@@ -178,4 +178,18 @@ impl SqliteStore {
         })
         .await
     }
+
+    /// Indexed case-insensitive membership check for hot authorization paths.
+    pub async fn is_allowed_user_email(&self, email: &str) -> Result<bool, AuthError> {
+        let email = email.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM allowed_users WHERE email = ?1 COLLATE NOCASE)",
+                params![email],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)
+        })
+        .await
+    }
 }

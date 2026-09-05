@@ -11,7 +11,7 @@ use std::time::Duration;
 use labby::proxy::command::ProxyCommand;
 use labby::proxy::config::{ProxyAuthMode, ProxyExposure, ProxyPortPreference, ProxyPreferences};
 use labby::proxy::runtime::{LocalProxy, LocalProxyAuthPolicy, LocalProxyOptions};
-use labby_auth::config::{AuthConfig, AuthMode};
+use labby_auth::config::{AuthConfig, AuthMode, GoogleConfig};
 use labby_auth::jwt::AccessClaims;
 use labby_auth::state::AuthState;
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
@@ -359,6 +359,11 @@ async fn oauth_state(temp: &tempfile::TempDir) -> Arc<AuthState> {
         key_path: temp.path().join("auth-jwt.pem"),
         scopes_supported: vec!["mcp:read".to_string(), "mcp:write".to_string()],
         disable_static_token_with_oauth: true,
+        google: GoogleConfig {
+            client_id: "test-client".to_string(),
+            client_secret: "test-secret".to_string(),
+            ..GoogleConfig::default()
+        },
         token_encryption_key: Some(
             labby_auth::at_rest::TokenEncryptionKey::from_encoded(
                 "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",

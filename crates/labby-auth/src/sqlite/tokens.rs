@@ -93,6 +93,49 @@ impl SqliteStore {
         .await
     }
 
+    pub async fn claim_bound_refresh_token(
+        &self,
+        refresh_token: &str,
+        claim_id: &str,
+        lease_expires_at: i64,
+    ) -> Result<Option<crate::types::ProviderBound<RefreshTokenRow>>, AuthError> {
+        let hash = hash_token(refresh_token);
+        let plaintext = refresh_token.to_string();
+        let claim_id = claim_id.to_string();
+        let now = now_unix();
+        let enc_key = self.enc_key.clone();
+        self.with_conn(move |conn| {
+            let transaction = conn.transaction().map_err(sqlite_error)?;
+            let claimed = transaction.execute(
+                "UPDATE refresh_tokens SET refresh_claim_id = ?2, refresh_claim_expires_at = ?3
+                 WHERE refresh_token_hash = ?1 AND expires_at > ?4
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                   AND (refresh_claim_id IS NULL OR refresh_claim_expires_at <= ?4)",
+                params![hash, claim_id, lease_expires_at, now],
+            ).map_err(sqlite_error)?;
+            if claimed == 0 { return Ok(None); }
+            let mut bound = transaction.query_row(
+                "SELECT client_id, subject, scope, provider_refresh_token, created_at, expires_at,
+                        resource, identity_issuer, provider_generation
+                 FROM refresh_tokens WHERE refresh_token_hash = ?1 AND refresh_claim_id = ?2",
+                params![hash, claim_id],
+                |row| Ok(crate::types::ProviderBound {
+                    value: RefreshTokenRow { refresh_token: plaintext, client_id: row.get(0)?,
+                        subject: row.get(1)?, scope: row.get(2)?, provider_refresh_token: row.get(3)?,
+                        created_at: row.get(4)?, expires_at: row.get(5)?, resource: row.get(6)? },
+                    binding: crate::types::ProviderBinding {
+                        identity_issuer: row.get(7)?, provider_generation: row.get(8)?,
+                    },
+                }),
+            ).map_err(sqlite_error)?;
+            transaction.commit().map_err(sqlite_error)?;
+            if let Some(raw) = bound.value.provider_refresh_token.as_deref() {
+                bound.value.provider_refresh_token = Some(maybe_decrypt(enc_key.as_deref(), raw)?);
+            }
+            Ok(Some(bound))
+        }).await
+    }
+
     pub async fn release_refresh_claim(
         &self,
         refresh_token: &str,
@@ -156,8 +199,10 @@ impl SqliteStore {
             conn.execute(
                 "INSERT INTO refresh_tokens (
                     refresh_token_hash, client_id, subject, resource, scope,
-                    provider_refresh_token, created_at, expires_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    provider_refresh_token, created_at, expires_at,
+                    identity_issuer, provider_generation
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, issuer, generation
+                     FROM inbound_identity_provider WHERE singleton = 1
                  ON CONFLICT(refresh_token_hash) DO UPDATE SET
                     client_id = excluded.client_id,
                     subject = excluded.subject,
@@ -165,7 +210,9 @@ impl SqliteStore {
                     scope = excluded.scope,
                     provider_refresh_token = excluded.provider_refresh_token,
                     created_at = excluded.created_at,
-                    expires_at = excluded.expires_at",
+                    expires_at = excluded.expires_at,
+                    identity_issuer = excluded.identity_issuer,
+                    provider_generation = excluded.provider_generation",
                 params![
                     hash,
                     token.client_id,
@@ -179,6 +226,64 @@ impl SqliteStore {
             )
             .map_err(sqlite_error)?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Insert a refresh token only while the provider generation that verified
+    /// its authorization code is still the active durable generation.
+    pub async fn upsert_bound_refresh_token(
+        &self,
+        token: RefreshTokenRow,
+        binding: crate::types::ProviderBinding,
+    ) -> Result<(), AuthError> {
+        let hash = hash_token(&token.refresh_token);
+        let encrypted_provider_rt = token
+            .provider_refresh_token
+            .as_deref()
+            .map(|raw| maybe_encrypt(self.enc_key.as_deref(), raw))
+            .transpose()?;
+        self.with_conn(move |conn| {
+            let count = conn
+                .execute(
+                    "INSERT INTO refresh_tokens (
+                        refresh_token_hash, client_id, subject, resource, scope,
+                        provider_refresh_token, created_at, expires_at,
+                        identity_issuer, provider_generation)
+                     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+                      WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
+                        WHERE singleton = 1 AND issuer = ?9 AND generation = ?10)
+                     ON CONFLICT(refresh_token_hash) DO UPDATE SET
+                        client_id = excluded.client_id,
+                        subject = excluded.subject,
+                        resource = excluded.resource,
+                        scope = excluded.scope,
+                        provider_refresh_token = excluded.provider_refresh_token,
+                        created_at = excluded.created_at,
+                        expires_at = excluded.expires_at,
+                        identity_issuer = excluded.identity_issuer,
+                        provider_generation = excluded.provider_generation",
+                    params![
+                        hash,
+                        token.client_id,
+                        token.subject,
+                        token.resource,
+                        token.scope,
+                        encrypted_provider_rt,
+                        token.created_at,
+                        token.expires_at,
+                        binding.identity_issuer,
+                        binding.provider_generation,
+                    ],
+                )
+                .map_err(sqlite_error)?;
+            if count == 1 {
+                Ok(())
+            } else {
+                Err(AuthError::InvalidGrant(
+                    "inbound provider changed before refresh issuance".into(),
+                ))
+            }
         })
         .await
     }
@@ -245,6 +350,7 @@ impl SqliteStore {
         new_token: RefreshTokenRow,
         response: &TokenResponse,
         replay_expires_at: i64,
+        binding: crate::types::ProviderBinding,
     ) -> Result<Option<RefreshTokenRow>, AuthError> {
         let old_hash = hash_token(old_token);
         let claim_id = claim_id.to_string();
@@ -268,8 +374,10 @@ impl SqliteStore {
                      WHERE refresh_token_hash = ?1
                        AND refresh_claim_id = ?2
                        AND refresh_claim_expires_at > ?3
-                       AND expires_at > ?3",
-                    params![old_hash, claim_id, now],
+                       AND expires_at > ?3
+                       AND identity_issuer = ?4 AND provider_generation = ?5
+                       AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                    params![old_hash, claim_id, now, binding.identity_issuer, binding.provider_generation],
                 )
                 .map_err(sqlite_error)?;
             if deleted == 0 {
@@ -279,8 +387,9 @@ impl SqliteStore {
                 .execute(
                     "INSERT INTO refresh_tokens (
                         refresh_token_hash, client_id, subject, resource, scope,
-                        provider_refresh_token, created_at, expires_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        provider_refresh_token, created_at, expires_at,
+                        identity_issuer, provider_generation
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     params![
                         new_hash,
                         new_token.client_id,
@@ -290,6 +399,8 @@ impl SqliteStore {
                         encrypted_provider_rt,
                         new_token.created_at,
                         new_token.expires_at,
+                        binding.identity_issuer,
+                        binding.provider_generation,
                     ],
                 )
                 .map_err(sqlite_error)?;
@@ -493,6 +604,42 @@ impl SqliteStore {
             }
         })
         .await
+    }
+
+    pub async fn find_bound_refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<crate::types::ProviderBound<RefreshTokenRow>>, AuthError> {
+        let hash = hash_token(refresh_token);
+        let plaintext = refresh_token.to_string();
+        let now = now_unix();
+        let enc_key = self.enc_key.clone();
+        self.with_conn(move |conn| {
+            let row = conn.query_row(
+                "SELECT client_id, subject, scope, provider_refresh_token, created_at, expires_at,
+                        resource, identity_issuer, provider_generation
+                 FROM refresh_tokens WHERE refresh_token_hash = ?1 AND expires_at > ?2
+                   AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                params![hash, now],
+                |row| Ok(crate::types::ProviderBound {
+                    value: RefreshTokenRow { refresh_token: plaintext, client_id: row.get(0)?,
+                        subject: row.get(1)?, scope: row.get(2)?, provider_refresh_token: row.get(3)?,
+                        created_at: row.get(4)?, expires_at: row.get(5)?, resource: row.get(6)? },
+                    binding: crate::types::ProviderBinding {
+                        identity_issuer: row.get(7)?, provider_generation: row.get(8)?,
+                    },
+                }),
+            ).optional().map_err(sqlite_error)?;
+            match row {
+                Some(mut bound) => {
+                    if let Some(raw) = bound.value.provider_refresh_token.as_deref() {
+                        bound.value.provider_refresh_token = Some(maybe_decrypt(enc_key.as_deref(), raw)?);
+                    }
+                    Ok(Some(bound))
+                }
+                None => Ok(None),
+            }
+        }).await
     }
 
     /// Store the single reusable Google refresh credential for a verified subject.

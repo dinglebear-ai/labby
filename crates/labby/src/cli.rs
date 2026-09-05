@@ -152,7 +152,7 @@ pub fn dispatch(cli: Cli, config: LabConfig) -> impl Future<Output = Result<Exit
         match cli.command {
             Command::Serve(args) => serve::run(args, &config).await,
             Command::Mcp(args) => serve::run_mcp(args, &config).await,
-            Command::Doctor(args) => doctor::run(args, format).await,
+            Command::Doctor(args) => doctor::run(args, format, &config).await,
             Command::Docs(args) => docs::run(args, format),
             Command::Health => health::run(format).await,
             Command::Logs(args) => logs::run(args).await,
@@ -203,7 +203,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Doctor(doctor::DoctorArgs {
-                check: Some(doctor::DoctorCheck::Auth)
+                check: Some(doctor::DoctorCheck::Auth(_))
             })
         ));
     }

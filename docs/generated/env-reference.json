@@ -1,6 +1,51 @@
 [
   {
     "service": "auth",
+    "env_var": "LABBY_AUTHELIA_CA_CERT_PATH",
+    "required": false,
+    "secret": false,
+    "description": "PEM CA certificate trusted only for the exact Authelia issuer origin",
+    "example": "/etc/labby/authelia-ca.pem",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTHELIA_CLIENT_ID",
+    "required": false,
+    "secret": false,
+    "description": "Authelia confidential OIDC client identifier",
+    "example": "labby",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTHELIA_CLIENT_SECRET",
+    "required": false,
+    "secret": true,
+    "description": "Authelia confidential OIDC client secret",
+    "example": "<labby_authelia_client_secret>",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTHELIA_ISSUER_URL",
+    "required": false,
+    "secret": false,
+    "description": "Exact Authelia OIDC issuer URL",
+    "example": "https://auth.example.com",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN",
+    "required": false,
+    "secret": false,
+    "description": "Exact HTTPS private issuer origin explicitly trusted by the operator",
+    "example": "https://auth.example.com",
+    "default_port": null
+  },
+  {
+    "service": "auth",
     "env_var": "LABBY_AUTH_ACCESS_TOKEN_TTL_SECS",
     "required": false,
     "secret": false,
@@ -105,6 +150,15 @@
     "secret": false,
     "description": "Inbound authentication mode: bearer or oauth",
     "example": "bearer",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_AUTH_PROVIDER",
+    "required": false,
+    "secret": false,
+    "description": "Active inbound identity provider: google or authelia",
+    "example": "authelia",
     "default_port": null
   },
   {

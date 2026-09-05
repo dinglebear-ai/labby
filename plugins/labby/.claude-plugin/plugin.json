@@ -78,6 +78,12 @@
       "description": "Additional CORS origins allowed for the Labby API, comma-separated, e.g. https://lab.example.com,https://mcp.example.com. Loopback origins (localhost, 127.0.0.1, [::1]) are always included and do not need to be listed here. Maps to LABBY_CORS_ORIGINS on the server.",
       "default": ""
     },
+    "auth_provider": {
+      "type": "string",
+      "title": "Inbound OAuth provider",
+      "description": "Inbound human identity provider: google or authelia. Maps to LABBY_AUTH_PROVIDER on the server.",
+      "default": "google"
+    },
     "google_client_id": {
       "type": "string",
       "title": "Google OAuth client ID",
@@ -89,6 +95,37 @@
       "title": "Google OAuth client secret",
       "description": "Google OAuth client secret. Required when auth_mode is oauth. Maps to LABBY_GOOGLE_CLIENT_SECRET on the server.",
       "sensitive": true,
+      "default": ""
+    },
+    "authelia_issuer_url": {
+      "type": "string",
+      "title": "Authelia OIDC issuer",
+      "description": "Exact HTTPS issuer URL published by Authelia. Maps to LABBY_AUTHELIA_ISSUER_URL on the server.",
+      "default": ""
+    },
+    "authelia_client_id": {
+      "type": "string",
+      "title": "Authelia client ID",
+      "description": "Authelia confidential OIDC client ID. Maps to LABBY_AUTHELIA_CLIENT_ID on the server.",
+      "default": ""
+    },
+    "authelia_client_secret": {
+      "type": "string",
+      "title": "Authelia client secret",
+      "description": "Authelia confidential OIDC client secret. Maps to LABBY_AUTHELIA_CLIENT_SECRET on the server.",
+      "sensitive": true,
+      "default": ""
+    },
+    "authelia_trusted_private_origin": {
+      "type": "string",
+      "title": "Trusted private Authelia origin",
+      "description": "Exact HTTPS Authelia origin explicitly trusted when the issuer resolves to a private address. Leave empty for public origins. Maps to LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN on the server.",
+      "default": ""
+    },
+    "authelia_ca_cert_path": {
+      "type": "string",
+      "title": "Authelia CA certificate path",
+      "description": "Optional PEM CA bundle trusted only for the exact Authelia issuer origin. Maps to LABBY_AUTHELIA_CA_CERT_PATH on the server.",
       "default": ""
     },
     "auth_admin_email": {

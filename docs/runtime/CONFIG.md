@@ -143,6 +143,16 @@ host-file configuration; browser provider edits cannot change it.
 
 ## Durable Depot Skill Imports
 
+For Authelia inbound OAuth, `[auth]` may contain the non-secret provider,
+issuer, client ID, exact private trust origin, and private-CA path shown in
+`config/config.example.toml`. Keep `LABBY_AUTHELIA_CLIENT_SECRET` in the
+service-owned `.env` or secret manager. Environment values override TOML as a
+complete provider selection. All Labby processes sharing `auth.db` must use the
+same effective provider configuration and be restarted together when it
+changes; generation fencing rejects stale callback and token work. See
+[HTTP Auth Modes](./OAUTH.md#authelia-open-beta) for rollout, rollback,
+offboarding, and compromise procedures.
+
 Local Artifact persistence flushes file contents before atomic publication.
 On Unix it also synchronizes the containing directories. Windows validates
 those directories and rejects reparse points, but this path does not provide

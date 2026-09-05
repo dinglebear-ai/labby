@@ -7,9 +7,9 @@ use rusqlite::Connection;
 use crate::at_rest::TokenEncryptionKey;
 use crate::jwt::{AccessClaims, SigningKeys};
 use crate::types::{
-    AllowedUserRow, AuthorizationCodeRow, BrowserReauthChallengeRow, BrowserReauthResult,
-    BrowserSessionRow, GoogleProviderCredentialUpdate, RefreshTokenRow, RegisteredClient,
-    UpstreamOauthCredentialRow, UpstreamOauthStateRow,
+    AllowedUserRow, AuthorizationCodeRow, BrowserSessionRow, GoogleProviderCredentialUpdate,
+    ProviderSwitchRevocation, RefreshTokenRow, RegisteredClient, UpstreamOauthCredentialRow,
+    UpstreamOauthStateRow,
 };
 
 use crate::util::now_unix;
@@ -1260,7 +1260,7 @@ async fn schema_migration_v7_skips_ambiguous_newest_provider_credentials() {
 async fn fresh_and_v4_upgraded_schema_are_identical() {
     let fresh_path = temp_db_path();
     let fresh = SqliteStore::open(fresh_path).await.unwrap();
-    let fresh_schema = auth_schema_snapshot(&fresh).await;
+    let mut fresh_schema = auth_schema_snapshot(&fresh).await;
 
     let upgraded_path = temp_db_path();
     let upgraded = SqliteStore::open(upgraded_path.clone()).await.unwrap();
@@ -1278,7 +1278,10 @@ async fn fresh_and_v4_upgraded_schema_are_identical() {
     }
     crate::util::set_restrictive_permissions(&upgraded_path).unwrap();
     let upgraded = SqliteStore::open(upgraded_path).await.unwrap();
-    let upgraded_schema = auth_schema_snapshot(&upgraded).await;
+    let mut upgraded_schema = auth_schema_snapshot(&upgraded).await;
+
+    fresh_schema.sort();
+    upgraded_schema.sort();
 
     assert_eq!(fresh_schema, upgraded_schema);
 }
@@ -1316,6 +1319,8 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
             "code".to_string(),
             "created_at".to_string(),
             "expires_at".to_string(),
+            "identity_issuer".to_string(),
+            "provider_generation".to_string(),
         ]
     );
     assert!(
@@ -1333,6 +1338,7 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
             "replacement_token_hash".to_string(),
             "created_at".to_string(),
             "expires_at".to_string(),
+            "provider_generation".to_string(),
         ]
     );
     drop(fresh);
@@ -1372,6 +1378,8 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
             "code".to_string(),
             "created_at".to_string(),
             "expires_at".to_string(),
+            "identity_issuer".to_string(),
+            "provider_generation".to_string(),
         ]
     );
     let legacy_rows = upgraded
@@ -1451,7 +1459,7 @@ async fn fresh_and_v8_upgraded_schemas_include_v11_refresh_replays() {
     assert_eq!(
         conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
 }
 
@@ -1507,7 +1515,7 @@ async fn schema_migration_v8_preserves_v7_provider_refresh_token_and_adds_broker
         })
         .await
         .unwrap();
-    assert_eq!(schema_version, 14);
+    assert_eq!(schema_version, 15);
     let row = migrated
         .find_google_provider_credential("google-subject-v7")
         .await
@@ -1644,54 +1652,207 @@ fn v12_migration_fault_rolls_back_columns_and_schema_version() {
     assert_eq!(columns, vec!["state"]);
 }
 
-#[test]
-fn v13_proof_migration_rolls_back_and_preserves_existing_sessions() {
-    let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE browser_sessions (session_id TEXT PRIMARY KEY, project_binding_json TEXT); INSERT INTO browser_sessions VALUES ('old-session', NULL); PRAGMA user_version = 12;").unwrap();
-    assert!(migrations::run_migrations_with_fault(&conn, "v13_before_commit").is_err());
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 12);
-    let exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'reauth_proofs')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(!exists);
-    migrations::run_migrations(&conn).unwrap();
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 14);
-    let sessions: i64 = conn
-        .query_row("SELECT COUNT(*) FROM browser_sessions", [], |row| {
-            row.get(0)
+#[tokio::test]
+async fn v15_backfills_google_and_provider_switch_revokes_old_generation() {
+    let store = temp_store().await;
+    store
+        .register_client(RegisteredClient {
+            client_id: "client".into(),
+            redirect_uris: vec!["http://127.0.0.1:7777/callback".into()],
+            created_at: now_unix(),
+            token_endpoint_auth_method: "none".into(),
+            token_endpoint_auth_methods: Vec::new(),
+            jwks: None,
+            jwks_uri: None,
         })
+        .await
         .unwrap();
-    assert_eq!(sessions, 1);
+    store.insert_auth_code(sample_code()).await.unwrap();
+    store
+        .upsert_refresh_token(sample_refresh_token("client", "refresh-v13"))
+        .await
+        .unwrap();
+    store
+        .upsert_browser_session(BrowserSessionRow {
+            session_id: "session-v13".into(),
+            subject: "same-sub".into(),
+            email: Some("user@example.com".into()),
+            csrf_token: "csrf-v13".into(),
+            created_at: now_unix(),
+            expires_at: now_unix() + 600,
+            project_binding: None,
+        })
+        .await
+        .unwrap();
+
+    let legacy = store.inbound_provider_state().await.unwrap();
+    assert_eq!(legacy.provider, "google");
+    assert_eq!(legacy.issuer, "https://accounts.google.com");
+    assert_eq!(legacy.generation, 1);
+
+    let adopted = store
+        .activate_inbound_provider(
+            "google",
+            "https://accounts.google.com",
+            "real-google-config",
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(adopted.generation, 1);
+    assert_eq!(adopted.revoked_authorization_codes, 0);
+    assert!(store.redeem_auth_code("code-123").await.is_ok());
+    store.insert_auth_code(sample_code()).await.unwrap();
+
+    let switched = store
+        .activate_inbound_provider(
+            "authelia",
+            "https://auth.example.test",
+            "authelia-config-v1",
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched.generation, 2);
+    assert_eq!(switched.revoked_authorization_codes, 1);
+    assert_eq!(switched.revoked_refresh_tokens, 1);
+    assert_eq!(switched.revoked_browser_sessions, 1);
+
+    store.insert_auth_code(sample_code()).await.unwrap();
+    let stamped: (String, i64) = store
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT identity_issuer, provider_generation
+                 FROM authorization_codes WHERE code = 'code-123'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(sqlite_error)
+        })
+        .await
+        .unwrap();
+    assert_eq!(stamped, ("https://auth.example.test".into(), 2));
+    store
+        .execute_test_statement(
+            "INSERT INTO authorization_codes
+               (code, client_id, subject, redirect_uri, resource, scope,
+                code_challenge, code_challenge_method, created_at, expires_at)
+             SELECT 'google-shadow', client_id, subject, redirect_uri, resource, scope,
+                    code_challenge, code_challenge_method, created_at, expires_at
+               FROM authorization_codes WHERE code = 'code-123';
+             UPDATE authorization_codes
+                SET identity_issuer = 'https://accounts.google.com'
+              WHERE code = 'google-shadow';",
+        )
+        .await
+        .unwrap();
+    let revoked = store
+        .revoke_inbound_identity("https://auth.example.test", "google-user")
+        .await
+        .unwrap();
+    assert_eq!(revoked, (1, 0, 0));
+    assert!(store.redeem_auth_code("google-shadow").await.is_err());
+
+    let repeated = store
+        .activate_inbound_provider(
+            "authelia",
+            "https://auth.example.test",
+            "authelia-config-v1",
+            now_unix(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(repeated.generation, 2);
+    assert_eq!(
+        repeated,
+        ProviderSwitchRevocation {
+            generation: 2,
+            ..Default::default()
+        }
+    );
 }
 
-#[test]
-fn v14_browser_reauth_migration_rolls_back_before_publication() {
-    let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE browser_sessions (session_id TEXT PRIMARY KEY, project_binding_json TEXT); PRAGMA user_version = 13;").unwrap();
-    let error = migrations::run_migrations_with_fault(&conn, "v14_before_commit").unwrap_err();
-    assert!(error.to_string().contains("injected v14 migration fault"));
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(version, 13);
-    let exists: bool = conn
+#[tokio::test]
+async fn v15_fault_rolls_back_and_future_schema_is_rejected() {
+    let path = temp_db_path();
+    let store = SqliteStore::open(path.clone()).await.unwrap();
+    drop(store);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "DROP TABLE inbound_identity_provider;
+         DROP INDEX idx_allowed_users_email_nocase;
+         DROP INDEX idx_authorization_codes_identity_generation_expiry;
+         DROP INDEX idx_authorization_requests_provider_generation_expiry;
+         DROP INDEX idx_browser_login_states_provider_generation_expiry;
+         DROP INDEX idx_browser_sessions_identity_generation_expiry;
+         DROP INDEX idx_native_authorization_results_generation_expiry;
+         DROP INDEX idx_refresh_tokens_generation_expiry;
+         DROP INDEX idx_refresh_tokens_identity_generation_expiry;
+         PRAGMA user_version = 12;",
+    )
+    .unwrap();
+    let error = migrations::run_migrations_with_fault(&conn, "v15_after_backfill")
+        .expect_err("fault must abort v15");
+    assert!(error.to_string().contains("injected v15 migration fault"));
+    assert_eq!(
+        conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        14
+    );
+    assert!(!conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'browser_reauth_challenges')",
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'inbound_identity_provider')",
             [],
-            |row| row.get(0),
+            |row| row.get::<_, bool>(0),
         )
+        .unwrap());
+    conn.execute_batch("PRAGMA user_version = 99;").unwrap();
+    drop(conn);
+    let before = std::fs::read(&path).unwrap();
+    let error = SqliteStore::open(path.clone())
+        .await
+        .expect_err("future schema must not open");
+    assert!(error.to_string().contains("newer than supported"));
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[tokio::test]
+async fn v15_two_openers_serialize_and_indexes_are_used() {
+    let path = temp_db_path();
+    let initial = SqliteStore::open(path.clone()).await.unwrap();
+    drop(initial);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA user_version = 12;").unwrap();
+    drop(conn);
+
+    let (first, second) = tokio::join!(
+        SqliteStore::open(path.clone()),
+        SqliteStore::open(path.clone())
+    );
+    let first = first.unwrap();
+    second.unwrap();
+    let integrity: String = first
+        .with_conn(|conn| {
+            conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                .map_err(sqlite_error)
+        })
+        .await
         .unwrap();
-    assert!(!exists);
+    assert_eq!(integrity, "ok");
+    let plan: String = first
+        .with_conn(|conn| {
+            conn.query_row(
+                "EXPLAIN QUERY PLAN SELECT * FROM refresh_tokens
+                 WHERE identity_issuer = ?1 AND subject = ?2
+                   AND provider_generation = ?3 AND expires_at > ?4",
+                params!["https://auth.example.test", "same-sub", 2, 0],
+                |row| row.get(3),
+            )
+            .map_err(sqlite_error)
+        })
+        .await
+        .unwrap();
+    assert!(plan.contains("idx_refresh_tokens_identity_generation_expiry"));
 }
 
 #[tokio::test]
@@ -2420,152 +2581,91 @@ async fn concurrent_assertion_consumption_has_exactly_one_winner() {
 }
 
 #[tokio::test]
-async fn browser_reauth_challenge_is_bounded_single_use_and_session_bound() {
+async fn stale_provider_binding_cannot_install_authorization_code_after_switch() {
     let store = temp_store().await;
-    let now = now_unix();
-    let row = BrowserReauthChallengeRow {
-        state: "state-secret".into(),
-        interaction_hash: [7; 32],
-        session_id: "session-one".into(),
-        subject: "subject-one".into(),
-        provider_code_verifier: "pkce-secret".into(),
-        nonce: "nonce-secret".into(),
-        purpose_json: r#"{"action":"save"}"#.into(),
-        created_at: now,
-        expires_at: now + 300,
+    let first = store
+        .activate_inbound_provider("google", "https://accounts.google.com", "first", now_unix())
+        .await
+        .unwrap();
+    let binding = crate::types::ProviderBinding {
+        identity_issuer: "https://accounts.google.com".into(),
+        provider_generation: first.generation,
     };
     store
-        .insert_browser_reauth_challenge(row.clone())
+        .activate_inbound_provider(
+            "authelia",
+            "https://auth.example.test",
+            "second",
+            now_unix(),
+        )
         .await
         .unwrap();
-    assert_eq!(
-        store
-            .poll_browser_reauth(&[7; 32], "session-one")
-            .await
-            .unwrap(),
-        Some(BrowserReauthResult::Pending)
-    );
-    assert_eq!(
-        store
-            .take_browser_reauth_challenge("state-secret")
-            .await
-            .unwrap(),
-        Some(row)
-    );
-    assert!(
-        store
-            .take_browser_reauth_challenge("state-secret")
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let proof = "p".repeat(43);
-    store
-        .complete_browser_reauth("state-secret", &proof)
-        .await
-        .unwrap();
-    assert!(
-        store
-            .poll_browser_reauth(&[7; 32], "wrong-session")
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        store
-            .poll_browser_reauth(&[7; 32], "session-one")
-            .await
-            .unwrap(),
-        Some(BrowserReauthResult::Completed(proof))
-    );
-    assert!(
-        store
-            .poll_browser_reauth(&[7; 32], "session-one")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    let result = store
+        .insert_bound_auth_code(
+            AuthorizationCodeRow {
+                code: "stale-code".into(),
+                client_id: "client".into(),
+                subject: "subject".into(),
+                redirect_uri: "http://127.0.0.1/callback".into(),
+                resource: "https://lab.example/mcp".into(),
+                scope: "lab".into(),
+                code_challenge: "challenge".into(),
+                code_challenge_method: "S256".into(),
+                provider_refresh_token: None,
+                created_at: now_unix(),
+                expires_at: now_unix() + 300,
+            },
+            binding,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::error::AuthError::InvalidGrant(_))
+    ));
+    assert!(matches!(
+        store.redeem_auth_code("stale-code").await,
+        Err(crate::error::AuthError::InvalidGrant(_))
+    ));
 }
 
 #[tokio::test]
-async fn failed_browser_reauth_callback_can_release_the_challenge_for_retry() {
+async fn stale_provider_binding_cannot_install_native_result_after_switch() {
     let store = temp_store().await;
-    let now = now_unix();
-    let row = BrowserReauthChallengeRow {
-        state: "retry-state".into(),
-        interaction_hash: [8; 32],
-        session_id: "session-one".into(),
-        subject: "subject-one".into(),
-        provider_code_verifier: "pkce-secret".into(),
-        nonce: "nonce-secret".into(),
-        purpose_json: r#"{"action":"save"}"#.into(),
-        created_at: now,
-        expires_at: now + 300,
+    let first = store
+        .activate_inbound_provider("google", "https://accounts.google.com", "first", now_unix())
+        .await
+        .unwrap();
+    let binding = crate::types::ProviderBinding {
+        identity_issuer: "https://accounts.google.com".into(),
+        provider_generation: first.generation,
     };
     store
-        .insert_browser_reauth_challenge(row.clone())
+        .activate_inbound_provider(
+            "authelia",
+            "https://auth.example.test",
+            "second",
+            now_unix(),
+        )
         .await
         .unwrap();
-    assert_eq!(
-        store
-            .take_browser_reauth_challenge("retry-state")
-            .await
-            .unwrap(),
-        Some(row.clone())
-    );
-    store
-        .retry_browser_reauth_challenge("retry-state")
-        .await
-        .unwrap();
-    assert_eq!(
-        store
-            .take_browser_reauth_challenge("retry-state")
-            .await
-            .unwrap(),
-        Some(row)
-    );
-}
-
-#[tokio::test]
-async fn browser_reauth_challenge_rejects_expiry_and_capacity_overflow() {
-    let store = temp_store().await;
-    let now = now_unix();
-    let make = |index: usize, expires_at: i64| BrowserReauthChallengeRow {
-        state: format!("state-{index}"),
-        interaction_hash: [u8::try_from(index).unwrap(); 32],
-        session_id: "same-session".into(),
-        subject: "subject-one".into(),
-        provider_code_verifier: "pkce-secret".into(),
-        nonce: "nonce-secret".into(),
-        purpose_json: "{}".into(),
-        created_at: now,
-        expires_at,
-    };
-    store
-        .insert_browser_reauth_challenge(make(1, now - 1))
-        .await
-        .unwrap_err();
-    store
-        .insert_browser_reauth_challenge(make(2, now + 300))
-        .await
-        .unwrap();
-    store
-        .insert_browser_reauth_challenge(make(3, now + 300))
-        .await
-        .unwrap();
-    store
-        .insert_browser_reauth_challenge(make(4, now + 300))
-        .await
-        .unwrap_err();
+    let result = store
+        .insert_bound_native_authorization_result(
+            crate::types::NativeAuthorizationResultRow {
+                poll_token_hash: "stale-poll".into(),
+                code: "stale-code".into(),
+                created_at: now_unix(),
+                expires_at: now_unix() + 300,
+            },
+            binding,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::error::AuthError::InvalidGrant(_))
+    ));
     assert!(
         store
-            .cancel_browser_reauth(&[2; 32], "same-session")
-            .await
-            .unwrap()
-    );
-    assert!(
-        store
-            .poll_browser_reauth(&[2; 32], "same-session")
+            .take_native_authorization_result("stale-poll")
             .await
             .unwrap()
             .is_none()

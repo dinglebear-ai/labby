@@ -184,6 +184,9 @@ Options:
       --json
           Emit JSON instead of human-readable tables
 
+      --live
+          Explicitly probe the configured provider's discovery and JWKS endpoints
+
       --color <COLOR>
           Control human-readable CLI styling
 

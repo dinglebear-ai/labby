@@ -34,15 +34,18 @@ pub async fn browser_login(
     let oauth_state_id = fingerprint(&request_state);
     state
         .store
-        .insert_browser_login_state(BrowserLoginStateRow {
-            state: request_state.clone(),
-            return_to: return_to.clone(),
-            provider_code_verifier,
-            created_at: now_unix(),
-            expires_at: now_unix() + AUTH_REQUEST_TTL_SECS,
-        })
+        .insert_bound_browser_login_state(
+            BrowserLoginStateRow {
+                state: request_state.clone(),
+                return_to: return_to.clone(),
+                provider_code_verifier,
+                created_at: now_unix(),
+                expires_at: now_unix() + AUTH_REQUEST_TTL_SECS,
+            },
+            state.inbound_provider_binding(),
+        )
         .await?;
-    let location = state.google.authorize_url(&AuthorizeUrlRequest {
+    let location = state.inbound_provider.authorize_url(&AuthorizeUrlRequest {
         state: request_state,
         scope: state.config.default_scope.clone(),
         code_challenge: provider_code_challenge,

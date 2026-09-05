@@ -1155,6 +1155,24 @@ pub struct AuthFileConfig {
     /// hosted in the domain qualify.
     #[serde(default)]
     pub allowed_email_domains: Option<Vec<String>>,
+    /// Active inbound human identity provider (`google` or `authelia`).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Authelia OpenID Connect issuer URL.
+    #[serde(default)]
+    pub authelia_issuer_url: Option<String>,
+    /// Authelia confidential client ID.
+    #[serde(default)]
+    pub authelia_client_id: Option<String>,
+    /// Authelia confidential client secret.
+    #[serde(default)]
+    pub authelia_client_secret: Option<String>,
+    /// Exact explicitly trusted private issuer origin.
+    #[serde(default)]
+    pub authelia_trusted_private_origin: Option<String>,
+    /// Optional PEM CA certificate used only for this exact Authelia origin.
+    #[serde(default)]
+    pub authelia_ca_certificate_path: Option<PathBuf>,
     /// Google OAuth client ID.
     #[serde(default)]
     pub google_client_id: Option<String>,
@@ -1298,6 +1316,35 @@ fn resolve_auth_with_env(
             "LABBY_GOOGLE_CLIENT_ID",
             config.google_client_id.clone(),
         );
+        insert_if_some(&mut merged, "LABBY_AUTH_PROVIDER", config.provider.clone());
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTHELIA_ISSUER_URL",
+            config.authelia_issuer_url.clone(),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTHELIA_CLIENT_ID",
+            config.authelia_client_id.clone(),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTHELIA_CLIENT_SECRET",
+            config.authelia_client_secret.clone(),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN",
+            config.authelia_trusted_private_origin.clone(),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_AUTHELIA_CA_CERT_PATH",
+            config
+                .authelia_ca_certificate_path
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        );
         insert_if_some(
             &mut merged,
             "LABBY_GOOGLE_CLIENT_SECRET",
@@ -1385,6 +1432,7 @@ fn resolve_auth_with_env(
         if key.starts_with("LABBY_AUTH_")
             || key == "LABBY_PUBLIC_URL"
             || key.starts_with("LABBY_GOOGLE_")
+            || key.starts_with("LABBY_AUTHELIA_")
             || key == "LABBY_TOKEN_ENCRYPTION_KEY"
         {
             merged.insert(key, value);
@@ -1394,6 +1442,24 @@ fn resolve_auth_with_env(
     merged
         .entry("LABBY_AUTH_ALLOWED_REDIRECT_URIS".to_string())
         .or_insert_with(|| DEFAULT_CLIENT_REDIRECT_URI_PATTERNS.join(","));
+
+    // An explicit provider selection owns precedence across configuration
+    // sources. Credentials for the non-selected legacy provider must not make
+    // an env override appear ambiguous.
+    match merged.get("LABBY_AUTH_PROVIDER").map(String::as_str) {
+        Some("authelia") => {
+            merged.remove("LABBY_GOOGLE_CLIENT_ID");
+            merged.remove("LABBY_GOOGLE_CLIENT_SECRET");
+        }
+        Some("google") => {
+            merged.remove("LABBY_AUTHELIA_ISSUER_URL");
+            merged.remove("LABBY_AUTHELIA_CLIENT_ID");
+            merged.remove("LABBY_AUTHELIA_CLIENT_SECRET");
+            merged.remove("LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN");
+            merged.remove("LABBY_AUTHELIA_CA_CERT_PATH");
+        }
+        _ => {}
+    }
 
     auth_config::AuthConfigBuilder::new()
         .env_prefix("LABBY")
@@ -3017,6 +3083,12 @@ future = "keep"
                 "https://callback.example.com/callback/*".to_string(),
             ]),
             allowed_email_domains: None,
+            provider: None,
+            authelia_issuer_url: None,
+            authelia_client_id: None,
+            authelia_client_secret: None,
+            authelia_trusted_private_origin: None,
+            authelia_ca_certificate_path: None,
             google_client_id: Some("client-id".to_string()),
             google_client_secret: Some("client-secret".to_string()),
             google_callback_path: Some("/auth/google/callback".to_string()),
@@ -3059,6 +3131,123 @@ future = "keep"
             admin_email: Some("admin@example.com".to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn resolve_auth_accepts_authelia_only_file_configuration() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".into()),
+            public_url: Some("https://lab.example.com/base".into()),
+            provider: Some("authelia".into()),
+            authelia_issuer_url: Some("https://auth.example.com/application/o/labby".into()),
+            authelia_client_id: Some("labby".into()),
+            authelia_client_secret: Some("secret".into()),
+            authelia_ca_certificate_path: Some("/etc/labby/authelia-ca.pem".into()),
+            admin_email: Some("admin@example.com".into()),
+            ..Default::default()
+        };
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [(
+                "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.inbound_provider,
+            Some(auth_config::InboundProviderKind::Authelia)
+        );
+        assert_eq!(
+            resolved.authelia.unwrap().ca_certificate_path,
+            Some(PathBuf::from("/etc/labby/authelia-ca.pem"))
+        );
+        assert!(resolved.google.client_id.is_empty());
+    }
+
+    #[test]
+    fn resolve_auth_authelia_environment_overrides_file_configuration() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".into()),
+            public_url: Some("https://lab.example.com".into()),
+            provider: Some("google".into()),
+            google_client_id: Some("legacy".into()),
+            google_client_secret: Some("legacy-secret".into()),
+            admin_email: Some("admin@example.com".into()),
+            ..Default::default()
+        };
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [
+                ("LABBY_AUTH_PROVIDER".into(), "authelia".into()),
+                (
+                    "LABBY_AUTHELIA_ISSUER_URL".into(),
+                    "https://auth.example.com/application/o/labby".into(),
+                ),
+                ("LABBY_AUTHELIA_CLIENT_ID".into(), "labby".into()),
+                (
+                    "LABBY_AUTHELIA_CLIENT_SECRET".into(),
+                    "authelia-secret".into(),
+                ),
+                (
+                    "LABBY_AUTHELIA_CA_CERT_PATH".into(),
+                    "/run/secrets/authelia-ca.pem".into(),
+                ),
+                (
+                    "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.inbound_provider,
+            Some(auth_config::InboundProviderKind::Authelia)
+        );
+        let authelia = resolved.authelia.unwrap();
+        assert_eq!(authelia.client_id, "labby");
+        assert_eq!(
+            authelia.ca_certificate_path,
+            Some(PathBuf::from("/run/secrets/authelia-ca.pem"))
+        );
+    }
+
+    #[test]
+    fn doctor_projection_uses_resolved_file_only_authelia_provider() {
+        let cfg = AuthFileConfig {
+            mode: Some("oauth".into()),
+            public_url: Some("https://lab.example.com".into()),
+            provider: Some("authelia".into()),
+            authelia_issuer_url: Some("https://auth.example.com/application/o/labby".into()),
+            authelia_client_id: Some("labby".into()),
+            authelia_client_secret: Some("secret".into()),
+            admin_email: Some("admin@example.com".into()),
+            ..Default::default()
+        };
+        let resolved = resolve_auth_with_env(
+            Some(&cfg),
+            [(
+                "LABBY_TOKEN_ENCRYPTION_KEY".into(),
+                "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".into(),
+            )],
+        )
+        .unwrap();
+        let findings = crate::dispatch::doctor::run_auth_checks_with_config(Some(&resolved));
+        let provider = findings
+            .iter()
+            .find(|finding| finding.check == "auth:provider")
+            .unwrap();
+        assert!(matches!(
+            provider.severity,
+            crate::dispatch::doctor::Severity::Ok
+        ));
+        assert!(provider.message.contains("authelia"));
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.check.starts_with("auth:google-")
+                    && matches!(finding.severity, crate::dispatch::doctor::Severity::Fail))
+        );
     }
 
     #[test]

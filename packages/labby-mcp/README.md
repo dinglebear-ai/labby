@@ -448,7 +448,9 @@ Useful environment variables:
 | `LABBY_MCP_HTTP_TOKEN` | Static bearer token for protected admin/API/MCP routes. |
 | `LABBY_AUTH_MODE` | `bearer` or `oauth`. |
 | `LABBY_PUBLIC_URL` | Public base URL for OAuth metadata, issuer/audience, callbacks, and allowed-host derivation. |
-| `LABBY_GOOGLE_CLIENT_ID` / `LABBY_GOOGLE_CLIENT_SECRET` | Google OAuth credentials for OAuth mode. |
+| `LABBY_AUTH_PROVIDER` | Inbound OAuth identity provider: `google` (stable) or `authelia` (open beta). |
+| `LABBY_GOOGLE_CLIENT_ID` / `LABBY_GOOGLE_CLIENT_SECRET` | Google credentials when Google is selected. |
+| `LABBY_AUTHELIA_ISSUER_URL` / `LABBY_AUTHELIA_CLIENT_ID` / `LABBY_AUTHELIA_CLIENT_SECRET` | Authelia OIDC configuration; see the pinned registration contract in the OAuth guide. |
 | `LABBY_AUTH_ADMIN_EMAIL` | Bootstrap admin email; required in OAuth mode. |
 | `LABBY_OAUTH_ENCRYPTION_KEY` | Base64 32-byte key required for encrypted upstream OAuth credentials. Rotation requires reauthorizing affected upstreams. |
 | `LABBY_WEB_ASSETS_DIR` | Override static Labby export directory. |

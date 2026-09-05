@@ -3,6 +3,14 @@ use axum::{Json, extract::State};
 use crate::state::AuthState;
 use crate::types::{AuthorizationServerMetadata, ProtectedResourceMetadata};
 
+fn route_path(state: &AuthState, id: crate::routes::AuthRouteId) -> &'static str {
+    crate::routes::auth_route_specs(state.inbound_provider.kind())
+        .into_iter()
+        .find(|spec| spec.id == id)
+        .expect("canonical OAuth route is present")
+        .path
+}
+
 pub async fn authorization_server_metadata(
     State(state): State<AuthState>,
 ) -> Json<AuthorizationServerMetadata> {
@@ -29,13 +37,24 @@ pub async fn authorization_server_metadata(
     }
     Json(AuthorizationServerMetadata {
         issuer: base.clone(),
-        authorization_endpoint: format!("{base}/authorize"),
-        token_endpoint: format!("{base}/token"),
-        revocation_endpoint: format!("{base}/revoke"),
-        registration_endpoint: state
-            .config
-            .enable_dynamic_registration
-            .then(|| format!("{base}/register")),
+        authorization_endpoint: format!(
+            "{base}{}",
+            route_path(&state, crate::routes::AuthRouteId::Authorize)
+        ),
+        token_endpoint: format!(
+            "{base}{}",
+            route_path(&state, crate::routes::AuthRouteId::Token)
+        ),
+        revocation_endpoint: format!(
+            "{base}{}",
+            route_path(&state, crate::routes::AuthRouteId::Revoke)
+        ),
+        registration_endpoint: state.config.enable_dynamic_registration.then(|| {
+            format!(
+                "{base}{}",
+                route_path(&state, crate::routes::AuthRouteId::Register)
+            )
+        }),
         native_callback_endpoint: Some(native_callback_endpoint(&state)),
         // Keep the legacy field absent so pre-v2 Palette releases safely fall
         // back to loopback rather than polling caller-controlled `state`.
@@ -44,7 +63,10 @@ pub async fn authorization_server_metadata(
         native_authorization_start_media_type: Some(
             "application/vnd.labby.native-oauth-start+json".to_string(),
         ),
-        jwks_uri: format!("{base}/jwks"),
+        jwks_uri: format!(
+            "{base}{}",
+            route_path(&state, crate::routes::AuthRouteId::Jwks)
+        ),
         response_types_supported: vec!["code".to_string()],
         scopes_supported: state.config.scopes_supported.clone(),
         grant_types_supported,

@@ -54,6 +54,10 @@ rustdoc-audit:
 test-integration:
     cargo nextest run --workspace --all-features --run-ignored ignored-only
 
+# Run the pinned, isolated real-Authelia OIDC acceptance harness.
+test-authelia:
+    bash tests/authelia/run.sh
+
 live-e2e tier="pr" seed="1":
     scripts/ci/labby-live-e2e.sh "{{tier}}" "{{seed}}"
 

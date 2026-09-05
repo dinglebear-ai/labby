@@ -1496,6 +1496,21 @@ jobs:
             coverage-summary.md
           if-no-files-found: error
 
+  authelia-acceptance:
+    name: Pinned Authelia acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.rust_test == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - name: Install Rust and kache
+        uses: ./.github/actions/setup-rust-kache
+      - name: Run isolated real-Authelia flow
+        run: bash tests/authelia/run.sh
+
   ci-gate:
     name: ci-gate
     runs-on: ubuntu-24.04
@@ -1532,6 +1547,7 @@ jobs:
       - palette-web
       - palette-rust
       - rust-coverage
+      - authelia-acceptance
     steps:
       - name: report changed-path routing drift
         if: ${{ needs.changes.outputs.gate_key_drift != '' }}
@@ -1615,3 +1631,4 @@ jobs:
           require_success_or_skipped palette-web "${{ needs.palette-web.result }}"
           require_success_or_skipped palette-rust "${{ needs.palette-rust.result }}"
           require_success_or_skipped rust-coverage "${{ needs.rust-coverage.result }}"
+          require_success_or_skipped authelia-acceptance "${{ needs.authelia-acceptance.result }}"

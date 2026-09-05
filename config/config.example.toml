@@ -269,6 +269,14 @@
 #   LABBY_GOOGLE_CLIENT_ID
 #   LABBY_GOOGLE_CLIENT_SECRET
 
+# Authelia OIDC is an alternative, single active inbound provider:
+# provider = "authelia"
+# authelia_issuer_url = "https://auth.example.com"
+# authelia_client_id = "labby"
+# Keep authelia_client_secret in ~/.labby/.env as LABBY_AUTHELIA_CLIENT_SECRET.
+# authelia_trusted_private_origin = "https://auth.example.com" # exact HTTPS origin only
+# authelia_ca_certificate_path = "/etc/labby/authelia-ca.pem" # optional private CA PEM
+
 # Optional Google callback path override.
 # Override with LABBY_GOOGLE_CALLBACK_PATH.
 # google_callback_path = "/auth/google/callback"

@@ -361,6 +361,27 @@
     "notes": "auth logout"
   },
   {
+    "method": "GET",
+    "path": "/auth/oidc/callback",
+    "aliases": [],
+    "surface": "api",
+    "handler_group": "oauth",
+    "handler_identity": "auth_callback",
+    "feature": null,
+    "runtime_condition": "mounted only when OAuth is configured",
+    "auth_required": false,
+    "bearer_only": false,
+    "bootstrap_proof": false,
+    "session_cookie_allowed": false,
+    "csrf_required": false,
+    "host_validation": false,
+    "master_only": false,
+    "cache_posture": "not cacheable",
+    "failure_disclosure": "standard",
+    "side_effects": "none_expected",
+    "notes": "auth callback"
+  },
+  {
     "method": "POST",
     "path": "/auth/reauth",
     "aliases": [],
