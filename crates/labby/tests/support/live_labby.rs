@@ -3299,6 +3299,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn process_signaling_requires_the_recorded_start_identity() {
         let pid = std::process::id();
